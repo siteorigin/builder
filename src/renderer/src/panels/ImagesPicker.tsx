@@ -1,10 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { ArrowDown, ArrowUp, ImageOff, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ImageOff, TriangleAlert, X } from 'lucide-react';
 import type { ListItem, ListProp, ProjectState } from '@shared/types';
 import { setState, useStore } from '../store';
 import { SwitchRow } from '../components/ui';
 import { AssetImage } from '../components/AssetImage';
-import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
+import { fitFor } from '../components/AssetPicture';
+import { AssetOrderControls, shortName, splitEnding, useAssetSeries } from '../components/AssetOrder';
 import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { isImeComposing } from '../lib/ime';
 import { mergeChoice, movePick, overNote, pickRoom, sampleRows, startingSamples, togglePick } from '../lib/gallery-picks';
@@ -63,6 +64,11 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
   const over = overNote(chosen.length, room);
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
+  // What the last change to the order did, said to screen readers.
+  const [said, setSaid] = useState('');
+  // Where focus goes once the order is drawn again: the same control on the row moved, or the next row's.
+  const refocus = useRef<{ id: string; control: 'up' | 'down' | 'out' } | null>(null);
+  const orderRef = useRef<HTMLOListElement>(null);
   const titleId = useId();
   const orderId = useId();
   const overId = useId();
@@ -70,9 +76,11 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     alive.current = true;
+    // The picker comes into view from its heading, so the images show and not only the fields above it.
+    root.current?.scrollIntoView({ block: 'start' });
     // Focus starts on the search, else the first image, else the way to Assets: once, when the picker opens, so a
     // grid drawn again later never takes focus from what the author is typing in.
-    root.current?.querySelector<HTMLElement>('input[type="search"], .insp-pick-tile, .btn')?.focus();
+    root.current?.querySelector<HTMLElement>('input[type="search"], .insp-pick-tile, .btn')?.focus({ preventScroll: true });
     return () => {
       alive.current = false;
     };
@@ -80,6 +88,15 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
   const needle = q.trim().toLowerCase();
   const shown = images.filter((a) => (!series.key || inSeries(a, series.key)) && (!needle || `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)));
   const full = chosen.length >= room;
+  // As Replace everywhere: a picture with any of its files gone can't go into a gallery until it is repaired in Assets.
+  const damageOf = (id: string): 'original' | 'copies' | null => {
+    const m = snapshot?.missingAssets.find((x) => x.assetId === id);
+    return m ? (m.original ? 'original' : 'copies') : null;
+  };
+  const lost = (id: string) => !!damageOf(id);
+  // The grid's one Tab stop: the tile used last, while it is still shown.
+  const [activeTile, setActiveTile] = useState<string | null>(null);
+  const roving = shown.some((a) => a.id === activeTile) ? activeTile : (shown[0]?.id ?? null);
   // Images that left Assets stay in the raw choice, in their places, until Add has said so.
   const choose = (next: string[]) => {
     if (busy) return;
@@ -96,6 +113,12 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
       setNotice(`${gone === 1 ? 'An image you chose was' : `${gone} images you chose were`} removed from Assets. Check your choice, then add again.`);
       return;
     }
+    // Checked again on the way in: a file can go missing while the choice is being made.
+    const missing = chosen.filter(lost);
+    if (missing.length) {
+      setNotice(`${missing.length === 1 ? `${nameOf(missing[0])} has` : `${missing.length} images you chose have`} missing files. Leave ${missing.length === 1 ? 'it' : 'them'} out, or repair ${missing.length === 1 ? 'it' : 'them'} in Assets first.`);
+      return;
+    }
     setBusy(true);
     try {
       const ok = await onAdd(chosen, replacing ? samples : []);
@@ -106,6 +129,37 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
   };
   // Another image with the same name is told apart by its ID.
   const nameOf = (id: string) => labels.get(id)?.label ?? assets[id]?.name ?? 'Image';
+  const move = (id: string, direction: 'up' | 'down') => {
+    const i = chosen.indexOf(id);
+    const to = direction === 'up' ? i - 1 : i + 1;
+    if (busy || i < 0 || to < 0 || to >= chosen.length) return;
+    refocus.current = { id, control: direction };
+    choose(movePick(chosen, id, direction));
+    setSaid(`${nameOf(id)} is now ${to + 1} of ${chosen.length}.`);
+  };
+  const leaveOut = (id: string) => {
+    if (busy) return;
+    const i = chosen.indexOf(id);
+    refocus.current = { id: chosen[i + 1] ?? chosen[i - 1] ?? '', control: 'out' };
+    choose(chosen.filter((x) => x !== id));
+    setSaid(`${nameOf(id)} left out.`);
+  };
+  useEffect(() => {
+    const want = refocus.current;
+    if (!want) return;
+    refocus.current = null;
+    const row = want.id ? orderRef.current?.querySelector<HTMLElement>(`li[data-pick="${CSS.escape(want.id)}"]`) : null;
+    // A move button that can go no further hands focus to the other one, so it never drops to the page.
+    const order = want.control === 'up' ? ['up', 'down', 'out'] : want.control === 'down' ? ['down', 'up', 'out'] : ['out'];
+    for (const c of order) {
+      const b = row?.querySelector<HTMLButtonElement>(`[data-control="${c}"]`);
+      if (b && !b.disabled) return b.focus();
+    }
+    root.current?.querySelector<HTMLElement>('.insp-pick-tile[tabindex="0"], input[type="search"]')?.focus();
+  }, [chosenRaw]);
+  const mac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
+  const alt = mac ? '⌥' : 'Alt+';
+  const left = Number.isFinite(room) ? room - chosen.length : Infinity;
   return (
     <div
       ref={root}
@@ -115,6 +169,13 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
       onKeyDown={(e) => {
         if (e.key !== 'Escape' || isImeComposing(e)) return;
         e.stopPropagation();
+        // Escape in a search with words in it clears the search and keeps the choice; the next Escape closes.
+        const t = e.target as HTMLInputElement;
+        if (t.matches('input[type="search"]') && t.value) {
+          e.preventDefault();
+          setQ('');
+          return;
+        }
         close();
       }}
     >
@@ -145,28 +206,63 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
           {(images.length > 6 || !!series.key) && <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />}
           {shown.length > 0 ? (
             // Drawn afresh for each search, series and order, so the first image shown is the grid's tab stop again.
-            <div key={JSON.stringify([needle, series.key, assetSort])} className="insp-pick-grid" role="listbox" aria-multiselectable="true" aria-label="Your images" aria-describedby={over ? overId : undefined} onKeyDown={pickGridKeys}>
-              {shown.map((a, i) => {
+            <div
+              key={JSON.stringify([needle, series.key, assetSort])}
+              className="insp-pick-grid"
+              role="listbox"
+              aria-multiselectable="true"
+              aria-label="Your images"
+              aria-describedby={over ? overId : undefined}
+              onKeyDown={(e) => {
+                // A listbox moves one option at a time, Up and Left back, Down and Right on, in the order the names are read.
+                const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('.insp-pick-tile')];
+                const i = tiles.indexOf(document.activeElement as HTMLElement);
+                const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+                const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? Math.max(0, Math.min(tiles.length - 1, i + step)) : -1;
+                if (i < 0 || to < 0 || e.altKey || e.metaKey || e.ctrlKey) return;
+                e.preventDefault();
+                setActiveTile(shown[to]?.id ?? null);
+                tiles[to].focus();
+              }}
+            >
+              {shown.map((a) => {
                 const at = chosen.indexOf(a.id);
-                const blocked = at < 0 && full;
+                // A file can go missing after it was chosen: the tile keeps saying so, and Add stops for it.
+                const missing = lost(a.id);
+                const blocked = (at < 0 && full) || (at < 0 && missing);
+                const label = labels.get(a.id)?.label ?? a.name;
+                const hurt = damageOf(a.id);
+                const what = hurt === 'copies' ? 'some of its smaller copies are missing' : 'its file is missing';
+                const why = missing ? (at >= 0 ? `${what}, so leave it out or repair it in Assets` : `${what}, so repair it in Assets first`) : blocked ? 'the gallery has no room for more images' : '';
+                // Logos and extreme shapes are shown whole, as Assets shows them.
+                const whole = fitFor(a).contain;
                 return (
                   <button
                     key={a.id}
                     role="option"
                     aria-selected={at >= 0}
                     aria-disabled={blocked || busy ? true : undefined}
-                    tabIndex={i === 0 ? 0 : -1}
-                    className={`insp-pick-tile${at >= 0 ? ' current' : ''}`}
-                    title={blocked ? `${labels.get(a.id)?.label}: the gallery has no room for more images` : labels.get(a.id)?.label}
-                    onClick={() => choose(togglePick(chosen, a.id, room))}
+                    aria-label={`${label}${at >= 0 ? `, number ${at + 1}` : ''}${why ? `: ${why}` : ''}`}
+                    tabIndex={a.id === roving ? 0 : -1}
+                    onFocus={() => setActiveTile(a.id)}
+                    className={`insp-pick-tile${at >= 0 ? ' current' : ''}${missing ? ' missing' : ''}`}
+                    title={why ? `${label}: ${why}` : label}
+                    onClick={() => (at >= 0 || !missing) && choose(togglePick(chosen, a.id, room))}
                   >
-                    {devUrl ? <AssetImage key={missingKey(snapshot, a.id)} asset={a} devUrl={devUrl} cover alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
+                    {devUrl ? <AssetImage key={missingKey(snapshot, a.id)} asset={a} devUrl={devUrl} cover={!whole} className={whole ? 'contain' : undefined} alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
                     {at >= 0 && (
                       <span className="insp-pick-num" aria-hidden="true">
                         {at + 1}
                       </span>
                     )}
-                    <span className="ellipsis">{labels.get(a.id)?.name}</span>
+                    {missing && (
+                      <span className="insp-pick-gone" aria-hidden="true">
+                        <TriangleAlert /> <span>{hurt === 'copies' ? 'Copy missing' : 'Missing'}</span>
+                      </span>
+                    )}
+                    <span className="insp-pick-name" aria-hidden="true">
+                      {shortName(labels.get(a.id)?.name ?? '', 26)}
+                    </span>
                     {/* Another image has this name: its ID, on a line of its own, tells them apart. */}
                     {labels.get(a.id)?.label !== labels.get(a.id)?.name && <span className="ellipsis insp-pick-id">{a.id}</span>}
                   </button>
@@ -174,8 +270,24 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
               })}
             </div>
           ) : (
-            <p className="faint insp-note">{`No images ${series.key ? `in ${series.label} ` : ''}match “${q.trim()}”.`}</p>
+            <div className="insp-pick-nomatch">
+              <p className="faint insp-note">{`No images ${series.key ? `in ${series.label} ` : ''}match “${q.trim()}”.`}</p>
+              {needle && (
+                <button
+                  className="btn btn-sm"
+                  onClick={() => {
+                    setQ('');
+                    root.current?.querySelector<HTMLElement>('input[type="search"]')?.focus();
+                  }}
+                >
+                  Clear search
+                </button>
+              )}
+            </div>
           )}
+          <p className={(needle || series.key) && shown.length ? 'faint insp-note insp-pick-result' : 'sr-only'} role="status">
+            {needle || series.key ? `${shown.length} of ${images.length} ${images.length === 1 ? 'image' : 'images'}${series.key ? ` · ${series.label}` : ''}` : ''}
+          </p>
           {samples.length > 0 && (
             <SwitchRow
               checked={replace}
@@ -188,31 +300,57 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
             <div className="field">
               <div className="field-label" id={orderId}>
                 <span className="grow">Order</span>
-                <span className="insp-count">{Number.isFinite(room) ? `${chosen.length} / ${room}` : chosen.length}</span>
+                <span className="insp-count">{Number.isFinite(left) ? `${chosen.length} chosen · ${left > 0 ? `room for ${left} more` : 'gallery full'}` : `${chosen.length} chosen`}</span>
               </div>
-              <ol className="insp-pick-order" aria-labelledby={orderId}>
+              <ol
+                ref={orderRef}
+                className="insp-pick-order"
+                aria-labelledby={orderId}
+                onKeyDown={(e) => {
+                  if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+                  const id = (e.target as HTMLElement).closest<HTMLElement>('li[data-pick]')?.dataset.pick;
+                  if (!id) return;
+                  e.preventDefault();
+                  move(id, e.key === 'ArrowUp' ? 'up' : 'down');
+                }}
+              >
                 {chosen.map((id, i) => (
-                  <li key={id}>
+                  <li key={id} data-pick={id} className={lost(id) ? 'missing' : undefined}>
+                    <span className="insp-pick-order-num" aria-hidden="true">
+                      {i + 1}
+                    </span>
                     <span className="insp-pick-order-thumb" aria-hidden="true">
-                      {devUrl ? <AssetImage key={missingKey(snapshot, id)} asset={assets[id]} devUrl={devUrl} cover alt="" loading="lazy" /> : <ImageOff />}
+                      {lost(id) ? <TriangleAlert className="insp-pick-order-warn" /> : devUrl ? <AssetImage key={missingKey(snapshot, id)} asset={assets[id]} devUrl={devUrl} cover={!fitFor(assets[id]).contain} className={fitFor(assets[id]).contain ? 'contain' : undefined} alt="" loading="lazy" /> : <ImageOff />}
                     </span>
-                    <span className="ellipsis grow" title={nameOf(id)}>
-                      {nameOf(id)}
+                    {/* Red is never a sign alone: the row says what is wrong in words. */}
+                    {lost(id) && <span className="insp-pick-order-miss">{damageOf(id) === 'copies' ? 'Copy missing' : 'Missing'}</span>}
+                    {/* The ending ("1100", "900") is what tells a series apart, so it is never the part cut off. */}
+                    <span className="insp-pick-order-name grow" title={nameOf(id)}>
+                      <span className="ellipsis">{splitEnding(nameOf(id))[0]}</span>
+                      {splitEnding(nameOf(id))[1] && <span className="insp-pick-order-end">{splitEnding(nameOf(id))[1]}</span>}
                     </span>
-                    <button className="icon-btn sm" aria-label={`Move ${nameOf(id)} up`} disabled={i === 0} aria-disabled={busy ? true : undefined} onClick={() => choose(movePick(chosen, id, 'up'))}>
+                    <button className="icon-btn sm" data-control="up" aria-label={`Move ${nameOf(id)} up`} aria-keyshortcuts="Alt+ArrowUp" title={`Move up (${alt}↑)`} disabled={i === 0} aria-disabled={busy ? true : undefined} onClick={() => move(id, 'up')}>
                       <ArrowUp />
                     </button>
-                    <button className="icon-btn sm" aria-label={`Move ${nameOf(id)} down`} disabled={i === chosen.length - 1} aria-disabled={busy ? true : undefined} onClick={() => choose(movePick(chosen, id, 'down'))}>
+                    <button className="icon-btn sm" data-control="down" aria-label={`Move ${nameOf(id)} down`} aria-keyshortcuts="Alt+ArrowDown" title={`Move down (${alt}↓)`} disabled={i === chosen.length - 1} aria-disabled={busy ? true : undefined} onClick={() => move(id, 'down')}>
                       <ArrowDown />
                     </button>
-                    <button className="icon-btn sm" aria-label={`Leave out ${nameOf(id)}`} aria-disabled={busy ? true : undefined} onClick={() => choose(chosen.filter((x) => x !== id))}>
+                    <button className="icon-btn sm" data-control="out" aria-label={`Leave out ${nameOf(id)}`} title="Leave out" aria-disabled={busy ? true : undefined} onClick={() => leaveOut(id)}>
                       <X />
                     </button>
                   </li>
                 ))}
               </ol>
+              {!replacing && items.length > 0 && (
+                <p className="faint insp-note">
+                  {chosen.length === 1 ? 'It goes' : 'They go'} {items.length === 1 ? 'after the image already in this gallery.' : `after the ${items.length} images already in this gallery.`}
+                </p>
+              )}
             </div>
           )}
+          <p className="sr-only" role="status">
+            {said}
+          </p>
           {over && (
             <p className="field-warning insp-note" id={overId}>
               {over}

@@ -24,6 +24,8 @@ export interface PlaceLabel {
   at?: { owner: OwnerRef; nodeId: string };
   /** The field the inspector opens there, when the image is a placed component's property or a field of its list. */
   field?: UseField;
+  /** The component whose design or starting value it is in: no page shows it as such. */
+  definitionId?: string;
 }
 
 /** The row of a list property an image is in ("Image 3: Custom"): its position, and its title when it has one. */
@@ -58,14 +60,14 @@ export function describePlace(state: ProjectState, place: ValuePlace, trees = ne
     const def = Object.hasOwn(state.components, place.definitionId) ? state.components[place.definitionId] : undefined;
     if (!def) return null;
     const label = typeof place.path[0] === 'string' ? def.properties[place.path[0]]?.label : undefined;
-    return { icon: 'component', where: `${def.name} default`, what: label ? `${label}: starting image for new copies` : 'Starting image for new copies' };
+    return { icon: 'component', where: `${def.name} default`, what: label ? `${label}: starting image for new copies` : 'Starting image for new copies', definitionId: def.id };
   }
   const t = trees.get(`${place.owner.kind}/${place.owner.id}`);
   const node = placeRoot(state, place) as GraphNode | undefined;
   if (!t || !node) return null;
   const row = rowLabel(state, node, place.path);
   const what = row ? `${displayName(state, node)} · ${row}` : displayName(state, node);
-  if (t.owner.kind === 'component') return { icon: 'component', where: `${t.label} design`, what };
+  if (t.owner.kind === 'component') return { icon: 'component', where: `${t.label} design`, what, definitionId: t.owner.id };
   const field = fieldOf(node, place.path);
   const at = { owner: t.owner, nodeId: node.id };
   const shown = { what, at, ...(field ? { field } : {}) };
