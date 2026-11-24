@@ -21,6 +21,7 @@ export interface AltCheck {
   /** The component whose design or starting value it is in, and for a starting value, its property. */
   definitionId?: string;
   prop?: string;
+  part?: string;
 }
 
 /** The uses still to check after a replacement with `withId` (see altStillToCheck), named as the Assets panel lists them. */

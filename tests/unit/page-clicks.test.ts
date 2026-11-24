@@ -104,8 +104,10 @@ describe('clicks on a page row', () => {
   it('holds a page while its row is pressed, whatever the clock says, until the press turns out to be a click or not', () => {
     const c = make();
     c.click('about', 1);
+    expect(c.held()).toBe(false);
     vi.advanceTimersByTime(DOUBLE_CLICK_MS - 10);
     c.hold();
+    expect(c.held()).toBe(true);
     vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
     expect(log).toEqual([]);
     expect(c.waiting()).toBe('about');
@@ -153,5 +155,16 @@ describe('clicks on a page row', () => {
     unlistNewer();
     newer.click('home', 1);
     expect(settlePageClick()).toBe(false);
+  });
+
+  it('never lets the canvas open a page whose row is being pressed, which may be a double click', () => {
+    const c = make();
+    const unlist = listPageClicks(c);
+    c.click('about', 1);
+    c.hold();
+    expect(settlePageClick()).toBe(false);
+    c.click('about', 2);
+    expect(log).toEqual(['rename about']);
+    unlist();
   });
 });

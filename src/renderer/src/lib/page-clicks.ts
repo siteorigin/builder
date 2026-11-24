@@ -16,6 +16,8 @@ export interface PageClicks {
   /** Stop the clock on the page waiting: a press on its row is held until its click (a second one, or the row's
    *  options) says what it was, so the page never opens, and the list never moves, under a button being pressed. */
   hold: () => void;
+  /** Whether the row waiting is pressed (see hold). */
+  held: () => boolean;
   /** The row waiting for a second click, if any. */
   waiting: () => string | null;
 }
@@ -33,7 +35,7 @@ const realTimers: Timers = { set: (run, ms) => setTimeout(run, ms), clear: (t) =
  * opens at once. A second click that comes after the page has opened still renames it.
  */
 export function pageClicks({ open, rename, wait = DOUBLE_CLICK_MS, timers = realTimers }: { open: (id: string) => void; rename: (id: string) => void; wait?: number; timers?: Timers }): PageClicks {
-  let pending: { id: string; timer: unknown } | null = null;
+  let pending: { id: string; timer: unknown; held?: boolean } | null = null;
   const drop = () => {
     if (pending) timers.clear(pending.timer);
     pending = null;
@@ -61,8 +63,11 @@ export function pageClicks({ open, rename, wait = DOUBLE_CLICK_MS, timers = real
     settle,
     drop,
     hold: () => {
-      if (pending) timers.clear(pending.timer);
+      if (!pending) return;
+      timers.clear(pending.timer);
+      pending.held = true;
     },
+    held: () => !!pending?.held,
     waiting: () => pending?.id ?? null
   };
 }
@@ -79,11 +84,11 @@ export function listPageClicks(clicks: PageClicks): () => void {
 }
 
 /**
- * Open the page a click in the Pages list is waiting to open, if any: true when there was one. A pick on the canvas
- * made meanwhile was on the page being left, and selects nothing, as any pick on a page that is leaving.
+ * Open the page a click in the Pages list is waiting to open, if any: true when there was one. Not while its row is
+ * pressed: the pointer is on the row, so whatever else happened then is not the author's next step.
  */
 export function settlePageClick(): boolean {
-  if (!listed?.waiting()) return false;
+  if (!listed?.waiting() || listed.held()) return false;
   listed.settle();
   return true;
 }

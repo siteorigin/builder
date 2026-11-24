@@ -27,8 +27,9 @@ export interface PlaceLabel {
   field?: UseField;
   /** The component whose design or starting value it is in: no page shows it as such, Component Studio does. */
   definitionId?: string;
-  /** For a starting value: the property it is the starting value of. */
+  /** For a starting value: the property it is the starting value of, and for an object property, which field. */
   prop?: string;
+  part?: string;
 }
 
 /** The row of a list property an image is in ("Image 3: Custom"): its position, and its title when it has one. */
@@ -63,8 +64,11 @@ export function describePlace(state: ProjectState, place: ValuePlace, trees = ne
     const def = Object.hasOwn(state.components, place.definitionId) ? state.components[place.definitionId] : undefined;
     if (!def) return null;
     const prop = typeof place.path[0] === 'string' ? place.path[0] : undefined;
-    const label = prop ? def.properties[prop]?.label : undefined;
-    return { icon: 'component', where: `${def.name} default`, what: label ? `${label}: starting image for new copies` : 'Starting image for new copies', definitionId: def.id, ...(prop ? { prop } : {}) };
+    const schema = prop ? def.properties[prop] : undefined;
+    const label = schema?.label;
+    // One field of an object property: its value (['hero', 'default', 'image']) or that field's own ('fields', 'image').
+    const part = schema?.type === 'object' && (place.path[1] === 'default' || place.path[1] === 'fields') && typeof place.path[2] === 'string' ? place.path[2] : undefined;
+    return { icon: 'component', where: `${def.name} default`, what: label ? `${label}: starting image for new copies` : 'Starting image for new copies', definitionId: def.id, ...(prop ? { prop } : {}), ...(part ? { part } : {}) };
   }
   const t = trees.get(`${place.owner.kind}/${place.owner.id}`);
   const node = placeRoot(state, place) as GraphNode | undefined;

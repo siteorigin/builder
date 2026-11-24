@@ -403,11 +403,17 @@ export function PagesPanel() {
       if (e.button === 0 && row?.dataset.page === id && listRef.current?.contains(row)) return clicks.hold();
       clicks.settle();
     };
-    // A held press that ends in no click on the row (released somewhere else) was not a second click.
-    const release = () => clicks.waiting() && setTimeout(() => clicks.settle(), 0);
+    // A held press that ends in no click on the row (released somewhere else) was not a second click. Its click, when
+    // there is one, comes first and settles it (a rename, the options); a fresh click on the row is not this one.
+    const release = () => {
+      const id = clicks.held() ? clicks.waiting() : null;
+      if (id) setTimeout(() => clicks.waiting() === id && clicks.held() && clicks.settle(), 0);
+    };
     const other = () => clicks.settle();
     document.addEventListener('pointerdown', press, true);
     document.addEventListener('pointerup', release, true);
+    // A press the browser takes over (a swipe that scrolls) never ends in a click.
+    document.addEventListener('pointercancel', other, true);
     document.addEventListener('keydown', other, true);
     // Focus leaving the editor's window (for the preview, another app) shows the click was single; a pick in the
     // preview settles it too (see settlePageClick).
@@ -416,6 +422,7 @@ export function PagesPanel() {
     return () => {
       document.removeEventListener('pointerdown', press, true);
       document.removeEventListener('pointerup', release, true);
+      document.removeEventListener('pointercancel', other, true);
       document.removeEventListener('keydown', other, true);
       window.removeEventListener('blur', other);
       unlist();
@@ -503,8 +510,11 @@ export function PagesPanel() {
   clickActions.current = { open: (id) => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id) && open(id), rename: setRenaming };
   renameGone.current = (id) => {
     // Still a page, no longer matching the find (the AI changed its address): the find clears, so its row comes back
-    // under the field, and the author goes on typing.
-    if (Object.hasOwn(st.pages, id) && finding) return setQuery('');
+    // under the field, brought into view, and the author goes on typing.
+    if (Object.hasOwn(st.pages, id) && finding) {
+      setQuery('');
+      return void requestAnimationFrame(() => rowEl(id)?.scrollIntoView({ block: 'nearest' }));
+    }
     // Removed: there is no page left to give the title to.
     renameBase.current = null;
     setRenaming(null);

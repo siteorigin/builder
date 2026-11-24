@@ -253,11 +253,11 @@ const OVERVIEW_FRAMES = 60;
  * that way (a list's starting rows, a property nothing shows, several properties at once), the component with nothing
  * selected and, for a managed one, its Properties opened.
  */
-const openComponentDefaults = (definitionId: string, prop?: string, content: 'image' | 'link' = 'image') => () => {
+const openComponentDefaults = (definitionId: string, prop?: string, content: 'image' | 'link' = 'image', part?: string) => () => {
   if (!openComponentStudio(definitionId)) return toast(GONE, 'info');
   const s = getState();
   const def = s.snapshot?.state.components[definitionId];
-  const nodeId = def && prop ? defaultEditorNode(def, prop, content) : null;
+  const nodeId = def && prop ? defaultEditorNode(def, prop, content, part) : null;
   setState({ selection: nodeId ? { owner: { kind: 'component', id: definitionId }, instancePath: [], nodeId } : null });
   if (def?.kind !== 'managed') return;
   const opening = s.snapshot!.workspaceKey;
@@ -282,9 +282,9 @@ const editable = (state: ProjectState, definitionId: string) => state.components
 
 /** Where a use in an element or a component goes: that element (in Component Studio for a design), or where the
  *  component's starting value is changed. None for a theme component's, which can't be changed. */
-function goToPlace(state: ProjectState, p: Pick<PlaceLabel, 'at' | 'field' | 'what' | 'definitionId' | 'prop'>): (() => void) | undefined {
+function goToPlace(state: ProjectState, p: Pick<PlaceLabel, 'at' | 'field' | 'what' | 'definitionId' | 'prop' | 'part'>): (() => void) | undefined {
   if (p.at) return revealUse(p.at.owner, p.at.nodeId, p.field, p.what);
-  return p.definitionId && editable(state, p.definitionId) ? openComponentDefaults(p.definitionId, p.prop) : undefined;
+  return p.definitionId && editable(state, p.definitionId) ? openComponentDefaults(p.definitionId, p.prop, 'image', p.part) : undefined;
 }
 
 /**

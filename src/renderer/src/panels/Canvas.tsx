@@ -52,6 +52,18 @@ const isMac = api.platform === 'darwin';
 const keys = (k: string) => shortcutLabel(k, api.platform);
 const ariaKeys = (k: string) => (isMac ? k : k.replace('Meta', 'Control'));
 
+/**
+ * Open a page chosen in Pages a moment ago that is still waiting to (see settlePageClick): true when that takes the
+ * canvas somewhere else, so a pick made meanwhile was on what is leaving and selects nothing. The page already shown,
+ * opened again, leaves the pick to land as it would have.
+ */
+function leavingForPage(): boolean {
+  const before = getState();
+  if (!settlePageClick()) return false;
+  const now = getState();
+  return now.pageId !== before.pageId || now.definitionMode !== before.definitionMode || now.templateMode !== before.templateMode;
+}
+
 /** The site's page addresses as they are now (see siteAddresses). */
 const siteNow = () => siteAddresses(Object.values(getState().snapshot?.state.pages ?? {}).map((pg) => pg.route));
 
@@ -730,9 +742,9 @@ export function Canvas() {
           break;
         }
         case 'select': {
-          // A pick on a page the editor has not yet confirmed (one leaving) selects nothing: also one made while a page
-          // chosen in Pages a moment ago waits to open, which then opens.
-          if (!st || !s.frameReady || settlePageClick()) return;
+          // A pick on a page the editor has not yet confirmed (one leaving) selects nothing: also one made while another
+          // page chosen in Pages a moment ago waits to open, which then opens.
+          if (!st || !s.frameReady || leavingForPage()) return;
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
@@ -741,7 +753,7 @@ export function Canvas() {
           break;
         }
         case 'dblclick': {
-          if (!st || !s.frameReady || settlePageClick()) return;
+          if (!st || !s.frameReady || leavingForPage()) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
           // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
@@ -850,7 +862,7 @@ export function Canvas() {
           frameTextFocus.active = p.on === true;
           break;
         case 'contextmenu': {
-          if (!st || !s.frameReady || settlePageClick()) return;
+          if (!st || !s.frameReady || leavingForPage()) return;
           pagePick();
           const chain = chainOf(p.chain);
           const ref = pick(chain, false);

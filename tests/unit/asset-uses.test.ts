@@ -207,6 +207,29 @@ describe('the uses of an image, one row each', () => {
     expect(defaultEditorNode(gallery, 'images', 'image')).toBeNull();
   });
 
+  it('opens the element showing the very field of an object property a starting image is in (#209)', () => {
+    const { state, work } = studio();
+    const sectionId = state.pages[work.id].rootIds[0];
+    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: work, nodeId: sectionId, name: 'Portrait band' }]);
+    const definitionId = made.results[0].definitionId as string;
+    const s = structuredClone(made.state);
+    const def = s.components[definitionId];
+    // Two pictures from one object property: the first starts as Other, the second as the portrait.
+    const first = Object.values(def.tree!.nodes).find((n) => n.kind === 'image') as ImageNode;
+    const second = { ...structuredClone(first), id: `${first.id}-2` };
+    def.tree!.nodes[second.id] = second;
+    const other: ImageValue = { assetId: 'a_other', alt: '' };
+    def.properties.pair = { type: 'object', label: 'Pair', fields: { a: { type: 'image', label: 'A', default: other }, b: { type: 'image', label: 'B', default: other } }, default: { a: other, b: { assetId: 'a_person1', alt: '' } } };
+    first.image = { $prop: 'pair', field: 'a' };
+    second.image = { $prop: 'pair', field: 'b' };
+    const start = imageUseRows(s, 'a_person1').find((r) => r.definitionId === definitionId && r.prop === 'pair')!;
+    expect(start.part).toBe('b');
+    expect(defaultEditorNode(def, 'pair', 'image', 'b')).toBe(second.id);
+    expect(defaultEditorNode(def, 'pair', 'image', 'a')).toBe(first.id);
+    // Without the field, either picture could be meant: neither is opened.
+    expect(defaultEditorNode(def, 'pair', 'image')).toBeNull();
+  });
+
   it('shows a component’s starting image by the component alone, and a theme component’s design nowhere (#209)', () => {
     const { state, work } = studio();
     const sectionId = state.pages[work.id].rootIds[0];
