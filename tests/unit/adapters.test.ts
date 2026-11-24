@@ -3,11 +3,12 @@
  * the OpenAI Responses API or the Anthropic Messages API through an injected fetch, so the adapters' own
  * request building and stream parsing are exercised without a provider.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
-import { AnthropicAdapter } from '@agent/anthropic';
+import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
 import { fixComponentSource } from '@agent/fixer';
 import type { CanonicalModelRequest, ModelEvent, ToolDefinition } from '@agent/types';
+import { MockOpenAIServer } from './mock-openai-server';
 
 type Sse = { event?: string; data: unknown };
 
@@ -387,5 +388,60 @@ describe('Anthropic adapter (Messages API wire format)', () => {
     expect(bodies[0]).not.toHaveProperty('tools');
     expect(bodies[1].max_tokens).toBe(8192);
     expect(adapter.capabilities().maxOutputTokens).toBe(8192);
+  });
+});
+
+describe('cloud adapters and the environment', () => {
+  let mock: MockOpenAIServer | null = null;
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await mock?.stop();
+    mock = null;
+  });
+
+  /**
+   * Answers requests to the provider's own API with the next scripted response, and sends anything else on to the
+   * real network: a request the environment redirected reaches the mock server below.
+   */
+  function official(origin: string, responses: Array<() => Response>) {
+    const seen: Array<{ url: string; headers: Headers }> = [];
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      seen.push({ url, headers: new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)) });
+      if (!url.startsWith(origin)) return globalThis.fetch(input, init);
+      const next = responses.shift();
+      if (!next) throw new Error('No scripted response left');
+      return next();
+    }) as typeof globalThis.fetch;
+    return { fetch, seen };
+  }
+
+  it('sends a cloud run and a connection test to the provider, never to a base URL set in the environment', async () => {
+    mock = await new MockOpenAIServer().start();
+    vi.stubEnv('OPENAI_BASE_URL', mock.baseURL);
+    vi.stubEnv('OPENAI_ORG_ID', 'org-from-env');
+    vi.stubEnv('OPENAI_PROJECT_ID', 'proj-from-env');
+    vi.stubEnv('ANTHROPIC_BASE_URL', mock.baseURL.replace(/\/v1$/, ''));
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'token-from-env');
+
+    const openai = official('https://api.openai.com/v1/', [() => openaiTurn([message('Done.')], { text: 'Done.' }), () => json(200, { id: 'gpt-6.2-sol', object: 'model' })]);
+    expect(doneOf(await collect(new OpenAIAdapter('sk-test', 'gpt-6.2-sol', { fetch: openai.fetch }).streamTurn(request(), new AbortController().signal)))?.text).toBe('Done.');
+    expect((await testOpenAI('sk-test', 'gpt-6.2-sol', { fetch: openai.fetch })).ok).toBe(true);
+
+    const anthropic = official('https://api.anthropic.com/v1/', [() => anthropicTurn([{ type: 'text', text: 'Done.' }], 'end_turn'), () => json(200, { id: 'claude-sonnet-5-5', type: 'model' })]);
+    expect(doneOf(await collect(new AnthropicAdapter('sk-ant-test', 'claude-sonnet-5-5', { fetch: anthropic.fetch }).streamTurn(request({ model: 'claude-sonnet-5-5' }), new AbortController().signal)))?.text).toBe('Done.');
+    expect((await testAnthropic('sk-ant-test', 'claude-sonnet-5-5', { fetch: anthropic.fetch })).ok).toBe(true);
+
+    expect(mock.requests).toEqual([]);
+    expect(openai.seen.map((r) => r.url)).toEqual(['https://api.openai.com/v1/responses', 'https://api.openai.com/v1/models/gpt-6.2-sol']);
+    expect(anthropic.seen.map((r) => r.url)).toEqual(['https://api.anthropic.com/v1/messages', 'https://api.anthropic.com/v1/models/claude-sonnet-5-5']);
+    // Nothing else from the environment rides along: no organization or project, and only the app's own key.
+    for (const r of openai.seen) {
+      expect(r.headers.get('openai-organization')).toBeNull();
+      expect(r.headers.get('openai-project')).toBeNull();
+      expect(r.headers.get('authorization')).toBe('Bearer sk-test');
+    }
+    for (const r of anthropic.seen) expect(`${r.headers.get('authorization')} ${r.headers.get('x-api-key')}`).toContain('sk-ant-test');
+    expect(JSON.stringify(anthropic.seen.map((r) => [...r.headers]))).not.toContain('token-from-env');
   });
 });
