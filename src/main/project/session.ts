@@ -1264,8 +1264,12 @@ export class ProjectSession extends EventEmitter {
     const historyPath = this.local('history', 'history.json');
     if (usableJournalHistory(journal.history)) await atomicWrite(historyPath, toJson(journal.history));
     else if (readableJournalHistory(journal.history)) {
-      const saved = await readIfExists(historyPath).then((t) => (t ? (JSON.parse(t) as unknown) : null)).catch(() => null);
-      if (!usableJournalHistory(saved)) await atomicWrite(historyPath, toJson(usableHistory(journal.history)));
+      // Only History that is surely gone or surely older is replaced: one that cannot be read is left as it is.
+      const saved = await fs.readFile(historyPath, 'utf8').then(
+        (t) => ({ file: JSON.parse(t) as { schemaVersion?: unknown } | null }),
+        (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? { file: null } : null)
+      ).catch(() => null);
+      if (saved && (saved.file === null || (typeof saved.file === 'object' && olderFormat(saved.file.schemaVersion)))) await atomicWrite(historyPath, toJson(usableHistory(journal.history)));
     }
     if (Number.isInteger(journal.revision)) await this.writeRevision(journal.revision!);
     const finished = typeof journal.finishRun === 'string';
@@ -3541,7 +3545,7 @@ function usableHistory(file: HistoryFile | null): HistoryFile {
   const h = emptyHistory();
   // An older format's steps go, but where each AI step stood when they went is still true of the site, so its chat
   // turn keeps it (issue 276). A newer format, or an undo position that does not fit its steps, says nothing sure.
-  const older = !!file && typeof file === 'object' && (file.schemaVersion === undefined || (typeof file.schemaVersion === 'number' && file.schemaVersion < SCHEMA_VERSION));
+  const older = !!file && typeof file === 'object' && olderFormat(file.schemaVersion);
   if (older && Array.isArray(file.entries) && Number.isInteger(file.cursor) && file.cursor >= 0 && file.cursor <= file.entries.length) {
     const before = file.droppedRuns && typeof file.droppedRuns === 'object' && !Array.isArray(file.droppedRuns) ? Object.entries(file.droppedRuns) : [];
     for (const [runId, status] of before) if (status === 'applied' || status === 'undone') noteDropped(h, [{ runId } as HistoryEntry], status);
@@ -3550,6 +3554,11 @@ function usableHistory(file: HistoryFile | null): HistoryFile {
     noteDropped(h, file.entries.slice(file.cursor), 'undone');
   }
   return h;
+}
+
+/** A format version before this one: the first format had none. */
+function olderFormat(v: unknown): boolean {
+  return v === undefined || (Number.isInteger(v) && (v as number) > 0 && (v as number) < SCHEMA_VERSION);
 }
 
 /** Note in `h` each AI step of `dropped`, which History is letting go, as standing `status` (see HistoryFile.droppedRuns). */

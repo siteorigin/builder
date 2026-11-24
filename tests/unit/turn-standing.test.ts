@@ -94,6 +94,11 @@ describe('AI turn standing in History (issue 276)', () => {
     await undone.s.collectGarbage();
     expect(undone.s.historyInfo().entries).toHaveLength(1);
     expect(standing(undone.s, 'run_redo')).toBe('undone');
+    await undone.s.close();
+    const reopened = await reopen(undone.dir);
+    expect(standing(reopened, 'run_redo')).toBe('undone');
+    await ok(reopened.redo());
+    expect(reopened.state.site.name).toBe('First');
   });
 
   it('keeps where each turn stood when History from an older format is dropped on opening', async () => {
@@ -113,8 +118,12 @@ describe('AI turn standing in History (issue 276)', () => {
 
   it('keeps History as saved when the trimmed History cannot be saved', async () => {
     const { s } = await make();
+    await ai(s, 'run_gone', 'Gone');
+    await ok(s.undo());
+    // The next run replaces the undone one's step.
     await ai(s, 'run_kept', 'Kept');
     await edit(s, 'Later');
+    expect(s.historyInfo().droppedRuns).toEqual({ run_gone: 'undone' });
     const real = fsp.rename.bind(fsp);
     vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
       if (String(to).endsWith('history.json')) throw Object.assign(new Error('injected failure'), { code: 'EIO' });
@@ -123,7 +132,7 @@ describe('AI turn standing in History (issue 276)', () => {
     s.historyByteLimit = 1;
     await s.collectGarbage();
     expect(s.historyInfo().entries.map((e) => e.runId ?? null)).toEqual(['run_kept', null]);
-    expect(s.historyInfo().droppedRuns).toBeUndefined();
+    expect(s.historyInfo().droppedRuns).toEqual({ run_gone: 'undone' });
     vi.restoreAllMocks();
     // Every step the saved History names can still be undone: its versions were kept.
     await ok(s.undo());

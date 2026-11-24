@@ -3,8 +3,8 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatMessage } from '@shared/api';
 import type { InstanceNode, ListItem } from '@shared/types';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, undoableId } from '../../src/renderer/src/lib/result';
-import { resultAsSaid, runStanding, turnState, type TurnHistory } from '@shared/turns';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId } from '../../src/renderer/src/lib/result';
+import { canCarryOn, resultAsSaid, runStanding, turnState, type TurnHistory } from '@shared/turns';
 
 describe('AI result card', () => {
   it('counts only passing checks as passed, keeping unchecked ones apart from site problems', () => {
@@ -260,6 +260,8 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
     const said = { ...turn('a5', 'r5', { summary: 'The label now reads (Undone.)', canUndo: false }), text: 'The label now reads (Undone.)' };
     expect(turnState(said, steps([]))).toMatchObject({ standing: 'unknown', undoneEarlier: false, result: { summary: 'The label now reads (Undone.)', canUndo: false } });
     expect(resultAsSaid(old.result!, old.text).undoneOnce).toBe(true);
+    // Read the same way for Undo turn: the assistant's own words never make a turn undoable.
+    expect(undoableId([ask('u1'), said], steps([{ runId: 'r5', applied: true }]))).toBeUndefined();
   });
 
   it('offers Continue on an unfinished turn that changed the site only while its changes are known to be in it', () => {
@@ -274,5 +276,24 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
     expect(resumableId([ask('u1'), marked('a1', 'r1')].map((m) => (m.result ? { ...m, result: { ...m.result, incomplete: true } } : m)), steps([]))).toBeUndefined();
     // One that changed nothing is offered whatever History says.
     expect(resumableId([ask('u1'), turn('a1', 'r1', { status: 'no-changes', canUndo: false, changes: [], incomplete: true })], steps([]))).toBe('a1');
+    // A finished turn is never carried on from, applied or not.
+    expect(canCarryOn(turnState(turn('a1', 'r1'), steps([{ runId: 'r1', applied: true }])))).toBe(false);
+    expect(canCarryOn(turnState(turn('a1', 'r1', { incomplete: true }), steps([{ runId: 'r1', applied: true }])))).toBe(true);
+  });
+
+  it('says why an unfinished turn can no longer be continued, and what can be done instead', () => {
+    const partial = turn('a1', 'r1', { incomplete: true });
+    expect(standingNote(partial, steps([{ runId: 'r1', applied: true }]))).toBeUndefined();
+    expect(standingNote(partial, steps([{ runId: 'r1', applied: false }]))).toBe('These changes were undone, so this request can only be continued once they are redone.');
+    // Its step is gone: no Redo brings it back.
+    expect(standingNote(partial, steps([], { r1: 'undone' }))).toBe('These changes were undone. This request can no longer be continued: send it again to start over.');
+    expect(standingNote(partial, steps([]))).toBe('History no longer shows whether these changes are in the site. This request can no longer be continued: send it again to start over.');
+    // A finished turn needs no word on continuing, whatever its standing; its heading says Undone.
+    expect(standingNote(turn('a2', 'r2'), steps([{ runId: 'r2', applied: false }]))).toBeUndefined();
+    expect(standingNote(turn('a3', 'r3', { status: 'no-changes', canUndo: false, changes: [], incomplete: true }), steps([]))).toBeUndefined();
+    expect(standingNote(marked('a4', 'r4'), steps([]))).toBe('These changes were undone once. History no longer shows whether they were redone since.');
+    expect(standingNote({ ...marked('a5', 'r5'), result: { ...marked('a5', 'r5').result!, incomplete: true } }, steps([]))).toBe(
+      'These changes were undone once. History no longer shows whether they were redone since. This request can no longer be continued: send it again to start over.'
+    );
   });
 });

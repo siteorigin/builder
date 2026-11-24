@@ -195,7 +195,11 @@ describe('project storage', () => {
     expect(labels(s)).toEqual(['Rename site']);
     expect(s.historyInfo().droppedRuns).toEqual({ run_before: 'applied', run_after: 'undone' });
     await s.close();
-    expect((await reopen(dir)).historyInfo().droppedRuns).toEqual({ run_before: 'applied', run_after: 'undone' });
+    const again = await reopen(dir);
+    expect(again.historyInfo().droppedRuns).toEqual({ run_before: 'applied', run_after: 'undone' });
+    expect(labels(again)).toEqual(['Rename site']);
+    await ok(again.undo());
+    expect(again.state.site.name).toBe('Before');
   });
 
   it('keeps every size of an image the project still names in any file, and drops a later step whose undo would name a deleted one', async () => {

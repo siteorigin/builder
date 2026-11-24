@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cpSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
@@ -330,6 +330,9 @@ describe('crash durability', { timeout: 300_000 }, () => {
         // The edit replaced the redo tail, and History noted the AI step it let go as undone.
         expect(info.entries.some((e) => e.runId === 'run_tail')).toBe(false);
         expect(info.droppedRuns).toEqual({ run_tail: 'undone' });
+        expect(info.undoLabel).toBe('Two');
+        expect((await s.undo()).ok).toBe(true);
+        expect(s.state.site.name).toBe('One');
       } else {
         expect(s.state.site.name).toBe('One');
         expect(info.entries.find((e) => e.runId === 'run_tail')).toMatchObject({ applied: false });
@@ -455,8 +458,37 @@ describe('crash durability', { timeout: 300_000 }, () => {
       writeFileSync(journalPath, JSON.stringify(journal));
       const again = await reopen(dir);
       expect(again.state.site.name).toBe('AI name');
-      // The step saved before the run still undoes; only the previous format's steps are left out.
-      expect(again.historyInfo().entries.map((e) => e.label)).toEqual(['By hand']);
+      // The step saved before the run stays where it was; only the previous format's steps are left out.
+      expect(again.historyInfo().entries.map((e) => ({ label: e.label, applied: e.applied }))).toEqual([{ label: 'By hand', applied: true }]);
+      expect(again.historyInfo().droppedRuns).toBeUndefined();
+    });
+
+    it('replaces only History that is surely older when a previous-format completion is finished (issue 276)', async () => {
+      const finishOld = async (prepare: (historyPath: string) => void) => {
+        const { dir, s } = await make();
+        expect(await s.beginRun('run_v')).toBeNull();
+        expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_v', history: false })).ok).toBe(true);
+        crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+        await s.completeRun('AI: test').catch(() => undefined);
+        disarm?.();
+        const journalPath = join(dir, '.siteorigin/journal.json');
+        const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
+        journal.history.schemaVersion = SCHEMA_VERSION - 1;
+        writeFileSync(journalPath, JSON.stringify(journal));
+        const historyPath = join(dir, '.siteorigin/history/history.json');
+        prepare(historyPath);
+        const again = await reopen(dir);
+        expect(again.state.site.name).toBe('AI name');
+        return { again, historyPath };
+      };
+      // History the previous format saved goes, for where the change leaves each AI step.
+      const older = await finishOld((p) => writeFileSync(p, JSON.stringify({ schemaVersion: SCHEMA_VERSION - 1, entries: [{ id: 'h1', label: 'Old', source: 'ai', time: '', revision: 1, docs: {}, runId: 'run_old' }], cursor: 0 })));
+      expect(older.again.historyInfo().droppedRuns).toEqual({ run_v: 'applied' });
+      // A newer format's History, or one that cannot be read, is left as it is.
+      const newer = await finishOld((p) => writeFileSync(p, JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1, entries: [], cursor: 0 })));
+      expect(JSON.parse(readFileSync(newer.historyPath, 'utf8')).schemaVersion).toBe(SCHEMA_VERSION + 1);
+      const unreadable = await finishOld((p) => mkdirSync(p, { recursive: true }));
+      expect(statSync(unreadable.historyPath).isDirectory()).toBe(true);
     });
 
     it('never trusts a previous-format completion that also changes files', async () => {

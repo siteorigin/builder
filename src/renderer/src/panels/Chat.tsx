@@ -9,7 +9,7 @@ import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDra
 import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, undoableId as undoableTurn } from '../lib/result';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { turnState } from '@shared/turns';
 import { composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
@@ -1143,6 +1143,7 @@ function ResultCard({
   const stepsId = useId();
   /** Project history holds the turn's change as undone now, from chat, the toolbar or History alike (issue 276). */
   const reverted = turn.standing === 'undone';
+  const note = standingNote(m, history);
   const head = turn.undoneEarlier ? { icon: <RotateCcw />, label: 'Undone earlier' } : outcome(r);
   const steps = m.activities ?? [];
   const stopped = r.status === 'cancelled';
@@ -1293,6 +1294,8 @@ function ResultCard({
                 </ul>
               </div>
             )}
+            {/* Whether it can still be continued is about the site now, so it is not tucked away with the old report. */}
+            {note && <p className="result-standing">{note}</p>}
             <button className="checks-toggle report-toggle" aria-expanded={showReport} onClick={() => setShowReport(!showReport)}>
               Before the undo
               <ChevronDown aria-hidden="true" />
@@ -1304,8 +1307,7 @@ function ResultCard({
         <div className="result-summary">
           <Md text={summaryOf(r)} />
         </div>
-        {turn.undoneEarlier && <p className="result-standing">These changes were undone once. History no longer shows whether they were redone since.</p>}
-        {reverted && r.incomplete && <p className="result-standing">These changes were undone, so this request can only be continued once they are redone.</p>}
+        {!reverted && note && <p className="result-standing">{note}</p>}
         {locations.length > 0 && (
           <ul className="locations" aria-label="Where to change it">
             {locations.map((l, i) => (
