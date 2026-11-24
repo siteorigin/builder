@@ -8,7 +8,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
-import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
+import { chainOf, descOrNull, measuredRects, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
@@ -26,6 +26,7 @@ import { focusInspector } from '../lib/inspector-focus';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
+import { SpacingHandles } from './SpacingHandles';
 import { copyPasteItems, PasteHere } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
@@ -70,6 +71,7 @@ export function Canvas() {
   const definitionMode = useStore((s) => s.definitionMode);
   // While Site styles is open, edits are site-wide; the element selection steps back.
   const stylesOpen = useStore((s) => s.rightTab === 'styles' && s.dockOpen);
+  const styleScope = useStore((s) => s.styleScope);
   const scrollRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
@@ -148,6 +150,9 @@ export function Canvas() {
   /** The frame session whose page has said it is ready at least once. */
   const readySession = useRef<string | null>(null);
   const measureWaiters = useRef(new Map<string, (rects: unknown) => void>());
+  /** The selected element's padding, border and margin as the page last reported them, for its spacing handles. */
+  const [spacing, setSpacing] = useState<FrameSpacing | null>(null);
+  const spacingSeen = useRef('null');
   /** The element chain under the pointer in the page, so hover can be re-resolved when the selection changes. */
   const hoverChain = useRef<BridgeDesc[] | null>(null);
   /** While editing a component everywhere: the placement the last pick went through, and the one under the
@@ -511,6 +516,13 @@ export function Canvas() {
           const hovered = rectList(p.hovered);
           // The pointer is on the name of what it was over: that element keeps its outline while it rests there.
           setState({ rects: { selected: rectList(p.selected), hovered: !hovered.length && overTag.current ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
+          // Kept only when it changes: the page reports every frame while it scrolls.
+          const sp = spacingOf(p.spacing);
+          const seen = JSON.stringify(sp);
+          if (seen !== spacingSeen.current) {
+            spacingSeen.current = seen;
+            setSpacing(sp);
+          }
           break;
         }
         case 'select': {
@@ -700,6 +712,14 @@ export function Canvas() {
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
             w(p.rects);
+          }
+          break;
+        }
+        case 'spaceMeasured': {
+          const w = measureWaiters.current.get(String(p.requestId));
+          if (w) {
+            measureWaiters.current.delete(String(p.requestId));
+            w(p.px);
           }
           break;
         }
@@ -1104,6 +1124,19 @@ export function Canvas() {
     window.addEventListener('keydown', key, true);
   }
 
+  /** Each spacing site style's size as padding on the box `desc` finds (null where it has none); null when the page
+   *  doesn't answer. */
+  const measureSpace = (vars: string[], desc: BridgeDesc) =>
+    new Promise<Array<number | null> | null>((resolve) => {
+      const requestId = Math.random().toString(36).slice(2);
+      measureWaiters.current.set(requestId, (raw) => resolve(spaceSizes(raw, vars.length)));
+      post('measureSpace', { requestId, vars, desc });
+      setTimeout(() => {
+        measureWaiters.current.delete(requestId);
+        resolve(null);
+      }, 1500);
+    });
+
   // Drag-to-resize viewport. The frame stays centered, so both edges follow the pointer, within the widths the
   // toolbar's width field accepts. The handle captures the pointer (as the panel splitters do), so the drag always
   // hears its release; the width is remembered once, for the opening it was made in. One drag at a time: a second
@@ -1297,6 +1330,12 @@ export function Canvas() {
   const firstSel = selBoxes[0];
   // Text being edited always has its chip parked above the page, never over the words.
   const placement = firstSel && selection ? chipPlacement(firstSel, !isPart && !editing, frameH * z) : null;
+  // Spacing handles sit on the selected box itself (not its outline's breathing room), while editing and not while
+  // text is being typed, a block moved, the page resized or a component's design edited everywhere.
+  const spaceDesc = selection ? descFor(selection) : null;
+  // The page's report must be for this selection: one from before it changed measured something else.
+  const spaceFor = !!spacing && !!spaceDesc && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
+  const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   const device = viewport < 768 ? 'Phone' : viewport < 1024 ? 'Tablet' : 'Desktop';
   const scalePct = Math.round(z * 100);
   // The width label shares the strip with a parked chip: in full, then the width and zoom, then just the width,
@@ -1561,6 +1600,22 @@ export function Canvas() {
                 {selBoxes.map((b, i) => (
                   <div key={`s${i}`} className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && reorder ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}`} style={b} />
                 ))}
+                {spaceShown && (
+                  <SpacingHandles
+                    // A drag belongs to one selection, at one size, zoom and page: any change ends it.
+                    key={JSON.stringify([session, pageId, refKey(selection!), selection!.itemPath ?? [], styleScope, viewport, z])}
+                    state={state!}
+                    selection={selection!}
+                    desc={spaceDesc!}
+                    box={toBox(rects.selected[0])}
+                    spacing={spacing!}
+                    zoom={z}
+                    post={post}
+                    measureSpace={measureSpace}
+                    onDragging={setDragging}
+                    focusCanvas={() => canvasRef.current?.focus({ preventScroll: true })}
+                  />
+                )}
                 {reorder?.line &&
                   (() => {
                     const d = dropBox(reorder.line);

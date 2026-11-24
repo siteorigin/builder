@@ -55,6 +55,7 @@ import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, 
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
+import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
 import { TagField } from './TagField';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, placedOnPage, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
@@ -241,13 +242,6 @@ function sharedPartStyles(def: ComponentDefinition, nodeId: string, inst: Instan
   // The shared rule shows again what the node's own styles or its selected options hide, as the stylesheet writes it.
   return cascadeStyles([...design, { styles: inst.overrides?.[partId], strength: 3, wideColumns: true, unhides: design.map((l) => l.styles) }]);
 }
-
-/**
- * The style reach (one card, or every card) last chosen for each card of each placement, so moving from a card's
- * title to its icon, from Parts or on the canvas, never quietly widens the edit. A card not chosen for yet follows
- * the shared style until "This card" is picked.
- */
-const reachByItem = new Map<string, 'all' | 'item'>();
 
 /** The selection one level up: the component a part belongs to (what Escape selects). */
 function parentOf(sel: ElementRef): ElementRef {
@@ -1185,12 +1179,14 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const itemGone = !!itemList && itemList === listProp && !!itemId && itemIndex < 0;
   const ownItemStyles = canStyleItem ? itemStylesOf(def, inst, partId!, itemId!) : undefined;
   // Another part of the same card keeps the choice made there: "This card" stays this card.
-  const reachKey = canStyleItem ? JSON.stringify([owner.kind, owner.id, selection.instancePath[0], itemId]) : '';
+  const reachKey = canStyleItem ? itemReachKey(owner, selection.instancePath[0], itemId!) : '';
   const [reach, setReachState] = useState<'all' | 'item'>(() => (reachKey && reachByItem.get(reachKey)) || (ownItemStyles ? 'item' : 'all'));
   const setReach = (r: 'all' | 'item') => {
     if (reachKey) reachByItem.set(reachKey, r);
     setReachState(r);
   };
+  // The canvas's spacing handles write where this says.
+  useEffect(() => (reachKey ? showReach(reachKey, reach) : undefined), [reachKey, reach]);
   const oneItem = canStyleItem && reach === 'item';
   const itemName = (it: Record<string, unknown> | undefined, i: number) => {
     const t = listSchema?.titleField ? it?.[listSchema.titleField] : undefined;

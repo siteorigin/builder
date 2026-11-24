@@ -123,7 +123,152 @@ function sendRects() {
   const hov = hovered && mode === 'edit' ? findAll(hovered).slice(0, 1).map(rectOf).filter(Boolean) : [];
   // A divider between items is not part of the item it follows.
   const rev = revealRoots().filter((el) => el.tagName !== 'HR').map(rectOf).filter(Boolean);
-  send('rects', { selected: sel, hovered: hov, hoveredDesc: hovered, revealed: rev, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+  // The padding, border and margin of the first selected box the editor outlines, for its spacing handles, with
+  // what it measured so a report from before a new selection is never taken for it.
+  const first = selBoxes.findIndex(Boolean);
+  const box = mode === 'edit' && first >= 0 ? spacingOf(selEls[first]) : null;
+  const spacing = box && { ...box, ctx: selected.ctx, node: selected.node, items: selected.items || '' };
+  send('rects', { selected: sel, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+}
+
+// ---------------------------------------------------------------------------
+// Spacing dragged on the canvas
+// ---------------------------------------------------------------------------
+
+/** Whether a transform scales, rotates or skews: one that only moves a box keeps its padding where it is drawn. */
+function distorts(s) {
+  if (s.scale && s.scale !== 'none' && s.scale.split(/\s+/).some((v) => Math.abs(Number.parseFloat(v) - 1) > 1e-3)) return true;
+  if (s.rotate && s.rotate !== 'none' && Number.parseFloat(s.rotate.trim().split(/\s+/).pop()) !== 0) return true;
+  if (!s.transform || s.transform === 'none') return false;
+  const m = /^matrix\(([^)]+)\)$/.exec(s.transform);
+  if (!m) return true;
+  const [a, b, c, d] = m[1].split(',').map(Number);
+  return Math.abs(a - 1) > 1e-3 || Math.abs(b) > 1e-3 || Math.abs(c) > 1e-3 || Math.abs(d - 1) > 1e-3;
+}
+
+/**
+ * An element's padding, border widths and margin in CSS pixels, by physical side. Null for a box with no padding
+ * of its own to drag (laid out as its children, or an inline run of text), and for one whose sides are not where
+ * the editor would draw them: set in vertical writing, or scaled, rotated or skewed by itself or what holds it.
+ */
+function spacingOf(el) {
+  const s = getComputedStyle(el);
+  if (s.display === 'contents' || s.display === 'inline' || s.display === 'none' || s.writingMode !== 'horizontal-tb') return null;
+  for (let e = el; e && e.nodeType === 1; e = e.parentElement) if (distorts(e === el ? s : getComputedStyle(e))) return null;
+  const n = (v) => {
+    const x = Number.parseFloat(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+  const sides = (k, suffix = '') => ({ top: n(s[`${k}Top${suffix}`]), right: n(s[`${k}Right${suffix}`]), bottom: n(s[`${k}Bottom${suffix}`]), left: n(s[`${k}Left${suffix}`]) });
+  return { padding: sides('padding'), border: sides('border', 'Width'), margin: sides('margin'), rtl: s.direction === 'rtl' };
+}
+
+/**
+ * Each spacing site style's size as padding on the dragged box, in CSS pixels, or null where it has none. Measured
+ * on a probe outside the page's body (so its layout and observers never see it), in the box's font, so lengths in
+ * em, ch or lh come out as they would on the box. A percentage is taken of the page's width.
+ */
+function measureSpace(vars, desc) {
+  // The box the editor outlines: the first copy that shows, as the spacing report takes it.
+  const el = desc && typeof desc.ctx === 'string' && typeof desc.node === 'string' ? findAll(desc).find((e) => rectOf(e)) : null;
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;margin:0;border:0;visibility:hidden;pointer-events:none;';
+  if (el) {
+    const s = getComputedStyle(el);
+    probe.style.font = s.font;
+    probe.style.lineHeight = s.lineHeight;
+  }
+  document.documentElement.appendChild(probe);
+  try {
+    return vars.map((v) => {
+      if (typeof v !== 'string' || !/^--so-[a-zA-Z0-9-]+$/.test(v)) return null;
+      probe.style.paddingTop = `var(${v})`;
+      const px = Number.parseFloat(getComputedStyle(probe).paddingTop);
+      return Number.isFinite(px) ? px : null;
+    });
+  } finally {
+    probe.remove();
+  }
+}
+
+/**
+ * The drags being shown, by drag: each one rule giving the dragged element(s) the dragged value until the page's
+ * own stylesheet shows the saved change. { el (a <style>), desc, props, text, still, until, deadline, raf }
+ */
+const spacingShown = new Map();
+const SPACING_PROPS = new Set(['padding-block-start', 'padding-block-end', 'padding-inline-start', 'padding-inline-end', 'margin-block-start', 'margin-block-end']);
+const SPACING_VALUE = /^(var\(--so-[a-zA-Z0-9-]+\)|-?\d+(\.\d+)?px|0)$/;
+const SPACING_MEDIA = /^\((min|max)-width: \d+(\.\d+)?px\)( and \((min|max)-width: \d+(\.\d+)?px\))?$/;
+
+function selectorOf(desc) {
+  const items = desc.items ? `[data-so-items="${cssEscape(desc.items)}"]` : '';
+  return `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]${items}`;
+}
+
+/** Put the page back for one drag, or for every drag. */
+function clearSpacing(drag) {
+  for (const [id, p] of spacingShown) {
+    if (drag !== undefined && id !== drag) continue;
+    if (p.raf) cancelAnimationFrame(p.raf);
+    p.el.remove();
+    spacingShown.delete(id);
+  }
+  scheduleRects();
+}
+
+function showSpacing(drag, desc, decls, media) {
+  const list = Array.isArray(decls) ? decls.filter((d) => Array.isArray(d) && SPACING_PROPS.has(d[0]) && typeof d[1] === 'string' && SPACING_VALUE.test(d[1])) : [];
+  if (!desc || typeof desc.ctx !== 'string' || typeof desc.node !== 'string' || !list.length || (media !== null && media !== undefined && !(typeof media === 'string' && SPACING_MEDIA.test(media)))) return clearSpacing(drag);
+  let p = spacingShown.get(drag);
+  if (p?.raf) cancelAnimationFrame(p.raf);
+  if (!p) {
+    const el = document.createElement('style');
+    el.setAttribute('data-so-spacing', '');
+    document.head.appendChild(el);
+    p = { el };
+    spacingShown.set(drag, p);
+  }
+  const target = { ctx: desc.ctx, node: desc.node, items: typeof desc.items === 'string' ? desc.items : '' };
+  const wrap = (rule) => (media ? `@media ${media}{${rule}}` : rule);
+  const sel = selectorOf(target);
+  // Transitions stay off while it shows, so the page's own value can be read the moment the rule steps aside.
+  Object.assign(p, {
+    desc: target,
+    props: list.map((d) => d[0]),
+    text: wrap(`${sel}{${list.map(([k, v]) => `${k}:${v} !important`).join(';')};transition:none !important}`),
+    still: wrap(`${sel}{transition:none !important}`),
+    until: null,
+    deadline: 0,
+    raf: 0
+  });
+  p.el.textContent = p.text;
+  scheduleRects();
+}
+
+/**
+ * Hand a drag over to the saved change: once the page has the revision the save made, the rule is taken away
+ * whenever the page shows the same spacing without it. Checked within one task, so a page still waiting for its
+ * new stylesheet never paints without the rule. A later revision (an Undo, another edit) or a page that never
+ * matches ends it, showing the page as it is.
+ */
+function settleSpacing(drag) {
+  const p = spacingShown.get(drag);
+  if (!p || p.until === null) return;
+  p.raf = 0;
+  if (revision > p.until || Date.now() > p.deadline) return clearSpacing(drag);
+  if (revision === p.until) {
+    const els = findAll(p.desc);
+    const read = () => els.flatMap((el) => {
+      const s = getComputedStyle(el);
+      return p.props.map((k) => Number.parseFloat(s.getPropertyValue(k)) || 0);
+    });
+    const shown = read();
+    p.el.textContent = p.still;
+    const own = read();
+    if (own.every((v, i) => Math.abs(v - shown[i]) < 0.5)) return clearSpacing(drag);
+    p.el.textContent = p.text;
+  }
+  p.raf = requestAnimationFrame(() => settleSpacing(drag));
 }
 
 // ---------------------------------------------------------------------------
@@ -3024,6 +3169,8 @@ window.addEventListener('message', async (e) => {
     case 'mode':
       mode = m.payload.mode === 'preview' ? 'preview' : 'edit';
       formEpoch++;
+      // Preview shows the page as it is saved.
+      if (mode === 'preview') clearSpacing();
       // A double-click from before the change starts nothing after it.
       pendingHit = null;
       if (editing) commitEdit();
@@ -3145,6 +3292,25 @@ window.addEventListener('message', async (e) => {
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
       // Each box with its CSS order, which can lay siblings out in another order than the document's.
       send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => { const el = findAll(d)[0]; const r = el && rectOf(el); return r ? { ...r, order: layoutOrder(el) } : null; }) });
+      break;
+    }
+    case 'measureSpace': {
+      const vars = Array.isArray(m.payload.vars) ? m.payload.vars.slice(0, 500) : [];
+      send('spaceMeasured', { requestId: m.payload.requestId, px: measureSpace(vars, m.payload.desc) });
+      break;
+    }
+    // A spacing drag: shown while it moves, handed to the saved change after it, or put back.
+    case 'spacingPreview': {
+      const drag = String(m.payload.drag || '');
+      const p = spacingShown.get(drag);
+      if (m.payload.clear) clearSpacing(drag);
+      else if (Number.isSafeInteger(m.payload.handoff)) {
+        if (p) {
+          p.until = m.payload.handoff;
+          p.deadline = Date.now() + 8000;
+          settleSpacing(drag);
+        }
+      } else showSpacing(drag, m.payload.desc, m.payload.decls, m.payload.media);
       break;
     }
     case 'inspect': {
