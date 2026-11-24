@@ -991,10 +991,11 @@ describe('media.carousel (issue #381)', () => {
     const css = componentsCss();
     const cls = nodeClass('media.carousel', 'slide');
     expect(css).toMatch(new RegExp(`\\.${cls}[^{]*\\{[^}]*width: 85%`));
-    expect(css).toMatch(/@media \(min-width: 1024px\)[\s\S]*width: calc\(\(100% - 2 \* 1\.5rem\) \/ 3\)/);
-    expect(css).toMatch(/--layout-two-columns[^{]*\{[^}]*width: calc\(\(100% - 1 \* 1\.5rem\) \/ 2\)/);
+    // The space between slides is the site's Large spacing, which the widths allow for whatever it is set to.
+    expect(css).toMatch(/@media \(min-width: 1024px\)[\s\S]*width: calc\(\(100% - 2 \* var\(--so-space-lg\)\) \/ 3\)/);
+    expect(css).toMatch(/--layout-two-columns[^{]*\{[^}]*width: calc\(\(100% - 1 \* var\(--so-space-lg\)\) \/ 2\)/);
     expect(css).toMatch(/--layout-one-column[^{]*\{[^}]*width: 100%/);
-    expect(css).toMatch(new RegExp(`\\.${nodeClass('media.carousel', 'track')}[^{]*\\{[^}]*gap: 1\\.5rem`));
+    expect(css).toMatch(new RegExp(`\\.${nodeClass('media.carousel', 'track')}[^{]*\\{[^}]*gap: var\\(--so-space-lg\\)`));
   });
 });
 

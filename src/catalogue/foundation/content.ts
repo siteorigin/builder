@@ -1,3 +1,4 @@
+import { tokenVar } from '@shared/styles';
 import { P, item, tok } from '../dsl';
 import { FOUNDATION } from './pack';
 import { eyebrowStyles, headingBlock, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
@@ -257,10 +258,10 @@ export const gallery = managed({
     ])
 });
 
-/** The space between slides, which the widths below allow for. */
-const SLIDE_GAP = '1.5rem';
+/** The space between slides, a site style, which the widths below allow for. */
+const SLIDE_GAP = 'space.lg';
 /** A slide's width when `n` show at once. */
-const slidesAcross = (n: number) => (n === 1 ? '100%' : `calc((100% - ${n - 1} * ${SLIDE_GAP}) / ${n})`);
+const slidesAcross = (n: number) => (n === 1 ? '100%' : `calc((100% - ${n - 1} * var(${tokenVar(SLIDE_GAP)})) / ${n})`);
 
 /**
  * A row of images that scrolls sideways a slide at a time: a portfolio, a product tour or the photos of one project.
@@ -304,7 +305,7 @@ export const carousel = managed({
       headingBlock(b),
       // Named by the heading. An empty carousel leaves no empty list (and no buttons) behind.
       // A row of its own, so a copy that hides the list and shows it again shows it as a row.
-      b.el('track', 'ul', { name: 'Slides', carousel: true, collapseEmpty: true, ariaLabel: { $prop: 'heading' }, styles: { layout: 'row', gap: SLIDE_GAP } }, [
+      b.el('track', 'ul', { name: 'Slides', carousel: true, collapseEmpty: true, ariaLabel: { $prop: 'heading' }, styles: { layout: 'row', gap: tok(SLIDE_GAP) } }, [
         b.repeat('slides', 'slides', [
           b.el('slide', 'li', { name: 'Slide', styles: { base: { width: '85%' }, tablet: { width: slidesAcross(2) }, desktop: { width: slidesAcross(3) } } }, [
             // A slide with a destination is one link around its picture and caption.
