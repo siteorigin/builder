@@ -42,7 +42,7 @@ const RECENTS = [
 ];
 const DENSE = Array.from({ length: 20 }, (_, i) => {
   const base = RECENTS[i % RECENTS.length];
-  return { ...base, name: i < RECENTS.length ? base.name : `${base.name} ${i + 1}`, dir: `${base.dir}-${i}`, openedAt: ago(30 + i * i * 90) };
+  return { ...base, name: i < RECENTS.length ? base.name : `${base.name} ${i + 1}`, dir: `${base.dir}-${i + 1}`, openedAt: ago(30 + i * i * 90) };
 });
 // Two copies of one project side by side: only their folder names tell them apart.
 DENSE[18] = { ...DENSE[18], name: 'Marlow Dental', dir: `${home}/marlow-dental` };
@@ -126,11 +126,22 @@ const step = async (s, message, detail) => {
 await fresh();
 await shot('welcome-first-run', '.empty-state');
 
+await fresh({}, SMALLEST);
+await shot('welcome-first-run-smallest', '.empty-state', LIGHT, 'New project');
+
 await fresh({ recents: RECENTS });
 await shot('welcome-recents', '.recent-grid', BOTH, 'Harbour Lane Studio');
 
 await fresh({ recents: DENSE });
 await shot('welcome-dense', '.recent-grid', LIGHT);
+
+// A long list can be filtered by name or folder; the twins both match.
+await win.locator('.recent-filter input').fill('marlow');
+await pause(150);
+await shot('welcome-filter', '.recent-grid', LIGHT, 'marlow-dental-copy');
+await win.locator('.recent-filter input').fill('bakery');
+await pause(150);
+await shot('welcome-filter-none', '.recent-none', LIGHT, 'Clear filter');
 
 await fresh({ recents: RECENTS }, SMALLEST);
 await shot('welcome-smallest', '.recent-grid', LIGHT);
