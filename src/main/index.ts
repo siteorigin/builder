@@ -31,6 +31,9 @@ import type { Diagnostic } from '@engine/validate';
 const here = dirname(fileURLToPath(import.meta.url));
 // Tests and side-by-side development can isolate settings, credentials and caches.
 if (process.env.SITEORIGIN_USER_DATA) app.setPath('userData', process.env.SITEORIGIN_USER_DATA);
+// A test session's own Documents folder: new projects default to Documents/SiteOrigin and exports start in Documents,
+// so a driven run never writes into the person's own.
+if (process.env.SITEORIGIN_DOCUMENTS) app.setPath('documents', process.env.SITEORIGIN_DOCUMENTS);
 let win: BrowserWindow | null = null;
 /** The editor's Appearance, as last saved. It styles the editor only: Electron's theme stays on System. */
 let appearance: Appearance = 'system';

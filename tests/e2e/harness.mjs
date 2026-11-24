@@ -1,10 +1,10 @@
 // Shared setup for the end-to-end scripts: scratch folders, launching the built app, the platform
 // shortcut modifier and polling assertions.
 import assert from 'node:assert/strict';
-import { _electron as electron } from 'playwright';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { launchApp } from '../driver/session.ts';
 
 /** The primary shortcut modifier: Cmd on macOS, Ctrl on Windows and Linux. */
 export const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
@@ -33,24 +33,16 @@ export function withTimeout(promise, ms, what) {
 }
 
 /** Launch the built app (out/) with its own settings folder and no AI provider keys unless given. The page
- *  gets an emulated 1440×900 viewport, unless `viewport` is null: then it follows the (hidden) native window. */
+ *  gets an emulated 1440×900 viewport, unless `viewport` is null: then it follows the (hidden) native window.
+ *  An app that never becomes ready is killed with everything it started before the error is thrown. For a run
+ *  isolated from everything of the caller's (profile, Documents, environment), use tests/driver/session.ts. */
 export async function launch(WORK, env = {}, { viewport = { width: 1440, height: 900 } } = {}) {
-  const app = await electron.launch({
-    args: ['.'],
-    env: { ...process.env, SITEORIGIN_USER_DATA: join(WORK, 'userdata'), OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', ...env }
+  const { app, win, errors } = await launchApp({
+    env: { ...process.env, SITEORIGIN_USER_DATA: join(WORK, 'userdata'), OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', ...env },
+    viewport: viewport ?? null,
+    timeoutMs: 90000
   });
-  try {
-    const win = await app.firstWindow();
-    const errors = [];
-    win.on('pageerror', (e) => errors.push(String(e)));
-    if (viewport) await win.setViewportSize(viewport);
-    await win.waitForSelector('.welcome', { timeout: 60000 });
-    return { app, win, errors };
-  } catch (e) {
-    // An app that started but never became ready is closed here: the caller never gets a handle to it.
-    await app.close().catch(() => undefined);
-    throw e;
-  }
+  return { app, win, errors };
 }
 
 /** Create a project through the same IPC call the New project dialog uses, and wait for its preview. */
