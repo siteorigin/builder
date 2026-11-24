@@ -37,6 +37,9 @@ const openInsert = async () => {
   if (!(await group.isVisible())) await win.getByRole('button', { name: 'Insert', exact: true }).click();
   await group.waitFor();
 };
+const openRail = async (name) => {
+  if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
+};
 const componentSection = async () => {
   const head = win.locator('#dock-panel-inspect .section-head', { hasText: 'Component' });
   if ((await head.getAttribute('aria-expanded')) === 'false') await head.click();
@@ -153,6 +156,40 @@ await eventually(async () => assert.ok(await win.evaluate(() => !!document.activ
 await undo.click();
 await eventually(async () => assert.deepEqual((await snapshot()).components[blue.id], blue, 'Undo restores the same variant'));
 await tile('Exhibitor card blue').waitFor();
+
+step('a Section holding content becomes a component from its Layers row, and a copy shows that content (#173)');
+const [{ nodeId: band }] = await apply([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }], 'Insert section');
+const filled = await apply(
+  [
+    { type: 'node.insert', owner, parentId: band, slot: 'content', primitive: 'heading', text: 'Visit the hall' },
+    { type: 'node.insert', owner, parentId: band, slot: 'content', primitive: 'paragraph', text: 'Open daily from nine.' }
+  ],
+  'Fill section'
+);
+const homeBefore = (await snapshot()).pages[pageId];
+await openRail('Layers');
+await win.locator(`[role="tree"] [data-node="${band}"]`).click({ button: 'right' });
+await menu.getByRole('menuitem', { name: /^Create component/ }).click();
+await dialog.getByLabel('Component name').fill('Hall hours band');
+await dialog.getByLabel('Component name').press('Enter');
+await dialog.waitFor({ state: 'detached' });
+await eventually(async () => assert.equal((await library())['Hall hours band'], 1, 'the section is now a placement of the new component'));
+const hall = Object.values((await snapshot()).components).find((d) => d.name === 'Hall hours band');
+const homeNodes = (await snapshot()).pages[pageId].nodes;
+for (const id of [band, ...filled.map((r) => r.nodeId)]) assert.equal(homeNodes[id], undefined, 'the section and its content moved into the component');
+assert.equal(hall.tree.nodes[hall.tree.rootIds[0]].slots.content.length, 2, 'the component holds the section’s content');
+await openInsert();
+// The library lists four components until it is asked for the rest; this is the fifth.
+const showAll = panel.getByRole('button', { name: /^Show all \d+ components/ });
+if (await showAll.count()) await showAll.click();
+await tile('Hall hours band').click();
+await eventually(async () => assert.equal((await library())['Hall hours band'], 2, 'a second copy is placed from Insert'));
+await eventually(async () => assert.equal(await frame.locator('h2', { hasText: 'Visit the hall' }).count(), 2, 'both copies show the heading'), 30000);
+assert.equal(await frame.locator('p', { hasText: 'Open daily from nine.' }).count(), 2, 'and the paragraph');
+await win.evaluate(() => window.builder.project.undo());
+await win.evaluate(() => window.builder.project.undo());
+await eventually(async () => assert.deepEqual((await snapshot()).pages[pageId], homeBefore, 'one Undo after the copy puts the section and its content back'));
+assert.equal((await snapshot()).components[hall.id], undefined, 'and removes the component');
 
 step('an unplaced component is shown on its own, at any width (#347)');
 /** Show components in isolated preview frames in the editor, step by step, and give back what each reported. */
