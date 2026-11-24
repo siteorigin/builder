@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { AiEvent, AppSettings, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ResponsiveScope } from '@shared/types';
+import type { SampleContactKind } from '@shared/sample-contact';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
@@ -15,7 +16,7 @@ export const api = window.builder;
 
 export type LeftTab = 'pages' | 'layers' | 'insert' | 'assets';
 export type RightTab = 'inspect' | 'chat' | 'styles';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'paste-style'; ref: ElementRef; opening: string };
+export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'paste-style'; ref: ElementRef; opening: string };
 
 export interface Rect {
   x: number;
@@ -146,6 +147,8 @@ export interface State {
   chatContextEnabled: { page: boolean; selection: boolean };
   /** What the next message is: a change for the AI to make, or a read-only question. */
   chatMode: ChatMode;
+  /** Sample contact details the author chose to publish as they are, so the export stops reviewing them. */
+  keptSamples: string[];
   /** A field to bring into view and focus once its component shows in the Inspector ("Open in inspector"). */
   inspectorFocus: InspectorFocus | null;
   /** Typed edits made while the AI was working (see HeldEdit). */
@@ -214,6 +217,7 @@ export const useStore = create<State>((set) => ({
   chatImages: {},
   chatContextEnabled: { page: true, selection: true },
   chatMode: 'edit',
+  keptSamples: [],
   inspectorFocus: null,
   heldEdits: [],
   aiOutcome: null,

@@ -140,6 +140,7 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     chatDrafts: cleanDrafts(local.chatDrafts),
     chatImages: cleanImages(local.chatImages),
     chatMode: local.chatMode === 'ask' ? 'ask' : 'edit',
+    keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
     conversation: null,
     selection: null,
     mode: 'edit',

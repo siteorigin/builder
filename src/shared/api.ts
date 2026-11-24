@@ -192,6 +192,8 @@ export interface LocalWorkspaceState {
   chatConversation?: string;
   /** Whether the next AI message was set to be a read-only question, so an unsent question stays one. */
   chatMode?: 'edit' | 'ask';
+  /** The starter's sample contact details the author chose to keep, which the export no longer reviews. */
+  keptSamples?: string[];
 }
 
 export interface CreateProjectOptions {

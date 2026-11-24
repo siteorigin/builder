@@ -14,7 +14,7 @@ import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { getTheme } from '@catalogue/index';
 import { FOUNDATION } from '@catalogue/foundation/pack';
-import { makeInstance } from '@engine/install';
+import { installComponent, makeInstance } from '@engine/install';
 import { examplesFor } from '@agent/examples';
 import { readProject, readState } from '../../src/main/project/documents';
 import { ProjectSession } from '../../src/main/project/session';
@@ -863,6 +863,8 @@ describe('theme component updates', () => {
      */
     function project(defaultRows: Array<Record<string, unknown>>, setRows?: Array<Array<Record<string, unknown>>>) {
       let s = createStarterState('blank', 'Slots', false);
+      // Blank places no section of its own: the theme's section is installed as placing one would.
+      installComponent(s, 'layout.section');
       const installed = structuredClone(shipped);
       installed.properties.rows = rows(defaultRows);
       installed.description = 'An older description';

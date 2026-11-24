@@ -334,10 +334,8 @@ if (!blank?.ok) throw new Error(`blank project failed: ${blank?.message}`);
 await win.waitForSelector('.editor', { timeout: 120000 });
 await pause(2500);
 {
-  // The blank starter has a title and the footer has headings: take both away.
+  // The blank starter's Home has nothing on it, and the footer has headings: take the footer away.
   const s = await snapshot();
-  const home = Object.values(s.state.pages)[0];
-  await apply(home.rootIds.map((nodeId) => ({ type: 'node.remove', owner: { kind: 'page', id: home.id }, nodeId })), 'Empty the page');
   await apply(s.state.site.shell.footer.rootIds.map((nodeId) => ({ type: 'node.remove', owner: { kind: 'shell', id: 'footer' }, nodeId })), 'Remove the footer');
 }
 await outlineView();

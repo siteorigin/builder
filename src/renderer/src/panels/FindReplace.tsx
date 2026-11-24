@@ -3,7 +3,8 @@ import { ArrowRight, ChevronRight, CircleAlert, CircleCheck, Link2, Lock, PanelB
 import { Modal, openSection } from '../components/ui';
 import { api, commitOps, getState, setState, toast, undoAction, undoAvailable, useStore } from '../store';
 import { selectPage } from '../lib/actions';
-import { contentFields, contentTarget, findContent, planReplace, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
+import { contentFields, contentTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
+import type { SampleContactKind } from '@shared/sample-contact';
 import { pagesShowing } from '@shared/page-shell';
 import { refKey, type ElementRef } from '@shared/types';
 
@@ -192,6 +193,7 @@ function ChangeRow({ c }: { c: ContentChange }) {
 interface KeptSearch {
   workspaceKey: string;
   query: string;
+  sample: SampleSearch | null;
   matchCase: boolean;
   replacement: string;
   replacing: boolean;
@@ -200,6 +202,12 @@ interface KeptSearch {
   finished: Finished | null;
 }
 let kept: KeptSearch | null = null;
+
+/** A search opened for one of the starter's sample contact details, and the words it was opened with. */
+interface SampleSearch {
+  kind: SampleContactKind;
+  query: string;
+}
 
 type Applied = NonNullable<Awaited<ReturnType<typeof commitOps>>>;
 interface Finished {
@@ -210,10 +218,16 @@ interface Finished {
   phase: 'done' | 'undoing' | 'undone' | 'failed';
 }
 
-export function FindReplaceModal({ initial }: { initial?: string }) {
+/**
+ * `sample` opens the search for one of the starter's sample contact details (from the export's review): while the
+ * search is the one it opened with, it finds that detail wherever the published website shows it, written in any
+ * way and as its links dial it, so one replacement changes them all. Changing the search goes back to finding words.
+ */
+export function FindReplaceModal({ initial, sample: forSample }: { initial?: string; sample?: SampleContactKind }) {
   const snap = useStore((s) => s.snapshot);
   // Back from looking at a match in the same project: the search, replacement and choices are as they were.
   const [resumed] = useState(() => (initial === undefined && kept?.workspaceKey === getState().snapshot?.workspaceKey ? kept : null));
+  const [sample] = useState<SampleSearch | null>(() => (forSample && initial !== undefined ? { kind: forSample, query: initial } : (resumed?.sample ?? null)));
   const [query, setQuery] = useState(initial ?? resumed?.query ?? '');
   const [matchCase, setMatchCase] = useState(resumed?.matchCase ?? false);
   const [replacement, setReplacement] = useState(resumed?.replacement ?? '');
@@ -236,8 +250,13 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
   const searched = useDeferredValue(query);
   const state = snap?.state;
   const fields = useMemo(() => (state ? contentFields(state) : []), [state]);
-  const matches = useMemo(() => (state ? findContent(state, searched, { matchCase }, fields) : []), [state, searched, matchCase, fields]);
-  const search = `${searched}\u0000${matchCase}`;
+  const sampleShown = !!sample && searched === sample.query;
+  const matches = useMemo(() => {
+    if (!state) return [];
+    if (sampleShown) return sampleContactMatches(state).find((g) => g.kind === sample!.kind)?.matches ?? [];
+    return findContent(state, searched, { matchCase }, fields);
+  }, [state, searched, matchCase, fields, sampleShown, sample]);
+  const search = `${sampleShown ? `sample:${sample!.kind}\u0000` : ''}${searched}\u0000${matchCase}`;
   // The list must show the search as typed: Replace never applies the matches of a search being replaced.
   const settled = searched === query;
   // A choice holds for one match as the author saw it: if its field or its reach changes, it has to be made again.
@@ -312,7 +331,7 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
     // A match that has gone says so and leaves the dialog open, with nothing to hand over.
     if (getState().modal) return;
     handOffUndo();
-    kept = snap?.workspaceKey ? { workspaceKey: snap.workspaceKey, query, matchCase, replacement, replacing, touched, picked, finished } : null;
+    kept = snap?.workspaceKey ? { workspaceKey: snap.workspaceKey, query, sample, matchCase, replacement, replacing, touched, picked, finished } : null;
   };
   const toggle = (m: ContentMatch, on: boolean) => {
     const next = new Set(ticked);
@@ -435,9 +454,14 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
               onChange={(e) => setQuery(e.target.value)}
             />
             <label className="find-case">
-              <input type="checkbox" checked={matchCase} onChange={(e) => setMatchCase(e.target.checked)} /> Match case
+              <input type="checkbox" checked={matchCase} disabled={sampleShown} onChange={(e) => setMatchCase(e.target.checked)} /> Match case
             </label>
           </div>
+          {sampleShown && (
+            <p className="faint find-hint" data-testid="find-sample-note">
+              Every place the published website shows the starter’s sample {sample!.kind === 'email' ? 'email address' : sample!.kind === 'phone' ? 'phone number, as written and as its links dial it' : 'street address'}. Change the search to find anything else.
+            </p>
+          )}
           {replacing && (
             <div className="find-row">
               <label htmlFor={replaceId}>Replace with</label>

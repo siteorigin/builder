@@ -52,6 +52,29 @@ describe('generated Svelte compiles', () => {
     expect(compileAll(generateProject(s))).toEqual([]);
     expect(compileAll(generateProject(s, { instrument: true }))).toEqual([]);
     expect(compileAll(generateProject(createStarterState('blank', 'Blank', false)))).toEqual([]);
+    expect(compileAll(generateProject(createStarterState('blank', 'Blank', false), { instrument: true }))).toEqual([]);
+  });
+});
+
+describe('the blank starter (#15)', () => {
+  it('publishes nothing the author did not write: no editing directions, placeholder tagline or sample contact details', () => {
+    const s = createStarterState('blank', 'Kloof', false);
+    const home = s.pages[s.site.homePageId];
+    expect(home.rootIds).toEqual([]);
+    expect(validateState(s)).toEqual([]);
+    const files = generateProject(s);
+    // What visitors get: the pages and the shared layout (a component's own file may name its defaults).
+    const shown = [...files].filter(([path]) => path.startsWith('src/routes/')).map(([, src]) => src).join('\n');
+    for (const leftover of ['Select this text', 'Insert panel', 'A short sentence', 'example.com', '555', 'Harbour Lane']) expect(shown).not.toContain(leftover);
+    // The footer keeps what is true of any site: its name, the Home link and the copyright.
+    const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+    expect(footer.props).toMatchObject({ siteName: 'Kloof', tagline: '', contact: [] });
+    // The footer still renders, with what is true of any site: the copyright and the Home link.
+    const layout = files.get('src/routes/+layout.svelte')!;
+    const footerTag = /<C_foundation_shell_footer_\w+[^]*?\/>/.exec(layout)?.[0] ?? '';
+    expect(footerTag).toContain(`copyright={${JSON.stringify(`© ${new Date().getFullYear()} Kloof.`)}}`);
+    expect(footerTag).toMatch(/links=\{\[\{[^}]*"label":"Home","link":\{"href":"\/"\}\}\]\}/);
+    expect(footerTag).toContain('contact={[]}');
   });
 });
 
@@ -1167,7 +1190,7 @@ describe('choosing a section to link to', () => {
     expect(pageSections(s, contactOf(s).id).map((x) => x.label)).toEqual(['Let’s talk', 'Get in touch', 'Frequently asked questions']);
     expect(pageSections(s, contactOf(s).id).every((x) => !x.anchor && !x.nested)).toBe(true);
     const blank = createStarterState('blank', 'Blank', false);
-    expect(pageSections(blank, blank.site.homePageId).map((x) => x.label)).toEqual(['Welcome to Blank']);
+    expect(pageSections(blank, blank.site.homePageId)).toEqual([]);
     // The logo strip shows its heading as a paragraph; its Heading property still names it.
     expect(pageSections(s, s.site.homePageId)[1].label).toBe('Trusted by homeowners and local businesses');
     // A heading placed straight on the page is a section of its own.

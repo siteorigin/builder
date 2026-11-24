@@ -54,6 +54,7 @@ vi.mock('electron', () => ({
 const { Controller } = await import('../../src/main/controller');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
+const { applyOperations } = await import('@engine/apply');
 const { SCHEMA_VERSION } = await import('@shared/types');
 const { sha } = await import('../../src/main/project/fsutil');
 
@@ -100,7 +101,12 @@ afterEach(async () => {
 async function makeProject(at?: string): Promise<string> {
   const dir = at ?? temp('project');
   mkdirSync(dir, { recursive: true });
-  const created = await ProjectSession.create(dir, createStarterState('blank', 'Read Only Site', false));
+  // A heading on Home, so the page the preview serves carries the editor's markup.
+  const blank = createStarterState('blank', 'Read Only Site', false);
+  const home = { kind: 'page' as const, id: blank.site.homePageId };
+  const placed = applyOperations(blank, [{ type: 'node.insert', owner: home, componentId: 'layout.section' }]);
+  const state = applyOperations(placed.state, [{ type: 'node.insert', owner: home, parentId: placed.results[0].nodeId as string, slot: 'content', primitive: 'heading', text: 'Read Only Site' }]).state;
+  const created = await ProjectSession.create(dir, state);
   await created.close();
   const pkg = '{"name":"site","type":"module"}';
   writeFileSync(join(dir, 'package.json'), pkg);

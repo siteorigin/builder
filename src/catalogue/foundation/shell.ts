@@ -3,6 +3,7 @@ import { SCHEMA_VERSION } from '@shared/types';
 import { P, tok } from '../dsl';
 import { FOUNDATION } from './pack';
 import { mutedStyles } from './common';
+import { SAMPLE_CONTACT } from '@shared/sample-contact';
 
 const { managed } = FOUNDATION;
 
@@ -548,9 +549,9 @@ export const footer = managed({
     linksHeading: P.str('Links heading', 'Explore'),
     links: P.list('Links', 'Link', { label: P.str('Label', 'Page'), link: P.link('Destination') }, [], { titleField: 'label', max: 12 }),
     contactHeading: P.str('Contact heading', 'Contact'),
-    contact: P.list('Contact links', 'Contact link', { label: P.str('Label', 'hello@example.com'), link: P.link('Destination') }, [
-      { label: 'hello@example.com', link: { type: 'email', target: 'hello@example.com' } },
-      { label: '+1 555 0134', link: { type: 'tel', target: '+15550134' } }
+    contact: P.list('Contact links', 'Contact link', { label: P.str('Label', SAMPLE_CONTACT.email), link: P.link('Destination') }, [
+      { label: SAMPLE_CONTACT.email, link: { type: 'email', target: SAMPLE_CONTACT.email } },
+      { label: SAMPLE_CONTACT.phone, link: { type: 'tel', target: SAMPLE_CONTACT.phoneDial } }
     ], { titleField: 'label', max: 8 }),
     copyright: P.str('Copyright', '© 2026 Studio. All rights reserved.')
   },

@@ -1,6 +1,7 @@
 import { P, tok } from '../dsl';
 import { FOUNDATION } from './pack';
 import { headingBlock, headingLevel, mutedStyles, sectionShell, toneAxis } from './common';
+import { SAMPLE_CONTACT } from '@shared/sample-contact';
 
 const { managed } = FOUNDATION;
 
@@ -189,17 +190,17 @@ export const contact = managed({
     items: P.list(
       'Contact methods',
       'Contact method',
-      { icon: P.icon('Icon', 'mail'), label: P.str('Label', 'Email'), value: P.str('Value', 'hello@example.com'), link: P.link('Link') },
+      { icon: P.icon('Icon', 'mail'), label: P.str('Label', 'Email'), value: P.str('Value', SAMPLE_CONTACT.email), link: P.link('Link') },
       [
-        { icon: 'mail', label: 'Email', value: 'hello@example.com', link: { type: 'email', target: 'hello@example.com' } },
-        { icon: 'phone', label: 'Phone', value: '+1 555 0134', link: { type: 'tel', target: '+15550134' } },
-        { icon: 'map-pin', label: 'Studio', value: '12 Harbour Lane, Millbrook', link: { type: 'none', target: '' } },
+        { icon: 'mail', label: 'Email', value: SAMPLE_CONTACT.email, link: { type: 'email', target: SAMPLE_CONTACT.email } },
+        { icon: 'phone', label: 'Phone', value: SAMPLE_CONTACT.phone, link: { type: 'tel', target: SAMPLE_CONTACT.phoneDial } },
+        { icon: 'map-pin', label: 'Studio', value: SAMPLE_CONTACT.address, link: { type: 'none', target: '' } },
         { icon: 'clock', label: 'Hours', value: 'Monday to Friday, 9am – 5pm', link: { type: 'none', target: '' } }
       ],
       { titleField: 'label', max: 8 }
     ),
     actionLabel: P.str('Action label', 'Email us'),
-    actionLink: P.link('Action link', { type: 'email', target: 'hello@example.com' })
+    actionLink: P.link('Action link', { type: 'email', target: SAMPLE_CONTACT.email })
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },

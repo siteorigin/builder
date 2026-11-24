@@ -45,7 +45,8 @@ const componentSection = async () => {
 step('an Exhibitor card made from a group, and a second copy from Insert');
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
-const section = (await snapshot()).pages[pageId].rootIds[0];
+// Blank's Home starts empty: a section to build in first.
+const [{ nodeId: section }] = await apply([{ type: 'node.insert', owner, componentId: 'layout.section' }], 'Insert section');
 const [{ nodeId: stack }] = await apply([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'stack' }], 'Insert stack');
 await apply([{ type: 'node.insert', owner, parentId: stack, primitive: 'heading', text: 'Exhibitor' }], 'Insert heading');
 const [{ nodeId: first }] = await apply([{ type: 'component.createFromNode', owner, nodeId: stack, name: 'Exhibitor card' }], 'Create component');
