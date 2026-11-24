@@ -313,6 +313,31 @@ describe('crash durability', { timeout: 300_000 }, () => {
     });
   });
 
+  it('keeps an undone AI step redoable, or notes it undone, whatever point a crash interrupts the edit that replaces it (issue 276)', async () => {
+    const setup = {
+      build: async (s: ProjectSession) => {
+        expect((await s.apply({ operations: [{ type: 'site.update', name: 'One' }] }, { label: 'One' })).ok).toBe(true);
+        expect(await s.beginRun('run_tail')).toBeNull();
+        expect((await s.apply({ operations: [{ type: 'site.update', name: 'Tail' }] }, { label: 'AI', source: 'ai', runId: 'run_tail', history: false })).ok).toBe(true);
+        expect(await s.completeRun('AI: Tail')).toBe(true);
+        expect((await s.undoGroup('run_tail')).ok).toBe(true);
+      }
+    };
+    await eachCrashPoint(setup, (s) => s.apply({ operations: [{ type: 'site.update', name: 'Two' }] }, { label: 'Two' }), async (s) => {
+      expect(s.conflicts).toEqual([]);
+      const info = s.historyInfo();
+      if (s.state.site.name === 'Two') {
+        // The edit replaced the redo tail, and History noted the AI step it let go as undone.
+        expect(info.entries.some((e) => e.runId === 'run_tail')).toBe(false);
+        expect(info.droppedRuns).toEqual({ run_tail: 'undone' });
+      } else {
+        expect(s.state.site.name).toBe('One');
+        expect(info.entries.find((e) => e.runId === 'run_tail')).toMatchObject({ applied: false });
+        expect(info.droppedRuns).toBeUndefined();
+      }
+    });
+  });
+
   describe('a save that fails part way', () => {
     /** Make every rename onto `suffix` fail, as a full or failing disk would. */
     const failRenameTo = (suffix: string) => {
