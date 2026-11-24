@@ -113,6 +113,17 @@ describe('Create component records where its source sat (#52)', () => {
     delete page.nodes[p.card];
     expect(definitionRole(p.state, p.cardDef)).toBe('section');
   });
+
+  it('an older card placed only among the page’s sections (as Insert used to put it) is still read from its design', () => {
+    const p = exhibitors();
+    delete p.state.components[p.cardDef].insertAs;
+    const out = apply(p.state, [{ type: 'node.insert', owner: p.owner, parentId: null, definitionId: p.cardDef }]);
+    const page = home(out.state);
+    (page.nodes[p.grid] as ElementNode).children = [];
+    delete page.nodes[p.card];
+    // Its root is a stack: an element, wherever its copies ended up.
+    expect(definitionRole(out.state, p.cardDef)).toBe('element');
+  });
 });
 
 describe('a reusable card inserts inside the selected layout (#52)', () => {

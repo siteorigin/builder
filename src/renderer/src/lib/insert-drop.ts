@@ -5,7 +5,7 @@
  * slot, or between sections in a new Section of their own.
  */
 import type { EditOperation } from '@shared/ops';
-import type { OwnerRef, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles } from '@shared/types';
 import { applyOperations } from '@engine/apply';
 import { childLists } from '@engine/tree';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
@@ -144,7 +144,8 @@ export function measuredLists(specs: ListSpec[], measured: Map<string, Measured 
  * reached only when the new node's order sits between its neighbours'. Null when no index reaches it.
  */
 export function insertIndex(shown: number[], to: number, order: (i: number) => number, own: number | null, length = shown.length ? Math.max(...shown) + 1 : 0): number | null {
-  if (!shown.length) return own === null && length ? null : length;
+  // Nothing else shows: it is the only one there, wherever it goes.
+  if (!shown.length) return length;
   if (own === null) return null;
   const prev = to > 0 ? shown[to - 1] : undefined;
   const next = to < shown.length ? shown[to] : undefined;
@@ -191,9 +192,8 @@ export function dropTarget(lists: DropList[], role: InsertRole, x: number, y: nu
   const shown = shownOrder(visible, order);
   const length = list.childIds.length;
   if (!shown.length) {
-    // Nothing shows in it: the new node goes at its end, and the list's own outline shows where.
-    const index = own === null && length ? null : length;
-    return { list, index, line: null, ...(index === null ? { refused: ORDER } : {}) };
+    // Nothing shows in it: the new node goes at its end, the only one shown there, and the list's own outline shows where.
+    return { list, index: length, line: null };
   }
   const drop = dropAt(
     shown.map((i) => list.children[i]!),
@@ -219,14 +219,13 @@ export function incomingOrder(state: ProjectState, spec: InsertSpec): number | n
     const styles = rootId ? own(chosen?.styles, rootId) : undefined;
     if (styles) sources.push(styles);
   }
-  const values = sources.flatMap((styles) => Object.entries(styles).flatMap(([scope, props]) => (props && Object.hasOwn(props, 'order') ? [[scope, props.order] as const] : [])));
-  if (!values.length) return 0;
-  const numbers = values.map(([, v]) => Number(v));
-  if (!numbers.every(Number.isSafeInteger)) return null;
-  // The same at every size it is set for counts as that; one that differs by size (or only at some sizes) is not known.
-  if (values.some(([scope]) => scope !== 'base') && !(values.some(([scope]) => scope === 'base') && numbers.every((n) => n === numbers[0]))) return null;
-  // The last one that sets it wins, as the page's rules do: a variant's over the design's own.
-  return numbers[numbers.length - 1];
+  // At each screen size, the last source that sets it there wins (a variant's over the design's own); a size that sets
+  // none takes the base one, and no Order at all is 0.
+  const at = (scope: ResponsiveScope): unknown => sources.reduce<unknown>((v, styles) => (styles[scope] && Object.hasOwn(styles[scope]!, 'order') ? styles[scope]!.order : v), undefined);
+  const base = at('base') ?? 0;
+  const sizes = (['base', 'phone', 'tablet', 'desktop'] as const).map((scope) => Number(at(scope) ?? base));
+  // One Order at every size is that Order; one that changes with the size is not known.
+  return sizes.every((n) => Number.isSafeInteger(n) && n === sizes[0]) ? sizes[0] : null;
 }
 
 /**

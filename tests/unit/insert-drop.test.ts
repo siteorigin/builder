@@ -151,6 +151,7 @@ describe('where an element drops (#52)', () => {
     // A list whose children all hide takes the new node at its end.
     const top = measuredLists([{ parentId: null, childIds: ['h'], depth: -1 }], new Map([['h', null]]));
     expect(dropTarget(top, 'section', 10, 10, 10, 0)).toMatchObject({ index: 1 });
+    expect(dropTarget(top, 'section', 10, 10, 10, null)).toMatchObject({ index: 1 });
   });
 
   it('the deeper of two containers the same size, and an empty row that measures as a line', () => {
@@ -220,7 +221,8 @@ describe('a new node among siblings with an Order style (#52)', () => {
     expect(insertIndex([0, 1], 2, order([0, 0]), 2)).toBe(2);
     expect(insertIndex([0, 1], 1, order([0, 0]), null)).toBeNull();
     expect(insertIndex([], 0, order([]), null, 0)).toBe(0);
-    expect(insertIndex([], 0, () => 0, null, 2)).toBeNull();
+    // Every sibling hidden here: it is the only one shown, wherever it goes.
+    expect(insertIndex([], 0, () => 0, null, 2)).toBe(2);
   });
 
   it('counts the new node’s order only where its container lays items out by order', () => {
@@ -263,6 +265,14 @@ describe('a new node among siblings with an Order style (#52)', () => {
     def.variantAxes = { look: { label: 'Look', default: 'plain', options: { plain: { label: 'Plain' }, last: { label: 'Last', styles: { [def.tree!.rootIds[0]]: { base: { order: 3 } } } } } } };
     expect(incomingOrder(out.state, { definitionId: defId })).toBe(0);
     expect(incomingOrder(out.state, { definitionId: defId, variants: { look: 'last' } })).toBe(3);
+    // The variant's Order wins over the design's at every size it sets, so it is one Order throughout.
+    root.styles = { base: { order: 0 } };
+    def.variantAxes.look.options.last.styles = { [def.tree!.rootIds[0]]: { base: { order: 2 }, phone: { order: 2 } } };
+    expect(incomingOrder(out.state, { definitionId: defId, variants: { look: 'last' } })).toBe(2);
+    // The design's phone Order still shows on a phone under a variant that sets only the base one.
+    root.styles = { phone: { order: 1 } };
+    def.variantAxes.look.options.last.styles = { [def.tree!.rootIds[0]]: { base: { order: 2 } } };
+    expect(incomingOrder(out.state, { definitionId: defId, variants: { look: 'last' } })).toBeNull();
   });
 });
 
