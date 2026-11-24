@@ -176,8 +176,10 @@ function isStyleValue(v: unknown): v is StyleValue {
   return !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && typeof (v as { token?: unknown }).token === 'string';
 }
 
-/** CSS variables named in CSS text, such as a gradient's `var(--so-color-brand)`. */
-const CSS_VAR_RE = /var\(\s*(--[A-Za-z0-9_-]+)/g;
+/** CSS variables named in CSS text, such as a gradient's `var(--so-color-brand)` (`var` in any case, as CSS reads it). */
+const CSS_VAR_RE = /var\(\s*(--[A-Za-z0-9_-]+)/gi;
+/** The variables a text style is read through, one per metric, after its own name. */
+const TEXT_METRICS = ['family', 'size', 'line-height', 'weight', 'tracking', 'transform'];
 const removed = (token: string) => `It uses the site style “${token}”, which has been removed since it was copied.`;
 
 /** What a check of the copy needs: the site styles now (by ID and as CSS text names them), and when it was copied. */
@@ -198,9 +200,14 @@ function prepare(state: ProjectState, known: Known, property: string, v: unknown
   if (err) return { error: err };
   const token = tokenRef(property, v);
   if (token && !known.tokens.has(token)) return { error: removed(token) };
-  // CSS text naming a site style's variable: only a style there was when copied, and is no longer, is missing.
+  // CSS text naming a site style's variable (or one of a text style's metrics): only a style there was when copied,
+  // and is no longer, is missing.
   if (typeof v === 'string')
-    for (const [, name] of v.matchAll(CSS_VAR_RE)) if (known.copied.has(name) && !known.vars.has(name)) return { error: removed(name.slice(5)) };
+    for (const [, name] of v.matchAll(CSS_VAR_RE)) {
+      const metric = known.copied.has(name) || !name.startsWith('--so-text-') ? undefined : TEXT_METRICS.find((m) => name.endsWith(`-${m}`) && known.copied.has(name.slice(0, -m.length - 1)));
+      const style = metric ? name.slice(0, -metric.length - 1) : name;
+      if (known.copied.has(style) && !known.vars.has(style)) return { error: removed(style.slice(5)) };
+    }
   if (property === 'fontFamily' && typeof v === 'string' && !FONT_KEYWORD_RE.test(v.trim())) {
     // The edit checks the value as written, then stores the stack, which may be longer than a value may be written.
     const font = resolveFontStack(state, v);

@@ -358,6 +358,12 @@ describe('paste style', () => {
     const plan = planStylePaste(s, copy, section(s, 'content.media'), 'every');
     expect(plan.rows.find((r) => r.property === 'background')).toMatchObject({ status: 'skip', reason: expect.stringContaining('has been removed') });
     expect(plan.operations.map((o) => (o.type === 'node.setStyle' ? o.property : ''))).toEqual(['paddingBlock', 'paddingBlock']);
+    // CSS reads var() in any case, and a text style through one variable per metric.
+    const sea = `--so-${token.replace('.', '-')}`;
+    const upper: StyleCopy = { ...copy, sets: [{ ...copy.sets[0], styles: { base: { background: `linear-gradient(VAR(${sea}), #ffffff)` } } }] };
+    expect(planStylePaste(s, upper, section(s, 'content.media'), 'every').rows[0]).toMatchObject({ status: 'skip', reason: expect.stringContaining('has been removed') });
+    const metric: StyleCopy = { kind: 'single', label: 'Text', vars: [...copy.vars, '--so-text-custom-callout'], sets: [{ part: null, label: 'Text', styles: { base: { maxWidth: 'var(--so-text-custom-callout-size)' } } }] };
+    expect(planStylePaste(s, metric, part(s, 'hero.split', 'heading'), 'every').rows[0]).toMatchObject({ property: 'maxWidth', status: 'skip', reason: expect.stringContaining('text-custom-callout') });
   });
 });
 
