@@ -169,6 +169,41 @@ describe('the uses of an image, one row each', () => {
     const all = applyOperations(s, [{ type: 'asset.replace', assetId: 'a_person1', withAssetId: 'a_publicity' }]).state;
     expect(((all.pages[home.id].nodes[galleryId] as InstanceNode).props.images as ListItem[]).map((i) => (i.image as ImageValue).assetId)).toEqual(['a_publicity', 'a_publicity', 'a_other']);
   });
+
+  it('shows an image in a project component’s design at its element there, for Component Studio to open (#209)', () => {
+    const { state, work } = studio();
+    const sectionId = state.pages[work.id].rootIds[0];
+    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: work, nodeId: sectionId, name: 'Portrait band' }]);
+    const definitionId = made.results[0].definitionId as string;
+    const s = structuredClone(made.state);
+    const def = s.components[definitionId];
+    expect(def.owner).toBe('project');
+    // A picture fixed in the design, the same on every placement, rather than one each placement fills in.
+    const designImage = Object.values(def.tree!.nodes).find((n) => n.kind === 'image') as ImageNode;
+    designImage.image = { assetId: 'a_person1', alt: '' };
+    const row = imageUseRows(s, 'a_person1').find((r) => r.where === 'Portrait band design')!;
+    expect(row).toMatchObject({ icon: 'component', what: 'Image', definitionId, at: { owner: { kind: 'component', id: definitionId }, nodeId: designImage.id } });
+  });
+
+  it('shows a component’s starting image by the component alone, and a theme component’s design nowhere (#209)', () => {
+    const { state, work } = studio();
+    const sectionId = state.pages[work.id].rootIds[0];
+    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: work, nodeId: sectionId, name: 'Portrait band' }]);
+    const definitionId = made.results[0].definitionId as string;
+    const s = structuredClone(made.state);
+    // The same design, owned by the theme: it can't be changed in Component Studio, so it has no element to show.
+    s.components[definitionId].owner = 'theme';
+    (Object.values(s.components[definitionId].tree!.nodes).find((n) => n.kind === 'image') as ImageNode).image = { assetId: 'a_person1', alt: '' };
+    const theme = imageUseRows(s, 'a_person1').find((r) => r.where === 'Portrait band design')!;
+    expect(theme.definitionId).toBe(definitionId);
+    expect(theme.at).toBeUndefined();
+    // A starting image belongs to the component, not to one element of its design.
+    const hero = (s.pages[s.site.homePageId].nodes[Object.keys(s.pages[s.site.homePageId].nodes).find((id) => s.components[(s.pages[s.site.homePageId].nodes[id] as InstanceNode).definitionId]?.componentId === 'hero.split')!] as InstanceNode).definitionId;
+    s.components[hero].properties.image.default = { assetId: 'a_person1', alt: '' };
+    const start = imageUseRows(s, 'a_person1').find((r) => r.definitionId === hero)!;
+    expect(start).toMatchObject({ icon: 'component', where: `${s.components[hero].name} default`, definitionId: hero });
+    expect(start.at).toBeUndefined();
+  });
 });
 
 describe('replacing an image in the places chosen', () => {

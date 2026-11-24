@@ -4,14 +4,14 @@ import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
 import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, attachToChat, commitOps, getState, inspectorFocusRequest, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
-import { Field, DraftInput, Segmented, Spinner, Tabs } from '../components/ui';
+import { Field, DraftInput, Segmented, Spinner, Tabs, openSection } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isValidFontAsset } from '@shared/fonts';
 import { FontList } from './FontFiles';
 import { inSeries, sortAssets } from '@shared/asset-order';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { Picture, Thumb } from '../components/AssetPicture';
-import { goToShellPart, imagePlacement, openPost, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
+import { goToShellPart, imagePlacement, openComponentStudio, openPost, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
@@ -226,21 +226,58 @@ interface Place {
   go?: () => void;
 }
 
+/** Said when a component's design was to be shown and it can no longer be changed here (removed meanwhile). */
+const GONE = 'That component can no longer be changed here.';
+
 /**
- * Selects an element where an image is used, on its page or in the shared part that shows it. For a placed
- * component's image, the inspector opens the field it is in: in a gallery or team, that row, opened.
+ * Selects an element where an image is used: on its page, in the shared part that shows it, or in a component's
+ * design, opened in Component Studio. For a placed component's image, the inspector opens the field it is in: in a
+ * gallery or team, that row, opened.
  */
 const revealUse = (owner: OwnerRef, nodeId: string, field?: UseField, label = 'That image') => () => {
   if (owner.kind === 'page') selectPage(owner.id);
   else if (owner.kind === 'template') openLayout(owner.id);
+  else if (owner.kind === 'component' && !openComponentStudio(owner.id)) return toast(GONE, 'info');
   else if (owner.kind === 'shell' && !goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id}, so this image is not on any page.`, 'info');
   const opening = getState().snapshot?.workspaceKey;
   setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true, ...(field && opening ? { inspectorFocus: inspectorFocusRequest({ opening, owner, nodeId, ...field, label }) } : {}) });
 };
 
-/** Where Show goes for one use of an image: its element and field, its page's settings, or Site styles. */
-function showUse(u: ImageUseRow): (() => void) | undefined {
+/** Frames to wait for the Inspector to show a component's overview before opening its Properties; then nothing happens. */
+const OVERVIEW_FRAMES = 60;
+
+/**
+ * Where a component's starting image or link is changed: the component in Component Studio with nothing in it
+ * selected, and, for a managed component, its Properties opened. A starting value belongs to the component, not to
+ * one element of its design.
+ */
+const openComponentDefaults = (definitionId: string) => () => {
+  if (!openComponentStudio(definitionId)) return toast(GONE, 'info');
+  setState({ selection: null });
+  const s = getState();
+  if (s.snapshot?.state.components[definitionId]?.kind !== 'managed') return;
+  const opening = s.snapshot.workspaceKey;
+  let frames = 0;
+  const step = () => {
+    const now = getState();
+    // Gone elsewhere meanwhile (another component, a part selected, another project): Properties stays as it is.
+    if (now.snapshot?.workspaceKey !== opening || now.definitionMode?.definitionId !== definitionId || now.selection) return;
+    if (document.querySelector('#dock-panel-inspect .insp-part-list')) return openSection('def-properties');
+    if (++frames < OVERVIEW_FRAMES) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+};
+
+/** Whether a component's design and starting values can be changed in Component Studio: the project's own. */
+const editable = (state: ProjectState, definitionId: string) => state.components[definitionId]?.owner === 'project';
+
+/**
+ * Where Show goes for one use of an image: its element and field (in Component Studio for a component's design), the
+ * component's Properties for its starting image, its page's settings, or Site styles.
+ */
+function showUse(state: ProjectState, u: ImageUseRow): (() => void) | undefined {
   if (u.at) return revealUse(u.at.owner, u.at.nodeId, u.field, u.what);
+  if (u.definitionId) return editable(state, u.definitionId) ? openComponentDefaults(u.definitionId) : undefined;
   const post = u.post;
   if (post) return () => void openPost(post.collectionId, post.entryId, post.n);
   if (u.setting === 'site') return openSiteStyles;
@@ -248,16 +285,13 @@ function showUse(u: ImageUseRow): (() => void) | undefined {
   return pageId ? () => selectPage(pageId, null) : undefined;
 }
 
-/**
- * For a use with no page to open (a component's design or its starting image): where it is changed. Edit everywhere…
- * on a placement opens the design; a component placed nowhere is changed only with Replace everywhere.
- */
+/** For a use in a theme component, whose design and starting values can't be changed: how it is changed instead. */
 function changeHint(state: ProjectState, u: ImageUseRow): string | undefined {
-  const definitionId = u.definitionId;
-  if (u.at || !definitionId) return undefined;
-  const placed = allTrees(state).some((t) => t.owner.kind !== 'component' && Object.values(t.tree.nodes).some((n) => n.kind === 'instance' && n.definitionId === definitionId));
-  return placed ? 'Change it with Edit everywhere… on a placement' : 'Not placed on any page: change it with Replace everywhere';
+  return u.definitionId && !editable(state, u.definitionId) ? 'Part of the theme: change it with Replace everywhere' : undefined;
 }
+
+/** What a use's button says it does: shows the element, or opens the component its starting image belongs to. */
+const showLabel = (state: ProjectState, u: ImageUseRow) => (!u.at && u.definitionId ? `Open ${state.components[u.definitionId]?.name ?? u.where} in Component Studio` : `Show ${u.what} on ${u.where}`);
 
 /** Every place a document is linked from, by the same rules as the engine's usage count. */
 function placesOf(state: ProjectState, assetId: string): Place[] {
@@ -278,12 +312,13 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
       const key = `${t.owner.kind}/${t.owner.id}/${n.id}`;
       if (t.owner.kind === 'page') out.push({ key, icon: 'page', where: t.label, what, count: c, go: revealUse(t.owner, n.id) });
       else if (t.owner.kind === 'shell') out.push({ key, icon: 'shell', where: `Shared ${t.label.toLowerCase()}`, what, count: c, go: revealUse(t.owner, n.id) });
-      else out.push({ key, icon: 'component', where: `${t.label} design`, what, count: c });
+      else if (t.owner.kind === 'template') out.push({ key, icon: 'page', where: t.label, what, count: c, go: revealUse(t.owner, n.id) });
+      else out.push({ key, icon: 'component', where: `${t.label} design`, what, count: c, ...(editable(state, t.owner.id) ? { go: revealUse(t.owner, n.id) } : {}) });
     }
   }
   for (const d of Object.values(state.components)) {
     const c = count(d.properties);
-    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: document ? 'Starting link for new copies' : 'Starting image for new copies', count: c });
+    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: document ? 'Starting link for new copies' : 'Starting image for new copies', count: c, ...(editable(state, d.id) ? { go: openComponentDefaults(d.id) } : {}) });
   }
   for (const p of Object.values(state.pages)) {
     const c = count(p.seo) + (p.seo.socialImage === assetId ? 1 : 0);
@@ -1060,7 +1095,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             <ul>
               {places.map((u) => {
                 const Icon = PLACE_ICON[u.icon];
-                const go = showUse(u);
+                const go = showUse(snap.state, u);
                 const label = `${u.where} · ${u.what}`;
                 return (
                   <li key={u.key}>
@@ -1071,7 +1106,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                       <span className="what">{u.what}</span>
                     </label>
                     {go && (
-                      <button className="btn btn-sm btn-ghost asset-choose-show" onClick={go} aria-label={`Show ${u.what} on ${u.where}`} title={`Show ${u.what} on ${u.where}`}>
+                      <button className="btn btn-sm btn-ghost asset-choose-show" onClick={go} aria-label={showLabel(snap.state, u)} title={showLabel(snap.state, u)}>
                         <ChevronRight />
                       </button>
                     )}
@@ -1328,7 +1363,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             <ul>
               {shownPlaces.map((p) => {
                 const Icon = PLACE_ICON[p.icon];
-                const go = showUse(p);
+                const go = showUse(snap.state, p);
                 const hint = go ? undefined : changeHint(snap.state, p);
                 const inner = (
                   <>
@@ -1341,11 +1376,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 return (
                   <li key={p.key}>
                     {go ? (
-                      <button className="asset-use" onClick={go} title={`Show ${p.what} on ${p.where}`}>
+                      <button className="asset-use" onClick={go} title={showLabel(snap.state, p)}>
                         {inner}
                       </button>
                     ) : (
-                      // A component's design or its starting image has no page to open: say where it is changed.
+                      // A theme component's design or starting image can't be opened: say how it is changed.
                       <span className="asset-use static" title={`${p.what} · ${p.where}`}>
                         {inner}
                         {hint && <span className="asset-use-hint">{hint}</span>}
