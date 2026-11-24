@@ -17,7 +17,7 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { REUSABILITY_CODES } from '@engine/reusability';
 import { STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
-import { publicationPlan, renderedContent } from '@generator/checks';
+import { notFoundSectionRoutes, publicationPlan, renderedContent } from '@generator/checks';
 import { UTIL_JS } from '@generator/runtime-files';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { P, eq, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
@@ -826,6 +826,63 @@ describe('generated buttons, tabs and disclosures', () => {
     // Chosen at first, the section shows and the jump is fine.
     const shown = apply(t, [{ type: 'component.setState', definitionId: hidden.id, state: 'plan', schema: { ...PLAN, initial: 'a' } }]);
     expect(validateState(shown).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+    // A jump within that hidden panel shows with its section, so it is fine too.
+    const u = fresh();
+    place(u, tabsDef(u, { panelExtra: (b) => [b.text('terms', 'p', 'Starter terms', { anchor: 'starter-terms' }), b.link('to-terms', { type: 'anchor', target: 'starter-terms' }, 'Terms', 'link')] }));
+    expect(validateState(u).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+  });
+
+  /** A closed disclosure over a summary that jumps to the terms beside it, which carry an anchor. */
+  function termsDef(s: ProjectState) {
+    return addDef(s, {
+      componentId: 'test.terms',
+      name: 'Terms',
+      properties: {},
+      parts: {},
+      state: structuredClone({ open: OPEN }),
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.link('more', NONE, 'More', 'secondary', { stateAction: { state: 'open', op: 'toggle' } }),
+          b.el('summary', 'div', { when: uiState('open') }, [b.link('to-terms', { type: 'anchor', target: 'terms' }, 'See the terms', 'link')]),
+          b.el('terms', 'div', { when: uiState('open'), anchor: 'terms' }, [b.text('terms-text', 'p', 'The terms')])
+        ])
+    });
+  }
+
+  it('keeps all of a disclosure’s content in the page, so a jump from one part to another works when it opens', async () => {
+    const s = fresh();
+    const def = termsDef(s);
+    place(s, def);
+    expect(compileErrors(s)).toEqual([]);
+    const html = await renderHome(s);
+    expect(html).toContain('href="#terms"');
+    const terms = openTag(html, nodeClass(def, 'terms'));
+    expect(attrOf(terms, 'id')).toBe('terms');
+    expect(terms).toContain(STATE_OFF_CLASS);
+    // The button names only the content without an anchor of its own: an anchor every placement would share.
+    const [toggle] = tagsWith(html, 'aria-expanded');
+    expect(attrOf(toggle, 'aria-controls')).toBe(attrOf(openTag(html, nodeClass(def, 'summary')), 'id'));
+    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+  });
+
+  it('follows kept panels where a page’s HTML is copied or served: a copied page’s jumps, the not-found page’s', () => {
+    const s = fresh();
+    place(s, termsDef(s));
+    const jump = { id: 'n_jumpterm', kind: 'link', link: { type: 'page', target: home(s).id, anchor: 'terms' }, label: 'Terms', appearance: 'link' } as GraphNode;
+    home(s).nodes[jump.id] = jump;
+    home(s).rootIds.push(jump.id);
+    const r = applyOperations(s, [{ type: 'page.duplicate', pageId: home(s).id }]);
+    const copy = r.state.pages[r.results[0].pageId as string];
+    const copied = Object.values(copy.nodes).filter((n): n is LinkNode => n.kind === 'link' && n.label === 'Terms');
+    expect(copied.map((n) => n.link)).toEqual([{ type: 'page', target: copy.id, anchor: 'terms' }]);
+    // A jump in a panel the shared header keeps hidden is served on the not-found page, which sends it to its section.
+    const h = fresh();
+    const header = h.site.shell.header;
+    const inHeader = makeInstance(tabsDef(h, { panelExtra: (b) => [b.link('to-pricing', { type: 'anchor', target: 'pricing' }, 'Pricing', 'link')] }), {});
+    header.nodes[inHeader.id] = inHeader;
+    header.rootIds.push(inHeader.id);
+    home(h).nodes[home(h).rootIds[0]].anchor = 'pricing';
+    expect(notFoundSectionRoutes(h)).toMatchObject({ pricing: home(h).route });
   });
 
   it('renders a tab list whose tabs and panels name each other in every placement, every panel in the page', async () => {

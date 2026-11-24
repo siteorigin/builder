@@ -28,6 +28,8 @@ export interface Scope {
   ui?: Record<string, unknown>;
   /** Every value the UI state can take, not only the one it starts at: a condition on it lets content render. */
   everyState?: boolean;
+  /** Inside a panel kept in the page while its component's state hides it (a `kept` walk): in the HTML, not on screen. */
+  keptHidden?: boolean;
   /** The placement's variant choices, with axes bound to the enclosing design's UI state at the option it starts at. */
   chosen?: InstanceNode['variants'];
   /** The placements this scope sits in, from the page down, to tell their links apart. */
@@ -234,8 +236,10 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     const key = `${frame.n}:${id}`;
     if (!n || path.has(key)) return;
     const kept = !!frame.kept?.has(id);
-    if (frame.def && n.when && !kept && !lets(n.when, false, frame.scope, state)) return;
-    if (frame.def && n.unless && !kept && !lets(n.unless, true, frame.scope, state)) return;
+    const shows = !frame.def || ((!n.when || lets(n.when, false, frame.scope, state)) && (!n.unless || lets(n.unless, true, frame.scope, state)));
+    if (!shows && !kept) return;
+    // A kept panel its state hides is walked as hidden content, and so is everything inside it.
+    if (!shows && !frame.scope.keptHidden) frame = { ...frame, scope: { ...frame.scope, keptHidden: true } };
     if (frame.def && n.kind === 'element' && n.collapseEmpty && !childRenders(state, frame, n, new Set())) return;
     const inner = new Set(path).add(key);
     const reportId = frame.reportId ?? n.id;
@@ -318,7 +322,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
             if (f) forwarded[k] = f;
           }
           const feedProps = new Set(Object.entries(def.properties).filter(([, p]) => isFeed(p)).map(([k]) => k));
-          const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots, codeSlot: frame.scope.codeSlot };
+          const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots, codeSlot: frame.scope.codeSlot, ...(frame.scope.keptHidden ? { keptHidden: true } : {}) };
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
           const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, stateInitial(def, k)])) : undefined;
           const chosen = startingVariants(n.variants, frame.def);
@@ -963,6 +967,8 @@ interface RenderedLink {
   key: string;
   /** Inside rich text, where it is changed in the text itself rather than in a link field. */
   inText: boolean;
+  /** In a panel kept in the page hidden (a \`kept\` walk): seen only once the panel shows. */
+  hidden?: boolean;
 }
 
 const isLinkValue = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && 'target' in (v as object);
@@ -1014,25 +1020,30 @@ function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, rep
 /** Every link a page or shell tree renders: buttons, links inside rich text, and the links code components receive. */
 function renderedLinks(state: ProjectState, tree: NodeTree, everyState = false, kept = false): RenderedLink[] {
   const out: RenderedLink[] = [];
+  const hidden = (scope: Scope) => (scope.keptHidden ? { hidden: true } : {});
   const at = (n: GraphNode, scope: Scope) => `${scope.trail ?? ''}:${n.id}:${String(scope.item?.id ?? '')}`;
   walkRendered(state, tree, {
     everyState,
     kept,
     link: (n, scope, reportId) => {
       const link = evaluate(n.link, scope);
-      if (isLinkValue(link)) out.push({ link, label: String(evaluate(n.label, scope) ?? '').trim(), reportId, key: at(n, scope), inText: false });
+      if (isLinkValue(link)) out.push({ link, label: String(evaluate(n.label, scope) ?? '').trim(), reportId, key: at(n, scope), inText: false, ...hidden(scope) });
     },
     text: (n, scope, reportId) => {
-      if (n.rich) richLinks(evaluate(n.text, scope)).forEach((sp, i) => out.push({ link: sp.link!, label: sp.text.trim(), reportId, key: `${at(n, scope)}:${i}`, inText: true }));
+      if (n.rich) richLinks(evaluate(n.text, scope)).forEach((sp, i) => out.push({ link: sp.link!, label: sp.text.trim(), reportId, key: `${at(n, scope)}:${i}`, inText: true, ...hidden(scope) }));
     },
     // A card links the whole container. One with an action follows its destination only while that action is `link`.
     node: (n, scope, reportId) => {
       if (n.kind !== 'element' || n.link === undefined) return;
       if (n.action !== undefined && n.action !== null && (!actionWraps(n) || evaluate(n.action, scope) !== 'link')) return;
       const link = evaluate(n.link, scope);
-      if (isLinkValue(link)) out.push({ link, label: n.name ?? '', reportId, key: at(n, scope), inText: false });
+      if (isLinkValue(link)) out.push({ link, label: n.name ?? '', reportId, key: at(n, scope), inText: false, ...hidden(scope) });
     },
-    code: (def, props, reportId, placement) => codeLinks(def, props, reportId, placement, out, shippedCode(state, def))
+    code: (def, props, reportId, placement, _n, scope) => {
+      const from = out.length;
+      codeLinks(def, props, reportId, placement, out, shippedCode(state, def));
+      if (scope.keptHidden) for (const l of out.slice(from)) l.hidden = true;
+    }
   });
   return out;
 }
@@ -1096,8 +1107,9 @@ export function notFoundSectionRoutes(state: ProjectState): Record<string, strin
     return ids.get(pageId)!;
   };
   const out: Record<string, string> = {};
+  // A jump in a panel the header or footer keeps in the page hidden is in the not-found page's HTML too.
   for (const part of parts)
-    for (const { link } of renderedLinks(state, state.site.shell[part])) {
+    for (const { link } of renderedLinks(state, state.site.shell[part], false, true)) {
       const fragment = link.type === 'anchor' ? link.target.replace(/^#/, '') : '';
       if (!fragment || here.has(fragment) || Object.hasOwn(out, fragment)) continue;
       // Where the link works: a page that shows its part and has the section, else any page that has it.
@@ -1116,9 +1128,12 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
   const shell = shellIds(state);
   const ids = new Map<string, Set<string>>();
-  const idsOf = (pageId: string) => {
-    if (!ids.has(pageId)) ids.set(pageId, pageIds(state, pageId, shell));
-    return ids.get(pageId)!;
+  // A link visitors see at first must find its section on screen. One in a panel kept in the page hidden shows with
+  // that panel, so a section in a hidden panel (its own, say) will do: the build finds it in the HTML.
+  const idsOf = (pageId: string, hidden?: boolean) => {
+    const key = `${hidden ? 'kept' : 'shown'}:${pageId}`;
+    if (!ids.has(key)) ids.set(key, pageIds(state, pageId, hidden ? undefined : shell, !!hidden));
+    return ids.get(key)!;
   };
   // The header and footer are checked on the pages that show each: they can differ.
   const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[] }> = [
@@ -1130,13 +1145,13 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   // Links in a panel kept in the page hidden are in its HTML, where the build follows them; the sections they go to
   // count only where a visitor can see them.
   for (const src of sources)
-    for (const { link, label, reportId, key, inText } of renderedLinks(state, src.tree, false, true)) {
+    for (const { link, label, reportId, key, inText, hidden } of renderedLinks(state, src.tree, false, true)) {
       let issue: SectionLinkIssue | null = null;
       if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
-        if (!idsOf(link.target).has(link.anchor)) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment: link.anchor, pageId: link.target };
+        if (!idsOf(link.target, hidden).has(link.anchor)) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment: link.anchor, pageId: link.target };
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
-        const missing = src.on.filter((p) => !idsOf(p.id).has(fragment)).map((p) => p.id);
+        const missing = src.on.filter((p) => !idsOf(p.id, hidden).has(fragment)).map((p) => p.id);
         if (missing.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once.

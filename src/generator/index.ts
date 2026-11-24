@@ -1071,12 +1071,13 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
     return s.schema.type === 'boolean' ? { state, shows: !negate } : null;
   };
   /**
-   * Content that can stay in the page hidden: rendered once, without an anchor of its own (which two placements would
-   * share), always in the page itself (not collapsing), and not a runtime helper's host. A tab list and its panels
-   * are plain elements of \`tag\`; a disclosure's content may also be plain text.
+   * Content that can stay in the page hidden: rendered once, always in the page itself (not collapsing), and not a
+   * runtime helper's host. A tab list and its panels are plain elements of \`tag\` without an anchor of their own
+   * (which two placements would share, where a tab and its panel must name each other); a disclosure's content may
+   * also be plain text, and keeps an anchor, though its button names only the content without one.
    */
   const panelHost = (n: GraphNode | undefined, tag?: string): n is GraphNode & { kind: 'element' | 'text' } => {
-    if (!n || !once.has(n.id) || roots.has(n.id) || n.anchor) return false;
+    if (!n || !once.has(n.id) || roots.has(n.id) || (tag && n.anchor)) return false;
     if (n.kind === 'text') return !tag && !n.rich;
     return n.kind === 'element' && !n.collapseEmpty && !rendersAsCard(ctx, n) && !isCarouselTrack(n) && (tag ? isBareTag(ctx, n, tag) : true);
   };
@@ -1121,7 +1122,9 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
     const open = hosts(true).length ? true : hosts(false).length ? false : null;
     const panels = open === null ? [] : hosts(open);
     for (const p of panels) out.panels.set(p, { state: name, shows: open! });
-    for (const b of toggles) out.buttons.set(b.id, open === null ? { role: 'pressed', state: name, value: true } : { role: 'disclosure', state: name, open, panels });
+    // All of the content stays in the page together, so a jump from one part to another works once it shows.
+    const named = panels.filter((p) => !tree.nodes[p]?.anchor);
+    for (const b of toggles) out.buttons.set(b.id, open === null ? { role: 'pressed', state: name, value: true } : { role: 'disclosure', state: name, open, panels: named });
   }
   return out;
 }
@@ -1174,7 +1177,8 @@ function stateButtonAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'link' }): str
     }
     case 'disclosure': {
       const ids = role.panels.map((p) => widgetId(ctx, p, 'panel'));
-      return ` aria-expanded={${stateIs(ctx, role.state, role.open)}} aria-controls={${ids.length === 1 ? ids[0] : `[${ids.join(', ')}].join(' ')`}}`;
+      const controls = !ids.length ? '' : ` aria-controls={${ids.length === 1 ? ids[0] : `[${ids.join(', ')}].join(' ')`}}`;
+      return ` aria-expanded={${stateIs(ctx, role.state, role.open)}}${controls}`;
     }
     case 'pressed':
       return ` aria-pressed={${stateIs(ctx, role.state, role.value)}}`;
@@ -1200,7 +1204,8 @@ function stateElementAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' | '
   }
   const panel = ctx.widgets?.panels.get(node.id);
   if (!panel) return '';
-  const id = ` id={${widgetId(ctx, node.id, 'panel')}}`;
+  // Content with an anchor keeps it as its id (anchorAttr), and no button names it.
+  const id = node.anchor ? '' : ` id={${widgetId(ctx, node.id, 'panel')}}`;
   if (!panel.tab) return id;
   const by = widgetId(ctx, panel.tab, 'tab');
   let labelledBy = ` aria-labelledby={${by}}`;
