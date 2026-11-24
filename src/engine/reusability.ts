@@ -242,16 +242,20 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
       }
   };
   /**
-   * Capped at or below the accessory size across or down at every width and in every variant: each width's and
-   * variant's styles are read over the base ones, as they apply, so a maximum still caps a larger width.
+   * Capped at or below the accessory size across or down at every width and in every variant: styles apply as they
+   * cascade (the node's base, a variant's base, then the node's and the variant's rules for that width), so a maximum
+   * still caps a larger width, and a variant's larger maximum lifts it.
    */
   const isAccessory = (n: GraphNode) => {
-    const base = scopesOf(n.styles).find(([s]) => s === 'base')?.[1] ?? {};
-    const applied = [base, ...[n.styles, ...(variantStyles.get(n.id) ?? [])].flatMap(scopesOf).map(([, props]) => ({ ...base, ...props }))];
-    const capped = (props: Record<string, unknown>, axis: string[]) => axis.some((p) => {
-      const px = lengthPx(props[p]);
-      return px !== null && px > 0 && px <= ACCESSORY_IMAGE_PX;
-    });
+    const own = Object.fromEntries(scopesOf(n.styles));
+    const variants = [{}, ...(variantStyles.get(n.id) ?? []).map((rs) => Object.fromEntries(scopesOf(rs)))];
+    const widths = new Set(['base', ...Object.keys(own), ...variants.flatMap((v) => Object.keys(v))]);
+    const applied = variants.flatMap((v) => [...widths].map((w) => ({ ...own.base, ...v.base, ...own[w], ...v[w] })));
+    const capped = (props: Record<string, unknown>, axis: string[]) =>
+      axis.some((p) => {
+        const px = lengthPx(props[p]);
+        return px !== null && px > 0 && px <= ACCESSORY_IMAGE_PX;
+      });
     return [['width', 'maxWidth'], ['height', 'maxHeight']].some((axis) => applied.every((props) => capped(props, axis)));
   };
   /** A part whose controls (all of them, when it lists none) can change its picture's crop or corners. */

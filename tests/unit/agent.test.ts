@@ -2630,77 +2630,6 @@ describe('components that are not reusable yet (#363)', () => {
     expect(reusabilityOf(env.session, def.id)).toEqual([]);
   });
 
-  it('keeps the finished run when the model cannot answer after being sent back', async () => {
-    let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
-    const env = await setup(
-      [
-        () => [insertSample(def, 1)],
-        () => finish('Added a line about the studio.'),
-        () => [{ type: 'error', code: 'invalid_request', message: 'The provider refused the request.' }]
-      ],
-      { codeEnabled: false }
-    );
-    def = await projectHero(env.session);
-    const { result } = await env.run('Add a line about the studio to this hero', everywhere(def));
-    expect(env.adapter.requests).toHaveLength(3);
-    expect(result?.status).toBe('completed');
-    expect(result?.summary).toBe('Added a line about the studio.');
-    expect(result?.canUndo).toBe(true);
-    expect(result?.checks?.filter((c) => c.status === 'issue')).toHaveLength(1);
-    expect(Object.values(env.session.state.components[def.id].tree!.nodes).some((n) => n.kind === 'text' && n.text === SAMPLE)).toBe(true);
-  });
-
-  it('keeps what landed after being sent back when the model then fails, if it still passes every check', async () => {
-    let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
-    let nodeId = '';
-    const env = await setup(
-      [
-        () => [insertSample(def, 1)],
-        (req) => {
-          nodeId = nodeIdOf(lastTool(req));
-          return finish('Added a line about the studio.');
-        },
-        () => [call('b1', 'apply_operations', { expectedRevision: 2, operations: [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'studio', schema: { type: 'string', label: 'Studio line', default: SAMPLE } }, { type: 'node.setBinding', owner: def.owner, nodeId, field: 'text', binding: { $prop: 'studio' } }] })],
-        () => [{ type: 'error', code: 'invalid_request', message: 'The provider refused the request.' }]
-      ],
-      { codeEnabled: false }
-    );
-    def = await projectHero(env.session);
-    const { result } = await env.run('Add a line about the studio to this hero', everywhere(def));
-    expect(env.adapter.requests).toHaveLength(4);
-    expect(result?.status).toBe('completed');
-    expect(result?.summary).toBe('Added a line about the studio.');
-    // Both the line and its binding are kept.
-    expect(env.session.state.components[def.id].tree!.nodes[nodeId]).toMatchObject({ text: { $prop: 'studio' } });
-    expect(result?.checks?.filter((c) => c.status === 'issue')).toEqual([]);
-  });
-
-  it('never keeps a run whose change found a file changed outside the app', async () => {
-    let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
-    let conflict: { error?: { code?: string } } = {};
-    const env = await setup(
-      [
-        () => [insertSample(def, 1)],
-        () => finish('Added a line about the studio.'),
-        () => {
-          // Someone edits the component's file while the model is sent back.
-          const file = join(env.session.dir, 'siteorigin', 'components', def.id, 'component.json');
-          writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), name: 'Edited elsewhere' }, null, 2));
-          return [call('c1', 'apply_operations', { expectedRevision: 2, operations: [{ type: 'node.setStyle', owner: def.owner, nodeId: def.root, scope: 'base', property: 'background', value: { token: 'color.surface-alt' } }] })];
-        },
-        (req) => {
-          conflict = lastTool(req);
-          return [{ type: 'error', code: 'invalid_request', message: 'The provider refused the request.' }];
-        }
-      ],
-      { codeEnabled: false }
-    );
-    def = await projectHero(env.session);
-    const { result } = await env.run('Add a line about the studio to this hero', everywhere(def));
-    expect(conflict.error?.code).toBe('CONFLICT');
-    expect(result?.status).toBe('conflicted');
-  });
-
   it('leaves alone what the component already had, and what the request may not change', async () => {
     let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
     let restyled: { componentWarnings?: unknown } = {};
@@ -2726,7 +2655,7 @@ describe('components that are not reusable yet (#363)', () => {
     expect(result?.checks?.filter((c) => c.status === 'issue')).toEqual([]);
   });
 
-  it('sends a run back for what its selection reaches', async () => {
+  it('never sends a narrower request back, and lists what it left', async () => {
     let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
     let group = '';
     const env = await setup(
@@ -2740,10 +2669,28 @@ describe('components that are not reusable yet (#363)', () => {
     def = await projectHero(env.session);
     const r = await env.session.apply({ operations: [{ type: 'node.insert', owner: def.owner, parentId: def.root, primitive: 'stack' }] }, { label: 'Add', source: 'user' });
     group = (r.results?.[0] as { nodeId: string }).nodeId;
+    // A selection may not add to the component's list fields or change what is outside it, so it is never sent back.
     const { result } = await env.run('Add a line here', { selection: { owner: def.owner, instancePath: [], nodeId: group }, selectionLabel: 'Group' });
-    expect(env.adapter.requests).toHaveLength(3);
-    expect(env.adapter.requests[2].items.at(-1)).toMatchObject({ kind: 'user', text: expect.stringContaining('not reusable yet') });
+    expect(env.adapter.requests).toHaveLength(2);
     expect(result?.status).toBe('completed');
+    expect(result?.checks?.filter((c) => c.status === 'issue').map((c) => c.text)).toEqual([expect.stringContaining('is written into the design')]);
+  });
+
+  it('leaves a run near its step limit as it finished', async () => {
+    let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
+    const env = await setup([() => [insertSample(def, 1)], () => finish('Added a line about the studio.'), () => finish('Done.')], { codeEnabled: false });
+    def = await projectHero(env.session);
+    const turns = LIMITS.modelTurns;
+    LIMITS.modelTurns = 3;
+    try {
+      const { result } = await env.run('Add a line about the studio to this hero', everywhere(def));
+      expect(env.adapter.requests).toHaveLength(2);
+      expect(result?.status).toBe('completed');
+      expect(result?.summary).toBe('Added a line about the studio.');
+      expect(result?.checks?.filter((c) => c.status === 'issue')).toHaveLength(1);
+    } finally {
+      LIMITS.modelTurns = turns;
+    }
   });
 
   it('does not send a run back to change what its selection does not reach, and still says so', async () => {

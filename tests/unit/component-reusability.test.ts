@@ -388,7 +388,7 @@ describe('hand-edited values the checks read', () => {
       name: 'Grid',
       properties: { items: P.list('Items', 'Item', { title: P.str('Title', ''), photo: P.image('Photo') }, []) },
       parts: { root: { nodeId: 'root', label: 'Section' }, inner: { nodeId: 'inner', label: 'Inner' }, framed: { nodeId: 'frame-all', label: 'Frame', styleControls: [] }, fit: { nodeId: 'frame-fit', label: 'Frame', styleControls: ['objectFit'] } },
-      variantAxes: { size: { label: 'Size', default: 'small', options: { small: { label: 'Small' }, large: { label: 'Large', styles: { 'grows-variant': { base: { width: '320px' } } } } } } },
+      variantAxes: { size: { label: 'Size', default: 'small', options: { small: { label: 'Small' }, large: { label: 'Large', styles: { 'grows-variant': { base: { width: '320px' } }, 'lifted': { base: { maxWidth: '320px' } } } } } } },
       build: (b) =>
         b.el('root', 'section', {}, [
           // An article holding one exposed element is still the card.
@@ -398,6 +398,8 @@ describe('hand-edited values the checks read', () => {
               b.image('grows', item('photo'), { styles: { base: { width: '40px' }, desktop: { width: 'fill' } } }),
               b.image('capped', item('photo'), { styles: { base: { maxWidth: '40px' }, desktop: { width: '320px' } } }),
               b.image('grows-variant', item('photo'), { styles: { width: '40px' } }),
+              // Capped by its own maximum, until a variant lifts the maximum at the width that grows it.
+              b.image('lifted', item('photo'), { styles: { base: { width: '40px', maxWidth: '40px' }, desktop: { width: '320px' } } }),
               b.el('frame-all', 'div', {}, [b.image('in-all', item('photo'))]),
               b.el('frame-fit', 'div', {}, [b.image('in-fit', item('photo'))])
             ])
@@ -409,6 +411,7 @@ describe('hand-edited values the checks read', () => {
       ['COMPONENT_PART_MISSING', 'card'],
       ['COMPONENT_PART_MISSING', 'grows'],
       ['COMPONENT_PART_MISSING', 'grows-variant'],
+      ['COMPONENT_PART_MISSING', 'lifted'],
       ['COMPONENT_PART_MISSING', 'in-fit']
     ]);
   });
