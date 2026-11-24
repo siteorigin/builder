@@ -121,21 +121,22 @@ export function termsNamed(collection: Collection, taxonomy: string, wanted: str
       .map((w) => w.trim())
       .join(',')
       .toLowerCase();
+  // As termNamed reads one: an exact ID first, then the first term, in order, whose ID or label it is (ignoring case).
   const byName = new Map<string, string>();
   let longest = 1;
   for (const id of Object.keys(terms)) {
     const label = typeof terms[id]?.label === 'string' ? terms[id].label : '';
-    if (label.trim() && !byName.has(norm(label))) byName.set(norm(label), id);
+    for (const name of [id.toLowerCase(), label.trim() ? norm(label) : '']) if (name && !byName.has(name)) byName.set(name, id);
     longest = Math.max(longest, label.split(',').length);
   }
-  for (const id of Object.keys(terms)) byName.set(id.toLowerCase(), id);
+  const named = (run: string) => (Object.hasOwn(terms, run) ? run : byName.get(run.toLowerCase()));
   // A label may hold a comma itself ("Arts, Culture"): the longest run of pieces that names a term is taken first.
-  const pieces = wanted.split(',').map((w) => w.trim().toLowerCase());
+  const pieces = wanted.split(',').map((w) => w.trim());
   const found = new Set<string>();
   for (let i = 0; i < pieces.length; ) {
     let term: string | undefined;
     let j = Math.min(pieces.length, i + longest);
-    for (; j > i; j--) if ((term = byName.get(pieces.slice(i, j).join(',')))) break;
+    for (; j > i; j--) if ((term = named(pieces.slice(i, j).join(',')))) break;
     if (term) found.add(term);
     i = term ? j : i + 1;
   }

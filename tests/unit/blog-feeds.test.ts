@@ -727,4 +727,14 @@ describe('after the last review', () => {
     const source = generateProject(publishedState(s)).get(pageFile(s.pages[home]))!;
     expect(source).toMatch(/so_pages=\{\{[^\n]*"entries":\{[^\n]*"title":"Glaze night"/);
   });
+
+  it('reads several terms as one term is read, the first in order whose ID or label it is', () => {
+    const s = run(blog(), {
+      type: 'collection.update',
+      collectionId: 'posts',
+      taxonomies: { categories: { label: 'Categories', terms: { workshops: { label: 'News' }, news: { label: 'Announcements' }, craft: { label: 'Craft' } } }, tags: { label: 'Tags', terms: {} } }
+    } as EditOperation);
+    expect(termsNamed(s.collections.posts, 'categories', 'News, Craft')).toEqual(['workshops', 'craft']);
+    expect(termsNamed(s.collections.posts, 'categories', 'news, Craft')).toEqual(['news', 'craft']);
+  });
 });

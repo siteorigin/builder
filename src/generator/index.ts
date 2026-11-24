@@ -2514,6 +2514,8 @@ function pageRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<s
   if (def.kind === 'code') {
     const source = def.source ?? '';
     if (Object.hasOwn(def.properties, 'so_pages') || !/\bso_pages\b/.test(source) || path.has(def.id)) return null;
+    // Worked out once per definition, however many components place it.
+    if (memo.has(def.id)) return memo.get(def.id)!;
     const entries = codeEntryNeeds(source);
     // And what the components it places need in turn: code converted from a design imports the designs (or code made
     // from them) inside it, by their files' names.
@@ -2523,7 +2525,9 @@ function pageRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<s
       for (const [k, q] of pageRowNeeds(state, d, memo, path)?.entries ?? []) entries.set(k, q);
     }
     path.delete(def.id);
-    return { articles: Infinity, currentPage: true, entries };
+    const needs = { articles: Infinity, currentPage: true, entries };
+    memo.set(def.id, needs);
+    return needs;
   }
   return treeRowNeeds(state, def, memo, path);
 }

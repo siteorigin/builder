@@ -1421,7 +1421,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     if (!mayLink.has(collectionId)) {
       const t = state.collections[collectionId]?.settings?.template;
       const placed = !!t?.nodes && Object.values(t.nodes).some((n) => n?.kind === 'instance');
-      mayLink.set(collectionId, !!t?.nodes && (draftIds.size > 0 || withheld.size > 0) && (placed || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes))));
+      mayLink.set(collectionId, !!t?.nodes && (draftIds.size > 0 || draftEntryIds.size > 0 || withheld.size > 0) && (placed || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes))));
     }
     return mayLink.get(collectionId)!;
   };
