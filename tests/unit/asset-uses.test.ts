@@ -214,6 +214,8 @@ describe('replacing an image in the places chosen', () => {
     s.pages[workId].seo.socialImage = 'a_person1';
     const r2 = applyOperations(s, [replaceIn([{ kind: 'pageSharing', pageId: homeId }])]).state;
     expect([r2.site.favicon, r2.site.socialImage, r2.pages[homeId].seo.socialImage, r2.pages[workId].seo.socialImage]).toEqual(['a_person1', 'a_person1', 'a_publicity', 'a_person1']);
+    const r4 = applyOperations(s, [replaceIn([{ kind: 'pageSharing', pageId: workId }])]).state;
+    expect([r4.pages[homeId].seo.socialImage, r4.pages[workId].seo.socialImage]).toEqual(['a_person1', 'a_publicity']);
     const r3 = applyOperations(s, [replaceIn([{ kind: 'site', field: 'socialImage' }])]).state;
     expect([r3.site.favicon, r3.site.socialImage, r3.pages[homeId].seo.socialImage]).toEqual(['a_person1', 'a_publicity', 'a_person1']);
   });
@@ -255,6 +257,12 @@ describe('replacing an image in the places chosen', () => {
     expect([row.what, row.target, row.field]).toEqual(['Gallery · Image 2: At work', null, undefined]);
     expect(() => applyOperations(s, [replaceIn([uses.g2])])).toThrow(/no longer shows the image/);
     expect(read(applyOperations(s, [replaceIn([uses.g1])]).state).rows.map((i) => i.assetId)).toEqual(['a_publicity', 'a_person1', 'a_other']);
+    // The same when the row sharing the ID comes first.
+    const first = structuredClone(state);
+    ((first.pages[home.id].nodes[galleryId] as InstanceNode).props.images as ListItem[]).unshift({ id: 'g2', image: { assetId: 'a_other', alt: '' }, caption: 'Earlier' });
+    const moved = imageUseRows(first, 'a_person1').find((r) => r.what.includes('At work'))!;
+    expect([moved.what, moved.target]).toEqual(['Gallery · Image 3: At work', null]);
+    expect(() => applyOperations(first, [replaceIn([uses.g2])])).toThrow(/no longer shows the image/);
   });
 
   it('refuses places for a document, which changes wherever it is linked', () => {

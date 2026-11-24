@@ -25,7 +25,7 @@ export function useKey(t: ImageUseTarget): string {
 
 /** The target for an image value's place, or null when its path steps through a list item by position. */
 function targetOf(place: ValuePlace): ImageUseTarget | null {
-  if (!place.path.every((s): s is string => typeof s === 'string')) return null;
+  if (!place.path.every((s): s is string => typeof s === 'string' && s !== '')) return null;
   const path = place.path as string[];
   return 'definitionId' in place ? { kind: 'default', definitionId: place.definitionId, path } : { kind: 'node', owner: place.owner, nodeId: place.nodeId, path };
 }
@@ -43,9 +43,11 @@ export function imageUses(state: ProjectState, assetId: string): ImageUse[] {
       // A list item is reached by its ID only when no other item of the list has it; otherwise by position, so it
       // is never mistaken for the other one.
       const ids = v.map(idOf);
+      const seen = new Map<string, number>();
+      for (const id of ids) if (id !== undefined) seen.set(id, (seen.get(id) ?? 0) + 1);
       v.forEach((x, i) => {
         const id = ids[i];
-        walk(x, at, [...path, id !== undefined && ids.indexOf(id) === ids.lastIndexOf(id) ? id : i]);
+        walk(x, at, [...path, id && seen.get(id) === 1 ? id : i]);
       });
     } else if (v && typeof v === 'object') {
       if ((v as { assetId?: unknown }).assetId === assetId) {

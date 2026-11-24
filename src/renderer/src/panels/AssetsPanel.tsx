@@ -906,7 +906,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const choosable = places.filter((u) => u.target).length;
     const onPick = (a: AssetRecord) => {
       if (!choosing) return void replaceWith(a.id);
-      // Picked here, it wins over a replacement still being imported.
+      // Nothing changes while a replacement is on its way. Picked here, it wins over one still being imported.
+      if (replacingNow.current) return;
       replaceSession.current++;
       setChoosing((c) => c && { ...c, pick: a.id });
     };
