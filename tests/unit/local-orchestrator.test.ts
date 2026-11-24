@@ -599,6 +599,7 @@ describe('what a constrained local run sends first (#364)', () => {
     const context = JSON.parse(/<editor_context>\n(\{.*\})\n<\/editor_context>/s.exec(body.messages.at(-1).content)![1]);
     expect(context.selection === null, label).toBe(!selection);
     if (selection) expect(context.selection.currentProps ?? context.selection.node.props).toHaveProperty('heading');
+    expect(context.allowedScope, label).toMatch(label.startsWith('ask') ? /^nothing: this is a read-only question$/ : label === 'section' ? /^only Hero \(.*\) unless the user approves more via request_wider_scope$/ : label === 'part' ? /^only the selected part "heading" of Hero/ : /^whole site$/);
     // A question can still be about code; an edit run without code has no code tool to explain.
     expect('customCode' in context, label).toBe(code || label.startsWith('ask'));
   });

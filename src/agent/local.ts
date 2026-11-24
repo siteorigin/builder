@@ -120,10 +120,9 @@ function serverMessage(body: string, apiKey?: string | null): string {
   return redact(clean).trim().slice(0, 300);
 }
 
-/** The request parameter a server's error names, when it names one: inside `error`, or beside it (vLLM). */
+/** The request parameter a server's error names, when it names one. */
 function serverParam(body: string): string {
-  const v = safeJson(body) as { error?: { param?: unknown }; param?: unknown } | undefined;
-  const param = (v?.error && typeof v.error === 'object' ? v.error.param : undefined) ?? v?.param;
+  const param = (safeJson(body) as { error?: { param?: unknown } } | undefined)?.error?.param;
   return typeof param === 'string' ? param : '';
 }
 
@@ -131,14 +130,27 @@ function serverParam(body: string): string {
 const FORMAT_REFUSED =
   /(?:unknown|unsupported|unrecognized|invalid|extra)[^.]*(?:response_format|json_schema)|(?:response_format|json_schema)[^.]*(?:not supported|unsupported|unknown|invalid|not permitted|failed)|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
 /** A refusal of the structured format itself, which no form of the schema would get past. */
-const FORMAT_TYPE_REFUSED = /response_format[^.]*type|type[^.]*json_(?:schema|object)[^.]*(?:not supported|unsupported|not permitted)|(?:unsupported|unknown|unrecognized)[^.]*response_format/i;
+const FORMAT_TYPE_REFUSED =
+  /response_format[^.]*type[^.]*(?:not supported|unsupported|not permitted|unknown|invalid)|type[^.]*json_(?:schema|object)[^.]*(?:not supported|unsupported|not permitted)|(?:unsupported|unknown|unrecognized)[^.]*response_format/i;
+/** A reference the server could not follow: always about the schema, whatever else the message says. */
+const REFERENCE_REFUSED = /\$ref|\$defs|resolv\w* ref/i;
 /**
  * A refusal of what a schema contains, such as a `$ref` or `$defs` the server cannot follow, or the grammar it
  * failed to build (llama.cpp, vLLM, Ollama and LM Studio wordings). Only wording that blames the schema or its
  * grammar counts, so a model named after one is not taken for it.
  */
 const SCHEMA_REFUSED =
-  /\$ref|\$defs|resolv\w* ref|unrecognized schema|json[ _]schema[^.]*(?:conver|compil|pars|not supported|unsupported|invalid)|(?:unsupported|unrecognized|invalid)[^.]*json[ _]schema|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
+  /\$ref|\$defs|resolv\w* ref|unrecognized schema|json[ _]schema[^.]*(?:conver|compil|pars|transform|grammar|not supported|unsupported|invalid)|(?:unsupported|unrecognized|invalid)[^.]*json[ _]schema|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
+
+/**
+ * Whether an error refuses what the schema contains rather than the format, the request's length or anything else.
+ * A structured parameter is authoritative; otherwise the wording must blame the schema.
+ */
+function refusesSchema(text: string, param: string): boolean {
+  if (param) return param.startsWith('response_format.json_schema');
+  if (REFERENCE_REFUSED.test(text)) return true;
+  return !CONTEXT_FULL.test(text) && !FORMAT_TYPE_REFUSED.test(text) && SCHEMA_REFUSED.test(text);
+}
 
 const CONTEXT_FULL = /context (size|length|window)|exceeds? .*context|n_ctx|too many tokens|prompt is too long/i;
 
@@ -553,9 +565,8 @@ export class LocalAdapter implements AgentModelAdapter {
       this.usageOption = false;
       return true;
     }
-    // A request too long for the model is not a refusal of any option.
-    if (!constrained || this.responseFormat === 'none' || CONTEXT_FULL.test(text)) return false;
-    const schemaRefused = this.responseFormat === 'json_schema' && (param ? param.startsWith('response_format.json_schema') : !FORMAT_TYPE_REFUSED.test(text) && SCHEMA_REFUSED.test(text));
+    if (!constrained || this.responseFormat === 'none') return false;
+    const schemaRefused = this.responseFormat === 'json_schema' && refusesSchema(text, param);
     if (schemaRefused && this.dropCompact(tools)) return true;
     if (schemaRefused || names('response_format', FORMAT_REFUSED)) {
       this.responseFormat = this.responseFormat === 'json_schema' ? 'json_object' : 'none';
@@ -602,7 +613,7 @@ export class LocalAdapter implements AgentModelAdapter {
       }
       if (result.kind === 'error') {
         // A server may only find out it cannot build the compact grammar once the stream has opened.
-        if (!result.streamed && constrained && fallbacks < MAX_FALLBACKS && !signal.aborted && result.errorBody && SCHEMA_REFUSED.test(serverMessage(result.errorBody)) && this.dropCompact(req.tools)) {
+        if (!result.streamed && constrained && fallbacks < MAX_FALLBACKS && !signal.aborted && result.errorBody && refusesSchema(serverMessage(result.errorBody), serverParam(result.errorBody)) && this.dropCompact(req.tools)) {
           fallbacks++;
           continue;
         }

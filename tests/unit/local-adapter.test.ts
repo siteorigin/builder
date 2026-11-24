@@ -894,8 +894,8 @@ describe('constrained JSON', () => {
     expect(posts().at(-1)?.body.response_format).toMatchObject({ type: 'json_schema', json_schema: { schema: envelopeSchema(TOOLS) } });
   });
 
-  it('takes a structured parameter over wording that would otherwise step down, inside or beside the error', async () => {
-    server.script({ status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar for model', param: 'model' } }) }, { status: 400, body: JSON.stringify({ object: 'error', message: 'JSON schema conversion failed', param: 'model', code: 400 }) });
+  it('takes a structured parameter over wording that would otherwise step down', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar for model', param: 'model' } }) }, { status: 400, body: JSON.stringify({ error: { message: 'JSON schema conversion failed: $ref', param: 'model' } }) });
     expect(errorOf(await run(adapter())).code).toBe('invalid_request');
     expect(errorOf(await run(adapter())).code).toBe('invalid_request');
     expect(posts()).toHaveLength(2);
@@ -903,10 +903,17 @@ describe('constrained JSON', () => {
 
   it('never steps down for a model whose name merely contains a word', async () => {
     server.script({ status: 400, body: JSON.stringify({ error: { message: 'Invalid model name: schema-demo' } }) }, envelopeReply('read_page', { pageId: 'p' }));
-    expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    const a = adapter();
+    expect(errorOf(await run(a)).code).toBe('invalid_request');
     expect(posts()).toHaveLength(1);
-    await run(adapter());
+    await run(a);
     expect(posts()[1].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS, { compact: true }));
+  });
+
+  it('still gives up the format when its refusal mentions the context window, as before', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'response_format is unsupported for this context window' } }) }, envelopeReply('read_page', { pageId: 'p' }));
+    expect(doneOf(await run(adapter())).toolCalls[0].name).toBe('read_page');
+    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_object']);
   });
 
   it('skips the full schema when the wording refuses the format itself', async () => {
@@ -1292,6 +1299,8 @@ describe('compact schemas on the wire (#364)', () => {
 
   it.each([
     ['llama.cpp', { error: { code: 400, message: 'JSON schema conversion failed:\nUnrecognized schema: {"$ref":"#/$defs/d0"}', type: 'invalid_request_error' } }],
+    ['vLLM (transform)', { object: 'error', message: 'Failed to transform json schema into a grammar: rule not found', type: 'BadRequestError', param: null, code: 400 }],
+    ['a server naming the format and the reference', { error: { message: 'response_format rejected schema type: unresolved $ref #/$defs/d0' } }],
     ['vLLM', { object: 'error', message: 'The provided JSON schema contains features not supported by xgrammar.', type: 'BadRequestError', param: null, code: 400 }],
     ['Ollama', { error: 'invalid JSON schema in format' }],
     ['a structured parameter', { error: { message: 'bad value', param: 'response_format.json_schema.schema' } }]
@@ -1340,9 +1349,22 @@ describe('compact schemas on the wire (#364)', () => {
     expect(schemaAt(1)).toEqual(envelopeSchema(SHARED));
   });
 
-  it('reports a stream error that is not about the schema as it is', async () => {
-    server.script({ frames: [`data: ${JSON.stringify({ error: { code: 500, message: 'Model crashed' } })}\n\n`] });
-    expect(errorOf(await run(adapter(), { tools: SHARED })).message).toMatch(/crashed/);
+  it.each([
+    ['not about the schema', { code: 500, message: 'Model crashed' }],
+    ['about the request length', { code: 500, message: 'Context length exceeded after JSON schema conversion' }],
+    ['about another parameter', { code: 500, message: 'Failed to parse grammar for model', param: 'model' }]
+  ])('reports a stream error %s as it is, and keeps the compact schema', async (_case, error) => {
+    server.script({ frames: [`data: ${JSON.stringify({ error })}\n\n`] }, envelopeReply('set_logo', logo));
+    const a = adapter();
+    expect(errorOf(await run(a, { tools: SHARED }))).toBeDefined();
+    expect(posts()).toHaveLength(1);
+    await run(a, { tools: SHARED });
+    expect(schemaAt(1).$defs).toBeDefined();
+  });
+
+  it('never asks again for a reply the stream had already started showing', async () => {
+    server.script({ frames: [sseChunk({ role: 'assistant' }), sseChunk({ content: '{"brief_status":"Setting' }), `data: ${JSON.stringify({ error: { code: 500, message: 'Failed to compile grammar: unresolved $ref' } })}\n\n`] });
+    expect(errorOf(await run(adapter(), { tools: SHARED }))).toBeDefined();
     expect(posts()).toHaveLength(1);
   });
 

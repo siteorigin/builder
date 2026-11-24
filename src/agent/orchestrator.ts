@@ -792,8 +792,8 @@ export class Orchestrator {
       }
     }
     const ctx = userMsg.context;
-    // A grammar-constrained run with the selection's own tools is not told how operations it does not have would do it.
-    const selection = ctx ? describeSelection(readState(), ctx.selection, { operations: !(constrainedJson && current.focused) }) : null;
+    // A grammar-constrained edit with the selection's own tools is not told how operations it does not have would do it.
+    const selection = ctx ? describeSelection(readState(), ctx.selection, { operations: !(constrainedJson && current.focused && !ask) }) : null;
     const examples = authority.kind === 'site' && !ask ? retrieveExamples(session.state, userMsg.text).map(exampleSection) : [];
     /** This request's own message: what a new conversation would still have to send. */
     const requestItem: CanonicalItem = {
