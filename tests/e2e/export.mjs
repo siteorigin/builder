@@ -270,6 +270,8 @@ const kitchenOriginal = basename(kitchen75.file);
 step('#393: posts published, one renamed after publishing, and a draft');
 // The ready-made blog: a published post, another linking to it by ID, and a draft whose text must never reach the website.
 const DRAFT_MARK = 'Unannounced kiln move 393';
+/** The heading of the post feed placed on Home (#397). */
+const FEED_HEADING = 'From the journal 397';
 const blogSetup = await win.evaluate((mark) =>
   window.builder.project.apply(
     {
@@ -370,6 +372,31 @@ for (const id of ['en_hours01', 'en_spring01']) assert.deepEqual(JSON.parse(read
 await win.getByRole('button', { name: 'Done', exact: true }).first().click();
 await eventually(async () => assert.equal(await win.getByTestId('template-strip').count(), 0, 'Done closes the layout'), 10000);
 
+step('#397: a post feed on Home, the blog index in pages of two, category archives, and a post backdated');
+// A third post, the newest, with a picture; then the posts sorted into categories and the index set to two a page.
+const feedHome = (await win.evaluate(() => window.builder.project.snapshot())).state.site.homePageId;
+const feedSetup = await win.evaluate(
+  ([homeId, picture, heading]) =>
+    window.builder.project.apply(
+      {
+        operations: [
+          { type: 'collection.update', collectionId: 'posts', pageSize: 2, taxonomies: { categories: { label: 'Categories', terms: { news: { label: 'News' }, craft: { label: 'Craft' }, events: { label: 'Events' } } }, tags: { label: 'Tags', terms: {} } } },
+          { type: 'entry.create', collectionId: 'posts', entryId: 'en_kiln01', title: 'New kiln', publishedAt: '2026-05-01', draft: false, excerpt: 'A bigger kiln for bigger pots.', featuredImage: picture, body: ['It arrives in May.'], terms: { categories: ['news'] } },
+          { type: 'entry.update', collectionId: 'posts', entryId: 'en_hours01', terms: { categories: ['news'] } },
+          { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring01', terms: { categories: ['craft'] } },
+          { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret01', terms: { categories: ['events'] } },
+          { type: 'node.insert', owner: { kind: 'page', id: homeId }, componentId: 'blog.grid', props: { heading } }
+        ]
+      },
+      { label: 'Show the latest posts on Home' }
+    ),
+  [feedHome, kitchen75.id, FEED_HEADING]
+);
+assert.equal(feedSetup.ok, true, `the feed is placed and the posts sorted: ${feedSetup.error?.message}`);
+// Backdated in a change of its own: it moves from newest to oldest, in the feed and in the index.
+const backdated = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_kiln01', publishedAt: '2025-11-20' }] }, { label: 'Backdate the post' }));
+assert.equal(backdated.ok, true, `the post is backdated: ${backdated.error?.message}`);
+
 /** The published posts as a built website has them, wherever it was built (`root`, served under `base`). */
 function checkBuiltPosts(root, label, base = '') {
   // Read without the comments Svelte leaves to hydrate from.
@@ -400,6 +427,50 @@ function checkBuiltPosts(root, label, base = '') {
   assert.deepEqual(all.filter((f) => f.includes('secret-plans')), [], `${label}: the draft post has no page`);
   const leaked = all.filter((f) => /\.(html|js|json|xml|txt)$/.test(f) && readFileSync(join(root, f), 'utf8').includes(DRAFT_MARK));
   assert.deepEqual(leaked, [], `${label}: nothing in the website carries the draft post's text`);
+}
+
+/**
+ * The post feed on Home and the blog's index and category archives as a built website has them (#397): newest first by
+ * publication date after the backdating, two to a page, linked by Previous and Next in the head and on the page, and
+ * never the draft. Read from the prerendered HTML alone, as a visitor without scripts gets it.
+ */
+function checkBuiltArchives(root, label, base = '') {
+  const page = (...path) => readFileSync(join(root, ...path, 'index.html'), 'utf8').replace(/<!--[^]*?-->/g, '');
+  const at = (html, from) => (href) => new URL(href.replace(/&amp;/g, '&'), `https://example.test${base}${from}`).pathname;
+  const order = (html, titles) => titles.map((t) => html.indexOf(`>${t}<`));
+  const home = page();
+  const feed = home.slice(home.indexOf(FEED_HEADING));
+  assert.ok(home.includes(FEED_HEADING), `${label}: Home shows the post feed`);
+  const shown = order(feed, ['Spring open studio', 'Opening hours', 'New kiln']);
+  assert.ok(shown.every((i) => i > 0) && shown[0] < shown[1] && shown[1] < shown[2], `${label}: the feed lists the posts newest first, the backdated one last: ${shown}`);
+  assert.ok(!feed.includes('Secret plans'), `${label}: the feed leaves the draft out`);
+  assert.match(feed, /<time[^>]*datetime="2026-03-02"[^>]*>/, `${label}: each card states its date in a <time> element`);
+  assert.match(feed, new RegExp(`srcset="[^"]*${kitchen75.variants[0].file.split('/').pop().replace(/\./g, '\\.')}[^"]*"`), `${label}: the backdated post's card has its picture's smaller copies`);
+  assert.ok(feed.includes('>News<') && feed.includes('A bigger kiln for bigger pots.'), `${label}: a card shows its category and excerpt`);
+  const cardLinks = [...feed.matchAll(/<a [^>]*href="([^"]*)"[^>]*>(?:<[^>]*>)*New kiln</g)].map((m) => at(feed, '/')(m[1]));
+  assert.deepEqual(cardLinks, [`${base}/blog/new-kiln/`], `${label}: the card links to the post's page`);
+
+  const index = page('blog');
+  const second = page('blog', 'page', '2');
+  assert.ok(!files(root).some((f) => f.split('/').join('/').includes('blog/page/1/')), `${label}: the index has no /page/1/`);
+  assert.ok(!files(root).some((f) => f.includes('blog/page/3')), `${label}: three published posts make two pages`);
+  assert.deepEqual(order(index, ['Spring open studio', 'Opening hours']).map((i) => i > 0), [true, true], `${label}: the index's first page has the two newest posts`);
+  assert.ok(!index.includes('>New kiln<') && !index.includes('Secret plans'), `${label}: the first page has neither the oldest post nor the draft`);
+  assert.ok(second.includes('>New kiln<') && !second.includes('>Opening hours<'), `${label}: the second page has the backdated post alone`);
+  const head = (html, rel) => html.match(new RegExp(`<link rel="${rel}" href="([^"]*)"`))?.[1];
+  assert.equal(at(index, '/blog/')(head(index, 'next')), `${base}/blog/page/2/`, `${label}: the index's first page names the next in its head`);
+  assert.equal(head(index, 'prev'), undefined, `${label}: the first page has no previous page`);
+  assert.equal(at(second, '/blog/page/2/')(head(second, 'prev')), `${base}/blog/`, `${label}: the second page names the first as previous`);
+  assert.equal(head(second, 'next'), undefined, `${label}: the last page has no next page`);
+  const nav = second.match(/<nav class="so-archive__pages[^"]*" aria-label="Pages">([^]*?)<\/nav>/)?.[1];
+  assert.ok(nav, `${label}: the page links are a labelled navigation`);
+  assert.match(nav, /aria-current="page"[^>]*>2<\/a>/, `${label}: the current page's link is marked as current`);
+
+  const news = page('blog', 'category', 'news');
+  assert.match(news, /<h1[^>]*>News<\/h1>/, `${label}: the category archive is headed with its category`);
+  assert.ok(news.includes('>Opening hours<') && news.includes('>New kiln<') && !news.includes('>Spring open studio<'), `${label}: the News archive lists the News posts alone`);
+  assert.ok(page('blog', 'category', 'craft').includes('>Spring open studio<'), `${label}: the Craft archive lists its post`);
+  assert.ok(!files(root).some((f) => f.includes('category/events')), `${label}: a category with only a draft has no archive`);
 }
 
 step('export through the controller');
@@ -464,6 +535,22 @@ assert.equal(await tab1.title(), 'Client proof 1', 'the first proof opens with i
 
 step('#393: the website has the published posts, keeps the renamed one\'s old address working, and not the draft');
 checkBuiltPosts(staticOut, 'website export');
+step('#397: the website lists the posts on Home and in the blog\'s pages, and a visitor moves through them');
+checkBuiltArchives(staticOut, 'website export');
+{
+  const tab = await proofTab(new URL('blog/', stat.previewUrl).href);
+  await eventually(async () => assert.equal((await tab.locator('main h1').first().textContent())?.trim(), 'Posts', 'the blog\'s index is headed with its name'));
+  await tab.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Next page' }).click();
+  await eventually(async () => assert.equal(new URL(tab.url()).pathname, '/blog/page/2/', `Next page goes to the second page: ${tab.url()}`));
+  await eventually(async () => assert.equal(await tab.getByRole('link', { name: 'New kiln', exact: true }).count(), 1, 'the second page lists the backdated post'));
+  await tab.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Previous page' }).click();
+  await eventually(async () => assert.equal(new URL(tab.url()).pathname, '/blog/', `Previous page goes back to the first: ${tab.url()}`));
+  await tab.getByRole('link', { name: 'Craft', exact: true }).first().click();
+  await eventually(async () => assert.equal(new URL(tab.url()).pathname, '/blog/category/craft/', `a card's category goes to its archive: ${tab.url()}`));
+  await eventually(async () => assert.equal((await tab.locator('main h1').first().textContent())?.trim(), 'Craft', 'the archive is headed with its category'));
+  await tab.close();
+}
+
 {
   const tab = await proofTab(new URL('blog/opening-hours/?from=newsletter#visit', stat.previewUrl).href);
   await eventually(async () => assert.equal(new URL(tab.url()).pathname + new URL(tab.url()).search + new URL(tab.url()).hash, '/blog/opening-times/?from=newsletter#visit', `the old address goes on to the new one, keeping the query and section: ${tab.url()}`));
@@ -889,6 +976,9 @@ step('#393: the sitemap under /studio lists each published post with the day it 
   assert.ok(sitemap.includes('<url><loc>https://example.com/studio/blog/spring-open-studio/</loc><lastmod>2026-03-09</lastmod></url>'), 'the sitemap dates the revised post by its revision');
   assert.ok(!sitemap.includes('secret-plans') && !sitemap.includes('/blog/opening-hours/'), 'the sitemap lists neither the draft nor the old address');
   checkBuiltPosts(studioStat.path, 'website export under /studio', '/studio');
+  checkBuiltArchives(studioStat.path, 'website export under /studio', '/studio');
+  for (const route of ['blog/', 'blog/page/2/', 'blog/category/news/', 'blog/category/craft/']) assert.ok(sitemap.includes(`<url><loc>https://example.com/studio/${route}</loc></url>`), `the sitemap lists the archive page /${route}: ${sitemap}`);
+  assert.ok(!sitemap.includes('category/events'), 'the sitemap lists no archive of a category with only a draft');
   assert.match(readFileSync(join(studioStat.path, 'blog', 'opening-times', 'index.html'), 'utf8'), /<link rel="canonical" href="https:\/\/example.com\/studio\/blog\/opening-times\/"/, 'the post names its public address');
 }
 assert.ok(studioStat.warnings.some((w) => w.includes('set the 404 error document to /studio/404.html (on Apache: ErrorDocument 404 /studio/404.html)')), `the export names the not-found page under /studio: ${studioStat.warnings.join(' ')}`);
@@ -1003,6 +1093,7 @@ if (BUILD) {
   assert.doesNotMatch(standalone404, /(?:href|src)="\.\.?\/|new URL\("\.|import\(["']\./, 'the standalone build writes a not-found page that works at any address');
   assert.ok(files(join(sourceOut, 'build')).some((f) => /lora.*\.woff2$/i.test(f)), 'the standalone build includes the chosen font');
   checkBuiltPosts(join(sourceOut, 'build'), 'standalone build');
+  checkBuiltArchives(join(sourceOut, 'build'), 'standalone build');
 } else console.log('\n(skipping the standalone npm ci && npm run build; pass --build to run it)');
 
 cleanup();
