@@ -697,7 +697,7 @@ body.dialog-open .toast { pointer-events: none; }
 .project-title[aria-expanded='true'], .toolbar .zoom-btn[aria-expanded='true'], .toolbar .icon-btn[aria-haspopup][aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
 .project-title:is(:hover, [aria-expanded='true']) .chev { color: var(--text-2); }
 /* In dark the hover fill is lighter than the raised face, so a sunken trigger takes the darker background instead. */
-@media (prefers-color-scheme: dark) { .project-title[aria-expanded='true'], .toolbar .zoom-btn[aria-expanded='true'], .toolbar .icon-btn[aria-haspopup][aria-expanded='true'] { background: var(--bg); } }
+:where(:root[data-appearance='dark']) { .project-title[aria-expanded='true'], .toolbar .zoom-btn[aria-expanded='true'], .toolbar .icon-btn[aria-haspopup][aria-expanded='true'] { background: var(--bg); } }
 /* Breadcrumb weight, as in the status bar: the project is the quiet parent, the page (the answer to "where am I")
    is the strong current item. The project name gives way first: its shrink weight is so much larger that the page
    loses nothing (not even the fraction of a pixel that would turn "Home" into "Ho…") until the project is at its
