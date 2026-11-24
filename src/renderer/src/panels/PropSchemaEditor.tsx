@@ -168,6 +168,11 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
     if (v.trim() !== '' && !Number.isFinite(Number(v))) return refuse(key, v, `${label} must be a number.`);
     accept(key, { [key]: numOrUndef(v) });
   };
+  const commitStep = (v: string) => {
+    const n = Number(v.trim());
+    if (v.trim() !== '' && (!Number.isFinite(n) || n <= 0)) return refuse('step', v, 'Step must be a number greater than 0.');
+    accept('step', { step: numOrUndef(v) });
+  };
   const commitCount = (key: string, label: string) => (v: string) => {
     const n = Number(v.trim());
     if (v.trim() !== '' && (!Number.isInteger(n) || n < 0 || n > 1000)) return refuse(key, v, `${label} must be a whole number from 0 to 1000.`);
@@ -251,7 +256,7 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
               <DraftInput className="input sm" value={shown('max', s.max === undefined ? '' : String(s.max))} onLive={live(shown('max', s.max === undefined ? '' : String(s.max)))} onCommit={commitNumber('max', 'Maximum')} ariaLabel={named('maximum')} />
             </Field>
             <Field label="Step" error={drafts.step?.message}>
-              <DraftInput className="input sm" value={shown('step', s.step === undefined ? '' : String(s.step))} onLive={live(shown('step', s.step === undefined ? '' : String(s.step)))} onCommit={commitNumber('step', 'Step')} ariaLabel={named('step')} />
+              <DraftInput className="input sm" value={shown('step', s.step === undefined ? '' : String(s.step))} onLive={live(shown('step', s.step === undefined ? '' : String(s.step)))} onCommit={commitStep} ariaLabel={named('step')} />
             </Field>
           </div>
         )}
