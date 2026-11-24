@@ -20,9 +20,9 @@
  * Nothing here is part of the editor: it lives in test tooling, launches only the built app, and never reaches the
  * shipped app or an exported site.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { connect } from './client.ts';
 import type { RequestOptions } from './client.ts';
@@ -375,8 +375,25 @@ export class McpServer {
 // Running it
 // ---------------------------------------------------------------------------
 
+/**
+ * This Node by a path that outlives an upgrade: the `node` on PATH when it is this same Node (a package manager's link,
+ * where the binary's own path names its version), else the binary itself.
+ */
+export function thisNode(path = process.env.PATH ?? '', self = process.execPath): string {
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, process.platform === 'win32' ? 'node.exe' : 'node');
+    try {
+      if (realpathSync(candidate) === realpathSync(self)) return candidate;
+    } catch {
+      // Not there.
+    }
+  }
+  return self;
+}
+
 /** A Codex configuration (~/.codex/config.toml) that runs this server from this checkout with this Node. */
-export function codexConfig(node = process.execPath, root = REPO_ROOT): string {
+export function codexConfig(node = thisNode(), root = REPO_ROOT): string {
   const toml = (s: string) => JSON.stringify(s);
   return [
     '[mcp_servers.siteorigin_builder]',
@@ -386,6 +403,9 @@ export function codexConfig(node = process.execPath, root = REPO_ROOT): string {
     '# Starting a session can take a few minutes on a cold machine (180 s by default, plus the client\'s grace).',
     'startup_timeout_sec = 30',
     'tool_timeout_sec = 300',
+    '# The tools act only on a disposable, headless copy of the app in a temporary profile of its own, so they run',
+    '# without asking each time (Codex otherwise asks before every tool that is not read-only, and `codex exec` refuses).',
+    'default_tools_approval_mode = "approve"',
     ''
   ].join('\n');
 }

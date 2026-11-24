@@ -15,7 +15,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { afterAll, describe, expect, it } from 'vitest';
 import { checkAnswer } from '../../src/main/headless-desktop.ts';
 import { parseAction } from '../driver/act.ts';
-import { INVALID_PARAMS, INVALID_REQUEST, MCP_PATH, MCP_VERSIONS, METHOD_NOT_FOUND, McpServer, PARSE_ERROR, SERVER_NAME, codexConfig, listTools, toolName, toolResult } from '../driver/mcp.ts';
+import { INVALID_PARAMS, INVALID_REQUEST, MCP_PATH, MCP_VERSIONS, METHOD_NOT_FOUND, McpServer, PARSE_ERROR, SERVER_NAME, codexConfig, listTools, thisNode, toolName, toolResult } from '../driver/mcp.ts';
 import type { HostConnection } from '../driver/mcp.ts';
 import { WAIT_LIMITS, parseSnapshotArgs, parseLocateArgs, parseWaitArgs, waitFor } from '../driver/observe.ts';
 import type { Located } from '../driver/observe.ts';
@@ -172,7 +172,20 @@ describe('tool discovery', () => {
     expect(toml).toContain(`args = [${JSON.stringify(MCP_PATH)}]`);
     expect(toml).toContain('cwd = "/work/builder"');
     expect(toml).toMatch(/tool_timeout_sec = (\d+)/);
+    expect(toml).toContain('default_tools_approval_mode = "approve"');
     expect(Number(/tool_timeout_sec = (\d+)/.exec(toml)![1]) * 1000).toBeGreaterThan(OPERATIONS['session.start'].defaultTimeoutMs + 90_000);
+  });
+
+  it('names this Node by the link on PATH that leads to it, which outlives an upgrade, else by its own path', () => {
+    const bin = join(scratch, 'bin');
+    const other = join(scratch, 'other');
+    mkdirSync(bin);
+    mkdirSync(other);
+    symlinkSync(process.execPath, join(bin, 'node'));
+    writeFileSync(join(other, 'node'), '#!/bin/sh\n');
+    expect(thisNode([join(scratch, 'missing'), other, bin].join(':'), process.execPath)).toBe(join(bin, 'node'));
+    expect(thisNode(other, process.execPath)).toBe(process.execPath);
+    expect(thisNode('', process.execPath)).toBe(process.execPath);
   });
 });
 
