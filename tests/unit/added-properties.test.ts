@@ -81,6 +81,39 @@ describe('a list property added to a placed component', () => {
     expect(errors(s)).toEqual([]);
   });
 
+  it('still finds an item by the ID the definition gave it, in the same batch and after a reorder', () => {
+    const p = placedNote(2);
+    const [a, b] = p.nodeIds;
+    const own = pageOwner(p.s);
+    const named = { ...links, default: [{ id: 'i_one', label: 'One' }, { id: 'i_two', label: 'Two' }, { id: 'i_three', label: 'Three' }] };
+    const s = applyOperations(p.s, [
+      { type: 'component.setPropSchema', definitionId: p.noteId, prop: 'links', schema: named },
+      { type: 'instance.listMove', owner: own, nodeId: a, prop: 'links', itemId: 'i_three', index: 0 },
+      { type: 'instance.setProp', owner: own, nodeId: a, prop: 'links', itemId: 'i_three', field: 'label', value: 'Third, first' },
+      { type: 'instance.setProp', owner: own, nodeId: b, prop: 'links', itemId: 'i_two', value: { label: 'Second' } },
+      { type: 'instance.listRemove', owner: own, nodeId: b, prop: 'links', itemId: 'i_one' }
+    ]).state;
+    expect(items(s, a)!.map((i) => i.label)).toEqual(['Third, first', 'One', 'Two']);
+    expect(items(s, b)!.map((i) => i.label)).toEqual(['Second', 'Three']);
+    expect([...items(s, a)!, ...items(s, b)!].some((i) => ['i_one', 'i_two', 'i_three'].includes(i.id))).toBe(false);
+    // An item that has gone is not found again through the definition's ID.
+    expect(() => applyOperations(s, [{ type: 'instance.setProp', owner: own, nodeId: b, prop: 'links', itemId: 'i_one', field: 'label', value: 'x' }])).toThrow(/Item "i_one" not found/);
+  });
+
+  it('moves styles kept for the default items onto the placement’s copies when the list comes back', () => {
+    const p = placedNote(1);
+    const [a] = p.nodeIds;
+    const named = { ...links, default: [{ id: 'i_one', label: 'One' }, { id: 'i_two', label: 'Two' }] };
+    const styles = { color: '#ff0000' };
+    // Kept from when the placement still showed the default items, before the property was removed.
+    placement(p.s, a).itemOverrides = { root: { list: 'links', items: { i_two: { base: styles }, i_other: { base: styles } } } };
+    const s = applyOperations(p.s, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'links', schema: named }]).state;
+    const copy = items(s, a)![1];
+    expect(copy.label).toBe('Two');
+    expect(placement(s, a).itemOverrides?.root?.items?.[copy.id]).toEqual({ base: styles });
+    expect(placement(s, a).itemOverrides?.root?.items).not.toHaveProperty('i_two');
+  });
+
   it('fills in a list added by saving a code component’s properties, and one a property becomes', () => {
     const p = placedNote(2);
     const [a, b] = p.nodeIds;

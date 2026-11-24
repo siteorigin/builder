@@ -1,6 +1,6 @@
-import type { ComponentDefinition, InstanceNode, ListItem, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, ListItem, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { catalogueComponent, getTheme } from '@catalogue/index';
-import { newId } from '@shared/ids';
+import { newId, stableHash } from '@shared/ids';
 import { definitionHash } from '@shared/migrations';
 import { findVariant } from '@shared/variants';
 
@@ -33,6 +33,29 @@ export function freshListIds(schema: Record<string, PropSchema>, props: Record<s
     if (s.type === 'list' && Array.isArray(out[k])) out[k] = (out[k] as ListItem[]).map((it) => ({ ...clone(it), id: newId('i') }));
   }
   return out;
+}
+
+/**
+ * The ID a list's default item takes in one placement's own copy of the list: its own, so no two placements share
+ * one, and worked out again from the default's ID, so an edit sent with the ID the definition gives the item still
+ * finds it (see placedItemIndex).
+ */
+export function placedItemId(owner: OwnerRef, nodeId: string, itemId: string): string {
+  const at = `${owner.kind}:${owner.id}:${nodeId}`;
+  return `i_${stableHash(`${at}\u0000${itemId}`)}${stableHash(`${itemId}\u0000${at}`)}`;
+}
+
+/** One placement's own copy of a list's default items, each under its placedItemId. */
+export function placedDefaultItems(owner: OwnerRef, node: InstanceNode, items: unknown): ListItem[] {
+  return (Array.isArray(items) ? (items as ListItem[]) : []).map((it) => ({ ...clone(it), id: placedItemId(owner, node.id, it.id) }));
+}
+
+/** Where an item is in a placement's own list: by its own ID, or by the ID of the default item it was copied from. */
+export function placedItemIndex(list: readonly ListItem[], owner: OwnerRef, nodeId: string, itemId: string): number {
+  const at = list.findIndex((it) => it.id === itemId);
+  if (at >= 0) return at;
+  const copy = placedItemId(owner, nodeId, itemId);
+  return list.findIndex((it) => it.id === copy);
 }
 
 export function defaultProps(def: ComponentDefinition): Record<string, unknown> {

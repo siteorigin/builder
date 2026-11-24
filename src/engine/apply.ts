@@ -44,7 +44,7 @@ import { pageLinkUses, type PageLinkUse } from './page-links';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
-import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
+import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { editTable } from './table';
 import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties } from './schema';
@@ -182,17 +182,18 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'instance.listRemove':
       return keepingFormKeys(state, op, () => {
         const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
-        const list = (node.props[op.prop] as Array<{ id: string }>) ?? [];
-        if (!list.some((i) => i.id === op.itemId)) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
+        const list = (node.props[op.prop] as ListItem[]) ?? [];
+        const at = placedItemIndex(list, op.owner, node.id, op.itemId);
+        if (at < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
         if (schema.min !== undefined && list.length <= schema.min) fail(`${schema.label} needs at least ${schema.min} items.`);
-        node.props[op.prop] = list.filter((i) => i.id !== op.itemId);
+        node.props[op.prop] = list.filter((_, i) => i !== at);
         return {};
       });
     case 'instance.listMove':
       return keepingFormKeys(state, op, () => {
         const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
-        const list = [...((node.props[op.prop] as Array<{ id: string }>) ?? [])];
-        const from = list.findIndex((i) => i.id === op.itemId);
+        const list = [...((node.props[op.prop] as ListItem[]) ?? [])];
+        const from = placedItemIndex(list, op.owner, node.id, op.itemId);
         if (from < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
         const [it] = list.splice(from, 1);
         list.splice(Math.min(op.index, list.length), 0, it);
@@ -1669,7 +1670,9 @@ function explicitItemFields(ops: EditOperation[]): Set<string> {
 function followItemLinks(state: ProjectState, def: ComponentDefinition, op: Op<'instance.setProp'>, before: ListItem, next: ListItem, sent: Record<string, unknown>, ctx: ApplyContext): string[] {
   const moved: string[] = [];
   for (const { text, link } of itemLinkPairs(def, op.prop)) {
-    if (!Object.hasOwn(sent, text) || Object.hasOwn(sent, link) || ctx.explicitItemFields?.has(itemFieldKey(op.owner, op.nodeId, op.prop, before.id, link))) continue;
+    // The batch may name the item by the ID of the default it was copied from (see placedItemIndex).
+    const explicit = (id: string) => ctx.explicitItemFields?.has(itemFieldKey(op.owner, op.nodeId, op.prop, id, link));
+    if (!Object.hasOwn(sent, text) || Object.hasOwn(sent, link) || explicit(before.id) || (op.itemId && explicit(op.itemId))) continue;
     // Lines that are each a number are a list, even once a one-line field joins them.
     const to = joinedLines(sent[text]) === null ? null : followText(before[text], next[text], before[link]);
     if (!to) continue;
@@ -1696,7 +1699,7 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     // A placement without its own list shows the definition's items, so an edit to one of them starts from those.
     const own = node.props[op.prop];
     const list = (Array.isArray(own) ? own : clone(schema.default)) as Array<ListItem>;
-    const idx = list.findIndex((i) => i.id === op.itemId);
+    const idx = placedItemIndex(list, op.owner, node.id, op.itemId);
     if (idx < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
     const before = list[idx];
     let next: ListItem;
@@ -1742,7 +1745,8 @@ function keepingFormKeys(state: ProjectState, op: Op<'instance.setProp' | 'insta
   const result = run();
   const after = node.props.fields;
   if (Array.isArray(after)) {
-    const cleared = op.type === 'instance.setProp' && op.itemId && op.field === 'name' ? [op.itemId] : [];
+    const at = op.type === 'instance.setProp' && op.itemId && op.field === 'name' ? placedItemIndex(after as ListItem[], op.owner, node.id, op.itemId) : -1;
+    const cleared = at >= 0 ? [(after as ListItem[])[at].id] : [];
     node.props.fields = settleFormKeys(before, after as ListItem[], new Set(cleared), formDefaults(def));
   }
   return result;
