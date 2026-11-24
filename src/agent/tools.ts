@@ -39,11 +39,8 @@ export const TOOL_ARGS = {
   read_component: z.object({
     componentId: z.string().optional(),
     definitionId: z.string().optional(),
-    structure: z
-      .boolean()
-      .optional()
-      .describe('Also show how its design is built, to make a new component like it: its nodes, the styles and tokens they use at each screen size, their bindings to its properties, its parts and its variant rules.'),
-    offset: z.number().int().min(0).optional().describe('With structure: where to go on reading a long design, from the next a previous read returned.')
+    structure: z.boolean().optional().describe('Also its design: nodes, styles and tokens, bindings, parts, variant rules.'),
+    offset: z.number().int().min(0).optional().describe('With structure: the next a previous read returned.')
   }),
   search_assets: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }),
   apply_operations: z.object({
@@ -120,8 +117,8 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds site tokens, or the catalogue: every component with its properties, parts and variants, and the icon names.',
   read_page: 'Its sections with props (and list item IDs), variants, styles and nested content.',
   inspect_element: 'One node: props, property schema, parts with their style controls, variants, slots and place in the tree. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
-  search_components: 'Theme and project components by keywords, with their componentIds or definitionIds.',
-  read_component: "A component's property schema, parts, variants, slots and examples. Read it before using an unfamiliar component. structure adds how its design is built (nodes, styles, tokens, bindings, variant rules), a part at a time from each next offset.",
+  search_components: 'Theme and project components by keywords, with their IDs.',
+  read_component: "A component's property schema, parts, variants, slots and examples. Read it before using an unfamiliar component.",
   search_assets: 'Images by name and description, each with its assetId (names can repeat). You cannot see images.',
   read_source: "A component's Svelte source. Only project code components can be patched.",
   apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the hash from read_source.',
