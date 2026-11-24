@@ -87,15 +87,17 @@ const HOURS = new RegExp(`^(${DAYS})(?: (\\d{1,2}):([0-5]\\d)-(\\d{1,2}):([0-5]\
 export function checkOpeningHours(input: string): Checked<string> {
   const text = oneLine(input).replace(/\s*([-,])\s*/g, '$1');
   if (!text) return ok('');
-  const m = text.length > IDENTITY_LIMITS.hoursLine ? null : HOURS.exec(text);
+  const m = HOURS.exec(text);
   const refused = no<string>(`“${oneLine(input)}” is not a period such as Mo-Fr 09:00-17:00: two-letter days, then the hours on a 24-hour clock.`);
   if (!m) return refused;
   const days = m[1].toLowerCase().replace(/\b([a-z])/g, (c) => c.toUpperCase());
-  if (m[2] === undefined) return ok(days);
+  if (m[2] === undefined) return days.length <= IDENTITY_LIMITS.hoursLine ? ok(days) : refused;
   const time = (h: string, min: string) => (Number(h) > 24 || (Number(h) === 24 && min !== '00') ? null : `${h.padStart(2, '0')}:${min}`);
   const from = time(m[2], m[3]);
   const to = time(m[4], m[5]);
-  return from && to ? ok(`${days} ${from}-${to}`) : refused;
+  // The limit is on the period as it is kept (hours padded), so one saved is never dropped when the website reads it.
+  const period = from && to ? `${days} ${from}-${to}` : '';
+  return period && period.length <= IDENTITY_LIMITS.hoursLine ? ok(period) : refused;
 }
 
 /** A map position typed as “latitude, longitude” (“-33.92, 18.42”). Empty text is none. */
@@ -199,6 +201,7 @@ export const BUSINESS_FIELDS = ['openingHours', 'priceRange', 'geo'] as const sa
 export function patchIdentity(current: unknown, patch: IdentityPatch | null, isImage: (id: string) => boolean): Checked<SiteIdentity | undefined> {
   if (patch === null) return ok(undefined);
   const next: Record<string, unknown> = current && typeof current === 'object' && !Array.isArray(current) ? { ...(current as Record<string, unknown>) } : {};
+  const was = next.kind;
   for (const key of IDENTITY_FIELDS) {
     if (!Object.hasOwn(patch, key) || patch[key] === undefined) continue;
     const value = patch[key];
@@ -214,8 +217,8 @@ export function patchIdentity(current: unknown, patch: IdentityPatch | null, isI
   if (next.kind !== 'LocalBusiness') {
     const given = BUSINESS_FIELDS.filter((key) => Object.hasOwn(patch, key) && patch[key] !== undefined && !isEmpty(next[key]));
     if (given.length) return no('Opening hours, a price range and a map position are said of a local business: choose Local business as who publishes the site first.');
-    // Choosing another kind clears them; an edit of another field leaves whatever is stored alone.
-    if (Object.hasOwn(patch, 'kind') && patch.kind !== undefined) for (const key of BUSINESS_FIELDS) delete next[key];
+    // Choosing another kind clears them; an edit of another field, or the same kind again, leaves whatever is stored alone.
+    if (next.kind !== was) for (const key of BUSINESS_FIELDS) delete next[key];
   }
   return ok(Object.keys(next).length ? (next as SiteIdentity) : undefined);
 }

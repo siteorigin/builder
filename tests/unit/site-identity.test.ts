@@ -135,6 +135,9 @@ describe('the site identity site.update saves', () => {
     const handEdited = copy(state);
     handEdited.site.identity = { kind: 'Organization', openingHours: ['Mo 09:00-17:00'] };
     expect(run(handEdited, { type: 'site.update', identity: { name: 'Riverside Pottery' } }).site.identity).toEqual({ kind: 'Organization', openingHours: ['Mo 09:00-17:00'], name: 'Riverside Pottery' });
+    expect(run(handEdited, { type: 'site.update', identity: { kind: 'Organization', name: 'Riverside Pottery' } }).site.identity).toEqual({ kind: 'Organization', openingHours: ['Mo 09:00-17:00'], name: 'Riverside Pottery' });
+    // Leaving a local business for an organization clears them as leaving it for a person does.
+    expect(run(business, { type: 'site.update', identity: { kind: 'Organization' } }).site.identity).toEqual({ kind: 'Organization', telephone: '+27 21 555 0134' });
     // Clearing it all leaves nothing behind.
     s = run(s, { type: 'site.update', identity: null });
     expect(s.site).not.toHaveProperty('identity');
@@ -194,6 +197,8 @@ describe('the site identity site.update saves', () => {
     expect(checkOpeningHours('Su 24:30-24:00').ok).toBe(false);
     expect(checkOpeningHours('Fr 09:00-24:00')).toEqual({ ok: true, value: 'Fr 09:00-24:00' });
     expect(checkOpeningHours('Fr 09:00-24:30').ok).toBe(false);
+    // The limit is on the period as kept: one whose padded hours run past it is refused, never saved and then dropped.
+    expect(checkOpeningHours('Mo-Tu,Mo-We,Mo-Th,Mo-Fr,Tu-We,Tu-Th,We-Th,Th-Fr,Sa 8:00-9:00').ok).toBe(false);
     expect(checkCoordinates('-33.92, 18.42')).toEqual({ ok: true, value: { latitude: -33.92, longitude: 18.42 } });
     expect(checkCoordinates('0 0')).toEqual({ ok: true, value: { latitude: 0, longitude: 0 } });
     expect(checkCoordinates('')).toEqual({ ok: true, value: null });
@@ -498,7 +503,7 @@ describe('structured data in the exported website', () => {
     expect(def.source).not.toContain('location.search');
     expect(website(formOnly)).not.toHaveProperty('potentialAction');
     // A copy reading its address another way still runs a search sent in a link.
-    for (const read of ['new URL(location.href).searchParams.get("q")', 'page.url.searchParams.get(`q`)']) {
+    for (const read of ['new URL(location.href).searchParams.get("q")', 'page.url.searchParams.get(`q`)', 'new URLSearchParams(window.location.search).get("q")', '((params) => params.get("q"))(new URLSearchParams(location.search))']) {
       const other = copy(searched);
       const own = Object.values(other.components).find((d) => d.componentId === 'site.search')!;
       own.source = own.source!.replace(/new URLSearchParams\(location\.search\)\.get\('q'\)/, read);

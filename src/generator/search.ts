@@ -133,17 +133,18 @@ export function usesSiteSearch(state: ProjectState): boolean {
 }
 
 /**
- * Code that reads `q` from its page's address, not from a form it submits: `new URLSearchParams(location.search)`,
- * `new URL(location.href).searchParams` or SvelteKit's `page.url.searchParams`.
+ * Code that reads its page's address, not only a form it submits: `location.search`, `new URL(location.href)` or
+ * SvelteKit's `page.url.searchParams`, with a `q` parameter read from it (directly, or through a variable).
  */
-const READS_ADDRESS_QUERY = /(?:new\s+URLSearchParams\(\s*(?:window\.|document\.)?location\.search\s*\)|new\s+URL\(\s*(?:window\.|document\.)?location(?:\.href)?\s*\)\.searchParams|\bpage\.url\.searchParams)\s*\.get\(\s*['"`]q['"`]\s*\)/;
+const READS_ADDRESS = /\blocation\.search\b|new\s+URL\(\s*(?:window\.|document\.)?location(?:\.href)?\s*\)|\bpage\.url\.searchParams\b/;
+const READS_Q = /\.get\(\s*['"`]q['"`]\s*\)/;
 
 /**
  * Whether a component runs a search of the site from its page's address (`?q=` in the URL), as the theme's Site search
  * does for a link to a search: its code names the search code and reads the `q` parameter of its page's address.
  */
 export function searchesFromAddress(def: ComponentDefinition | undefined): boolean {
-  return !!def && def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source) && READS_ADDRESS_QUERY.test(def.source);
+  return !!def && def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source) && READS_ADDRESS.test(def.source) && READS_Q.test(def.source);
 }
 
 /** The index as a module: the same pages always give the same bytes. */
