@@ -9,11 +9,10 @@
  * that is met where it timed out or the other way round, an export that fails where it succeeded), and says which and
  * why, with the reply.
  */
-import { HOST_PATH_LABEL, REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
+import { REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
 import type { JournalEntry, ReplayRecord, TargetDescriptor } from './evidence.ts';
 import type { Reply, StartArgs } from './protocol.ts';
 import { Session } from './session.ts';
-import { REDACTED } from './snapshot.ts';
 import type { SessionOptions } from './session.ts';
 
 export interface ReplayOptions {
@@ -68,12 +67,6 @@ function factsOf(op: string, result: unknown): Record<string, unknown> {
   return {};
 }
 
-/** Words the record put in place of what it would not keep: a step that holds one cannot be sent as it was. */
-const LEFT_OUT = [REDACTED, HOST_PATH_LABEL, '<caller folder>', '<session>', '<repo>', '<artifacts>', '<tmp>'];
-const leftOut = (e: JournalEntry) => {
-  const text = JSON.stringify([e.args ?? {}, e.targets ?? []]);
-  return LEFT_OUT.find((w) => text.includes(w)) ?? null;
-};
 
 /** Where a repeat differs from the recording: the same matches found, as completely; the same way an export ended. */
 function differs(e: JournalEntry, reply: Reply): string | null {
@@ -146,9 +139,8 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       }
       return diverge(e, `it failed in the recording (${e.outcome.code}) after it may have sent input`);
     }
+    // The session marks a step whose arguments it scrubbed or hid: what it holds is not what was sent.
     if (e.unreplayable) return diverge(e, `it cannot be replayed: ${e.unreplayable}`);
-    const hidden = leftOut(e);
-    if (hidden) return diverge(e, `it cannot be replayed: the record holds ${hidden} in place of what it was given`);
     const args: Record<string, unknown> = { ...(e.args ?? {}) };
     if (e.class === 'input') {
       for (const d of e.targets ?? []) {

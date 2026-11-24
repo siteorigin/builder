@@ -534,7 +534,8 @@ export async function readProjectDocs(dir: string, opts: { find?: string; signal
       continue;
     }
     const id = typeof p.id === 'string' ? p.id : f.file.slice('siteorigin/pages/'.length).replace(/\.json$/, '');
-    pages.push({ id: cut(id), title: str(p.title) ?? '', route: str(p.route) ?? '', home: id === homePageId, draft: p.draft === true });
+    // A route is kept whole (to the length any page could have): it is what a client hands back to preview.ready.
+    pages.push({ id: cut(id), title: str(p.title) ?? '', route: typeof p.route === 'string' ? cut(p.route, 2000) : '', home: id === homePageId, draft: p.draft === true });
   }
   pages.sort((a, b) => (a.home === b.home ? (a.route < b.route ? -1 : a.route > b.route ? 1 : 0) : a.home ? -1 : 1));
   const out: ProjectDocs = {

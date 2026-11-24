@@ -15,8 +15,8 @@ import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { execFile } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -740,6 +740,33 @@ function parseCloseArgs(args: Record<string, unknown> | undefined): CloseArgs {
 
 const now = () => new Date().toISOString();
 
+/**
+ * Write a file whole, or not at all: into a new file beside it, then renamed over it. A link put where the file was is
+ * replaced, never followed. `check` runs just before the rename (a request that ran out of time publishes nothing).
+ */
+async function writeWhole(file: string, text: string, check?: () => void) {
+  const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+  await writeFile(tmp, text, { flag: 'wx' });
+  try {
+    check?.();
+    await rename(tmp, file);
+  } catch (e) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw e;
+  }
+}
+
+function writeWholeSync(file: string, text: string) {
+  const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+  writeFileSync(tmp, text, { flag: 'wx' });
+  try {
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
 function aborted(signal: AbortSignal) {
   if (signal.aborted) throw new DriverError('TIMEOUT', 'The request ran out of time.');
 }
@@ -822,6 +849,9 @@ export class Session {
   /** Whether the session got as far as ready: only then is there a run to replay. */
   private reachedReady = false;
   private hide: ((s: string) => string) | null = null;
+  /** The replay record being written, and app.log being brought up to date: each write waits for the one before. */
+  private saving: Promise<unknown> | null = null;
+  private flushing: Promise<unknown> | null = null;
   private closeRequested = false;
   /** Whether closing keeps the artifacts: settled by the first close, so a later one cannot change it. */
   private keeping: boolean | null = null;
@@ -1013,7 +1043,8 @@ export class Session {
         if (a.after !== undefined && (!Number.isInteger(a.after) || (a.after as number) < 0)) throw new DriverError('BAD_REQUEST', '"after" is a cursor: a whole number from 0.');
         if (a.limit !== undefined && (!Number.isInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 200)) throw new DriverError('BAD_REQUEST', '"limit" is a whole number from 1 to 200.');
         // Up to the request reading it: its own entry is not finished yet.
-        return this.present(this.journal.read(a.after as number | undefined, (a.limit as number | undefined) ?? 100, entry?.seq ?? Infinity), true);
+        const read = this.journal.read(a.after as number | undefined, (a.limit as number | undefined) ?? 100, entry?.seq ?? Infinity);
+        return this.present({ ...read, entries: this.presentEntries(read.entries) }, true);
       }
       case 'evidence.save': {
         const a = request.args ?? {};
@@ -1238,7 +1269,7 @@ export class Session {
    * Run a look with its own stop, for at most `ms`: one that takes longer is told to stop and is waited for before the
    * next request observes (it could still replace what the page's last snapshot holds). Null when it did not finish.
    */
-  private async boundedLook<T>(look: (signal: AbortSignal) => Promise<T>, ms: number, parent: AbortSignal, keep?: (e: unknown) => boolean): Promise<T | null> {
+  private async boundedLook<T>(look: (signal: AbortSignal) => Promise<T>, ms: number, parent: AbortSignal, keep?: (e: unknown) => boolean, tracked = true): Promise<T | null> {
     const ctl = new AbortController();
     const stop = () => ctl.abort();
     if (parent.aborted) return null;
@@ -1256,8 +1287,11 @@ export class Session {
       }
       if (done) return done.v;
       ctl.abort();
-      const settling: Promise<unknown> = work.finally(() => this.lingering.delete(settling));
-      this.lingering.add(settling);
+      // Only a look that can still change what refs resolve against (an observation) holds the next request back.
+      if (tracked) {
+        const settling: Promise<unknown> = work.finally(() => this.lingering.delete(settling));
+        this.lingering.add(settling);
+      }
       return null;
     } finally {
       parent.removeEventListener('abort', stop);
@@ -1306,12 +1340,19 @@ export class Session {
       // The evidence first, then one last look with what time is left: what held by the very end still counts.
       const details = await this.waitEvidence(progress, request, signal, deadline - Math.min(400, Math.floor(reserve / 3)), since, began);
       const fatal = (e: unknown) => e instanceof DriverError && (!e.retryable || WAIT_FATAL.has(e.code));
-      const final = await this.boundedLook(look, deadline - Date.now() - 100, signal, fatal);
+      // An observation is not taken over one still stopping; a probe of the app's state never holds anything back.
+      const observes = c.condition.startsWith('ui.') || c.condition === 'preview.ready';
+      const left = () => deadline - Date.now() - 100;
+      if (observes && this.lingering.size && left() > 50) await this.settled(left()).catch(() => undefined);
+      const final = left() > 50 && !(observes && this.lingering.size) ? await this.boundedLook(look, left(), signal, fatal, observes) : null;
       if (final) {
         progress.samples++;
-        if (final.verdict.met) return met(final.verdict);
+        // Met in time, by a session still open: it counts.
+        if (final.verdict.met && Date.now() < deadline && !this.closeRequested) return met(final.verdict);
+        if (!final.verdict.met) Object.assign(details, this.present({ pending: final.verdict.pending ?? details.pending, last: final.last }, true));
         details.samples = progress.samples;
       }
+      details.waitedMs = Date.now() - began;
       throw new DriverError('TIMEOUT', `${c.condition} did not hold within ${Math.round((deadline - began) / 100) / 10}s: ${String(details.pending)}.`, { retryable: true, details });
     } finally {
       if (this.waiting === progress) this.waiting = null;
@@ -1455,7 +1496,7 @@ export class Session {
       build: b ? { fingerprint: b.fingerprint, files: b.files, builtAt: b.builtAt, packageVersion: b.packageVersion, git: b.git } : null,
       platform: { os: process.platform, arch: process.arch, electron: this.appIdentity?.electron ?? null, chrome: this.appIdentity?.chrome ?? null },
       scenario: { fixture: this.args.fixture ?? 'welcome', provider: this.args.provider ?? 'scripted' },
-      steps: this.journal.entries(),
+      steps: this.presentEntries(this.journal.entries()),
       dropped: this.journal.dropped,
       complete: this.journal.dropped === 0,
       evidence: {
@@ -1488,15 +1529,33 @@ export class Session {
     return this.recordFrom(observation, screenshots, artifacts);
   }
 
-  /** Write replay.json into the artifacts, and return where and what. */
-  private async saveReplay(signal: AbortSignal, screenshot: boolean) {
-    if (!this.paths) throw new DriverError('NOT_STARTED', 'The session has no artifacts folder yet: start it first.');
-    const record = await this.replayRecord(signal, screenshot);
-    // A request that ran out of time writes nothing after its reply.
-    aborted(signal);
-    const file = join(this.paths.artifacts, 'replay.json');
-    await writeFile(file, JSON.stringify(record, null, 2));
-    return { file, record };
+  /** Write replay.json into the artifacts, and return where and what: one save at a time, the last one written last. */
+  private saveReplay(signal: AbortSignal, screenshot: boolean): Promise<{ file: string; record: ReplayRecord }> {
+    const paths = this.paths;
+    if (!paths) return Promise.reject(new DriverError('NOT_STARTED', 'The session has no artifacts folder yet: start it first.'));
+    const before = this.saving;
+    const run = (async () => {
+      await before?.catch(() => undefined);
+      const record = await this.replayRecord(signal, screenshot);
+      const file = join(paths.artifacts, 'replay.json');
+      // A request that ran out of time publishes nothing after its reply.
+      await writeWhole(file, JSON.stringify(record, null, 2), () => aborted(signal));
+      return { file, record };
+    })();
+    this.saving = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Journal entries as they leave the session, scrubbed and with host paths hidden; one whose arguments that changed
+   * cannot be replayed as recorded, and says so.
+   */
+  private presentEntries(entries: JournalEntry[]): JournalEntry[] {
+    return entries.map((e) => {
+      const shown = this.present(e, true);
+      if (shown.unreplayable || JSON.stringify([e.args ?? null, e.targets ?? null]) === JSON.stringify([shown.args ?? null, shown.targets ?? null])) return shown;
+      return { ...shown, unreplayable: 'its arguments held a credential or a host path, which the record leaves out' };
+    });
   }
 
   /** The app's output as it is kept: bounded, scrubbed of every credential the session knows, host paths hidden. */
@@ -1507,10 +1566,14 @@ export class Session {
   }
 
   /** Write app.log as it is now, when there is new output: a host that is killed still leaves what came before. */
-  private async flushLog() {
-    if (!this.paths || this.appLog.written === this.logFlushed) return;
+  private flushLog(): Promise<unknown> {
+    if (!this.paths || this.appLog.written === this.logFlushed || this.flushing) return this.flushing ?? Promise.resolve();
     this.logFlushed = this.appLog.written;
-    await writeFile(join(this.paths.artifacts, 'app.log'), this.logText()).catch(() => undefined);
+    const file = join(this.paths.artifacts, 'app.log');
+    this.flushing = writeWhole(file, this.logText())
+      .catch(() => undefined)
+      .finally(() => (this.flushing = null));
+    return this.flushing;
   }
 
   /**
@@ -2054,7 +2117,9 @@ export class Session {
     // The app's output, once it can write no more: kept with the artifacts, or with a run folder that stays as evidence.
     if (this.logTimer) clearInterval(this.logTimer);
     this.logTimer = null;
-    if (this.paths && (this.keeping || problems.length)) await writeFile(join(this.paths.artifacts, 'app.log'), this.logText()).catch(() => undefined);
+    // A flush still writing finishes first, so the last word in app.log is this one.
+    await this.flushing;
+    if (this.paths && (this.keeping || problems.length)) await writeWhole(join(this.paths.artifacts, 'app.log'), this.logText()).catch(() => undefined);
     this.state = 'closed';
     if (problems.length) {
       throw new DriverError('CLEANUP_FAILED', `The run folder ${this.paths?.root ?? '(none)'} was kept: ${problems.join('; ')}.`, {
@@ -2154,9 +2219,9 @@ export class Session {
     this.logTimer = null;
     if (p && keeping) {
       try {
-        writeFileSync(join(p.artifacts, 'app.log'), this.logText());
+        writeWholeSync(join(p.artifacts, 'app.log'), this.logText());
         // The record of the run from what is held now: no observation can be taken on the way out.
-        if (this.reachedReady) writeFileSync(join(p.artifacts, 'replay.json'), JSON.stringify(this.recordFrom(this.lastObservation, undefined, readdirSync(p.artifacts)), null, 2));
+        if (this.reachedReady) writeWholeSync(join(p.artifacts, 'replay.json'), JSON.stringify(this.recordFrom(this.lastObservation, undefined, readdirSync(p.artifacts)), null, 2));
       } catch {
         // The process is exiting: the evidence is kept as far as it can be.
       }

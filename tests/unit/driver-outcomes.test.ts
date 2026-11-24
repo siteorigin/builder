@@ -556,12 +556,17 @@ describe('the session\'s record', () => {
     expect(entries[3].args.artifactsDir).toBe('<caller folder>');
     expect(entries[4].unreplayable).toMatch(/too long to keep whole/);
     expect(JSON.stringify(entries)).not.toMatch(/hunter2|private-runs/);
+    // An argument naming a folder of the host's is shown by its label, and the step says it cannot be replayed as it was.
+    await call('ui.locate', { role: 'button', name: join(homedir(), 'secret-plans') });
+    const named = ((await call('evidence.log', { after: 5, limit: 2 })) as unknown as { result: { entries: any[] } }).result.entries.find((e) => e.op === 'ui.locate'); // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (process.platform !== 'win32') expect(named.args.name).toBe('~/secret-plans');
+    expect(named.unreplayable).toMatch(/credential or a host path/);
     // An argument nested deeper than any record keeps is recorded cut, and the request is still answered.
     let deep: Record<string, unknown> = {};
     for (let i = 0; i < 100_000; i++) deep = { d: deep };
     const answered = await call('ui.click', { target: deep });
     expect(answered.ok).toBe(false);
-    const last = ((await call('evidence.log', { after: 6 })) as unknown as { result: { entries: any[] } }).result.entries[0]; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const last = ((await call('evidence.log', { after: 8 })) as unknown as { result: { entries: any[] } }).result.entries[0]; // eslint-disable-line @typescript-eslint/no-explicit-any
     expect([last.op, last.unreplayable]).toEqual(['ui.click', expect.stringMatching(/too long to keep whole/)]);
   });
 
@@ -661,13 +666,16 @@ describe('replay', () => {
     expect(s.sent).toEqual([]);
     const typed = [journey[0], step(2, { op: 'ui.fill', class: 'input', args: { textLeftOut: { length: 7 } }, targets: [layers], unreplayable: 'its typed text was left out of the record', outcome: { ok: true } })];
     expect((await replay(record(typed), { make: () => fake(answers()) })).divergence?.reason).toMatch(/typed text was left out/);
-    // What the record scrubbed or hid is not sent in its place.
-    for (const args of [{ find: 'a [redacted] key' }, { path: '<host-path>' }]) {
-      const hidden = [journey[0], step(2, { op: 'project.summary', class: 'observation', args, outcome: { ok: true, summary: { found: 0, complete: true } } })];
-      const s2 = fake(answers());
-      const r2 = await replay(record(hidden), { make: () => s2 });
-      expect([r2.divergence?.seq, r2.divergence?.reason]).toEqual([2, expect.stringMatching(/the record holds/)]);
-      expect(s2.sent.map((f) => f.op)).toEqual(['session.start']);
-    }
+    // A step whose arguments the session scrubbed or hid is not sent with what stands in for them.
+    const hidden = [journey[0], step(2, { op: 'project.summary', class: 'observation', args: { find: '[redacted]' }, unreplayable: 'its arguments held a credential or a host path, which the record leaves out', outcome: { ok: true, summary: { found: 0, complete: true } } })];
+    const s2 = fake(answers());
+    const r2 = await replay(record(hidden), { make: () => s2 });
+    expect([r2.divergence?.seq, r2.divergence?.reason]).toEqual([2, expect.stringMatching(/held a credential or a host path/)]);
+    expect(s2.sent.map((f) => f.op)).toEqual(['session.start']);
+    // Text a person typed that only looks like a stand-in is sent as it was.
+    const literal = [journey[0], step(2, { op: 'project.summary', class: 'observation', args: { find: 'a [redacted] word' }, outcome: { ok: true, summary: { found: 1, complete: true } } })];
+    const s3 = fake(answers());
+    expect((await replay(record(literal), { make: () => s3 })).ok).toBe(true);
+    expect(s3.sent.find((f) => f.op === 'project.summary')!.args).toEqual({ find: 'a [redacted] word' });
   });
 });
