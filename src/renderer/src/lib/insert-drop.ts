@@ -11,7 +11,7 @@ import { childLists } from '@engine/tree';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import type { InsertSpec } from './insert-search';
 import { dropAt, shownOrder, type Box } from './reorder';
-import { type InsertRole } from './insert-at';
+import { whereFor, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { treeFor } from './model';
 
 /** A list a drop can go into, before it is measured: the page's top level (`parentId` null), an element's children,
@@ -248,3 +248,49 @@ export function dropRefusal(state: ProjectState, ops: EditOperation[], before: (
 
 /** The problems that stop a project being saved, as the project counts them before a change. */
 export const savingProblems = (state: ProjectState): Diagnostic[] => validateState(state, { sectionLinks: false }).filter(blocksSaving);
+
+/** How near a container's top or bottom edge (in screen pixels) a drop goes beside it rather than into it. */
+export const INSERT_EDGE = 10;
+
+/**
+ * What a drop at a point does, as a drag shows it: the place (null where nothing goes), why nothing can go there, the
+ * gap's line and the outline of the list it goes into (in page pixels), and the place in words.
+ */
+export interface InsertAim {
+  at: InsertAt | null;
+  refused: string | null;
+  line: Box | null;
+  outline: Box | null;
+  where: Where;
+}
+
+/**
+ * The canvas drop destination every drag of something new shares, so an Insert tile (#52) and an Assets image dropped
+ * between content (#506) go to the same place and show it the same way. For something placed as `role` on `owner`
+ * (`own`: its CSS order, see incomingOrder): the lists that can take it, for the canvas to measure, and once they are
+ * measured, what a drop at a point in page pixels does, the page drawn at `scale`. Whether the project takes it in a
+ * list (`ops` there, the change the drop would make) is tried once per list, on a copy, against the problems the
+ * project already has.
+ */
+export function insertDestination(state: ProjectState, owner: OwnerRef, role: InsertRole, own: number | null, ops: (at: InsertAt) => EditOperation[]) {
+  const specs = dropListSpecs(state, owner);
+  const checked = new Map<string, string | null>();
+  let problems: Diagnostic[] | null = null;
+  const refusal = (at: InsertAt) => {
+    const key = JSON.stringify([at.parentId, at.slot ?? null]);
+    if (!checked.has(key)) checked.set(key, dropRefusal(state, ops(at), () => (problems ??= savingProblems(state))));
+    return checked.get(key) ?? null;
+  };
+  const aim = (lists: DropList[], x: number, y: number, scale: number): InsertAim | null => {
+    const t = dropTarget(lists, role, x, y, INSERT_EDGE / scale, own);
+    if (!t) return null;
+    const at: InsertAt = { owner, parentId: t.list.parentId, ...(t.list.slot ? { slot: t.list.slot } : {}), ...(t.index !== null ? { index: t.index } : {}) };
+    const refused = t.refused ?? (t.index === null ? null : refusal(at));
+    // An empty row measures as a line: its outline is drawn at least 4 screen pixels tall.
+    const box = t.list.box;
+    const outline = box && box.height * scale < 4 ? { ...box, y: box.y - 2 / scale, height: 4 / scale } : box;
+    if (refused || t.index === null) return { at: null, refused, line: null, outline, where: null };
+    return { at, refused: null, line: t.line, outline, where: whereFor(state, at, role) };
+  };
+  return { specs, aim };
+}

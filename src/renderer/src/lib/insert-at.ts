@@ -315,5 +315,8 @@ export function sectionWhere(st: ProjectState, at: InsertAt | null): Where {
   return { lead: at.index === 0 ? 'at the top of' : 'at the end of', target: ownerLabel(st, at.owner) };
 }
 
+/** A place in words, after what goes there: "after Card in Grid", "in a new section at the top of Home". */
+export const whereText = (w: NonNullable<Where>): string => `${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}`;
+
 /** Where something placed as `role` at `at` goes, in words. */
 export const whereFor = (st: ProjectState, at: InsertAt | null, role: InsertRole): Where => (role === 'element' ? elementWhere(st, at) : sectionWhere(st, at));

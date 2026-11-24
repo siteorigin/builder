@@ -3,7 +3,10 @@ import type { EditOperation } from '@shared/ops';
 import type { ElementNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertIndex, measuredLists, measureIds, savingProblems, type Measured } from '../../src/renderer/src/lib/insert-drop';
+import type { AssetRecord, InstanceNode } from '@shared/types';
+import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, measuredLists, measureIds, savingProblems, type Measured } from '../../src/renderer/src/lib/insert-drop';
+import { imageInsertOps } from '../../src/renderer/src/lib/image-drop';
+import type { InsertAt } from '../../src/renderer/src/lib/insert-at';
 
 /**
  * Dragging an Insert tile onto the page (#52): the lists a drop can go into, and the list and gap under the pointer.
@@ -288,5 +291,89 @@ describe('what the project would refuse (#52)', () => {
     expect(linked()).toEqual([]);
     expect(dropRefusal(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.grid, primitive: 'button' }], linked)).toMatch(/inside a card that links somewhere/);
     expect(dropRefusal(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.grid, primitive: 'paragraph' }], linked)).toBeNull();
+  });
+});
+
+describe('an Assets image dropped between content (#506)', () => {
+  const photo: AssetRecord = {
+    id: 'img_portrait',
+    name: 'Portrait',
+    file: 'static/assets/portrait.png',
+    mime: 'image/png',
+    bytes: 1000,
+    width: 800,
+    height: 1000,
+    hash: 'portrait',
+    kind: 'image',
+    altSuggestion: 'A portrait of the artist',
+    createdAt: '2026-11-25T09:00:00.000Z'
+  };
+  /** The page as in #52, with the portrait in Assets and an empty Stack in the row (a column to fill). */
+  function withPortrait() {
+    const p = page();
+    const out = applyOperations(p.state, [
+      { type: 'asset.add', asset: photo },
+      { type: 'node.insert', owner: p.owner, parentId: p.row, primitive: 'stack' }
+    ]);
+    const stack = out.results[1].nodeId as string;
+    const measured = new Map(p.measured).set(stack, box(100, 280, 400, 80));
+    const dest = insertDestination(out.state, p.owner, 'element', 0, (at) => imageInsertOps(at, photo.id, 'n_portrait'));
+    const lists = measuredLists(dest.specs, measured);
+    /** Where a drop at (x, y) goes, and the page once the image is there. */
+    const drop = (x: number, y: number) => {
+      const aim = dest.aim(lists, x, y, 1)!;
+      return { aim, after: aim.at ? applyOperations(out.state, imageInsertOps(aim.at, photo.id, 'n_portrait')).state.pages[p.owner.id] : null };
+    };
+    return { ...p, state: out.state, stack, dest, lists, drop };
+  }
+  const image = { kind: 'image', image: { assetId: photo.id, alt: photo.altSuggestion } };
+
+  it('between two sections: in a Section of its own, shown by a line between them', () => {
+    const p = withPortrait();
+    const { aim, after } = p.drop(500, 396);
+    expect(aim).toMatchObject({ at: { owner: p.owner, parentId: null, index: 1 }, refused: null, where: { lead: 'in a new section after' } });
+    expect(aim.line).toMatchObject({ y: 399 });
+    expect(after!.rootIds).toHaveLength(3);
+    expect([after!.rootIds[0], after!.rootIds[2]]).toEqual([p.first, p.second]);
+    const made = after!.nodes[after!.rootIds[1]] as InstanceNode;
+    expect(made.slots!.content).toEqual(['n_portrait']);
+    expect(after!.nodes.n_portrait).toMatchObject(image);
+  });
+
+  it('between two elements inside a section, and between two cards in a grid', () => {
+    const p = withPortrait();
+    // In the section, beside the grid and below it: after the grid, before the row.
+    const inSection = p.drop(50, 265);
+    expect(inSection.aim).toMatchObject({ at: { parentId: p.first, slot: 'content', index: 1 }, refused: null });
+    expect(inSection.aim.line).not.toBeNull();
+    expect((inSection.after!.nodes[p.first] as InstanceNode).slots!.content).toEqual([p.grid, 'n_portrait', p.row]);
+    expect(inSection.after!.nodes.n_portrait).toMatchObject(image);
+    // Over the second card's left half: between the two cards.
+    const inGrid = p.drop(600, 150);
+    expect(inGrid.aim).toMatchObject({ at: { parentId: p.grid, index: 1 }, where: { lead: 'after' } });
+    expect((inGrid.after!.nodes[p.grid] as ElementNode).children).toEqual([p.a, 'n_portrait', p.b]);
+  });
+
+  it('inside an empty column, shown by the column’s outline alone', () => {
+    const p = withPortrait();
+    const { aim, after } = p.drop(300, 320);
+    expect(aim).toMatchObject({ at: { parentId: p.stack, index: 0 }, line: null, outline: box(100, 280, 400, 80), where: { lead: 'inside' } });
+    expect((after!.nodes[p.stack] as ElementNode).children).toEqual(['n_portrait']);
+  });
+
+  it('shows no line where an Image can’t go, and has no place to drop it', () => {
+    const p = withPortrait();
+    // Sections take only text in their content: neither the empty second section nor a new one between them takes it.
+    const def = p.state.components[(p.state.pages[p.owner.id].nodes[p.second] as InstanceNode).definitionId];
+    def.slots!.content = { ...def.slots!.content, primitives: ['text'] };
+    const dest = insertDestination(p.state, p.owner, 'element', 0, (at: InsertAt) => imageInsertOps(at, photo.id, 'n_portrait'));
+    for (const [x, y] of [
+      [500, 550],
+      [500, 396]
+    ]) {
+      const aim = dest.aim(measuredLists(dest.specs, new Map(p.measured)), x, y, 1)!;
+      expect(aim).toMatchObject({ at: null, line: null, where: null });
+      expect(aim.refused).toMatch(/takes text, not an image/);
+    }
   });
 });

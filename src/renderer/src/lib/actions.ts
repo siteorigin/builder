@@ -17,7 +17,7 @@ import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
-import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, whereFor, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
@@ -420,7 +420,7 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
     markArrival(ref);
     setState({ selection: ref, rightTab: 'inspect' });
   }
-  toast(`Added ${name}${w ? ` ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : ''}.`, 'info', undoAction(r));
+  toast(`Added ${name}${w ? ` ${whereText(w)}` : ''}.`, 'info', undoAction(r));
   return true;
 }
 
@@ -524,7 +524,7 @@ export async function dropAssetAt(assetId: string, at: InsertAt, revision: numbe
     setState({ selection: ref, ...(now.rightTab === start.rightTab && now.dockOpen === start.dockOpen ? { rightTab: 'inspect' as const, dockOpen: true } : {}) });
   }
   const page = snap.state.pages[owner.id]?.title ?? '';
-  toast(`Placed “${name}”${w ? ` ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}${w.node && page ? ` on ${page}` : ''}` : ''}.`, 'info', undoAction(r));
+  toast(`Placed “${name}”${w ? ` ${whereText(w)}${w.node && page ? ` on ${page}` : ''}` : ''}.`, 'info', undoAction(r));
   return true;
 }
 
