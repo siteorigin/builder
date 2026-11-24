@@ -1,5 +1,5 @@
 import { createContext, Fragment, useContext, useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Box, ChevronRight, ClipboardCopy, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
+import { ArrowDown, ArrowUp, Box, ChevronRight, ClipboardCopy, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Split, Square, SquareDashed, Trash2, Type } from 'lucide-react';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
@@ -14,6 +14,7 @@ import { styleCopyItems } from './StylePaste';
 import { everySizeEdits, eyeAction, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type VisibilityEdit } from '../lib/layers';
 import { besideOf, extendTo, inGroup, layerRef, toggle, type Group } from '../lib/layer-set';
 import { treeFor } from '../lib/model';
+import { describeConditions } from '../lib/conditions';
 import { OutlinePanel } from './OutlinePanel';
 
 /*
@@ -641,7 +642,10 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   const hidden = vis.hiddenHere;
   const custom = def?.owner === 'project';
   const groupId = `layers-group-${owner.kind}-${id}`;
-  const title = [label.full, path.length ? `In ${path.join(' › ')}` : '', custom ? 'Made in this project' : '', sentence(vis.note)].filter(Boolean).join('\n');
+  // In the design of the component being edited, a node shown or hidden by a rule says so: the rule can hide it
+  // on the canvas, where only this row still finds it.
+  const conditions = ownerDef && definitionMode?.definitionId === owner.id ? describeConditions(ownerDef, n) : [];
+  const title = [label.full, path.length ? `In ${path.join(' › ')}` : '', custom ? 'Made in this project' : '', sentence(vis.note), ...conditions].filter(Boolean).join('\n');
   const draggable = owner.kind !== 'shell' && !isDefRoot;
   const canToggleHidden = owner.kind !== 'shell' && !isDefRoot && hideable(state, n);
   const eye = canToggleHidden ? eyeAction(state, n, size) : null;
@@ -702,6 +706,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
         data-name={label.kind}
         data-words={label.empty ? undefined : label.excerpt}
         aria-label={`${label.full}${custom ? ', made in this project' : ''}${vis.note ? `, ${vis.note}` : ''}`}
+        aria-description={conditions.length ? `${conditions.join('. ')}.` : undefined}
         style={{ ...depthVar(depth), '--drop-depth': drop?.depth ?? depth } as React.CSSProperties}
         draggable={draggable && !renaming}
         onDragStart={(e) => {
@@ -893,6 +898,11 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
         {sizesTag && !renaming && (
           <span className={`layer-sizes${hidden ? ' here' : ''}`} aria-hidden="true" title={sentence(`hidden ${sizesText(vis.own.hiddenAt)}`)}>
             {sizesTag}
+          </span>
+        )}
+        {conditions.length > 0 && !renaming && (
+          <span className="layer-flag layer-cond" title={`${conditions.join('.\n')}.`}>
+            <Split aria-hidden="true" />
           </span>
         )}
         {/* A layer above hides this one in this preview: the flag selects it, to show it again there. */}

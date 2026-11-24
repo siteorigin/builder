@@ -233,6 +233,79 @@ describe('conditions that compare a value (#90)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Rules made in the Inspector (#368)
+// ---------------------------------------------------------------------------
+
+/** A design whose wrapper holds two parts and a sibling after it, with no rules yet: they are added through operations. */
+function wrapperDef(s: ProjectState) {
+  return addDef(s, {
+    componentId: 'test.wrapper',
+    name: 'Wrapper',
+    properties: { badge: P.str('Badge', 'New'), tone: P.choice('Tone', 'calm', [['calm', 'Calm'], ['loud', 'Loud']]), hidden: P.bool('Hidden', false), extra: P.str('Extra', '') },
+    parts: {},
+    build: (b) =>
+      b.el('root', 'section', {}, [b.el('wrap', 'div', { name: 'Badge row' }, [b.text('badge', 'span', prop('badge')), b.text('extra', 'small', prop('extra'))]), b.text('after', 'p', 'Always here')])
+  });
+}
+
+describe('rules made in the Inspector (#368)', () => {
+  it('sets and clears "hide when empty" on a container of a component’s design, and nowhere else', () => {
+    const s = fresh();
+    const def = wrapperDef(s);
+    const op = (nodeId: string, value: unknown) => ({ type: 'node.setContent' as const, owner: owner(def), nodeId, field: 'collapseEmpty' as const, value });
+    expect(validateOperation(op('wrap', true)).ok).toBe(true);
+    const on = applyOperations(s, [op('wrap', true)]).state;
+    expect(on.components[def.id].tree!.nodes.wrap).toMatchObject({ collapseEmpty: true });
+    expect(s.components[def.id].tree!.nodes.wrap).not.toHaveProperty('collapseEmpty');
+    const off = applyOperations(on, [op('wrap', false)]).state;
+    expect(off.components[def.id].tree!.nodes.wrap).not.toHaveProperty('collapseEmpty');
+    expect(() => applyOperations(s, [op('badge', true)])).toThrow(/Only containers/);
+    expect(() => applyOperations(s, [op('wrap', 'false')])).toThrow(/true or false/);
+    expect(() => applyOperations(s, [op('wrap', null)])).toThrow(/true or false/);
+    // A page's own container has no design to judge its items by.
+    const page = home(s);
+    page.nodes['plain-box'] = { id: 'plain-box', kind: 'element', tag: 'div', children: [] } as GraphNode;
+    page.rootIds.push('plain-box');
+    expect(() => applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'page', id: page.id }, nodeId: 'plain-box', field: 'collapseEmpty', value: true }])).toThrow(/Only containers in a component/);
+  });
+
+  it('renders what the rules say as a placement’s values change, and leaves out a container only when all inside are hidden', async () => {
+    const s = fresh();
+    const def = wrapperDef(s);
+    const set = applyOperations(s, [
+      { type: 'node.setBinding', owner: owner(def), nodeId: 'badge', field: 'when', binding: { $prop: 'tone' }, eq: 'loud' },
+      { type: 'node.setBinding', owner: owner(def), nodeId: 'badge', field: 'unless', binding: { $prop: 'hidden' } },
+      { type: 'node.setBinding', owner: owner(def), nodeId: 'extra', field: 'when', binding: { $prop: 'extra' } },
+      { type: 'node.setContent', owner: owner(def), nodeId: 'wrap', field: 'collapseEmpty', value: true }
+    ]).state;
+    const d = set.components[def.id];
+    const inst = place(set, d, { tone: 'loud' });
+    const pageOwner = { kind: 'page' as const, id: home(set).id };
+    expect(errors(set)).toEqual([]);
+    expect(compileErrors(set)).toEqual([]);
+    const wrapCls = nodeClass(d, 'wrap');
+    /** The placement's markup with these values: whether the wrapper, the badge and the extra note are there. */
+    const shows = async (state: ProjectState, props: Record<string, unknown>) => {
+      const next = applyOperations(state, Object.entries(props).map(([prop, value]) => ({ type: 'instance.setProp' as const, owner: pageOwner, nodeId: inst.id, prop, value }))).state;
+      const html = placements(await renderHome(next), next.components[def.id])[0];
+      expect(html).toContain('Always here');
+      return { wrap: openTag(html, wrapCls) !== '', badge: html.includes('>New<'), extra: html.includes('>Also<') };
+    };
+    expect(await shows(set, {})).toEqual({ wrap: true, badge: true, extra: false });
+    expect(await shows(set, { extra: 'Also' })).toEqual({ wrap: true, badge: true, extra: true });
+    // Only the second part shown: the container stays for it.
+    expect(await shows(set, { tone: 'calm', extra: 'Also' })).toEqual({ wrap: true, badge: false, extra: true });
+    // Neither: the container goes with them.
+    expect(await shows(set, { tone: 'calm' })).toEqual({ wrap: false, badge: false, extra: false });
+    // Loud but hidden: the hide rule wins over the show rule, and nothing is left to show.
+    expect(await shows(set, { hidden: true })).toEqual({ wrap: false, badge: false, extra: false });
+    // Without "hide when empty", the emptied container stays.
+    const kept = applyOperations(set, [{ type: 'node.setContent', owner: owner(def), nodeId: 'wrap', field: 'collapseEmpty', value: false }]).state;
+    expect(await shows(kept, { tone: 'calm' })).toEqual({ wrap: true, badge: false, extra: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Bound tags, variants and accessible names
 // ---------------------------------------------------------------------------
 

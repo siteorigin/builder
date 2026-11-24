@@ -15,7 +15,7 @@ import { shellPageLinks } from '@generator/checks';
 // ---------------------------------------------------------------------------
 
 const PRIMITIVES: Record<string, string> = { richtext: 'rich text', repeat: 'repeated items', slot: 'content area' };
-const CONTENT_FIELDS: Record<string, string> = { text: 'text', link: 'link', label: 'button text', appearance: 'button style', icon: 'icon', tag: 'heading level', anchor: 'anchor' };
+const CONTENT_FIELDS: Record<string, string> = { text: 'text', link: 'link', label: 'button text', appearance: 'button style', icon: 'icon', tag: 'heading level', anchor: 'anchor', collapseEmpty: 'hiding when empty' };
 const SITE_FIELDS: Record<string, string> = { name: 'name', language: 'language', description: 'description', baseUrl: 'web address', favicon: 'favicon', socialImage: 'sharing image', notFoundHeading: 'not-found page heading', notFoundMessage: 'not-found page message', notFoundLinkLabel: 'not-found page link' };
 const PAGE_FIELDS: Record<string, string> = { title: 'title', route: 'address', navLabel: 'menu label', seoTitle: 'search title', description: 'description', noindex: 'search visibility', searchHidden: 'site search visibility', draft: 'draft status', showHeader: 'shared header', showFooter: 'shared footer', socialImage: 'sharing image', language: 'language', linkTranslationTo: 'translations', articleDate: 'publication date', byline: 'byline', excerpt: 'excerpt', newsHidden: 'news list visibility', article: 'article status' };
 
@@ -206,6 +206,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return imageParts(wasShown, nowShown).forEach((p) => contentEdit(op, p));
       }
       case 'node.setBinding': {
+        if (op.field === 'when' || op.field === 'unless') {
+          const rule = op.field === 'when' ? 'when it shows' : 'when it hides';
+          return plain(op, `${op.binding ? 'Set' : 'Cleared'} ${rule} for ${name(op.owner, op.nodeId)} in ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
+        }
         const field = op.field === 'prop' ? (op.prop ?? 'property') : (CONTENT_FIELDS[op.field] ?? op.field);
         const label = `${op.binding ? 'Connected' : 'Disconnected'} the ${field} of ${name(op.owner, op.nodeId)} ${op.binding ? 'to a property' : 'from its property'} in ${where(op.owner)}`;
         return plain(op, label, linkTo(op.owner, op.nodeId));
