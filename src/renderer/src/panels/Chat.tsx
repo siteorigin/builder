@@ -451,21 +451,27 @@ export function Chat() {
     return true;
   };
 
-  // A request handed over from elsewhere in the editor (Create component's Build with AI) is sent once, as it was asked,
-  // when the chat can send. One that cannot start waits in an empty message box rather than being lost.
+  // A request handed over from elsewhere in the editor (Create component's Build with AI) is sent as it was asked, with
+  // its own page and task, when the chat can send it straight away. When it cannot (the AI is not set up, the switch
+  // note says earlier messages would go to another model, or the send is refused), it waits by the composer until
+  // the author sends or discards it: never sent behind a note they have not seen, and never lost.
   const handed = useStore((s) => s.chatRequest);
-  useEffect(() => {
-    if (!handed || !conversation || running || sending) return;
-    setState({ chatRequest: null });
-    if (handed.workspaceKey !== snap.workspaceKey) return;
-    const conversationId = conversation.id;
-    void send(handed.text, handed.context).then((sent) => {
-      if (sent || getState().snapshot?.workspaceKey !== handed.workspaceKey) return;
-      if (!draftFor(getState().chatDrafts, conversationId).trim()) setChatDraft(conversationId, handed.text);
+  const sendHanded = (req: NonNullable<typeof handed>) => {
+    // Held from the moment it starts, so whatever renders meanwhile never sends it twice.
+    setState({ chatRequest: { ...req, held: true } });
+    void send(req.text, req.context).then((sent) => {
+      if (sent && getState().chatRequest?.id === req.id) setState({ chatRequest: null });
     });
+  };
+  useEffect(() => {
+    if (!handed) return;
+    if (handed.workspaceKey !== snap.workspaceKey) return void setState({ chatRequest: null });
+    if (handed.held || !conversation || running || sending) return;
+    if (!configured || notice) return void setState({ chatRequest: { ...handed, held: true } });
+    sendHanded(handed);
     // `send` reads the state it needs when it runs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handed, conversation, running, sending]);
+  }, [handed, conversation, running, sending, configured, notice, snap.workspaceKey]);
 
   /** Carry on with an unfinished request, with that request's own page and selection, leaving the draft alone. */
   const continueRequest = (user: ChatMessage | undefined) => {
@@ -734,6 +740,20 @@ export function Chat() {
         <div className="scope-note danger" role="status">
           <TriangleAlert />
           <span>{provider.warning}</span>
+        </div>
+      )}
+      {handed?.held && (
+        <div className="scope-note held-request" role="status">
+          <Component />
+          <span>
+            <span>Waiting to send: {handed.text}</span>{' '}
+            <button className="link" disabled={running || sending || !conversation} title={running ? 'Available when the current request finishes' : undefined} onClick={() => sendHanded(handed)}>
+              Send
+            </button>{' '}
+            <button className="link" disabled={sending} onClick={() => setState({ chatRequest: null })}>
+              Discard
+            </button>
+          </span>
         </div>
       )}
       {configured && notice && (

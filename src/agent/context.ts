@@ -375,7 +375,7 @@ function documentOrder(tree: NodeTree): string[] {
   return out;
 }
 
-/** Every token a value refers to, at any depth: style values, text styles, token properties' defaults. */
+/** Every `{ token }` reference in style rules (one scope, a responsive set, or rules by part and item), at any depth. */
 function collectTokens(v: unknown, out: Set<string>) {
   if (Array.isArray(v)) return v.forEach((x) => collectTokens(x, out));
   if (!v || typeof v !== 'object') return;
@@ -405,7 +405,7 @@ function structureNode(state: ProjectState, n: GraphNode, parts: string[] | unde
  * each node is styled through, and, on the first read, its property defaults, the style rules of each variant option
  * by node, and every token it uses. A long design comes a part at a time: read again from `next` until it is null.
  */
-export function componentStructure(state: ProjectState, def: ComponentDefinition, offset = 0) {
+export function componentStructure(state: ProjectState, def: ComponentDefinition, offset = 0, room = STRUCTURE_CHARS) {
   if (def.kind !== 'managed' || !def.tree)
     return { definitionId: def.id, kind: def.kind, note: def.kind === 'code' ? 'A code component: its design is Svelte source, not a node tree. Its contract above is what placements use.' : 'This component has no design tree.' };
   const tree = def.tree;
@@ -415,6 +415,9 @@ export function componentStructure(state: ProjectState, def: ComponentDefinition
   const theme = getTheme(state.site.themeId).components;
   // A design read from the catalogue places other theme components the project may not have installed yet.
   const nested = (id: string) => (Object.hasOwn(state.components, id) ? state.components[id] : theme.find((c) => c.id === id));
+  // The first read also says what holds for the whole design, and its nodes share what room that leaves.
+  const whole = offset > 0 ? null : designSummary(state, def, nested);
+  const budget = Math.min(STRUCTURE_CHARS, room - (whole ? JSON.stringify(whole).length : 0));
   const nodes: Record<string, unknown>[] = [];
   let used = 0;
   let i = Math.min(offset, order.length);
@@ -423,27 +426,52 @@ export function componentStructure(state: ProjectState, def: ComponentDefinition
     const rec = n ? structureNode(state, n, partsOf.get(n.id), nested) : { id: order[i], missing: true };
     const size = JSON.stringify(rec).length;
     // At least one node per read, so a read always moves on.
-    if (nodes.length && used + size > STRUCTURE_CHARS) break;
+    if (nodes.length && used + size > budget) break;
     nodes.push(rec);
     used += size;
   }
   const page = { totalNodes: order.length, offset, next: i < order.length ? i : null };
-  if (offset > 0) return { definitionId: def.id, nodes, ...page };
+  if (!whole) return { definitionId: def.id, nodes, ...page };
+  return { definitionId: def.id, rootIds: tree.rootIds, nodes, ...page, ...whole };
+}
+
+/**
+ * What holds for a whole design: its property defaults, the style rules of each variant option by node, and every
+ * token it uses: in its styles, its variant rules, the styles and token properties of the components placed in it,
+ * and its own token properties' defaults (a list's or object's token fields included).
+ */
+function designSummary(state: ProjectState, def: ComponentDefinition, nested: (id: string) => ComponentDefinition | undefined) {
   const tokens = new Set<string>();
-  collectTokens(tree.nodes, tokens);
-  collectTokens(def.variantAxes, tokens);
-  for (const sch of Object.values(def.properties)) if (sch.type === 'token') collectTokens(sch.default, tokens);
-  const defaults = Object.fromEntries(Object.entries(def.properties).flatMap(([k, sch]) => ('default' in sch && sch.default !== undefined ? [[k, summarizeValue(sch.default, state.pages)]] : [])));
+  const tokenValue = (v: unknown) => {
+    if (v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { token?: unknown }).token === 'string') tokens.add((v as { token: string }).token);
+  };
+  /** The tokens a property holds, by its schema: a token, or the token fields of an object or of each list item. */
+  const propTokens = (sch: PropSchema, v: unknown) => {
+    if (sch.type === 'token') return tokenValue(v);
+    if (sch.type !== 'object' && sch.type !== 'list') return;
+    const records = sch.type === 'object' ? [v] : Array.isArray(v) ? v : [];
+    for (const r of records) if (isEntry(r)) for (const [f, fs] of Object.entries(sch.fields)) if (fs.type === 'token') tokenValue(r[f]);
+  };
+  for (const n of Object.values(def.tree?.nodes ?? {})) {
+    collectTokens(n.styles, tokens);
+    if (n.kind !== 'instance') continue;
+    collectTokens(n.overrides, tokens);
+    collectTokens(n.itemOverrides, tokens);
+    for (const [k, sch] of Object.entries(nested(n.definitionId)?.properties ?? {})) if (Object.hasOwn(n.props, k) && !isBinding(n.props[k])) propTokens(sch, n.props[k]);
+  }
+  for (const sch of Object.values(def.properties)) {
+    propTokens(sch, sch.default);
+    // A list's or object's token field has a default of its own, which new items start with.
+    if (sch.type === 'list' || sch.type === 'object') for (const f of Object.values(sch.fields)) if (f.type === 'token') tokenValue(f.default);
+  }
   const variantStyles = Object.fromEntries(
     axesOf(def)
       .map(([axis, a]) => [axis, Object.fromEntries(Object.entries(a.options).flatMap(([o, v]) => (v.styles && Object.keys(v.styles).length ? [[o, v.styles]] : [])))] as const)
       .filter(([, opts]) => Object.keys(opts).length)
   );
+  for (const opts of Object.values(variantStyles)) collectTokens(opts, tokens);
+  const defaults = Object.fromEntries(Object.entries(def.properties).flatMap(([k, sch]) => ('default' in sch && sch.default !== undefined ? [[k, summarizeValue(sch.default, state.pages)]] : [])));
   return {
-    definitionId: def.id,
-    rootIds: tree.rootIds,
-    nodes,
-    ...page,
     ...(Object.keys(defaults).length ? { propertyDefaults: defaults } : {}),
     ...(Object.keys(variantStyles).length ? { variantStyles } : {}),
     tokensUsed: [...tokens].sort()

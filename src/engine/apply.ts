@@ -2294,7 +2294,9 @@ function componentCreate(state: ProjectState, op: Op<'component.create'>): OpRes
     if (!PROJECT_DEFINITION_ID.test(op.definitionId)) fail(`"${op.definitionId}" is not a project component ID.`);
     if (Object.hasOwn(state.components, op.definitionId)) fail(`Component "${op.definitionId}" already exists.`);
   }
-  const id = op.definitionId ?? projectDefId(name);
+  let id = op.definitionId ?? projectDefId(name);
+  // A random suffix can repeat one already in use: never put the new design in place of an existing one.
+  while (Object.hasOwn(state.components, id)) id = projectDefId(name);
   const [root] = primitiveNode(state, 'container');
   const def: ComponentDefinition = {
     schemaVersion: SCHEMA_VERSION,

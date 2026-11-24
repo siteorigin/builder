@@ -2332,19 +2332,14 @@ describe('building a new component from Create component (#172)', () => {
     expect(env.session.state.components['proj.taken-abcde']).toBeUndefined();
   });
 
-  it('gives a small model only what building a component takes, and leaves other small requests as they were', async () => {
+  it('gives a small model only what building a component takes, also when told to continue, and leaves other small requests as they were', async () => {
     const seen: CanonicalModelRequest[] = [];
+    const look = (req: CanonicalModelRequest) => {
+      seen.push(req);
+      return finish('Nothing yet.');
+    };
     const env = await setup(
-      [
-        (req) => {
-          seen.push(req);
-          return finish('Nothing yet.');
-        },
-        (req) => {
-          seen.push(req);
-          return finish('Nothing yet.');
-        }
-      ],
+      [look, look, look],
       { codeEnabled: false, capabilities: { contextWindowTokens: 32000 } }
     );
     await env.run('Create a component called "Price tag".', task);
@@ -2354,10 +2349,13 @@ describe('building a new component from Create component (#172)', () => {
     expect(ops).toEqual(expect.arrayContaining(['component.create', 'node.insert', 'node.setBinding', 'component.setPropSchema', 'component.setVariant', 'node.setStyle']));
     for (const op of ['page.create', 'token.set', 'instance.setProp', 'component.createCode']) expect(ops).not.toContain(op);
     expect(seen[0].system).toContain('You make reusable components');
+    // "continue" typed into the chat carries on with the component, with what building one takes.
+    await env.run('continue');
+    expect(seen[1].tools.map((t) => t.name).sort()).toEqual(names);
     // The same request typed straight into the chat keeps the small site tools.
     await env.run('Create a component called "Price tag".');
-    expect(seen[1].tools.map((t) => t.name)).toContain('upsert_page_with_sections');
-    expect(seen[1].tools.map((t) => t.name)).not.toContain('apply_operations');
+    expect(seen[2].tools.map((t) => t.name)).toContain('upsert_page_with_sections');
+    expect(seen[2].tools.map((t) => t.name)).not.toContain('apply_operations');
   });
 });
 

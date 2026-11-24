@@ -823,8 +823,10 @@ export class Orchestrator {
     let authority: Authority = requestAuthority(userMsg.context, session.state);
     /** A request about a component's own design keeps the tools for it, even after the user widens it. */
     const definitionRun = authority.kind === 'component' || (authority.kind === 'selection' && authority.owner.kind === 'component');
-    /** A new component asked for from the Create component dialog, which the whole site may hold. */
-    const componentTask = !ask && authority.kind === 'site' && userMsg.context?.task === 'component';
+    /** The request a typed "continue" carries on with: the last one before it that was not a "continue" itself. */
+    const carried = CONTINUE.test(userMsg.text) ? [...history].reverse().find((h) => h.role === 'user' && typeof h.text === 'string' && !CONTINUE.test(h.text)) : undefined;
+    /** A new component asked for from the Create component dialog (or a "continue" of one), which the whole site may hold. */
+    const componentTask = !ask && authority.kind === 'site' && (userMsg.context?.task === 'component' || carried?.context?.task === 'component');
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     // Problems the project already had (including components that already fail to build) are not the run's. Each is

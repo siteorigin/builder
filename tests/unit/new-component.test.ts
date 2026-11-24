@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -99,7 +99,8 @@ describe('component.create (#172)', () => {
       expect(r.error?.message).toMatch(why);
     };
     await refused([{ type: 'component.create', name: '   ' }], /needs a name/);
-    for (const id of ['proj.../x', 'foundation.layout.section', 'proj.card', 'proj.card-ABCDE'])
+    // Only a slug as the editor makes it: two IDs that differ by a doubled hyphen would share one generated file.
+    for (const id of ['proj.../x', 'foundation.layout.section', 'proj.card', 'proj.card-ABCDE', 'proj.a--b-abcde', 'proj.-card-abcde', 'proj.card--abcde'])
       await refused([{ type: 'component.create', definitionId: id, name: 'Card' }], /not a project component ID/);
     const id = projectDefinitionId('Card');
     await refused([{ type: 'component.create', definitionId: id, name: 'Card' }, { type: 'component.create', definitionId: id, name: 'Card again' }], /already exists/);
@@ -109,14 +110,29 @@ describe('component.create (#172)', () => {
     expect(s.historyInfo().entries.length).toBe(entries);
   });
 
-  it('gives two components of the same name IDs of their own', () => {
-    const r = applyOperations(createStarterState('blank', 'Expo', false), [
-      { type: 'component.create', name: 'Card' },
-      { type: 'component.create', name: 'Card' }
-    ]);
-    const [a, b] = r.results.map((x) => x.definitionId as string);
-    expect(a).not.toBe(b);
-    expect([r.state.components[a].name, r.state.components[b].name]).toEqual(['Card', 'Card']);
+  it('gives two components of the same name IDs of their own, even when the random part repeats', () => {
+    const st = createStarterState('blank', 'Expo', false);
+    // The random part of a component ID (five characters) comes out the same the first two times it is drawn.
+    const real = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
+    let suffixes = 0;
+    const spy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(<T extends ArrayBufferView | null>(bytes: T): T => {
+      if (bytes instanceof Uint8Array && bytes.length === 5 && ++suffixes <= 2) return bytes.fill(0) as unknown as T;
+      return real(bytes as never) as T;
+    });
+    try {
+      const r = applyOperations(st, [
+        { type: 'component.create', name: 'Card' },
+        { type: 'component.create', name: 'Card' }
+      ]);
+      const [a, b] = r.results.map((x) => x.definitionId as string);
+      expect(a).toBe('proj.card-00000');
+      expect(b).not.toBe(a);
+      expect([r.state.components[a].name, r.state.components[b].name]).toEqual(['Card', 'Card']);
+      // The first is still the design it was: the second never took its place.
+      expect(r.state.components[a].tree!.rootIds[0]).toBe(r.results[0].rootNodeId);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -171,10 +187,11 @@ describe('read_component with structure (#172)', () => {
       expect(serializeResult(first).length, c.componentId).toBeLessThan(24000);
       expect(JSON.parse(serializeResult(first)).truncated, c.componentId).toBeUndefined();
     }
-    // A long design: more nodes than one read holds.
+    // A long design: more nodes than one read holds, and a contract long enough to leave its first part less room.
     const long = structuredClone(catalogueComponent('foundation', 'features.grid')!);
     long.id = 'proj.long-abcde';
     long.owner = 'project';
+    for (let p = 0; p < 4; p++) long.properties[`choice${p}`] = { type: 'enum', label: `Choice ${p}`, default: 'v0', options: Array.from({ length: 40 }, (_, k) => ({ value: `v${k}-${'x'.repeat(50)}`, label: `Option ${k}` })) };
     const root = long.tree!.nodes[long.tree!.rootIds[0]] as ElementNode;
     for (let i = 0; i < 120; i++) {
       const id = `n_filler${i}`;
@@ -186,6 +203,8 @@ describe('read_component with structure (#172)', () => {
     let offset = 0;
     for (let reads = 0; reads < 20; reads++) {
       const out = await read(s, { definitionId: long.id, structure: true, ...(offset ? { offset } : {}) });
+      // Every part fits a tool result whole, so its next is never cut off.
+      expect(JSON.parse(serializeResult(out)).truncated).toBeUndefined();
       const part = out.structure;
       expect(JSON.stringify(part.nodes).length).toBeLessThanOrEqual(STRUCTURE_CHARS + 400);
       // Later parts carry only the nodes: the contract and the whole-design summaries came with the first.
@@ -197,6 +216,28 @@ describe('read_component with structure (#172)', () => {
     }
     expect(offset).toBeGreaterThan(0);
     expect(seen.sort()).toEqual(Object.keys(long.tree!.nodes).sort());
+  });
+});
+
+describe('the tokens a design uses (#172)', () => {
+  it('lists the tokens of its styles and token properties, never a property that only happens to be called token', () => {
+    let s = createStarterState('blank', 'Expo', false);
+    const r = applyOperations(s, [
+      { type: 'component.create', name: 'Inner' },
+      { type: 'component.create', name: 'Outer' }
+    ]);
+    s = r.state;
+    const inner = s.components[r.results[0].definitionId as string];
+    const outer = s.components[r.results[1].definitionId as string];
+    inner.properties.token = { type: 'string', label: 'Token', default: '' };
+    // A list empty by default, whose token field starts new items on the brand colour.
+    outer.properties.items = { type: 'list', label: 'Items', itemLabel: 'Item', fields: { tone: { type: 'token', label: 'Tone', tokenGroup: 'color', default: { token: 'color.brand' } } }, default: [] } as never;
+    const root = outer.tree!.rootIds[0];
+    outer.tree!.nodes.n_inner = { id: 'n_inner', kind: 'instance', definitionId: inner.id, props: { token: 'Summer offer' }, overrides: { root: { base: { background: { token: 'color.surface' } } } } } as never;
+    (outer.tree!.nodes[root] as ElementNode).children.push('n_inner');
+    const used = (componentStructure(s, outer) as { tokensUsed: string[] }).tokensUsed;
+    expect(used).toEqual(expect.arrayContaining(['color.brand', 'color.surface', 'space.md', 'space.lg']));
+    expect(used).not.toContain('Summer offer');
   });
 });
 
@@ -214,6 +255,16 @@ describe('search_components finds project components (#172)', () => {
     expect(names('pricing comparison', 1)).toHaveLength(1);
     expect(names('photo')).toEqual(['Team member']);
     expect(names('zzz')).toEqual([]);
+  });
+
+  it('returns one list within the limit, theme and project components ranked together', async () => {
+    let s = createStarterState('blank', 'Expo', false);
+    s = applyOperations(s, [{ type: 'component.create', name: 'Pricing', description: 'Our own plans.' }]).state;
+    const search = async (args: Record<string, unknown>) => ((await executeTool('search_components', JSON.stringify(args), { state: () => s, revision: () => 1 } as never, 'c1')).content as { results: Array<{ name: string; projectComponent?: boolean }> }).results;
+    expect(await search({ query: 'pricing', limit: 1 })).toHaveLength(1);
+    const both = await search({ query: 'pricing', limit: 8 });
+    expect(both.length).toBeLessThanOrEqual(8);
+    expect(both.some((r) => r.projectComponent && r.name === 'Pricing')).toBe(true);
   });
 });
 

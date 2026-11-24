@@ -81,6 +81,20 @@ await dialog.getByLabel('Component name').waitFor();
 await dialog.getByRole('button', { name: 'Cancel' }).click();
 await dialog.waitFor({ state: 'detached' });
 assert.deepEqual(await library(), {}, 'Cancel makes nothing');
+// Build with AI with no AI provider set up: the request waits in the chat to be sent or discarded, never lost, and never
+// sent anywhere (this check stops before the click if a provider were set up).
+const ai = await win.evaluate(async () => ({ settings: await window.builder.app.getSettings(), providers: await window.builder.ai.providers() }));
+assert.equal(ai.providers.find((p) => p.id === ai.settings.ai.provider)?.configured ?? false, false, 'no AI provider is set up');
+await openInsert();
+await panel.locator('.insert-tile.new[data-key="new-component"]').click();
+await dialog.getByLabel('Component name').fill('Quote card');
+await dialog.getByRole('button', { name: 'Build with AI' }).click();
+await dialog.waitFor({ state: 'detached' });
+const held = win.locator('.held-request', { hasText: 'Create a component called "Quote card".' });
+await held.waitFor();
+await held.getByRole('button', { name: 'Discard' }).click();
+await held.waitFor({ state: 'detached' });
+assert.deepEqual(await library(), {}, 'nothing is made');
 
 step('an Exhibitor card made from a group, and a second copy from Insert');
 // Blank's Home starts empty: a section to build in first.

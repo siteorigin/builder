@@ -193,8 +193,11 @@ export interface State {
   chatDrafts: ChatDrafts;
   /** Library images attached to those unsent messages, by asset ID (see lib/chatDrafts). */
   chatImages: ChatImages;
-  /** A request another part of the editor asked the chat to send (Create component's Build with AI), once it can. */
-  chatRequest: { text: string; context: ChatContext; workspaceKey: string } | null;
+  /**
+   * A request another part of the editor asked the chat to send (Create component's Build with AI). `held` once it
+   * waits for the author to send it from the chat, or while it is being sent.
+   */
+  chatRequest: { id: string; text: string; context: ChatContext; workspaceKey: string; held?: boolean } | null;
   /** What the next message is about: the open page (or Home), and how far an edit may reach (see chatTarget.editScope). */
   chatContextEnabled: { page: boolean; scope: ChatEditScope };
   /** What the next message is: a change for the AI to make, or a read-only question. */

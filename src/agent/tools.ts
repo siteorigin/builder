@@ -295,7 +295,7 @@ const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameter
 /** The tools of a read-only question: the same small set for every model, with or without a selection. */
 function askTools(codeEnabled: boolean): ToolDefinition[] {
   const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
-  return names.map((name) => {
+  const tools = names.map((name): ToolDefinition => {
     // A question can never widen what may change: nothing may.
     const args = name === 'request_clarification' ? TOOL_ARGS.request_clarification.omit({ widenScope: true }) : TOOL_ARGS[name];
     const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
@@ -303,6 +303,8 @@ function askTools(codeEnabled: boolean): ToolDefinition[] {
     // A question asks back only when it is ambiguous, which the question's own instructions say.
     return { name, ...describe(name), ...(name === 'request_clarification' ? { brief: 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' } : {}), parameters: schema };
   });
+  // A question reads component contracts alone: a design is read to build a component, which a question never does.
+  return tools.map(contractRead);
 }
 
 /**
@@ -368,20 +370,27 @@ export function toolsForRun(opts: {
   return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations').map(contractRead) : general)], mode: 'site', focused };
 }
 
+/** How well a component matches a search: 3 for each word in its name, 1 for each found only in the rest. */
+function searchScore(query: string, name: string, rest: string): number {
+  const n = name.toLowerCase();
+  const hay = `${n} ${rest}`.toLowerCase();
+  return query
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .reduce((s, w) => s + (n.includes(w) ? 3 : hay.includes(w) ? 1 : 0), 0);
+}
+
 /**
  * The project's own components matching a search, best first, scored as the catalogue search scores its own: a word
  * in the name counts most, one in the description or tags less. The shared header and footer are never offered.
  */
 export function searchProjectComponents(state: ProjectState, query: string, limit: number) {
-  const words = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const mine = Object.values(state.components).filter((d) => d.owner === 'project' && d.category !== 'shell');
-  if (!words.length) return mine.slice(0, limit);
+  if (!query.trim()) return mine.slice(0, limit);
   return mine
-    .map((d) => {
-      const name = d.name.toLowerCase();
-      const hay = `${name} ${d.description ?? ''} ${(d.tags ?? []).join(' ')}`.toLowerCase();
-      return { d, score: words.reduce((n, w) => n + (name.includes(w) ? 3 : hay.includes(w) ? 1 : 0), 0) };
-    })
+    .map((d) => ({ d, score: searchScore(query, d.name, `${d.description ?? ''} ${(d.tags ?? []).join(' ')}`) }))
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
@@ -389,8 +398,9 @@ export function searchProjectComponents(state: ProjectState, query: string, limi
 }
 
 /**
- * read_component as a small model building pages has it: the contract alone. A design is read to build a component,
- * which a small model does only when asked to (task "component"), so its window keeps the room.
+ * read_component with the contract alone, for a question and for a small model building pages. A design is read to
+ * build a component, which neither does (a small model builds one only when asked to, with task "component"), so
+ * their windows keep the room.
  */
 function contractRead(t: ToolDefinition): ToolDefinition {
   if (t.name !== 'read_component') return t;
@@ -578,9 +588,16 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'search_components': {
       const a = args as z.infer<(typeof TOOL_ARGS)['search_components']>;
-      const themed = searchCatalogue(state.site.themeId, a.query, a.limit ?? 8).map((e) => ({ componentId: e.componentId, name: e.name, description: e.description, variants: e.axes }));
-      const project = searchProjectComponents(state, a.query, a.limit ?? 8).map((d) => ({ definitionId: d.id, name: d.name, description: d.description, kind: d.kind, projectComponent: true }));
-      return { ok: true, content: { results: [...themed, ...project] } };
+      const limit = a.limit ?? 8;
+      const themed = searchCatalogue(state.site.themeId, a.query, limit).map((e) => ({ score: searchScore(a.query, e.name, `${e.description} ${e.tags.join(' ')} ${e.category} ${e.componentId}`), hit: { componentId: e.componentId, name: e.name, description: e.description, variants: e.axes } }));
+      const project = searchProjectComponents(state, a.query, limit).map((d) => ({ score: searchScore(a.query, d.name, `${d.description ?? ''} ${(d.tags ?? []).join(' ')}`), hit: { definitionId: d.id, name: d.name, description: d.description, kind: d.kind, projectComponent: true } }));
+      // One list, best first within the limit; a theme component comes first where they match as well.
+      const results = [...themed, ...project]
+        .map((r, i) => ({ ...r, i }))
+        .sort((x, y) => y.score - x.score || x.i - y.i)
+        .slice(0, limit)
+        .map((r) => r.hit);
+      return { ok: true, content: { results } };
     }
     case 'read_component': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_component']>;
@@ -592,7 +609,13 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Component not found. Use search_components.' } };
       // A design read part by part: the contract came with the first part.
       if (a.structure && a.offset) return { ok: true, content: { definitionId: def.id, structure: componentStructure(state, def, a.offset) } };
-      if (a.structure) return { ok: true, content: { ...componentDetail(def), structure: componentStructure(state, def) } };
+      if (a.structure) {
+        // The first part shares one result with the contract; a contract too long to leave the design room is read alone.
+        const contract = componentDetail(def);
+        const room = MAX_RESULT_CHARS - 1000 - JSON.stringify(contract).length;
+        if (room < 4000) return { ok: true, content: { definitionId: def.id, note: 'Its contract is long: read_component without structure shows it.', structure: componentStructure(state, def, 0, MAX_RESULT_CHARS - 1000) } };
+        return { ok: true, content: { ...contract, structure: componentStructure(state, def, 0, room) } };
+      }
       const examples = examplesFor(state, def.componentId).map(exampleSection);
       return { ok: true, content: { ...componentDetail(def), ...(examples.length ? { workedExamples: examples } : {}) } };
     }

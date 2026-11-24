@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import { newId } from '@shared/ids';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
 import { uniqueCopyName } from '@engine/definitions';
@@ -327,19 +328,22 @@ function newComponentPlaceNow() {
 export function NewComponentModal() {
   const snap = useStore((s) => s.snapshot);
   const running = useStore((s) => !!s.runStatus);
+  const waiting = useStore((s) => !!s.chatRequest);
+  // The page Start blank places it on, said as it is now: the page on screen, or the one a design was opened from.
+  const pageId = useStore((s) => s.definitionMode?.returnPageId ?? s.pageId);
   const readOnly = !!snap?.readOnly;
   const input = useRef<HTMLInputElement>(null);
   useHeldFocus(input);
   const close = useCloseOwn();
+  const [own] = useState(() => getState().modal);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   // Asked for only once the author has typed or tried to start, so the dialog never opens on an error.
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [place] = useState(newComponentPlaceNow);
-  const pageTitle = place && snap ? snap.state.pages[place.pageId]?.title : undefined;
+  const pageTitle = pageId && snap && Object.hasOwn(snap.state.pages, pageId) ? snap.state.pages[pageId].title : undefined;
   const nameError = touched && !name.trim() ? 'Enter a name for this component.' : undefined;
-  const canBuild = !readOnly && !busy && !running && !!(name.trim() || description.trim());
+  const canBuild = !readOnly && !busy && !running && !waiting && !!(name.trim() || description.trim());
 
   const start = async () => {
     setTouched(true);
@@ -356,14 +360,25 @@ export function NewComponentModal() {
     } finally {
       if (!r) setBusy(false);
     }
+    if (!r) return;
     const after = getState();
-    const root = after.snapshot?.state.components[plan.definitionId]?.tree?.rootIds[0];
-    if (!r || after.snapshot?.workspaceKey !== now.workspaceKey || !root) return;
-    // The new design opens for editing on its placement, as Edit everywhere opens one.
+    // Named by the change itself, which the snapshot may not show yet.
+    const root = typeof r[0]?.rootNodeId === 'string' ? r[0].rootNodeId : null;
+    const shown = after.snapshot?.state;
+    // An Undo or another change that landed meanwhile can have taken the placement away again: then nothing opens.
+    const gone = !!shown?.components[plan.definitionId] && !shown.pages[at.pageId]?.nodes[plan.nodeId];
+    const mine = after.modal === own;
+    if (after.snapshot?.workspaceKey !== now.workspaceKey || !root || gone) {
+      setBusy(false);
+      if (mine) setState({ modal: null });
+      return;
+    }
+    // The new design opens for editing on its placement, as Edit everywhere opens one. Another dialog opened meanwhile
+    // stays open over it.
     if (after.mode !== 'edit') setMode('edit');
     if (after.pageId !== at.pageId) saveLocal({ pageId: at.pageId });
     setState({
-      modal: null,
+      ...(mine ? { modal: null } : {}),
       pageId: at.pageId,
       definitionMode: { definitionId: plan.definitionId, returnPageId: at.pageId },
       selection: { owner: { kind: 'page', id: at.pageId }, instancePath: [plan.nodeId], nodeId: root },
@@ -379,7 +394,7 @@ export function NewComponentModal() {
     // The chat sends it, as its own Send would, once it can; its own unsent message stays as it is.
     setState({
       modal: null,
-      chatRequest: { text: componentRequest(name, description), context: componentRequestContext(s.snapshot.state, newComponentPlaceNow(), s.viewport), workspaceKey: s.snapshot.workspaceKey },
+      chatRequest: { id: newId('req'), text: componentRequest(name, description), context: componentRequestContext(s.snapshot.state, newComponentPlaceNow(), s.viewport), workspaceKey: s.snapshot.workspaceKey },
       rightTab: 'chat',
       dockOpen: true
     });
@@ -405,7 +420,7 @@ export function NewComponentModal() {
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn" disabled={!canBuild} title={running ? 'The AI is working on another request.' : undefined} onClick={build}>
+            <button className="btn" disabled={!canBuild} title={running ? 'The AI is working on another request.' : waiting ? 'Another request is waiting to be sent in the chat.' : undefined} onClick={build}>
               <Sparkles aria-hidden="true" />
               Build with AI
             </button>
