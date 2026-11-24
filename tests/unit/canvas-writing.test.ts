@@ -354,6 +354,21 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       ]);
     });
 
+    it('keeps a non-breaking space at the end of a line, and reads a list item without its list as a paragraph', async () => {
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await pasteRaw('<p>Address<br><span>&nbsp;</span></p><li>Lone item</li>', 'Address');
+      expect(await commit()).toEqual([p('Address\n'), p('Lone item')]);
+    });
+
+    it('reads a paste of many empty comments in one pass', async () => {
+      await editAt('r', 'word');
+      const started = Date.now();
+      await pasteRaw(' <!---->'.repeat(150_000) + 'Word', 'Word');
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(await commit()).toEqual([untouched[0], p('The second paragraph has a Word to change.'), untouched[2], untouched[3]]);
+    }, 20000);
+
     it('reads a paste of many nested lists in one pass', async () => {
       await editAt('r', 'word');
       const started = Date.now();

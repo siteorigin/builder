@@ -1090,6 +1090,22 @@ function pastedHref(raw) {
 }
 
 /**
+ * Copied HTML without its comments, which hold nothing a paste keeps (Word's conditional blocks among them), in one
+ * pass: the browser's own parser is slow on a long run of them. An unclosed one runs to the end, as it does in HTML.
+ */
+function withoutComments(html) {
+  let out = '';
+  let at = 0;
+  for (let open = html.indexOf('<!--'); open >= 0; open = html.indexOf('<!--', at)) {
+    out += html.slice(at, open);
+    const close = html.indexOf('-->', open + 4);
+    if (close < 0) return out;
+    at = close + 3;
+  }
+  return out + html.slice(at);
+}
+
+/**
  * Copied HTML as markup the rich text can hold, or '' when it holds no words. It is parsed inert (nothing runs or
  * loads) and read in one pass, in reading order, as lines: each block (a paragraph, heading, quote or list item)
  * is a line of its own, a block inside a list item, quote or heading is another line of that kind, and the items
@@ -1098,7 +1114,7 @@ function pastedHref(raw) {
  */
 function pastedRich(html) {
   if (!html || html.length > 2000000) return '';
-  const src = new DOMParser().parseFromString(html, 'text/html').body;
+  const src = new DOMParser().parseFromString(withoutComments(html), 'text/html').body;
   /** { kind: '' (words outside any block) | 'p' | 'h3' | 'h4' | 'blockquote' | 'li', list, runs: [{ text } | { br }] with marks } */
   const lines = [];
   let line = null;
@@ -1142,7 +1158,8 @@ function pastedRich(html) {
     if ((n.tagName === 'TD' || n.tagName === 'TH') && line && line.runs.length) add(ctx, { text: ' ', m });
     let within = ctx;
     if (kind === 'ul' || kind === 'ol') within = { kind: 'li', list: ctx.list || kind };
-    else if (kind === 'li') within = { kind: 'li', list: ctx.list || 'ul' };
+    // A list item copied without its list is a paragraph.
+    else if (kind === 'li') within = ctx.list ? { kind: 'li', list: ctx.list } : { kind: 'p', list: '' };
     else if (kind) within = ctx.kind === 'li' || ctx.kind === 'blockquote' || ctx.kind === 'h3' || ctx.kind === 'h4' ? ctx : { kind, list: '' };
     // A block starts a line of its own, and what follows it starts another.
     if (kind) line = null;
@@ -1151,11 +1168,14 @@ function pastedRich(html) {
   };
   for (const c of src.childNodes) walk(c, { kind: '', list: '' }, {});
 
-  /** A line without the spacing at its ends; null when it holds no words. */
+  /** A line without the spacing a page collapses at its ends (a non-breaking space stays); null when it holds no words. */
   const trimmed = (l) => {
-    const runs = l.runs.slice();
-    while (runs.length && runs[0].text !== undefined && !/\S/.test(runs[0].text)) runs.shift();
-    while (runs.length && runs[runs.length - 1].text !== undefined && !/\S/.test(runs[runs.length - 1].text)) runs.pop();
+    const spacing = (r) => r.text !== undefined && !/[^ \t\r\n\f]/.test(r.text);
+    let a = 0;
+    let b = l.runs.length;
+    while (a < b && spacing(l.runs[a])) a++;
+    while (b > a && spacing(l.runs[b - 1])) b--;
+    const runs = l.runs.slice(a, b);
     return runs.some((r) => r.text !== undefined && /\S/.test(r.text)) ? { ...l, runs } : null;
   };
   const kept = lines.map(trimmed).filter(Boolean);
