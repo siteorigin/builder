@@ -133,6 +133,7 @@ await eventually(async () => {
   assert.equal(found.body.length, 2, 'the two paragraphs stay two: no line becomes a paragraph of its own');
   assert.equal(lastText(found.body), 'That conversation shapes every decision that follows, from the first sketch to the last detail.\nStudio 4\nHarbour Lane', 'the word and the lines are stored in their paragraph');
   assert.ok(found.body[0].spans[0].text.startsWith('Before we draw'), 'the first paragraph is untouched');
+  assert.ok(found.body[1].spans.some((x) => x.text === 'conversation' && x.strong && x.em && x.link?.type === 'page'), 'the linked bold italic words keep their marks');
 });
 const edited = await mediaBody();
 await eventually(async () => assert.equal(await second.locator('br').count(), 2, 'the preview shows the lines inside one paragraph'));
@@ -143,7 +144,7 @@ await win.locator('[aria-label^="Undo"]').first().click();
 await eventually(async () => assert.ok(lastText((await mediaBody()).body).endsWith('last cushion.'), 'undo puts the word and the paragraph back'));
 await eventually(async () => assert.equal(await second.locator('br').count(), 0, 'the preview shows the paragraph as it was'));
 await win.locator('[aria-label^="Redo"]').first().click();
-await eventually(async () => assert.equal(lastText((await mediaBody()).body), lastText(edited.body), 'redo writes the edit again'));
+await eventually(async () => assert.deepEqual((await mediaBody()).body, edited.body, 'redo writes the edit again, marks and links included'));
 await eventually(async () => assert.equal(await second.locator('br').count(), 2, 'the lines are back'));
 // Opening the edit again and leaving it changes nothing.
 const settled = (await mediaBody()).revision;
@@ -152,6 +153,7 @@ await win.waitForTimeout(800);
 const detail = await onScreen('detail');
 await win.mouse.dblclick(detail.x, detail.y);
 await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited again'));
+assert.equal(await rich.evaluate(() => getSelection().toString()), 'detail', 'the edit starts at the word double-clicked again');
 await win.keyboard.press(`${MOD}+Enter`);
 await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), null, 'the edit ends'));
 await win.waitForTimeout(500);

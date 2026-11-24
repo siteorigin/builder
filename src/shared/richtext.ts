@@ -72,8 +72,8 @@ export function cleanSpans(spans: RichSpan[]): RichSpan[] {
     if (!s || typeof s !== 'object') continue;
     // Only what HTML itself collapses: a non-breaking space ("10 kg") is deliberate.
     const text = String(s.text ?? '')
-      .replace(/\r\n?/g, '\n')
-      .replace(/[ \t\f]+/g, ' ');
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t\r\f]+/g, ' ');
     if (text) mergeInto(runs, { ...s, text });
   }
   const merged: RichSpan[] = [];
@@ -82,10 +82,15 @@ export function cleanSpans(spans: RichSpan[]): RichSpan[] {
       mergeInto(merged, r);
       continue;
     }
-    const [, lead, core, trail] = /^([ \n]*)([\s\S]*?)([ \n]*)$/.exec(r.text)!;
-    if (lead) mergeInto(merged, { text: lead });
-    if (core) mergeInto(merged, span(core, r));
-    if (trail) mergeInto(merged, { text: trail });
+    // The spaces and breaks at either end, found with one scan from each end (a run of breaks stays linear).
+    const t = r.text;
+    let a = 0;
+    let b = t.length;
+    while (a < b && (t[a] === ' ' || t[a] === '\n')) a++;
+    while (b > a && (t[b - 1] === ' ' || t[b - 1] === '\n')) b--;
+    if (a) mergeInto(merged, { text: t.slice(0, a) });
+    if (b > a) mergeInto(merged, span(t.slice(a, b), r));
+    if (b < t.length) mergeInto(merged, { text: t.slice(b) });
   }
   if (!merged.some((s) => /[^ \n]/.test(s.text))) return [];
   // A space is never doubled across a mark boundary or kept beside a break, and a run neither starts nor ends with one.
@@ -276,12 +281,12 @@ function parseInline(text: string, marks: Partial<RichSpan>, opts: ParseOptions,
 
 // A marker is followed by spaces, never by a line break: a block that starts with a break keeps it.
 const LINE_MARKERS: Array<{ re: RegExp; type: RichBlock['type'] }> = [
-  { re: /^####[ \t]+/, type: 'h4' },
-  { re: /^###[ \t]+/, type: 'h3' },
-  { re: /^>[ \t]?/, type: 'blockquote' },
-  { re: /^[-*+][ \t]+\[[ xX]\][ \t]+/, type: 'check' },
-  { re: /^[-*+][ \t]+/, type: 'ul' },
-  { re: /^\d+[.)][ \t]+/, type: 'ol' }
+  { re: /^####[^\S\n]+/, type: 'h4' },
+  { re: /^###[^\S\n]+/, type: 'h3' },
+  { re: /^>[^\S\n]?/, type: 'blockquote' },
+  { re: /^[-*+][^\S\n]+\[[ xX]\][^\S\n]+/, type: 'check' },
+  { re: /^[-*+][^\S\n]+/, type: 'ul' },
+  { re: /^\d+[.)][^\S\n]+/, type: 'ol' }
 ];
 
 /** A line ending in an odd run of backslashes (the last one not escaped) goes on in the next, after a line break. */
@@ -293,18 +298,22 @@ const BREAK_AT_END = /(?:^|[^\\])(?:\\\\)*\\$/;
  */
 function textLines(input: string, markdown: boolean): string[] {
   const out: string[] = [];
-  let open: string | null = null;
+  /** The lines of the block being read, each without its closing backslash; null between blocks. */
+  let open: string[] | null = null;
   for (const raw of input.split(/\r?\n/)) {
-    const line = raw.trim();
-    const text: string = open === null ? line : `${open}\n${line}`;
-    if (markdown && BREAK_AT_END.test(line)) open = text.slice(0, -1);
-    else {
-      out.push(text);
+    // A line that goes on from a break keeps a deliberate space at its start (a non-breaking one).
+    const line = open === null ? raw.trim() : raw.replace(/^[ \t]+/, '').trimEnd();
+    const goesOn = markdown && BREAK_AT_END.test(line);
+    const piece = goesOn ? line.slice(0, -1) : line;
+    if (open === null) open = [piece];
+    else open.push(piece);
+    if (!goesOn) {
+      out.push(open.join('\n'));
       open = null;
     }
   }
   // A break at the very end: the line it starts is empty.
-  if (open !== null) out.push(`${open}\n`);
+  if (open !== null) out.push(`${open.join('\n')}\n`);
   return out;
 }
 

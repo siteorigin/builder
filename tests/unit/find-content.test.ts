@@ -300,6 +300,15 @@ describe('what replacing keeps safe', () => {
     expect(nbsp.changes.map((c) => c.after)).toEqual(['Book club and book night, 10\u00a0kg']);
   });
 
+  it('shows a line break a match runs across, so replacing it is a change that shows', () => {
+    const { s, page } = withParagraph([{ type: 'p', spans: [{ text: 'Harbour Lane\n12 Quay Street' }] }]);
+    const found = findContent(s, 'Lane 12').filter((m) => m.field.nodeId === 'n_rich_para');
+    expect(found.map((m) => m.match)).toEqual(['Lane ↵ 12']);
+    const { after, plan } = apply(s, found, 'Lane 12');
+    expect((after.pages[page.id].nodes.n_rich_para as { text: RichText }).text).toEqual([{ type: 'p', spans: [{ text: 'Harbour Lane 12 Quay Street' }] }]);
+    expect(plan.changes.map((c) => [c.before, c.after])).toEqual([['Harbour Lane ↵ 12 Quay Street', 'Harbour Lane 12 Quay Street']]);
+  });
+
   it('refuses to remove a link whose destination the same edit makes equal to its neighbour’s', () => {
     const { s } = withParagraph([{ type: 'p', spans: [{ text: 'Offers', link: { type: 'url', target: 'https://example.org/salecopy' } }, { text: 'copy', link: { type: 'url', target: 'https://example.org/sale' } }] }]);
     const ms = findContent(s, 'copy').filter((m) => m.field.nodeId === 'n_rich_para');

@@ -187,7 +187,7 @@ step('the first right-click in copy as its edit begins goes to the word under th
 // The misspelling already on the page is marked as the spellchecker would mark it, in the preview's own frame,
 // just before the right-click: the hidden window's own idle check soon clears a marker it did not find itself,
 // and DevTools drops its markers when its session ends. If the marker goes before the click lands, the attempt
-// starts over from a new edit, so every attempt right-clicks inside the edit's untouched whole selection.
+// starts over from a new edit, so every attempt right-clicks the word the edit began with selected.
 const preview = await (await win.locator('.frame-box iframe').elementHandle()).contentFrame();
 const cdp = await win.context().newCDPSession(preview);
 const mark = async () => {

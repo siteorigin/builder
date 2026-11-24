@@ -155,7 +155,8 @@ describe('rich text input', () => {
     // About 120 000 characters each: linear parsing takes milliseconds, a quadratic scan many seconds.
     const inputs: Array<[string, string]> = [
       ...['*a ', '[', '**a ', '[a]('].map((unit): [string, string] => [unit, unit.repeat(Math.ceil(120_000 / unit.length))]),
-      ['a link whose words are many marked runs', `[${'*a* '.repeat(30_000)}](https://example.com/${'x'.repeat(1900)})`]
+      ['a link whose words are many marked runs', `[${'*a* '.repeat(30_000)}](https://example.com/${'x'.repeat(1900)})`],
+      ['many lines that go on after a break', 'a\\\n'.repeat(200_000)]
     ];
     for (const [name, input] of inputs) {
       const started = performance.now();
@@ -165,11 +166,22 @@ describe('rich text input', () => {
     }
   });
 
+  it('cleans a marked run of many line breaks in linear time', () => {
+    const text = 'A' + '\n'.repeat(400_000) + 'B';
+    const started = performance.now();
+    const out = cleanBlocks([{ type: 'p', spans: [{ text, strong: true }] }]);
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(out).toEqual([p({ text, strong: true })]);
+  });
+
   it('reads a line ending in a backslash as a line break inside the block', () => {
     expect(norm('Harbour Lane Studio\\\n12 Quay Street\\\nPort Town\n\nNext')).toEqual([p('Harbour Lane Studio\n12 Quay Street\nPort Town'), p('Next')]);
     expect(norm('- One\\\n  more\n- Two')).toEqual([{ type: 'ul', items: [[{ text: 'One\nmore' }], [{ text: 'Two' }]] }]);
     // Only an odd run of backslashes breaks the line: an even run is escaped backslashes.
     expect(norm('C:\\\\\nNext')).toEqual([p('C:\\'), p('Next')]);
+    expect(norm('A' + '\\'.repeat(5) + '\nB')).toEqual([p('A' + '\\'.repeat(2) + '\nB')]);
+    // A marker is followed by any space but a line break.
+    expect(norm('1.\u00a0Buy')).toEqual([{ type: 'ol', items: [[{ text: 'Buy' }]] }]);
     // A string never goes on into the next one, and old strings are read for their marks only.
     expect(norm(['A\\', 'B'])).toEqual([p('A\n'), p('B')]);
     expect(toRichText(['A\\', 'B'])).toEqual([p('A\\'), p('B')]);
@@ -177,6 +189,9 @@ describe('rich text input', () => {
 
   it('keeps line breaks in structured blocks, without the spaces around them', () => {
     expect(norm([{ type: 'p', spans: [{ text: 'a \r\n b' }, { text: ' bold \n', strong: true }, { text: 'c' }] }])).toEqual([p('a\nb ', { text: 'bold', strong: true }, '\nc')]);
+    // A carriage return alone is spacing, as it always was.
+    expect(norm([{ type: 'p', spans: [{ text: 'a\rb' }] }])).toEqual([p('a b')]);
+    expect(toRichText(['A\rB'])).toEqual([p('A B')]);
     expect(norm([{ type: 'p', spans: [{ text: '\nlead and trail\n\n' }] }])).toEqual([p('\nlead and trail\n\n')]);
     // A block of breaks alone has nothing to show.
     expect(norm([{ type: 'p', spans: [{ text: ' \n \n' }] }, { type: 'p', spans: [{ text: 'x' }] }])).toEqual([p('x')]);
@@ -191,6 +206,8 @@ describe('rich text input', () => {
       { type: 'p', spans: [{ text: 'Before ' }, { text: 'bold\nlink', strong: true, link: { type: 'page', target: about.id } }, { text: '\n- not a list' }] },
       { type: 'p', spans: [{ text: '\nstarts and ends with a break\n\n' }] },
       { type: 'h3', spans: [{ text: 'Two\nlines' }] },
+      { type: 'h3', spans: [{ text: '\nAfter a break' }] },
+      { type: 'p', spans: [{ text: 'A\n\u00a0spaced on purpose' }] },
       { type: 'ul', items: [[{ text: 'Item\n### not a heading' }], [{ text: 'Last\n' }]] }
     ]);
     const text = richTextToMarkdown(value, s.pages);
@@ -702,6 +719,7 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
       [
         { type: 'p', spans: [{ text: 'Harbour Lane Studio\n12 Quay Street\nPort Town' }] },
         { type: 'p', spans: [{ text: 'A ' }, { text: 'bold\nbreak', strong: true, link: { type: 'url', target: 'https://example.com/' } }, { text: '\nB\n\n' }] },
+        { type: 'p', spans: [{ text: 'a\nb', strong: true, em: true }, { text: '\nOne break at the end\n' }] },
         { type: 'ul', items: [[{ text: '\nOne' }], [{ text: 'Two' }]] }
       ],
       s,
@@ -710,9 +728,12 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
     const out = html(value).replace(/<!--[\s\S]*?-->/g, '');
     expect(out).toContain('<p>Harbour Lane Studio<br/>12 Quay Street<br/>Port Town</p>');
     expect(out).toContain('<strong>bold<br/>break</strong>');
-    expect(out).toContain('B<br/><br/></p>');
+    expect(out).toContain('<strong><em>a<br/>b</em></strong>');
+    // A block that ends with a break shows the empty line after it: one more <br>, as a browser needs.
+    expect(out).toContain('B<br/><br/><br/></p>');
+    expect(out).toContain('end<br/><br/></p>');
     expect(out).toContain('<li><br/>One</li>');
-    expect(out.match(/<p>/g)).toHaveLength(2);
+    expect(out.match(/<p>/g)).toHaveLength(3);
     expect(roundTrip(value)).toEqual(value);
   });
 

@@ -47,7 +47,15 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks:
   let list: RichListBlock | null = null;
   let type: RichTextBlock['type'] = 'p';
   let droppedLinks = 0;
+  /** The breaks read from <br>: the last one in a block shows no line (see flush). */
+  const brs = new WeakSet<RichSpan>();
   const flush = () => {
+    // A <br> that ends a block shows nothing: it is the browser's own, holding the caret on the empty line after a
+    // Shift+Enter, or the one the page adds after a block that ends with a break (RichText.svelte). Only the
+    // breaks before it are the writer's.
+    let last = run.length - 1;
+    while (last >= 0 && !/[^ ]/.test(run[last].text)) last--;
+    if (last >= 0 && brs.has(run[last])) run.splice(last, 1);
     if (run.some((s) => s.text.trim())) {
       if (list) list.items.push(run);
       else blocks.push({ type, spans: run });
@@ -65,7 +73,9 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks:
     const tag = n.tag.toLowerCase();
     // A line break inside the block (Shift+Enter), not a new paragraph.
     if (tag === 'br') {
-      run.push({ text: '\n', ...marks });
+      const br = { text: '\n', ...marks };
+      brs.add(br);
+      run.push(br);
       return;
     }
     const inner = { ...marks };

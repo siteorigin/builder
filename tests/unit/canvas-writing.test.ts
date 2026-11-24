@@ -76,10 +76,7 @@ async function answer(dbl: Message, hit: string | null = dbl.payload.hit ?? null
   const desc = dbl.payload.chain![0];
   const editId = `e-${Math.random().toString(36).slice(2)}`;
   const before = (await messages()).length;
-  await page.evaluate(
-    ({ desc, editId, hit }) => document.querySelector('iframe')!.contentWindow!.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'beginTextEdit', payload: { desc, editId, hit } }, '*'),
-    { desc: { ctx: desc.ctx, node: desc.node, items: desc.items }, editId, hit }
-  );
+  await post('beginTextEdit', { desc: { ctx: desc.ctx, node: desc.node, items: desc.items }, editId, hit });
   await expect.poll(async () => (await messages()).slice(before).some((m) => m.type === 'textEditStarted' || m.type === 'textCancel'), WAIT).toBe(true);
   return editId;
 }
@@ -98,16 +95,27 @@ async function commit() {
   await expect.poll(async () => (await messages()).slice(before).some((m) => m.type === 'textCommit'), WAIT).toBe(true);
   const sent = (await messages()).slice(before).find((m) => m.type === 'textCommit')!;
   if (sent.payload.rich === undefined) return sent.payload.text;
-  return blocksFromDom(richDom(sent.payload.rich)!, {}).blocks;
+  return blocksFromDom(richDom(sent.payload.rich)!, PAGES).blocks;
 }
 
 /** Puts HTML and its plain text on the browser's own clipboard. */
 async function copy(htmlText: string, plain: string) {
-  await page.evaluate(
-    async ({ htmlText, plain }) =>
-      navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([htmlText], { type: 'text/html' }), 'text/plain': new Blob([plain], { type: 'text/plain' }) })]),
-    { htmlText, plain }
-  );
+  await page.evaluate(`navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([${JSON.stringify(htmlText)}], { type: 'text/html' }), 'text/plain': new Blob([${JSON.stringify(plain)}], { type: 'text/plain' }) })])`);
+}
+
+/** A message from the editor to the frame. */
+async function post(type: string, payload: unknown) {
+  await page.evaluate(`document.querySelector('iframe').contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: ${JSON.stringify(type)}, payload: ${JSON.stringify(payload)} }, '*')`);
+}
+
+/** Pastes markup straight from another app: a paste event no browser clipboard has cleaned. */
+async function pasteRaw(htmlText: string, plain: string) {
+  await frame.evaluate(`(() => {
+    const dt = new DataTransfer();
+    dt.setData('text/html', ${JSON.stringify(htmlText)});
+    dt.setData('text/plain', ${JSON.stringify(plain)});
+    document.activeElement.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  })()`);
 }
 
 /** An editing command as the app's Edit menu or its shortcut runs it in the focused frame (paste, pasteAndMatchStyle, undo, redo). */
@@ -116,6 +124,8 @@ async function command(name: string) {
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86 });
 }
 
+/** The site's pages, as the editor reads a link's route back to its page. */
+const PAGES = { pg_about: { id: 'pg_about', route: '/about/' } };
 const p = (...spans: Array<string | Record<string, unknown>>) => ({ type: 'p', spans: spans.map((x) => (typeof x === 'string' ? { text: x } : x)) });
 const untouched = [p('First paragraph stays.'), p('The second paragraph has a word to change.'), p('Teams co', { text: 'oper', strong: true }, 'ate on the third.'), p('Fourth paragraph stays too.')];
 
@@ -179,22 +189,59 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
 
     it('leaves the whole text to Select All', async () => {
       await editAt('r', 'word');
+      expect((await selected()).text).toBe('word');
       await page.keyboard.press('ControlOrMeta+A');
       expect((await selected()).text.replace(/\s+/g, ' ').trim()).toBe(PARAGRAPHS.join(' ').replace(/<\/?strong>/g, ''));
     });
 
-    it('starts nothing for a double-click the author has since moved on from', async () => {
+    it('starts nothing for a double-click the author has since moved on from, and still starts the newer one', async () => {
       const first = await doubleClick('r', 'word');
-      await doubleClick('h', 'Studio');
+      const second = await doubleClick('h', 'Studio');
       const before = (await messages()).length;
-      await answer(first);
+      const stale = await answer(first);
+      expect((await messages()).slice(before).map((m) => [m.type, m.payload.editId])).toEqual([['textCancel', stale]]);
+      expect(await editable('r')).toBeNull();
+      await answer(second);
+      await expect.poll(() => editable('h'), WAIT).toBe('plaintext-only');
+      expect((await selected()).text).toBe('Studio');
+    });
+
+    it('starts nothing when the text double-clicked was replaced before the editor answered', async () => {
+      const dbl = await doubleClick('r', 'word');
+      // The page updates in between: the same text, rendered anew.
+      await frame.evaluate(`(() => { const el = document.querySelector('[data-so-node="r"]'); el.replaceWith(el.cloneNode(true)); })()`);
+      const before = (await messages()).length;
+      await answer(dbl);
       expect((await messages()).slice(before).map((m) => m.type)).toEqual(['textCancel']);
       expect(await editable('r')).toBeNull();
     });
 
-    it('starts at the end of the text when there is no double-click to start from', async () => {
+    it('starts nothing once the editor has gone to Preview', async () => {
       const dbl = await doubleClick('r', 'word');
-      await answer(dbl, null);
+      await post('mode', { mode: 'preview' });
+      const before = (await messages()).length;
+      await answer(dbl);
+      expect((await messages()).slice(before).map((m) => m.type)).toEqual(['textCancel']);
+      expect(await editable('r')).toBeNull();
+    });
+
+    it('puts a caret, not the last word, where the double-click is in blank space beside the text', async () => {
+      const box = (await frame.locator('h1').boundingBox())!;
+      await page.evaluate(`document.querySelector('iframe').focus()`);
+      const before = (await messages()).length;
+      await page.mouse.dblclick(box.x + box.width - 20, box.y + box.height / 2);
+      await expect.poll(async () => (await messages()).slice(before).some((m) => m.type === 'dblclick'), WAIT).toBe(true);
+      await answer((await messages()).slice(before).find((m) => m.type === 'dblclick')!);
+      await expect.poll(() => editable('h'), WAIT).toBe('plaintext-only');
+      expect((await selected()).collapsed).toBe(true);
+      await page.keyboard.type(' now');
+      expect(await commit()).toBe('Harbour Lane Studio now');
+    });
+
+    it('starts at the end of the text when there is no double-click to start from', async () => {
+      await page.evaluate(`document.querySelector('iframe').focus()`);
+      await answer({ type: 'dblclick', payload: { chain: [{ ctx: 'page:p', node: 'r', items: '' }] } }, null);
+      await expect.poll(() => editable('r'), WAIT).toBe('true');
       expect((await selected()).collapsed).toBe(true);
       await page.keyboard.type(' More.');
       expect(await commit()).toEqual([untouched[0], untouched[1], untouched[2], p('Fourth paragraph stays too. More.')]);
@@ -215,8 +262,22 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       ]);
     });
 
+    it('brings headings, quotes, numbered lists and line breaks', async () => {
+      await copy('<meta charset="utf-8"><h2>Title</h2><h5>Small</h5><blockquote>A quote</blockquote><ol><li>First</li><li>Second</li></ol><p>12 Quay Street<br>Port Town</p>', 'Title');
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await command('paste');
+      expect(await commit()).toEqual([
+        { type: 'h3', spans: [{ text: 'Title' }] },
+        { type: 'h4', spans: [{ text: 'Small' }] },
+        { type: 'blockquote', spans: [{ text: 'A quote' }] },
+        { type: 'ol', items: [[{ text: 'First' }], [{ text: 'Second' }]] },
+        p('12 Quay Street\nPort Town')
+      ]);
+    });
+
     it('puts a formatted phrase in place of the selected word, inside its paragraph', async () => {
-      await copy('<meta charset="utf-8"><span style="font-weight:700">bold</span> <i>words</i>', 'bold words');
+      await copy('<meta charset="utf-8"><span style="font-weight:600">bold</span> <span style="font-style:italic">words</span>', 'bold words');
       await editAt('r', 'word');
       await command('paste');
       expect(await commit()).toEqual([untouched[0], p('The second paragraph has a ', { text: 'bold', strong: true }, ' ', { text: 'words', em: true }, ' to change.'), untouched[2], untouched[3]]);
@@ -245,16 +306,28 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
     it('rebuilds markup the browser has not cleaned, keeping only what the text can hold', async () => {
       // A paste event can carry markup straight from another app, unsanitized.
       await editAt('r', 'word');
-      await frame.evaluate(`(() => {
-        const dt = new DataTransfer();
-        dt.setData('text/html', '<p onclick="steal()">Safe <b onmouseover="steal()">bold</b><img src="/x.png" onerror="steal()"><script>steal()<\\/script><style>p{}</style><iframe src="/x"></iframe><a href="javascript:steal()" style="x">plain</a></p>');
-        dt.setData('text/plain', 'Safe bold plain');
-        document.querySelector('[data-so-node="r"]').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      })()`);
+      await pasteRaw(
+        '<p onclick="steal()">Safe <b onmouseover="steal()">bold</b><img src="/x.png" onerror="steal()"><script>steal()</script><style>p{}</style><iframe src="/x"></iframe><button>Buy now</button><svg><title>Company logo</title></svg><a href="javascript:steal()" style="x">plain</a> <a href="file:///etc/hosts">file</a> <a href="//example.com/x">far</a> <a href="tel:office">call</a></p>',
+        'Safe bold plain'
+      );
       const inserted = await html('r');
       expect(inserted).toContain('<strong>bold</strong>');
-      expect(inserted).not.toMatch(/<(img|script|style|iframe|a)\b|steal|on\w+=|style=/);
-      expect(await commit()).toEqual([untouched[0], p('The second paragraph has a Safe ', { text: 'bold', strong: true }, 'plain to change.'), untouched[2], untouched[3]]);
+      expect(inserted).not.toMatch(/<(img|script|style|iframe|a|button|svg)\b|steal|on\w+=|style=|Buy now|Company logo/);
+      expect(await commit()).toEqual([untouched[0], p('The second paragraph has a Safe ', { text: 'bold', strong: true }, 'plain file far call to change.'), untouched[2], untouched[3]]);
+    });
+
+    it('keeps a quote’s paragraphs and a nested list’s items apart, and a link to the site’s own page', async () => {
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await pasteRaw(
+        `<blockquote>\n  <p>First</p>Second</blockquote><ul><li>One<ul><li>Inner<ul><li>Deeper</li></ul></li></ul></li><li>Two</li></ul><p><a href="${SITE}/about/#team">Our team</a></p>`,
+        'First Second'
+      );
+      expect(await commit()).toEqual([
+        { type: 'blockquote', spans: [{ text: 'First\nSecond' }] },
+        { type: 'ul', items: [[{ text: 'One' }], [{ text: 'Inner' }], [{ text: 'Deeper' }], [{ text: 'Two' }]] },
+        p({ text: 'Our team', link: { type: 'page', target: 'pg_about', anchor: 'team' } })
+      ]);
     });
 
     it('pastes words alone with Paste and Match Style', async () => {
@@ -278,10 +351,18 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       await command('paste');
       const pasted = await html('r');
       expect(pasted).toContain('<strong>our studio</strong>');
+      expect(pasted).toContain('<a href="https://example.com/shop" target="_blank">the shop</a>');
       await command('undo');
       expect(await html('r')).toBe(before);
       await command('redo');
       expect(await html('r')).toBe(pasted);
+    });
+
+    it('pastes the plain words when the copied markup holds none', async () => {
+      await copy('<img src="/x.png">', 'picture caption');
+      await editAt('r', 'word');
+      await command('paste');
+      expect(await commit()).toEqual([untouched[0], p('The second paragraph has a picture caption to change.'), untouched[2], untouched[3]]);
     });
 
     it('leaves the selection alone when there is nothing to paste', async () => {
@@ -304,6 +385,14 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       await page.keyboard.press('Enter');
       await page.keyboard.type('Open daily.');
       expect(await commit()).toEqual([p('Harbour Lane Studio\n12 Quay Street\nPort Town'), p('Open daily.')]);
+    });
+
+    it('stores one break for one Shift+Enter at the end, not the browser’s placeholder for the empty line', async () => {
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await page.keyboard.type('A');
+      await page.keyboard.press('Shift+Enter');
+      expect(await commit()).toEqual([p('A\n')]);
     });
   });
 });

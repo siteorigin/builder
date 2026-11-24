@@ -290,7 +290,7 @@ export const RICHTEXT_SVELTE = `<script>
 	/**
 	 * Renders structured rich text as plain semantic HTML: paragraphs, headings, quotes and lists of text spans.
 	 * Text is always escaped; HTML is never interpreted, and a line feed in a span is a line break (<br>) inside its
-	 * block. \`paragraphs\` and \`list\` are the older form, which code components written against it still pass:
+	 * block. A block ending with a break gets one more <br>, as a browser needs to show the empty line after it. \`paragraphs\` and \`list\` are the older form, which code components written against it still pass:
 	 * strings with inline **strong** and *emphasis*. With \`list\` the root is the list itself, as it always was, so
 	 * their selectors (\`.x > li\`) keep matching.
 	 */
@@ -337,7 +337,7 @@ export const RICHTEXT_SVELTE = `<script>
 
 {#snippet lines(text)}{#each String(text ?? '').split('\\n') as line, k (k)}{#if k}<br />{/if}{line}{/each}{/snippet}
 {#snippet marked(s)}{#if s.strong && s.em}<strong><em>{@render lines(s.text)}</em></strong>{:else if s.strong}<strong>{@render lines(s.text)}</strong>{:else if s.em}<em>{@render lines(s.text)}</em>{:else}{@render lines(s.text)}{/if}{/snippet}
-{#snippet inline(spans)}{#each spans as s, i (i)}{#if s.link}<SoLink link={s.link} appearance="link">{@render marked(s)}</SoLink>{:else}{@render marked(s)}{/if}{/each}{/snippet}
+{#snippet inline(spans)}{#each spans as s, i (i)}{#if s.link}<SoLink link={s.link} appearance="link">{@render marked(s)}</SoLink>{:else}{@render marked(s)}{/if}{/each}{#if String(spans?.at(-1)?.text ?? '').endsWith('\\n')}<br />{/if}{/snippet}
 
 {#if items}
 	<ul class={['so-rich', 'so-rich--' + list, className]} {...rest}>

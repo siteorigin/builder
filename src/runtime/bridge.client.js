@@ -801,8 +801,9 @@ function textAt(x, y) {
     return c.getBoundingClientRect();
   };
   const holds = (b) => !!b && x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
-  const char = !holds(box(r.startOffset)) && holds(box(r.startOffset - 1)) ? r.startOffset - 1 : r.startOffset;
-  return { node: new WeakRef(node), caret: r.startOffset, char };
+  // Off the characters (blank space beside a line): the nearest caret, and no word.
+  const char = holds(box(r.startOffset)) ? r.startOffset : holds(box(r.startOffset - 1)) ? r.startOffset - 1 : -1;
+  return { node: new WeakRef(node), text: node.nodeValue, caret: r.startOffset, char };
 }
 
 const isInline = (el) => getComputedStyle(el).display.startsWith('inline');
@@ -835,7 +836,7 @@ function wordRange(el, node, at) {
   let text = '';
   let pos = -1;
   for (const t of line) {
-    if (t === node) pos = text.length + Math.min(at.char, node.length - 1);
+    if (t === node && at.char >= 0 && at.char < node.length) pos = text.length + at.char;
     starts.push(text.length);
     text += t.nodeValue;
   }
@@ -867,12 +868,18 @@ function wordRange(el, node, at) {
  * an earlier double-click than the last one starts nothing: the author has double-clicked something else since.
  */
 function beginTextEdit(desc, editId, hitId) {
+  // An answer to an older double-click leaves the newer one waiting for its own answer.
   const hit = hitId && pendingHit && pendingHit.id === hitId ? pendingHit : null;
-  pendingHit = null;
-  if (hitId && !hit) return send('textCancel', { desc, editId });
-  const target = hit && hit.target.deref();
-  let clicked = target && target.isConnected ? (target instanceof Element ? target : target.parentElement) : null;
-  while (clicked && !(clicked.hasAttribute('data-so-node') && sameDesc(descOf(clicked), desc))) clicked = clicked.parentElement;
+  if (hit) pendingHit = null;
+  if (mode !== 'edit' || (hitId && !hit)) return send('textCancel', { desc, editId });
+  let clicked = null;
+  if (hit) {
+    const target = hit.target.deref();
+    clicked = target && target.isConnected ? (target instanceof Element ? target : target.parentElement) : null;
+    while (clicked && !(clicked.hasAttribute('data-so-node') && sameDesc(descOf(clicked), desc))) clicked = clicked.parentElement;
+    // The text double-clicked has been replaced since (the page updated): what the author meant to edit is gone.
+    if (!clicked) return send('textCancel', { desc, editId });
+  }
   const el = clicked || findAll(desc)[0];
   // The editor is waiting for this edit to end: tell it there is nothing to edit.
   if (!el) return send('textCancel', { desc, editId });
@@ -888,8 +895,10 @@ function beginTextEdit(desc, editId, hitId) {
   el.style.outline = 'none';
   el.style.cursor = 'text';
   el.focus();
-  // The clicked text can be gone (the page's own text replaced typed text shown there): a caret at the end then.
-  const node = hit && hit.at && hit.at.node.deref();
+  // The page's own text can have replaced typed text shown there: the word is found again in the same words, and
+  // otherwise the edit starts with a caret at the end.
+  let node = hit && hit.at && hit.at.node.deref();
+  if (node && !el.contains(node)) node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue === hit.at.text);
   let range;
   if (node && el.contains(node)) range = wordRange(el, node, hit.at);
   else {
@@ -1055,8 +1064,31 @@ const PASTE_DROP = new Set(['HEAD', 'TITLE', 'META', 'LINK', 'BASE', 'STYLE', 'S
 /** Pasted blocks, as the rich text holds them. Anything else is read for its text, marks and links. */
 const PASTE_BLOCKS = { P: 'p', DIV: 'p', SECTION: 'p', ARTICLE: 'p', HEADER: 'p', FOOTER: 'p', MAIN: 'p', ASIDE: 'p', NAV: 'p', ADDRESS: 'p', PRE: 'p', FIGURE: 'p', FIGCAPTION: 'p', DL: 'p', DT: 'p', DD: 'p', TR: 'p', CAPTION: 'p', H1: 'h3', H2: 'h3', H3: 'h3', H4: 'h4', H5: 'h4', H6: 'h4', BLOCKQUOTE: 'blockquote', UL: 'ul', OL: 'ol', LI: 'li' };
 const PASTE_BLOCK_TAGS = Object.keys(PASTE_BLOCKS).join(',');
-/** A link the editor can store (it checks again, and finds the page, when the edit is committed). */
-const PASTE_HREF = /^(https?:\/\/\S|mailto:\S|tel:\S|#\S|\/)/i;
+const HTML_NS = 'http://www.w3.org/1999/xhtml';
+
+/**
+ * A copied link's address as the rich text can store it, or '' when it cannot: its words are then pasted unlinked.
+ * A link to one of this site's pages copied from the preview is a link to that page. The editor checks the address
+ * again, and finds the page for a route, when the edit is committed.
+ */
+function pastedHref(raw) {
+  let href = raw.trim();
+  if (/^https?:\/\//i.test(href)) {
+    try {
+      const url = new URL(href);
+      if (url.origin === location.origin) href = url.pathname + url.hash;
+    } catch {
+      return '';
+    }
+  }
+  const storable =
+    /^https?:\/\/[^\s<>"]+$/i.test(href) ||
+    /^mailto:[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/i.test(href) ||
+    /^tel:[+0-9 ().-]{3,30}$/i.test(href) ||
+    /^#[A-Za-z][\w-]*$/.test(href) ||
+    /^\/(?!\/)[^\s<>"]*$/.test(href);
+  return storable && href.length <= 2000 ? href : '';
+}
 
 /**
  * Copied HTML as markup the rich text can hold, or '' when it holds no words. It is parsed inert (nothing runs or
@@ -1067,6 +1099,12 @@ function pastedRich(html) {
   const src = new DOMParser().parseFromString(html, 'text/html').body;
   const out = document.createElement('div');
   let words = false;
+  /** Lines (list items, headings, quotes) where a block joined the text: the next words go on a new line. */
+  const breakAfter = new WeakSet();
+  const lineBreak = (parent) => {
+    breakAfter.delete(parent);
+    put(parent, document.createElement('br'), {});
+  };
   /** Text or a break inside its marks and link, joining the run before it where that has the same ones. */
   const put = (parent, node, m) => {
     let host = parent;
@@ -1099,13 +1137,20 @@ function pastedRich(html) {
       lines.forEach((t, i) => {
         if (i) put(parent, document.createElement('br'), m);
         if (!t) return;
-        if (/\S/.test(t)) words = true;
+        if (/\S/.test(t)) {
+          words = true;
+          if (breakAfter.has(parent)) lineBreak(parent);
+        }
         put(parent, document.createTextNode(t), m);
       });
       return;
     }
-    if (n.nodeType !== Node.ELEMENT_NODE || PASTE_DROP.has(n.tagName)) return;
-    if (n.tagName === 'BR') return put(parent, document.createElement('br'), m);
+    // SVG and MathML (their titles and labels included) are not text.
+    if (n.nodeType !== Node.ELEMENT_NODE || n.namespaceURI !== HTML_NS || PASTE_DROP.has(n.tagName)) return;
+    if (n.tagName === 'BR') {
+      breakAfter.delete(parent);
+      return put(parent, document.createElement('br'), m);
+    }
     const inner = { ...m };
     const style = n.style || {};
     const weight = style.fontWeight;
@@ -1115,9 +1160,8 @@ function pastedRich(html) {
     if (n.tagName === 'I' || n.tagName === 'EM') inner.em = true;
     if (style.fontStyle) inner.em = style.fontStyle === 'italic' || style.fontStyle === 'oblique';
     if (n.tagName === 'A') {
-      const href = (n.getAttribute('href') || '').trim();
-      // A link the text cannot hold keeps its words, unlinked.
-      if (PASTE_HREF.test(href) && href.length <= 2000) {
+      const href = pastedHref(n.getAttribute('href') || '');
+      if (href) {
         inner.href = href;
         inner.newTab = n.getAttribute('target') === '_blank';
       } else delete inner.href;
@@ -1131,6 +1175,9 @@ function pastedRich(html) {
       return kids(parent);
     }
     if (kind === 'ul' || kind === 'ol') {
+      // A list inside a list has no stored form: its items join the list around it.
+      const outer = parent.tagName === 'LI' ? parent.parentNode : parent.tagName === 'UL' || parent.tagName === 'OL' ? parent : null;
+      if (outer) return kids(outer);
       const list = document.createElement(kind);
       parent.appendChild(list);
       return kids(list);
@@ -1142,8 +1189,12 @@ function pastedRich(html) {
     // A block inside a list item, heading or quote joins the text there on a line of its own: the rich text holds
     // no deeper structure.
     if (!inList && parent !== out) {
-      if (parent.lastChild) put(parent, document.createElement('br'), m);
-      return kids(parent);
+      const before = parent.textContent;
+      breakAfter.delete(parent);
+      if (/\S/.test(before)) lineBreak(parent);
+      kids(parent);
+      if (/\S/.test(parent.textContent.slice(before.length))) breakAfter.add(parent);
+      return;
     }
     const block = document.createElement(inList ? 'li' : kind === 'li' ? 'p' : kind);
     parent.appendChild(block);
@@ -1203,9 +1254,10 @@ function commitEdit(detached = false) {
 function richCopy(root) {
   let budget = 4000;
   const copy = (n, depth) => {
+    // Only what goes in the copy counts: a page has a comment for every piece of text Svelte renders.
+    if (n.nodeType !== 1 && n.nodeType !== 3) return null;
     if (budget-- <= 0 || depth > 16) throw new Error('too large');
     if (n.nodeType === 3) return n.nodeValue;
-    if (n.nodeType !== 1) return null;
     const out = { tag: n.tagName.toLowerCase(), children: [] };
     const w = n.style && n.style.fontWeight;
     if (w) out.b = w === 'bold' || w === 'bolder' || Number(w) >= 600;
@@ -1457,6 +1509,8 @@ window.addEventListener('message', async (e) => {
     case 'mode':
       mode = m.payload.mode === 'preview' ? 'preview' : 'edit';
       formEpoch++;
+      // A double-click from before the change starts nothing after it.
+      pendingHit = null;
       if (editing) commitEdit();
       document.documentElement.toggleAttribute('data-so-editing', mode === 'edit');
       // A full-size image a visitor opened in Preview is a modal: it would cover the page being edited.
