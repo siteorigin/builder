@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Component, Copy, Ellipsis, Eye, GripVertical, Image, Link2, PanelRight, Pencil, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { applyOps } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
@@ -91,6 +91,15 @@ export function Canvas() {
   const setFrameError = (m: string | null) => setState({ previewIssue: m });
   // After Try again, the problem stays reported as "Restarting preview" until the new page says it is ready.
   const [retrying, setRetrying] = useState(false);
+  /** The problem shown is the canvas's own "took too long" report, which a late arrival of the page clears. */
+  const timedOut = useRef(false);
+  const [slowPage, setSlowPage] = useState(false);
+  /** Counts the changes the page has finished showing, so measurements of it can follow. */
+  const [applied, setApplied] = useState(0);
+  const markTimedOut = (on: boolean) => {
+    timedOut.current = on;
+    setSlowPage(on);
+  };
   const frameReady = useStore((s) => s.frameReady);
   const workspaceKey = useStore((s) => s.snapshot?.workspaceKey);
   /** A visitor's journey through the site in Preview (see lib/preview-history): the frame's own history entries,
@@ -103,7 +112,13 @@ export function Canvas() {
   };
   const [dragging, setDragging] = useState(false);
   /** A frame resize in progress: the pointer, where it started, and the opening its width belongs to. */
-  const resizeDrag = useRef<{ el: HTMLDivElement; pointer: number; x: number; from: number; zoom: number; opening: string | undefined; changed: boolean } | null>(null);
+  const resizeDrag = useRef<{ el: HTMLDivElement; pointer: number; x: number; from: number; zoom: number; opening: string | undefined; changed: boolean; onKey: (e: KeyboardEvent) => void } | null>(null);
+  /** Resizing the frame by a handle, which alone lights the handles (a section drag does not). */
+  const [resizing, setResizing] = useState<'left' | 'right' | null>(null);
+  /** An inline text edit is open on the page: the selection and chip say so, with a way to finish. */
+  const [editing, setEditing] = useState(false);
+  /** Said to screen readers after a move, since the drop line and the new order are visual only. */
+  const [announcement, setAnnouncement] = useState('');
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
   /** Inline text edits in progress, with the project and the AI's activity when each began. */
@@ -129,22 +144,33 @@ export function Canvas() {
   /** The canvas itself: where focus goes when the chip control that had it goes away. */
   const canvasRef = useRef<HTMLElement>(null);
   const [chipW, setChipW] = useState(0);
+  /** The pointer is on the name of a short hovered element, which sits outside it, off the page. */
+  const overTag = useRef(false);
   /** Escape hides the hover tag (WCAG 1.4.13) until the pointer moves to another element. */
   const [tagHidden, setTagHidden] = useState(false);
   useEffect(() => setTagHidden(false), [hover && refKey(hover)]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A name that goes away under the pointer (dismissed, or its element no longer hovered) fires no pointer leave.
+  useEffect(() => {
+    overTag.current = false;
+  }, [hover && refKey(hover), tagHidden]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && getState().hover && setTagHidden(true);
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, []);
-  /** While dragging to reorder: the insertion line, in page pixels. */
-  const [reorder, setReorder] = useState<{ line: Rect } | null>(null);
+  /** While dragging to reorder: the insertion line in page pixels (null where the drop would change nothing) and
+   *  the name of what is moving. */
+  const [reorder, setReorder] = useState<{ line: Rect | null; name: string } | null>(null);
   const url = runtime.state === 'ready' ? runtime.url : null;
   const origin = url ? new URL(url).origin : null;
   const state = snapshot?.state;
   const page = state && pageId ? state.pages[pageId] : null;
   const initialSrc = useMemo(() => (url && page ? url + page.route : null), [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => setState({ frameReady: false }), [url, session]);
+  // A new frame (another server, or Try again) is not ready until it says so: nothing is sent to it before then.
+  useEffect(() => {
+    setState({ frameReady: false });
+    setReady(false);
+  }, [url, session]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -204,8 +230,79 @@ export function Canvas() {
   const elided = elideAddress(address, addressFit);
   // The page ends above the panel, so it never covers what it describes (a form's Send button at the foot of a page).
   const practiceRoom = formsShown && practiceH ? Math.max(0, practiceBottom + practiceH + 8 - 28) : 0;
+  // While editing, a page problem sits below the page rather than over its foot (a card, a form's Send button).
+  const issueRoom = issueShown && mode === 'edit' && !formsShown ? Math.max(0, issueBottom + (issueH || 40) + 8 - 28) : 0;
   // The frame's whole footprint (20px top padding + 14px label margin + 28px bottom padding) fits at Fit, so the pasteboard never needs its own scrollbar.
-  const frameH = Math.max(formsShown ? 160 : 300, (size.h - 70 - practiceRoom) / zoom);
+  const frameH = Math.max(formsShown ? 160 : 300, (size.h - 70 - practiceRoom - issueRoom) / zoom);
+
+  // While editing, a page that never says it has opened (no reply, no error) is reported as a problem after a while,
+  // so the canvas offers Try again instead of saying "Opening…" for ever with the page closed to picks. A restart
+  // (Try again) gets the same deadline, and its expiry hands Try again back. Preview keeps its own recovery.
+  useEffect(() => {
+    if (!url || frameReady || runtime.state !== 'ready' || mode !== 'edit' || !(retrying || !frameError)) return;
+    const t = setTimeout(() => {
+      if (getState().frameReady) return;
+      setRetrying(false);
+      const title = getState().snapshot?.state.pages[getState().pageId ?? '']?.title;
+      setFrameError(`${title ? `The ${title} page` : 'The page'} took too long to open.`);
+      markTimedOut(true);
+    }, 20000);
+    return () => clearTimeout(t);
+  }, [url, session, pageId, frameReady, frameError, retrying, mode, runtime.state]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The page frame is centred, which can put its origin on half a device pixel; it is nudged onto a whole one, so the
+  // page and the 1px keylines drawn over it are crisp (the overlay edges are snapped relative to this origin).
+  const [nudge, setNudge] = useState({ x: 0, y: 0 });
+  useLayoutEffect(() => {
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const d = window.devicePixelRatio || 1;
+    const frac = (v: number) => (((v * d) % 1) + 1) % 1 / d;
+    const x = frac(r.left + nudge.x);
+    const y = frac(r.top + nudge.y);
+    if (Math.abs(x - nudge.x) > 0.01 || Math.abs(y - nudge.y) > 0.01) setNudge({ x, y });
+  });
+
+  /** The width label's three forms, measured off screen: the width; the width and zoom; and the width with its screen
+   *  size and zoom. */
+  const labelMeasure = useRef<HTMLSpanElement>(null);
+  const [labelW, setLabelW] = useState({ short: 60, mid: 100, full: 200 });
+  /** What the strip shows on its left (a page opening, a section moving), and how wide it is. */
+  const stripLeft = useRef<HTMLDivElement>(null);
+  const [stripLeftW, setStripLeftW] = useState(0);
+  useLayoutEffect(() => {
+    const [short, mid, full] = [...(labelMeasure.current?.children ?? [])].map((el) => (el as HTMLElement).offsetWidth);
+    if (short && mid && full && (short !== labelW.short || mid !== labelW.mid || full !== labelW.full)) setLabelW({ short, mid, full });
+    const left = stripLeft.current?.offsetWidth ?? 0;
+    if (left !== stripLeftW) setStripLeftW(left);
+  });
+
+  /** A page with nothing on it (only the shared header and footer, if it shows them): the canvas offers the first
+   *  step in the open space below them. `emptyTop` is where that space starts, in page pixels. */
+  const emptyPage = mode === 'edit' && !definitionMode && !!page && page.rootIds.length === 0;
+  const [emptyTop, setEmptyTop] = useState<number | null>(null);
+  // Cleared only when the page changes or stops being empty, so the card does not blink while the frame is resized.
+  useEffect(() => setEmptyTop(null), [pageId, emptyPage]);
+  useEffect(() => {
+    if (!emptyPage || !frameReady || !page) return;
+    const st = getState().snapshot?.state;
+    if (!st) return;
+    const parts = (['header', 'footer'] as const).filter((part) => showsPart(page, part));
+    const descs = parts.flatMap((part) => st.site.shell[part].rootIds.map((id) => descOf(st, { owner: { kind: 'shell', id: part }, instancePath: [], nodeId: id }) ?? { ctx: '', node: '', items: '' }));
+    if (!descs.length) return setEmptyTop(0);
+    const requestId = Math.random().toString(36).slice(2);
+    let live = true;
+    measureWaiters.current.set(requestId, (raw) => {
+      if (!live) return;
+      const found = (measuredRects(raw, descs.length) ?? []).filter((r): r is Rect => !!r);
+      setEmptyTop(found.length ? Math.max(...found.map((r) => r.y + r.height)) : 0);
+    });
+    post('measure', { requestId, descs });
+    return () => {
+      live = false;
+      measureWaiters.current.delete(requestId);
+    };
+  }, [emptyPage, frameReady, pageId, viewport, snapshot?.revision, applied]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload);
   // Saving or leaving the project asks the preview to hand back an inline edit that is still open.
@@ -225,7 +322,41 @@ export function Canvas() {
     if (editId === undefined) pendingEdits.current.clear();
     else pendingEdits.current.delete(editId);
     inlineEdit.active = pendingEdits.current.size > 0;
+    setEditing(inlineEdit.active);
     markDraft(CANVAS_DRAFT, inlineEdit.active);
+  }
+  /** Start editing an element's text on the page (a double-click, or Edit text in its menu). A double-click passes
+   *  its gesture id (`hit`) so the edit starts at the word clicked. */
+  function beginTextEdit(ref: ElementRef, desc: BridgeDesc, hit?: string) {
+    const editId = Math.random().toString(36).slice(2);
+    pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]), base: getState().snapshot, ai: aiActivity() });
+    inlineEdit.active = true;
+    setEditing(true);
+    markDraft(CANVAS_DRAFT, true);
+    post('beginTextEdit', { desc, editId, hit });
+  }
+  /** Edit text from the editor's own controls (the chip's Edit text, or the menu's): the page takes focus for it,
+   *  after a menu has closed and handed focus back, so the edit keeps the focus it is given. */
+  function startTextEditFromChrome(ref: ElementRef) {
+    setState({ selection: ref });
+    setTimeout(() => {
+      const desc = descFor(ref);
+      if (!desc || !canInlineEdit(ref)) return;
+      frameRef.current?.focus();
+      beginTextEdit(ref, desc);
+    }, 60);
+  }
+  /** Run a move of the selection and tell screen readers where it went among its siblings, from and to. */
+  async function announcedMove(move: () => Promise<unknown>) {
+    const before = getState().snapshot?.state;
+    const t = structuralTarget(getState().selection);
+    const from = before && t ? siblings(before, t) : null;
+    const name = before && t ? chromeLabel(before, t) : '';
+    await move();
+    const after = getState().snapshot?.state;
+    const to = after && t && resolveRef(after, t).node ? siblings(after, t) : null;
+    if (!from || !to || from.index === to.index) return;
+    setAnnouncement(`${name} moved from position ${from.index + 1} to ${to.index + 1} of ${to.count}.`);
   }
   // A new page load (another server, Try again) or closing the editor ends any edit the old page had open.
   useEffect(() => {
@@ -256,6 +387,7 @@ export function Canvas() {
           setState({ frameReady: true });
           setFrameError(null);
           setRetrying(false);
+          markTimedOut(false);
           frameAt.current = path;
           frameTextFocus.active = false;
           endInlineEdit();
@@ -295,6 +427,12 @@ export function Canvas() {
           // An open edit is not ended here: one in the shared header outlives the page change, and the page
           // ends any other (its element goes away) with its own cancel.
           setState({ frameReady: true });
+          // A page that arrived after the canvas reported it as too slow is no longer a problem.
+          if (timedOut.current) {
+            markTimedOut(false);
+            setFrameError(null);
+            setRetrying(false);
+          }
           syncPage(path);
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
@@ -310,15 +448,23 @@ export function Canvas() {
           }
           break;
         }
-        case 'hover':
-          hoverChain.current = chainOf(p.chain);
+        case 'hover': {
+          const chain = chainOf(p.chain);
+          // The pointer left the page for the name of what it was over: the hover stays (WCAG 1.4.13).
+          if (!chain.length && overTag.current) break;
+          hoverChain.current = chain;
           resolveHover();
           break;
-        case 'rects':
-          setState({ rects: { selected: rectList(p.selected), hovered: rectList(p.hovered), revealed: rectList(p.revealed) } });
+        }
+        case 'rects': {
+          const hovered = rectList(p.hovered);
+          // The pointer is on the name of what it was over: that element keeps its outline while it rests there.
+          setState({ rects: { selected: rectList(p.selected), hovered: !hovered.length && overTag.current ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
           break;
+        }
         case 'select': {
-          if (!st) return;
+          // A pick on a page the editor has not yet confirmed (one leaving) selects nothing.
+          if (!st || !s.frameReady) return;
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
@@ -327,19 +473,15 @@ export function Canvas() {
           break;
         }
         case 'dblclick': {
-          if (!st) return;
+          if (!st || !s.frameReady) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
           const desc = ref && canInlineEdit(ref) ? descFor(ref) : null;
           if (ref && desc) {
             setState({ selection: ref });
-            const editId = Math.random().toString(36).slice(2);
-            pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]), base: getState().snapshot, ai: aiActivity() });
-            inlineEdit.active = true;
-            markDraft(CANVAS_DRAFT, true);
             // The double-click it answers, so the edit starts at the word clicked (and not after a newer one).
             const hit = typeof p.hit === 'string' && p.hit.length <= 20 ? p.hit : undefined;
-            post('beginTextEdit', { desc, editId, hit });
+            beginTextEdit(ref, desc, hit);
           } else if (ref) {
             setState({ selection: ref, rightTab: 'inspect' });
             const r = resolveRef(st, ref);
@@ -375,8 +517,8 @@ export function Canvas() {
             reportRefused('A link pointed to something that is not a page, web address, email or phone number, so it was removed.');
           }
           if (value === null || (Array.isArray(value) && value.length > 500)) {
-            toast('That text change could not be saved. Try editing it in the inspector.', 'error');
-            reportRefused('That text change could not be saved. Try editing it in the inspector.');
+            toast('That text change could not be saved. Try editing it in the Inspector.', 'error');
+            reportRefused('That text change could not be saved. Try editing it in the Inspector.');
             break;
           }
           // Typed on the page, like any typed edit: if the AI ran meanwhile, it is the edit of the text as it was
@@ -408,18 +550,20 @@ export function Canvas() {
           if (!pendingEdits.current.has(String(p.editId))) break;
           endInlineEdit(String(p.editId));
           if (p.reason === 'too-large') {
-            toast('That text is too long to edit on the page. Edit it in the inspector instead.', 'error');
-            reportRefused('That text is too long to edit on the page. Edit it in the inspector instead.');
+            toast('That text is too long to edit on the page. Edit it in the Inspector instead.', 'error');
+            reportRefused('That text is too long to edit on the page. Edit it in the Inspector instead.');
           }
           break;
         case 'key':
-          // Ignored: shortcuts are taken from trusted keyboard input (see App), never from the page.
+          // Shortcuts are taken from trusted keyboard input (see App), never from the page. Escape only hides the
+          // hover name (WCAG 1.4.13), which changes nothing in the project, so the page's report of it counts.
+          if (p.key === 'Escape' && getState().hover) setTagHidden(true);
           break;
         case 'textFocus':
           frameTextFocus.active = p.on === true;
           break;
         case 'contextmenu': {
-          if (!st) return;
+          if (!st || !s.frameReady) return;
           pagePick();
           const chain = chainOf(p.chain);
           const ref = pick(chain, false);
@@ -465,11 +609,15 @@ export function Canvas() {
           break;
         }
         case 'runtimeError':
+          markTimedOut(false);
           setFrameError(String(p.message).slice(0, 400));
           setRetrying(false);
           break;
         case 'revisionApplied':
-          setFrameError(null);
+          // A change shown by the page clears its own error, not the canvas's report that a page never arrived.
+          if (!timedOut.current) setFrameError(null);
+          // The page now shows the latest change (a last section deleted): what is measured on it is measured again.
+          setApplied((n) => n + 1);
           break;
         case 'forms':
           setForms(formsOf(p.forms));
@@ -535,7 +683,9 @@ export function Canvas() {
   // Pointer events inside the page never reach this window, so any move seen here (the pasteboard, the chip,
   // a panel) means the pointer has left the page and the page's hover ends. A hover a Layers row set stays.
   useEffect(() => {
-    const leave = () => {
+    const leave = (e: PointerEvent) => {
+      // Resting on the name of what is hovered keeps it hovered.
+      if ((e.target as Element | null)?.closest?.('.ov-label.outside')) return;
       if (!hoverChain.current) return;
       hoverChain.current = null;
       const s = getState();
@@ -642,8 +792,14 @@ export function Canvas() {
     if (!ready || !page) return;
     // The page already went there itself (a link clicked while previewing): leave it where it is.
     if (samePath(page.route, frameAt.current)) return;
-    // Until the page confirms the navigation, it is "opening", not ready.
+    // Until the page confirms the navigation, it is "opening", not ready. Focus in the leaving page moves to the
+    // canvas, which stays.
     setState({ frameReady: false });
+    // Any problem reported was about the page that is leaving.
+    markTimedOut(false);
+    setFrameError(null);
+    setRetrying(false);
+    if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
     pendingNav.current = page.route;
     frameAt.current = null;
     post('navigate', { path: page.route });
@@ -738,8 +894,12 @@ export function Canvas() {
       const now = getState().snapshot?.state;
       if (now && refExists(now, target)) void fn();
     };
+    // Text that can be edited on the page can be reached without a double-click: the keyboard's way in.
+    const editable = canInlineEdit(ref) && !!descFor(ref);
+    const editText = live(ref, () => startTextEditFromChrome(ref));
     const items = [
         { heading: name },
+        ...(editable ? [{ label: 'Edit text', icon: <Pencil />, onSelect: editText }] : []),
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
         { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: live(ref, () => askAiAbout(ref)) },
         ...(t
@@ -747,8 +907,8 @@ export function Canvas() {
               ...(reorderable || !locked || create ? [{ separator: true }] : []),
               ...(reorderable
                 ? [
-                    { label: 'Move up', icon: <ArrowUp />, shortcut: keys('⇧⌘↑'), disabled: sib!.index === 0, onSelect: on(() => moveSelection(-1)) },
-                    { label: 'Move down', icon: <ArrowDown />, shortcut: keys('⇧⌘↓'), disabled: sib!.index >= sib!.count - 1, onSelect: on(() => moveSelection(1)) }
+                    { label: 'Move up', icon: <ArrowUp />, shortcut: keys('⇧⌘↑'), disabled: sib!.index === 0, onSelect: on(() => announcedMove(() => moveSelection(-1))) },
+                    { label: 'Move down', icon: <ArrowDown />, shortcut: keys('⇧⌘↓'), disabled: sib!.index >= sib!.count - 1, onSelect: on(() => announcedMove(() => moveSelection(1))) }
                   ]
                 : []),
               ...(locked ? [] : [{ label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
@@ -777,6 +937,8 @@ export function Canvas() {
     let released = false;
     const early = () => (released = true);
     window.addEventListener('pointerup', early, { once: true });
+    window.addEventListener('pointercancel', early, { once: true });
+    window.addEventListener('blur', early, { once: true });
     const requestId = Math.random().toString(36).slice(2);
     const rects = await new Promise<Array<Rect | null> | null>((resolve) => {
       measureWaiters.current.set(requestId, (raw) => resolve(measuredRects(raw, info.list.length)));
@@ -787,44 +949,78 @@ export function Canvas() {
       setTimeout(() => resolve(null), 1500);
     });
     window.removeEventListener('pointerup', early);
+    window.removeEventListener('pointercancel', early);
+    window.removeEventListener('blur', early);
     const from = info.index;
     // Siblings hidden at this width take no space on the page: the drag moves among the visible ones.
     const visible = rects ? rects.flatMap((r, i) => (r ? [i] : [])) : [];
     if (released || !rects?.[from] || visible.length < 2) return;
     const boxes = visible.map((i) => rects[i]!);
+    const name = chromeLabel(st, t);
     let to: number | null = null;
     setDragging(true);
-    setReorder({ line: dropAt(boxes, rects[from]!.x + 1, rects[from]!.y + 1).line });
+    // Keys reach this window, not the page, while dragging: Escape cancels.
+    canvasRef.current?.focus({ preventScroll: true });
+    // The line shows only where a drop would change the order; over the element's own place there is none.
+    setReorder({ line: null, name });
     const move = (ev: PointerEvent) => {
       const box = wrapRef.current?.getBoundingClientRect();
       if (!box) return;
       const z = currentZoom();
+      const inside = ev.clientX >= box.left && ev.clientX <= box.right && ev.clientY >= box.top && ev.clientY <= box.bottom;
       const drop = dropAt(boxes, (ev.clientX - box.left) / z, (ev.clientY - box.top) / z);
-      to = drop.to;
-      setReorder({ line: drop.line });
+      // Outside the page, or over the element's own place, a release moves nothing.
+      to = inside && moveIndex(visible, from, drop.to) !== null ? drop.to : null;
+      setReorder({ line: to === null ? null : drop.line, name });
     };
-    const up = () => {
+    const end = (commit: boolean) => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('blur', cancel);
+      window.removeEventListener('keydown', key, true);
       setDragging(false);
       setReorder(null);
-      const index = to === null ? null : moveIndex(visible, from, to);
-      if (index !== null) void applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], 'Move');
+      const index = commit && to !== null ? moveIndex(visible, from, to) : null;
+      if (index !== null) void announcedMove(() => applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], 'Move'));
+    };
+    const up = () => end(true);
+    const cancel = () => end(false);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      end(false);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('blur', cancel);
+    window.addEventListener('keydown', key, true);
   }
 
   // Drag-to-resize viewport. The frame stays centered, so both edges follow the pointer, within the widths the
   // toolbar's width field accepts. The handle captures the pointer (as the panel splitters do), so the drag always
   // hears its release; the width is remembered once, for the opening it was made in. One drag at a time: a second
   // pointer, or one pressed during a block reorder, is ignored.
-  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+  const startResize = (e: React.PointerEvent<HTMLDivElement>, side: PanelSide) => {
     if (e.button !== 0 || resizeDrag.current || dragging) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    resizeDrag.current = { el: e.currentTarget, pointer: e.pointerId, x: e.clientX, from: getState().viewport, zoom, opening: getState().snapshot?.workspaceKey, changed: false };
+    // Escape puts the width back where the drag found it.
+    const onKey = (ev: KeyboardEvent) => {
+      const d = resizeDrag.current;
+      if (ev.key !== 'Escape' || !d) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      d.changed = false;
+      setState({ viewport: d.from });
+      endResize();
+    };
+    window.addEventListener('keydown', onKey, true);
+    resizeDrag.current = { el: e.currentTarget, pointer: e.pointerId, x: e.clientX, from: getState().viewport, zoom, opening: getState().snapshot?.workspaceKey, changed: false, onKey };
     setDragging(true);
+    setResizing(side);
   };
   const moveResize = (e: React.PointerEvent<HTMLDivElement>, side: PanelSide) => {
     const d = resizeDrag.current;
@@ -841,7 +1037,9 @@ export function Canvas() {
     const d = resizeDrag.current;
     if (!d || (pointer !== undefined && d.pointer !== pointer)) return;
     resizeDrag.current = null;
+    window.removeEventListener('keydown', d.onKey, true);
     setDragging(false);
+    setResizing(null);
     if (d.el.isConnected && d.el.hasPointerCapture(d.pointer)) d.el.releasePointerCapture(d.pointer);
     if (d.changed && getState().snapshot?.workspaceKey === d.opening) saveLocal({ viewport: getState().viewport });
   };
@@ -854,7 +1052,8 @@ export function Canvas() {
   useEffect(() => () => endResize(), []); // eslint-disable-line react-hooks/exhaustive-deps
   const frameHandle = (side: PanelSide) => (
     <div
-      className={`frame-handle ${side}${dragging ? ' dragging' : ''}`}
+      // Only the edge being dragged lights up (a block reorder lights neither).
+      className={`frame-handle ${side}${resizing === side ? ' dragging' : ''}`}
       tabIndex={0}
       role="separator"
       aria-orientation="vertical"
@@ -864,7 +1063,7 @@ export function Canvas() {
       aria-valuetext={`${viewport} pixels`}
       aria-label={`Preview width, ${side} edge`}
       title="Drag to resize, or use the arrow keys"
-      onPointerDown={startResize}
+      onPointerDown={(e) => startResize(e, side)}
       onPointerMove={(e) => moveResize(e, side)}
       onPointerUp={(e) => endResize(e.pointerId)}
       onPointerCancel={(e) => endResize(e.pointerId)}
@@ -888,6 +1087,17 @@ export function Canvas() {
           <AppMark size={40} />
           <h3>Preview unavailable</h3>
           <p style={{ maxWidth: 360 }}>{runtime.message}</p>
+          <p>Your work is safe. You can keep editing in Layers and the Inspector.</p>
+          <button
+            className="btn"
+            onClick={() => {
+              setState({ leftTab: 'layers' });
+              // Focus follows into Layers, so the keyboard carries on there.
+              requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is([role="tree"] [tabindex="0"], button)')?.focus());
+            }}
+          >
+            <Layers /> Open Layers
+          </button>
         </div>
       );
     if (runtime.state === 'error')
@@ -895,7 +1105,7 @@ export function Canvas() {
         <div className="canvas-card" role="alert">
           <TriangleAlert size={26} color="var(--red)" />
           <h3>{runtime.message}</h3>
-          <p>Your work is safe and editing keeps working. The live preview needs the website tools to be set up.</p>
+          <p>Your work is safe. You can keep editing in Layers and the Inspector while the preview is stopped.</p>
           {runtime.detail && devMode && <pre>{runtime.detail}</pre>}
           <div className="row">
             <button className="btn btn-primary" onClick={() => void api.project.retryPreview()}>
@@ -909,12 +1119,12 @@ export function Canvas() {
       );
     if (runtime.state !== 'preparing' && runtime.state !== 'starting')
       return (
-        <div className="canvas-card">
+        <div className="canvas-card" role="status">
           <AppMark size={40} />
           <h3>Preview is paused</h3>
-          <p>Your work is saved. Start the preview to see and edit your site on the page.</p>
+          <p>Your work is safe. Start the preview to see and edit your site on the page.</p>
           <button className="btn btn-primary" onClick={() => void api.project.retryPreview()}>
-            <RefreshCcw /> Start preview
+            <Play /> Start preview
           </button>
         </div>
       );
@@ -930,55 +1140,87 @@ export function Canvas() {
     );
   })();
 
+  // The frame shows a page the editor has not confirmed (one leaving, or one that never arrived): it takes no picks,
+  // nothing is drawn on it, and it steps back. "Opening" is that, before anything has been reported wrong.
+  const staleFrame = !runtimeCard && !!url && !frameReady && mode === 'edit';
+  const opening = staleFrame && !frameError;
+  // While editing, a page that is showing but threw is not "couldn't be previewed": something on it went wrong.
+  // Preview's own wording is left as it is.
+  const issueText = mode !== 'edit' ? 'This page couldn’t be previewed.' : slowPage && frameError ? frameError : frameReady ? 'Something on this page didn’t work.' : 'This page couldn’t be previewed.';
   const z = zoom;
-  const toBox = (r: Rect) => ({ left: r.x * z, top: r.y * z, width: r.width * z, height: r.height * z });
-  // Text and other small parts get a few pixels of breathing room, so the outline never touches the glyphs.
-  // While editing everywhere, the component's own nodes are its parts; its root stands for the whole design.
+  const frameW = viewport * z;
+  // Edges land on device pixels, so a 1px keyline at a fractional zoom is one crisp pixel, not two faint ones.
+  const dpr = window.devicePixelRatio || 1;
+  const snap = (v: number) => Math.round(v * dpr) / dpr;
+  const toBox = (r: Rect) => {
+    const left = snap(r.x * z);
+    const top = snap(r.y * z);
+    return { left, top, width: snap((r.x + r.width) * z) - left, height: snap((r.y + r.height) * z) - top };
+  };
+  // The drop line keeps the same weight at any zoom: centred on the gap the geometry gives, 2px of colour between
+  // its keylines, in screen pixels. It starts at the centre of its ring, 7px in, and stays at least 6px inside the
+  // page, so its keylines and ring are never clipped.
+  const dropBox = (r: Rect) => {
+    const vertical = r.height > r.width;
+    const b = toBox(r);
+    const within = (v: number, max: number) => Math.max(6, Math.min(v, max - 8));
+    return vertical
+      ? { left: snap(within(b.left + b.width / 2 - 1, frameW)), top: b.top + 7, width: 2, height: Math.max(4, b.height - 9), vertical }
+      : { left: b.left + 7, top: snap(within(b.top + b.height / 2 - 1, frameH * z)), width: Math.max(4, b.width - 9), height: 2, vertical };
+  };
+  // Text and other small parts get a few pixels of breathing room, so the outline (drawn inside its box) never
+  // touches the glyphs. While editing everywhere, the component's own nodes are its parts; its root stands for
+  // the whole design.
   const inDef = !!definitionMode && inDefinition(selection, definitionMode.definitionId);
   const defRoot = inDef && !selection!.instancePath.length && state?.components[definitionMode!.definitionId]?.tree?.rootIds[0] === selection!.nodeId;
   const isPart = !!selection?.instancePath.length || (inDef && !defRoot);
-  const pad = isPart ? 3 : 0;
-  const selBoxes = mode === 'edit' && !stylesOpen ? rects.selected.map(toBox).map((b) => ({ left: b.left - pad, top: b.top - pad, width: b.width + pad * 2, height: b.height + pad * 2 })) : [];
-  const hovBoxes = mode === 'edit' ? rects.hovered.map(toBox) : [];
+  // Text and links placed straight on the page get the same room as parts: the ring is drawn inside the box.
+  const textKind = (ref: ElementRef | null) => !!ref && !!state && ['text', 'link'].includes(resolveRef(state, ref).node?.kind ?? '');
+  const pad = isPart || textKind(selection) ? 6 : 0;
+  // While another page opens, what is outlined belongs to the page that is leaving: nothing is drawn on it.
+  const selBoxes = mode === 'edit' && !stylesOpen && !staleFrame ? rects.selected.map(toBox).map((b) => ({ left: b.left - pad, top: b.top - pad, width: b.width + pad * 2, height: b.height + pad * 2 })) : [];
+  // A hovered part gets the same room as a selected one, so its outline does not jump when it is clicked.
+  const hovDef = !!definitionMode && inDefinition(hover, definitionMode.definitionId);
+  const hovPad = hover?.instancePath.length || textKind(hover) || (hovDef && !(!hover!.instancePath.length && state?.components[definitionMode!.definitionId]?.tree?.rootIds[0] === hover!.nodeId)) ? 6 : 0;
+  const hovBoxes = mode === 'edit' && !staleFrame ? rects.hovered.map(toBox).map((b) => ({ left: b.left - hovPad, top: b.top - hovPad, width: b.width + hovPad * 2, height: b.height + hovPad * 2 })) : [];
   // A part of a repeated item selected on the page, and outlined there, already marks its item: the item stays
   // revealed, without a second outline.
   const selShown = rects.selected.some((r) => r.y + r.height > 0 && r.y < frameH);
-  const revBoxes = mode === 'edit' && !(selection?.itemPath?.length && selShown) ? rects.revealed.map(toBox) : [];
+  const revBoxes = mode === 'edit' && !staleFrame && !(selection?.itemPath?.length && selShown) ? rects.revealed.map(toBox) : [];
   const selLabel = selection && state ? chromeLabel(state, selection) : '';
   const hovering = hover && !sameRef(hover, selection) && !reorder && !dragging && !menu.isOpen;
   const firstSel = selBoxes[0];
-  const placement = firstSel && selection ? chipPlacement(firstSel, !isPart, frameH * z) : null;
+  // Text being edited always has its chip parked above the page, never over the words.
+  const placement = firstSel && selection ? chipPlacement(firstSel, !isPart && !editing, frameH * z) : null;
+  const device = viewport < 768 ? 'Phone' : viewport < 1024 ? 'Tablet' : 'Desktop';
+  const scalePct = Math.round(z * 100);
+  // The width label shares the strip with a parked chip: in full, then the width and zoom, then just the width,
+  // then not at all, whichever fits beside the chip. While the frame is being resized it always shows in full.
+  // The same goes for what the strip says on its left (a page opening, a section moving), which never takes more
+  // room than leaves the width itself.
+  const chipEnd = placement === 'strip' && !reorder && !resizing && firstSel ? Math.max(0, Math.min(firstSel.left, frameW - chipW)) + chipW + 12 : 0;
+  const leftEnd = chipEnd || (stripLeftW ? stripLeftW + 12 : 0);
+  const labelMode = resizing || leftEnd + labelW.full <= frameW ? 'full' : scalePct !== 100 && leftEnd + labelW.mid <= frameW ? 'mid' : leftEnd + labelW.short <= frameW ? 'short' : 'gone';
+  const stripRoom = Math.max(80, frameW - labelW.short - 12);
+  // The empty-page card needs about 210px under the shared header and footer (its height and margins); with less,
+  // the strip says it instead.
+  const emptyFits = emptyTop !== null && emptyTop * z + 24 + 186 <= frameH * z;
+  const addSections = () => {
+    setState({ leftTab: 'insert' });
+    // Into the Insert panel, where the first section is chosen; it goes on this page.
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is(input, button, [tabindex="0"])')?.focus());
+  };
 
   return (
-    <main ref={canvasRef} tabIndex={-1} className={`canvas${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}`} aria-label="Website preview">
+    <main ref={canvasRef} tabIndex={-1} className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${resizing ? ' resizing' : ''}`} aria-label="Website preview">
       {runtimeCard && <div className="canvas-state">{runtimeCard}</div>}
-      {!runtimeCard && url && !frameReady && !frameError && (
-        <div className="canvas-state soft" role="status">
-          <div className="canvas-card compact">
-            <Spinner />
-            <span>Opening {page?.title ?? 'the page'}…</span>
-          </div>
-        </div>
-      )}
-      {/* A page with nothing on it says how to start, here in the editor only: the website shows an empty page. */}
-      {!runtimeCard && url && frameReady && !frameError && mode === 'edit' && !definitionMode && page && !page.rootIds.length && (
-        <div className="canvas-state empty-page">
-          <div className="canvas-card" role="group" aria-labelledby="canvas-empty-title" data-testid="canvas-empty-page">
-            <h3 id="canvas-empty-title">This page has no sections yet</h3>
-            <p>Add a first section to start building it. Visitors never see this note.</p>
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                setState({ leftTab: 'insert' });
-                // Into the Insert panel, where the first section is chosen; it goes on this page.
-                requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is(input, button, [tabindex="0"])')?.focus());
-              }}
-            >
-              <Plus size={14} /> Add a section
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Said in the strip above the page (see frame-status below), and here for screen readers. */}
+      <p className="sr-only" role="status">
+        {opening ? `Opening ${page?.title ?? 'the page'}…` : ''}
+      </p>
+      <p className="sr-only" role="status">
+        {announcement}
+      </p>
       {mode === 'preview' && (
         <div className="preview-pill" role="group" aria-label="Preview">
           <span className="pill-note" title="Links and menus work as they will for visitors">
@@ -1016,7 +1258,7 @@ export function Canvas() {
       {/* Mounted before they have anything to say, so both are announced. The problem clears during a restart, so a
           restart that fails is announced again. */}
       <p className="sr-only" role="alert">
-        {issueShown && !retrying ? 'This page couldn’t be previewed. Your work is safe.' : ''}
+        {issueShown && !retrying ? `${issueText} Your work is safe.` : ''}
       </p>
       <p className="sr-only" role="status">
         {issueShown && retrying ? 'Restarting preview…' : ''}
@@ -1027,7 +1269,7 @@ export function Canvas() {
         <div ref={issueRef} className={`ai-veil issue${retrying ? ' retrying' : ''}`} style={{ bottom: issueBottom }} role="group" aria-label="Page problem">
           {retrying ? <Spinner decorative /> : <TriangleAlert size={15} aria-hidden="true" />}
           <span>
-            <strong>{retrying ? 'Restarting preview…' : 'This page couldn’t be previewed.'}</strong> Your work is safe.
+            <strong>{retrying ? 'Restarting preview…' : issueText}</strong> Your work is safe.
           </span>
           {/* Not natively disabled, so focus stays here while the page restarts. */}
           <button
@@ -1096,10 +1338,71 @@ export function Canvas() {
         onMouseDown={(e) => e.target === e.currentTarget && setState({ selection: null })}
       >
         {url && initialSrc && (
-          <div className="frame-wrap" ref={wrapRef} style={{ width: viewport * z, height: frameH * z, marginTop: 14 }}>
-            <div className={`frame-width-label${placement === 'strip' && !reorder ? (Math.min(firstSel.left, viewport * z - chipW) + chipW + 12 > viewport * z - 190 ? ' gone' : ' aside') : ''}`}>
-              <b>{viewport}</b> px {viewport < 768 ? '· Phone range' : viewport < 1024 ? '· Tablet range' : '· Desktop range'}
+          <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: 14, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
+            {/* The strip above the page: what the page is doing on the left, its screen size on the right. */}
+            {opening && !resizing && (
+              <div className="frame-status" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
+                <Spinner decorative />
+                <span>Opening {page?.title ?? 'the page'}…</span>
+              </div>
+            )}
+            <div className={`frame-width-label${labelMode === 'gone' ? ' gone' : ''}${resizing ? ' live' : ''}`} title={scalePct !== 100 ? `${viewport} px wide, shown at ${scalePct}%` : `${viewport} px wide, shown at actual size`}>
+              <b>{viewport}</b>&nbsp;px
+              {labelMode === 'mid' && (
+                <>
+                  <span className="sep">·</span>
+                  {scalePct}%
+                </>
+              )}
+              {labelMode === 'full' && (
+                <>
+                  <span className="sep">·</span>
+                  {device}
+                  {scalePct !== 100 && (
+                    <>
+                      <span className="sep">·</span>
+                      {scalePct}% zoom
+                    </>
+                  )}
+                </>
+              )}
             </div>
+            <span className="frame-width-label measure" ref={labelMeasure} aria-hidden="true">
+              <span>
+                <b>{viewport}</b>&nbsp;px
+              </span>
+              <span>
+                <b>{viewport}</b>&nbsp;px<span className="sep">·</span>
+                {scalePct}%
+              </span>
+              <span>
+                <b>{viewport}</b>&nbsp;px<span className="sep">·</span>
+                {device}
+                {scalePct !== 100 && (
+                  <>
+                    <span className="sep">·</span>
+                    {scalePct}% zoom
+                  </>
+                )}
+              </span>
+            </span>
+            {/* A chip parked in the strip (the shared header selected) takes the strip; Layers keeps its own Add sections. */}
+            {emptyPage && emptyTop !== null && !staleFrame && !emptyFits && !resizing && !reorder && !(placement === 'strip' && firstSel) && (
+              <div className="frame-status empty" ref={stripLeft} style={{ maxWidth: stripRoom }}>
+                <span>This page has no sections yet</span>
+                <button className="link-btn" onClick={addSections}>
+                  <Plus /> Add a section
+                </button>
+              </div>
+            )}
+            {reorder && firstSel && (
+              <div className="ov-moving" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
+                <GripVertical />
+                <span className="what">Moving {reorder.name}</span>
+                <span className="sep">·</span>
+                <span className="hint">Esc to cancel</span>
+              </div>
+            )}
             <div className="frame-box" style={{ width: viewport, height: frameH, transform: `scale(${z})` }}>
               <iframe
                 key={session}
@@ -1108,31 +1411,69 @@ export function Canvas() {
                 title="Website preview"
                 src={initialSrc}
                 sandbox="allow-scripts allow-same-origin allow-forms"
-                style={{ pointerEvents: dragging ? 'none' : undefined }}
+                // While a drag runs, and while another page is on its way, picks on the page would act on what is leaving.
+                style={{ pointerEvents: dragging || staleFrame ? 'none' : undefined }}
+                tabIndex={staleFrame ? -1 : undefined}
               />
             </div>
             <div className="overlay-layer">
               <div className="overlay-clip">
                 {hovering &&
-                  hovBoxes.map((b, i) => (
-                    <div key={`h${i}`} className="ov-box ov-hover" style={b}>
-                      {i === 0 && !tagHidden && b.height >= 40 && b.top + b.height > 30 && !(placement === 'inside' && firstSel && Math.abs(firstSel.top - b.top) < 34 && Math.abs(firstSel.left - b.left) < chipW + 8) && (
-                        // Kept in view when the element's top has scrolled out of the page.
-                        <span className="ov-label" style={b.top < 0 ? { top: 3 - b.top } : undefined}>
-                          {state && hover ? chromeLabel(state, hover) : ''}
-                        </span>
-                      )}
-                    </div>
-                  ))}
+                  hovBoxes.map((b, i) => {
+                    const tall = b.height >= 40;
+                    // A tall element carries its name inside its top-left corner (kept in view when its top has scrolled
+                    // out of the page); a short one, above it, or below when it sits at the top of the page.
+                    // Near the page's right edge the name is anchored to the element's right, so the page edge never cuts it.
+                    const side = b.left > frameW - 160 ? (tall ? { left: 'auto', right: 4 } : { left: 'auto', right: 0 }) : tall ? {} : { left: 0 };
+                    const tagAt = { ...side, ...(tall ? (b.top < 0 ? { top: 4 - b.top } : {}) : b.top >= 24 ? { top: -19 } : { top: b.height - 1 }) };
+                    const show = i === 0 && !tagHidden && b.top + b.height > (tall ? 30 : 0) && !(placement === 'inside' && firstSel && Math.abs(firstSel.top - b.top) < 34 && Math.abs(firstSel.left - b.left) < chipW + 8);
+                    return (
+                      <div key={`h${i}`} className="ov-box ov-hover" style={b}>
+                        {show && (
+                          // Outside its element the name is hoverable (WCAG 1.4.13): the pointer can rest on it without the
+                          // hover moving on, and a click there selects what it names, as a click on the element would.
+                          <span className={`ov-label${tall ? '' : b.top >= 24 ? ' outside' : ' outside below'}`} style={tagAt} onClick={
+                              tall
+                                ? undefined
+                                : () => {
+                                    overTag.current = false;
+                                    pagePick();
+                                    if (hover) setState({ selection: hover, ...(getState().rightTab === 'styles' ? { rightTab: 'inspect' as const } : {}) });
+                                  }
+                            }
+                            onPointerEnter={() => (overTag.current = true)}
+                            onPointerLeave={() => (overTag.current = false)}
+                          >
+                            {state && hover ? chromeLabel(state, hover) : ''}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 {revBoxes.map((b, i) => (
                   <div key={`r${i}`} className="ov-box ov-revealed" style={b} />
                 ))}
                 {selBoxes.map((b, i) => (
-                  <div key={`s${i}`} className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}`} style={b} />
+                  <div key={`s${i}`} className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && reorder ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}`} style={b} />
                 ))}
-                {reorder && <div className="ov-drop" style={toBox(reorder.line)} role="presentation" />}
+                {reorder?.line &&
+                  (() => {
+                    const d = dropBox(reorder.line);
+                    return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" />;
+                  })()}
               </div>
-              {firstSel && selection && state && placement && !reorder && (
+              {emptyPage && emptyTop !== null && !staleFrame && emptyFits && (
+                <div className="canvas-empty" style={{ top: emptyTop * z + 24 }}>
+                  <div className="canvas-card empty-card" role="group" aria-labelledby="canvas-empty-title" data-testid="canvas-empty-page">
+                    <h3 id="canvas-empty-title">This page has no sections yet</h3>
+                    <p>Add a first section to start building it. Visitors never see this note.</p>
+                    <button className="btn btn-primary" onClick={addSections}>
+                      <Plus /> Add a section
+                    </button>
+                  </div>
+                </div>
+              )}
+              {firstSel && selection && state && placement && !reorder && !resizing && (
                 <SelectionChip
                   box={firstSel}
                   frameWidth={viewport * z}
@@ -1148,6 +1489,18 @@ export function Canvas() {
                   onLostFocus={() => canvasRef.current?.focus({ preventScroll: true })}
                   onMore={(el, focusLast) => openContextMenu(0, 0, selection, el, focusLast)}
                   onGrip={startReorder}
+                  editing={editing}
+                  onDone={() => post('commitTextEdit')}
+                  onMove={(dir) => void announcedMove(() => moveLayers(dir))}
+                  onEditText={canInlineEdit(selection) && descFor(selection) ? () => startTextEditFromChrome(selection) : null}
+                  onReveal={
+                    selShown
+                      ? null
+                      : () => {
+                          const desc = descFor(selection);
+                          if (desc) post('scrollTo', { desc });
+                        }
+                  }
                 />
               )}
             </div>
@@ -1238,7 +1591,7 @@ function chipPlacement(box: { top: number; height: number }, topLevel: boolean, 
  * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
-function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, onMore, onGrip, onWidth, onLostFocus }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: { n: number; count: number } | null; sib: { index: number; count: number } | null; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void }) {
+function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: { n: number; count: number } | null; sib: { index: number; count: number } | null; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
   // With the inspector out of sight (dock closed, or AI / Site styles showing), the chip offers the way back.
@@ -1258,9 +1611,15 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
   useLayoutEffect(() => {
     current.current = 0;
   }, [key]);
+  /** Too narrow for everything (a phone frame, many actions): the parent link and Edit text, which More actions
+   *  also offers, step out of the chip rather than being clipped while still focusable. */
+  const [compact, setCompact] = useState(false);
+  useLayoutEffect(() => setCompact(false), [key, frameWidth, editing]);
   useLayoutEffect(() => {
     const width = ref.current?.offsetWidth ?? 0;
     if (width && width !== w) (setW(width), onWidth(width));
+    const nameEl = ref.current?.querySelector<HTMLElement>('.name');
+    if (!compact && nameEl && nameEl.scrollWidth > nameEl.clientWidth + 1) setCompact(true);
     // Roving tab stop: exactly one button is in the Tab order, the last one used.
     const list = buttons();
     const keep = Math.min(current.current, list.length - 1);
@@ -1303,24 +1662,51 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
   };
   // A disabled move stays focusable (APG toolbar), so it is marked aria-disabled and ignores the press.
   const guard = (ok: boolean, fn: () => void) => () => ok && fn();
+  const trackFocus = (e: React.FocusEvent) => {
+    focusIn.current = true;
+    lastFocused.current = e.target as HTMLElement;
+    const list = buttons();
+    const i = list.indexOf(e.target as HTMLElement);
+    if (i < 0) return;
+    // A press or a programmatic focus moves the toolbar's one Tab stop too, as the arrow keys do.
+    current.current = i;
+    list.forEach((b, j) => (b.tabIndex = j === i ? 0 : -1));
+  };
+  // Focus moving to nothing may mean its control was removed; orphaned() tells that from a plain blur.
+  const trackBlur = (e: React.FocusEvent) => {
+    if (e.relatedTarget && !ref.current?.contains(e.relatedTarget as Node)) focusIn.current = false;
+  };
+  // While its text is being edited on the page, the chip says so and offers the way out: Done keeps the change
+  // (as a click anywhere else does), Escape on the page puts the text back.
+  if (editing) {
+    const what = /^[A-Z][a-z]/.test(name) ? name[0].toLowerCase() + name.slice(1) : name;
+    return (
+      <div ref={ref} className={`ov-chip ${placement} editing`} style={{ left, top, maxWidth: frameWidth }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
+        <span className="name">
+          <Pencil />
+          <span className="label">Editing {what}</span>
+          <span className="sep" aria-hidden="true">
+            ·
+          </span>
+          <span className="of">Esc to cancel</span>
+        </span>
+        <button className="chip-text" title={`Done (${keys('⌘↩')})`} aria-keyshortcuts={ariaKeys('Meta+Enter')} onClick={onDone}>
+          <Check /> Done <kbd>{keys('⌘↩')}</kbd>
+        </button>
+      </div>
+    );
+  }
   return (
     <div
       ref={ref}
       className={`ov-chip ${placement}`}
       style={{ left, top, maxWidth: frameWidth }}
       role="toolbar"
-      aria-label={`${name} actions`}
+      // Which of a repeated part it acts on (one card, or every card) is part of what the toolbar is for.
+      aria-label={`${name}${item ? `, ${item.n} of ${item.count}` : repeats > 1 ? `, all ${repeats} ${repeatsLabel}` : ''} actions`}
       onKeyDown={onKeyDown}
-      onFocus={(e) => {
-        focusIn.current = true;
-        lastFocused.current = e.target as HTMLElement;
-        const i = buttons().indexOf(e.target as HTMLElement);
-        if (i >= 0) current.current = i;
-      }}
-      onBlur={(e) => {
-        // Focus moving to nothing may mean its control was removed; orphaned() tells that from a plain blur.
-        if (e.relatedTarget && !ref.current?.contains(e.relatedTarget as Node)) focusIn.current = false;
-      }}
+      onFocus={trackFocus}
+      onBlur={trackBlur}
     >
       {canReorder && !group && (
         // Pointer-only, so it is hidden from assistive tech: Move up and Move down are its equivalent. A drag moves one
@@ -1332,8 +1718,8 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
       <span className="name">
         {icon}
         <span className="label">{name}</span>
-        {parent && parentRef && (
-          <button className="of link" title={`Select ${parent} (Esc)`} onClick={() => setState({ selection: parentRef })}>
+        {parent && parentRef && !compact && (
+          <button className="of link" title={`Select ${parent} (Esc)`} aria-label={`in ${parent}: select it`} aria-keyshortcuts="Escape" onClick={() => setState({ selection: parentRef })}>
             <span className="ellipsis">in {parent}</span>
           </button>
         )}
@@ -1344,6 +1730,17 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
       <button className="icon-btn" title={`Ask AI about this (${keys('⌘J')})`} aria-label="Ask AI about this" aria-keyshortcuts={ariaKeys('Meta+J')} onClick={() => askAiAbout(selection)}>
         <Sparkles />
       </button>
+      {onEditText && !compact && (
+        <button className="icon-btn" title="Edit text (double-click)" aria-label="Edit text" onClick={onEditText}>
+          <Pencil />
+        </button>
+      )}
+      {/* Scrolled right out of view, the selection has no outline on the page: this brings it back. */}
+      {onReveal && (
+        <button className="chip-text" title="Scroll the page back to it" aria-label="Show on the page" onClick={onReveal}>
+          <LocateFixed /> Show
+        </button>
+      )}
       {inspectorHidden && (
         <button
           className="chip-text"
@@ -1360,10 +1757,10 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
       {(canReorder || canEdit) && <span className="chip-sep" aria-hidden="true" />}
       {canReorder && (
         <>
-          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} onClick={guard(canUp, () => void moveLayers(-1))}>
+          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} onClick={guard(canUp, () => onMove(-1))}>
             <ArrowUp />
           </button>
-          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} onClick={guard(canDown, () => void moveLayers(1))}>
+          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} onClick={guard(canDown, () => onMove(1))}>
             <ArrowDown />
           </button>
         </>
