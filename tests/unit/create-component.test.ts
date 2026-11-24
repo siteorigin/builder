@@ -265,7 +265,7 @@ describe('a component made from a section (#173)', () => {
     expect(anchored[0]).toMatchObject({ kind: 'text', tag: 'p', text: { $prop: 'text' } });
   });
 
-  it('refuses a code component whose inner part has styles of its own, which a component cannot carry', () => {
+  it('carries a code component’s styles into the design, and refuses root styles its code would drop there', () => {
     let s: ProjectState = createStarterState('business', 'Test Studio', false);
     const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
     const cta = s.pages[page.id].rootIds.find((id) => s.components[(s.pages[page.id].nodes[id] as InstanceNode).definitionId]?.componentId === 'cta.banner')!;
@@ -274,22 +274,26 @@ describe('a component made from a section (#173)', () => {
     s = sec.state;
     const section = sec.results[0].nodeId as string;
     s = applyOperations(s, [{ type: 'node.move', owner: page, nodeId: cta, parentId: section, slot: 'content', index: 0 }]).state;
-    // Styles on its root still apply inside a design: that is fine.
-    const rooted = applyOperations(s, [{ type: 'node.setStyle', owner: page, nodeId: cta, partId: 'root', scope: 'base', property: 'paddingBlock', value: '4rem' }]).state;
-    expect(() => applyOperations(rooted, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).not.toThrow();
-    const styled = applyOperations(rooted, [{ type: 'node.setStyle', owner: page, nodeId: cta, partId: 'panel', scope: 'base', property: 'background', value: '#123456' }]).state;
-    expect(() => applyOperations(styled, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its Panel part/);
-    expect(() => applyOperations(styled, [{ type: 'component.createFromNode', owner: page, nodeId: cta, name: 'Band' }])).toThrow(/own styles on its Panel part/);
-    // A record with nothing in it styles nothing; one with a style at any size does.
-    const blank = structuredClone(rooted);
-    (blank.pages[page.id].nodes[cta] as InstanceNode).overrides!.panel = { base: {} };
-    expect(() => applyOperations(blank, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).not.toThrow();
-    (blank.pages[page.id].nodes[cta] as InstanceNode).overrides!.panel = { base: {}, phone: { background: '#123456' } };
-    expect(() => applyOperations(blank, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its Panel part/);
+    // Styles on its root and on an inner part both reach it inside a design: they go with it.
+    const styled = applyOperations(s, [
+      { type: 'node.setStyle', owner: page, nodeId: cta, partId: 'root', scope: 'base', property: 'paddingBlock', value: '4rem' },
+      { type: 'node.setStyle', owner: page, nodeId: cta, partId: 'panel', scope: 'base', property: 'background', value: '#123456' }
+    ]).state;
+    const made = applyOperations(styled, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }]);
+    const band = made.state.components[made.results[0].definitionId as string];
+    const copied = Object.values(band.tree!.nodes).find((n) => n.kind === 'instance' && made.state.components[n.definitionId]?.kind === 'code') as InstanceNode;
+    expect(copied.overrides).toEqual({ root: { base: { paddingBlock: '4rem' } }, panel: { base: { background: '#123456' } } });
     // Code that reads only its part classes, not the class it is given, keeps its root styles only on a page.
-    const partsOnly = structuredClone(rooted);
+    const partsOnly = structuredClone(styled);
     const code = partsOnly.components[(partsOnly.pages[page.id].nodes[cta] as InstanceNode).definitionId];
-    code.source = '<script>\n\tlet { heading = \'\', so_o = undefined } = $props();\n</script>\n\n<section class={so_o?.root}>{heading}</section>\n';
+    code.source = "<script>\n\tlet { heading = '', so_o = undefined } = $props();\n</script>\n\n<section class={so_o?.root}>{heading}</section>\n";
+    expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its root/);
+    expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: cta, name: 'Band' }])).toThrow(/own styles on its root/);
+    // A root record with nothing in it styles nothing; one with a style at any size does.
+    const node = partsOnly.pages[page.id].nodes[cta] as InstanceNode;
+    node.overrides = { root: { base: {} } };
+    expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).not.toThrow();
+    node.overrides = { root: { base: {}, phone: { background: '#123456' } } };
     expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its root/);
     // Code that reads the class from its props object places it: nothing would be lost.
     code.source = '<script>\n\tlet p = $props();\n</script>\n\n<section class={p.class ?? p.so_o?.root}>{p.heading}</section>\n';

@@ -1976,7 +1976,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   const info = findParent(tree, op.nodeId) ?? fail('Node is not attached.');
   if (root.kind === 'slot' || root.kind === 'repeat') fail('Select an element rather than a slot or repeat to create a component.');
   refuseItemStylesInto(state, tree, subtreeIds(tree, op.nodeId), 'every placement of a component shares its items.');
-  if (op.owner.kind !== 'component') refuseCodePartStylesInto(state, tree, subtreeIds(tree, op.nodeId));
+  if (op.owner.kind !== 'component') refuseCodeRootStylesInto(state, tree, subtreeIds(tree, op.nodeId));
   const ownerDef = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
   const defTree: NodeTree = { rootIds: [], nodes: {} };
   const properties: Record<string, PropSchema> = {};
@@ -2155,12 +2155,10 @@ function rootControls(state: ProjectState, node: InstanceNode): { styleControls?
 }
 
 /**
- * A code component takes a placement's styles on its inner parts only on a page, and on its root inside a design only
- * through the class it places: styles that would no longer apply are refused rather than quietly lost.
- */
-/**
- * Whether code may place the `class` it is given, on any sign of it (read from its props object, or passed on with
- * the rest of them): refused only when it plainly does not.
+ * Inside a component's design, a code component's root takes styles only through the class it places (its inner parts
+ * take theirs through the part classes): root styles that would no longer apply are refused rather than quietly lost.
+ * Code may place its class in ways not read here (from its props object, or passed on with the rest of them), so it is
+ * refused only when it plainly does not.
  */
 function mayPlaceClass(def: ComponentDefinition): boolean {
   if (codePlacesClass(def)) return true;
@@ -2168,15 +2166,13 @@ function mayPlaceClass(def: ComponentDefinition): boolean {
   return /\.\s*class\b/.test(src) || /\$\$(rest)?props\b/i.test(src) || /\{\s*\.\.\./.test(src);
 }
 
-function refuseCodePartStylesInto(state: ProjectState, tree: NodeTree, ids: string[]) {
+function refuseCodeRootStylesInto(state: ProjectState, tree: NodeTree, ids: string[]) {
   for (const id of ids) {
     const n = tree.nodes[id];
-    if (n?.kind !== 'instance' || !n.overrides) continue;
-    const def = own(state.components, n.definitionId);
-    if (def?.kind !== 'code') continue;
-    const sets = (p: string) => Object.values(n.overrides![p] ?? {}).some((scope) => !!scope && Object.keys(scope).length > 0);
-    const styled = Object.keys(n.overrides).find((p) => sets(p) && (p !== 'root' || !mayPlaceClass(def)));
-    if (styled) fail(`"${n.name ?? def.name}" has its own styles on its ${styled === 'root' ? 'root' : `${own(def.parts, styled)?.label ?? styled} part`}, which this code component takes only on a page. Reset them first, or create the component from a different element.`);
+    const root = n?.kind === 'instance' ? n.overrides?.root : undefined;
+    if (!root || !Object.values(root).some((scope) => !!scope && Object.keys(scope).length > 0)) continue;
+    const def = own(state.components, (n as InstanceNode).definitionId);
+    if (def?.kind === 'code' && !mayPlaceClass(def)) fail(`"${n!.name ?? def.name}" has its own styles on its root, which this code component takes only on a page. Reset them first, or create the component from a different element.`);
   }
 }
 
