@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { describeOps, InspectionLog, inspectionChecks, joinWords, pagesTouched } from '@agent/report';
+import { fitInspection, serializeResult } from '@agent/tools';
 import { OPERATION_SCHEMAS, type EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 
@@ -221,6 +222,41 @@ describe('check results', () => {
     // No images: no image line, and no pass claimed for images that are not there.
     expect(inspectionChecks(true, ok({ total: 0, loaded: 0, failed: 0, unverified: 0 }))).toHaveLength(1);
     expect(inspectionChecks(false, { viewport: 'tablet', error: 'VALIDATION_FAILED' })).toEqual([{ status: 'unverified', text: "Couldn't check the layout at tablet width." }]);
+  });
+
+  it('reports the readability checks in at most two rows, and only from reports that ran them (#361)', () => {
+    const count = (checked: number, failed = 0, unverified = 0, skipped?: string) => ({ checked, failed, unverified, ...(skipped ? { skipped } : {}) });
+    const withChecks = (checks: object, viewport = 'phone') => ({ pageId: 'p', viewport, report: { issues: [], checks } });
+    const clean = { contrast: count(30), overlaps: count(12), clippedText: count(0), tapTargets: count(6) };
+    expect(inspectionChecks(true, withChecks(clean)).slice(1)).toEqual([{ status: 'pass', text: 'No problems with text contrast, overlaps, cut-off text and tap targets at phone width.' }]);
+    // Above phone width the tap targets are not checked, and the pass does not claim them.
+    expect(inspectionChecks(true, withChecks({ ...clean, tapTargets: count(0, 0, 0, 'Phone widths only.') }, 'desktop')).at(-1)).toEqual({ status: 'pass', text: 'No problems with text contrast, overlaps and cut-off text at desktop width.' });
+    expect(inspectionChecks(true, withChecks({ contrast: count(30, 3), overlaps: count(12, 1), clippedText: count(2, 2), tapTargets: count(6, 1) })).slice(1)).toEqual([
+      { status: 'issue', text: 'Found 3 text elements with low contrast, overlapping boxes, 2 boxes that cut off text and a tap target under 44px at phone width.' }
+    ]);
+    // What only pixels could judge is never a pass, and never a failure.
+    expect(inspectionChecks(true, withChecks({ ...clean, contrast: count(30, 0, 2) })).slice(1)).toEqual([{ status: 'unverified', text: "Couldn't confirm the contrast of 2 text elements over images or mixed backgrounds at phone width." }]);
+    expect(inspectionChecks(true, withChecks({ ...clean, contrast: count(30, 1, 1) })).slice(1).map((c) => c.status)).toEqual(['issue', 'unverified']);
+    // A report from before these checks keeps its rows as they were.
+    expect(inspectionChecks(true, ok())).toEqual([{ status: 'pass', text: 'Fits the screen at phone width.' }]);
+  });
+
+  it('cuts a layout report to fit a tool result without losing a count or a kind of finding', () => {
+    const issue = (kind: string, i: number) => ({ kind, ref: { owner: { kind: 'page', id: 'p' }, nodeId: `n${i}` }, text: 't'.repeat(80), with: { ref: { owner: { kind: 'page', id: 'p' }, nodeId: 'm' }, text: 'w'.repeat(80) }, message: 'm'.repeat(400) });
+    const report = { checks: { contrast: { checked: 200, failed: 70, unverified: 0 } }, images: { total: 1, loaded: 1, failed: 0, unverified: 0 }, issues: [...Array.from({ length: 70 }, (_, i) => issue('low-contrast', i)), issue('overlap', 99), issue('small-tap-target', 98)], runtimeErrors: ['e'.repeat(5000)] };
+    const envelope = { revision: 3, pageId: 'p', viewport: 'phone', width: 390 };
+    const fitted = fitInspection(envelope, report) as typeof report & { omittedIssues: number };
+    expect(serializeResult({ ...envelope, report: fitted }).length).toBeLessThanOrEqual(24000);
+    expect(JSON.parse(serializeResult({ ...envelope, report: fitted })).truncated).toBeUndefined();
+    expect(fitted.checks).toEqual(report.checks);
+    expect(fitted.images).toEqual(report.images);
+    expect(new Set(fitted.issues.map((i) => i.kind))).toEqual(new Set(['low-contrast', 'overlap', 'small-tap-target']));
+    expect(fitted.issues.length + fitted.omittedIssues).toBe(72);
+    expect(fitted.issues.every((i) => i.text === undefined && i.with.text === undefined && i.ref)).toBe(true);
+    // The report the bridge sent is left as it was, and one that fits is passed through untouched.
+    expect(report.issues[0].text).toHaveLength(80);
+    const small = { issues: [issue('overlap', 1)] };
+    expect(fitInspection(envelope, small)).toBe(small);
   });
 
   it('says each check once, with its latest result, naming its page', () => {

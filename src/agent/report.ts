@@ -10,6 +10,7 @@ import { declaredTokens } from '@engine/tokens';
 import { displayName, getTree } from '@engine/tree';
 import { altStillToCheck } from '@engine/alt-review';
 import type { HomeChange } from '@engine/apply';
+import type { CheckCount, InspectionChecks } from '@shared/inspection';
 import { shellPageLinks } from '@generator/checks';
 
 // ---------------------------------------------------------------------------
@@ -421,7 +422,38 @@ interface ImageSummary {
 interface InspectionContent {
   pageId?: string;
   viewport?: string;
-  report?: { issues?: Array<{ kind: string; message?: string }>; images?: ImageSummary; documentWidth?: number; viewportWidth?: number };
+  report?: { issues?: Array<{ kind: string; message?: string }>; images?: ImageSummary; documentWidth?: number; viewportWidth?: number; checks?: Partial<InspectionChecks> };
+}
+
+/** How each readability check's failures read on the result card, one and many. */
+const READABILITY_ROWS: Array<[keyof InspectionChecks, string, string]> = [
+  ['contrast', 'text with low contrast', 'text elements with low contrast'],
+  ['overlaps', 'overlapping boxes', 'overlapping boxes'],
+  ['clippedText', 'text cut off by its box', 'boxes that cut off text'],
+  ['tapTargets', 'a tap target under 44px', 'tap targets under 44px']
+];
+
+/**
+ * The readability checks (contrast, overlaps, cut-off text, tap targets) as at most two rows: what failed, and what
+ * could not be measured without pixels; or one pass once every check that applies measured something. Reports
+ * from before these checks have none.
+ */
+function readabilityChecks(checks: Partial<InspectionChecks> | undefined, at: string): ChatCheck[] {
+  if (!checks || typeof checks !== 'object') return [];
+  const count = (c: CheckCount | undefined, k: 'checked' | 'failed' | 'unverified') => (c && typeof c[k] === 'number' ? c[k] : 0);
+  const failed = READABILITY_ROWS.flatMap(([key, one, many]) => {
+    const n = count(checks[key], 'failed');
+    return n ? [n === 1 ? one : `${n} ${many}`] : [];
+  });
+  const out: ChatCheck[] = [];
+  if (failed.length) out.push({ status: 'issue', text: `Found ${joinWords(failed)} ${at}.` });
+  const unverified = count(checks.contrast, 'unverified');
+  if (unverified) out.push({ status: 'unverified', text: `Couldn't confirm the contrast of ${unverified === 1 ? 'text' : `${unverified} text elements`} over images or mixed backgrounds ${at}.` });
+  if (!out.length && READABILITY_ROWS.some(([key]) => count(checks[key], 'checked') > 0)) {
+    const applied = READABILITY_ROWS.filter(([key]) => checks[key] && !checks[key]!.skipped).map(([key]) => ({ contrast: 'text contrast', overlaps: 'overlaps', clippedText: 'cut-off text', tapTargets: 'tap targets' })[key]);
+    out.push({ status: 'pass', text: `No problems with ${joinWords(applied)} ${at}.` });
+  }
+  return out;
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -454,6 +486,7 @@ export function inspectionChecks(ok: boolean, content: unknown, onPage = ''): Ch
   } else if (images.total > 0) {
     out.push({ status: 'pass', text: images.total === 1 ? `The image loads ${at}.` : `All ${images.total} images load ${at}.` });
   }
+  out.push(...readabilityChecks(c.report.checks, at));
   return out;
 }
 
