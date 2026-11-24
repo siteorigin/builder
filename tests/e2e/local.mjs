@@ -141,6 +141,15 @@ try {
     await eventually(async () => assert.ok((await win.locator('.result-card').count()) > cards, 'the run ends with a result card'), 60000, 200);
     return win.locator('.result-card').last();
   };
+  // With nothing selected, an edit keeps to the open page until the whole site is chosen (#513).
+  const scopeControl = win.getByRole('group', { name: 'What the AI may change' });
+  const thisPage = scopeControl.getByRole('button', { name: /^This page/ });
+  const wholeSite = scopeControl.getByRole('button', { name: /^Whole site/ });
+  assert.equal(await thisPage.getAttribute('aria-pressed'), 'true', 'an edit starts on the open page');
+  await wholeSite.click();
+  await eventually(async () => assert.equal(await wholeSite.getAttribute('aria-pressed'), 'true'));
+  /** What a request told the model about where it was sent from. */
+  const sentContext = (body) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec(body.messages.at(-1).content)[1]);
   const tested = posts().length;
   assert.equal(tested, 1, 'only the connection test has asked for a reply so far');
   const card = await sendRequest('Rename the site to Harbor Coffee');
@@ -154,6 +163,9 @@ try {
     assert.equal(p.body.model, 'second-model');
   }
   assert.match(JSON.stringify(edits[1].body.messages), /Result of update_site_brand/, 'the tool result went back to the model');
+  // The whole site, starting from the open page's sections, so nothing had to be read first.
+  assert.equal(sentContext(edits[0].body).allowedScope, 'whole site');
+  assert.ok(sentContext(edits[0].body).currentPage.sections.length > 0, "the open page's sections went with the request");
   // Each turn names its model, as a screen reader reads it too.
   const turnModel = () => win.locator('.msg-ai .turn-model');
   const said = (texts) => texts.map((t) => t.replace(/\s+/g, ' ').trim());
@@ -392,6 +404,18 @@ try {
   assert.equal(await win.locator('.msg-user').count(), userMessages + 1);
   assert.equal(await win.locator('.msg-user').last().innerText(), sent, 'it was the original request, about the same page');
   assert.equal(await message.inputValue(), 'A note for later', 'the draft was kept');
+
+  step('with This page chosen, an edit keeps to the open page and starts from its sections');
+  await thisPage.click();
+  await eventually(async () => assert.equal(await thisPage.getAttribute('aria-pressed'), 'true'));
+  second.script(envelopeReply('finish', { message: 'It reads well.' }));
+  const pagePosts = second.requests.filter((r) => r.method === 'POST').length;
+  assert.match((await (await sendRequest('What would you change on this page?')).getAttribute('class')) ?? '', /\bno-changes\b/);
+  const pageRun = second.requests.filter((r) => r.method === 'POST')[pagePosts].body;
+  assert.match(sentContext(pageRun).allowedScope, /^only the Home page \(page pg_\w+\)/);
+  assert.ok(sentContext(pageRun).currentPage.sections.length > 0);
+  assert.doesNotMatch(JSON.stringify(pageRun.response_format), /update_site_brand/, 'the site-wide brand tool is not offered');
+  assert.match(await win.locator('.msg-user').last().innerText(), /This page · Home/);
   assert.deepEqual(errors, []);
   passed = true;
   console.log('\nlocal: all checks passed');
