@@ -8,12 +8,12 @@ import { isImageBlock, isListBlock, isRichBlock, richTextToPlain, spanRuns, toRi
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
-import { entryRoute, findEntry } from '@shared/collections';
+import { entryRoute, findEntry, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
-import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, resolveLink, siteEntries, stateActionWorks } from './index';
+import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
@@ -1346,11 +1346,23 @@ export interface DraftLink {
 /** A draft a link can lead to: a page, or a collection entry. */
 type DraftTarget = { pageId: string; entryId?: undefined } | { entryId: string; pageId?: undefined };
 
-/** What the next website export publishes: the pages, in site order, the drafts it leaves out, and links to them. */
+/**
+ * What the next website export publishes: the pages, in site order, the collection entries it has a page for, the
+ * drafts (pages and entries) it leaves out, and links to them.
+ */
 export interface PublicationPlan {
   published: PageDoc[];
   drafts: PageDoc[];
+  /** The collection entries the website gets a page for, each with its collection and address. */
+  publishedEntries: SiteEntry[];
+  /** The collection entries the website leaves out: they stay in the editable project. */
+  draftEntries: SiteEntry[];
   draftLinks: DraftLink[];
+}
+
+/** What a website export publishes, by ID: its pages, and its collection entries as `entry:ID`, so no entry shares an ID with a page. */
+export function publicationIds(plan: Pick<PublicationPlan, 'published' | 'publishedEntries'>): string[] {
+  return [...plan.published.map((p) => p.id), ...plan.publishedEntries.map((e) => `entry:${e.entry.id}`)];
 }
 
 /**
@@ -1399,7 +1411,11 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
   const draftLinks: DraftLink[] = [];
   const entries = siteEntries(state);
   const draftEntries = entries.filter((e) => isDraftEntry(e.entry));
-  if (!drafts.length && !draftEntries.length) return { published, drafts, draftLinks };
+  // The entries that get a page are the website's, judged as its export judges them: with the drafts already left out,
+  // so a draft that holds an address (a hand-edited clash) never hides the published entry that gets it.
+  const live = publishedState(state);
+  const publishedEntries = live === state ? entries : siteEntries(live);
+  if (!drafts.length && !draftEntries.length) return { published, drafts, publishedEntries, draftEntries, draftLinks };
   const draftIds = new Set(drafts.map((p) => p.id));
   // The addresses visitors would find nothing at: each draft's own, and the old addresses that lead to one.
   const withheld = new Map<string, DraftTarget>([
@@ -1472,7 +1488,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     // Text the entry's layout does not show links nowhere on the website.
     if (found.length && showsBody(collection, entryArticle(state, collection, entry))) draftLinks.push(...found);
   }
-  return { published, drafts, draftLinks };
+  return { published, drafts, publishedEntries, draftEntries, draftLinks };
 }
 
 /**

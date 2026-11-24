@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
-import { describeDraftLink, publicationPlan, type DraftLink } from '@generator/checks';
+import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } from '@generator/checks';
 import type { PageDoc, ProjectState } from '@shared/types';
+import type { SiteEntry } from '@shared/collections';
 import type { ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
@@ -13,14 +14,11 @@ import { websiteFormNotes, websiteTrees } from '@engine/validate';
 import { publishedState } from '@generator/index';
 import { destinationLabel, noteState } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
+import { pagesSummaryText } from '../lib/export-summary';
 
 type ExportKind = 'static' | 'source';
 
 const NO_EXPORTS: RecentExport[] = [];
-/** More pages than this are counted, with the full lists one click away, so they never push the export choices out of view. */
-const LONG_PAGE_LIST = 6;
-/** Page titles longer than this in all are counted too, however few pages there are. */
-const LONG_TITLES = 110;
 /** More links to drafts than this are counted, with the list one click away. */
 const LONG_LINK_LIST = 3;
 /** More notes than this fold into the export's own row, so a success keeps its next step in view. */
@@ -64,13 +62,6 @@ function openDraftLink(l: DraftLink) {
   } else if (s.pageId !== l.owner.id || s.definitionMode) selectPage(l.owner.id);
   setState({ modal: null, mode: 'edit', selection: { owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true, definitionMode: null });
   setTimeout(() => openSection('content'), 50);
-}
-
-/** "Home", "Home and About", "Home, About and Contact". Pages that share a title are told apart by their address. */
-function listTitles(pages: PageDoc[], all: PageDoc[]): string {
-  const key = (p: PageDoc) => p.title.trim().toLowerCase();
-  const titles = pages.map((p) => (all.some((o) => o.id !== p.id && key(o) === key(p)) ? `${p.title} (${p.route})` : p.title));
-  return titles.length < 2 ? (titles[0] ?? '') : `${titles.slice(0, -1).join(', ')} and ${titles[titles.length - 1]}`;
 }
 
 /** When an export finished: the time today, or the date and time on an earlier day. */
@@ -129,24 +120,23 @@ function PageList({ title, pages }: { title: string; pages: PageDoc[] }) {
   );
 }
 
-/** What the website export publishes and leaves out: named when the list is short, counted when it is long. */
-function PagesSummary({ published, drafts }: { published: PageDoc[]; drafts: PageDoc[] }) {
+/** What the website export publishes and leaves out: pages named when the list is short, counted when it is long, and the collection entries counted. */
+function PagesSummary({ published, drafts, publishedEntries, draftEntries }: { published: PageDoc[]; drafts: PageDoc[]; publishedEntries: SiteEntry[]; draftEntries: SiteEntry[] }) {
   const listId = useId();
   const [open, setOpen] = useState(false);
-  const all = [...published, ...drafts];
-  // Counted, not named, when there are many pages or their titles would run long.
-  const long = all.length > LONG_PAGE_LIST || all.reduce((n, p) => n + p.title.length, 0) > LONG_TITLES;
+  const text = pagesSummaryText({ published, drafts, publishedEntries, draftEntries });
+  const { long } = text;
   return (
     <div className="export-pages" data-testid="export-pages">
       <p>
         <Globe size={14} aria-hidden /> <span>
-          <strong>The website publishes {published.length === 1 ? '1 page' : `${published.length} pages`}{long ? '.' : ':'}</strong>{!long && ` ${listTitles(published, all)}.`}
+          <strong>{text.published.lead}</strong>{text.published.rest}
         </span>
       </p>
-      {drafts.length > 0 && (
+      {text.drafts && (
         <p data-testid="export-drafts">
           <FilePen size={14} aria-hidden /> <span>
-            <strong>{drafts.length === 1 ? '1 draft is' : `${drafts.length} drafts are`} left out{long ? '.' : ':'}</strong>{!long && ` ${listTitles(drafts, all)}.`} Drafts stay in the editable project; hiding a page from search engines doesn’t leave it out.
+            <strong>{text.drafts.lead}</strong>{text.drafts.rest}
           </span>
         </p>
       )}
@@ -513,8 +503,8 @@ export function ExportModal() {
     if (busy || blocked || (kind === 'static' && draftLinks.length)) return;
     setBusy(kind);
     try {
-      // The website is built only if it still publishes the pages listed here.
-      const r = kind === 'static' ? await api.project.exportStatic(format, plan?.published.map((p) => p.id)) : await api.project.exportSource(format);
+      // The website is built only if it still publishes the pages and entries counted here.
+      const r = kind === 'static' ? await api.project.exportStatic(format, plan ? publicationIds(plan) : undefined) : await api.project.exportSource(format);
       if (r.message) setResult(r);
       settle.current = r.message ? 'result' : kind;
     } catch (e) {
@@ -748,7 +738,7 @@ export function ExportModal() {
             )}
             {state && <FormReview notes={formNotes} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
-            {plan && <PagesSummary published={plan.published} drafts={plan.drafts} />}
+            {plan && <PagesSummary published={plan.published} drafts={plan.drafts} publishedEntries={plan.publishedEntries} draftEntries={plan.draftEntries} />}
             <div className="export-choice" role="group" aria-labelledby="export-choice-title">
               <div className="export-choice-head">
                 <h3 id="export-choice-title">Choose an export</h3>

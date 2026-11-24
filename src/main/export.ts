@@ -13,7 +13,7 @@ import { STARTER_ASSETS } from '@catalogue/starters';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { describeDraftLink, draftTarget, netlifyFormClashes, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
+import { describeDraftLink, draftTarget, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
@@ -577,15 +577,16 @@ export function draftLinksStop(state: ProjectState): { message: string; warnings
 }
 
 /**
- * Why a website export stopped: the pages it would publish are not the ones the author was shown (a draft was
- * published, or a page kept as a draft, while the export started). Null when they are, or when nothing was shown.
+ * Why a website export stopped: the pages and collection entries it would publish are not the ones the author was
+ * shown (a draft was published, or a page or entry kept as a draft, while the export started). Null when they are, or
+ * when nothing was shown.
  */
 export function publishedChanged(state: ProjectState, shown: string[] | undefined): { message: string; warnings: string[] } | null {
   if (!shown) return null;
-  const now = publicationPlan(state).published.map((p) => p.id);
+  const now = publicationIds(publicationPlan(state));
   const was = new Set(shown);
   if (now.length === was.size && now.every((id) => was.has(id))) return null;
-  return { message: 'The pages the website publishes changed while the export was starting. Check the list of pages and drafts, then export again.', warnings: [] };
+  return { message: 'The pages and entries the website publishes changed while the export was starting. Check the list of pages and drafts, then export again.', warnings: [] };
 }
 
 /**

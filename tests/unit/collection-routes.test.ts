@@ -11,8 +11,8 @@ import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { entryFile, generateLayout, generateProject, generateSitemap, liveRedirects, publishedState, resolveLink } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
-import { publicationPlan } from '@generator/checks';
-import { draftLinksStop, draftSourceNotes, isGeneratedReadme, projectReadme, withheldRoutes } from '../../src/main/export';
+import { publicationIds, publicationPlan } from '@generator/checks';
+import { draftLinksStop, draftSourceNotes, isGeneratedReadme, projectReadme, publishedChanged, withheldRoutes } from '../../src/main/export';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -212,6 +212,66 @@ describe('draft entries and the website export', () => {
     // Published again, its old address works again.
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: false });
     expect(publishedState(s).site.redirects).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
+  });
+
+  it('lists the entries the website publishes and the drafts it leaves out, beside the pages (#568)', () => {
+    const s = blog();
+    const plan = publicationPlan(s);
+    // Newest first, as the collection lists them; each with the address its page has.
+    expect(plan.publishedEntries.map((e) => [e.entry.id, e.collection.settings.id, e.route])).toEqual([
+      ['en_spring', 'posts', '/blog/spring-open-studio/'],
+      ['en_winter', 'posts', '/blog/winter-workshop/']
+    ]);
+    expect(plan.draftEntries.map((e) => e.entry.id)).toEqual(['en_secret']);
+    // The pages are reported as before.
+    expect(plan.drafts).toEqual([]);
+    expect(plan.published.length).toBeGreaterThan(0);
+    // Every entry published: the plan's short path (no drafts at all) reports them too.
+    const all = publicationPlan(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false }));
+    expect(all.draftEntries).toEqual([]);
+    expect(all.publishedEntries.map((e) => e.entry.id)).toEqual(['en_secret', 'en_spring', 'en_winter']);
+    // Only drafts: nothing of the collection is published.
+    const onlyDrafts = publicationPlan(run(s, ...['en_winter', 'en_spring'].map((entryId): EditOperation => ({ type: 'entry.update', collectionId: 'posts', entryId, draft: true }))));
+    expect(onlyDrafts.publishedEntries).toEqual([]);
+    expect(onlyDrafts.draftEntries.map((e) => e.entry.id).sort()).toEqual(['en_secret', 'en_spring', 'en_winter']);
+    // Entries of every collection are counted.
+    const two = publicationPlan(run(s, { type: 'collection.create', collectionId: 'news', name: 'News', route: '/news/' }, { type: 'entry.create', collectionId: 'news', entryId: 'en_news1', title: 'Opening', publishedAt: '2026-05-01', draft: false }));
+    expect(two.publishedEntries.map((e) => e.entry.id).sort()).toEqual(['en_news1', 'en_spring', 'en_winter']);
+    // A site without collections has none.
+    expect(publicationPlan(createStarterState('business', 'Riverside Studio', false))).toMatchObject({ publishedEntries: [], draftEntries: [] });
+    // An entry at an address the site cannot have is no page of the website, so it is not counted.
+    const damaged = structuredClone(s);
+    damaged.collections.posts.entries.en_winter.slug = 'Not a slug';
+    expect(publicationPlan(damaged).publishedEntries.map((e) => e.entry.id)).toEqual(['en_spring']);
+    // A newer draft hand-edited onto a published post's address does not hide the post: the website gets it once the draft is out.
+    const clash = structuredClone(s);
+    clash.collections.posts.entries.en_secret.slug = 'winter-workshop';
+    const held = publicationPlan(clash);
+    expect(held.publishedEntries.map((e) => [e.entry.id, e.route])).toEqual([['en_spring', '/blog/spring-open-studio/'], ['en_winter', '/blog/winter-workshop/']]);
+    expect(generateProject(publishedState(clash)).has('src/routes/blog/winter-workshop/+page.svelte')).toBe(true);
+  });
+
+  it('stops a website export when the entries it publishes are not the ones the author was shown (#568)', () => {
+    const s = blog();
+    const shown = publicationIds(publicationPlan(s));
+    expect(shown).toEqual(expect.arrayContaining(['entry:en_spring', 'entry:en_winter']));
+    expect(shown).not.toContain('entry:en_secret');
+    expect(publishedChanged(s, shown)).toBeNull();
+    // A hand-edited page that shares an entry's ID is still told apart: the export is not stopped for it.
+    const shared = structuredClone(s);
+    const [aboutId] = shared.site.pageOrder.filter((id) => id !== shared.site.homePageId);
+    shared.pages['en_winter'] = { ...shared.pages[aboutId], id: 'en_winter', route: '/winter-page/' };
+    shared.site.pageOrder.push('en_winter');
+    expect(publishedChanged(shared, publicationIds(publicationPlan(shared)))).toBeNull();
+    // The draft was published while the export was starting: the author saw it counted among the drafts.
+    const published = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false });
+    expect(publishedChanged(published, shown)?.message).toMatch(/changed while the export was starting/);
+    // And a post kept back in its place, with as many entries as before.
+    const swapped = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: true });
+    expect(publicationIds(publicationPlan(swapped))).toHaveLength(shown.length);
+    expect(publishedChanged(swapped, shown)).not.toBeNull();
+    // Pages alone are not what this site publishes.
+    expect(publishedChanged(s, publicationPlan(s).published.map((p) => p.id))).not.toBeNull();
   });
 
   it('stops the website export over a typed address of a draft entry, naming it', () => {
