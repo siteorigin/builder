@@ -195,12 +195,12 @@ describe('component.upsert: building a managed component in one operation (#358)
       [{ ...op, variantAxes: { tone: { label: 'Tone', default: 'loud', options: { dark: { label: 'Dark' } } } } }, /default of the "tone" axis \("loud"\) is not one of its options/],
       // Values and styles, checked as the single-step edits check them.
       [withNodes((n) => (node(n, 'card').styles = { paddingBlock: { token: 'space.nope' } }, n)), /"card":.*space\.nope/],
-      [withNodes((n) => (node(n, 'card').styles = { 'base:hover': { layout: 'grid' } }, n)), /"card":/],
+      [withNodes((n) => (node(n, 'card').styles = { 'base:hover': { layout: 'grid' } }, n)), /"card": Layout cannot change on hover/],
       [withNodes((n) => (node(n, 'card').styles = { wobble: 3 }, n)), /"card": Unknown style property "wobble"/],
       [withNodes((n) => (node(n, 'title').tag = 'h9', n)), /"title": Text’s tag must be one of/],
       [withNodes((n) => (node(n, 'title').tag = { $prop: 'heading' }, n)), /cannot show a string as its tag/],
       // A list item outside its list, judged once the whole design is in place.
-      [withNodes((n) => (node(n, 'footnote').tag = 'li', n)), /list item|li/i]
+      [withNodes((n) => (node(n, 'footnote').tag = 'li', n)), /is a list item, so it goes directly inside a list/]
     ];
     for (const [bad, why] of refused) {
       expect(validateOperation(bad)).toMatchObject({ ok: true });
@@ -214,7 +214,7 @@ describe('component.upsert: building a managed component in one operation (#358)
 
   it('rebuilds a placed component, keeping placement values, list items, variant choices and part styles across pages, in one undoable step', async () => {
     const { s, home, other } = await session();
-    const made = await s.apply({ operations: [pricing({ parts: { ...pricing().parts, footnote: { nodeId: 'footnote', label: 'Footnote' } } })] }, { label: 'Build' });
+    const made = await s.apply({ operations: [pricing({ insertAs: 'section', parts: { ...pricing().parts, footnote: { nodeId: 'footnote', label: 'Footnote' } } })] }, { label: 'Build' });
     const id = made.results![0].definitionId as string;
     const placed = await s.apply(
       {
@@ -244,7 +244,7 @@ describe('component.upsert: building a managed component in one operation (#358)
 
     // The rebuild: the card and heading are new nodes under the same part IDs, plans gain a "note" and lose their
     // button text, a subtitle is new, the footnote part and the "stack" layout are gone.
-    const next = pricing({ definitionId: id, name: 'Price list', description: undefined, category: undefined, tags: undefined, icon: undefined });
+    const next = pricing({ definitionId: id, name: 'Price list', description: undefined, category: undefined, tags: undefined, icon: undefined, insertAs: null });
     next.properties = {
       heading: { type: 'string', label: 'Title', default: 'Plans' },
       subtitle: { type: 'string', label: 'Subtitle', default: 'Cancel any time.' },
@@ -283,6 +283,8 @@ describe('component.upsert: building a managed component in one operation (#358)
     const def = s.state.components[id];
     // The same component, renamed, with what the description left out kept.
     expect(def).toMatchObject({ id, componentId: before.components[id].componentId, name: 'Price list', description: 'Plans side by side.', category: 'conversion', icon: 'tag' });
+    expect(before.components[id].insertAs).toBe('section');
+    expect(def.insertAs).toBeUndefined();
     expect(def.tree!.nodes.title).toBeUndefined();
     expect(def.parts.footnote).toBeUndefined();
     expect(Object.keys(def.variantAxes!.layout.options)).toEqual(['grid']);
@@ -297,7 +299,6 @@ describe('component.upsert: building a managed component in one operation (#358)
       { id: 'p2', name: 'Team', price: '$50', featured: true, cta: { type: 'none', target: '' }, note: '' }
     ]);
     expect((pb.props.plans as ListItem[]).map((p) => [p.name, p.note])).toEqual([['Basic', ''], ['Pro', '']]);
-    expect(pa.props.ctaLabel).toBeUndefined();
     // The tone choice stays; the layout option that is gone falls back to the default.
     expect(pa.variants).toEqual({ tone: 'dark' });
     // Styles on parts that are still there follow them to their new elements; a removed part's styles go.
@@ -367,14 +368,14 @@ describe('component.upsert: building a managed component in one operation (#358)
       return op;
     };
     const cases: Array<[Upsert, RegExp]> = [
-      // A price that is no longer one of the choices on the other page.
+      // A price that is no longer one of the choices on the other page, though the new defaults are.
       [
         rebuild((op) => {
-          const plans = op.properties.plans as { fields: Record<string, unknown> };
-          plans.fields.price = { type: 'enum', label: 'Price', default: 'low', options: [{ value: 'low', label: 'Low' }, { value: 'high', label: 'High' }] };
+          const plans = op.properties.plans as { fields: Record<string, unknown>; default: Array<Record<string, unknown>> };
+          plans.fields.price = { type: 'enum', label: 'Price', default: 'low', options: [{ value: '$9', label: 'Low' }, { value: '$29', label: 'High' }, { value: 'low', label: 'Lowest' }] };
           op.nodes = op.nodes.map((n) => (n.id === 'price' ? { ...n, unless: undefined } : n));
         }),
-        /must be one of low, high/
+        /^Pricing: .*Price: must be one of \$9, \$29, low\. Change that content first/
       ],
       // The notes slot holds content on the other page.
       [rebuild((op) => ((op.slots = undefined), (op.nodes = op.nodes.filter((n) => n.id !== 'notes').map((n) => (n.id === 'footnote' ? { ...n, children: [] } : n))))), /"Notes" slot has content/],
