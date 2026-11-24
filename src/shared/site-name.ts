@@ -127,6 +127,6 @@ export function siteNameNote(state: ProjectState): string | undefined {
   const parts = (list: typeof placed) => [...new Set(list.map((p) => p.part))].join(' and ');
   const out: string[] = [];
   if (following.length) out.push(`The ${parts(following)} ${following.length === 1 ? 'shows' : 'show'} it too.`);
-  for (const p of own) out.push(`The ${p.part} keeps its own name, “${String(shown(p.def, p.node, BRAND_PROP) ?? '').trim()}”.`);
+  for (const p of own) out.push(`The ${p.part} keeps its own name: “${String(shown(p.def, p.node, BRAND_PROP) ?? '').trim()}”`);
   return out.join(' ');
 }

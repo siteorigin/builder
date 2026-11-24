@@ -67,7 +67,7 @@ await eventually(async () => assert.match(await win.locator('.toolbar').innerTex
 step('a footer name of the author’s own stays through the next rename, and the site’s name field says so');
 const footerId = site().shell.footer.rootIds[0];
 assert.ok((await apply([{ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footerId, prop: 'siteName', value: 'Morning Paper Co.' }], 'Edit footer')).ok);
-await eventually(async () => assert.match(await nameField().innerText(), /The header shows it too\. The footer keeps its own name, “Morning Paper Co\.”\./));
+await eventually(async () => assert.match(await nameField().innerText(), /The header shows it too\. The footer keeps its own name: “Morning Paper Co\.”/));
 await rename('Morning Courier');
 await liveIs({ header: 'Morning Courier', footer: 'Morning Paper Co.', copyright: `© ${year} Morning Courier. All rights reserved.` }, 'the header and copyright follow, the footer keeps its name');
 await nameField().screenshot({ path: join(SHOTS, 'site-rename-details.png') });
@@ -87,7 +87,8 @@ assert.match(text(footer), new RegExp(`© ${year} Morning Courier\\. All rights 
 assert.doesNotMatch(text(footer), /Morning Press/, 'the exported footer shows no old name');
 
 step('the footer’s own field says it keeps its name, and Use the site name makes it follow again');
-await frame.locator('footer:not(main footer) p').first().click();
+// The canvas is scaled to fit beside the panels, so the footer's name is selected with a click on the element itself.
+await frame.locator('footer:not(main footer) p').first().dispatchEvent('click');
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 const inspector = win.locator('#dock-panel-inspect');
 const own = inspector.locator('.field-hint', { hasText: 'Its own name' });

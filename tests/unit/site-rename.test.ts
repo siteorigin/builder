@@ -96,9 +96,9 @@ describe('what the editor says about the site’s name', () => {
     const s = createStarterState('business', 'Morning Press', false);
     expect(siteNameNote(s)).toBe('The header and footer show it too.');
     shell(s, 'footer').props.siteName = 'Morning Press Co.';
-    expect(siteNameNote(s)).toBe('The header shows it too. The footer keeps its own name, “Morning Press Co.”.');
+    expect(siteNameNote(s)).toBe('The header shows it too. The footer keeps its own name: “Morning Press Co.”');
     s.site.shell.header = { rootIds: [], nodes: {} };
-    expect(siteNameNote(s)).toBe('The footer keeps its own name, “Morning Press Co.”.');
+    expect(siteNameNote(s)).toBe('The footer keeps its own name: “Morning Press Co.”');
     s.site.shell.footer = { rootIds: [], nodes: {} };
     expect(siteNameNote(s)).toBeUndefined();
   });
