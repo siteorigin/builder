@@ -42,7 +42,9 @@ async function modalClip() {
 }
 
 /** Capture a state; `check` must be visible at the moment of capture, in each theme. */
-async function shot(state, check, themes = BOTH, { full = false, keepPointer = false } = {}) {
+async function shot(state, check, themes = BOTH, { full = false, keepPointer = false, reveal = false } = {}) {
+  // `reveal` scrolls the checked element to the top of the dialog body, for a state below the dialog's first screen.
+  if (reveal) await win.locator(check).first().evaluate((el) => el.scrollIntoView({ block: 'start' }));
   for (const theme of themes) {
     await win.emulateMedia({ colorScheme: theme });
     if (!keepPointer) await win.mouse.move(4, 4);
@@ -92,6 +94,10 @@ await pause(1200);
 // ---- Choosing what to export ----
 await openDialog();
 await shot('rest', '.modal [data-testid="export-pages"]');
+// The starter's sample contact details, one opened to show where it appears.
+await modal.getByTestId('export-sample-email').getByRole('button', { name: 'Show where' }).click();
+await shot('samples-where', '.modal [data-testid="export-sample-email"] li', LIGHT);
+await modal.getByTestId('export-sample-email').getByRole('button', { name: 'Show where' }).click();
 await modal.getByRole('button', { name: 'ZIP file', exact: true }).click();
 await shot('format-zip', '.modal [aria-pressed="true"]:has-text("ZIP file")', LIGHT);
 // Keyboard: Tab from the format control lands on the first export choice.
@@ -170,7 +176,7 @@ await pause(500);
     if (!(await snapshot()).conflicts.length) throw new Error('the conflict is not held');
   }, 30000);
   await openDialog();
-  await shot('blocked-conflict', '.modal .scope-note.site', LIGHT);
+  await shot('blocked-conflict', '.modal #export-blocked-conflict', LIGHT);
   await closeDialog();
   const settled = await win.evaluate((p) => window.builder.project.resolveConflict(p, 'restore'), rel);
   if (!settled?.ok) throw new Error(`the conflict did not resolve: ${JSON.stringify(settled)}`);
@@ -227,7 +233,7 @@ for (const [what, call] of [
 }
 await openDialog();
 await modal.getByRole('region', { name: 'Recent exports' }).getByRole('listitem').nth(3).waitFor();
-await shot('history', '.modal .export-history');
+await shot('history', '.modal .export-history h3', BOTH, { reveal: true });
 await win.locator('.modal-body').evaluate((el) => (el.scrollTop = el.scrollHeight));
 await shot('history-scrolled', '.modal .export-history li:last-child', LIGHT);
 await closeDialog();
@@ -253,7 +259,8 @@ await app.evaluate(({ ipcMain }, result) => {
   ok: true,
   path: (await snapshot()).recentExports[0].path,
   message: 'Exported 12 pages as a ZIP file.',
-  warnings: ['No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.', 'Two library images are not used on any page and were left out of the website.', 'kitchen.jpg still records where it was taken.']
+  // Notes the website export really gives (main/controller.ts), worded as it words them.
+  warnings: ['No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.', 'One image has not been chosen yet and shows a placeholder.', 'kitchen.jpg is 2.4 MB; consider a smaller image.']
 });
 await openDialog();
 await websiteButton.click();
@@ -265,6 +272,18 @@ await win.setViewportSize({ width: 1024, height: 640 });
 await pause(300);
 await openDialog();
 await shot('small-window', '.modal [data-testid="export-pages"]', LIGHT);
+await closeDialog();
+await win.setViewportSize({ width: 1440, height: 900 });
+await pause(300);
+
+// ---- Every sample detail kept on purpose: the review settles to one line ----
+await openDialog();
+for (let left = await modal.getByRole('button', { name: 'Keep it' }).count(); left > 0; left--) {
+  await modal.getByRole('button', { name: 'Keep it' }).first().click();
+  await pause(200);
+}
+await modal.getByTestId('export-samples-kept').waitFor();
+await shot('samples-kept', '.modal [data-testid="export-samples-kept"]');
 await closeDialog();
 
 await app.close();
