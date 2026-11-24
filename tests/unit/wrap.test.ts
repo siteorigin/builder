@@ -291,7 +291,7 @@ describe('Wrap and Ungroup in a component’s design', () => {
     const inner = t.nodes.inner as ElementNode;
     t.nodes.fbox = { id: 'fbox', kind: 'element', tag: 'div', children: ['frep'] };
     t.nodes.frep = { id: 'frep', kind: 'repeat', list: { $prop: 'items' }, filter: { field: 'title' }, children: [] };
-    const tab = (id: string, value: string) => ({ id, kind: 'link' as const, link: { type: 'none' as const, target: '' }, label: value, stateAction: { state: 'view', op: 'set' as const, value } });
+    const tab = (id: string, value: string) => ({ id, kind: 'link' as const, link: { type: 'none' as const, target: '' }, label: value, appearance: 'primary', stateAction: { state: 'view', op: 'set' as const, value } });
     t.nodes.tabs = { id: 'tabs', kind: 'element', tag: 'div', children: ['t1', 't2'] };
     t.nodes.t1 = tab('t1', 'a');
     t.nodes.t2 = tab('t2', 'b');

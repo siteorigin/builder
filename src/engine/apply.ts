@@ -1410,7 +1410,7 @@ function nodeWrap(state: ProjectState, op: Op<'node.wrap'>): OpResult {
     const n = tree.nodes[id];
     const name = `“${displayName(state, n, def)}”`;
     if (choosesState(n)) fail(`${name} is one of the buttons that choose what the component shows (its tabs), which are known by the list holding them, so it can’t be wrapped.`);
-    if (parent?.kind === 'repeat' && parent.appearStagger && n.appear) fail(`${name} enters in turn with the other items of its list, which a container around it would stop, so it can’t be wrapped.`);
+    if (parent?.kind === 'repeat' && parent.appearStagger && 'appear' in n && n.appear && n.appear !== 'none') fail(`${name} enters in turn with the other items of its list, which a container around it would stop, so it can’t be wrapped.`);
   }
   const landed = slotLanding(state, op.owner, tree, run.parentId, run.list);
   const wrapper = primitiveNode(state, op.primitive)[0] as ElementNode;
