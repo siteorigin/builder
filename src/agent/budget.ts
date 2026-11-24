@@ -47,23 +47,73 @@ interface ReadInfo {
   /** What was read. Only a later read of exactly this replaces it: a page read is depth-limited, so it may omit a subtree. */
   target: string;
   pageId?: string;
+  /** Cut short by the result size limit: it shows only its start, so it never stands in for a complete read. */
+  partial?: boolean;
+  /** read_source: the definition, the lines shown, and the hash of the source they came from. */
+  definitionId?: string;
+  lines?: [number, number];
+  hash?: string;
+  /** read_project: the optional sections it included. The summary itself comes with every read. */
+  extras?: string[];
+  /** The project revision it was read at, when the result says. */
+  revision?: number;
 }
+
+const PROJECT_EXTRAS = ['tokens', 'catalogue', 'components'];
 
 function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, index: number, args: Record<string, any>): ReadInfo | null {
   if (item.isError || item.content.startsWith(TOMBSTONE)) return null;
   const body = parse(item.content);
+  const partial = body?.truncated === true;
+  // A result cut short still starts with its revision, when it has one.
+  const revision = partial ? Number(/^\{"revision":(\d+)[,}]/.exec(String(body!.partial ?? ''))?.[1] ?? NaN) : body?.revision;
+  const base = { index, name: item.name, ...(partial ? { partial } : {}), ...(typeof revision === 'number' && Number.isFinite(revision) ? { revision } : {}) };
   if (item.name === 'read_page') {
     const pageId = String(body?.owner?.id ?? body?.id ?? args.pageId ?? '');
     if (!pageId) return null;
     const nodeId = args.nodeId ? String(args.nodeId) : '';
-    return { index, name: item.name, target: `page:${pageId}:${nodeId}`, pageId };
+    return { ...base, target: `page:${pageId}:${nodeId}`, pageId };
   }
   if (item.name === 'read_component') {
     const id = args.definitionId ?? args.componentId ?? body?.definitionId;
-    return id ? { index, name: item.name, target: `component:${id}` } : null;
+    return id ? { ...base, target: `component:${id}` } : null;
   }
-  if (item.name === 'read_project') return { index, name: item.name, target: `project:${[...(args.sections ?? [])].sort().join(',')}` };
+  if (item.name === 'read_project') {
+    const extras = PROJECT_EXTRAS.filter((s) => Array.isArray(args.sections) && args.sections.includes(s));
+    return { ...base, target: 'project', extras };
+  }
+  if (item.name === 'read_source') {
+    const definitionId = String(body?.definitionId ?? args.definitionId ?? '');
+    // A managed component's answer is a one-line note with no source to collapse.
+    if (!definitionId || (!partial && typeof body?.source !== 'string')) return null;
+    // The lines actually shown. An end before the start (which the tool accepts) does not say what came back: a
+    // negative one counts from the end of the file, and a cut result shows an unknown share of what it asked for.
+    const start = Number(partial ? (args.startLine ?? 1) : body!.startLine);
+    const asked = Number(args.endLine ?? start + 399);
+    const shown = body?.source === '' ? 0 : String(body?.source).split('\n').length;
+    const end = partial ? (asked < 1 ? Infinity : asked) : start + shown - 1;
+    return { ...base, target: `source:${definitionId}`, definitionId, lines: [start, end], ...(partial ? {} : { hash: String(body!.hash) }) };
+  }
+  if (item.name === 'inspect_element') {
+    const owner = args.owner ?? body?.owner;
+    if (!owner?.id || !args.nodeId) return null;
+    return { ...base, target: `element:${owner.kind}:${owner.id}:${args.nodeId}` };
+  }
+  if (item.name === 'inspect_layout') {
+    const pageId = body?.pageId ?? args.pageId;
+    const viewport = body?.viewport ?? args.viewport;
+    return pageId && viewport ? { ...base, target: `layout:${pageId}:${viewport}`, pageId: String(pageId) } : null;
+  }
   return null;
+}
+
+/** Whether a later read shows everything an earlier one did, at least as recently. */
+function replaces(newer: ReadInfo, older: ReadInfo): boolean {
+  if (newer.index <= older.index || newer.target !== older.target || (newer.partial && !older.partial)) return false;
+  if (newer.name === 'read_project') return older.extras!.every((s) => newer.extras!.includes(s));
+  // Only a complete read is known to show every line it covers.
+  if (newer.name === 'read_source') return !newer.partial && newer.lines![0] <= older.lines![0] && newer.lines![1] >= older.lines![1];
+  return true;
 }
 
 /** The one-line stand-in for a read. A page keeps its section IDs, so the model can still address them. */
@@ -79,7 +129,20 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     return `${TOMBSTONE}read_page ${id}${title}${rev}.${sections ? ` Sections: ${sections}${more}.` : ''} Read it again before relying on its content.]`;
   }
   if (read.name === 'read_component') return `${TOMBSTONE}read_component ${args.definitionId ?? args.componentId ?? body?.definitionId}. Read it again if you need its contract.]`;
-  return `${TOMBSTONE}read_project${rev}${args.sections?.length ? ` (${args.sections.join(', ')})` : ''}. Read it again if you need it.]`;
+  // The hash is left out: only a fresh read gives one a patch can use.
+  if (read.name === 'read_source') {
+    const lines = typeof body?.source === 'string' ? ` lines ${body.startLine}–${body.endLine} of ${body.totalLines}` : '';
+    return `${TOMBSTONE}read_source ${body?.definitionId ?? args.definitionId}${lines}. Read it again for the current source and hash.]`;
+  }
+  if (read.name === 'inspect_element') {
+    const owner = args.owner ?? body?.owner;
+    return `${TOMBSTONE}inspect_element ${args.nodeId} on ${owner?.kind} ${owner?.id}${rev}. Inspect it again before relying on it.]`;
+  }
+  if (read.name === 'inspect_layout') return `${TOMBSTONE}inspect_layout ${body?.pageId ?? args.pageId} ${body?.viewport ?? args.viewport}. Measure it again if you need it.]`;
+  const pages = Array.isArray(body?.pages) ? body!.pages : [];
+  const list = pages.slice(0, 12).map((p: Record<string, unknown>) => `${p.id} ${p.route ?? ''}`.trim()).join(', ');
+  const more = pages.length > 12 ? `, and ${pages.length - 12} more` : '';
+  return `${TOMBSTONE}read_project${rev}${args.sections?.length ? ` (${args.sections.join(', ')})` : ''}.${list ? ` Pages: ${list}${more}.` : ''} Read it again if you need it.]`;
 }
 
 export interface BudgetResult {
@@ -94,7 +157,17 @@ export interface BudgetResult {
 }
 
 /** Collapse what is safe to collapse, in place, and report where the request stands against the window. */
-export function applyContextBudget(items: CanonicalItem[], opts: { system: string; tools: ToolDefinition[]; capabilities: Pick<ModelCapabilities, 'contextWindowTokens' | 'maxOutputTokens'>; isMutation: (toolName: string) => boolean }): BudgetResult {
+export function applyContextBudget(
+  items: CanonicalItem[],
+  opts: {
+    system: string;
+    tools: ToolDefinition[];
+    capabilities: Pick<ModelCapabilities, 'contextWindowTokens' | 'maxOutputTokens'>;
+    isMutation: (toolName: string) => boolean;
+    /** The project's revision now. Some changes (links connected when a page is created) are not a tool's result. */
+    revision?: number;
+  }
+): BudgetResult {
   const { contextWindowTokens: window, maxOutputTokens } = opts.capabilities;
   const available = window - Math.min(maxOutputTokens, Math.floor(window / 4));
   let estimate = estimateRequestTokens(opts.system, opts.tools, items);
@@ -124,7 +197,7 @@ export function applyContextBudget(items: CanonicalItem[], opts: { system: strin
     });
     const collapse = (r: ReadInfo) => {
       const it = items[r.index] as Extract<CanonicalItem, { kind: 'tool_result' }>;
-      const line = tombstoneFor(r, it.content, argsByCall.get(it.callId) ?? {});
+      const line = tombstoneFor(r, it.content, argsByCall.get(it.callId) ?? {}).replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ');
       if (line.length >= it.content.length) return;
       estimate -= estimateTokens(it.content) - estimateTokens(line);
       it.content = line;
@@ -133,21 +206,35 @@ export function applyContextBudget(items: CanonicalItem[], opts: { system: strin
     const collapsed = new Set<ReadInfo>();
     for (const r of reads) {
       if (r.index >= protectedFrom) continue;
-      const replaced = reads.some((n) => n.index > r.index && n.target === r.target);
-      if (replaced) {
+      if (reads.some((n) => replaces(n, r))) {
         collapse(r);
         collapsed.add(r);
       }
     }
+    /** Made out of date by a later change: what it reports may no longer be true. */
+    const stale = (r: ReadInfo): boolean => {
+      const changedAfter = (id: string) => changes.some((c) => c.index > r.index && c.text.includes(id));
+      if (r.name === 'read_page') return changedAfter(r.pageId!);
+      // A patch names its component; a later read with another hash shows a change made some other way.
+      if (r.name === 'read_source') return changedAfter(r.definitionId!) || (!!r.hash && reads.some((n) => n.index > r.index && n.target === r.target && !!n.hash && n.hash !== r.hash));
+      // A measurement, an element's props and the project summary all describe the revision they were read at:
+      // only a change that moved it (whether or not a tool made it) makes them stale.
+      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'read_project') return false;
+      return r.revision !== undefined && opts.revision !== undefined ? r.revision < opts.revision : r.index < lastMutation;
+    };
     if (estimate > available * HARD_LIMIT) {
       for (const r of reads) {
         if (collapsed.has(r) || r.index >= protectedFrom || estimate <= available * HARD_LIMIT) continue;
-        // A contract does not go stale, so it is only given up after the page reads it was used for.
-        if (r.name === 'read_page' && changes.some((c) => c.index > r.index && c.text.includes(r.pageId!))) collapse(r);
+        if (stale(r)) {
+          collapse(r);
+          collapsed.add(r);
+        }
       }
+      // A contract or a source does not go stale by itself (a change that removes one need not name it), so it
+      // is only given up after the reads it was used with, once anything has changed.
       for (const r of reads) {
         if (collapsed.has(r) || r.index >= protectedFrom || estimate <= available * HARD_LIMIT) continue;
-        if (r.name === 'read_component' && r.index < lastMutation) collapse(r);
+        if ((r.name === 'read_component' || r.name === 'read_source') && r.index < lastMutation) collapse(r);
       }
     }
   }

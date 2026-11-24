@@ -5,7 +5,7 @@
  */
 import { findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import { isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
 import { getTree } from '@engine/tree';
@@ -15,6 +15,8 @@ import { propJsonSchema, propsJsonSchema, type JsonSchema } from './propschema';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
 import { repeatedPartList } from '@shared/item-styles';
+
+type ContentField = Extract<EditOperation, { type: 'node.setContent' }>['field'];
 
 export const SELECTION_ARGS = {
   update_selected_props: z.object({ props: z.record(z.string(), z.unknown()).optional(), variant: z.string().optional() }),
@@ -78,13 +80,33 @@ export function selectionTarget(ref: ElementRef | null | undefined): SelectionTa
   };
 }
 
+const choice = (label: string, values: readonly string[]): PropSchema => ({ type: 'enum', label, default: values[0], options: values.map((value) => ({ value, label: value })) });
+/** The tags the engine lets a plain text element change to. */
+const TEXT_TAG_CHOICES = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'] as const;
+const APPEARANCES: readonly ButtonAppearance[] = ['primary', 'secondary', 'text', 'light', 'link', 'plain'];
+
 /** Content fields of a basic element, expressed as properties so one tool edits every kind of selection. */
 const NODE_FIELDS: Partial<Record<GraphNode['kind'], Record<string, PropSchema>>> = {
-  text: { text: { type: 'string', label: 'Text', default: '', multiline: true, maxLength: 20000 } },
+  text: { text: { type: 'string', label: 'Text', default: '', multiline: true, maxLength: 20000 }, tag: choice('Heading level or paragraph', TEXT_TAG_CHOICES) },
   image: { image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } },
-  link: { label: { type: 'string', label: 'Button label', default: '' }, link: { type: 'link', label: 'Destination', default: { type: 'none', target: '' } } },
+  link: {
+    label: { type: 'string', label: 'Button label', default: '' },
+    link: { type: 'link', label: 'Destination', default: { type: 'none', target: '' } },
+    appearance: choice('Button style', APPEARANCES)
+  },
   icon: { icon: { type: 'icon', label: 'Icon', default: 'sparkles' } }
 };
+
+/**
+ * The fields this element can change. Rich text keeps its paragraph structure, and a tag or style bound to a
+ * repeated item is set by the item, so neither is offered.
+ */
+function nodeFields(node: GraphNode): Record<string, PropSchema> {
+  const fields = { ...NODE_FIELDS[node.kind] };
+  if (node.kind === 'text' && (node.rich || isBinding(node.tag))) delete fields.tag;
+  if (node.kind === 'link' && isBinding(node.appearance)) delete fields.appearance;
+  return fields;
+}
 
 interface Resolved {
   tree: NodeTree;
@@ -106,7 +128,7 @@ function resolve(state: ProjectState, target: SelectionTarget): Resolved | null 
     const def = state.components[node.definitionId];
     return def ? { tree, node, def, properties: def.properties } : null;
   }
-  return { tree, node, properties: NODE_FIELDS[node.kind] ?? {} };
+  return { tree, node, properties: nodeFields(node) };
 }
 
 const STYLE_VALUE: JsonSchema = {
@@ -119,6 +141,60 @@ const STYLE_VALUE: JsonSchema = {
   ],
   description: 'A value, a token reference, or null to remove the override.'
 };
+
+type ListSchema = Extract<PropSchema, { type: 'list' }>;
+type Shape = { lists: Array<{ key: string; description?: string }>; schema: JsonSchema };
+
+/** Each list field's shapes by name, with the lists using each. Fields that differ only in their label are one shape. */
+function listShapes(lists: Array<[string, ListSchema]>): Map<string, Shape[]> {
+  const shapes = new Map<string, Shape[]>();
+  for (const [key, s] of lists)
+    for (const [name, schema] of Object.entries((propJsonSchema(s).items as JsonSchema).properties as Record<string, JsonSchema>)) {
+      if (name === 'id') continue;
+      const seen = shapes.get(name) ?? [];
+      const shape = JSON.stringify({ ...schema, description: undefined });
+      const entry = { key, ...(schema.description !== undefined ? { description: String(schema.description) } : {}) };
+      const same = seen.find((x) => JSON.stringify({ ...x.schema, description: undefined }) === shape);
+      if (same) same.lists.push(entry);
+      else seen.push({ lists: [entry], schema });
+      shapes.set(name, seen);
+    }
+  return shapes;
+}
+
+/** A shape's description, naming its lists when it is one of several or when they describe it differently. */
+function describeShape(shape: Shape, name: string, alone: boolean): string | undefined {
+  const descriptions = [...new Set(shape.lists.map((l) => l.description ?? name))];
+  if (descriptions.length > 1) return shape.lists.map((l) => `When prop is "${l.key}": ${l.description ?? name}`).join('. ');
+  return alone ? (shape.schema.description as string | undefined) : `When prop is ${shape.lists.map((l) => `"${l.key}"`).join(' or ')}: ${descriptions[0]}`;
+}
+
+/**
+ * One closed object with the fields of every list; the app checks them against the list named by `prop`. A
+ * name two lists use differently takes either list's shape, each labelled with its lists, rather than one
+ * list's shape silently replacing the other's.
+ */
+function listFields(lists: Array<[string, ListSchema]>): Record<string, JsonSchema> {
+  const fields: Record<string, JsonSchema> = {};
+  for (const [name, seen] of listShapes(lists)) {
+    const branches = seen.map((x) => {
+      const description = describeShape(x, name, seen.length === 1);
+      return { ...x.schema, ...(description !== undefined ? { description } : {}) };
+    });
+    fields[name] = branches.length === 1 ? branches[0] : { anyOf: branches };
+  }
+  return fields;
+}
+
+/**
+ * Another list's shape for a field this list's check would quietly empty rather than refuse: a number for an
+ * image, or an image or a list of choices for a link.
+ */
+function emptiedBy(field: PropSchema, v: unknown): string | null {
+  if (field.type === 'image' && (typeof v === 'number' || typeof v === 'boolean' || Array.isArray(v))) return 'must be an image: an asset ID or { assetId, alt }';
+  if (field.type === 'link' && !!v && typeof v === 'object' && (Array.isArray(v) || !('type' in v))) return 'must be a link: a route, a URL or { type, target }';
+  return null;
+}
 
 /**
  * The tools for a selection, or null when they cannot cover it: inside a component's own definition, or on a
@@ -140,12 +216,9 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
     }
   });
   // A computed list (news, an article header) is filled from the site's pages: it has no items to edit.
-  const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, Extract<PropSchema, { type: 'list' }>]>;
+  const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, ListSchema]>;
   if (lists.length) {
-    // One closed object with the fields of every list; the app checks them against the list named by `prop`.
-    const fields: Record<string, JsonSchema> = {};
-    for (const [, s] of lists) Object.assign(fields, ((propJsonSchema(s).items as JsonSchema).properties as Record<string, JsonSchema>));
-    delete fields.id;
+    const fields = listFields(lists);
     tools.push({
       name: 'edit_selected_list',
       description: SELECTION_DESCRIPTIONS.edit_selected_list,
@@ -254,7 +327,7 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     if (a.variant !== undefined && (!r.def || 'error' in findVariant(r.def, a.variant))) issues.push({ field: 'variant', message: `must be one of: ${(r.def ? [...new Set(variantOptions(r.def).map((o) => o.id))] : []).join(', ') || 'none'}` });
     if (issues.length) return fieldError(issues, note);
     const ops: EditOperation[] = Object.entries(props).map(([prop, value]) =>
-      r.node.kind === 'instance' ? { type: 'instance.setProp', owner, nodeId, prop, value } : { type: 'node.setContent', owner, nodeId, field: prop as 'text', value }
+      r.node.kind === 'instance' ? { type: 'instance.setProp', owner, nodeId, prop, value } : { type: 'node.setContent', owner, nodeId, field: prop as ContentField, value }
     );
     if (a.variant !== undefined) ops.push({ type: 'instance.setVariant', owner, nodeId, variant: a.variant });
     return applySelected(ops, host, 'Edit selection', callId);
@@ -276,11 +349,25 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     if (a.action === 'move' && a.index === undefined) issues.push({ field: 'index', message: 'required for move' });
     let fields: Record<string, unknown> = {};
     if (a.action === 'update' || a.action === 'insert') {
+      // A field another list shapes differently may come in that list's shape, which this list's own check
+      // could quietly turn into an empty value.
+      const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, ListSchema]>;
+      const misshapen = new Set<string>();
+      for (const [name, seen] of listShapes(lists)) {
+        if (seen.length < 2 || !Object.hasOwn(a.fields ?? {}, name) || !Object.hasOwn(schema.fields, name)) continue;
+        const problem = emptiedBy(schema.fields[name], a.fields![name]);
+        if (!problem) continue;
+        misshapen.add(`fields.${name}`);
+        issues.push({ field: `fields.${name}`, message: `${problem} for "${a.prop}"` });
+      }
       // One item is checked here; the list's length rules are the engine's, against the real list.
       const list = { name: schema.label, properties: { [a.prop]: { ...schema, min: undefined, max: undefined } } } as unknown as ComponentDefinition;
       const fieldIssues: FieldIssue[] = [];
       const checked = checkProps(list, { [a.prop]: [a.fields ?? {}] }, state, 'fields', fieldIssues);
-      for (const i of fieldIssues) issues.push({ field: i.field.replace(`fields.${a.prop}[0]`, 'fields'), message: i.message });
+      for (const i of fieldIssues) {
+        const field = i.field.replace(`fields.${a.prop}[0]`, 'fields');
+        if (!misshapen.has(field)) issues.push({ field, message: i.message });
+      }
       if (checked.deferred.length) issues.push({ field: `fields.${checked.deferred[0].field}`, message: `no page uses the route ${checked.deferred[0].route}` });
       fields = (checked.props[a.prop] as Array<Record<string, unknown>>)?.[0] ?? {};
       if (a.action === 'update' && !Object.keys(fields).length) issues.push({ field: 'fields', message: 'send the fields to change' });

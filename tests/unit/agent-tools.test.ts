@@ -24,6 +24,7 @@ import { compileProject } from '../../src/main/compile';
 import { resolveInstanceProps } from '@generator/index';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[];
+type JsonSchemaLike = { type?: string; description?: string; anyOf?: JsonSchemaLike[]; properties?: Record<string, JsonSchemaLike> };
 
 class FakeAdapter implements AgentModelAdapter {
   requests: CanonicalModelRequest[] = [];
@@ -920,6 +921,102 @@ describe('selection tools', () => {
     expect((pageAt(session.state, '/')!.nodes[textId] as { text: string }).text).toBe('Hello there');
   });
 
+  it('changes a selected heading’s level and a selected button’s style (#195)', async () => {
+    const { session, adapter, run } = await setup(
+      [
+        (req) => {
+          const props = (req.tools[0].parameters.properties as { props: { properties: Record<string, { enum?: string[] }> } }).props.properties;
+          expect(props.tag.enum).toEqual(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p']);
+          return [call('t1', 'update_selected_props', { props: { tag: 'h2' } })];
+        },
+        () => [call('t2', 'update_selected_props', { props: { tag: 'span' } })],
+        () => finish(),
+        (req) => {
+          const props = (req.tools[0].parameters.properties as { props: { properties: Record<string, { enum?: string[] }> } }).props.properties;
+          expect(props.appearance.enum).toEqual(['primary', 'secondary', 'text', 'light', 'link', 'plain']);
+          return [call('b1', 'update_selected_props', { props: { appearance: 'secondary', label: 'Book now' } })];
+        },
+        () => finish()
+      ],
+      focused,
+      'blank',
+      (s) => {
+        const home = s.pages[s.site.homePageId];
+        home.nodes.n_btn = { id: 'n_btn', kind: 'link', link: { type: 'none', target: '' }, label: 'Button', appearance: 'primary' };
+        home.rootIds.push('n_btn');
+      }
+    );
+    const home = pageAt(session.state, '/')!;
+    const headingId = Object.values(home.nodes).find((n) => n.kind === 'text' && n.tag === 'h1')!.id;
+    await run('Make this a subheading', { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: headingId });
+    expect((pageAt(session.state, '/')!.nodes[headingId] as { tag: string }).tag).toBe('h2');
+    // A tag the element cannot take is refused by field, before anything is applied.
+    expect(JSON.stringify(lastResult(adapter.requests[2]))).toContain('props.tag');
+    await run('Make this a secondary button', { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: 'n_btn' });
+    expect(pageAt(session.state, '/')!.nodes.n_btn).toMatchObject({ appearance: 'secondary', label: 'Book now' });
+  });
+
+  it('never offers a tag for rich text, or a tag or style a repeated item sets (#195)', () => {
+    const state = createStarterState('blank', 'Test', false);
+    const home = state.pages[state.site.homePageId];
+    home.nodes.n_rich = { id: 'n_rich', kind: 'text', tag: 'div', text: '', rich: true };
+    home.nodes.n_boundTag = { id: 'n_boundTag', kind: 'text', tag: { $item: 'level' }, text: 'x' };
+    home.nodes.n_boundBtn = { id: 'n_boundBtn', kind: 'link', link: { type: 'none', target: '' }, label: 'Go', appearance: { $item: 'style' } };
+    const fieldsOf = (nodeId: string) => Object.keys((selectionTools(state, { owner: { kind: 'page', id: home.id }, nodeId })![0].parameters.properties as { props: { properties: object } }).props.properties);
+    expect(fieldsOf('n_rich')).toEqual(['text']);
+    expect(fieldsOf('n_boundTag')).toEqual(['text']);
+    expect(fieldsOf('n_boundBtn')).toEqual(['label', 'link']);
+  });
+
+  it('keeps each list’s own shape for a field name two lists share (#195)', async () => {
+    const statsList = { type: 'list', label: 'Stats', itemLabel: 'Stat', fields: { title: { type: 'image', label: 'Value', default: { assetId: null, alt: '' } } }, default: [] } as unknown as PropSchema;
+    type List = Extract<PropSchema, { type: 'list' }>;
+    let gridDef = '';
+    const { session, adapter, run } = await setup(
+      [
+        // A shape the list's own check would quietly turn into an empty image is refused by field, and nothing
+        // is applied.
+        () => [call('l0', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: 42 } })],
+        () => [call('l1', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: { assetId: null, alt: 'Chart' } } })],
+        () => [call('l2', 'edit_selected_list', { prop: 'items', action: 'insert', fields: { icon: 'leaf', title: 'Care', description: 'Weekly.' } })],
+        // An update is checked the same way: a list of choices would quietly clear a destination.
+        () => [call('l3', 'edit_selected_list', { prop: 'links', action: 'update', itemId: 'it_go', fields: { title: [{ label: 'Email' }] } })],
+        () => finish()
+      ],
+      focused,
+      'business',
+      (s) => {
+        const grid = s.pages[s.site.homePageId].nodes[s.pages[s.site.homePageId].rootIds[2]] as InstanceNode;
+        gridDef = grid.definitionId;
+        const props = s.components[gridDef].properties;
+        props.stats = statsList;
+        // The same shape under another label is one shape.
+        const items = props.items as List;
+        props.notes = { ...items, label: 'Notes', fields: { title: { ...items.fields.title, label: 'Note' } }, default: [] } as PropSchema;
+        props.links = { type: 'list', label: 'Links', itemLabel: 'Link', fields: { title: { type: 'link', label: 'Destination', default: { type: 'none', target: '' } } }, default: [{ id: 'it_go', title: { type: 'url', target: 'https://example.com' } }] } as unknown as PropSchema;
+      }
+    );
+    const ref = { ...heroRef(session.state), nodeId: pageAt(session.state, '/')!.rootIds[2] };
+    await run('Add a stat and a card', ref);
+    const tool = adapter.requests[0].tools.find((t) => t.name === 'edit_selected_list')!;
+    const title = ((tool.parameters.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
+    expect(title.anyOf?.map((b) => b.type)).toEqual(['string', 'object', 'string']);
+    // One shape the lists describe differently keeps each list's description.
+    expect(title.anyOf?.slice(0, 2).map((b) => b.description)).toEqual(['When prop is "items": Title. When prop is "notes": Note', 'When prop is "stats": Value']);
+    expect(title.anyOf?.[2].description).toMatch(/^When prop is "links": Destination/);
+    const strict = toStrictSchema(tool.parameters);
+    const strictTitle = ((strict.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
+    expect(JSON.stringify(strictTitle)).toMatch(/"type":"string".*"type":"object"/);
+    expect(findForbiddenShapes(strict)).toEqual([]);
+    expect(JSON.stringify(strict)).not.toContain('$json');
+    expect(lastResult(adapter.requests[1]).fields).toEqual([{ field: 'fields.title', message: 'must be an image: an asset ID or { assetId, alt } for "stats"' }]);
+    const grid = nodeAt(session.state, 2).props;
+    expect((grid.stats as Array<{ title: unknown }>).map((i) => i.title)).toEqual([{ assetId: null, alt: 'Chart' }]);
+    expect((grid.items as Array<{ title: string }>).at(-1)?.title).toBe('Care');
+    expect(lastResult(adapter.requests[4]).fields).toEqual([{ field: 'fields.title', message: 'must be a link: a route, a URL or { type, target } for "links"' }]);
+    expect(grid.links).toBeUndefined();
+  });
+
   it('switches to the site tools once the user allows a wider change', async () => {
     const { session, adapter, run, answers } = await setup(
       [
@@ -1005,6 +1102,170 @@ describe('context budget', () => {
     expect(r.overflow).toBe(false);
     const tight = applyContextBudget([...read('a', { pageId: 'pg_a' }, big(1)), ...read('b', { pageId: 'pg_b' }, big(1, 'pg_b'))], opts(1000));
     expect(tight.overflow).toBe(true);
+  });
+
+  describe('code, element, layout and project reads (#195)', () => {
+    const pad = 'q'.repeat(4000);
+    const src = (def: string, start: number, end: number, hash: string, endLine = end) =>
+      JSON.stringify({ definitionId: def, editable: true, hash, totalLines: 900, startLine: start, endLine, source: Array.from({ length: end - start + 1 }, () => 'let x = 1;').join('\n') + pad });
+    const element = (id: string, rev = 3) => JSON.stringify({ revision: rev, owner: { kind: 'page', id }, node: { id: 'n_1', kind: 'instance', props: { body: pad } }, displayName: 'Hero', parent: null });
+    const layout = (pageId: string, viewport: string, rev?: number) => JSON.stringify({ ...(rev !== undefined ? { revision: rev } : {}), pageId, viewport, width: 390, report: { issues: [], headings: pad } });
+    const project = (rev = 3) => JSON.stringify({ revision: rev, homePageId: 'pg_a', pages: [{ id: 'pg_a', route: '/' }, { id: 'pg_b', route: '/about/' }], tokens: pad });
+    const filler = (id: string) => read(id, {}, '{"errors":[]}', 'validate_project');
+    const at = (items: CanonicalItem[], callId: string) => results(items).find((r) => r.callId === callId)!.content;
+    const optsWith = (window: number, extra: Partial<Parameters<typeof applyContextBudget>[1]> = {}) => ({ ...opts(window), isMutation: (n: string) => n === 'apply_source_patch' || n === 'apply_operations', ...extra });
+
+    it('collapses a read another read of the same thing replaced, and nothing it did not', () => {
+      const items: CanonicalItem[] = [
+        ...read('s1', { definitionId: 'def_a', startLine: 1, endLine: 80 }, src('def_a', 1, 80, 'sha_one'), 'read_source'),
+        ...read('s2', { definitionId: 'def_a' }, src('def_a', 1, 400, 'sha_one'), 'read_source'),
+        // Other lines of the same source are not a replacement.
+        ...read('s3', { definitionId: 'def_a', startLine: 401 }, src('def_a', 401, 800, 'sha_one'), 'read_source'),
+        // Fewer lines than an earlier read are not a replacement either.
+        ...read('s4', { definitionId: 'def_a', startLine: 1, endLine: 80 }, src('def_a', 1, 80, 'sha_one'), 'read_source'),
+        ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a'), 'inspect_element'),
+        ...read('e2', { owner: { kind: 'page', id: 'pg_b' }, nodeId: 'n_1' }, element('pg_b'), 'inspect_element'),
+        ...read('e3', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a'), 'inspect_element'),
+        // A route and the page's ID are the same page; another viewport is another measurement.
+        ...read('l1', { pageId: '/', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...read('l2', { pageId: 'pg_a', viewport: 'desktop' }, layout('pg_a', 'desktop'), 'inspect_layout'),
+        ...read('l3', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),
+        // A project read that includes everything an earlier one did replaces it, whatever order the sections came in.
+        ...read('p1', { sections: ['tokens'] }, project(), 'read_project'),
+        ...read('p2', { sections: ['catalogue', 'pages'] }, project(), 'read_project'),
+        ...read('p3', { sections: ['catalogue', 'tokens'] }, project(), 'read_project'),
+        ...read('p4', {}, project(), 'read_project'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      const kept = structuredClone(items);
+      const r = applyContextBudget(items, optsWith(26000));
+      expect(r.tombstoned).toBe(5);
+      expect(at(items, 's1')).toBe('[Superseded read_source def_a lines 1–80 of 900. Read it again for the current source and hash.]');
+      expect(at(items, 's1')).not.toContain('sha_one');
+      expect(at(items, 'e1')).toBe('[Superseded inspect_element n_1 on page pg_a at rev 3. Inspect it again before relying on it.]');
+      expect(at(items, 'l1')).toBe('[Superseded inspect_layout pg_a phone. Measure it again if you need it.]');
+      expect(at(items, 'p1')).toBe('[Superseded read_project at rev 3 (tokens). Pages: pg_a /, pg_b /about/. Read it again if you need it.]');
+      expect(at(items, 'p2')).toContain('[Superseded read_project at rev 3 (catalogue, pages).');
+      for (const id of ['s2', 's3', 's4', 'e2', 'e3', 'l2', 'l3', 'p3', 'p4']) expect(at(items, id), id).toBe(at(kept, id));
+    });
+
+    it('never lets a read cut short by the size limit replace a complete one', () => {
+      const cut = (s: string) => JSON.stringify({ truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
+      const items: CanonicalItem[] = [
+        ...read('a', { pageId: 'pg_a' }, big(1)),
+        ...read('b', { pageId: 'pg_a' }, cut(big(2))),
+        ...read('s1', { definitionId: 'def_a', startLine: 1, endLine: 400 }, cut(src('def_a', 1, 400, 'sha_one')), 'read_source'),
+        ...read('s2', { definitionId: 'def_a' }, src('def_a', 1, 400, 'sha_one'), 'read_source'),
+        // A cut read does not show every line it asked for, so it replaces nothing, even another cut read.
+        ...read('s3', { definitionId: 'def_b', startLine: 200, endLine: 400 }, cut(src('def_b', 200, 400, 'sha_b')), 'read_source'),
+        ...read('s4', { definitionId: 'def_b', startLine: 1, endLine: 400 }, cut(src('def_b', 1, 400, 'sha_b')), 'read_source'),
+        // An end before the start returns all but the last line: what came back is what counts.
+        ...read('s5', { definitionId: 'def_c', endLine: -1 }, src('def_c', 1, 899, 'sha_c', -1), 'read_source'),
+        ...read('s6', { definitionId: 'def_c', endLine: 80 }, src('def_c', 1, 80, 'sha_c'), 'read_source'),
+        // An empty answer shows no line at all.
+        ...read('s7', { definitionId: 'def_e', startLine: 80, endLine: 80 }, src('def_e', 80, 80, 'sha_e'), 'read_source'),
+        ...read('s8', { definitionId: 'def_e', startLine: 80, endLine: 79 }, JSON.stringify({ definitionId: 'def_e', editable: true, hash: 'sha_e', totalLines: 900, startLine: 80, endLine: 79, source: '' }), 'read_source'),
+        // A cut read that asked for all but the last line may show more than a later read of the first lines.
+        ...read('s9', { definitionId: 'def_f', endLine: -1 }, cut(src('def_f', 1, 899, 'sha_f', -1)), 'read_source'),
+        ...read('s10', { definitionId: 'def_f', endLine: 80 }, src('def_f', 1, 80, 'sha_f'), 'read_source'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      const kept = structuredClone(items);
+      applyContextBudget(items, optsWith(16000));
+      expect(at(items, 'a')).toBe(big(1));
+      // A complete read of the lines the cut one asked for replaces it.
+      expect(at(items, 's1')).toBe('[Superseded read_source def_a. Read it again for the current source and hash.]');
+      for (const id of ['s3', 's5', 's7', 's9']) expect(at(items, id), id).toBe(at(kept, id));
+    });
+
+    it('under pressure collapses what a later change made stale, then sources once anything has changed', () => {
+      const patch: CanonicalItem[] = [
+        { kind: 'assistant', text: '', toolCalls: [{ id: 'm', name: 'apply_source_patch', arguments: JSON.stringify({ definitionId: 'def_a', expectedHash: 'sha_one', edits: [] }) }] },
+        { kind: 'tool_result', callId: 'm', name: 'apply_source_patch', content: '{"ok":true,"revision":4,"hash":"sha_two"}' }
+      ];
+      const failed: CanonicalItem[] = [
+        { kind: 'assistant', text: '', toolCalls: [{ id: 'x', name: 'apply_source_patch', arguments: JSON.stringify({ definitionId: 'def_c', expectedHash: 'h', edits: [] }) }] },
+        { kind: 'tool_result', callId: 'x', name: 'apply_source_patch', content: '{"error":"STALE_REVISION"}', isError: true }
+      ];
+      const history = (): CanonicalItem[] => [
+        ...read('c1', { definitionId: 'def_c' }, src('def_c', 1, 400, 'sha_c'), 'read_source'),
+        ...failed,
+        ...read('s1', { definitionId: 'def_a' }, src('def_a', 1, 400, 'sha_one'), 'read_source'),
+        ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a'), 'inspect_element'),
+        ...read('l1', { pageId: 'pg_b', viewport: 'phone' }, layout('pg_b', 'phone'), 'inspect_layout'),
+        ...read('p1', {}, project(), 'read_project'),
+        ...read('s2', { definitionId: 'def_b' }, src('def_b', 1, 400, 'sha_b'), 'read_source'),
+        ...patch,
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      // Enough room once the stale reads are gone: the sources nothing changed are kept.
+      const roomy = history();
+      applyContextBudget(roomy, optsWith(7400));
+      for (const id of ['s1', 'e1', 'l1', 'p1']) expect(at(roomy, id), id).toMatch(/^\[Superseded /);
+      for (const id of ['c1', 's2']) expect(at(roomy, id), id).not.toContain('Superseded');
+      // Tighter still, a source is given up after a change that need not have named it (a theme switch removes
+      // components without naming them), but a failed patch changed nothing.
+      const tight = history();
+      applyContextBudget(tight, optsWith(3000));
+      for (const id of ['c1', 's2']) expect(at(tight, id), id).toMatch(/^\[Superseded read_source/);
+      // With no change at all, nothing is stale.
+      const quiet = history().filter((i) => !('callId' in i && i.callId === 'm') && !(i.kind === 'assistant' && i.toolCalls[0]?.id === 'm'));
+      applyContextBudget(quiet, optsWith(3000));
+      for (const id of ['c1', 's1', 'e1', 'l1', 'p1', 's2']) expect(at(quiet, id), id).not.toContain('Superseded');
+    });
+
+    it('under pressure collapses a source a later read shows has changed, with no change in between', () => {
+      const items: CanonicalItem[] = [
+        ...read('d1', { definitionId: 'def_d' }, src('def_d', 1, 400, 'sha_d1'), 'read_source'),
+        ...read('d2', { definitionId: 'def_d', startLine: 401 }, src('def_d', 401, 800, 'sha_d2'), 'read_source'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      applyContextBudget(items, optsWith(2000));
+      expect(at(items, 'd1')).toMatch(/^\[Superseded read_source def_d lines 1–400 of 900\./);
+      expect(at(items, 'd2')).toBe(src('def_d', 401, 800, 'sha_d2'));
+    });
+
+    it('goes by the revision a read was made at: a change that was not a tool’s result counts, a change that changed nothing does not', () => {
+      const noop: CanonicalItem[] = [
+        { kind: 'assistant', text: '', toolCalls: [{ id: 'm', name: 'apply_operations', arguments: '{"operations":[]}' }] },
+        { kind: 'tool_result', callId: 'm', name: 'apply_operations', content: '{"ok":true,"revision":3}' }
+      ];
+      const cut = (s: string) => JSON.stringify({ truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
+      const items = (): CanonicalItem[] => [
+        ...read('p1', {}, cut(project(3)), 'read_project'),
+        ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a', 3), 'inspect_element'),
+        ...read('l1', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone', 3), 'inspect_layout'),
+        ...noop,
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      const current = items();
+      applyContextBudget(current, optsWith(2000, { revision: 3 }));
+      for (const id of ['p1', 'e1', 'l1']) expect(at(current, id), id).not.toContain('Superseded');
+      // Links connected when a page was created move the revision without a tool result.
+      const moved = items();
+      applyContextBudget(moved, optsWith(2000, { revision: 4 }));
+      expect(at(moved, 'p1')).toMatch(/^\[Superseded read_project\. /);
+      expect(at(moved, 'e1')).toMatch(/^\[Superseded inspect_element n_1/);
+      expect(at(moved, 'l1')).toBe('[Superseded inspect_layout pg_a phone. Measure it again if you need it.]');
+    });
+
+    it('keeps every collapsed read to one line', () => {
+      const titled = JSON.stringify({ revision: 1, id: 'pg_a', title: 'About\nUs\u2028Team', owner: { kind: 'page', id: 'pg_a' }, sections: [{ id: 'n_1', componentId: 'hero.split', props: { heading: pad } }] });
+      const items: CanonicalItem[] = [...read('a', { pageId: 'pg_a' }, titled), ...read('b', { pageId: 'pg_a' }, titled), ...filler('f1'), ...filler('f2')];
+      applyContextBudget(items, optsWith(2000));
+      expect(at(items, 'a')).toMatch(/^\[Superseded read_page pg_a "About Us Team"/);
+    });
+
+    it('records the revision a layout check was made at', async () => {
+      const { session, adapter, run } = await setup([() => [call('i1', 'inspect_layout', { pageId: '/', viewport: 'phone' })], () => finish()]);
+      await run('Check the home page on phones');
+      expect(lastResult(adapter.requests[1])).toMatchObject({ revision: session.revision, pageId: session.state.site.homePageId, viewport: 'phone' });
+    });
   });
 
   it('keeps a run inside a small window, then stops with its work kept when it cannot', async () => {

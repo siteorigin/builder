@@ -919,7 +919,7 @@ export class Orchestrator {
         current = runTools();
         const tools = current.tools;
         const system = systemPrompt(readState(), current);
-        const budget = applyContextBudget(items, { system, tools, capabilities: ad.adapter.capabilities(), isMutation: (n) => MUTATING_TOOLS.has(n as never) });
+        const budget = applyContextBudget(items, { system, tools, capabilities: ad.adapter.capabilities(), isMutation: (n) => MUTATING_TOOLS.has(n as never), revision: readRevision() });
         // The first request goes out regardless: only the provider knows its exact count.
         if (budget.overflow && turns > 1) {
           await stopAtLimit("the model's context limit", 'context limit');

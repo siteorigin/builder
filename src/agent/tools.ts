@@ -411,7 +411,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         // A preview that is not running or did not load is a failed check, never a clean result.
         if (!report || typeof report !== 'object' || report.error)
           return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? 'no report')}` } };
-        return { ok: true, content: { pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], report } };
+        return { ok: true, content: { revision: host.revision(), pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], report } };
       } catch (e) {
         return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
       }

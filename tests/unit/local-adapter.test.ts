@@ -590,6 +590,36 @@ describe('constrained JSON', () => {
     expect(messages[3].content).toContain('Validation found new errors.');
   });
 
+  it('replays an earlier request’s answer as a finish envelope, never as prose (#195)', async () => {
+    // The server refuses the schema, then the JSON mode: every request still shows the history in the format.
+    server.script(
+      { status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar' } }) },
+      { status: 400, body: JSON.stringify({ error: { message: 'response_format type not supported' } }) },
+      envelopeReply('finish', { message: 'Done.' }),
+      textReply('ok')
+    );
+    const items: CanonicalModelRequest['items'] = [
+      { kind: 'user', text: 'Make the headline bolder' },
+      // A finished turn read back from the transcript carries no provider data.
+      { kind: 'assistant', text: 'Made the headline bolder.', toolCalls: [] },
+      { kind: 'user', text: 'Which button?' },
+      // A blank turn has no message a finish could carry, so it is left out.
+      { kind: 'assistant', text: '  ', toolCalls: [] },
+      { kind: 'user', text: 'Now the button' }
+    ];
+    await run(adapter(), { items });
+    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_object', undefined]);
+    for (const post of posts()) {
+      const messages = post.body.messages as Array<{ role: string; content: string }>;
+      expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+      expect(parseEnvelope(messages[2].content)).toMatchObject({ ok: true, finish: 'Made the headline bolder.' });
+      expect(messages[3].content).toBe('Which button?\n\nNow the button');
+    }
+    // Native tool calling keeps the plain text.
+    await run(native(), { items: items.slice(0, 3) });
+    expect(posts()[3].body.messages[2]).toEqual({ role: 'assistant', content: 'Made the headline bolder.' });
+  });
+
   it('labels a failed tool result as an error', async () => {
     server.script(envelopeReply('finish', { message: 'Done.' }));
     await run(adapter(), { items: [{ kind: 'assistant', text: 's', toolCalls: [{ id: 'c', name: 'read_page', arguments: '{}' }] }, { kind: 'tool_result', callId: 'c', name: 'read_page', content: 'nope', isError: true }] });
