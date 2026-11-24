@@ -3170,7 +3170,11 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .insert-band { grid-column: 1 / -1; padding: 10px 4px 0; font-size: 11.5px; font-weight: 500; color: var(--text-3); }
 .insert-grid.banded > .insert-row:first-child .insert-band { padding-top: 0; }
 .insert-grid.compact .insert-tile { flex-direction: row; align-items: center; gap: 8px; min-height: 40px; padding: 6px 8px; }
-.insert-grid.compact .insert-tile strong { padding: 0; flex: 1; min-width: 0; }
+.insert-grid.compact .insert-tile strong { padding: 0; flex: 1; min-width: 0; overflow-wrap: normal; }
+/* Basic elements: a column never narrows past its longest label word ("Numbered"), so a label wraps between words
+   and never inside one; the tile's spacing tightens first to make that room. */
+.insert-grid.compact:not(.list):not(.managed) { grid-template-columns: repeat(2, minmax(min-content, 1fr)); }
+.insert-panel.narrow .insert-grid.compact .insert-tile { gap: 6px; padding: 6px; }
 .insert-grid.list { grid-template-columns: 1fr; }
 /* The library: each component's tile, then its manage button in the same row. */
 /* The button takes the row's full height, so it lines up with its tile for the grid's Home, End and arrow keys. */
