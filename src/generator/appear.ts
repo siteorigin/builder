@@ -1,5 +1,7 @@
 import type { NodeTree, ProjectState } from '@shared/types';
 import { isAppearPreset } from '@shared/types';
+import { showsPart } from '@shared/page-shell';
+import { anchorCapable } from '@engine/tree';
 
 /**
  * Entrances: a section or container with an `appear` preset fades, lifts or scales in the first time it scrolls into
@@ -67,21 +69,29 @@ export function observeAppear() {
 	if (typeof IntersectionObserver !== 'function' || typeof MutationObserver !== 'function' || typeof matchMedia !== 'function') return () => {};
 	// The stylesheet keeps printouts whole on its own, so only the visitor's wish for less motion stops this.
 	const motion = matchMedia('(prefers-reduced-motion: no-preference)');
-	const armed = new Set();
+	// Every element this script has marked, waiting or coming in, so it can always let go of it, attached or not.
+	const marked = new Set();
 	let checked = new WeakSet();
+	let pending = [];
+	let timer = 0;
 	let on = false;
 	const clear = (el) => {
-		armed.delete(el);
+		marked.delete(el);
+		io.unobserve(el);
 		el.removeAttribute('data-appear-state');
 		el.removeAttribute('data-appear-step');
 	};
 	const io = new IntersectionObserver((entries) => {
-		const entering = entries.filter((e) => e.isIntersecting && armed.has(e.target)).map((e) => e.target);
+		const entering = entries.filter((e) => e.isIntersecting && marked.has(e.target) && e.target.getAttribute('data-appear-state') === 'waiting').map((e) => e.target);
 		entering.sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
 		const items = [];
 		for (const el of entering) {
-			armed.delete(el);
 			io.unobserve(el);
+			// Something inside has keyboard focus: it shows at once.
+			if (el.matches(':focus-within')) {
+				clear(el);
+				continue;
+			}
 			const item = el.getAttribute('data-appear-stagger');
 			if (item !== null && !items.includes(item)) items.push(item);
 			const step = item === null ? 0 : Math.min(items.indexOf(item), ${MAX_STEP});
@@ -93,37 +103,67 @@ export function observeAppear() {
 	// Everything is measured before anything is armed, so the page is laid out once.
 	const arm = (els) => {
 		const below = els.filter((el) => {
-			if (checked.has(el) || !PRESETS.includes(el.getAttribute('data-appear'))) return false;
+			if (checked.has(el) || !el.isConnected || !PRESETS.includes(el.getAttribute('data-appear'))) return false;
 			checked.add(el);
 			return el.getClientRects().length > 0 && el.getBoundingClientRect().top >= innerHeight;
 		});
 		for (const el of below) {
 			el.setAttribute('data-appear-state', 'waiting');
-			armed.add(el);
+			marked.add(el);
 			io.observe(el);
 		}
 	};
+	// Content that arrives later (a page a visitor moves to, a section shown later) is measured once the page has
+	// been still for a moment: a new page starts at its top (or its anchor), not where the last one was left, and may
+	// glide there, starting a few frames later. Until then it shows as it is.
+	const quiet = () => {
+		clearTimeout(timer);
+		timer = setTimeout(() => {
+			timer = 0;
+			removeEventListener('scroll', quiet);
+			const found = pending;
+			pending = [];
+			if (on) arm(found);
+		}, 150);
+	};
+	const later = (els) => {
+		if (!els.length) return;
+		pending.push(...els);
+		if (!timer) addEventListener('scroll', quiet, { passive: true });
+		quiet();
+	};
 	const within = (root) => (root.nodeType === 1 ? [...(root.matches('[data-appear]') ? [root] : []), ...root.querySelectorAll('[data-appear]')] : []);
-	// Pages a visitor moves to, and content that shows later, are armed as they arrive.
 	const mo = new MutationObserver((records) => {
 		const found = [];
 		for (const r of records) {
 			if (r.type === 'childList') r.addedNodes.forEach((n) => found.push(...within(n)));
 			else if (PRESETS.includes(r.target.getAttribute('data-appear'))) found.push(r.target);
-			else if (r.target.hasAttribute('data-appear-state')) (io.unobserve(r.target), clear(r.target));
+			else {
+				// A preset taken away lets go at once, and one given back later counts afresh.
+				checked.delete(r.target);
+				if (marked.has(r.target)) clear(r.target);
+			}
 		}
-		for (const el of armed) if (!el.isConnected) (io.unobserve(el), clear(el));
-		arm(found);
+		for (const el of marked) if (!el.isConnected) clear(el);
+		later(found);
 	});
-	// An entrance is over when it ends, or when it stops early (focus moved in, the element was hidden).
+	// An entrance is over when it ends, or when it stops early (the element was hidden).
 	const done = (e) => {
-		if (e.animationName === 'so-appear-fade' && e.target.getAttribute?.('data-appear-state') === 'running') clear(e.target);
+		if (e.animationName === 'so-appear-fade' && marked.has(e.target) && e.target.getAttribute('data-appear-state') === 'running') clear(e.target);
+	};
+	// Keyboard focus moving inside shows it at once, and for good: it never comes in again behind the visitor's back.
+	const focused = (e) => {
+		for (const el of marked) if (el.contains(e.target)) clear(el);
 	};
 	const stop = () => {
 		on = false;
 		mo.disconnect();
 		io.disconnect();
-		for (const el of document.querySelectorAll('[data-appear-state]')) clear(el);
+		clearTimeout(timer);
+		timer = 0;
+		removeEventListener('scroll', quiet);
+		pending = [];
+		for (const el of [...marked]) clear(el);
 	};
 	const update = () => {
 		const want = ${active};
@@ -136,42 +176,55 @@ export function observeAppear() {
 	};
 	motion.addEventListener('change', update);
 	document.addEventListener('animationend', done, true);
-	document.addEventListener('animationcancel', done, true);${watchMode}
+	document.addEventListener('animationcancel', done, true);
+	document.addEventListener('focusin', focused, true);${watchMode}
 	update();
 	return () => {
 		motion.removeEventListener('change', update);
 		document.removeEventListener('animationend', done, true);
-		document.removeEventListener('animationcancel', done, true);${instrument ? '\n\t\tmode.disconnect();' : ''}
+		document.removeEventListener('animationcancel', done, true);
+		document.removeEventListener('focusin', focused, true);${instrument ? '\n\t\tmode.disconnect();' : ''}
 		stop();
 	};
 }
 `;
 }
 
+/** What a code component's source carries when it shows an entrance: a preset on its markup, or one it passes on. */
+const CODE_ENTRANCE = /\bdata-appear="(?:fade|lift|scale-subtle)"|\bso_appear=\{"(?:fade|lift|scale-subtle)"\}/;
+
 /**
- * Whether a visitor of the generated site can meet an entrance: a page (drafts included while editing; a published
- * build is generated without them), or the shared header or footer, holds a section or container with a preset, or
- * places a component whose design does, at any depth. A component nothing places never turns the observer on, and a
- * placement that turns its design's entrance off (`none`) still counts its design: the cost is a few idle lines.
+ * Whether a visitor of the generated site can meet an entrance: one of its pages (drafts included while editing; a
+ * published build is generated without them), or the shared header or footer while a page shows it, holds a section
+ * or container with a preset, or places a component whose design does, at any depth. A component nothing places, a
+ * design's root entrance its only placement turns off (`none`), and a preset on a placement that cannot take one
+ * (a code component's) never turn the observer on.
  */
 export function usesAppear(state: ProjectState): boolean {
+  // Each design once for each way it is reached: with its root's own entrance turned off by its placement, or not.
   const seen = new Set<string>();
-  const holds = (tree: NodeTree | undefined): boolean => {
+  const holds = (tree: NodeTree | undefined, rootOff = false): boolean => {
+    const rootId = rootOff ? tree?.rootIds[0] : undefined;
     for (const n of Object.values(tree?.nodes ?? {})) {
-      if ((n.kind === 'element' || n.kind === 'instance') && isAppearPreset(n.appear)) return true;
-      if (n.kind === 'instance' && placesAppear(n.definitionId)) return true;
+      if (n.kind === 'element' && isAppearPreset(n.appear) && n.id !== rootId) return true;
+      if (n.kind !== 'instance') continue;
+      // A design's root takes its placement's choice first.
+      const choice = n.id === rootId ? 'none' : n.appear;
+      if (isAppearPreset(choice) && anchorCapable(state, state.components[n.definitionId])) return true;
+      if (placesAppear(n.definitionId, choice === 'none')) return true;
     }
     return false;
   };
-  const placesAppear = (defId: string): boolean => {
-    if (seen.has(defId)) return false;
-    seen.add(defId);
+  const placesAppear = (defId: string, rootOff: boolean): boolean => {
+    const key = `${rootOff ? 'off' : 'on'}:${defId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
     const def = state.components[defId];
     if (!def) return false;
-    // A code component (one converted from a design keeps its markup) shows an entrance its source marks, or one of
-    // the components it places does.
-    if (def.kind === 'code') return (typeof def.source === 'string' && /\bdata-appear\b/.test(def.source)) || (def.dependencies ?? []).some(placesAppear);
-    return holds(def.tree);
+    if (def.kind === 'code') return (typeof def.source === 'string' && CODE_ENTRANCE.test(def.source)) || (def.dependencies ?? []).some((d) => placesAppear(d, false));
+    return holds(def.tree, rootOff);
   };
-  return [...Object.values(state.pages), state.site.shell.header, state.site.shell.footer].some(holds);
+  const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id)).map((id) => state.pages[id]);
+  const shell = (['header', 'footer'] as const).filter((part) => pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part]);
+  return [...pages, ...shell].some((tree) => holds(tree));
 }

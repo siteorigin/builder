@@ -1,5 +1,5 @@
 import type { AppearPreset, ElementNode, InstanceNode, OwnerRef, RepeatNode } from '@shared/types';
-import { APPEAR_PRESETS } from '@shared/types';
+import { APPEAR_PRESETS, isAppearPreset } from '@shared/types';
 import { applyOps } from '../store';
 import { Field, SwitchRow } from '../components/ui';
 
@@ -8,7 +8,9 @@ export const APPEAR_LABELS: Record<AppearPreset, string> = { fade: 'Fade in', li
 
 /** The entrance a node shows, in words for a section's summary line ("Lift in"), or nothing. */
 export function appearSummary(node: ElementNode | InstanceNode, design?: AppearPreset): string | undefined {
-  const own = node.appear === 'none' ? undefined : (node.appear ?? design);
+  if (node.appear === 'none') return undefined;
+  // A value the editor does not know (a hand-edited file) is no entrance: the site ignores it too.
+  const own = isAppearPreset(node.appear) ? node.appear : design;
   return own ? APPEAR_LABELS[own] : undefined;
 }
 
@@ -22,7 +24,7 @@ export function EntranceField({ owner, node, design }: { owner: OwnerRef; node: 
   const set = (value: string) =>
     void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'appear', value: value || null }], value && value !== 'none' ? 'Set entrance' : value ? 'Turn entrance off' : 'Clear entrance');
   const placement = node.kind === 'instance';
-  const value = node.appear ?? '';
+  const value = node.appear === 'none' || isAppearPreset(node.appear) ? node.appear : '';
   return (
     <Field label="Entrance" hint={HINT}>
       <select className="select" value={value} onChange={(e) => set(e.target.value)}>

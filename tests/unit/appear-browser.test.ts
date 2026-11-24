@@ -249,12 +249,62 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
         document.querySelector('main').append(late);
       })()`);
       await page.waitForFunction(`${stateOf('#late')} === 'waiting'`);
-      // A preset taken away lets go at once.
+      // A preset taken away lets go at once; given back, it counts afresh.
       await page.evaluate(`${q('#late')}.removeAttribute('data-appear')`);
       await page.waitForFunction(`${stateOf('#late')} === null`);
-      await page.evaluate('window.__stop()');
+      await page.evaluate(`${q('#late')}.setAttribute('data-appear', 'lift')`);
+      await page.waitForFunction(`${stateOf('#late')} === 'waiting'`);
+      // Stopping lets go of everything, even an element taken out of the page in the same moment.
+      const reinserted = await page.evaluate(`(() => {
+        const el = ${q('#late')};
+        el.remove();
+        window.__stop();
+        document.querySelector('main').append(el);
+        return el.getAttribute('data-appear-state');
+      })()`);
+      expect(reinserted).toBe(null);
       expect(await armed(page)).toBe(0);
       expect(await read(page, BANNER)).toMatchObject({ opacity: '1', animation: 'none' });
+    } finally {
+      await close();
+    }
+  });
+
+  it('measures a page a visitor moves to where it starts, not where the last one was scrolled to', async () => {
+    const { page, close } = await open();
+    try {
+      // As a client-side navigation does: the new page's content arrives while the old scroll position holds, and
+      // the page goes back to its top only after that, gliding there (the theme scrolls smoothly).
+      await page.evaluate(`window.scrollTo(0, document.documentElement.scrollHeight)`);
+      await page.evaluate(`(() => {
+        document.querySelector('main').innerHTML = '<div style="height: 1400px"></div><div id="next" data-appear="fade" style="height: 200px">Next page</div><div style="height: 200px"></div>';
+        queueMicrotask(() => window.scrollTo(0, 0));
+      })()`);
+      await page.waitForFunction(`${stateOf('#next')} === 'waiting'`);
+      expect((await read(page, '#next')).top).toBeGreaterThan(720);
+    } finally {
+      await close();
+    }
+  });
+
+  it('shows an element at once, and for good, when keyboard focus moves inside it', async () => {
+    const { page, close } = await open();
+    try {
+      await page.evaluate(`(() => {
+        const box = document.createElement('div');
+        box.id = 'focusable';
+        box.setAttribute('data-appear', 'lift');
+        box.innerHTML = '<a href="#x">A link</a>';
+        document.querySelector('main').append(box);
+      })()`);
+      await page.waitForFunction(`${stateOf('#focusable')} === 'waiting'`);
+      await page.focus('#focusable a');
+      await page.waitForFunction(`${stateOf('#focusable')} === null`);
+      expect(await read(page, '#focusable')).toMatchObject({ opacity: '1', animation: 'none' });
+      // Leaving it plays nothing afterwards.
+      await page.evaluate(`document.activeElement.blur()`);
+      await page.waitForTimeout(50);
+      expect(await read(page, '#focusable')).toMatchObject({ state: null, opacity: '1', animation: 'none' });
     } finally {
       await close();
     }

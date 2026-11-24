@@ -7,6 +7,7 @@
  * portable project source.
  */
 import type {
+  AppearPreset,
   AssetRecord,
   Binding,
   ComponentDefinition,
@@ -898,6 +899,11 @@ interface EmitCtx {
   parents?: Map<string, string>;
   /** The direct children of the repeat being emitted, while it staggers its items' entrances (`appearStagger`). */
   staggered?: Set<string>;
+  /**
+   * A design written as a code component of its own (generateStandaloneComponent): its root shows the entrance its one
+   * placement chose (`appear`, or the design's own while that is unset), written in, since code takes none.
+   */
+  standalone?: { appear?: AppearPreset | 'none' };
 }
 
 function useImport(ctx: EmitCtx, name: string, path: string) {
@@ -994,9 +1000,14 @@ function appearPlumbing(state: ProjectState): boolean {
  * turns the design's own entrance off.
  */
 function appearAttrs(ctx: EmitCtx, node: GraphNode): string {
+  // A site no visitor can meet an entrance on (a design's only placement turned it off, nothing places it) shows none.
+  if (!ctx.standalone && !appearPlumbing(ctx.state)) return '';
   const own = node.kind === 'element' && isAppearPreset(node.appear) ? node.appear : undefined;
   let out = '';
-  if (isDefRoot(ctx, node) && appearPlumbing(ctx.state)) {
+  if (isDefRoot(ctx, node) && ctx.standalone) {
+    const chosen = ctx.standalone.appear === 'none' ? undefined : isAppearPreset(ctx.standalone.appear) ? ctx.standalone.appear : own;
+    if (chosen) out = ` data-appear=${js(chosen)}`;
+  } else if (isDefRoot(ctx, node)) {
     out = ` data-appear={so_appear === 'none' ? undefined : so_appear${own ? ` ?? ${js(own)}` : ''}} data-appear-stagger={so_stagger}`;
   } else if (own) out = ` data-appear=${js(own)}`;
   if (own && ctx.staggered?.has(node.id)) out += ` data-appear-stagger={${ctx.items[ctx.items.length - 1]}.id}`;
@@ -1744,8 +1755,13 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
   // So does its entrance, and its place in a staggered list, when the site has entrances.
-  if (def.kind === 'managed' && appearPlumbing(ctx.state)) {
-    const own = node.appear === 'none' || isAppearPreset(node.appear) ? node.appear : undefined;
+  const ownAppear = node.appear === 'none' || isAppearPreset(node.appear) ? node.appear : undefined;
+  if (def.kind === 'managed' && isDefRoot(ctx, node) && ctx.standalone) {
+    // Written in: the code copy passes its one placement's choice (or its root's own) straight to the design inside.
+    const chosen = ctx.standalone.appear ?? ownAppear;
+    if (chosen) attrs.push(`so_appear=${attrJs(chosen)}`);
+  } else if (def.kind === 'managed' && appearPlumbing(ctx.state)) {
+    const own = ownAppear;
     if (isDefRoot(ctx, node)) attrs.push(own ? `so_appear={so_appear ?? ${js(own)}}` : 'so_appear={so_appear}', 'so_stagger={so_stagger}');
     else {
       if (own) attrs.push(`so_appear=${attrJs(own)}`);
@@ -1984,7 +2000,7 @@ function designRowsExpr(schema: ListProp, rctx: ResolveContext): string {
   return `${expr}.map((row) => ({ id: row.id${fields.map((f) => `, ${f}`).join('')} }))`;
 }
 
-export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions): string {
+export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions, standalone?: EmitCtx['standalone']): string {
   const file = defFile(def);
   const tree = def.tree!;
   const locals = propLocals(def);
@@ -1999,7 +2015,8 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     items: [],
     rctx: { state },
     indent: 0,
-    locals
+    locals,
+    standalone
   };
   const markup = emitNodes(ctx, tree.rootIds);
   const propDecls = Object.entries(def.properties)
@@ -2022,7 +2039,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   propDecls.push(`\t\tso_o = undefined,`);
   if (Object.keys(def.parts).some((pid) => repeatedPartList(def, pid))) propDecls.push(`\t\tso_oi = undefined,`);
   propDecls.push(`\t\tso_id = undefined,`);
-  if (appearPlumbing(state)) propDecls.push(`\t\tso_appear = undefined,`, `\t\tso_stagger = undefined,`);
+  if (appearPlumbing(state) && !standalone) propDecls.push(`\t\tso_appear = undefined,`, `\t\tso_stagger = undefined,`);
   // A converted copy is generated before its source exists, so its markup decides, not the source.
   if (treeTakesEager(state, def, new Map(), new Set())) propDecls.push(`\t\tso_eager = false,`);
   // A converted copy is generated before its source exists, so its tree decides, as for `so_eager`.
@@ -2040,10 +2057,11 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
 /**
  * A managed definition as one self-contained Svelte file: its markup plus a <style> block with every node,
  * responsive, nested-override and variant rule, under the definition's own class names. Used to convert a copy
- * to code, so the result keeps its appearance without the original definition's stylesheet.
+ * to code, so the result keeps its appearance without the original definition's stylesheet. `appear` is the entrance
+ * the placement being converted chose for the root (see EmitCtx.standalone), since a code component takes none.
  */
-export function generateStandaloneComponent(state: ProjectState, def: ComponentDefinition): string {
-  const body = generateManagedComponent(state, def, { instrument: false });
+export function generateStandaloneComponent(state: ProjectState, def: ComponentDefinition, appear?: AppearPreset | 'none'): string {
+  const body = generateManagedComponent(state, def, { instrument: false }, { appear });
   const css = emitRules(definitionRules(state, def, true));
   return css ? `${body}\n<style>\n${indentBlock(css)}\n</style>\n` : body;
 }
