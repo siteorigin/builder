@@ -1305,6 +1305,7 @@ function ResultCard({
           <Md text={summaryOf(r)} />
         </div>
         {turn.undoneEarlier && <p className="result-standing">These changes were undone once. History no longer shows whether they were redone since.</p>}
+        {reverted && r.incomplete && <p className="result-standing">These changes were undone, so this request can only be continued once they are redone.</p>}
         {locations.length > 0 && (
           <ul className="locations" aria-label="Where to change it">
             {locations.map((l, i) => (

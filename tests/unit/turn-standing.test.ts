@@ -2,8 +2,8 @@
  * Where an AI turn's change stands (issue 276): History says it while it holds the turn's step, and remembers whether
  * the step was applied or undone when it lets it go, so a chat turn never claims the opposite of the site.
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, promises as fsp, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -14,6 +14,7 @@ import { ProjectSession } from '../../src/main/project/session';
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const s of open.splice(0)) await s.close().catch(() => undefined);
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
@@ -80,6 +81,8 @@ describe('AI turn standing in History (issue 276)', () => {
     await applied.s.collectGarbage();
     expect(applied.s.historyInfo().entries).toHaveLength(1);
     expect(standing(applied.s, 'run_kept')).toBe('applied');
+    await applied.s.close();
+    expect(standing(await reopen(applied.dir), 'run_kept')).toBe('applied');
 
     // With nothing applied, the far end of redo goes first.
     const undone = await make();
@@ -106,6 +109,48 @@ describe('AI turn standing in History (issue 276)', () => {
     expect(again.historyInfo().entries).toEqual([]);
     expect(again.historyInfo().droppedRuns).toEqual({ run_gone: 'undone', run_on: 'applied', run_off: 'undone' });
     expect(again.state.site.name).toBe('On');
+  });
+
+  it('keeps History as saved when the trimmed History cannot be saved', async () => {
+    const { s } = await make();
+    await ai(s, 'run_kept', 'Kept');
+    await edit(s, 'Later');
+    const real = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (String(to).endsWith('history.json')) throw Object.assign(new Error('injected failure'), { code: 'EIO' });
+      return real(from, to);
+    });
+    s.historyByteLimit = 1;
+    await s.collectGarbage();
+    expect(s.historyInfo().entries.map((e) => e.runId ?? null)).toEqual(['run_kept', null]);
+    expect(s.historyInfo().droppedRuns).toBeUndefined();
+    vi.restoreAllMocks();
+    // Every step the saved History names can still be undone: its versions were kept.
+    await ok(s.undo());
+    await ok(s.undoGroup('run_kept'));
+    expect(s.state.site.name).toBe('Turns');
+  });
+
+  it('carries over only what an older History says for sure', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const file = join(dir, '.siteorigin/history/history.json');
+    const step = (runId: string) => ({ id: runId, label: 'AI', source: 'ai', time: '', revision: 1, docs: {}, runId });
+    const read = async (h: unknown) => {
+      writeFileSync(file, JSON.stringify(h));
+      const again = await reopen(dir);
+      const dropped = again.historyInfo().droppedRuns;
+      await again.close();
+      return dropped;
+    };
+    // A malformed step is skipped where it stands: the one after the undo position is still undone.
+    expect(await read({ schemaVersion: SCHEMA_VERSION - 1, entries: [null, step('run_b')], cursor: 1 })).toEqual({ run_b: 'undone' });
+    // The first format had no version, and is older.
+    expect(await read({ entries: [step('run_a'), step('run_b')], cursor: 1 })).toEqual({ run_a: 'applied', run_b: 'undone' });
+    // An undo position that does not fit, or a newer format, says nothing sure.
+    expect(await read({ schemaVersion: SCHEMA_VERSION - 1, entries: [step('run_a')], cursor: 3 })).toBeUndefined();
+    expect(await read({ schemaVersion: SCHEMA_VERSION - 1, entries: [step('run_a')] })).toBeUndefined();
+    expect(await read({ schemaVersion: SCHEMA_VERSION + 1, entries: [step('run_a')], cursor: 1 })).toBeUndefined();
   });
 
   it('lets go of the oldest notes past its limit', async () => {

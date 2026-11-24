@@ -334,6 +334,8 @@ describe('crash durability', { timeout: 300_000 }, () => {
         expect(s.state.site.name).toBe('One');
         expect(info.entries.find((e) => e.runId === 'run_tail')).toMatchObject({ applied: false });
         expect(info.droppedRuns).toBeUndefined();
+        expect((await s.redo()).ok).toBe(true);
+        expect(s.state.site.name).toBe('Tail');
       }
     });
   });
@@ -426,13 +428,35 @@ describe('crash durability', { timeout: 300_000 }, () => {
       expect(journal.finishRun).toBe('run_v');
       journal.history.schemaVersion = SCHEMA_VERSION - 1;
       writeFileSync(journalPath, JSON.stringify(journal));
+      // That version had saved no History of its own before the run.
+      expect(existsSync(join(dir, '.siteorigin/history/history.json'))).toBe(false);
       const again = await reopen(dir);
       expect(again.state.site.name).toBe('AI name');
       expect(existsSync(join(dir, '.siteorigin/sessions/active-run.json'))).toBe(false);
-      // Its undo steps hold documents of the old format, so they are not offered.
+      // Its undo steps hold documents of the old format, so they are not offered; that the run's change is in the
+      // site still holds, for its chat turn (issue 276).
       expect(again.historyInfo().entries.find((e) => e.runId === 'run_v')).toBeUndefined();
+      expect(again.historyInfo().droppedRuns).toEqual({ run_v: 'applied' });
       expect(again.recoveryNotes.join(' ')).not.toMatch(/could not be finished/);
       expect(again.recoveryNotes.join(' ')).toMatch(/cannot be undone/);
+    });
+
+    it('keeps History saved in this format when a previous-format completion is finished (issue 276)', async () => {
+      const { dir, s } = await make();
+      expect((await s.apply({ operations: [{ type: 'site.update', name: 'By hand' }] }, { label: 'By hand' })).ok).toBe(true);
+      expect(await s.beginRun('run_v')).toBeNull();
+      expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_v', history: false })).ok).toBe(true);
+      crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      await s.completeRun('AI: test').catch(() => undefined);
+      disarm?.();
+      const journalPath = join(dir, '.siteorigin/journal.json');
+      const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
+      journal.history.schemaVersion = SCHEMA_VERSION - 1;
+      writeFileSync(journalPath, JSON.stringify(journal));
+      const again = await reopen(dir);
+      expect(again.state.site.name).toBe('AI name');
+      // The step saved before the run still undoes; only the previous format's steps are left out.
+      expect(again.historyInfo().entries.map((e) => e.label)).toEqual(['By hand']);
     });
 
     it('never trusts a previous-format completion that also changes files', async () => {

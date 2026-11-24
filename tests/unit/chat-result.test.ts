@@ -236,6 +236,8 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
     expect(undoableId(msgs, steps([{ runId: 'r1', applied: false }, { runId: 'r2', applied: false }]))).toBeUndefined();
     // A manual edit after the turn stands in the way.
     expect(undoableId(msgs, steps([{ runId: 'r1', applied: true }, { runId: 'r2', applied: true }, { applied: true }]))).toBeUndefined();
+    // A turn that changed nothing has no change of its own to undo.
+    expect(undoableId([ask('u1'), turn('a1', 'r1', { status: 'no-changes', canUndo: false, changes: [] })], steps([{ runId: 'r1', applied: true }]))).toBeUndefined();
     // Nothing can be undone while an edit run holds the project.
     expect(undoableId(msgs, { ...steps([{ runId: 'r2', applied: true }]), canUndo: false })).toBeUndefined();
   });
@@ -253,15 +255,24 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
     // can still be undone, keeps its words.
     expect(resultAsSaid(turn('a2', 'r2', { summary: 'Removed the note (Undone.)', canUndo: true }).result!).undoneOnce).toBe(false);
     expect(resultAsSaid(turn('a3', 'r3', { status: 'no-changes', summary: 'Nothing to do. (Undone.)', canUndo: false }).result!)).toMatchObject({ undoneOnce: false, result: { summary: 'Nothing to do. (Undone.)' } });
+    expect(resultAsSaid(turn('a4', 'r4', { summary: 'Labelled it (Undone.) for now.', canUndo: false }).result!).undoneOnce).toBe(false);
+    // The mark was only ever added to the summary: words the turn's own text says too are the assistant's.
+    const said = { ...turn('a5', 'r5', { summary: 'The label now reads (Undone.)', canUndo: false }), text: 'The label now reads (Undone.)' };
+    expect(turnState(said, steps([]))).toMatchObject({ standing: 'unknown', undoneEarlier: false, result: { summary: 'The label now reads (Undone.)', canUndo: false } });
+    expect(resultAsSaid(old.result!, old.text).undoneOnce).toBe(true);
   });
 
-  it('offers Continue on an unfinished turn only while its changes are in the site', () => {
+  it('offers Continue on an unfinished turn that changed the site only while its changes are known to be in it', () => {
     const msgs = [ask('u1'), turn('a1', 'r1', { incomplete: true })];
     expect(resumableId(msgs, steps([{ runId: 'r1', applied: true }]))).toBe('a1');
+    expect(resumableId(msgs, steps([], { r1: 'applied' }))).toBe('a1');
     expect(resumableId(msgs, steps([{ runId: 'r1', applied: false }]))).toBeUndefined();
     expect(resumableId(msgs, steps([], { r1: 'undone' }))).toBeUndefined();
-    // Nothing known either way: it is offered as before.
-    expect(resumableId(msgs, steps([]))).toBe('a1');
+    // History has nothing on it, so its changes may be gone.
+    expect(resumableId(msgs, steps([]))).toBeUndefined();
+    expect(resumableId(msgs, null)).toBeUndefined();
     expect(resumableId([ask('u1'), marked('a1', 'r1')].map((m) => (m.result ? { ...m, result: { ...m.result, incomplete: true } } : m)), steps([]))).toBeUndefined();
+    // One that changed nothing is offered whatever History says.
+    expect(resumableId([ask('u1'), turn('a1', 'r1', { status: 'no-changes', canUndo: false, changes: [], incomplete: true })], steps([]))).toBe('a1');
   });
 });

@@ -5,7 +5,7 @@ import { locateField } from '@engine/locate';
 import { refExists, resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
 import { editableDesign, requestComponentId } from './chatTarget';
-import { resultAsSaid, turnState, type TurnHistory } from '@shared/turns';
+import { canCarryOn, resultAsSaid, turnState, type TurnHistory } from '@shared/turns';
 
 /** Checks that need attention, read from the wording of results stored before checks carried a status. */
 const ISSUE = /wider than the screen|overflows its box|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)|^stopped at /i;
@@ -69,14 +69,13 @@ export function locationTarget(state: ProjectState, currentPageId: string | null
 
 /**
  * The result that offers Continue: the conversation's last message, when it is a request that ended unfinished.
- * An older unfinished card does not, since a newer request has moved on from it, and neither does one whose changes
- * were undone since: there is nothing left to carry on from until it is redone.
+ * An older unfinished card does not, since a newer request has moved on from it, and neither does one that changed
+ * the site unless its changes are known to be in it: once undone, there is nothing to carry on from until a Redo.
  */
 export function resumableId(messages: ChatMessage[], history?: TurnHistory | null): string | undefined {
   const last = messages.at(-1);
   if (last?.role !== 'assistant' || !last.result?.incomplete || (last.result.status !== 'completed' && last.result.status !== 'no-changes')) return undefined;
-  const turn = turnState(last, history);
-  return turn?.standing === 'undone' || turn?.undoneEarlier ? undefined : last.id;
+  return canCarryOn(turnState(last, history)) ? last.id : undefined;
 }
 
 /**
@@ -87,7 +86,7 @@ export function resumableId(messages: ChatMessage[], history?: TurnHistory | nul
 export function undoableId(messages: ChatMessage[], history: (TurnHistory & { canUndo: boolean }) | null | undefined): string | undefined {
   if (!history?.canUndo) return undefined;
   const top = [...history.entries].reverse().find((e) => e.applied)?.runId;
-  return top ? messages.find((m) => m.role === 'assistant' && m.runId === top && !!m.result && resultAsSaid(m.result).result.canUndo)?.id : undefined;
+  return top ? messages.find((m) => m.role === 'assistant' && m.runId === top && !!m.result && resultAsSaid(m.result, m.text).result.canUndo)?.id : undefined;
 }
 
 /**

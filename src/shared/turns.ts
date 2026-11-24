@@ -15,10 +15,11 @@ const UNDONE_MARK = ' (Undone.)';
 /**
  * A result as the assistant gave it. Earlier versions recorded Undo turn by appending "(Undone.)" to the summary and
  * clearing canUndo, which no Redo ever took back (issue 276). Read back, that is the original summary, a turn that
- * did change the site, and `undoneOnce`: it was undone at least once, whatever it is now. Nothing is rewritten.
+ * did change the site, and `undoneOnce`: it was undone at least once, whatever it is now. Nothing is rewritten. The
+ * mark was only ever added to the summary, so one the turn's own `text` says too is the assistant's words.
  */
-export function resultAsSaid(r: TurnResult): { result: TurnResult; undoneOnce: boolean } {
-  if (r.status !== 'completed' || r.canUndo !== false || typeof r.summary !== 'string' || !r.summary.endsWith(UNDONE_MARK)) return { result: r, undoneOnce: false };
+export function resultAsSaid(r: TurnResult, text?: string): { result: TurnResult; undoneOnce: boolean } {
+  if (r.status !== 'completed' || r.canUndo !== false || typeof r.summary !== 'string' || !r.summary.endsWith(UNDONE_MARK) || (!!text && text === r.summary)) return { result: r, undoneOnce: false };
   return { result: { ...r, summary: r.summary.slice(0, -UNDONE_MARK.length), canUndo: true }, undoneOnce: true };
 }
 
@@ -43,9 +44,17 @@ export interface TurnState {
 }
 
 /** An assistant turn's result as it was said, and where its change stands in the site now. */
-export function turnState(m: Pick<ChatMessage, 'runId' | 'result'>, history: TurnHistory | null | undefined): TurnState | null {
+export function turnState(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, history: TurnHistory | null | undefined): TurnState | null {
   if (!m.result) return null;
-  const { result, undoneOnce } = resultAsSaid(m.result);
+  const { result, undoneOnce } = resultAsSaid(m.result, m.text);
   const standing = result.canUndo ? runStanding(m.runId, history) : 'unknown';
   return { result, standing, undoneEarlier: undoneOnce && standing === 'unknown' };
+}
+
+/**
+ * Whether an unfinished turn can be carried on from: one that changed the site only while its changes are known to be
+ * in it, since what it made and the links it left waiting are gone once it is undone. One that changed nothing can.
+ */
+export function canCarryOn(turn: TurnState | null): boolean {
+  return !!turn?.result.incomplete && (!turn.result.canUndo || turn.standing === 'applied');
 }

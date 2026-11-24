@@ -5,7 +5,7 @@ import { turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type Ch
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
-import { turnState, type TurnHistory } from '@shared/turns';
+import { canCarryOn, turnState, type TurnHistory } from '@shared/turns';
 import { getTheme } from '@catalogue/index';
 import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
@@ -762,8 +762,8 @@ export class Orchestrator {
     const before = [...history].reverse().find((h) => h.role === 'assistant');
     const previousTurn = before ? turnState(before, steps) : null;
     const previous = previousTurn?.result;
-    // An unfinished request that was undone since has nothing left to carry on from.
-    const continuing = !ask && CONTINUE.test(userMsg.text) && !!previous?.incomplete && previousTurn?.standing !== 'undone' && !previousTurn?.undoneEarlier;
+    // An unfinished request that changed the site carries on only while its changes are known to be in it.
+    const continuing = !ask && CONTINUE.test(userMsg.text) && canCarryOn(previousTurn);
     if (continuing) {
       for (const p of previous!.unfinished ?? []) rememberPage(wanted, { title: p.title, ...(p.route ? { route: p.route } : {}), ...(p.existing ? { existing: p.existing } : {}), reason: 'carried' });
       // Links that were waiting for a missing page; each is connected only if its slot is still empty.
@@ -802,8 +802,9 @@ export class Orchestrator {
         const turn = h.result ? turnState(h, steps) : null;
         const r = turn?.result;
         const undone = turn?.standing === 'undone';
-        // A run stopped at its budget lists what it already did, so "continue" picks up where it left off.
-        const done = r?.incomplete && r.canUndo && r.changes.length && !undone && !turn?.undoneEarlier ? ` Changes made so far: ${r.changes.map((c) => c.label).join('; ')}.` : '';
+        // A run stopped at its budget lists what it already did, so "continue" picks up where it left off: only while
+        // those changes are known to be in the site.
+        const done = r?.incomplete && r.canUndo && r.changes.length && turn?.standing === 'applied' ? ` Changes made so far: ${r.changes.map((c) => c.label).join('; ')}.` : '';
         const standing = undone ? ' These changes were undone afterwards.' : turn?.undoneEarlier ? ' These changes were undone afterwards, and may have been redone since.' : '';
         const said = r?.summary || h.text ? (r?.summary || h.text) + done + standing : '';
         const text = [said, ...unanswered].filter(Boolean).join(' ');

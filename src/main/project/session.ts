@@ -1258,8 +1258,15 @@ export class ProjectSession extends EventEmitter {
     await this.syncFoldersOf(allPaths as string[]);
     // Held versions are recorded before the journal goes, so a second crash cannot lose them.
     await this.saveConflicts();
-    // The undo position and revision the change left, then the run it finished: all before the journal goes.
-    if (usableJournalHistory(journal.history)) await atomicWrite(this.local('history', 'history.json'), toJson(journal.history));
+    // The undo position and revision the change left, then the run it finished: all before the journal goes. Steps
+    // saved in an older format are not installed. When the saved History is of that format too, and so is dropped on
+    // reading, where the change leaves each AI step is kept in its place, not where it stood before (issue 276).
+    const historyPath = this.local('history', 'history.json');
+    if (usableJournalHistory(journal.history)) await atomicWrite(historyPath, toJson(journal.history));
+    else if (readableJournalHistory(journal.history)) {
+      const saved = await readIfExists(historyPath).then((t) => (t ? (JSON.parse(t) as unknown) : null)).catch(() => null);
+      if (!usableJournalHistory(saved)) await atomicWrite(historyPath, toJson(usableHistory(journal.history)));
+    }
     if (Number.isInteger(journal.revision)) await this.writeRevision(journal.revision!);
     const finished = typeof journal.finishRun === 'string';
     if (finished) await removeDurable(marker);
@@ -2074,28 +2081,32 @@ export class ProjectSession extends EventEmitter {
     const blobDir = this.local('history', 'blobs');
     const sizes = await this.blobSizes();
     const pinned = this.pinnedBlobs();
+    // Trimmed on a copy, installed only once it is saved: a failed save leaves History as the disk has it, and the
+    // versions it names are kept.
+    const next: HistoryFile = { ...this.history, entries: [...this.history.entries] };
     const total = () => {
-      const all = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs)]);
+      const all = new Set([...pinned, ...next.entries.flatMap(entryBlobs)]);
       let bytes = 0;
       for (const b of all) bytes += sizes.get(b) ?? 0;
       return bytes;
     };
     let dropped = 0;
-    while (this.history.entries.length > 1 && total() > this.historyByteLimit) {
+    while (next.entries.length > 1 && total() > this.historyByteLimit) {
       // The oldest applied group goes first. With nothing applied, trim redo from its far end instead:
       // dropping the first redo group would leave the next one expecting documents that never return.
-      if (this.history.cursor > 0) {
-        noteDropped(this.history, this.history.entries.slice(0, 1), 'applied');
-        this.history.entries.shift();
-        this.history.cursor--;
+      if (next.cursor > 0) {
+        noteDropped(next, next.entries.slice(0, 1), 'applied');
+        next.entries.shift();
+        next.cursor--;
       } else {
-        noteDropped(this.history, this.history.entries.slice(-1), 'undone');
-        this.history.entries.pop();
+        noteDropped(next, next.entries.slice(-1), 'undone');
+        next.entries.pop();
       }
       dropped++;
     }
     if (dropped) {
-      await atomicWrite(this.local('history', 'history.json'), toJson(this.history));
+      await atomicWrite(this.local('history', 'history.json'), toJson(next));
+      this.history = next;
       this.emit('history');
     }
     const keep = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs), ...(await this.blobsNamedOnDisk())]);
@@ -3527,22 +3538,23 @@ function emptyHistory(): HistoryFile {
  */
 function usableHistory(file: HistoryFile | null): HistoryFile {
   if (file && file.schemaVersion === SCHEMA_VERSION) return file;
-  // The steps go, but where each AI step stood when they went is still true of the site: its chat turn keeps it.
   const h = emptyHistory();
-  if (file && typeof file === 'object' && Array.isArray(file.entries)) {
-    const entries = file.entries.filter((e): e is HistoryEntry => !!e && typeof e === 'object');
-    const cursor = Number.isInteger(file.cursor) ? Math.min(Math.max(file.cursor, 0), entries.length) : 0;
-    const before = file.droppedRuns && typeof file.droppedRuns === 'object' ? Object.entries(file.droppedRuns) : [];
+  // An older format's steps go, but where each AI step stood when they went is still true of the site, so its chat
+  // turn keeps it (issue 276). A newer format, or an undo position that does not fit its steps, says nothing sure.
+  const older = !!file && typeof file === 'object' && (file.schemaVersion === undefined || (typeof file.schemaVersion === 'number' && file.schemaVersion < SCHEMA_VERSION));
+  if (older && Array.isArray(file.entries) && Number.isInteger(file.cursor) && file.cursor >= 0 && file.cursor <= file.entries.length) {
+    const before = file.droppedRuns && typeof file.droppedRuns === 'object' && !Array.isArray(file.droppedRuns) ? Object.entries(file.droppedRuns) : [];
     for (const [runId, status] of before) if (status === 'applied' || status === 'undone') noteDropped(h, [{ runId } as HistoryEntry], status);
-    noteDropped(h, entries.slice(0, cursor), 'applied');
-    noteDropped(h, entries.slice(cursor), 'undone');
+    // By each step's own place: a malformed one is skipped where it stands, never moving another across the cursor.
+    noteDropped(h, file.entries.slice(0, file.cursor), 'applied');
+    noteDropped(h, file.entries.slice(file.cursor), 'undone');
   }
   return h;
 }
 
 /** Note in `h` each AI step of `dropped`, which History is letting go, as standing `status` (see HistoryFile.droppedRuns). */
-function noteDropped(h: HistoryFile, dropped: HistoryEntry[], status: DroppedRun) {
-  const runs = dropped.flatMap((e) => (typeof e?.runId === 'string' && e.runId ? [e.runId] : []));
+function noteDropped(h: HistoryFile, dropped: Array<HistoryEntry | null | undefined>, status: DroppedRun) {
+  const runs = dropped.flatMap((e) => (e && typeof e === 'object' && typeof e.runId === 'string' && e.runId ? [e.runId] : []));
   if (!runs.length) return;
   const map: Record<string, DroppedRun> = { ...h.droppedRuns };
   for (const runId of runs) {

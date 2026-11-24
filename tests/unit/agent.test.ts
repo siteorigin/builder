@@ -394,7 +394,9 @@ describe('read-only questions (#203)', () => {
     // the question runs is the question's.
     expect(events.slice(from).some((e) => e.kind === 'message' && e.message?.runId === editRun)).toBe(false);
     expect(orch.conversation?.messages.find((m) => m.role === 'assistant' && m.runId === editRun)?.result).toMatchObject({ summary: 'Renamed the site.', canUndo: true });
-    expect(events.slice(from).filter((e) => e.kind === 'status').every((e) => e.runId === runId)).toBe(true);
+    const statuses = events.slice(from).filter((e) => e.kind === 'status');
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(statuses.every((e) => e.runId === runId)).toBe(true);
   });
 
   it('keeps the turn as it was said when it is undone from chat and redone from the toolbar, also after reopening (issue 276)', async () => {
@@ -2275,6 +2277,23 @@ describe('requests that create pages over several steps (#88)', () => {
     const staff = pageAt(session.state, '/staff-picks/')!;
     const cta = staff.nodes[staff.rootIds[0]] as unknown as { props: Record<string, unknown> };
     expect(cta.props.primaryLink).toEqual({ type: 'page', target: pageAt(session.state, '/reader-requests/')!.id });
+  });
+
+  it('tells the model a turn an earlier version marked undone may have been redone, when History no longer knows (issue 276)', async () => {
+    const { run, orch, adapter } = await setup([
+      () => [call('e1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'site.update', name: 'Renamed' }] })],
+      () => finish('Renamed the site.'),
+      () => finish('It is called Renamed.')
+    ]);
+    const { runId } = await run('Rename the site');
+    // As an earlier version saved an undone turn, for a step History has since forgotten.
+    const saved = orch.conversation!.messages.find((m) => m.role === 'assistant' && m.runId === runId)!;
+    saved.runId = 'run_forgotten';
+    saved.result = { ...saved.result!, summary: `${saved.result!.summary} (Undone.)`, canUndo: false };
+    await run('What is the site called?', { mode: 'ask' });
+    const said = adapter.requests.at(-1)!.items.flatMap((i) => (i.kind === 'assistant' ? [i.text] : [])).join('\n');
+    expect(said).toContain('Renamed the site. These changes were undone afterwards, and may have been redone since.');
+    expect(said).not.toContain('(Undone.)');
   });
 
   it('carries nothing on from an unfinished request that was undone since (issue 276)', async () => {
