@@ -12,7 +12,7 @@
  * is certainly inline may go.
  */
 import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { ELEMENT_TAGS, TEXT_TAGS, isBinding } from '@shared/types';
+import { ELEMENT_TAGS, TEXT_TAGS, isBinding, slotChildren } from '@shared/types';
 import { brokenCardKeys, cardKey, isCardLink } from '@generator/card-links';
 import { boundSchema } from './schema';
 import { allTrees, getNode, getTree, instancesOf } from './tree';
@@ -86,7 +86,7 @@ class Structure {
       const parentOf = new Map<string, string>();
       for (const n of Object.values(tree.nodes)) {
         if (n.kind === 'element' || n.kind === 'repeat') for (const ch of n.children ?? []) parentOf.set(ch, n.id);
-        else if (n.kind === 'instance') for (const ids of Object.values(n.slots ?? {})) for (const ch of ids ?? []) parentOf.set(ch, n.id);
+        else if (n.kind === 'instance') for (const slot of Object.keys(n.slots ?? {})) for (const ch of slotChildren(n, slot)) parentOf.set(ch, n.id);
       }
       const def = owner.kind === 'component' && Object.hasOwn(this.state.components, owner.id) ? this.state.components[owner.id] : undefined;
       c = { owner, tree, def, parentOf };
@@ -147,7 +147,7 @@ class Structure {
     if (p.kind === 'repeat') return this.up(ctx, p.id);
     if (p.kind === 'element') return { parents: [{ ctx, id: p.id }], open: false };
     if (p.kind !== 'instance') return OPEN;
-    const slot = Object.entries(p.slots ?? {}).find(([, ids]) => (ids ?? []).includes(id))?.[0];
+    const slot = Object.keys(p.slots ?? {}).find((k) => slotChildren(p, k).includes(id));
     const inner = this.defCtx(p.definitionId);
     if (!inner || slot === undefined) return OPEN;
     const parents = new Map<string, Around>();
@@ -240,7 +240,7 @@ class Reader {
         if (!inner || !this.designInline(inner, seen)) return false;
         // Only content in a slot the design renders shows.
         const rendered = new Set(Object.values(inner.tree.nodes).flatMap((x) => (x.kind === 'slot' ? [x.slot] : [])));
-        return Object.entries(n.slots ?? {}).every(([slot, ids]) => !rendered.has(slot) || (ids ?? []).every(ok));
+        return Object.keys(n.slots ?? {}).every((slot) => !rendered.has(slot) || slotChildren(n, slot).every(ok));
       }
       if (!inline(this.rendered(ctx, n))) return false;
       return n.kind !== 'element' || n.children.every(ok);
@@ -316,7 +316,7 @@ function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingP
     reachable.add(id);
     const n = nodes[id];
     if (n.kind === 'element' || n.kind === 'repeat') (n.children ?? []).forEach(visit);
-    else if (n.kind === 'instance') Object.values(n.slots ?? {}).forEach((ids) => (ids ?? []).forEach(visit));
+    else if (n.kind === 'instance') Object.keys(n.slots ?? {}).forEach((slot) => slotChildren(n, slot).forEach(visit));
   };
   tree.rootIds.forEach(visit);
 
