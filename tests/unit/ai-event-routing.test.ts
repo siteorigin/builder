@@ -29,25 +29,40 @@ const store = (await load('../../src/renderer/src/store')) as {
   setState: (p: Partial<ChatState>) => void;
 };
 
-/** Each model turn streams a line of text, then waits until the test releases it. */
+/**
+ * Each model turn streams a line of text and waits until the test releases it, then streams whatever `late` holds
+ * and ends. A scripted turn, when one is queued, is answered at once instead.
+ */
 class GatedAdapter implements AgentModelAdapter {
   private gates: Array<() => void> = [];
+  script: ModelEvent[][] = [];
+  late = '';
   capabilities() {
     return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 };
+  }
+  /** A turn is waiting at its gate, its first text already streamed. */
+  get waiting() {
+    return this.gates.length > 0;
   }
   release() {
     this.gates.splice(0).forEach((r) => r());
   }
   async *streamTurn(): AsyncIterable<ModelEvent> {
+    const scripted = this.script.shift();
+    if (scripted) return yield* scripted;
     yield { type: 'text', delta: 'Working on it.' };
     await new Promise<void>((r) => this.gates.push(r));
-    yield { type: 'done', stopReason: 'end', text: 'Working on it.', toolCalls: [] };
+    if (this.late) yield { type: 'text', delta: this.late };
+    yield { type: 'done', stopReason: 'end', text: `Working on it.${this.late}`, toolCalls: [] };
   }
 }
 
 const dirs: string[] = [];
 const sessions: ProjectSession[] = [];
+const orchestrators: Orchestrator[] = [];
 afterEach(async () => {
+  // Clearing waits for a finished request's transcript write, which would otherwise land in a removed folder.
+  for (const o of orchestrators.splice(0)) await o.clearHistory().catch(() => undefined);
   for (const s of sessions.splice(0)) await s.close().catch(() => undefined);
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
   store.setState({ conversation: null, runStatus: null, activeRunId: null });
@@ -67,23 +82,30 @@ async function setup() {
   const session = await ProjectSession.create(dir, createStarterState('blank', 'Events', false));
   sessions.push(session);
   const adapter = new GatedAdapter();
+  /** Every event the assistant sent, as the renderer received it. */
+  const events: AiEvent[] = [];
   const orch = new Orchestrator({
     session: () => session,
     adapter: async () => ({ adapter, model: 'fake', provider: 'openai' }),
     // Events reach the store as they reach the renderer: copied across the bridge.
-    emit: (e: AiEvent) => store.applyAiEvent(structuredClone(e)),
+    emit: (e: AiEvent) => {
+      events.push(structuredClone(e));
+      store.applyAiEvent(structuredClone(e));
+    },
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [] }),
     onBusyChange: () => undefined
   });
+  orchestrators.push(orch);
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
   /** Show a conversation in the chat panel, as the renderer receives it. */
   const show = (c: Conversation) => store.setState({ conversation: structuredClone(c) });
-  const streaming = () => until(() => store.getState().runStatus === 'running', 'the request to stream');
+  const streaming = () => until(() => adapter.waiting, 'the request to stream');
+  const finished = () => until(() => !orch.busy && store.getState().runStatus === null, 'the request to finish');
   const finish = async () => {
     await streaming();
     adapter.release();
-    await until(() => !orch.busy && store.getState().runStatus === null, 'the request to finish');
+    await finished();
   };
   /** Wait until a conversation's file holds `count` messages. */
   const saved = (id: string, count: number) =>
@@ -91,28 +113,36 @@ async function setup() {
       const file = join(dir, '.siteorigin', 'sessions', 'chat', `${id}.json`);
       return existsSync(file) && (JSON.parse(readFileSync(file, 'utf8')) as Conversation).messages.length === count;
     }, 'the transcript to be saved');
-  return { orch, ctx, show, finish, streaming, saved };
+  return { session, orch, adapter, events, ctx, show, streaming, finished, finish, saved };
 }
 
 const said = (messages: ChatMessage[] | undefined) => (messages ?? []).map((m) => `${m.role}: ${m.text}`);
+/** The conversation each kind of event named, for the events of one request. */
+const tags = (events: AiEvent[], runId: string) => [...new Set(events.filter((e) => e.runId === runId).map((e) => `${e.kind} ${e.conversationId}`))].sort();
 
 describe('AI events reach only their own conversation', () => {
   it('a request running in another conversation never shows in the new one on screen', async () => {
-    const { orch, ctx, show, finish } = await setup();
+    const { orch, events, ctx, show, streaming, finish } = await setup();
     const first = (await orch.loadConversations()).active;
     show(first);
-    expect((await orch.send('First request', ctx, first.id)).ok).toBe(true);
-    await finish();
-    // The conversation on screen shows its own request as it streams.
+    const one = await orch.send('First request', ctx, first.id);
+    expect(one.ok).toBe(true);
+    // The conversation on screen shows its own request, and its reply as it streams.
+    await streaming();
     expect(said(store.getState().conversation?.messages)).toEqual(['user: First request', 'assistant: Working on it.']);
+    await finish();
+    expect(tags(events, one.runId!)).toEqual([`message ${first.id}`, `status ${first.id}`, `text ${first.id}`]);
 
     // New conversation: the panel shows the empty thread, while the assistant is bound to the earlier one (as when
     // listing Earlier conversations used to rebind it), so the next request is filed in that earlier thread.
     const fresh = await orch.newConversation();
     show(fresh);
     await orch.openConversation(first.id);
-    expect((await orch.send('Second request', ctx, first.id)).ok).toBe(true);
+    const two = await orch.send('Second request', ctx, first.id);
+    expect(two.ok).toBe(true);
     await finish();
+    // Every event of it names the thread it was filed in.
+    expect(tags(events, two.runId!)).toEqual([`message ${first.id}`, `status ${first.id}`, `text ${first.id}`]);
 
     // The empty thread stays empty: nothing from the earlier conversation was streamed into it.
     expect(store.getState().conversation?.id).toBe(fresh.id);
@@ -124,14 +154,16 @@ describe('AI events reach only their own conversation', () => {
   });
 
   it('a request still ending when its project closed shows nothing in the project opened next, even the same thread', async () => {
-    const { orch, ctx, show, finish, streaming, saved } = await setup();
+    const { orch, adapter, events, ctx, show, streaming, finish, finished, saved } = await setup();
     const first = (await orch.loadConversations()).active;
     show(first);
     expect((await orch.send('First request', ctx, first.id)).ok).toBe(true);
     await finish();
     await saved(first.id, 2);
-    expect((await orch.send('Second request', ctx, first.id)).ok).toBe(true);
+    const two = await orch.send('Second request', ctx, first.id);
+    expect(two.ok).toBe(true);
     await streaming();
+    expect(tags(events, two.runId!)).toEqual([`message ${first.id}`, `status ${first.id}`, `text ${first.id}`]);
 
     // Closing gives up waiting for the request and lets the project go; the same project opens again, on the same
     // conversation as its file has it.
@@ -143,10 +175,38 @@ describe('AI events reach only their own conversation', () => {
     const before = store.getState().conversation;
     expect(said(before?.messages)).toEqual(['user: First request', 'assistant: Working on it.']);
 
-    // The old request ends now: its status still frees the composer, but its messages are not this opening's.
-    await finish();
+    // The old request streams more, then ends: its status still frees the composer, but nothing else it sends is
+    // this opening's, so every event it sends from here on names no conversation.
+    const mark = events.length;
+    adapter.late = ' Still working.';
+    adapter.release();
+    await finished();
+    expect(tags(events.slice(mark), two.runId!)).toEqual(['message ', 'status ', 'text ']);
     expect(store.getState().conversation).toBe(before);
     expect(store.getState().activeRunId).toBeNull();
+  });
+
+  it('an Undo beside a finished request updates it in the conversation on screen', async () => {
+    const { session, orch, adapter, events, ctx, show, finished } = await setup();
+    const homeId = session.state.site.homePageId;
+    adapter.script = [
+      [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: 't1', name: 'apply_operations', arguments: JSON.stringify({ expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'page.update', pageId: homeId, seoTitle: 'Welcome home' }] }) }] }],
+      [{ type: 'done', stopReason: 'end', text: 'Renamed it.', toolCalls: [] }]
+    ];
+    const open = (await orch.loadConversations()).active;
+    show(open);
+    const run = await orch.send('Retitle the home page', ctx, open.id);
+    expect(run.ok).toBe(true);
+    await finished();
+    const reply = () => store.getState().conversation?.messages.find((m) => m.runId === run.runId && m.role === 'assistant');
+    expect(reply()?.result?.canUndo).toBe(true);
+
+    // The Undo is not part of any request: it names the conversation that is open, which shows it.
+    const mark = events.length;
+    expect((await orch.undoTurn(run.runId!)).ok).toBe(true);
+    expect(events.slice(mark).map((e) => `${e.kind} ${e.runId} ${e.conversationId}`)).toEqual([`message  ${open.id}`]);
+    expect(reply()?.result?.canUndo).toBe(false);
+    expect(reply()?.result?.summary).toMatch(/\(Undone\.\)$/);
   });
 
   it('ignores message and text events tagged with another conversation, or with none', () => {
@@ -165,7 +225,7 @@ describe('AI events reach only their own conversation', () => {
     // Run status is the app's, whichever conversation the run belongs to.
     store.applyAiEvent({ runId: 'r_other', conversationId: 'c_other', kind: 'status', status: 'running', mode: 'edit' });
     expect(store.getState().runStatus).toBe('running');
-    store.applyAiEvent({ runId: 'r_other', conversationId: 'c_other', kind: 'status', status: 'completed', mode: 'edit' });
+    store.applyAiEvent({ runId: 'r_other', conversationId: '', kind: 'status', status: 'completed', mode: 'edit' });
     expect(store.getState().runStatus).toBeNull();
 
     // Its own conversation's events still apply.
