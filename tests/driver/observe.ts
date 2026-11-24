@@ -195,6 +195,28 @@ async function readPreview(page: Page): Promise<{ iframe: boolean; doc: PreviewD
   }
 }
 
+/** Runs in a document: the values of its ordinary fields (never a credential field's), open shadow roots included. */
+function plainIn(secret: string): string[] {
+  const w = globalThis as Dom;
+  const out: string[] = [];
+  const visit = (root: Dom) => {
+    for (const el of root.querySelectorAll('input, textarea, select')) {
+      if (el.matches(secret)) continue;
+      if (el.tagName === 'SELECT') for (const o of el.selectedOptions) out.push(String(o.label || o.textContent || ''), String(o.value));
+      else if (el.value) out.push(String(el.value));
+    }
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) visit(el.shadowRoot);
+  };
+  visit(w.document);
+  return out;
+}
+
+/** The values of ordinary fields in every frame of the window (frames that cannot be read give none). */
+async function framePlain(page: Page): Promise<Set<string>> {
+  const read = await Promise.all(page.frames().map((f) => f.evaluate(plainIn, SECRET_INPUTS).catch((): string[] => [])));
+  return new Set(read.flat());
+}
+
 /** The credential values in every frame of the window: the editor's, the preview's and any other (failures skipped). */
 export async function frameSecrets(page: Page, { strict = false }: { strict?: boolean } = {}): Promise<string[]> {
   // Strict: a frame that cannot be read fails the whole read, for a caller that must not take "unknown" as "none".
@@ -284,7 +306,7 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   aborted(signal);
   const raw = (await page.locator('body').ariaSnapshotJSON({ mode: 'ai', boxes: true, signal })) as unknown as (RawNode | string)[];
   aborted(signal);
-  const [docs, others, stored] = await Promise.all([readDocs(page), frameSecrets(page), env.storedSecrets?.().catch((): string[] => []) ?? Promise.resolve([])]);
+  const [docs, others, stored, plain] = await Promise.all([readDocs(page), frameSecrets(page), env.storedSecrets?.().catch((): string[] => []) ?? Promise.resolve([]), framePlain(page)]);
   if (docs.editor.token !== first.editor.token) throw changing('The editor reloaded');
   // The editor's document stays the same when another project opens in it: refs would be bound to the wrong one.
   if (docs.editor.opening !== first.editor.opening) throw changing('Another project opened');
@@ -298,14 +320,16 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   const classified = await factsByRef(page, valued);
   const secretRefs = new Set(valued.filter((r) => classified.get(r)?.secret));
   const unknownRefs = new Set(valued.filter((r) => !classified.get(r)));
-  // Every credential field's value, read straight from every frame, and the saved keys.
-  const credentials = [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored];
-  const redacted = redact(raw, { secretRefs, unknownRefs, secrets: [...credentials, ...(env.remembered?.() ?? [])] });
-  // Only those are remembered for the rest of the session. A value that merely could not be classified (a field with no
-  // ref while a menu is open, or one replaced as it was read) is kept out of this reply alone: remembered, it would
-  // scrub ordinary text (a heading's words, a width) from every later reply and make refs to it stale, and a
-  // credential field's value is in the direct read above whether or not the snapshot gave it a ref.
-  env.remember?.(credentials);
+  // A field with no ref (Playwright gives none to the editor's fields while a menu is open) or one that could not be read
+  // is told apart by its value: one an ordinary field holds now, and no credential field, is not a secret. Anything
+  // else it could be is remembered for the rest of the session, as a credential is.
+  const redacted = redact(raw, {
+    secretRefs,
+    unknownRefs,
+    secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored, ...(env.remembered?.() ?? [])],
+    plain
+  });
+  env.remember?.(redacted.secrets);
   const editor = shape(raw, 'editor');
   // An iframe Playwright could not enter has no children: its page is not there to observe yet.
   const preview = previewRaw?.children?.length ? shape(previewRaw.children, 'preview') : null;
@@ -794,14 +818,16 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
     await Promise.all(written.map((f) => rm(f, { force: true }).catch(() => undefined)));
     throw e;
   }
-  const f = after?.frame;
+  // Where the page sits on the preview image, only from a capture nothing moved during.
+  const still = !!before && !!after && !sceneChange(before, after);
+  const f = still ? after!.frame : null;
   const out: Shots = {
     editor: { path: `${stem}-editor.png`, width: vp.width, height: vp.height },
     preview: previewPng && clip ? { path: `${stem}-preview.png`, width: clip.width, height: clip.height, clip, ...(f ? { origin: f.origin, scale: f.scale.x } : {}) } : null
   };
   // Points on the images stand for what they show only if nothing moved while they were taken.
-  if (token && env.shots && before && after && !sceneChange(before, after) && after.editor.viewport.width === vp.width && after.editor.viewport.height === vp.height) {
-    env.shots.issue({ token, at: performance.now(), generation: env.generation, scene: after, editor: { width: vp.width, height: vp.height }, preview: out.preview?.clip ? { clip: out.preview.clip } : null });
+  if (token && env.shots && still && after!.editor.viewport.width === vp.width && after!.editor.viewport.height === vp.height) {
+    env.shots.issue({ token, at: performance.now(), generation: env.generation, scene: after!, editor: { width: vp.width, height: vp.height }, preview: out.preview?.clip ? { clip: out.preview.clip } : null });
     out.observation = token;
   }
   return out;

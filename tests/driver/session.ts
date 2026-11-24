@@ -192,10 +192,10 @@ export const OPERATIONS: Record<string, OpSpec> = {
   },
   'ui.type': {
     kind: 'act',
-    defaultTimeoutMs: 15_000,
+    defaultTimeoutMs: 30_000,
     needsApp: true,
     usesWindow: true,
-    summary: 'Type text key by key ({ text, target?: { ref } }): into the target, keeping its caret when it already has the focus, or into what has the focus, which must take text.'
+    summary: 'Type text key by key ({ text, target?: { ref } }): into the target, keeping its caret when it already has the focus, or into what has the focus, which must take text. Stops if the focus moves while typing.'
   },
   'ui.select': {
     kind: 'act',
@@ -846,10 +846,20 @@ export class Session {
       case 'ui.press':
       case 'ui.scroll':
       case 'ui.drag': {
-        const action = parseAction(request.op, request.args);
-        await this.settled();
-        const page = this.windowFor(request);
-        return runAction({ observe: this.observer(page, signal), page, deadline, shots: this.shots }, action);
+        try {
+          const action = parseAction(request.op, request.args);
+          // Never past the point where the action could still fail with a reason rather than run out of time.
+          await this.settled(Math.max(0, deadline - Date.now() - 2000));
+          const page = this.windowFor(request);
+          return await runAction({ observe: this.observer(page, signal), page, deadline, shots: this.shots }, action);
+        } catch (e) {
+          // A request can quote what it was given (a key chord, say): nothing the session knows as a credential goes back.
+          if (e instanceof DriverError && this.secrets.size) {
+            const known = [...this.secrets];
+            throw new DriverError(e.code, scrubDeep(e.message, known), { retryable: e.retryable, ...(e.details ? { details: scrubDeep(e.details, known) } : {}) });
+          }
+          throw e;
+        }
       }
       default:
         throw new DriverError('UNKNOWN_OP', `There is no operation "${request.op}".`);
@@ -885,9 +895,9 @@ export class Session {
   }
 
   /** Wait (a bounded time) for operations that ran out of time to stop before observing again; BUSY if they will not. */
-  private async settled() {
+  private async settled(maxMs = 10_000) {
     if (!this.lingering.size) return;
-    const done = await bounded(Promise.all([...this.lingering]).then(() => true), 10_000, false);
+    const done = await bounded(Promise.all([...this.lingering]).then(() => true), Math.min(10_000, maxMs), false);
     if (!done) throw new DriverError('BUSY', 'An earlier request that ran out of time is still stopping; try again shortly.', { retryable: true });
   }
 

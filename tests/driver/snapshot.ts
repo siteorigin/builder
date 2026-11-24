@@ -220,6 +220,12 @@ export interface Redaction {
   unknownRefs: Set<string>;
   /** Credential values read from the page, scrubbed wherever they appear. */
   secrets: string[];
+  /**
+   * The values ordinary fields hold now (never a credential field's), read from the page. A node with no ref, or whose
+   * element could not be read, is an ordinary field when its value is one of these and no credential: Playwright gives
+   * no refs to the editor's fields while a menu is open, and their text is not a secret for that.
+   */
+  plain?: Set<string>;
 }
 
 export interface Redacted {
@@ -275,8 +281,16 @@ export function scrubDeep<T>(value: T, secrets: string[]): T {
  */
 export function redact(nodes: (RawNode | string)[], r: Redaction): Redacted {
   const captured: string[] = [];
+  const known = new Set(r.secrets);
+  /** A value whose field is a credential, or cannot be told apart from one. */
+  const hidden = (n: RawNode) => {
+    if (n.ref && r.secretRefs.has(n.ref)) return true;
+    if (n.ref && !r.unknownRefs.has(n.ref)) return false;
+    const v = valueOf(n);
+    return !(r.plain?.has(v) && !known.has(v));
+  };
   for (const n of rawNodes(nodes)) {
-    if (!holdsValue(n) || (n.ref && !r.secretRefs.has(n.ref) && !r.unknownRefs.has(n.ref))) continue;
+    if (!holdsValue(n) || !hidden(n)) continue;
     // The value as a whole, and each piece Playwright gave it in (its text, and fragments under it).
     captured.push(valueOf(n), n.text ?? '', ...(n.children ?? []).map((c) => (typeof c === 'string' ? c : c.role === 'text' ? (c.text ?? '') : '')));
   }
@@ -292,7 +306,7 @@ export function redact(nodes: (RawNode | string)[], r: Redaction): Redacted {
     if (!list) return list;
     return list.map((n) => {
       if (typeof n === 'string') return clean(n);
-      if (holdsValue(n) && (!n.ref || r.secretRefs.has(n.ref) || r.unknownRefs.has(n.ref))) {
+      if (holdsValue(n) && hidden(n)) {
         delete n.text;
         n.children = (n.children ?? []).filter((c) => typeof c !== 'string' && c.role !== 'text');
         n.redacted = true;

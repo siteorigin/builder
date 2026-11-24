@@ -91,7 +91,7 @@ describe('a session before it starts', () => {
       'ui.click': 15000,
       'ui.hover': 15000,
       'ui.fill': 15000,
-      'ui.type': 15000,
+      'ui.type': 30000,
       'ui.select': 15000,
       'ui.press': 15000,
       'ui.scroll': 15000,

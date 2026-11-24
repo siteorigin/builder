@@ -6,9 +6,10 @@
  *
  * - the scene: the same window, project opening and documents, the same editor viewport, the same place and zoom of
  *   the preview's frame, and the same scroll of both pages;
- * - a witness: when the pixels are taken, each document records every element's box; at action time the element under
- *   the pixel must have been there, at the same place, when the screenshot was taken. A panel scrolled or a row moved
- *   under the point fails, even where the scene still matches;
+ * - a witness: when the pixels are taken, each document records every element's box (open shadow roots included); at
+ *   action time the element under the pixel must have been there, at the same place, and every element that covered
+ *   the pixel then must still be there, unchanged. A panel scrolled or a row moved under the point fails, and so does
+ *   a toast that has gone from over it, even where the scene still matches;
  * - its use: a newer screenshot replaces it, an action that sent input consumes it, and it expires.
  *
  * The record kept in each document lives only in the session's own app (never in project source or exports).
@@ -152,11 +153,17 @@ function sceneIn(a: { token: string | null; selector: string | null; key: string
   const d = w.document;
   if (a.token) {
     const boxes = new WeakMap();
-    for (const el of d.querySelectorAll('*')) {
-      const r = el.getBoundingClientRect();
-      boxes.set(el, [r.x, r.y, r.width, r.height]);
-    }
-    Object.defineProperty(w, Symbol.for(a.key), { value: { token: a.token, boxes }, configurable: true, enumerable: false, writable: false });
+    const list: Dom[] = [];
+    const visit = (root: Dom) => {
+      for (const el of root.querySelectorAll('*')) {
+        const r = el.getBoundingClientRect();
+        boxes.set(el, [r.x, r.y, r.width, r.height]);
+        list.push(el);
+        if (el.shadowRoot) visit(el.shadowRoot);
+      }
+    };
+    visit(d);
+    Object.defineProperty(w, Symbol.for(a.key), { value: { token: a.token, boxes, list }, configurable: true, enumerable: false, writable: false });
   }
   const iframe = a.selector ? d.querySelector(a.selector) : null;
   let frame = null;
@@ -198,19 +205,5 @@ export async function readScene(page: Page, preview: Frame | null, selector: str
 }
 
 export type Witness = 'ok' | 'new' | 'moved' | 'superseded';
-
-/**
- * Runs in a document: whether the element at `el`'s place had that box when the screenshot `token` was taken.
- * `el` is the element now under the point.
- */
-export function witnessIn(el: Dom, a: { token: string; key: string }): Witness {
-  const w = globalThis as Dom;
-  const shot = w[Symbol.for(a.key)];
-  if (!shot || shot.token !== a.token) return 'superseded';
-  const box = shot.boxes.get(el);
-  if (!box) return 'new';
-  const r = el.getBoundingClientRect();
-  return Math.abs(r.x - box[0]) <= 1 && Math.abs(r.y - box[1]) <= 1 && Math.abs(r.width - box[2]) <= 1 && Math.abs(r.height - box[3]) <= 1 ? 'ok' : 'moved';
-}
 
 export const SHOT_WITNESS_KEY = SHOT_KEY;

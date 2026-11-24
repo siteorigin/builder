@@ -8,7 +8,7 @@
 // a target under a dialog or covered by the canvas's chip, and an impossible gesture each fail with a reason, and
 // change nothing.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { flatten, semanticSelector } from '../driver/observe.ts';
 import { Session } from '../driver/session.ts';
@@ -75,9 +75,13 @@ try {
     assert.equal(c.focus?.name, 'Project name', 'the dialog puts the focus in its first field');
     return c.dialog;
   });
+  const workspaceBefore = readdirSync(session.paths.workspace).sort();
   await press('Shift+Tab');
+  const back = (await snapshot({ scope: 'editor', maxNodes: 5 })).context;
+  assert.notEqual(back.focus?.name, 'Project name', 'Shift+Tab moved the focus');
+  assert.equal(back.dialog?.name, 'New project', 'and it stayed in the dialog');
   await press('Tab');
-  assert.equal((await snapshot({ scope: 'editor', maxNodes: 5 })).context.focus?.name, 'Project name', 'Tab and Shift+Tab keep the focus inside the dialog');
+  assert.equal((await snapshot({ scope: 'editor', maxNodes: 5 })).context.focus?.name, 'Project name', 'Tab brought it back to the first field');
   await press('Escape');
   await eventually(async () => {
     const c = (await snapshot({ scope: 'editor', maxNodes: 20 })).context;
@@ -85,7 +89,7 @@ try {
     assert.equal(c.screen, 'welcome');
   });
   failed(await call('ui.locate', { ref: dialog.ref }), 'STALE_REF', 'the closed dialog');
-  assert.equal(existsSync(PROJECT()), false, 'nothing was created');
+  assert.deepEqual(readdirSync(session.paths.workspace).sort(), workspaceBefore, 'nothing was created');
 
   step('the dialog again: name, starter and folder chosen through its controls, and the project created');
   await click(newProject.ref);
@@ -94,8 +98,19 @@ try {
     assert.equal(c.dialog?.name, 'New project');
     return c.dialog;
   });
-  await act('ui.fill', { target: { ref: (await find({ role: 'textbox', name: 'Project name', within: form.ref })).ref }, text: 'Harbour Lane Studio' });
-  await click((await find({ role: 'radio', name: 'Business', exact: false, within: form.ref })).ref);
+  // Fill replaces what a field holds; typing into it adds at the caret.
+  const nameField = await find({ role: 'textbox', name: 'Project name', within: form.ref });
+  await act('ui.fill', { target: { ref: nameField.ref }, text: 'A placeholder name' });
+  await act('ui.fill', { target: { ref: nameField.ref }, text: 'Harbour Lane' });
+  await act('ui.type', { target: { ref: nameField.ref }, text: ' Studio' });
+  assert.equal((await find({ ref: nameField.ref })).value, 'Harbour Lane Studio', 'the name was replaced, then added to');
+  // The starter: Blank, then Business, each click moving the choice.
+  const blank = await find({ role: 'radio', name: 'Blank', exact: false, within: form.ref });
+  const business = await find({ role: 'radio', name: 'Business', exact: false, within: form.ref });
+  await click(blank.ref);
+  await eventually(async () => assert.deepEqual([(await find({ ref: blank.ref })).checked, (await find({ ref: business.ref })).checked ?? false], [true, false], 'Blank is chosen'));
+  await click(business.ref);
+  await eventually(async () => assert.deepEqual([(await find({ ref: blank.ref })).checked ?? false, (await find({ ref: business.ref })).checked], [false, true], 'Business is chosen'));
   ok(await call('desktop.setAnswers', { answers: [{ dialog: 'open', title: 'Choose where to create the project', selection: 'folder', paths: ['workspace'] }] }), 'the folder chooser’s answer');
   await click((await find({ role: 'button', name: 'Choose…', within: form.ref })).ref);
   await eventually(async () => {
@@ -156,7 +171,7 @@ try {
   const menu = await eventually(async () => {
     const s = await snapshot({ scope: 'editor', maxNodes: 300 });
     const m = flatten(s.editor.nodes).find((x) => x.role === 'menu');
-    assert.ok(m, 'a right click opens the actions menu');
+    assert.match(m?.name ?? '', /actions$/, 'a right click opens the actions menu');
     return m;
   });
   assert.ok(menu.ref);
@@ -223,7 +238,7 @@ try {
   const logoRow = await find({ role: 'treeitem', name: 'Logo strip', scope: 'editor' });
   await act('ui.drag', { from: { ref: heroRow.ref }, to: { ref: logoRow.ref, position: { x: 40, y: 3 } } });
   await eventually(async () => assert.deepEqual((await pageOrder()).slice(0, 3), ['Split hero', 'Logo strip', 'Services grid'], 'the Layers drag moved the hero back to the top'));
-  assert.equal(await applied(), reorderSteps + 2);
+  await eventually(async () => assert.equal(await applied(), reorderSteps + 2, `one more step of history: ${JSON.stringify((await saved()).history.entries.map((e) => [e.label, e.applied]))}`), 5000);
 
   step('keyboard Undo and Redo from a Layers row move the project one step each');
   const row = await find({ role: 'treeitem', name: 'Split hero', scope: 'editor' });
@@ -358,10 +373,15 @@ try {
   await press('Escape');
   await eventually(async () => assert.equal((await snapshot({ maxNodes: 20 })).context.dialog, null));
   failed(await call('ui.locate', { ref: settings.ref }), 'STALE_REF', 'the closed dialog');
-  // Typing with nothing that takes text focused types nothing (letters there would be shortcuts).
+  // Typing with nothing that takes text focused types nothing: an "s" on the Logo strip row would select Services grid.
   await click((await find({ role: 'treeitem', name: 'Logo strip', scope: 'editor' })).ref);
-  const notText = failed(await call('ui.type', { text: 'd' }), 'NOT_ACTIONABLE', 'typing with a Layers row focused');
+  await eventually(async () => assert.equal((await snapshot({ maxNodes: 20 })).context.selection?.toolbar, 'Logo strip actions'));
+  const notText = failed(await call('ui.type', { text: 's' }), 'NOT_ACTIONABLE', 'typing with a Layers row focused');
   assert.equal(notText.details.reason, 'not-editable');
+  await new Promise((r) => setTimeout(r, 300));
+  const after = (await snapshot({ maxNodes: 20 })).context;
+  assert.equal(after.selection?.toolbar, 'Logo strip actions', 'the key never reached the row');
+  assert.equal(after.focus?.name, 'Logo strip');
   // Impossible gestures, refused before anything is sent.
   const edgeNow = await find({ role: 'separator', name: 'Preview width, right edge', scope: 'editor' });
   failed(await call('ui.drag', { from: { ref: edgeNow.ref }, to: { ref: edgeNow.ref }, by: { x: 10, y: 0 } }), 'BAD_REQUEST', 'a drag to a target and by an offset');
@@ -386,11 +406,81 @@ try {
   assert.deepEqual(chosen.selected, { label: 'Image first', value: 'media-start' });
   await eventually(async () => assert.equal(await applied(), was + 1, 'one step of history'));
   assert.match((await saved()).history.undoLabel ?? '', /layout/i, 'Undo names the change');
+  /** The hero's layout as the project holds it. */
+  const heroLayout = async () => {
+    const st = (await saved()).state;
+    const p = st.pages[st.site.homePageId];
+    const id = p.rootIds.find((r) => st.components[p.nodes[r].definitionId]?.name === 'Split hero');
+    return p.nodes[id].variants?.layout ?? 'default';
+  };
+  await eventually(async () => assert.equal(await heroLayout(), 'media-start', 'the hero shows its image first'));
+  // And back, by value. Choosing what is already chosen changes nothing.
+  const relayout = await find({ role: 'combobox', name: 'Layout', scope: 'editor' });
+  await act('ui.select', { target: { ref: relayout.ref }, option: { value: 'default' } });
+  await eventually(async () => assert.equal(await heroLayout(), 'default', 'and last again'));
+  await eventually(async () => assert.equal(await applied(), was + 2, 'one more step'));
+  const same = await act('ui.select', { target: { ref: (await find({ role: 'combobox', name: 'Layout', scope: 'editor' })).ref }, option: { label: 'Image last' } });
+  assert.equal(same.selected.value, 'default');
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(await applied(), was + 2, 'the option already chosen moves nothing');
+
+  step('modifiers are held for a click and let go after it: Shift selects a range of rows, a plain click one row');
+  const SECTIONS = ['Split hero', 'Logo strip', 'Services grid'];
+  const rowState = async () => {
+    const rows = flatten((await snapshot({ scope: 'editor', maxNodes: 1000 })).editor.nodes).filter((x) => x.role === 'treeitem' && SECTIONS.some((n) => x.name?.startsWith(n)));
+    if (rows.length !== 3) console.log('rows', JSON.stringify(rows.map((x) => x.name)));
+    return Object.fromEntries(SECTIONS.map((n) => [n, !!rows.find((x) => x.name.startsWith(n))?.selected]));
+  };
+  await click((await find({ role: 'treeitem', name: 'Split hero', scope: 'editor' })).ref);
+  await click((await find({ role: 'treeitem', name: 'Services grid', scope: 'editor' })).ref, { modifiers: ['Shift'] });
+  await eventually(async () => assert.deepEqual(await rowState(), { 'Split hero': true, 'Logo strip': true, 'Services grid': true }, 'Shift selected the range'));
+  await click((await find({ role: 'treeitem', name: 'Logo strip', scope: 'editor' })).ref);
+  await eventually(async () => assert.deepEqual(await rowState(), { 'Split hero': false, 'Logo strip': true, 'Services grid': false }, 'Shift was let go: a plain click selects one row'));
+
+  step('a credential entered through the actions never comes back, nor does a screenshot while it is known');
+  const KEY = 'sk-ACTIONS-SENTINEL-7f3a9c';
+  const leaks = (reply) => ['ACTIONS-SENTINEL', '7f3a9c'].filter((f) => JSON.stringify(reply).includes(f));
+  await click((await find({ role: 'button', name: 'Settings', scope: 'editor' })).ref);
+  const settingsAgain = await eventually(async () => {
+    const d = (await snapshot({ maxNodes: 20 })).context.dialog;
+    assert.equal(d?.name, 'Settings');
+    return d;
+  });
+  await click((await find({ role: 'tab', name: 'AI assistant', within: settingsAgain.ref })).ref);
+  const keyField = await eventually(() => find({ role: 'textbox', name: 'API key (optional)', scope: 'editor' }));
+  const filled = await call('ui.fill', { target: { ref: keyField.ref }, text: KEY });
+  ok(filled, 'filling the key');
+  const replies = [filled, await call('ui.snapshot', { scope: 'editor', maxNodes: 1000 }), await call('ui.locate', { ref: keyField.ref }), await call('ui.press', { key: 'Tab' }), await call('ui.press', { key: 'Shift+Tab' })];
+  for (const r of replies) assert.deepEqual(leaks(r), [], `no piece of the key in ${r.op}`);
+  assert.equal(ok(replies[2], 'the key field').node.redacted, true);
+  const covered2 = ok(await call('ui.snapshot', { maxNodes: 5, screenshot: true }), 'a screenshot with a key typed');
+  assert.equal(covered2.screenshots.observation, undefined, 'no point can be aimed at a screenshot that was not taken');
+  assert.deepEqual([covered2.screenshots.editor, covered2.screenshots.preview], [null, null]);
+  // A request quoting the key is answered without it.
+  const quoted = await call('ui.press', { key: KEY });
+  assert.equal(quoted.ok, false);
+  assert.deepEqual(leaks(quoted), [], 'nor in a refusal that quotes it');
+  await press('Escape');
+  const ask = await eventually(async () => {
+    const d = (await snapshot({ maxNodes: 20 })).context.dialog;
+    assert.equal(d?.name, 'Save the API key you entered?');
+    return d;
+  });
+  await click((await find({ role: 'button', name: 'Discard', within: ask.ref })).ref);
+  await eventually(async () => assert.equal((await snapshot({ maxNodes: 20 })).context.dialog, null));
 
   assert.deepEqual(session.pageErrors, [], 'the editor raised no errors');
   passed = true;
   console.log('\nactions: all checks passed');
 } finally {
-  await session.close({ failed: !passed }).catch((e) => console.error('close failed', e));
-  if (passed) cleanup();
+  // A teardown that fails fails the run, even one whose checks passed.
+  const closed = await session.close({ failed: !passed }).then(
+    () => true,
+    (e) => {
+      console.error('close failed', e);
+      return false;
+    }
+  );
+  if (!closed) process.exitCode = 1;
+  if (passed && closed) cleanup();
 }
