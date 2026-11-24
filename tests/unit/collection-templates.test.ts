@@ -376,6 +376,11 @@ describe('after the last review', () => {
     const link = Object.values(odd.collections.posts.settings.template.nodes).find((n) => n.kind === 'link')!;
     (link as { link: unknown }).link = { type: 'anchor', target: 42 };
     expect(() => generateProject(odd)).not.toThrow();
+    // A layout without its list of top-level elements is reported, never a failure to open the project.
+    const rootless = structuredClone(s);
+    delete (rootless.collections.posts.settings.template as { rootIds?: unknown }).rootIds;
+    expect(() => validateState(rootless)).not.toThrow();
+    expect(validateState(rootless).some((d) => d.code === 'COLLECTION_INVALID')).toBe(true);
   });
 
   it('gives a draft listed first the published entry after it, and one listed last the one before it', () => {

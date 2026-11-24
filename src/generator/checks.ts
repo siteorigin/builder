@@ -1206,7 +1206,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const layoutIds = new Map<string, Set<string>>();
   const storedIdsOf = (collectionId: string, hidden?: boolean) => {
     const key = `${hidden ? 'kept' : 'shown'}:${collectionId}`;
-    const template = state.collections[collectionId]?.settings?.template;
+    const template = storedLayout(state, collectionId);
     if (!layoutIds.has(key)) layoutIds.set(key, template?.nodes ? treeIds(state, [template], new Set(entryIdsOf(hidden)), !!hidden) : entryIdsOf(hidden));
     return layoutIds.get(key)!;
   };
@@ -1226,7 +1226,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const layoutLinks = new Map<string, boolean>();
   const hasSectionLinks = (collectionId: string) => {
     if (!layoutLinks.has(collectionId)) {
-      const template = state.collections[collectionId]?.settings?.template;
+      const template = storedLayout(state, collectionId);
       // A placed section's links can depend on the words each entry gives it: a layout with one is always read.
       const placed = !!template?.nodes && Object.values(template.nodes).some((n) => n?.kind === 'instance');
       layoutLinks.set(collectionId, placed || (!!template?.nodes && renderedLinks(state, template, false, true).some(({ link }) => (link.type === 'page' && !!link.anchor) || link.type === 'anchor')));
@@ -1860,5 +1860,11 @@ export function pageHeadings(state: ProjectState, pageId: string, opts: { shell?
  */
 function entryArticle(state: ProjectState, collection: Collection, entry: EntryDoc): NodeTree {
   return materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
+}
+
+/** A collection's layout as stored, when it is a tree at all (a damaged one is reported with its settings). */
+function storedLayout(state: ProjectState, collectionId: string): NodeTree | undefined {
+  const t = state.collections[collectionId]?.settings?.template;
+  return t && typeof t === 'object' && Array.isArray(t.rootIds) && t.nodes && typeof t.nodes === 'object' ? t : undefined;
 }
 
