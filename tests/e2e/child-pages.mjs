@@ -1,9 +1,9 @@
 // Child pages (#169): Lookbook is added from the Pages panel and Kitchens is added inside it from Lookbook's
 // options, previewed at /lookbook/kitchens/. Pages lists Kitchens under Lookbook, and its header link lands under
 // Lookbook's, which Edit menu shows and can undo and redo without touching the page. Kitchens then moves into Work
-// from its page settings: Pages follows, the menu does not. The static export, served under /studio/, loads the
-// nested address directly, sends the old address on to the new one, and its submenu works by keyboard (Enter,
-// Space, Tab, Escape), by pointer and by touch at phone width.
+// from its page settings: Pages lists it apart from Work until Move under puts it there, and the menu stays as it
+// was. The static export, served under /studio/, loads the nested address directly, sends the old address on to the
+// new one, and its submenu works by keyboard (Enter, Space, Tab, Escape), by pointer and by touch at phone width.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -45,7 +45,7 @@ const menuRows = async () => {
 };
 const pagesPanel = () => win.locator('.side-panel-view:not([hidden]) .pages-list');
 const pageRow = (title) => pagesPanel().locator('[data-page]', { hasText: title }).first();
-const outline = () => pagesPanel().locator('[data-page]').evaluateAll((rows) => rows.map((r) => `${'  '.repeat(Number(r.style.getPropertyValue('--page-depth') || 0))}${r.querySelector('.page-title').textContent}`));
+const outline = () => pagesPanel().locator('[data-page]').evaluateAll((rows) => rows.map((r) => `${'  '.repeat(Number(r.style.getPropertyValue('--depth') || 0))}${r.querySelector('.page-title').textContent}`));
 const inspector = () => win.locator('#dock-panel-inspect');
 
 try {
@@ -62,19 +62,23 @@ try {
   await eventually(async () => assert.ok(await pageBy('Lookbook'), 'Lookbook exists'));
   await pageRow('Lookbook').hover();
   await pageRow('Lookbook').getByRole('button', { name: 'Lookbook options' }).click();
-  await win.getByRole('menuitem', { name: 'Add page inside…' }).click();
+  await win.getByRole('menuitem', { name: 'Add page inside' }).click();
   const lookbook = await pageBy('Lookbook');
-  assert.equal(await win.locator('.pages-add-inside select').inputValue(), lookbook.id, 'the form starts inside Lookbook');
+  assert.equal(await win.locator('#pages-add-inside').inputValue(), lookbook.id, 'the form starts inside Lookbook');
   await win.getByLabel('New page title').fill('Kitchens');
   assert.equal(await win.locator('#pages-add-route .value').innerText(), '/lookbook/kitchens/', 'the address previews inside Lookbook');
   assert.match(await win.locator('.pages-add-form').innerText(), /Add to header menu, under Lookbook/, 'the form says where the menu link goes');
+  // A page inside another starts out of the menu; asked for, its link goes under its parent's.
+  const navBox = win.locator('.pages-add-form').getByRole('checkbox', { name: /Add to header menu/ });
+  assert.equal(await navBox.isChecked(), false, 'a page inside another is left out of the menu unless asked');
+  await navBox.check();
   await win.locator('.pages-add-actions .btn-primary').click();
   await eventually(async () => assert.equal((await pageBy('Kitchens'))?.route, '/lookbook/kitchens/', 'Kitchens gets the previewed address'));
   const kitchens = await pageBy('Kitchens');
 
   step('Pages shows Kitchens inside Lookbook, and the header menu groups its link under Lookbook’s');
   await eventually(async () => assert.deepEqual(await outline(), ['Home', 'About', 'Contact', 'Lookbook', '  Kitchens']));
-  assert.equal(await pageRow('Kitchens').getAttribute('aria-description'), 'Inside Lookbook. /lookbook/kitchens/');
+  assert.equal(await pageRow('Kitchens').getAttribute('aria-description'), '/lookbook/kitchens/, in Lookbook');
   const titleX = async (title) => (await pageRow(title).locator('.page-title').boundingBox()).x;
   assert.ok((await titleX('Kitchens')) >= (await titleX('Lookbook')) + 12, 'Kitchens is shown indented under Lookbook');
   const rows = await menuRows();
@@ -98,7 +102,7 @@ try {
   await list.locator('.list-editor-item', { hasText: 'Kitchens' }).getByRole('switch', { name: 'Show under the link above' }).click();
   await eventually(async () => assert.deepEqual((await menuRows()).map((r) => r.row), ['Home', 'About', 'Contact', 'Lookbook', '  Kitchens']));
 
-  step('move Kitchens into Work from its page settings: Pages follows, the menu does not');
+  step('move Kitchens into Work from its page settings: Move under lists it in Work, the menu stays as it was');
   const work = await apply([{ type: 'page.create', title: 'Work', route: '/work/', starter: 'intro' }], 'Add page Work');
   assert.equal(work.ok, true);
   const workId = work.results[0].pageId;
@@ -109,8 +113,14 @@ try {
   await eventually(async () => assert.equal(await inside.inputValue(), lookbook.id, 'page settings say Kitchens is inside Lookbook'));
   await inside.selectOption(workId);
   await eventually(async () => assert.equal((await pageBy('Kitchens')).route, '/work/kitchens/', 'Kitchens moves into Work'));
+  // Its place in the page order is unchanged, before Work: Pages says so and offers to list it under Work.
+  await eventually(async () => assert.deepEqual(await outline(), ['Home', 'About', 'Contact', 'Lookbook', 'Kitchens', 'Work']));
+  assert.match(await pageRow('Kitchens').innerText(), /Listed apart from Work/);
+  await pageRow('Kitchens').hover();
+  await pageRow('Kitchens').getByRole('button', { name: 'Kitchens options' }).click();
+  await win.getByRole('menuitem', { name: 'Move under Work' }).click();
   await eventually(async () => assert.deepEqual(await outline(), ['Home', 'About', 'Contact', 'Lookbook', 'Work', '  Kitchens']));
-  assert.equal(await pageRow('Kitchens').getAttribute('aria-description'), 'Inside Work. /work/kitchens/');
+  assert.equal(await pageRow('Kitchens').getAttribute('aria-description'), '/work/kitchens/, in Work');
   const after = await menuRows();
   assert.deepEqual(after.map((r) => r.row), ['Home', 'About', 'Contact', 'Lookbook', '  Kitchens'], 'the menu link stays under Lookbook');
   assert.equal(after.find((r) => r.target === kitchens.id)?.id, kitchensItem.id, 'it is the same link, still leading to Kitchens');
@@ -129,6 +139,8 @@ try {
   /** Wait until the header has hydrated: once mounted, it publishes its height on the page root. */
   const hydrated = (page) => page.waitForFunction(() => document.documentElement.style.getPropertyValue('--so-header-offset') !== '', null, { timeout: 30000 });
   const expanded = (toggle) => toggle.getAttribute('aria-expanded');
+  // The phone menu is a native disclosure: its open attribute is its state.
+  const menuOpen = (p) => p.evaluate(() => document.querySelector('.so-header__menu').open);
   const focusedText = (page) => page.evaluate(() => document.activeElement?.textContent?.trim() ?? null);
   const hasFocus = (locator) => locator.evaluate((el) => el === document.activeElement);
 
@@ -199,7 +211,7 @@ try {
   const mToggle = mNav.getByRole('button', { name: 'Lookbook submenu' });
   const mKitchens = mNav.getByRole('link', { name: 'Kitchens', exact: true });
   await menuButton.tap();
-  await eventually(async () => assert.equal(await expanded(menuButton), 'true', 'the menu opens'));
+  await eventually(async () => assert.equal(await menuOpen(mobile), true, 'the menu opens'));
   const cta = mNav.getByRole('link', { name: 'Book a call' });
   const ctaBefore = (await cta.boundingBox()).y;
   await mToggle.tap();
@@ -212,13 +224,13 @@ try {
   // Escape closes the submenu first, back to its button, then the menu, back to the menu button.
   await mobile.keyboard.press('Escape');
   await eventually(async () => assert.equal(await expanded(mToggle), 'false', 'Escape closes the submenu'));
-  assert.equal(await expanded(menuButton), 'true', 'the menu stays open');
+  assert.equal(await menuOpen(mobile), true, 'the menu stays open');
   assert.equal(await hasFocus(mToggle), true, 'focus is on the submenu button');
   await mobile.keyboard.press('Escape');
-  await eventually(async () => assert.equal(await expanded(menuButton), 'false', 'a second Escape closes the menu'));
+  await eventually(async () => assert.equal(await menuOpen(mobile), false, 'a second Escape closes the menu'));
   assert.equal(await hasFocus(menuButton), true, 'focus is on the menu button');
   await menuButton.tap();
-  await eventually(async () => assert.equal(await expanded(menuButton), 'true'));
+  await eventually(async () => assert.equal(await menuOpen(mobile), true));
   await mToggle.tap();
   await eventually(async () => assert.equal(await expanded(mToggle), 'true'));
   await mToggle.tap();
@@ -228,7 +240,7 @@ try {
   await eventually(async () => assert.equal(await expanded(mToggle), 'true'));
   await mKitchens.tap();
   await mobile.waitForURL(`${ORIGIN}/studio/work/kitchens/`);
-  assert.equal(await expanded(menuButton), 'false', 'the menu closes on arrival');
+  assert.equal(await menuOpen(mobile), false, 'the menu closes on arrival');
   assert.equal((await mobile.locator('main h1').first().innerText()).trim(), 'Kitchens');
 
   assert.deepEqual(errors, [], 'no uncaught errors in the editor');

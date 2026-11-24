@@ -624,7 +624,7 @@ describe('shell.header', () => {
       expect(source).toMatch(/\.so-header__sub\[hidden\] \{\s*display: none;/);
       expect(source).not.toMatch(/:hover[^{]*\.so-header__sub\b[^{]*\{[^}]*display/);
       // Escape closes the submenu first, back to its button, then the phone menu.
-      expect(source).toMatch(/if \(openSub !== null\) \{[\s\S]*?subToggle\(id\)\?\.focus\(\);[\s\S]*?\} else if \(open\) \{/);
+      expect(source).toMatch(/if \(openSub !== null\) \{[\s\S]*?subToggle\(id\)\?\.focus\(\);[\s\S]*?\} else if \(menu\?\.open\) \{/);
     });
   });
 
