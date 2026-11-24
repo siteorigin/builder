@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, CircleAlert, Folder, FolderOpen, Plus, Search, Settings, X } from 'lucide-react';
+import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Plus, Search, Settings, Sun, X } from 'lucide-react';
 import type { RecentProject } from '@shared/api';
 import { api, errorText, setState, toast, useStore } from './store';
 import { openDialogs, Spinner } from './components/ui';
@@ -7,12 +7,36 @@ import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs'
 import { shortPath, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark, MARK_COLORS } from './components/AppMark';
+import { switchScheme, useEditorScheme } from './lib/appearance';
 
 export function BrandMark() {
   return (
     <div className="brand-mark" aria-hidden="true">
       <AppMark size={48} />
     </div>
+  );
+}
+
+/**
+ * One click between the editor's light and dark Appearance, without opening Settings (#554). It shows the scheme the
+ * editor is drawn in (System resolved to this computer's) and saves the other one as the Appearance; System stays a
+ * choice in Settings. The editor redraws from the saved setting (lib/appearance.ts).
+ */
+export function AppearanceToggle() {
+  const scheme = useEditorScheme();
+  const dark = scheme === 'dark';
+  const toggle = async () => {
+    try {
+      const saved = await switchScheme();
+      if (saved) setState({ settings: saved });
+    } catch (e) {
+      toast(`Could not change the appearance: ${errorText(e)}`, 'error');
+    }
+  };
+  return (
+    <button type="button" className="icon-btn appearance-toggle no-drag" role="switch" aria-checked={dark} aria-label="Dark appearance" title={dark ? 'Switch to light appearance' : 'Switch to dark appearance'} onClick={() => void toggle()}>
+      {dark ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
+    </button>
   );
 }
 
@@ -262,6 +286,7 @@ export function Welcome() {
         </footer>
       </aside>
       <main className="welcome-main">
+        <AppearanceToggle />
         <div className="sr-only" role="status">
           {openingNote}
         </div>
