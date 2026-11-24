@@ -1975,6 +1975,8 @@ function designTag(def: ComponentDefinition, node: GraphNode): { source: 'design
 /** A component placed in the design: the inputs the design gives it, the same in every placement. */
 function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; def: ComponentDefinition; node: InstanceNode; placedDef: ComponentDefinition }) {
   const owner: OwnerRef = { kind: 'component', id: def.id };
+  // A Project health finding about a form in the design (Go to form) opens its setting here, as on a page.
+  useFieldReveal({ owner, instancePath: [], nodeId: node.id });
   const fields = groupFields(Object.entries(placedDef.properties).map(([key, schema]) => ({ key, schema: schema as PropSchema, data: null })));
   if (!fields.length) return null;
   return (

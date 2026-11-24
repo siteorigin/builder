@@ -1,7 +1,8 @@
+import type { ExportNote } from '@shared/api';
 import { isArticleDate, pageArticle } from '@shared/articles';
 import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
-import type { GraphNode, ImageValue, NodeTree, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import type { GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { STYLE_PROP_MAP, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
@@ -9,7 +10,7 @@ import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryField
 import { validateRoute } from '@shared/routes';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
-import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds } from './tree';
+import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
 import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
@@ -20,8 +21,8 @@ import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
-import { showsPart } from '@shared/page-shell';
-import { effectiveTokens, isDraftPage } from '@generator/index';
+import { SHELL_PARTS, showsPart } from '@shared/page-shell';
+import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
 import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
@@ -377,9 +378,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
       if (inTheme || n.kind !== 'instance' || def?.componentId !== 'contact.form' || def.kind !== 'code') continue;
       const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
-      // A binding outside a component has nothing to bind to and is exported empty, so the default decides.
-      const problem = owner.kind !== 'component' ? formConnectionProblem(def, Object.fromEntries(Object.entries(n.props).filter(([, v]) => !isBinding(v)))) : undefined;
-      if (problem) out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. ${problem}`, owner, nodeId: n.id });
+      const unconnected = formConnectionDiagnostic(state, owner, label, n);
+      if (unconnected) out.push(unconnected);
       // A list bound from outside is only known where it is placed.
       if (namesFormFields(def) && !isBinding(props.fields)) {
         const fields = formFieldsAsSent(def, props.fields);
@@ -559,6 +559,45 @@ export function formNameDiagnostics(state: ProjectState): Diagnostic[] {
     const forms = clash.forms.filter((f, i) => clash.forms.findIndex((g) => g.owner.kind === f.owner.kind && g.owner.id === f.owner.id && g.nodeId === f.nodeId) === i);
     return forms.map((f) => ({ severity: 'warning' as const, code: 'FORM_NAME_DUPLICATE', message: `${label(f)}: ${message}`, owner: f.owner, nodeId: f.nodeId }));
   });
+}
+
+/**
+ * Project health's finding for a placed contact form that visitors cannot send (no form service, or not the setting it
+ * needs), or undefined when it can send or is not a contact form. A form in a component's own design is judged where
+ * the component is placed, so a component owner has none.
+ */
+export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, label: string, node: GraphNode): Diagnostic | undefined {
+  if (owner.kind === 'component' || node.kind !== 'instance') return undefined;
+  const def = state.components[node.definitionId];
+  if (def?.componentId !== 'contact.form' || def.kind !== 'code') return undefined;
+  // A binding outside a component has nothing to bind to and is exported empty, so the default decides; but a
+  // layout's form can take a setting from each entry it shows, and that one is decided where the entry is.
+  const kept = (v: unknown) => !isBinding(v) || (owner.kind === 'template' && isEntryBinding(v));
+  const problem = formConnectionProblem(def, Object.fromEntries(Object.entries(node.props).filter(([, v]) => kept(v))));
+  return problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. ${problem}`, owner, nodeId: node.id } : undefined;
+}
+
+/**
+ * The contact forms the website publishes that visitors cannot send, each as Project health reports it: on the
+ * published pages in site order, then the shared header and footer when a published page or entry shows them, then
+ * the layout of each collection with a published entry. Drafts are left out, as the website leaves them out.
+ */
+export function websiteFormProblems(state: ProjectState): Diagnostic[] {
+  const live = publishedState(state);
+  const entries = siteEntries(live).filter((e) => !isDraftEntry(e.entry));
+  const collections = new Set(entries.map((e) => e.collection.settings.id));
+  const pages = live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id)).map((id) => live.pages[id]);
+  const trees: Array<{ owner: OwnerRef; tree: NodeTree; label: string }> = [
+    ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p, label: p.title })),
+    ...SHELL_PARTS.filter((part) => entries.length > 0 || pages.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: live.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' })),
+    ...templateTrees(live).filter((t) => collections.has(t.owner.id))
+  ];
+  return trees.flatMap(({ owner, tree, label }) => Object.values(tree?.nodes ?? {}).flatMap((n) => formConnectionDiagnostic(live, owner, label, n) ?? []));
+}
+
+/** The website's forms visitors cannot send (websiteFormProblems) as export notes, each leading to its form's settings. */
+export function websiteFormNotes(state: ProjectState): ExportNote[] {
+  return websiteFormProblems(state).flatMap((d): ExportNote[] => (d.owner && d.nodeId ? [{ message: d.message, destination: { kind: 'form', owner: d.owner as OwnerRef, nodeId: d.nodeId, setting: 'connection' } }] : []));
 }
 
 /** A heading's words, quoted, for a message. */

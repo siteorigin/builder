@@ -23,7 +23,7 @@ import type { ForegroundSuggestion } from '@shared/contrast';
 import { NOT_FOUND_LIMITS, clipText, notFoundDefaults } from '@shared/not-found';
 import { VisitorTextFields } from './VisitorText';
 import { itemStyleRecords } from '@shared/item-styles';
-import { checkPublicUrl } from '@shared/public-url';
+import { checkPublicUrl, publicUrl } from '@shared/public-url';
 import { LANGUAGE_CODE_ERROR, languageDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
 import { siteNameNote } from '@shared/site-name';
 
@@ -544,6 +544,9 @@ export function SiteStyles() {
     openSection('tok-layout', { focus: `${at} :is(input, select, button:not(.reset-dot))` });
   };
   const site = st.site;
+  // The newest website export said it had no public URL to build from, and one is saved now: it needs exporting again.
+  const lastSite = snap.recentExports?.find((e) => e.kind === 'site');
+  const urlSinceExport = !!publicUrl(site) && !!lastSite?.notes?.some((n) => n.destination?.kind === 'site' && n.destination.field === 'baseUrl');
   const updSite = (patch: Record<string, unknown>) => void applyOps([{ type: 'site.update', ...patch }], 'Update site settings');
   const changedIds = tokens.map((t) => t.id).filter(changed);
   // Theme styles only: an override on one of your own styles is its value in use, with no theme value under it.
@@ -1356,7 +1359,7 @@ export function SiteStyles() {
           key={`url-${snap?.workspaceKey}`}
           id="site-public-url"
           label="Public URL"
-          hint="For canonical links and the sitemap."
+          hint={urlSinceExport ? 'For canonical links and the sitemap. The website you last exported was built without it: export it again to include them.' : 'For canonical links and the sitemap.'}
           value={site.baseUrl}
           placeholder="https://example.com"
           check={publicUrlProblem}
@@ -1385,10 +1388,14 @@ export function SiteStyles() {
           </select>
         </Field>
         <Field hint="The small icon in browser tabs. A square image works best.">
-          <SiteImageField title="Favicon" plain="favicon" state={st} value={site.favicon} onChange={(id) => updSite({ favicon: id })} />
+          <div id="site-favicon" style={{ display: 'contents' }}>
+            <SiteImageField title="Favicon" plain="favicon" state={st} value={site.favicon} onChange={(id) => updSite({ favicon: id })} />
+          </div>
         </Field>
         <Field hint="The picture shown when the site is shared. Link previews crop it to about 1.91 to 1, so 1200 by 630 pixels is ideal.">
-          <SiteImageField title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} />
+          <div id="site-social-image" style={{ display: 'contents' }}>
+            <SiteImageField title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} />
+          </div>
         </Field>
       </Section>
 

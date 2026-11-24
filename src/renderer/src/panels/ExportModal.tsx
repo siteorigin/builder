@@ -1,14 +1,17 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
 import { describeDraftLink, publicationPlan, type DraftLink } from '@generator/checks';
-import type { PageDoc } from '@shared/types';
-import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
+import type { PageDoc, ProjectState } from '@shared/types';
+import type { ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
 import { goToShellPart, openAsset, selectPage, openLayout } from '../lib/actions';
 import { treeFor } from '../lib/model';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
 import { openContentMatch } from './FindReplace';
+import { websiteFormNotes } from '@engine/validate';
+import { destinationLabel, noteState } from '../lib/destinations';
+import { openEditorDestination } from '../lib/open-destination';
 
 type ExportKind = 'static' | 'source';
 
@@ -297,6 +300,91 @@ function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettl
 }
 
 /**
+ * The contact forms the website would publish that visitors cannot send, each in Project health's words (which name
+ * its page) with the way to its settings. They are reviewed before the website goes out, but never stop it: a work in
+ * progress can still be exported on purpose.
+ */
+function FormReview({ notes, disabled, folded }: { notes: ExportNote[]; disabled: boolean; folded: boolean }) {
+  const baseId = useId();
+  // Folded to its counted heading while something more urgent needs the room; the rows are one click away.
+  const [listOpen, setListOpen] = useState(false);
+  useEffect(() => {
+    if (disabled) setListOpen(false);
+  }, [disabled]);
+  if (!notes.length) return null;
+  const headId = `${baseId}-head`;
+  const rowsId = `${baseId}-rows`;
+  return (
+    <section className="export-review" data-testid="export-form-review" aria-labelledby={headId}>
+      <div className="export-review-head">
+        <TriangleAlert aria-hidden />
+        <div className="grow">
+          <strong id={headId}>{notes.length === 1 ? 'A contact form on the website can’t send messages yet.' : `${notes.length} contact forms on the website can’t send messages yet.`}</strong>
+          <span>Visitors who fill {notes.length === 1 ? 'it' : 'them'} in won’t reach you. You can still export the website.</span>
+        </div>
+        {folded && !disabled && (
+          <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
+            <ChevronRight size={14} aria-hidden style={{ transform: listOpen ? 'rotate(90deg)' : undefined }} />
+            {listOpen ? 'Hide' : 'Review'}
+          </button>
+        )}
+      </div>
+      <ul className="export-review-list" id={rowsId} hidden={folded && !listOpen}>
+        {notes.map((n, i) => (
+          <li key={n.destination?.kind === 'form' ? `${n.destination.owner.kind}:${n.destination.owner.id}:${n.destination.nodeId}` : i}>
+            <div className="export-review-row">
+              <span className="export-review-what" id={`${baseId}-${i}`}>
+                {n.message}
+              </span>
+              <div className="export-review-actions">
+                {n.destination && (
+                  <button className="btn btn-sm" disabled={disabled} aria-describedby={`${baseId}-${i}`} onClick={() => openEditorDestination(n.destination!)}>
+                    {destinationLabel(n.destination)}
+                  </button>
+                )}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** What an export note says once what it describes was put right after the export: the files need exporting again. */
+function fixedSince(note: ExportNote, state: 'fixed' | 'gone'): string {
+  if (note.destination?.kind === 'site') return 'Public URL set since this export. Export again to include canonical links and the sitemap.';
+  return state === 'gone' ? 'This form is no longer on the website. Export again to update the files.' : 'Connected since this export. Export again so visitors can send it.';
+}
+
+/**
+ * One note about an export. A note about something the author can fix leads to it while it still holds, and once it is
+ * fixed says that the files need exporting again: the export itself never changes.
+ */
+function NoteLine({ note, project, forms, disabled }: { note: ExportNote; project: ProjectState | undefined; forms: ExportNote[]; disabled: boolean }) {
+  const lineId = useId();
+  const now = project ? noteState(project, note, forms) : null;
+  return (
+    <p className="export-note-line">
+      <span id={lineId}>{note.message}</span>
+      {now === 'open' && note.destination && (
+        <>
+          {' '}
+          <button type="button" className="link-btn export-note-go" disabled={disabled} aria-describedby={lineId} onClick={() => openEditorDestination(note.destination!)}>
+            {destinationLabel(note.destination)}
+          </button>
+        </>
+      )}
+      {(now === 'fixed' || now === 'gone') && (
+        <span className="export-note-since">
+          <CircleCheck aria-hidden /> {fixedSince(note, now)}
+        </span>
+      )}
+    </p>
+  );
+}
+
+/**
  * What a failed build said, for the author to read and copy into a support request. Copying works with the details
  * closed; a clipboard that is unavailable or refuses says so, and the text can still be selected.
  */
@@ -353,6 +441,8 @@ export function ExportModal() {
   const samples = useMemo(() => (state ? sampleContactMatches(state) : []), [state]);
   const samplesToReview = samples.filter((g) => !keptValues.includes(g.value));
   const samplesKept = samples.filter((g) => keptValues.includes(g.value));
+  // The website's contact forms visitors cannot send, as the website export would name them, and where to fix each.
+  const formNotes = useMemo(() => (state ? websiteFormNotes(state) : []), [state]);
   const [busy, setBusy] = useState<ExportKind | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [format, setFormat] = useState<ExportFormat>('folder');
@@ -368,7 +458,10 @@ export function ExportModal() {
   const succeeded = !!shown?.ok;
   // A success's notes go with the export they describe, under its actions, so the result stays a short verdict.
   const notesInRow = succeeded && shown!.warnings.length > 0 && recent[0]?.path === shown!.path;
-  const foldNotes = notesInRow && shown!.warnings.length > MANY_NOTES;
+  // The newest export's notes: all of them just after it finishes; once the dialog is opened again, those that lead to
+  // something to fix, so a fix made since says the files need exporting again.
+  const rowNotes: ExportNote[] = notesInRow ? (shown!.notes ?? shown!.warnings.map((message) => ({ message }))) : succeeded ? [] : (recent[0]?.notes ?? []).filter((n) => n.destination);
+  const foldNotes = rowNotes.length > MANY_NOTES;
   const notesId = useId();
   // The page a failed build names by its address, when exactly one page has it: the author's way back to fix it.
   const failedPage = useMemo(() => {
@@ -486,21 +579,19 @@ export function ExportModal() {
                   </>
                 )}
               </div>
-              {latest && notesInRow && (
+              {i === 0 && rowNotes.length > 0 && (
                 <div className="export-row-notes-wrap">
                   {foldNotes ? (
                     <button type="button" className="btn btn-sm btn-ghost export-note-toggle" aria-expanded={notesOpen} aria-controls={notesId} onClick={() => setNotesOpen(!notesOpen)}>
-                      <ChevronRight size={14} style={{ transform: notesOpen ? 'rotate(90deg)' : undefined }} /> Review {shown!.warnings.length} export notes
+                      <ChevronRight size={14} style={{ transform: notesOpen ? 'rotate(90deg)' : undefined }} /> Review {rowNotes.length} export notes
                     </button>
                   ) : (
-                    <h4 className="export-row-notes-title">{shown!.warnings.length === 1 ? 'A note about this export' : 'Notes about this export'}</h4>
+                    <h4 className="export-row-notes-title">{rowNotes.length === 1 ? 'A note about this export' : 'Notes about this export'}</h4>
                   )}
                   {/* Not a list: the history's list items are its exports, one each. */}
                   <div className="export-row-notes" id={notesId} hidden={foldNotes && !notesOpen}>
-                    {shown!.warnings.map((w, n) => (
-                      <p className="export-note-line" key={n}>
-                        {w}
-                      </p>
+                    {rowNotes.map((note, n) => (
+                      <NoteLine key={n} note={note} project={state} forms={formNotes} disabled={!!busy} />
                     ))}
                   </div>
                 </div>
@@ -651,6 +742,7 @@ export function ExportModal() {
                 </div>
               </div>
             )}
+            {state && <FormReview notes={formNotes} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
             {plan && <PagesSummary published={plan.published} drafts={plan.drafts} />}
             <div className="export-choice" role="group" aria-labelledby="export-choice-title">
