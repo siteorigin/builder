@@ -2163,7 +2163,10 @@ function rootControls(state: ProjectState, node: InstanceNode): { styleControls?
 function mayPlaceClass(def: ComponentDefinition): boolean {
   if (codePlacesClass(def)) return true;
   const src = (def.source ?? '').replace(/<style\b[\s\S]*?<\/style>/g, '');
-  return /\.\s*class\b/.test(src) || /\$\$(rest)?props\b/i.test(src) || /\{\s*\.\.\./.test(src);
+  if (/\.\s*class\b|\[\s*['"`]class['"`]\s*\]|\$\$(rest)?props\b/.test(src)) return true;
+  // Passed on with the rest of its props (`let { …, ...rest } = $props()`, then `{...rest}` on an element).
+  const rest = src.match(/\.\.\.\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*\$props\(\)/)?.[1];
+  return !!rest && new RegExp(`\\{\\s*\\.\\.\\.\\s*${rest.replace(/\$/g, '\\$')}\\s*\\}`).test(src);
 }
 
 function refuseCodeRootStylesInto(state: ProjectState, tree: NodeTree, ids: string[]) {

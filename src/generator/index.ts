@@ -1713,7 +1713,8 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // reached through the node class `class` already passes.
   if (ctx.def && def.kind === 'code') {
     const map: Record<string, string> = {};
-    for (const partId of Object.keys(node.overrides ?? {}).sort()) if (partId !== 'root' && Object.hasOwn(def.parts, partId)) map[partId] = nestedOverrideClass(ctx.def, node.id, partId);
+    // A part its code hides is shown again through the same marker classes a page's placement passes.
+    for (const partId of Object.keys(node.overrides ?? {}).sort()) if (partId !== 'root' && Object.hasOwn(def.parts, partId)) map[partId] = nestedOverrideClass(ctx.def, node.id, partId) + shownClasses(def, node.overrides![partId]);
     if (Object.keys(map).length) attrs.push(`so_o={${js(map)}}`);
   }
   if (ctx.instrument && def.kind === 'managed') {

@@ -295,9 +295,40 @@ describe('a component made from a section (#173)', () => {
     expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).not.toThrow();
     node.overrides = { root: { base: {}, phone: { background: '#123456' } } };
     expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its root/);
-    // Code that reads the class from its props object places it: nothing would be lost.
-    code.source = '<script>\n\tlet p = $props();\n</script>\n\n<section class={p.class ?? p.so_o?.root}>{p.heading}</section>\n';
-    expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).not.toThrow();
+    // Code that reads the class from its props object, or passes its other props on, places it: nothing is lost.
+    const allowed = [
+      '<script>\n\tlet p = $props();\n</script>\n\n<section class={p.class ?? p.so_o?.root}>{p.heading}</section>\n',
+      "<script>\n\tlet p = $props();\n</script>\n\n<section class={p['class']}>{p.heading}</section>\n",
+      '<script>\n\tlet { heading = \'\', so_o = undefined, ...rest } = $props();\n</script>\n\n<section {...rest}>{heading}</section>\n'
+    ];
+    for (const source of allowed) {
+      code.source = source;
+      expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }]), source).not.toThrow();
+    }
+    // A spread of something else does not pass the class on.
+    code.source = "<script>\n\tlet { heading = '', so_o = undefined } = $props();\n\tconst attrs = { role: 'note' };\n</script>\n\n<section {...attrs} class={so_o?.root}>{heading}</section>\n";
+    expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its root/);
+  });
+
+  it('keeps a code component’s part shown in the new design when its placement showed it', () => {
+    let s: ProjectState = createStarterState('business', 'Test Studio', false);
+    const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const cta = s.pages[page.id].rootIds.find((id) => s.components[(s.pages[page.id].nodes[id] as InstanceNode).definitionId]?.componentId === 'cta.banner')!;
+    // The design hides its panel; this placement shows it again, then is converted to code (which keeps the hide).
+    const theme = s.components[(s.pages[page.id].nodes[cta] as InstanceNode).definitionId];
+    theme.tree!.nodes.panel.styles = { ...theme.tree!.nodes.panel.styles, base: { ...theme.tree!.nodes.panel.styles?.base, hidden: true } };
+    (s.pages[page.id].nodes[cta] as InstanceNode).overrides = { panel: { base: { hidden: false } } };
+    const conv = applyOperations(s, [{ type: 'component.convertToCode', owner: page, nodeId: cta }]);
+    s = conv.state;
+    const code = s.components[conv.results[0].definitionId as string];
+    const mark = `so-shown--${code.id.replace(/[^a-zA-Z0-9]/g, '-')}`;
+    expect(code.source).toContain(mark);
+    const sec = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: null, index: 0, componentId: 'layout.section' }]);
+    s = applyOperations(sec.state, [{ type: 'node.move', owner: page, nodeId: cta, parentId: sec.results[0].nodeId as string, slot: 'content', index: 0 }]).state;
+    const made = applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: sec.results[0].nodeId as string, name: 'Band' }]);
+    const def = made.state.components[made.results[0].definitionId as string];
+    const svelte = [...generateProject(made.state)].find(([p]) => p.includes(def.id.replace(/\./g, '-')))![1];
+    expect(svelte).toMatch(new RegExp(`"panel":"[^"]*${mark}"`));
   });
 });
 
