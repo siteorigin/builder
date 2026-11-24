@@ -3360,7 +3360,7 @@ export function generateSitemap(state: ProjectState): string | null {
     urls.push(`\t<url><loc>${escapeHtmlAttr(base + routeUrl(route))}</loc>${changed ? `<lastmod>${changed}</lastmod>` : ''}</url>`);
   }
   // Then each collection's index and category archives, every page of each.
-  for (const { route } of siteArchives(state)) urls.push(`\t<url><loc>${escapeHtmlAttr(base + route)}</loc></url>`);
+  for (const { route } of siteArchives(state)) urls.push(`\t<url><loc>${escapeHtmlAttr(base + routeUrl(route))}</loc></url>`);
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 }
 

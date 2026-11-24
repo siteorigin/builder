@@ -10,7 +10,7 @@ import { archivePages, categoryTerms } from '@shared/archives';
 import { entryRow } from '@shared/entry-feed';
 import { siteLanguage } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
-import { routeDir } from '@shared/routes';
+import { routeDir, routeUrl } from '@shared/routes';
 import { visitorTextFor } from '@shared/visitor-text';
 import type { ProjectState } from '@shared/types';
 import { derived } from './cache';
@@ -120,7 +120,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
 
   const head: string[] = [`\t<title>{${js(title)}}</title>`, `\t<meta property="og:type" content="website" />`, `\t<meta property="og:title" content={${js(title)}} />`];
   const base = publicUrl(site);
-  if (base) head.push(`\t<link rel="canonical" href={${js(base + route)}} />`, `\t<meta property="og:url" content={${js(base + route)}} />`);
+  if (base) head.push(`\t<link rel="canonical" href={${js(base + routeUrl(route))}} />`, `\t<meta property="og:url" content={${js(base + routeUrl(route))}} />`);
   if (here.prev) head.push(`\t<link rel="prev" href=${href(here.prev)} />`);
   if (here.next) head.push(`\t<link rel="next" href=${href(here.next)} />`);
 

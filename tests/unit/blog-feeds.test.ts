@@ -737,4 +737,12 @@ describe('after the last review', () => {
     expect(termsNamed(s.collections.posts, 'categories', 'News, Craft')).toEqual(['workshops', 'craft']);
     expect(termsNamed(s.collections.posts, 'categories', 'news, Craft')).toEqual(['news', 'craft']);
   });
+
+  it('writes an archive page’s public address percent-encoded, as a page’s is', () => {
+    const s = run(createStarterState('business', 'Riverside Studio', false), { type: 'site.update', baseUrl: 'https://example.com' } as EditOperation, { type: 'collection.create', collectionId: 'posts', route: '/ブログ/' } as EditOperation);
+    const files = generateProject(s);
+    const encoded = `https://example.com${encodeURI('/ブログ/')}`;
+    expect(files.get('static/sitemap.xml')).toContain(`<loc>${encoded}</loc>`);
+    expect(files.get('src/routes/ブログ/+page.svelte')).toContain(`<link rel="canonical" href={"${encoded}"} />`);
+  });
 });
