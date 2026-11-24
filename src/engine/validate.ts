@@ -24,8 +24,8 @@ export interface Diagnostic {
   /**
    * Where in its owner the problem is, for telling it apart from others of its kind (see `introducedDiagnostics` and
    * `diagnosticKey`): unlike the message, it stays the same when a page or component it names is renamed, or a repair
-   * changes the wording. A compile error's is where in its generated file it is, as "path:line:column": its message
-   * names the line only.
+   * changes the wording. It identifies the problem where its message cannot: a compile error's file and construct (its
+   * message names a line that moves), or which of several links in one placement it is.
    */
   site?: string;
 }
@@ -338,7 +338,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     const message = i.pageId
       ? `${where}: ${what} goes to #${i.fragment} on ${state.pages[i.pageId].title}, but that page has no section with that ID. ${fix}`
       : `${where}: ${what} goes to #${i.fragment}, but ${listed((i.pages ?? []).map((id) => state.pages[id].title))} ${(i.pages ?? []).length > 1 ? 'have' : 'has'} no section with that ID. ${fix}`;
-    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId });
+    // Which link it is, where one placement shows several with the same text (one per card, say).
+    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId, site: `${i.nodeId ?? ''}|${i.key}#${i.fragment}` });
   }
   // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
   // ones), and the pictures of a project component, which can only show images.

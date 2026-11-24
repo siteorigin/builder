@@ -6,7 +6,7 @@
 import type { ComponentDefinition, ProjectState } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
 import { getTheme } from '@catalogue/index';
-import { applyOperation } from './apply';
+import { walkOperations } from './apply';
 import { getTree } from './tree';
 
 /** Operations that work with source directly. */
@@ -47,23 +47,12 @@ export function developerModeReason(state: ProjectState, op: EditOperation): str
 }
 
 /**
- * Why a batch needs Developer mode, or null. Each operation is checked against the project as the operations before
- * it leave it, so a theme switched or a component installed earlier in the same batch is the one a later copy copies.
+ * Why a batch needs Developer mode, or null. Source operations need it wherever they are. A copy is checked against the
+ * project as the operations before it leave it, applied as the engine applies them, so a theme switched or a component
+ * installed earlier in the same batch is the one it copies.
  */
 export function developerModeRefusal(state: ProjectState, ops: EditOperation[]): string | null {
-  if (!ops.some((o) => CODE_OPERATIONS.has(o.type) || COPIES.has(o.type))) return null;
-  let draft: ProjectState | null = null;
-  for (const [i, op] of ops.entries()) {
-    const reason = developerModeReason(draft ?? state, op);
-    if (reason) return reason;
-    // Staged only while a later operation copies something.
-    if (!ops.slice(i + 1).some((o) => COPIES.has(o.type))) break;
-    draft ??= structuredClone(state);
-    try {
-      applyOperation(draft, op);
-    } catch {
-      // The batch is refused at this operation anyway; later ones are still checked against what came before it.
-    }
-  }
-  return null;
+  if (ops.some((o) => CODE_OPERATIONS.has(o.type))) return developerModeReason(state, ops.find((o) => CODE_OPERATIONS.has(o.type))!);
+  if (!ops.some((o) => COPIES.has(o.type))) return null;
+  return walkOperations(state, ops, (draft, op) => (COPIES.has(op.type) ? developerModeReason(draft, op) : null));
 }

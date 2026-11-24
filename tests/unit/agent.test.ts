@@ -18,6 +18,7 @@ import { catalogueIndex } from '@agent/context';
 import { applyOperations } from '@engine/apply';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
+import { diagnosticKey, validateState } from '@engine/validate';
 import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
 
@@ -1148,6 +1149,21 @@ describe('run budget, parallel calls and validation', () => {
     expect(result?.validation).toContain('1 pre-existing issue remain.');
   });
 
+  it('treats an error that went from one place and came back at another, same count and message, as new (#132)', async () => {
+    const message = 'A link points to a page that does not exist.';
+    const at = (nodeId: string) => ({ severity: 'error' as const, code: 'LINK_MISSING', message, owner: { kind: 'page', id: 'pg_home' }, nodeId });
+    const about = (s: ProjectSession) => Object.values(s.state.pages).find((p) => p.route === '/about/')!;
+    let session: ProjectSession;
+    const env = await setup(
+      [() => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.update', pageId: about(session).id, title: 'About the studio' }] })], () => finish('Done.'), () => finish('Done again.'), () => finish('Really done.')],
+      { compileAll: async (s) => [at(about(s).title === 'About the studio' ? 'n_new' : 'n_old')] }
+    );
+    session = env.session;
+    const { result } = await env.run('Retitle the about page');
+    expect(result?.status).toBe('failed');
+    expect(about(session).title).not.toBe('About the studio');
+  });
+
   it('treats a compile error that moved along the same line as new, even with the same message (#132)', async () => {
     const error = (column: number) => ({ severity: 'error' as const, code: 'COMPILE', message: 'Card (line 1): Attributes need to be unique', site: `src/lib/components/custom/Card.svelte:1:${column}` });
     const env = await setup(
@@ -2275,5 +2291,140 @@ describe('Developer mode and code components (#132)', () => {
     expect(session.state.site.themeId).toBe('foundation');
     expect((session.state.site.shell.header.nodes[header()] as InstanceNode).definitionId).toBe(headerDef);
     expect(Object.values(session.state.components).some((d) => d.name === 'Section copy' && d.kind !== 'code')).toBe(true);
+  });
+
+  it('refuses a code operation anywhere in a batch, not only first (#132)', async () => {
+    let session: ProjectSession;
+    const hero = () => session.state.pages[session.state.site.homePageId].rootIds[0];
+    const owner = () => ({ kind: 'page', id: session.state.site.homePageId });
+    const env = await setup(
+      [() => [call('c1', 'apply_operations', batch([{ type: 'node.rename', owner: owner(), nodeId: hero(), name: 'Opening' }, { type: 'component.convertToCode', owner: owner(), nodeId: hero() }]))], () => finish('That needs Developer mode.')],
+      { codeEnabled: false }
+    );
+    session = env.session;
+    const before = codeDefs(session.state);
+    await env.run('Turn the hero into code');
+    expect(resultOf(env.adapter.requests[1]).error?.message).toMatch(/Developer mode is off/);
+    expect(codeDefs(session.state)).toEqual(before);
+    expect(session.revision).toBe(0);
+  });
+});
+
+describe('repair baseline identity (#132)', () => {
+  // One code component, its source changed between checks.
+  const made = applyOperations(createStarterState('business', 'Test', false), [{ type: 'component.createCode', name: 'Card', source: '<div></div>\n' }]);
+  const cardId = (made.results[0] as { definitionId: string }).definitionId;
+  const compileKeys = async (source: string) => {
+    const state = structuredClone(made.state);
+    state.components[cardId].source = source;
+    return (await compileProject(state)).filter((d) => d.code === 'COMPILE').map(diagnosticKey);
+  };
+
+  it('knows a compile error by its construct: moved along or down the file it is the same, another construct is new', async () => {
+    const [first] = await compileKeys('<div id="a" id="a"></div>\n');
+    expect(first).toBeDefined();
+    expect(await compileKeys('\n\n    <div id="a" id="a"></div>\n')).toEqual([first]);
+    expect(await compileKeys('<nav id="a" id="a"></nav>\n')).not.toEqual([first]);
+  });
+
+  it('tells apart the same broken section link in two cards of one placement', () => {
+    const s0 = createStarterState('business', 'Test', false);
+    const home = s0.site.homePageId;
+    const plans = (links: [string, string]) =>
+      applyOperations(s0, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'pricing.plans', newNodeId: 'n_plans', props: { plans: links.map((link, i) => ({ id: `i_${i}`, name: `Plan ${i}`, price: '$1', actionLabel: 'Details', actionLink: link })) } }]).state;
+    const keys = (s: ProjectState) => validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map(diagnosticKey);
+    const first = keys(plans(['#missing', '/']));
+    const second = keys(plans(['/', '#missing']));
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(second[0]).not.toBe(first[0]);
+  });
+});
+
+describe('part scope rules (#132)', () => {
+  const base = () => createStarterState('business', 'Test', false);
+  const placeOn = (state: ProjectState, componentId: string, props: Record<string, unknown> = {}) => {
+    const home = state.site.homePageId;
+    const { state: next, results } = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId, props }]);
+    const nodeId = (results[0] as { nodeId: string }).nodeId;
+    return { state: next, owner: { kind: 'page' as const, id: home }, nodeId, def: next.components[(next.pages[home].nodes[nodeId] as InstanceNode).definitionId] };
+  };
+  const partOf = (owner: { kind: 'page'; id: string }, nodeId: string, region: string, extra: Partial<{ partId: string; itemPath: string[]; instancePath: string[] }> = {}) =>
+    authorityFor({ owner, instancePath: extra.instancePath ?? [nodeId], nodeId: region, ...(extra.partId ? { partId: extra.partId } : {}), ...(extra.itemPath ? { itemPath: extra.itemPath } : {}) }, 'the section');
+
+  it('keeps a page-list card title from changing the link its whole card shows by (#132)', () => {
+    const s0 = base();
+    const about = Object.values(s0.pages).find((p) => p.route === '/about/')!.id;
+    const { state, owner, nodeId } = placeOn(s0, 'content.pages', { items: [{ pageLink: { type: 'page', target: about }, title: 'About us' }] });
+    const item = ((state.pages[owner.id].nodes[nodeId] as InstanceNode).props.items as ListItem[])[0].id;
+    const authority = partOf(owner, nodeId, 'card-text', { partId: 'cardText', itemPath: [item] });
+    const set = (field: string, value: unknown): EditOperation => ({ type: 'instance.setProp', owner, nodeId, prop: 'items', itemId: item, field, value });
+    // The description is shown only here; the link and the title also decide whether the whole card shows.
+    expect(checkAuthority(state, [set('description', 'Who we are')], authority)).toBeNull();
+    expect(checkAuthority(state, [set('pageLink', { type: 'none', target: '' })], authority)).toMatch(/fields of the item that the selected part does not show/);
+    expect(checkAuthority(state, [set('title', '')], partOf(owner, nodeId, 'card-title', { partId: 'cardTitle', itemPath: [item] }))).toMatch(/selected part/);
+  });
+
+  it('keeps a placement property shown in every card from a one-card selection, and allows it for the part across cards (#132)', () => {
+    const s0 = base();
+    const { state, owner, nodeId, def } = placeOn(s0, 'features.grid');
+    // A project copy whose card titles take their tag from a placement property.
+    const fork = structuredClone(def);
+    fork.id = 'proj.cards-test';
+    fork.owner = 'project';
+    fork.properties.cardLevel = { type: 'enum', label: 'Card heading', default: 'h3', options: [{ value: 'h3', label: 'H3' }, { value: 'h4', label: 'H4' }] };
+    (fork.tree!.nodes['card-title'] as { tag: unknown }).tag = { $prop: 'cardLevel' };
+    state.components[fork.id] = fork;
+    (state.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId = fork.id;
+    const item = ((state.pages[owner.id].nodes[nodeId] as InstanceNode).props.items as ListItem[])[0].id;
+    const level: EditOperation = { type: 'instance.setProp', owner, nodeId, prop: 'cardLevel', value: 'h4' };
+    expect(checkAuthority(state, [level], partOf(owner, nodeId, 'card-title', { partId: 'cardTitle', itemPath: [item] }))).toMatch(/changes more of the section than the selected part/);
+    expect(checkAuthority(state, [level], partOf(owner, nodeId, 'card-title', { partId: 'cardTitle' }))).toBeNull();
+  });
+
+  it('limits a code component part, and a part of a nested component, to what they can show on their own (#132)', () => {
+    const s0 = base();
+    const header = s0.site.shell.header.rootIds[0];
+    const owner = { kind: 'shell' as const, id: 'header' };
+    const def = s0.components[(s0.site.shell.header.nodes[header] as InstanceNode).definitionId];
+    expect(def.kind).toBe('code');
+    // A part of the code component other than its root.
+    const partId = 'brand';
+    def.parts.brand = { nodeId: 'brand', label: 'Brand' };
+    expect(authorityFor({ owner, instancePath: [header], nodeId: 'root', partId: 'root' }, 'Header', null, s0)).not.toHaveProperty('part');
+    const code = authorityFor({ owner, instancePath: [header], nodeId: def.parts[partId].nodeId, partId }, 'Header', null, s0);
+    expect(code).toMatchObject({ kind: 'selection', part: { partId } });
+    expect(checkAuthority(s0, [{ type: 'node.setStyle', owner, nodeId: header, partId, scope: 'base', property: 'color', value: '#123456' }], code)).toBeNull();
+    expect(checkAuthority(s0, [{ type: 'instance.setProp', owner, nodeId: header, prop: 'siteName', value: 'Renamed' }], code)).toMatch(/more of Header than the selected part/);
+    const nested = authorityFor({ owner, instancePath: [header, 'n_inner'], nodeId: 'n_inner' }, 'Header');
+    expect(checkAuthority(s0, [{ type: 'instance.listInsert', owner, nodeId: header, prop: 'links' }], nested)).toMatch(/inside another component placed in Header/);
+  });
+
+  it('lets a container part change the content placed in its slot, and nothing else (#132)', () => {
+    const s0 = base();
+    const { state: placed, owner, nodeId } = placeOn(s0, 'layout.section');
+    const { state, results } = applyOperations(placed, [{ type: 'node.insert', owner, parentId: nodeId, slot: 'content', primitive: 'paragraph', text: 'Inside' }]);
+    const paragraph = (results[0] as { nodeId: string }).nodeId;
+    const authority = partOf(owner, nodeId, 'inner', { partId: 'container' });
+    expect(checkAuthority(state, [{ type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Changed' }], authority)).toBeNull();
+    expect(checkAuthority(state, [{ type: 'node.insert', owner, parentId: nodeId, slot: 'content', primitive: 'paragraph', text: 'More' }], authority)).toBeNull();
+    expect(checkAuthority(state, [{ type: 'node.setStyle', owner, nodeId, partId: 'root', scope: 'base', property: 'background', value: '#000000' }], authority)).toMatch(/other than the selected one/);
+    // A contract edit reaches every placement, more than the part.
+    const inDef: Authority = { kind: 'selection', owner: { kind: 'component', id: 'proj.x' }, nodeId: 'n', label: 'Card', part: { regionNodeId: 'inner', partId: 'container' } };
+    expect(checkAuthority(state, [{ type: 'component.setPropSchema', definitionId: 'proj.x', prop: 'extra', schema: { type: 'string', label: 'Extra', default: '' } }], inDef)).not.toBeNull();
+  });
+
+  it('asks before a bound default is written in a definition, but not for a field the engine never writes to a default (#132)', () => {
+    const s0 = base();
+    const { state: placed, owner, nodeId } = placeOn(s0, 'cta.banner');
+    const { state, results } = applyOperations(placed, [{ type: 'component.makeUnique', owner, nodeId }]);
+    const id = (results[0] as { definitionId: string }).definitionId;
+    const def = state.components[id];
+    const button = Object.values(def.tree!.nodes).find((n) => n.kind === 'link')!;
+    (button as { appearance: unknown }).appearance = { $prop: 'heading' };
+    const heading = Object.values(def.tree!.nodes).find((n) => n.kind === 'text' && JSON.stringify((n as { text: unknown }).text) === JSON.stringify({ $prop: 'heading' }))!;
+    const inDef: Authority = { kind: 'selection', owner: { kind: 'component', id }, nodeId: def.tree!.rootIds[0], label: 'Banner' };
+    expect(checkAuthority(state, [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: heading.id, field: 'text', value: 'New default' }], inDef)).toMatch(/default of the "heading" property/);
+    expect(checkAuthority(state, [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: button.id, field: 'appearance', value: 'secondary' }], inDef)).toBeNull();
   });
 });

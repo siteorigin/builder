@@ -315,7 +315,14 @@ export function selectionAbridged(state: ProjectState, target: { owner: OwnerRef
     return false;
   }
   const n = Object.hasOwn(tree.nodes, target.nodeId) ? tree.nodes[target.nodeId] : undefined;
-  if (n?.kind === 'instance') return JSON.stringify(agentProps(state.components[n.definitionId], n.props, state.pages, true)).length > SELECTED_FULL_CHARS;
+  if (n?.kind === 'instance') {
+    const def = state.components[n.definitionId];
+    // Text the placement inherits from its definition's default is not shown at all, and may be long too.
+    const long = (s: PropSchema) =>
+      (s.type === 'richtext' && Array.isArray(s.default) && richTextToMarkdown(s.default as never, state.pages).length > RICH_SUMMARY_CHARS) || (s.type === 'string' && typeof s.default === 'string' && s.default.length > 220);
+    if (Object.entries(def?.properties ?? {}).some(([k, s]) => !Object.hasOwn(n.props, k) && long(s))) return true;
+    return JSON.stringify(agentProps(def, n.props, state.pages, true)).length > SELECTED_FULL_CHARS;
+  }
   if (n?.kind === 'text' && !isBinding(n.text)) return JSON.stringify(summarizeValue(n.text, state.pages)) !== JSON.stringify(n.text);
   return false;
 }
@@ -372,14 +379,16 @@ export function readField(state: ProjectState, ref: FieldRef): { ok: true; conte
     value = fields[ref.prop];
   }
   if (isBinding(value)) return { ok: false, message: 'This field shows a property of the component it is inside; read that component instead.' };
-  const rich = Array.isArray(value) && value.length > 0 && value.every(isRichBlock);
+  // Rich text, empty included, reads as Markdown: an empty value written back stays empty.
+  const rich = Array.isArray(value) && ((schema?.type === 'richtext' || (node.kind === 'text' && node.rich)) || (value.length > 0 && value.every(isRichBlock)));
   const format = rich ? 'markdown' : typeof value === 'string' ? 'text' : 'json';
   const text = rich ? richTextToMarkdown(value as never, state.pages, schema?.type === 'richtext' ? schema.plainAs : undefined) : typeof value === 'string' ? value : JSON.stringify(value ?? null);
-  const start = Math.min(Math.max(0, ref.offset ?? 0), text.length);
+  let start = Math.min(Math.max(0, ref.offset ?? 0), text.length);
+  // Never between the two halves of one character, at either end of a part.
+  if (start > 0 && start < text.length && /[\uDC00-\uDFFF]/.test(text.charAt(start)) && /[\uD800-\uDBFF]/.test(text.charAt(start - 1))) start--;
   let end = Math.min(text.length, start + FIELD_PART_CHARS);
   // Measured as the tool result carries it, where quotes, backslashes and line breaks are escaped.
   while (end > start + 1 && JSON.stringify(text.slice(start, end)).length - 2 > FIELD_PART_CHARS) end = start + Math.floor((end - start) * 0.9);
-  // Never between the two halves of one character.
   if (end < text.length && end > start + 1 && /[\uD800-\uDBFF]/.test(text.charAt(end - 1))) end--;
   const next = end < text.length ? end : null;
   return {
@@ -459,13 +468,18 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     ...(itemReach ? { styleReach: itemReach } : {}),
     note: feed
       ? `This shows a page's article details, filled in from that page: change its title, articleDate, byline or excerpt with page.update on pageId ${itemId ?? '(the article)'}, never instance.setProp. Style the part with node.setStyle using partId.`
-      : itemReach && 'itemId' in itemReach
-        ? `Edit the content this part shows with instance.setProp on the instance, with itemId "${itemReach.itemId}" and the field. Style it with node.setStyle using partId and itemId "${itemReach.itemId}": the other items keep the shared style. To return it to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.`
-        : `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`,
-    // What the run may change: the app refuses anything else until the user approves a wider change. A code
-    // component's parts cannot say what they show, and its root is the whole placement.
-    ...(def?.tree && !def.tree.rootIds.includes(ref.instancePath[1] ?? ref.nodeId)
-      ? { scope: 'Only this part: the content it shows and its own styles. Anything else in the component (other parts, its variants, other items) needs the user to approve a wider change first.' }
+      : `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`,
+    // What the run may change: the app refuses anything else until the user approves a wider change. The definition's
+    // root is the whole placement.
+    ...(def && !(def.tree ? def.tree.rootIds[0] === (ref.instancePath[1] ?? ref.nodeId) : ref.instancePath.length === 1 && ref.partId === 'root')
+      ? {
+          scope:
+            ref.instancePath.length > 1
+              ? 'Nothing on its own: this part is inside another component placed here. Any change needs the user to approve a wider change first.'
+              : !def.tree
+                ? 'Only this part\'s own styles: a code component cannot say what its parts show. Anything else needs the user to approve a wider change first.'
+                : `Only this part: the content it shows${selectedItem !== undefined ? ` for the selected item "${selectedItem}"` : ''} and its own styles. Anything else in the component (other parts, its variants${selectedItem !== undefined ? ', other items' : ''}) needs the user to approve a wider change first.`
+        }
       : {})
   };
 }

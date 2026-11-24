@@ -7,10 +7,9 @@
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
-import { enclosingRepeatProp, getTree, settledRoot, subtreeIds } from '@engine/tree';
+import { enclosingRepeatProp, getTree, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
 import { bindingSites } from '@engine/schema';
-import { applyOperation } from '@engine/apply';
-import { repeatedPartList } from '@shared/item-styles';
+import { walkOperations } from '@engine/apply';
 
 /** A part selected inside a placement: the run may change only what that part shows. */
 export interface PartAuthority {
@@ -20,6 +19,8 @@ export interface PartAuthority {
   partId?: string;
   /** The selected list item, when the part is shown once per item. */
   itemId?: string;
+  /** Inside a component placed in this one: its parts cannot be changed from the outer placement on their own. */
+  nested?: boolean;
 }
 
 /**
@@ -44,7 +45,8 @@ export function authorityFor(selection: ElementRef | null, label: string | null,
   const part: PartAuthority = {
     regionNodeId: selection.instancePath[1] ?? selection.nodeId,
     ...(selection.instancePath.length === 1 && selection.partId ? { partId: selection.partId } : {}),
-    ...(selection.itemPath?.length ? { itemId: selection.itemPath[selection.itemPath.length - 1] } : {})
+    ...(selection.itemPath?.length ? { itemId: selection.itemPath[selection.itemPath.length - 1] } : {}),
+    ...(selection.instancePath.length > 1 ? { nested: true } : {})
   };
   // Without the project, a part is assumed; with it, a selection that is really the whole placement is one.
   return !state || selectedPart(state, { ...authority, part }) ? { ...authority, part } : authority;
@@ -54,29 +56,57 @@ export function authorityFor(selection: ElementRef | null, label: string | null,
 export interface PartReach {
   /** Properties shown only inside the part, wherever they are used (conditions included): changing one changes nothing else. */
   props: Set<string>;
-  /** For a part inside a repeated item: each list, and the item fields the part shows. */
+  /** For a part inside a repeated item: each list, and the item fields shown only inside the part. */
   itemFields: Map<string, Set<string>>;
   /** The definition's nodes inside the part. */
   nodes: Set<string>;
+  /** The part is shown once per item of a list: a placement property shown inside it shows in every item. */
+  repeated: boolean;
+  /** The declared slots the part renders: content placed in them is inside it. */
+  slots: Set<string>;
 }
+
+const NOTHING: PartReach = { props: new Set(), itemFields: new Map(), nodes: new Set(), repeated: false, slots: new Set() };
 
 export function partReach(def: ComponentDefinition, regionNodeId: string): PartReach {
   const tree = def.tree;
   const nodes = new Set(tree && Object.hasOwn(tree.nodes, regionNodeId) ? subtreeIds(tree, regionNodeId) : []);
+  // Whether every use of a property, or of an item field of a list, is inside the part.
   const only = new Map<string, boolean>();
-  const itemFields = new Map<string, Set<string>>();
+  const fields = new Map<string, Map<string, boolean>>();
   for (const site of bindingSites(def)) {
-    if ('$prop' in site.binding) only.set(site.binding.$prop, (only.get(site.binding.$prop) ?? true) && nodes.has(site.node.id));
-    else if (nodes.has(site.node.id)) {
-      const list = enclosingRepeatProp(def, site.node.id);
-      if (list) itemFields.set(list, (itemFields.get(list) ?? new Set()).add(site.binding.$item));
+    const inside = nodes.has(site.node.id);
+    if ('$prop' in site.binding) {
+      only.set(site.binding.$prop, (only.get(site.binding.$prop) ?? true) && inside);
+      continue;
     }
+    const list = enclosingRepeatProp(def, site.node.id);
+    if (!list) continue;
+    const uses = fields.get(list) ?? new Map<string, boolean>();
+    uses.set(site.binding.$item, (uses.get(site.binding.$item) ?? true) && inside);
+    fields.set(list, uses);
   }
-  return { props: new Set([...only].filter(([, inside]) => inside).map(([p]) => p)), itemFields, nodes };
+  const itemFields = new Map<string, Set<string>>();
+  for (const [list, uses] of fields) {
+    const own = new Set([...uses].filter(([, inside]) => inside).map(([f]) => f));
+    // A visible text that carries its link along when it changes (an email and its mailto) is inside only with the link.
+    for (const { text, link } of itemLinkPairs(def, list)) if (own.has(text) && !own.has(link)) own.delete(text);
+    if (own.size) itemFields.set(list, own);
+  }
+  const slots = new Set<string>();
+  for (const id of nodes) {
+    const n = tree!.nodes[id];
+    if (n?.kind === 'slot') slots.add(n.slot);
+  }
+  return { props: new Set([...only].filter(([, inside]) => inside).map(([p]) => p)), itemFields, nodes, repeated: nodes.size > 0 && !!enclosingRepeatProp(def, regionNodeId), slots };
 }
 
-/** The placement a part authority is in, its definition and what the part reaches, or null for a whole placement. */
-function selectedPart(state: ProjectState, authority: Extract<Authority, { kind: 'selection' }>): { def: ComponentDefinition; reach: PartReach; part: PartAuthority } | null {
+/**
+ * The placement a part authority is in, its definition and what the part reaches, or null for the whole placement (its
+ * definition's root). A part inside a nested component, or of a code component (which has no tree to say what its parts
+ * show), reaches nothing but its own styles: anything more needs the user's approval.
+ */
+function selectedPart(state: ProjectState, authority: Extract<Authority, { kind: 'selection' }>): { def: ComponentDefinition; inst: InstanceNode; reach: PartReach; part: PartAuthority } | null {
   const part = authority.part;
   if (!part) return null;
   let inst: GraphNode | undefined;
@@ -85,48 +115,75 @@ function selectedPart(state: ProjectState, authority: Extract<Authority, { kind:
   } catch {
     return null;
   }
-  const def = inst?.kind === 'instance' ? state.components[(inst as InstanceNode).definitionId] : undefined;
-  // A code component has no tree to say what a part of it shows, so a selection inside one is the whole placement, as
-  // is the definition's own root.
-  if (!def?.tree || def.tree.rootIds.includes(part.regionNodeId)) return null;
-  return { def, reach: partReach(def, part.regionNodeId), part };
+  const def = inst?.kind === 'instance' ? state.components[inst.definitionId] : undefined;
+  if (!def || inst?.kind !== 'instance') return null;
+  // A code component's root part is the placement itself.
+  if (!part.nested && !def.tree && part.partId === 'root') return null;
+  if (part.nested || !def.tree) return { def, inst, reach: NOTHING, part };
+  // Only the first top-level node is the placement itself; another is a part like any other.
+  if (def.tree.rootIds[0] === part.regionNodeId) return null;
+  return { def, inst, reach: partReach(def, part.regionNodeId), part };
 }
 
 /** Why an operation on the placement itself reaches beyond its selected part, or null when it stays inside. */
 function outsidePart(op: EditOperation, sel: NonNullable<ReturnType<typeof selectedPart>>, label: string): string | null {
   const { def, reach, part } = sel;
   const beyond = `${op.type} changes more of ${label} than the selected part.`;
+  if (part.nested) return `${op.type} changes more than the selected part, which is inside another component placed in ${label}.`;
+  // A placement property shown in a repeated part shows in every item, not only the selected one.
+  const whole = (prop: string) => reach.props.has(prop) && !(part.itemId !== undefined && reach.repeated);
   switch (op.type) {
     case 'node.setStyle':
     case 'node.resetStyles': {
+      // The part's own style is shared by every item it is shown for; one item may also be styled alone.
       const partId = op.partId ?? 'root';
       const own = Object.hasOwn(def.parts, partId) ? def.parts[partId] : undefined;
       if (partId !== part.partId && !(own && reach.nodes.has(own.nodeId))) return `${op.type} styles a part of ${label} other than the selected one.`;
-      // One selected card: the others keep their own look.
-      if (part.itemId !== undefined && repeatedPartList(def, partId) && op.itemId !== part.itemId) return `${op.type} styles every item of ${label}, not only the selected one: pass its itemId "${part.itemId}".`;
+      if (part.itemId !== undefined && op.itemId !== undefined && op.itemId !== part.itemId) return `${op.type} styles an item of ${label} other than the selected one.`;
       return null;
     }
     case 'instance.setProp': {
-      if (reach.props.has(op.prop)) return null;
+      // The engine treats an empty item ID as none: the whole list.
+      if (!op.itemId) return whole(op.prop) ? null : beyond;
+      if (whole(op.prop)) return null;
       const fields = reach.itemFields.get(op.prop);
-      if (!fields || op.itemId === undefined) return beyond;
+      if (!fields) return beyond;
       if (part.itemId !== undefined && op.itemId !== part.itemId) return `${op.type} changes an item of ${label} other than the selected one.`;
-      const sent = op.field !== undefined ? [op.field] : op.value && typeof op.value === 'object' && !Array.isArray(op.value) ? Object.keys(op.value) : [];
+      const sent = op.field ? [op.field] : op.value && typeof op.value === 'object' && !Array.isArray(op.value) ? Object.keys(op.value) : [];
       return sent.every((f) => fields.has(f)) ? null : `${op.type} changes fields of the item that the selected part does not show.`;
     }
     case 'instance.listInsert':
     case 'instance.listRemove':
     case 'instance.listMove':
     case 'instance.editTable':
-      return reach.props.has(op.prop) ? null : beyond;
+      return whole(op.prop) ? null : beyond;
     default:
       return beyond;
   }
 }
 
+/** Content placed in the slots a selected part renders, in the owner's tree: it is inside the part. */
+function slotContent(state: ProjectState, owner: OwnerRef, sel: NonNullable<ReturnType<typeof selectedPart>>): Set<string> {
+  const out = new Set<string>();
+  if (!sel.reach.slots.size) return out;
+  const tree = getTree(state, owner);
+  for (const name of sel.reach.slots) for (const child of sel.inst.slots?.[name] ?? []) for (const id of subtreeIds(tree, child)) out.add(id);
+  return out;
+}
+
+/** Whether a destination is inside a selected part: content in a slot it renders, or that slot of the placement itself. */
+function inPartSlot(parentId: string | null | undefined, slot: string | undefined, sel: NonNullable<ReturnType<typeof selectedPart>>, placed: Set<string>): boolean {
+  if (!parentId) return false;
+  if (parentId === sel.inst.id) return slot !== undefined && sel.reach.slots.has(slot);
+  return placed.has(parentId);
+}
+
+/** Content fields the engine writes to a property's default when they are bound in a definition (see nodeSetContent). */
+const BOUND_FIELDS = new Set(['text', 'image', 'link', 'label', 'icon', 'iconPosition', 'action', 'ariaLabel', 'tag']);
+
 /** Whether an edit inside a definition writes a property's default, which every placement without its own value shows. */
 function writesDefault(state: ProjectState, op: EditOperation): string | null {
-  if (op.type !== 'node.setContent' || op.owner.kind !== 'component') return null;
+  if (op.type !== 'node.setContent' || op.owner.kind !== 'component' || !BOUND_FIELDS.has(op.field)) return null;
   let node: GraphNode | undefined;
   try {
     node = getTree(state, op.owner).nodes[op.nodeId];
@@ -332,19 +389,7 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
 export function checkAuthority(state: ProjectState, ops: EditOperation[], authority: Authority): string | null {
   if (authority.kind === 'site') return null;
   if (authority.kind === 'component') return checkComponentAuthority(state, ops, authority);
-  let draft: ProjectState | null = null;
-  for (const [i, op] of ops.entries()) {
-    const denied = checkOne(draft ?? state, op, authority);
-    if (denied) return denied;
-    if (i === ops.length - 1) break;
-    draft ??= structuredClone(state);
-    try {
-      applyOperation(draft, op);
-    } catch {
-      // The batch is refused at this operation anyway; later ones are checked against what came before it.
-    }
-  }
-  return null;
+  return walkOperations(state, ops, (draft, op) => checkOne(draft, op, authority));
 }
 
 function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Authority, { kind: 'selection' }>): string | null {
@@ -369,21 +414,31 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
       if (op.type === 'node.move' && (!o.parentId || !allowed.has(o.parentId))) return `node.move would move content outside ${authority.label}.`;
       if (op.type === 'node.move' && o.nodeId === authority.nodeId) return `node.move would move ${authority.label} itself.`;
       if (op.type === 'node.duplicate' && o.nodeId === authority.nodeId) return `node.duplicate would add a new section outside ${authority.label}.`;
-      if (part) return o.nodeId === authority.nodeId ? outsidePart(op, part, authority.label) : `${op.type} changes content of ${authority.label} outside the selected part.`;
+      if (part) {
+        if (o.nodeId === authority.nodeId) return outsidePart(op, part, authority.label);
+        // Content placed in a slot the part renders is inside it, and may move only within such content.
+        const placed = slotContent(state, authority.owner, part);
+        if (!placed.has(o.nodeId)) return `${op.type} changes content of ${authority.label} outside the selected part.`;
+        if (op.type === 'node.move' && !inPartSlot(o.parentId, (op as { slot?: string }).slot, part, placed)) return `node.move would move content outside the selected part of ${authority.label}.`;
+      }
       return writesDefault(state, op);
     }
     case 'insert': {
       const o = op as Extract<EditOperation, { type: 'node.insert' }>;
-      if (!sameOwner(o.owner) || !o.parentId || !allowed.has(o.parentId) || part) return `node.insert adds content outside ${part ? 'the selected part of ' : ''}${authority.label}.`;
+      if (!sameOwner(o.owner) || !o.parentId || !allowed.has(o.parentId)) return `node.insert adds content outside ${authority.label}.`;
+      if (part && !inPartSlot(o.parentId, o.slot, part, slotContent(state, authority.owner, part))) return `node.insert adds content outside the selected part of ${authority.label}.`;
       return null;
     }
     case 'copy': {
       // The source is only read, so it may be anywhere; the copy must land inside the selection.
       const o = op as Extract<EditOperation, { type: 'node.copy' }>;
-      if (!sameOwner(o.toOwner) || !o.parentId || !allowed.has(o.parentId) || part) return `node.copy adds content outside ${part ? 'the selected part of ' : ''}${authority.label}.`;
+      if (!sameOwner(o.toOwner) || !o.parentId || !allowed.has(o.parentId)) return `node.copy adds content outside ${authority.label}.`;
+      if (part && !inPartSlot(o.parentId, (o as { slot?: string }).slot, part, slotContent(state, authority.owner, part))) return `node.copy adds content outside the selected part of ${authority.label}.`;
       return null;
     }
     case 'definition':
+      // The selected part's component contract is shown in every placement: more than the part.
+      if (part) return `${op.type} changes the contract of the component the selected part is in, which is more than the part.`;
       return definitionOpAllowed(state, op, authority, allowed) ? null : `${op.type} changes more than ${authority.label}.`;
     default:
       return `${op.type} changes more than ${authority.label}.`;

@@ -802,6 +802,8 @@ export interface SectionLinkIssue {
   fragment: string;
   /** The page it goes to, for a link to a section of another page. */
   pageId?: string;
+  /** Which rendered link it is: stable while the link stays in the same node and item. */
+  key: string;
   /** The pages it shows on that lack the section, for a link to a section of the page it is on. */
   pages?: string[];
 }
@@ -860,11 +862,11 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
     for (const { link, label, reportId, key, inText } of renderedLinks(state, src.tree)) {
       let issue: SectionLinkIssue | null = null;
       if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
-        if (!idsOf(link.target).has(link.anchor)) issue = { owner: src.owner, nodeId: reportId, label, inText, fragment: link.anchor, pageId: link.target };
+        if (!idsOf(link.target).has(link.anchor)) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment: link.anchor, pageId: link.target };
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
         const missing = src.on.filter((p) => !idsOf(p.id).has(fragment)).map((p) => p.id);
-        if (missing.length) issue = { owner: src.owner, nodeId: reportId, label, inText, fragment, pages: missing };
+        if (missing.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once.
       const id = JSON.stringify([src.owner, reportId, key]);

@@ -202,13 +202,29 @@ export interface DeferredLink {
 }
 
 const same = (a: unknown, b: unknown) => a !== undefined && b !== undefined && JSON.stringify(a) === JSON.stringify(b);
+const isRow = (it: unknown): it is Record<string, unknown> => !!it && typeof it === 'object' && !Array.isArray(it);
+
+/**
+ * The stored value a sent one stands for when it is that value as it was read, or undefined. Besides an exact copy, a
+ * link to a page that has since gone may come back as the page ID a string-typed tool field takes, and an image whose
+ * file has gone as its assetId and alt text without its other settings.
+ */
+function storedIfUnchanged(schema: PropSchema, sent: unknown, stored: unknown, state: ProjectState): unknown {
+  if (stored === undefined) return undefined;
+  if (same(sent, stored)) return stored;
+  const was = stored as Partial<LinkValue & ImageValue> | null;
+  if (!was || typeof was !== 'object') return undefined;
+  if (schema.type === 'link' && typeof sent === 'string' && was.type === 'page' && was.target === sent && !Object.hasOwn(state.pages, sent)) return stored;
+  if (schema.type === 'image' && isRow(sent) && typeof was.assetId === 'string' && sent.assetId === was.assetId && String(sent.alt ?? '') === String(was.alt ?? '') && !Object.hasOwn(state.assets.assets, was.assetId)) return stored;
+  return undefined;
+}
 
 /**
  * Check a section's props with the engine's value normalizers, so every problem is reported with its exact
  * path. Returns the props to send, with routes resolved, and any links waiting for a page. `stored` is the
  * placement's own props when the section already exists: a value sent back unchanged is checked against it, as the
  * engine checks it, so one saved under older rules (a link to a page since removed, an icon since retired) never
- * blocks the rest of the update. A list item is its stored item by id.
+ * blocks the rest of the update. A list item is the stored item it is merged with: by its id, or as `itemIds` matches it.
  */
 export function checkProps(
   def: ComponentDefinition,
@@ -217,7 +233,7 @@ export function checkProps(
   path: string,
   issues: FieldIssue[],
   stored?: Record<string, unknown>,
-  /** The stored item id each sent item of a list stands for, when it is matched by more than its own id. */
+  /** The stored item id each sent item of a list stands for, as the write matches them (by id, else by title or page). */
   itemIds?: (prop: string, sent: unknown[]) => Array<string | undefined>
 ): { props: Record<string, unknown>; deferred: DeferredLink[] } {
   const out: Record<string, unknown> = {};
@@ -236,8 +252,9 @@ export function checkProps(
       continue;
     }
     if (schema.type === 'link') {
-      // A stored link sent back as it is stays as it is, even when its page has gone.
-      const r = same(v, storedProp(k)) ? { value: v } : resolveRouteLink(v, state);
+      // A stored link sent back as it was read stays as it is, even when its page has gone.
+      const kept = storedIfUnchanged(schema, v, storedProp(k), state);
+      const r = kept !== undefined ? { value: kept } : resolveRouteLink(v, state);
       if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k });
       out[k] = r.value;
       checkValue(() => normalizeScalar(schema, r.value, state, schema.label, storedProp(k)), `${path}.${k}`, issues);
@@ -246,19 +263,39 @@ export function checkProps(
     if (schema.type === 'list' && Array.isArray(v)) {
       const before = issues.length;
       const kept = storedProp(k);
-      const storedItems = Array.isArray(kept) ? (kept as unknown[]).filter((x): x is ListItem => !!x && typeof x === 'object' && typeof (x as ListItem).id === 'string') : [];
+      const storedItems = Array.isArray(kept) ? (kept as unknown[]).filter((x): x is ListItem => isRow(x) && typeof x.id === 'string') : [];
       // An id two stored items share names neither of them.
       const storedItem = (id: unknown) => (typeof id === 'string' && storedItems.filter((x) => x.id === id).length === 1 ? storedItems.find((x) => x.id === id) : undefined);
-      const matched = storedItems.length && itemIds ? itemIds(k, v) : [];
-      const items = v.map((it, i) => {
-        const itemPath = `${path}.${k}[${i}]`;
-        if (!it || typeof it !== 'object' || Array.isArray(it)) {
-          issues.push({ field: itemPath, message: 'expected an object' });
-          return it;
-        }
+      // Links written as routes resolve first, so items are matched to stored ones as the write matches them.
+      const rows = v.map((it, i) => {
+        if (!isRow(it)) return it;
         const copy: Record<string, unknown> = {};
-        const was = storedItem(matched[i] ?? (it as Record<string, unknown>).id);
         for (const [f, x] of Object.entries(it)) {
+          const fs = f !== 'id' && Object.hasOwn(schema.fields, f) ? schema.fields[f] : undefined;
+          if (fs?.type !== 'link') {
+            copy[f] = x;
+            continue;
+          }
+          const r = resolveRouteLink(x, state);
+          if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k, itemIndex: i, field: f });
+          copy[f] = r.value;
+        }
+        return copy;
+      });
+      const matched = storedItems.length && itemIds ? itemIds(k, rows) : undefined;
+      // Without a matcher, an id stands for its stored item once: a second item sending it again is a new item.
+      const claimed = new Set<string>();
+      const items = rows.map((row, i) => {
+        const itemPath = `${path}.${k}[${i}]`;
+        if (!isRow(row)) {
+          issues.push({ field: itemPath, message: 'expected an object' });
+          return row;
+        }
+        const ownId = typeof row.id === 'string' && !claimed.has(row.id) ? row.id : undefined;
+        if (ownId) claimed.add(ownId);
+        const was = storedItem(matched ? matched[i] : ownId);
+        const copy: Record<string, unknown> = {};
+        for (const [f, x] of Object.entries(row)) {
           if (f === 'id') {
             copy.id = x;
             continue;
@@ -268,26 +305,22 @@ export function checkProps(
             issues.push({ field: `${itemPath}.${f}`, message: `${schema.itemLabel} has no field "${f}". Fields: ${Object.keys(schema.fields).join(', ')}` });
             continue;
           }
-          let value = x;
-          if (fs.type === 'link' && !same(x, was?.[f])) {
-            const r = resolveRouteLink(x, state);
-            if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k, itemIndex: i, field: f });
-            value = r.value;
-          }
+          const keptValue = storedIfUnchanged(fs, (v[i] as Record<string, unknown>)[f], was?.[f], state);
+          const value = keptValue !== undefined ? keptValue : x;
           copy[f] = value;
           checkValue(() => normalizeScalar(fs, value, state, fs.label, was?.[f]), `${itemPath}.${f}`, issues);
         }
         return copy;
       });
       out[k] = items;
-      // List-wide rules (length) are checked once its items are sound.
-      // An item matched by more than its id is checked as that stored item, as the engine will see it once merged.
-      const asStored = items.map((it, i) => (matched[i] && it && typeof it === 'object' && !Array.isArray(it) && (it as Record<string, unknown>).id === undefined ? { ...it, id: matched[i] } : it));
+      // List-wide rules (length) are checked once its items are sound, each as the stored item it will be merged with.
+      const asStored = items.map((it, i) => (matched?.[i] && isRow(it) && it.id === undefined ? { ...it, id: matched[i] } : it));
       if (issues.length === before) checkValue(() => normalizeProp(schema, asStored, state, schema.label, kept), `${path}.${k}`, issues);
       continue;
     }
-    out[k] = v;
-    checkValue(() => normalizeProp(schema, v, state, schema.label, storedProp(k)), `${path}.${k}`, issues);
+    const keptValue = storedIfUnchanged(schema, v, storedProp(k), state);
+    out[k] = keptValue !== undefined ? keptValue : v;
+    checkValue(() => normalizeProp(schema, out[k], state, schema.label, storedProp(k)), `${path}.${k}`, issues);
   }
   return { props: out, deferred };
 }
@@ -655,8 +688,10 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
       return null;
     }
     const { def, ref } = r;
-    const variants = chooseVariants(def, s.variant, s.variants, `${at}.`, issues);
     const node = updates.get(i);
+    // The options of the definition the section writes to: an existing fork of a catalogue component may differ.
+    const placed = node && Object.hasOwn(scratch.components, node.definitionId) ? scratch.components[node.definitionId] : def;
+    const variants = chooseVariants(placed, s.variant, s.variants, `${at}.`, issues);
     const nodeProps = node ? (scratch.components[node.definitionId]?.properties ?? {}) : {};
     // A list's items stand for the stored items they are merged with below, by id or else by title.
     const itemIds = (prop: string, sent: unknown[]) => {

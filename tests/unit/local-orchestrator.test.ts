@@ -51,8 +51,8 @@ async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOp
     codeEnabled: async () => codeEnabled
   });
   const header = session.state.site.shell.header.rootIds[0];
-  const run = async (text: string, selection: ElementRef | null = null, selectionLabel: string | null = null, mode?: ChatContext['mode']) => {
-    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel, viewport: 1280, ...(mode ? { mode } : {}) };
+  const run = async (text: string, selection: ElementRef | null = null, selectionLabel: string | null = null, mode?: ChatContext['mode'], component?: { id: string; name: string }) => {
+    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel, viewport: 1280, ...(mode ? { mode } : {}), ...(component ? { component } : {}) };
     const r = await orch.send(text, ctx);
     expect(r.ok).toBe(true);
     await expect.poll(() => orch.busy || busy, { timeout: 5000, interval: 5 }).toBe(false);
@@ -83,14 +83,20 @@ describe('orchestrator with constrained JSON', () => {
   });
 
   it('applies a structured value sent in the encoded form', async () => {
-    const { session, run, header } = await setup();
-    const item = { label: 'Services', link: { type: 'url', target: 'https://example.com/services' } };
-    const args = { expectedRevision: 0, operations: [{ type: 'instance.listInsert', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'links', item: { $json: JSON.stringify(item) } }] };
-    server.script(envelopeReply('apply_operations', args), envelopeReply('finish', { message: 'Added a link.' }));
-    const { result } = await run('Add a Services link', { owner: { kind: 'shell', id: 'header' }, instancePath: [header, 'n_inner'], nodeId: 'n_inner' }, 'Header');
+    const { session, run } = await setup();
+    // A component edited everywhere is a run the small tools cannot cover, so the general edit tool is offered.
+    const home = session.state.pages[session.state.site.homePageId];
+    const grid = home.rootIds.map((id) => home.nodes[id] as unknown as { id: string; definitionId: string }).find((n) => session.state.components[n.definitionId]?.componentId === 'features.grid')!;
+    const made = await session.apply({ operations: [{ type: 'component.makeUnique', owner: { kind: 'page', id: home.id }, nodeId: grid.id, name: 'Studio cards' }] }, { label: 'Make unique', source: 'user' });
+    expect(made.ok).toBe(true);
+    const id = (made.results?.[0] as { definitionId: string }).definitionId;
+    const items = [{ id: 'i_one', icon: 'leaf', title: 'Services', description: 'What we do.' }];
+    const args = { expectedRevision: session.revision, operations: [{ type: 'component.setPropDefault', definitionId: id, prop: 'items', value: { $json: JSON.stringify(items) } }] };
+    server.script(envelopeReply('apply_operations', args), envelopeReply('finish', { message: 'Set the default cards.' }));
+    const { result } = await run('Start every placement with a Services card', null, null, undefined, { id, name: 'Studio cards' });
     expect(result?.status).toBe('completed');
-    const links = (session.state.site.shell.header.nodes[header] as unknown as { props: { links: Array<{ label: string }> } }).props.links;
-    expect(links.at(-1)?.label).toBe('Services');
+    const def = session.state.components[id].properties.items as unknown as { default: Array<{ title: string }> };
+    expect(def.default.map((i) => i.title)).toEqual(['Services']);
   });
 
   it('still enforces the selection scope', async () => {

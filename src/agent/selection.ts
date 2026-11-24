@@ -137,9 +137,11 @@ function resolve(state: ProjectState, target: SelectionTarget): Resolved | null 
  * component's, whose parts cannot say what they show). The run may change only that; see checkAuthority.
  */
 function selectedPartReach(r: Resolved, target: SelectionTarget): PartReach | null {
-  if (!target.partId || !r.def?.tree || !Object.hasOwn(r.def.parts, target.partId)) return null;
+  if (!target.partId || !r.def || !Object.hasOwn(r.def.parts, target.partId)) return null;
+  // A code component has no tree to say what its parts show: only the part's own styles.
+  if (!r.def.tree) return target.partId === 'root' ? null : partReach(r.def, '');
   const nodeId = r.def.parts[target.partId].nodeId;
-  return r.def.tree.rootIds.includes(nodeId) ? null : partReach(r.def, nodeId);
+  return r.def.tree.rootIds[0] === nodeId ? null : partReach(r.def, nodeId);
 }
 
 const STYLE_VALUE: JsonSchema = {
@@ -218,7 +220,9 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   const tools: ToolDefinition[] = [];
   // A selected part offers only what it shows; its placement's variants change the whole section.
   const reach = selectedPartReach(r, target);
-  const shown = reach ? Object.fromEntries(Object.entries(r.properties).filter(([k]) => reach.props.has(k))) : r.properties;
+  // A placement property shown in a repeated part shows in every item, not only the selected one.
+  const placementWide = (k: string) => !!reach && reach.props.has(k) && !(target.itemId !== undefined && reach.repeated);
+  const shown = reach ? Object.fromEntries(Object.entries(r.properties).filter(([k]) => placementWide(k))) : r.properties;
   const variants = r.def && !reach ? [...new Set(variantOptions(r.def).map((o) => o.id))] : [];
   const byAxis = r.def && !reach ? variantsJsonSchema(r.def, true) : null;
   if (Object.keys(shown).length || variants.length)
@@ -236,7 +240,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
       }
     });
   // A computed list (news, an article header) is filled from the site's pages: it has no items to edit.
-  const lists = Object.entries(r.properties).filter(([k, s]) => s.type === 'list' && !s.feed && (!reach || reach.props.has(k) || reach.itemFields.has(k))) as Array<[string, ListSchema]>;
+  const lists = Object.entries(r.properties).filter(([k, s]) => s.type === 'list' && !s.feed && (!reach || placementWide(k) || reach.itemFields.has(k))) as Array<[string, ListSchema]>;
   if (lists.length) {
     const fields = listFields(lists);
     tools.push({
@@ -280,7 +284,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   // Parts shown once per list item, which can be styled for one item alone.
   const perItem = r.def ? parts.filter((p) => repeatedPartList(r.def!, p)) : [];
   // With one item selected, its part is styled for that item alone unless the user widens the request.
-  const selectedItem = target.itemId ? (reach ? ` Omitted, it is the selected item "${target.itemId}"; styling every item needs request_wider_scope.` : ` The selected item is "${target.itemId}".`) : '';
+  const selectedItem = target.itemId ? ` The selected item is "${target.itemId}".` : '';
   tools.push({
     name: 'style_selected_element',
     description: SELECTION_DESCRIPTIONS.style_selected_element,
@@ -292,7 +296,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
           ? {
               itemId: {
                 type: 'string',
-                description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style.${reach && target.itemId ? '' : ' Omit to style every item.'}${selectedItem}`
+                description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style. Omit to style every item.${selectedItem}`
               },
               resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles; then apply styles, which may be empty.' }
             }
@@ -437,8 +441,6 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
   const perItem = r.node.kind === 'instance' && r.def ? Object.keys(r.def.parts).filter((p) => repeatedPartList(r.def!, p)) : [];
   // One item's style needs a repeated part: the one named, the selected one, or the only one there is.
   const partId = r.node.kind === 'instance' ? (a.partId ?? target.partId ?? (a.itemId && perItem.length === 1 ? perItem[0] : undefined)) : undefined;
-  // A selected card is styled alone: the item the selection names, when its part is the one shown per item.
-  if (a.itemId === undefined && target.itemId !== undefined && partId === target.partId && partId && perItem.includes(partId) && r.def && selectedPartReach(r, target)) a.itemId = target.itemId;
   if (r.node.kind !== 'instance' && a.partId) return fieldError([{ field: 'partId', message: 'this element has no parts' }], note);
   if (a.itemId !== undefined && (!partId || !perItem.includes(partId)))
     return fieldError([{ field: a.partId ? 'partId' : 'itemId', message: perItem.length ? `to style one item, name a repeated part: ${perItem.join(', ')}` : 'this element has no part repeated per item' }], note);

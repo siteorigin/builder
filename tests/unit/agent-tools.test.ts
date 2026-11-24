@@ -1096,6 +1096,21 @@ describe('context budget', () => {
     expect(results(items).map((x) => x.callId)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('keeps every part of a field read whole, and a read of one field after another (#132)', () => {
+    const owner = { kind: 'page', id: 'pg_a' };
+    const part = (offset: number, prop = 'body') => JSON.stringify({ revision: 1, owner, nodeId: 'n_1', prop, format: 'markdown', total: 24000, start: offset, end: offset + 8000, next: offset + 8000 < 24000 ? offset + 8000 : null, text: 'x'.repeat(8000) });
+    const items: CanonicalItem[] = [
+      { kind: 'user', text: 'go' },
+      ...read('a', { owner, nodeId: 'n_1', prop: 'body' }, part(0), 'inspect_element'),
+      ...read('b', { owner, nodeId: 'n_1', prop: 'body', offset: 8000 }, part(8000), 'inspect_element'),
+      ...read('c', { owner, nodeId: 'n_1', prop: 'heading' }, part(0, 'heading'), 'inspect_element'),
+      ...read('d', { owner, nodeId: 'n_1', prop: 'body', offset: 16000 }, part(16000), 'inspect_element')
+    ];
+    applyContextBudget(items, opts(9000));
+    // No part stands in for another: each still holds its text.
+    expect(results(items).map((r) => r.content.includes('x'.repeat(8000)))).toEqual([true, true, true, true]);
+  });
+
   it('leaves everything alone while there is room', () => {
     const items: CanonicalItem[] = [...read('a', { pageId: 'pg_a' }, big(1)), ...read('b', { pageId: 'pg_a' }, big(2)), ...read('c', { pageId: 'pg_c' }, big(2, 'pg_c'))];
     const copy = structuredClone(items);
@@ -1614,6 +1629,8 @@ describe('tone and layout in one call (#132)', () => {
       () => [call('v1', 'upsert_page_with_sections', { slug: 'care', title: 'Care', sections: [{ componentId: 'features.grid', variants: { tone: 'muted', layout: 'two-columns' }, props: { heading: 'Care', items } }] })],
       (req) => {
         expect(lastResult(req).ok).toBe(true);
+        // The one call set both axes as it placed the section.
+        expect(gridOn(session.state, '/care/').variants).toEqual({ tone: 'muted', layout: 'two-columns' });
         return [call('v2', 'upsert_page_with_sections', { slug: 'care', sections: [{ componentId: 'features.grid', variants: { layout: 'four-columns' } }] })];
       },
       (req) => {
@@ -1730,7 +1747,7 @@ describe('reading long rich text whole (#132)', () => {
 
   it('edits a 5,000-character field near its end without losing anything else (#132)', async () => {
     let text = '';
-    let node = { id: '' };
+    let node = { id: '' } as InstanceNode;
     let owner = { kind: 'page' as const, id: '' };
     // Reads every part the tool returns, in order, then writes the whole value back with one word changed.
     const step = (req: CanonicalModelRequest): ModelEvent[] => {
@@ -1826,6 +1843,9 @@ describe('a selected part or placement scopes the run (#132)', () => {
     expect(Object.keys(tool.properties.props.properties)).toContain('heading');
     expect(Object.keys(tool.properties.props.properties)).not.toContain('lead');
     expect(tool.properties.variant).toBeUndefined();
+    expect((tool.properties as Record<string, unknown>).variants).toBeUndefined();
+    // The model asked to widen, and the user's no kept the run on the heading.
+    expect(answers).toHaveLength(0);
     for (const i of [2, 3, 4]) {
       const r = lastResult(adapter.requests[i]);
       expect(r.error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
@@ -1839,32 +1859,38 @@ describe('a selected part or placement scopes the run (#132)', () => {
     expect(after.overrides).toEqual(before.overrides);
   });
 
-  it('changes only the selected card: its own fields and its own style, never the others in one batch', async () => {
+  it('changes only the selected card: its own fields and its style, never another card, in one batch or after', async () => {
     let poetry = '';
     let other = '';
+    let afterRefused: { revision: number; grid: InstanceNode } | null = null;
+    const owner = () => ({ kind: 'page', id: home(session.state).id });
+    const gridId = () => nodeAt(session.state, 2).id;
     const { session, adapter, run } = await setup([
-      (req) => {
-        const grid = nodeAt(session.state, 2);
-        const owner = { kind: 'page', id: home(session.state).id };
-        // A valid style for the selected card and a reset of every card: neither lands.
-        return [
-          call('c1', 'apply_operations', {
-            expectedRevision: session.revision,
-            operations: [
-              { type: 'node.setStyle', owner, nodeId: grid.id, partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' },
-              { type: 'node.resetStyles', owner, nodeId: grid.id, partId: 'card' }
-            ]
-          })
-        ];
-      },
-      () => [call('c2', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home(session.state).id }, nodeId: nodeAt(session.state, 2).id, prop: 'items', itemId: other, field: 'title', value: 'Not this one' }] })],
-      () => [call('c3', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.listInsert', owner: { kind: 'page', id: home(session.state).id }, nodeId: nodeAt(session.state, 2).id, prop: 'items' }] })],
+      // A valid style for the selected card and a title for another card: neither lands.
       () => [
-        call('c4', 'apply_operations', {
+        call('c1', 'apply_operations', {
           expectedRevision: session.revision,
           operations: [
-            { type: 'instance.setProp', owner: { kind: 'page', id: home(session.state).id }, nodeId: nodeAt(session.state, 2).id, prop: 'items', itemId: poetry, field: 'title', value: 'Poetry night' },
-            { type: 'node.setStyle', owner: { kind: 'page', id: home(session.state).id }, nodeId: nodeAt(session.state, 2).id, partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' }
+            { type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' },
+            { type: 'instance.setProp', owner: owner(), nodeId: gridId(), prop: 'items', itemId: other, field: 'title', value: 'Not this one' }
+          ]
+        })
+      ],
+      () => {
+        afterRefused = { revision: session.revision, grid: structuredClone(nodeAt(session.state, 2)) };
+        return [call('c2', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', itemId: other, scope: 'base', property: 'background', value: '#ffeedd' }] })];
+      },
+      () => [call('c3', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.listInsert', owner: owner(), nodeId: gridId(), prop: 'items' }] })],
+      // An empty item ID would replace the whole list.
+      () => [call('c4', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.setProp', owner: owner(), nodeId: gridId(), prop: 'items', itemId: '', value: [] }] })],
+      () => [
+        call('c5', 'apply_operations', {
+          expectedRevision: session.revision,
+          operations: [
+            { type: 'instance.setProp', owner: owner(), nodeId: gridId(), prop: 'items', itemId: poetry, field: 'title', value: 'Poetry night' },
+            { type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' },
+            // The card part's own style is shared by every card it is shown for: it is the selected part.
+            { type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', scope: 'base', property: 'radius', value: '0px' }
           ]
         })
       ],
@@ -1876,15 +1902,18 @@ describe('a selected part or placement scopes the run (#132)', () => {
     other = items[0].id;
     const def = session.state.components[grid.definitionId];
     const before = structuredClone(grid);
+    const revision = session.revision;
     await run('Rename this card and make it pale blue', { owner: { kind: 'page', id: home(session.state).id }, instancePath: [grid.id], nodeId: def.parts.card.nodeId, partId: 'card', itemPath: [poetry] });
-    for (const i of [1, 2, 3]) expect(lastResult(adapter.requests[i]).error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
-    expect(lastResult(adapter.requests[4]).ok).toBe(true);
+    for (const i of [1, 2, 3, 4]) expect(lastResult(adapter.requests[i]).error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
+    // Nothing of the refused batch landed, not even its allowed first operation.
+    expect(afterRefused).toEqual({ revision, grid: before });
+    expect(lastResult(adapter.requests[5]).ok).toBe(true);
     const after = nodeAt(session.state, 2);
     const afterItems = after.props.items as ListItem[];
     expect(afterItems).toHaveLength(items.length);
     expect(afterItems[0]).toEqual(items[0]);
     expect(afterItems[1].title).toBe('Poetry night');
-    expect(after.overrides).toEqual(before.overrides);
+    expect(after.overrides?.card?.base).toEqual({ ...(before.overrides?.card?.base ?? {}), radius: '0px' });
     expect(after.itemOverrides).toEqual({ card: { list: 'items', items: { [poetry]: { base: { background: '#dbeeff' } } } } });
   });
 
@@ -1922,5 +1951,146 @@ describe('a selected part or placement scopes the run (#132)', () => {
     expect(defaultWhenAsked).toBe(before);
     expect(lastResult(adapter.requests[3]).ok).toBe(true);
     expect((def().properties.heading as { default: unknown }).default).toBe('A new default');
+    // The placement with its own heading keeps it; the one showing the default shows the new one.
+    const placements = Object.values(session.state.pages).flatMap((p) => Object.values(p.nodes)).filter((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === defId);
+    expect(placements).toHaveLength(2);
+    expect(placements.filter((n) => Object.hasOwn(n.props, 'heading')).map((n) => n.props.heading)).toHaveLength(1);
+    expect(placements.find((n) => Object.hasOwn(n.props, 'heading'))!.props.heading).not.toBe('A new default');
+    expect(defaultWhenAsked).not.toBe('A new default');
+  });
+});
+
+describe('values sent back as they were read (#132)', () => {
+  const focused = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' as const };
+  const onHome = (s: ProjectState, componentId: string) => {
+    const p = pageAt(s, '/')!;
+    return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!;
+  };
+
+  it('matches rows by id, not position, and gives an id sent twice to its first row only', async () => {
+    let sent: Array<Record<string, unknown>> = [];
+    const { session, adapter, run } = await setup(
+      [
+        () => {
+          sent = (onHome(session.state, 'features.grid').props.items as ListItem[]).map((i) => ({ id: i.id, icon: i.icon, title: i.title }));
+          // Reordered, each retired icon sent back with its own row.
+          return [call('r1', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'features.grid', props: { items: [sent[1], sent[0], ...sent.slice(2)] } }] })];
+        },
+        () => [call('r2', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'features.grid', props: { items: [sent[0], { ...sent[0], title: 'Copy' }, ...sent.slice(1)] } }] })],
+        () => finish()
+      ],
+      {},
+      'business',
+      (s) => {
+        const items = onHome(s, 'features.grid').props.items as ListItem[];
+        items[0].icon = 'flux-capacitor';
+        items[1].icon = 'warp-drive';
+      }
+    );
+    await run('Swap the first two cards');
+    expect(lastResult(adapter.requests[1]).ok).toBe(true);
+    const order = (onHome(session.state, 'features.grid').props.items as ListItem[]).map((i) => [i.id, i.icon]);
+    expect(order.slice(0, 2)).toEqual([[sent[1].id, 'warp-drive'], [sent[0].id, 'flux-capacitor']]);
+    // The second row reusing the first row's id is a new card: its retired icon is refused by its own field.
+    expect(lastResult(adapter.requests[2]).fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].props.items[1].icon']);
+  });
+
+  it('keeps a link to a removed page and a picture whose file is gone when a string-typed tool sends them back', async () => {
+    const { session, adapter, run } = await setup(
+      [
+        () => {
+          const hero = onHome(session.state, 'hero.split') ?? (pageAt(session.state, '/')!.nodes[pageAt(session.state, '/')!.rootIds[0]] as InstanceNode);
+          const image = hero.props.image as { assetId: string; alt: string };
+          return [call('k1', 'update_selected_props', { props: { heading: 'New headline', primaryLink: 'pg_gone', image: { assetId: image.assetId, alt: image.alt } } })];
+        },
+        () => finish()
+      ],
+      focused,
+      'business',
+      (s) => {
+        const p = s.pages[s.site.homePageId];
+        const hero = p.nodes[p.rootIds[0]] as InstanceNode;
+        hero.props.primaryLink = { type: 'page', target: 'pg_gone' };
+        hero.props.image = { assetId: 'a_gone', alt: 'Kitchen', decorative: true };
+      }
+    );
+    const home = pageAt(session.state, '/')!;
+    await run('Sharpen the headline', { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] });
+    expect(lastResult(adapter.requests[1]).ok).toBe(true);
+    const hero = pageAt(session.state, '/')!.nodes[home.rootIds[0]] as InstanceNode;
+    expect(hero.props).toMatchObject({ heading: 'New headline', primaryLink: { type: 'page', target: 'pg_gone' }, image: { assetId: 'a_gone', alt: 'Kitchen', decorative: true } });
+  });
+
+  it('checks a page-list card sent with a route against the card the write merges it with', async () => {
+    let aboutId = '';
+    const { session, adapter, run } = await setup(
+      [() => [call('p1', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'content.pages', props: { items: [{ pageLink: '/about/', title: 'About the studio', image: { assetId: 'a_gone', alt: 'Team' } }] } }] })], () => finish()],
+      {},
+      'business',
+      (s) => {
+        const page = s.pages[s.site.homePageId];
+        aboutId = Object.values(s.pages).find((p) => p.route === '/about/')!.id;
+        const { nodeId } = applyOperation(s, { type: 'node.insert', owner: { kind: 'page', id: page.id }, componentId: 'content.pages', props: { items: [{ pageLink: { type: 'page', target: aboutId }, title: '' }] } }) as { nodeId: string };
+        ((page.nodes[nodeId] as InstanceNode).props.items as ListItem[])[0].image = { assetId: 'a_gone', alt: 'Team' };
+      }
+    );
+    await run('Retitle the About card');
+    expect(lastResult(adapter.requests[1]).ok).toBe(true);
+    const card = (onHome(session.state, 'content.pages').props.items as ListItem[])[0];
+    expect(card).toMatchObject({ title: 'About the studio', pageLink: { type: 'page', target: aboutId }, image: { assetId: 'a_gone', alt: 'Team' } });
+  });
+
+  it('sets a variant on the fork a catalogue component was matched to, by the fork’s own axes', async () => {
+    const { session, adapter, run } = await setup(
+      [() => [call('f1', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'features.grid', variant: 'muted' }] })], () => finish()],
+      {},
+      'business',
+      (s) => {
+        const grid = onHome(s, 'features.grid');
+        const { definitionId } = applyOperation(s, { type: 'component.fork', definitionId: grid.definitionId }) as { definitionId: string };
+        // The fork offers "muted" as a layout rather than a tone.
+        const axes = s.components[definitionId].variantAxes!;
+        delete axes.tone.options.muted;
+        axes.layout.options.muted = { label: 'Muted' };
+      }
+    );
+    await run('Make the grid muted');
+    expect(lastResult(adapter.requests[1]).ok).toBe(true);
+    expect(onHome(session.state, 'features.grid').variants?.layout).toBe('muted');
+  });
+
+  it('offers the whole-field read for long text a placement inherits from its definition', async () => {
+    const { session, adapter, run } = await setup(
+      [() => finish('Read it.')],
+      focused,
+      'business',
+      (s) => {
+        const page = s.pages[s.site.homePageId];
+        const { nodeId } = applyOperation(s, { type: 'node.insert', owner: { kind: 'page', id: page.id }, componentId: 'content.text' }) as { nodeId: string };
+        const node = page.nodes[nodeId] as InstanceNode;
+        delete node.props.body;
+        (s.components[node.definitionId].properties.body as { default: unknown }).default = Array.from({ length: 20 }, (_, i) => ({ type: 'p', spans: [{ text: `Paragraph ${i} `.repeat(12) }] }));
+      }
+    );
+    const page = pageAt(session.state, '/')!;
+    const text = onHome(session.state, 'content.text');
+    await run('Shorten this text', { owner: { kind: 'page', id: page.id }, instancePath: [], nodeId: text.id });
+    expect(adapter.requests[0].tools.map((t) => t.name)).toContain('inspect_element');
+  });
+
+  it('reads an empty rich text as empty, never splits a character, and shows one variant pick as a variant', async () => {
+    const { executeTool } = await import('@agent/tools');
+    const { exampleSection } = await import('@agent/examples');
+    const s = createStarterState('business', 'Test', false);
+    const page = s.pages[s.site.homePageId];
+    const { nodeId } = applyOperation(s, { type: 'node.insert', owner: { kind: 'page', id: page.id }, componentId: 'content.text', props: { heading: '😀a', body: '' } }) as { nodeId: string };
+    const host = { state: () => s, revision: () => 1 } as unknown as Parameters<typeof executeTool>[2];
+    const read = async (args: Record<string, unknown>) => (await executeTool('inspect_element', JSON.stringify({ owner: { kind: 'page', id: page.id }, nodeId, ...args }), host, 'c')).content as { text: string; start: number };
+    expect((await read({ prop: 'body' })).text).toBe('');
+    // An offset inside the emoji starts at the whole emoji.
+    expect(await read({ prop: 'heading', offset: 1 })).toMatchObject({ start: 0, text: '😀a' });
+    const ex = { id: 'x', componentId: 'stats.row', keywords: [], description: 'd', variants: { tone: 'inverse' }, props: {} };
+    expect(exampleSection(ex).section).toEqual({ componentId: 'stats.row', variant: 'inverse', props: {} });
+    expect(exampleSection({ ...ex, variants: { tone: 'inverse', layout: 'two-columns' } }).section).toMatchObject({ variants: { tone: 'inverse', layout: 'two-columns' } });
   });
 });
