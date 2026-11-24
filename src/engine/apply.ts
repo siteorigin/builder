@@ -23,7 +23,7 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, slotChildren, type AppearPreset, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
+import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
@@ -47,6 +47,7 @@ import { slotsInsideCards } from '@generator/card-links';
 import { chosenUses, imageUses } from './image-uses';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
+import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -1166,6 +1167,12 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
     nodes = [structuralNode(state, op.owner, op.primitive, op.bind)];
   } else if (op.primitive) {
     nodes = primitiveNode(state, op.primitive, op.text);
+    // A paragraph or span container holds only inline content, so text inserted there is inline text.
+    const text = nodes[0];
+    const holder = op.parentId && Object.hasOwn(tree.nodes, op.parentId) ? tree.nodes[op.parentId] : undefined;
+    // Content placed in a component without naming a slot goes in its first one (see insertionList).
+    const slot = op.slot ?? (holder?.kind === 'instance' ? Object.keys(state.components[holder.definitionId]?.slots ?? {})[0] : undefined);
+    if (text.kind === 'text' && !text.rich && op.parentId && insertsInline(state, op.owner, op.parentId, slot)) text.tag = 'span';
   } else {
     let def: ComponentDefinition;
     if (op.definitionId) def = state.components[op.definitionId] ?? fail(`Component definition "${op.definitionId}" is not installed.`);
@@ -1769,10 +1776,14 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       if (node.kind !== 'text' && node.kind !== 'element') fail('Only text and containers have a tag.');
       if (node.kind === 'text' && node.rich) fail('Rich text keeps its paragraph structure.');
       // A bound tag is the choice's default, which must stay one of the choice's options.
+      if (isBinding(node.tag) && typeof v !== 'string') fail('A tag is the name of one, such as "h2" or "section".');
       if (setBound(node.tag, () => String(v))) return {};
-      if (node.kind !== 'text') fail('A container’s tag is chosen when it is inserted.');
-      if (!['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'].includes(String(v))) fail('Tag must be h1–h6 or p.');
-      node.tag = String(v) as TextTag;
+      // Any tag of its kind. Whether it fits where it sits (a list item in a list, only inline content in a
+      // paragraph) is judged once the whole batch is applied, so a list and its items can change together.
+      const problem = tagKindProblem(node, v);
+      if (problem) fail(problem);
+      if (node.kind === 'text') node.tag = v as TextTag;
+      else node.tag = v as ElementTag;
       return {};
     }
     case 'anchor': {
@@ -3038,6 +3049,14 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
       }
       throw e;
     }
+  }
+  // Retagged nodes must fit where they render once the batch is done (a list item in a list, say).
+  const retagged = ops.flatMap((op, i) => (op.type === 'node.setContent' && op.field === 'tag' ? [{ op, i }] : []));
+  if (retagged.length) {
+    const problem = batchTagProblem(state, draft, retagged.map(({ op }) => op.owner));
+    // Named by the edit that retagged the node out of place, when one did; else it is where the batch leaves it.
+    const by = problem ? retagged.findLast(({ op }) => op.nodeId === problem.nodeId && op.owner.kind === problem.owner.kind && op.owner.id === problem.owner.id) : undefined;
+    if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (node.setContent): ${problem.message}` : problem.message);
   }
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };

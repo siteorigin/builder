@@ -252,7 +252,7 @@ export const OPERATION_SCHEMAS = {
     nodeId: z.string(),
     field: z
       .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger'])
-      .describe('"collapseEmpty" (definition containers): true hides it when all children are hidden. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
+      .describe('"collapseEmpty" (definition containers): true hides it when all children are hidden. "tag" must fit where the node sits: li in ul/ol, dt/dd in dl, figcaption in figure, summary in details, only inline content in a p or span. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({
