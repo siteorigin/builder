@@ -8,6 +8,7 @@ import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
 import { atomicWrite, safeJoin, sha } from './fsutil';
+import { readRegularFile } from '../packs/files';
 import { sanitizeSvg } from './svg';
 import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng, type ImageProblem } from './media';
 import { createVariantClient, MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type WebCopyResult } from './media-client';
@@ -527,6 +528,61 @@ export async function importAsset(
     ...(p.font ? { font: p.font } : {})
   };
   return { record, existing: false, ...noted };
+}
+
+/**
+ * Store an image a component package carries, as the library stores a file it imports: checked, resized copies made,
+ * and written only while `fence` allows. The same picture already in the library is that record. An SVG is stored
+ * only when it is already as the library would rebuild it: one the rebuild would change holds something (a script, an
+ * event handler, a remote file) that no site image may, and is refused rather than quietly changed.
+ */
+export async function importPackageImage(
+  projectDir: string,
+  image: { name: string; mime: string; ext: string; bytes: Buffer },
+  existing: AssetRecord[],
+  fence: WriteFence = unfenced,
+  createdAt = new Date().toISOString()
+): Promise<{ record: AssetRecord; existing: boolean }> {
+  const shown = `${image.name.trim().slice(0, 80) || 'Image'}${image.ext}`;
+  const refuse = refusal(shown, 'was not imported');
+  if (!image.mime.startsWith('image/') || !MIME[image.ext] || MIME[image.ext] !== image.mime) throw refuse('it is not a picture the library takes.');
+  if (image.bytes.length > MAX_BYTES) throw new Error(`${shown} is larger than 25 MB.`);
+  const p = await prepareBytes(shown, image.bytes, image.mime, image.ext, refuse);
+  if (image.mime === 'image/svg+xml' && !p.buf.equals(image.bytes)) throw refuse('it holds scripts, links or other content a site’s images may not have.');
+  // The same picture already in the library is that record, while its file is still the picture. One whose file has
+  // gone gets a record of its own; one whose file now holds something else is left alone, never written over.
+  let changed: AssetRecord | undefined;
+  for (const dup of existing.filter((a) => a.hash === p.hash && a.mime === p.mime)) {
+    const at = safeJoin(projectDir, dup.file);
+    const there = await fs.lstat(at).then((st) => (st.isFile() ? readRegularFile(at, MAX_BYTES).catch(() => null) : null), () => 'missing' as const);
+    if (Buffer.isBuffer(there) && sha(there) === dup.hash) return { record: dup, existing: true };
+    if (there !== 'missing') changed ??= dup;
+  }
+  if (changed) throw refuse(`the library's own copy of it (“${changed.name}”) has changed in the project folder. Locate it in Assets, then import again.`);
+  const { stored, files } = await planStore(p, refuse);
+  // A file already at a planned name is never replaced: the same bytes (left by an import that was then refused) are
+  // used as they are, and anything else is someone else's file.
+  const pending: PendingFile[] = [];
+  for (const f of files) {
+    const at = safeJoin(projectDir, f.rel);
+    const there = await fs.lstat(at).then(() => readRegularFile(at, Math.max(f.data.length, 1)).catch(() => null), () => 'missing' as const);
+    if (there === 'missing') pending.push(f);
+    else if (!Buffer.isBuffer(there) || !there.equals(f.data)) throw refuse(`a different file already has its name (${f.rel.split('/').pop()}) in the project folder.`);
+  }
+  if (!(await fence(() => writePlanned(projectDir, stored, pending, existing)))) throw refuse(`${NOT_WRITTEN}.`);
+  const record: AssetRecord = {
+    id: newId('a'),
+    name: image.name.trim().slice(0, 200) || 'Image',
+    file: stored.file,
+    mime: stored.mime,
+    bytes: stored.bytes,
+    hash: stored.hash,
+    kind: 'image',
+    createdAt,
+    ...(stored.width !== undefined ? { width: stored.width, height: stored.height } : {}),
+    ...(stored.variants ? { variants: stored.variants } : {})
+  };
+  return { record, existing: false };
 }
 
 /** A file the importer named, inside static/assets/: the only kind a library image or document may be restored to. */

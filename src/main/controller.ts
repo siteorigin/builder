@@ -4,7 +4,7 @@ import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } fro
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportFormat, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { ComponentExportResult, ComponentImportResult, CreateProjectOptions, ExportFormat, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -36,6 +36,9 @@ import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, trust, untrust } from './settings';
 import { newId } from '@shared/ids';
+import { packageFileName, type ComponentPackage } from '@shared/component-package';
+import { importedCode, planComponentPackage } from '@engine/component-package';
+import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
 
 const INSTANCE_ID = randomUUID();
 
@@ -1521,6 +1524,108 @@ export class Controller {
       }
       return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
     }));
+  }
+
+  /**
+   * Save a project component as a package file another project can import (#371): the chooser offers a place unless
+   * `dest` is given. `notes` says what the package leaves out (links to this site's pages, say).
+   */
+  async exportComponent(definitionId: string, dest?: string): Promise<ComponentExportResult> {
+    const s = this.session;
+    if (!s) return { ok: false };
+    const state = s.state;
+    const def = Object.hasOwn(state.components, definitionId) ? state.components[definitionId] : undefined;
+    if (!def) return { ok: false, message: 'That component is no longer in this project.' };
+    // One that can't travel says so before a chooser opens.
+    try {
+      planComponentPackage(state, definitionId);
+    } catch (e) {
+      return { ok: false, message: `“${def.name}” can’t be exported: ${(e as Error).message}` };
+    }
+    let file = dest;
+    if (!file) {
+      const r = await dialog.showSaveDialog(this.getWindow()!, {
+        title: `Export ${def.name}`,
+        defaultPath: join(app.getPath('documents'), packageFileName(def.name)),
+        filters: [{ name: 'SiteOrigin component', extensions: ['json'] }],
+        buttonLabel: 'Export',
+        properties: ['showOverwriteConfirmation', 'createDirectory']
+      });
+      if (r.canceled || !r.filePath) return { ok: false };
+      file = r.filePath;
+    }
+    // A package written into the project would replace one of its own files, outside its history.
+    if (isInside(s.dir, file)) return { ok: false, message: 'Choose a location outside the project folder.' };
+    try {
+      const { text, notes } = await buildComponentPackage(s.dir, state, definitionId, `SiteOrigin Builder ${app.getVersion()}`);
+      await atomicWrite(file, text);
+      return { ok: true, path: file, notes };
+    } catch (e) {
+      return { ok: false, message: `“${def.name}” was not exported: ${(e as Error).message}` };
+    }
+  }
+
+  /**
+   * Import a component package (#371): the chooser offers one unless `path` is given. Its images are stored and its
+   * components, site styles and image records land together as one change, or nothing lands. Returns the imported
+   * component and the history entry to undo it with.
+   */
+  async importComponent(path?: string): Promise<ComponentImportResult> {
+    const s = this.session;
+    if (!s) return { ok: false };
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    const closed = { ok: false, message: 'The project was closed before the component could be imported.' };
+    let file = path;
+    if (!file) {
+      const r = await dialog.showOpenDialog(this.getWindow()!, { title: 'Import a component', properties: ['openFile'], filters: [{ name: 'SiteOrigin component', extensions: ['json'] }] });
+      if (r.canceled || !r.filePaths[0]) return { ok: false };
+      file = r.filePaths[0];
+    }
+    if (this.session !== s || this.closing) return closed;
+    if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before importing a component.' };
+    let pkg: ComponentPackage;
+    try {
+      pkg = await readComponentPackage(file);
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+    const name = pkg.definitions.find((d) => d.id === pkg.rootId)?.name ?? 'the component';
+    // Code from a package runs on this computer whenever the site is previewed or built: whoever imports it decides,
+    // knowing that, before anything is written. (A path given directly is a test's, which has no one to ask.)
+    const code = importedCode(s.state, { id: '', pkg, images: {} });
+    if (code.length && !path) {
+      if (!(await loadSettings()).settings.developerMode) return { ok: false, message: `“${name}” includes code components, which need Developer mode. Turn on Developer mode in Settings to import it.` };
+      const names = code.map((d) => `“${d.name}”`).join(', ');
+      const r = await dialog.showMessageBox(this.getWindow()!, {
+        type: 'warning',
+        buttons: ['Cancel', 'Import code'],
+        defaultId: 0,
+        cancelId: 0,
+        message: `“${name}” includes code`,
+        detail: `This package brings code components (${names}). Their code runs on this computer whenever the site is previewed or built, and the checks it passes can't make code from someone else safe. Import it only from someone you trust.`
+      });
+      if (r.response !== 1) return { ok: false };
+    }
+    // Its images are written before their records exist, so the session holds off sweeping meanwhile.
+    return this.serialImport(() =>
+      s.withImport(async () => {
+        if (this.session !== s || this.closing) return closed;
+        let prepared: PreparedImport;
+        try {
+          prepared = await preparePackageImport(s.dir, s.state, pkg, { codeAllowed: (await loadSettings()).settings.developerMode, fence: this.writeFence(s) });
+        } catch (e) {
+          return { ok: false, message: (e as Error).message };
+        }
+        // Asked again now the images are in: Developer mode or the assistant may have changed meanwhile.
+        if (this.session !== s || this.closing) return closed;
+        if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before importing a component.' };
+        const codeAllowed = (await loadSettings()).settings.developerMode;
+        const r = await s.apply({ operations: [...prepared.assets, { type: 'component.import', importId: prepared.input.id }] }, { label: `Import ${name}`, source: 'user', codeAllowed, componentImport: prepared.input });
+        if (!r.ok) return { ok: false, message: `“${name}” was not imported: ${(r.error?.message ?? 'it could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
+        const definitionId = r.results?.at(-1)?.definitionId;
+        return { ok: true, definitionId: typeof definitionId === 'string' ? definitionId : undefined, name, entryId: r.entryId, revision: r.revision };
+      })
+    );
   }
 
   /**

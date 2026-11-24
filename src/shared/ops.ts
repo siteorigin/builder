@@ -400,6 +400,9 @@ export const OPERATION_SCHEMAS = {
     expectedPropertiesHash: z.string().optional().describe('propertiesHash() of the schema `properties` was edited from. Refused when the stored schema has changed since.')
   }),
   'component.remove': z.object({ type: z.literal('component.remove'), definitionId: z.string() }),
+  // Editor only: lands a component package the editor read and checked. The package travels beside the batch, never
+  // in it, so an operation alone can import nothing.
+  'component.import': z.object({ type: z.literal('component.import'), importId: z.string().regex(/^imp_[A-Za-z0-9]{8}$/) }),
   'component.setPropSchema': z.object({
     type: z.literal('component.setPropSchema'),
     definitionId: z.string(),

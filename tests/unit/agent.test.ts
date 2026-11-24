@@ -1708,9 +1708,11 @@ describe('tool definitions', () => {
     expect(withCode.types).not.toContain('asset.add');
     expect(withCode.types).not.toContain('asset.relink');
     expect(withCode.types).not.toContain('node.paste');
+    // A component package is read and checked by the editor's import, never sent as an operation (#371).
+    expect(withCode.types).not.toContain('component.import');
     expect(withCode.required).not.toContain('scope');
     const noCode = applySchema(toolDefinitions({ codeEnabled: false }));
-    for (const t of ['component.createCode', 'component.updateSource', 'component.convertToCode', 'node.paste', 'asset.relink']) expect(noCode.types).not.toContain(t);
+    for (const t of ['component.createCode', 'component.updateSource', 'component.convertToCode', 'node.paste', 'asset.relink', 'component.import']) expect(noCode.types).not.toContain(t);
     expect(noCode.types).toContain('page.create');
     const names = (codeEnabled: boolean) => toolDefinitions({ codeEnabled }).map((d) => d.name);
     expect(names(false)).not.toContain('apply_source_patch');

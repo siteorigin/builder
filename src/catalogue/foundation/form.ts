@@ -570,12 +570,17 @@ export const FORM_SERVICES: Record<string, { prop: string; setup: string; missin
 };
 
 const SERVICE_SETTINGS = Object.values(FORM_SERVICES).map((s) => s.prop);
+/**
+ * The settings that send a form's messages to someone's own account: an HTTPS endpoint, or a Web3Forms key (whose
+ * owner gets the mail). A Netlify form's name sends to whichever site it is published on, so it is not among them.
+ */
+export const FORM_DESTINATIONS = ['endpoint', 'accessKey'] as const;
 
 /**
  * Whether a definition reads its form service settings the way the theme's contact form does: any version of it, or
  * a project copy of it whose code still does. Code that reads them some other way keeps the ordinary inspector.
  */
-function readsFormServices(def: ComponentDefinition | undefined): def is ComponentDefinition {
+export function readsFormServices(def: ComponentDefinition | undefined): def is ComponentDefinition {
   if (!def || def.kind !== 'code' || def.properties.provider?.type !== 'enum') return false;
   // A copy made unique takes a project component ID; its provenance still names the form it came from.
   if (def.componentId !== 'contact.form' && def.provenance?.componentId !== 'contact.form') return false;

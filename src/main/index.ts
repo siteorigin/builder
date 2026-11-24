@@ -315,6 +315,9 @@ function registerIpc() {
   const pathList = (paths: unknown) => (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : undefined);
   handle('project:reviewImport', (paths?: unknown, only?: unknown) => controller.reviewImport(pathList(paths), kindOf(only)));
   handle('project:importAssets', (paths?: unknown, only?: unknown, choices?: unknown) => controller.importAssets(pathList(paths), kindOf(only), importChoices(choices)));
+  // The file is always one the author chose in the app's own chooser.
+  handle('project:exportComponent', (id: unknown) => (typeof id === 'string' ? controller.exportComponent(id) : { ok: false, message: 'That component is no longer in this project.' }));
+  handle('project:importComponent', () => controller.importComponent());
   handle('project:fontFile', (assetId: unknown, opening: unknown) => (typeof assetId === 'string' && typeof opening === 'string' ? controller.fontFile(assetId, opening) : null));
   handle('project:webCopyPlan', (assetId: unknown) => (typeof assetId === 'string' ? controller.webCopyPlan(assetId) : null));
   handle('project:makeWebCopy', (assetId: unknown, opts: unknown) => {
@@ -379,6 +382,8 @@ function registerIpc() {
     handle('test:exportSource', (dest: string, format?: unknown) => controller.exportSourceTo(dest, format === 'zip' ? 'zip' : 'folder'));
     handle('test:previewComponent', (steps: unknown) => previewComponents(Array.isArray(steps) ? (steps as ComponentPreviewStep[]) : []));
     handle('test:thumbCaptures', () => controller.thumbs.captures);
+    handle('test:exportComponent', (id: unknown, dest: unknown) => controller.exportComponent(String(id), String(dest)));
+    handle('test:importComponent', (path: unknown) => controller.importComponent(String(path)));
     handle('test:inspectLayout', (pageId: unknown, width: unknown) => inspectLayout(String(pageId), Number.isFinite(width) ? Math.min(4000, Math.max(200, Math.round(width as number))) : 390));
   }
   handle('ai:providers', () => providerStatuses());

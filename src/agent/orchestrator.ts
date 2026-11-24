@@ -1006,6 +1006,8 @@ export class Orchestrator {
         // Asset records are created only by the verified importer, never by the model.
         if (operations.some((o) => o.type === 'asset.add' || o.type === 'asset.relink'))
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The assistant cannot add images. Ask the user to import them, then use search_assets.' } };
+        if (operations.some((o) => o.type === 'component.import'))
+          return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The assistant cannot import component packages. Ask the user to import the package from the component library.' } };
         // Code, and copies that would make new code (duplicating a code component, say), need Developer mode.
         if (!codeEnabled) {
           const refusal = developerModeRefusal(session.state, operations);
