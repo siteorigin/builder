@@ -11,6 +11,7 @@ import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
+import { archivePages } from '@shared/archives';
 import { placeholderImageCount } from '@generator/checks';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
@@ -2199,6 +2200,12 @@ export class Controller {
     }
     // Every published collection entry is a page of its own.
     for (const { route } of siteEntries(live)) {
+      const file = join(out, route, 'index.html');
+      if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings };
+      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings };
+    }
+    // So is each page of every collection's index and category archives.
+    for (const { route } of archivePages(live)) {
       const file = join(out, route, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings };
       if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings };

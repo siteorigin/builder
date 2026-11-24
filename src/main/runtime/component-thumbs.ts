@@ -14,6 +14,7 @@ import type { PreparedComponentPreview } from '@shared/component-preview';
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { siteLanguage } from '@shared/languages';
 import { articleRows } from '@shared/articles';
+import { NO_QUERY, entryRows } from '@shared/entry-feed';
 import { getTheme } from '@catalogue/index';
 import { codeNeeds, directDependencies } from '@engine/definitions';
 import { generateTokensCss } from '@generator/index';
@@ -78,6 +79,8 @@ export function brandFingerprint(state: ProjectState): string {
 
 /** Whether a definition shows rows worked out from the site's pages (a list of articles), which its picture then shows too. */
 const readsPages = (d: ComponentDefinition) => Object.values(d.properties).some((p) => p.type === 'list' && !!p.feed) || (d.kind === 'code' && /\bso_pages\b/.test(d.source ?? ''));
+/** Whether a definition shows a collection's entries (a list of posts). */
+const readsEntries = (d: ComponentDefinition) => Object.values(d.properties).some((p) => p.type === 'list' && p.feed === 'entries');
 
 /**
  * The key of a project component's thumbnail as the project is now, or null when the project has no such
@@ -94,8 +97,14 @@ export function thumbKey(state: ProjectState, definitionId: string, brand = bran
     .sort((a, b) => (a[0] < b[0] ? -1 : 1));
   // A list of articles shows the articles as they are now: their titles, dates and pictures.
   const rows = defs.some(readsPages) ? articleRows(state, 'articles', undefined) : null;
+  // A list of posts shows each collection's published entries as they are now, with their pictures' files.
+  const posts = defs.some(readsEntries)
+    ? Object.keys(state.collections ?? {})
+        .sort()
+        .map((id) => entryRows(state, { ...NO_QUERY, collection: id }).map((r) => [r, r.image.assetId ? (state.assets.assets[r.image.assetId]?.hash ?? null) : null]))
+    : null;
   return createHash('sha256')
-    .update(JSON.stringify([RECIPE, definitionId, siteLanguage(state.site), brand, json, assets, rows]))
+    .update(JSON.stringify([RECIPE, definitionId, siteLanguage(state.site), brand, json, assets, rows, ...(posts ? [posts] : [])]))
     .digest('hex');
 }
 

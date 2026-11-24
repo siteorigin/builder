@@ -40,7 +40,8 @@ import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
 import { validateRoute } from '@shared/routes';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
-import { articleRows, feedLimit, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { findEntry } from '@shared/collections';
 import { cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
@@ -58,7 +59,7 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
 import { TagField } from './TagField';
-import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, placedOnPage, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
+import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
 import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
@@ -66,8 +67,8 @@ import { useStyleCopyItems } from './StylePaste';
 import { useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
-import { assetUrl, createComponentTarget, definitionView, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
-import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, setMode, structuralTarget } from '../lib/actions';
+import { assetUrl, createComponentTarget, definitionView, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planLayers, selectPage, setMode, structuralTarget } from '../lib/actions';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -1235,7 +1236,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const listProp = (repeatList && def.properties[repeatList]?.type === 'list' ? repeatList : undefined) ?? contentList;
   const listSchema = listProp ? (def.properties[listProp] as Extract<ComponentDefinition['properties'][string], { type: 'list' }>) : undefined;
   // A computed list's items are the pages it shows where it is placed (each row's ID is its page's).
-  const feedRows = listSchema?.feed ? (articleRows(state, listSchema.feed, placedOnPage(parent), Number.isFinite(feedLimit(listSchema)) ? feedLimit(listSchema) : undefined) as unknown as Array<Record<string, unknown>>) : undefined;
+  const feedRows = listSchema?.feed ? placedFeedRows(state, listSchema, parent?.owner, def.properties, inst.props as Record<string, unknown>) : undefined;
   // A list the outer design fills in from one of its own properties is not this placement's to list here.
   const ownList = listProp ? (inst.props[listProp] ?? listSchema?.default) : undefined;
   const listItems = feedRows ?? (Array.isArray(ownList) ? (ownList as Array<Record<string, unknown>>) : []);
@@ -2360,10 +2361,22 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
   );
 }
 
-/** What a part of a computed list shows, and where to change it: the article page it comes from. */
+/** What a part of a computed list shows, and where to change it: the article page, or the post, it comes from. */
 function ComputedItemNote({ state, pageId, listLabel }: { state: ProjectState; pageId?: string; listLabel: string }) {
+  const post = pageId ? findEntry(state, pageId) : undefined;
+  if (post)
+    return (
+      <>
+        <p className="muted insp-note">
+          From “{post.entry.title}” in {post.collection.settings.name}, and follows it: its title, date, author, excerpt, featured image and categories are changed there, and every feed shows the change.
+        </p>
+        <button className="btn btn-sm insp-inline-btn" onClick={() => void openPost(post.collection.settings.id, post.entry.id)}>
+          Edit {post.entry.title}
+        </button>
+      </>
+    );
   const page = pageId ? state.pages[pageId] : undefined;
-  if (!page) return <p className="muted insp-note">The {listLabel} come from the site’s pages. Click one on the page to see where it comes from.</p>;
+  if (!page) return <p className="muted insp-note">The {listLabel} come from the site’s pages or posts. Click one on the page to see where it comes from.</p>;
   return (
     <>
       <p className="muted insp-note">

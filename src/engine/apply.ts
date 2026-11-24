@@ -529,6 +529,7 @@ function instanceTarget(state: ProjectState, owner: OwnerRef, nodeId: string): {
 /** A computed list's items are pages of the site: they change with those pages, never one at a time here. */
 function refuseFeed(schema: PropSchema) {
   if (schema.type !== 'list' || !schema.feed) return;
+  if (schema.feed === 'entries') fail(`${schema.label} shows a collection’s published entries, newest first, and changes with them. Edit a post in Posts, or choose which posts show with the section’s Collection, Category, Tag and Number of entries.`);
   const what = schema.feed === 'articles' ? 'the site’s dated articles, newest first' : 'the page it is on';
   fail(`${schema.label} shows ${what} and changes with them. Edit the article’s title, date, byline or excerpt in its page settings, or hide it from news lists there.`);
 }

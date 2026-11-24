@@ -9,11 +9,12 @@ import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
 import { entryRoute, findEntry } from '@shared/collections';
+import { archivePages } from '@shared/archives';
+import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
 import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
-import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
@@ -153,17 +154,16 @@ interface Frame {
 }
 
 /** Each property's effective value for a placement: its own (evaluated where it is placed) or the default. */
-export function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope, pageId?: string): Record<string, unknown> {
+export function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope, pageId?: string, entry?: { collectionId: string; entryId: string }): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(def.properties)) {
     const own = Object.hasOwn(n.props, name);
-    // A computed list holds what the site's pages give it where it is placed, as the generator writes it: it is
-    // never bound or stored.
+    // A computed list holds what the site's pages (or a collection's entries) give it where it is placed, as the
+    // generator writes it: it is never bound or stored. An entry feed shows what the placement's own values chose.
     if (schema.type === 'list' && schema.feed) {
-      const limit = feedLimit(schema);
       // Shaped as the list's own items, as the generator writes them: its ID and declared fields only.
-      props[name] = articleRows(state, schema.feed, pageId, Number.isFinite(limit) ? limit : undefined).map((row) => ({
-        ...Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(row, k) ? (row as unknown as Record<string, unknown>)[k] : f.default])),
+      props[name] = feedRows(state, schema, { pageId, entry, query: entryQuery(def.properties, n.props) }).map((row) => ({
+        ...Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(row, k) ? row[k] : f.default])),
         id: row.id
       }));
       continue;
@@ -1139,6 +1139,11 @@ export interface SectionLinkIssue {
    * an entry's page has none of a page's sections, only the layout's and the header and footer's.
    */
   entries?: string[];
+  /**
+   * The archive pages it shows on (see shared/archives.ts), by address, for a link in the shared header or footer to
+   * a section of the page it is on: they have none of a page's sections either.
+   */
+  archives?: string[];
 }
 
 /**
@@ -1184,6 +1189,8 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   // Only published entries are pages of the website a build has to follow links on.
   const published = siteEntries(state).filter((e) => !isDraftEntry(e.entry));
   const entries = published.map((e) => e.entry.id);
+  // Collections' index and archive pages show the header and footer around a list of entries, with no sections.
+  const archives = archivePages(state).map((p) => p.route);
   const entryIds = new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]);
   const ids = new Map<string, Set<string>>();
   // A link visitors see at first must find its section on screen. One in a panel kept in the page hidden shows with
@@ -1235,7 +1242,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   };
   // The header and footer are checked on the pages that show each: they can differ.
   const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[]; entry?: (typeof articles)[number] }> = [
-    ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0),
+    ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0 || archives.length > 0),
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] })),
     // A collection's layout, as each of its published entries shows it.
     ...articles.filter((a) => hasSectionLinks(a.collection.settings.id)).map((a) => ({ owner: { kind: 'template' as const, id: a.collection.settings.id }, tree: a.article(), on: [] as PageDoc[], entry: a }))
@@ -1255,7 +1262,9 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
         const fragment = link.target.replace(/^#/, '');
         const missing = src.on.filter((p) => !idsOf(p.id, hidden).has(fragment)).map((p) => p.id);
         const lacking = src.owner.kind === 'shell' ? lackingIn(fragment, hidden) : src.entry && lacks(src.entry, fragment, hidden) ? [src.entry.entry.id] : [];
-        if (missing.length || lacking.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}) };
+        const listing = src.owner.kind === 'shell' && !entryIdsOf(hidden).has(fragment) ? archives : [];
+        if (missing.length || lacking.length || listing.length)
+          issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}), ...(listing.length ? { archives: listing } : {}) };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once; one in a layout, once for all the
       // entries that lack its section.

@@ -389,7 +389,12 @@ export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectStat
     if (!Array.isArray(v)) fail(`${label}: expected a list.`);
     if (schema.feed) {
       // Its items are the site's pages, worked out where it is placed; there is nothing to store.
-      if (v.length) fail(`${label} fills itself from the site's ${schema.feed === 'articles' ? 'dated articles' : 'page'}; give its pages article details instead of items.`);
+      if (v.length)
+        fail(
+          schema.feed === 'entries'
+            ? `${label} fills itself from a collection's published entries; choose which with its collection, category, tag and count instead of items.`
+            : `${label} fills itself from the site's ${schema.feed === 'articles' ? 'dated articles' : 'page'}; give its pages article details instead of items.`
+        );
       return [];
     }
     if (schema.max !== undefined && v.length > schema.max) fail(`${label}: at most ${schema.max} items.`);

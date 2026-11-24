@@ -4,7 +4,7 @@
  * size at a time, with Previous and Next links between them.
  */
 import { describe, expect, it } from 'vitest';
-import type { AssetRecord, ComponentDefinition, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { AssetRecord, ComponentDefinition, InstanceNode, ListProp, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -16,6 +16,9 @@ import { pageLinks } from '@generator/archive';
 import { GenerationCache } from '@generator/cache';
 import { archivePages } from '@shared/archives';
 import { entryQuery, entryRows } from '@shared/entry-feed';
+import { upsertToolSchema } from '@agent/macros';
+import { propSchemaSummary } from '@agent/context';
+import { placedFeedRows } from '../../src/renderer/src/lib/model';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const page = (id: string): OwnerRef => ({ kind: 'page', id });
@@ -315,5 +318,32 @@ describe('the entry feed in a definition', () => {
     const s = blog();
     expect(() => normalizePropSchema({ type: 'list', itemLabel: 'Post', fields: { image: { type: 'string', label: 'Image' } }, feed: 'entries' }, s, 'posts')).toThrow(/must be a image field/);
     expect(normalizePropSchema({ type: 'list', itemLabel: 'Post', fields: { title: { type: 'string', label: 'Title' }, image: { type: 'image', label: 'Picture' } }, feed: 'entries' }, s, 'posts')).toMatchObject({ feed: 'entries', default: [] });
+  });
+});
+
+describe('the AI and the editor', () => {
+  it('offers the post sections to the page tool once the project has a collection', () => {
+    const sections = (s: ProjectState) => JSON.stringify(upsertToolSchema(s));
+    expect(sections(createStarterState('business', 'Riverside Studio', false))).not.toContain('"blog.grid"');
+    expect(sections(blog())).toContain('"blog.grid"');
+    expect(sections(blog())).toContain('"blog.featured"');
+  });
+
+  it('describes an entry feed as filled from a collection, chosen by the placement', () => {
+    const def = Object.values(onHome(blog(), 'blog.grid').s.components).find((d) => d.componentId === 'blog.grid')!;
+    expect(JSON.stringify(propSchemaSummary(def.properties).items)).toContain("a collection's published entries");
+  });
+
+  it('gives a feed in a collection’s layout every row any entry’s page can show it with', () => {
+    const s = run(blog(), { type: 'node.insert', owner: POSTS, parentId: null, componentId: 'blog.grid', props: { count: 2 } } as EditOperation);
+    const n = Object.values(s.collections.posts.settings.template.nodes).find((x) => x.kind === 'instance' && s.components[x.definitionId]?.componentId === 'blog.grid') as InstanceNode;
+    const def = s.components[n.definitionId];
+    const rows = placedFeedRows(s, def.properties.items as ListProp, POSTS, def.properties, n.props);
+    // Two on each entry's page, never that entry: the newest three between them.
+    expect(rows.map((r) => r.id)).toEqual(['en_kiln', 'en_glaze', 'en_open']);
+    // On a page, what the page shows.
+    const placed = onHome(s, 'blog.grid', { count: 2 });
+    const home = placed.s.pages[placed.home].nodes[placed.nodeId] as InstanceNode;
+    expect(placedFeedRows(placed.s, def.properties.items as ListProp, page(placed.home), def.properties, home.props).map((r) => r.id)).toEqual(['en_kiln', 'en_glaze']);
   });
 });

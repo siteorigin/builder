@@ -204,7 +204,11 @@ describe('draft entries and the website export', () => {
       { route: '/blog/glazing-evenings/', draft: 'Winter workshop' },
       { route: '/blog/winter-workshop/', draft: 'Winter workshop' }
     ]);
-    expect([...generateProject(live).keys()].filter((f) => f.startsWith('src/routes/blog/'))).toEqual(['src/routes/blog/spring-open-studio/+page.svelte']);
+    const files = generateProject(live);
+    // The published entry's page, and the collection's index listing it alone (#397).
+    expect([...files.keys()].filter((f) => f.startsWith('src/routes/blog/'))).toEqual(['src/routes/blog/spring-open-studio/+page.svelte', 'src/routes/blog/+page.svelte']);
+    expect(files.get('src/routes/blog/+page.svelte')).toContain('Spring open studio');
+    expect(files.get('src/routes/blog/+page.svelte')).not.toContain('Winter workshop');
     // Published again, its old address works again.
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: false });
     expect(publishedState(s).site.redirects).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
@@ -239,7 +243,8 @@ describe('draft entries and the website export', () => {
     s = run(s, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: nav.id, prop: linkProp!, value: { type: 'anchor', target: 'visit' } });
     const found = validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map((d) => d.message);
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatch(/goes to #visit, but .*2 collection entries have no section with that ID/);
+    // The collection's index (#397) shows the header too, and has none of a page's sections either.
+    expect(found[0]).toMatch(/goes to #visit, but .*2 collection entries and the collection index at \/blog\/ have no section with that ID/);
     expect(found[0]).toMatch(/Entries have none of a page’s sections/);
   });
 });
@@ -259,6 +264,8 @@ describe('a renamed entry in a cached run', () => {
     made();
     s = run(s, rename('en_winter', 'glazing-evenings'));
     expect(made()).toEqual([
+      // The collection's index links to the entry at its new address (#397).
+      'archive:posts:/blog/',
       'entry:posts:en_spring#clean',
       'entry:posts:en_spring#dev',
       'entry:posts:en_winter#clean',
@@ -275,9 +282,9 @@ describe('a renamed entry in a cached run', () => {
     s = run(s, rename('en_winter', 'glaze'));
     expect(made()).toContain('redirect:posts:en_winter:/blog/winter-workshop/');
     expect(generateProject(s, {}, cache).get('src/routes/blog/winter-workshop/+page.svelte')).toContain('resolve("/blog/glaze/")');
-    // A change to the collection's name, which no file shows, makes nothing again.
+    // A change to the collection's name makes only its index again, whose heading it is (#397): no entry's page shows it.
     s = run(s, { type: 'collection.update', collectionId: 'posts', name: 'Journal' });
-    expect(made()).toEqual([]);
+    expect(made()).toEqual(['archive:posts:/blog/']);
   });
 });
 
