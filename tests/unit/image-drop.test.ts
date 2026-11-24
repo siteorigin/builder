@@ -8,7 +8,8 @@ import { findParent } from '@engine/tree';
 import { P, item, prop, type ComponentSpec } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
 import { showsWithSoImage } from '@generator/checks';
-import { imageDropOps, imageDropTargets, resolveImageDrop, showsFile, type ImageTarget, type PointedAt } from '../../src/renderer/src/lib/image-drop';
+import { aimKey, assetAim, imageDropOps, imageDropTargets, resolveImageDrop, showsFile, type ImageTarget, type PointedAt } from '../../src/renderer/src/lib/image-drop';
+import type { InsertAim } from '../../src/renderer/src/lib/insert-drop';
 import { descOf, type BridgeDesc } from '../../src/renderer/src/lib/model';
 
 /**
@@ -448,5 +449,71 @@ describe('a picture’s file (#505)', () => {
     expect(showsFile('/assets/Shop%20front.png', 'assets/Shop front.png')).toBe(true);
     expect(showsFile('/assets/old-logo.png', 'assets/logo.png')).toBe(false);
     expect(showsFile('', 'assets/logo.png')).toBe(false);
+  });
+});
+
+describe('an image first, then between content (#506)', () => {
+  const rect = { x: 10, y: 20, width: 300, height: 200 };
+  const line = { x: 0, y: 399, width: 1000, height: 2 };
+  /** A place between content the pointer is also over. */
+  const between = (s: ReturnType<typeof site>): InsertAim => ({ at: { owner: s.owner, parentId: null, index: 1 }, refused: null, line, outline: null, where: { lead: 'in a new section after', target: 'Split hero', node: true } });
+
+  it('an image pointed at, or the one empty image of the component the pointer is in, takes it however a place between content would', () => {
+    const s = site();
+    const targets = imageDropTargets(s.state, s.owner.id);
+    const media = targets.find((t) => t.desc.node === 'media')!;
+    let asked = 0;
+    const insert = () => (asked++, between(s));
+    const onImage = pick(s.state, targets, chain(s.state, s.owner, s.hero, 'media', [], 'div'), { src: '', own: false });
+    // On the image, even before anything is measured.
+    expect(assetAim(onImage, rect, false, insert)).toEqual({ kind: 'image', target: media, outline: rect });
+    expect(assetAim(onImage, rect, true, insert)).toEqual({ kind: 'image', target: media, outline: rect });
+    // Off it, on the hero's heading: its empty image, once measured.
+    const heading = headingOf(s.state, s.node(s.hero));
+    const off = pick(s.state, targets, chain(s.state, s.owner, s.hero, heading.id, [], 'h1'));
+    expect(assetAim(off, rect, true, insert)).toEqual({ kind: 'image', target: media, outline: rect });
+    expect(asked).toBe(0);
+    // Taken by an image that can't be outlined (shown more than once): not dropped between content either.
+    expect(assetAim(off, null, true, insert)).toEqual({ kind: 'none' });
+    expect(assetAim(onImage, null, true, insert)).toEqual({ kind: 'none' });
+    expect(assetAim(onImage, null, false, insert)).toEqual({ kind: 'none' });
+    expect(asked).toBe(0);
+    // An empty image off the pointer, not yet measured where it shows, is not yet known to take it.
+    expect(assetAim(off, rect, false, insert)).toEqual({ kind: 'pending' });
+    expect(asked).toBe(0);
+  });
+
+  it('goes between content only once no image is targeted, and waits while what finds one is being measured', () => {
+    const s = site();
+    let asked = 0;
+    const insert = () => (asked++, between(s));
+    // Nothing measured yet: an empty image off the pointer can't be counted, so nothing is known.
+    expect(assetAim(null, null, false, insert)).toEqual({ kind: 'pending' });
+    expect(asked).toBe(0);
+    expect(assetAim(null, null, true, insert)).toEqual({ kind: 'insert', aim: between(s) });
+    expect(asked).toBe(1);
+    // Where nothing can go, the place says why, with nowhere to drop.
+    const refused: InsertAim = { at: null, refused: 'It has more than one place for content.', line: null, outline: rect, where: null };
+    expect(assetAim(null, null, true, () => refused)).toEqual({ kind: 'insert', aim: refused });
+    expect(assetAim(null, null, true, () => null)).toEqual({ kind: 'none' });
+  });
+
+  it('tells two aims apart by what a release would do', () => {
+    const s = site();
+    const targets = imageDropTargets(s.state, s.owner.id);
+    const media = targets.find((t) => t.desc.node === 'media')!;
+    const onImage = { kind: 'image' as const, target: media, outline: rect };
+    const gap = { kind: 'insert' as const, aim: between(s) };
+    expect(aimKey({ kind: 'pending' })).toBeNull();
+    expect(aimKey(onImage)).toBe(aimKey({ ...onImage, outline: { ...rect, y: 50 } }));
+    expect(aimKey(gap)).toBe(aimKey({ kind: 'insert', aim: { ...between(s), line: { ...line, y: 10 } } }));
+    const at = (parentId: string | null, slot: string | undefined, index: number) => aimKey({ kind: 'insert', aim: { ...between(s), at: { owner: s.owner, parentId, ...(slot ? { slot } : {}), index } } });
+    // Each part of the place counts: the index, the list, the slot, the page.
+    const keys = [at(null, undefined, 1), at(null, undefined, 2), at(s.hero, 'content', 1), at(s.hero, 'other', 1), at(s.team, 'content', 1), aimKey({ kind: 'insert', aim: { ...between(s), at: { owner: { kind: 'page', id: 'about' }, parentId: null, index: 1 } } })];
+    expect(new Set(keys).size).toBe(keys.length);
+    // As does which image: the hero's own, or another.
+    const other = targets.find((t) => t !== media && t.field)!;
+    expect(aimKey({ kind: 'image', target: other, outline: rect })).not.toBe(aimKey(onImage));
+    expect(new Set([aimKey(onImage), aimKey(gap), aimKey({ kind: 'insert', aim: { ...between(s), at: null, refused: 'No.' } }), aimKey({ kind: 'none' })]).size).toBe(4);
   });
 });

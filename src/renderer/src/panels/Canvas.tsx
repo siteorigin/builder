@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
+import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
@@ -13,11 +14,11 @@ import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
-import { insertOps, insertRole, whereFor, type InsertAt } from '../lib/insert-at';
-import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, measuredLists, measureIds, savingProblems, type DropList, type Measured } from '../lib/insert-drop';
+import { insertOps, insertRole, whereText, type InsertAt } from '../lib/insert-at';
+import { dropRefusal, incomingOrder, insertDestination, measureIds, savingProblems, type DropList, type Measured } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { setAssetDropTarget, type AssetDrag } from '../lib/asset-drag';
-import { descKey, imageDropTargets, resolveImageDrop, type ImageTarget } from '../lib/image-drop';
+import { aimKey, assetAim, descKey, imageDropTargets, imageInsertOps, resolveImageDrop, type AssetAim, type ImageTarget } from '../lib/image-drop';
 import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
 import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
@@ -27,7 +28,7 @@ import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
-import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
+import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -276,7 +277,7 @@ export function Canvas() {
   });
   /** While an image from Assets is dragged: where the pointer is, the image a drop there changes (outlined, in page
    *  pixels; none where no image takes it), and what the strip says. */
-  const [imageDrop, setImageDrop] = useState<{ name: string; x: number; y: number; over: boolean; outline: Rect | null; label: string } | null>(null);
+  const [imageDrop, setImageDrop] = useState<{ name: string; x: number; y: number; over: boolean; idle: boolean; outline: Rect | null; line: Rect | null; list: Rect | null; label: string; refused: string | null } | null>(null);
   const assetDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
   /** The project revision the page shows: as it loads, the one the editor has; then each one it says it has applied. */
   const shownRevision = useRef(0);
@@ -1525,6 +1526,36 @@ export function Canvas() {
     });
 
   /**
+   * Measure what the page shows for `descs`, in batches it answers (it reads at most 200 at a time); one it can't show
+   * measures as nothing. Each batch's request goes in `requests`, for a drag that ends meanwhile to drop: its answer
+   * then never comes.
+   */
+  function measureDescs(descs: BridgeDesc[], requests: string[]): Promise<Array<Measured | null>> {
+    const out: Array<Measured | null> = descs.map(() => null);
+    const starts: number[] = [];
+    for (let i = 0; i < descs.length; i += 200) starts.push(i);
+    return Promise.all(
+      starts.map(
+        (from) =>
+          new Promise<void>((resolve) => {
+            const batch = descs.slice(from, from + 200);
+            const requestId = Math.random().toString(36).slice(2);
+            requests.push(requestId);
+            measureWaiters.current.set(requestId, (raw) => {
+              measureWaiters.current.delete(requestId);
+              const rects = measuredRects(raw, batch.length);
+              batch.forEach((_, i) => (out[from + i] = rects?.[i] ?? null));
+              resolve();
+            });
+            post('measure', { requestId, descs: batch.map((d) => ({ ctx: d.ctx, node: d.node, items: d.items })) });
+          })
+      )
+    ).then(() => out);
+  }
+  /** The elements the page shows for nodes of `owner`'s own tree (a drop's lists), one that shows none named so. */
+  const listDescs = (owner: OwnerRef, ids: string[]): BridgeDesc[] => ids.map((id) => descFor({ owner, instancePath: [], nodeId: id }) ?? { ctx: '', node: '', items: '' });
+
+  /**
    * Drag a new section or element from Insert onto the page. The lists on the page that can take it are measured (and
    * measured again when the page shows a newer version or scrolls under the wheel); the pointer then picks a list and a
    * gap in it (lib/insert-drop), shown by a line and the outline of the container, and the release inserts it there as
@@ -1539,8 +1570,8 @@ export function Canvas() {
     const st = snap.state;
     const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
     const role = insertRole(st, drag.spec);
-    const own = incomingOrder(st, drag.spec);
-    const specs = dropListSpecs(st, owner);
+    const dest = insertDestination(st, owner, role, incomingOrder(st, drag.spec), (at) => insertOps(at, drag.spec, role));
+    const specs = dest.specs;
     if (!specs.length) return false;
     let lists: DropList[] | null = null;
     let point = { x: start.x, y: start.y };
@@ -1549,14 +1580,6 @@ export function Canvas() {
     let released = false;
     // Where a release would put it now: the place, or why it can't go there, and whether the pointer is on the page.
     let aim: { at: InsertAt | null; refused: string | null; over: boolean } = { at: null, refused: null, over: false };
-    // Whether the project takes it in a list, tried once on a copy, against the problems the project already has.
-    const checked = new Map<string, string | null>();
-    let problems: ReturnType<typeof savingProblems> | null = null;
-    const refusal = (at: InsertAt) => {
-      const key = JSON.stringify([at.parentId, at.slot ?? null]);
-      if (!checked.has(key)) checked.set(key, dropRefusal(st, insertOps(at, drag.spec, role), () => (problems ??= savingProblems(st))));
-      return checked.get(key) ?? null;
-    };
     const show = () => {
       const wrap = wrapRef.current?.getBoundingClientRect();
       const view = canvasRef.current?.querySelector('.canvas-scroll')?.getBoundingClientRect();
@@ -1569,16 +1592,12 @@ export function Canvas() {
       if (over && lists && wrap) {
         // The page's scale as it is drawn now (the panels beside the canvas can change it mid-drag).
         const z = wrap.width / getState().viewport;
-        const t = dropTarget(lists, role, (point.x - wrap.left) / z, (point.y - wrap.top) / z, INSERT_EDGE / z, own);
+        const t = dest.aim(lists, (point.x - wrap.left) / z, (point.y - wrap.top) / z, z);
         if (t) {
-          const at: InsertAt = { owner, parentId: t.list.parentId, ...(t.list.slot ? { slot: t.list.slot } : {}), ...(t.index !== null ? { index: t.index } : {}) };
-          const refused = t.refused ?? (t.index === null ? null : refusal(at));
-          aim = { at: refused || t.index === null ? null : at, refused, over };
-          // An empty row measures as a line: its outline is drawn at least 4 screen pixels tall.
-          outline = t.list.box && t.list.box.height * z < 4 ? { ...t.list.box, y: t.list.box.y - 2 / z, height: 4 / z } : t.list.box;
-          line = refused ? null : t.line;
-          const w = refused ? null : whereFor(st, at, role);
-          label = refused ? `Can’t place ${drag.name} here` : w ? `${drag.name} ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : label;
+          aim = { at: t.at, refused: t.refused, over };
+          outline = t.outline;
+          line = t.line;
+          label = t.refused ? `Can’t place ${drag.name} here` : t.where ? `${drag.name} ${whereText(t.where)}` : label;
         }
       }
       setInsertDrop({ name: drag.name, x: point.x, y: point.y, over, line, outline, label, refused: aim.refused });
@@ -1635,30 +1654,12 @@ export function Canvas() {
         toast(`The page didn’t answer, so ${drag.name} can’t be dragged onto it now. Click its tile to add it instead.`, 'info');
       }, 3000);
       const ids = measureIds(specs);
-      const measured = new Map<string, Measured | null>();
-      const batches: string[][] = [];
-      for (let i = 0; i < ids.length; i += 200) batches.push(ids.slice(i, i + 200));
-      void Promise.all(
-        batches.map(
-          (batch) =>
-            new Promise<void>((resolve) => {
-              const requestId = Math.random().toString(36).slice(2);
-              requests.push(requestId);
-              measureWaiters.current.set(requestId, (raw) => {
-                measureWaiters.current.delete(requestId);
-                const rects = measuredRects(raw, batch.length);
-                batch.forEach((id, i) => measured.set(id, rects?.[i] ?? null));
-                resolve();
-              });
-              post('measure', { requestId, descs: batch.map((id) => descFor({ owner, instancePath: [], nodeId: id }) ?? { ctx: '', node: '', items: '' }) });
-            })
-        )
-      ).then(() => {
+      void measureDescs(listDescs(owner, ids), requests).then((rects) => {
         measuring = false;
         if (done) return;
         if (again) return measure();
         clearTimeout(timer);
-        lists = measuredLists(specs, measured);
+        lists = dest.lists(new Map(ids.map((id, i) => [id, rects[i]])));
         show();
         if (released) end(true);
       });
@@ -1780,12 +1781,15 @@ export function Canvas() {
   useEffect(() => insertDrag.current?.remeasure(), [applied]);
 
   /**
-   * Drag an image from Assets onto an image on the page (#505). As the pointer moves the page is asked what is under it,
-   * and the image a drop there changes (lib/image-drop) is outlined: the image itself, or off any image, the one empty
-   * image of the component or list item the pointer is in. The release puts the dragged image there as one change,
-   * planned on the project as the drag found it; released where no image takes it, nothing changes. Escape, leaving
-   * the window, or releasing off the page cancels. Only the pointer that started it moves or drops it. Returns false
-   * when the canvas can't take a drag now.
+   * Drag an image from Assets onto the page (#505, #506). As the pointer moves the page is asked what is under it. The
+   * image a drop there changes (lib/image-drop) is outlined: the image itself, or off any image, the one empty image of
+   * the component or list item the pointer is in. Where no image is targeted, the drop goes between content as a new
+   * Image element, shown by the line and container outline an Insert tile shows there (the destination they share,
+   * lib/insert-drop); a place that can't hold one shows no line. The release does what the page says is at the release
+   * point, measured again there, as one change planned on the project as the drag found it; when that is not what the
+   * drag showed as it was let go (the pointer outran the page's answers, or the page moved under it), nothing changes.
+   * Escape, leaving the window, or releasing off the page cancels. Only the pointer that started it moves or drops it. Returns false when the canvas can't take a drag
+   * now.
    */
   function startAssetDrag(drag: AssetDrag, start: { x: number; y: number; pointerId: number }): boolean {
     const s = getState();
@@ -1794,7 +1798,11 @@ export function Canvas() {
     const st = snap.state;
     const opening = snap.workspaceKey;
     const revision = snap.revision;
+    const owner: OwnerRef = { kind: 'page', id: s.pageId };
     const targets = imageDropTargets(st, s.pageId);
+    // Between content, a new Image element holding the image, where an Insert tile's Image would go (it has no Order).
+    const dest = insertDestination(st, owner, 'element', 0, (at) => imageInsertOps(at, drag.assetId, newId('n')), 'use Place on page');
+    const listIds = measureIds(dest.specs);
     // What is outlined for an empty image the pointer is not on (its own box, or the card that will show it); an empty
     // image whose box the page does not show now (in a tab not chosen) is not counted.
     const boxes = [...new Map(targets.filter((t) => t.unfilled).map((t) => [descKey(t.box), t.box])).values()];
@@ -1805,16 +1813,29 @@ export function Canvas() {
     };
     // Shown now, once or more: every such empty image counts, though only one shown once can be outlined.
     const showing = (t: ImageTarget) => !!measured?.get(descKey(t.box));
-    let measured: Map<string, Measured | null> | null = boxes.length ? null : new Map();
+    // The empty images' boxes and the page's lists, measured together where the page is now scrolled to.
+    let measured: Map<string, Measured | null> | null = null;
+    let lists: DropList[] | null = null;
     let point = { x: start.x, y: start.y };
     let done = false;
     // The page's latest answer, and the point it was asked about.
     let pointed: (NonNullable<ReturnType<typeof pointedAt>> & { at: { x: number; y: number } }) | null = null;
     // Released on the page: the drop waits for the page's answer about the release point, asked after the release (the
-    // page may have moved under a pointer that did not), and for the boxes it needs.
+    // page may have moved under a pointer that did not), and for the boxes and lists it needs.
     let released = false;
     let fresh = false;
-    let aim: { target: ImageTarget | null; over: boolean } = { target: null, over: false };
+    // What a release now does, and whether the pointer is on the page.
+    let aim: AssetAim = { kind: 'none' };
+    let over = false;
+    // What the drag last showed a drop on the page would do, once known (an aim pending a moment, after a wheel step,
+    // leaves it on screen until the next is drawn), and what it showed as it was let go.
+    let seen: AssetAim = { kind: 'pending' };
+    let shown: AssetAim = { kind: 'pending' };
+    // Let go anywhere but on an image: the page is measured again once, after its answer about the release point.
+    let remeasured = false;
+    // Counts the wheel steps: the page's answer to a question asked before the latest one says what was there before it
+    // scrolled.
+    let scrolls = 0;
     const requests: string[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     let asking = false;
@@ -1826,9 +1847,10 @@ export function Canvas() {
     let scrolled: string | null = null;
     let measuredAt: string | null = null;
     const word = drag.name;
-    /** The window point in the page's own pixels, when it is over the page on screen, and nothing of the editor's (a menu,
-     *  a note) covers it there. The page takes no pointer while the drag runs, so the window finds what is over it. */
-    const onPage = (): { x: number; y: number } | null => {
+    /** The window point in the page's own pixels, and the page's scale, when it is over the page on screen and nothing of
+     *  the editor's (a menu, a note) covers it there. The page takes no pointer while the drag runs, so the window finds
+     *  what is over it. */
+    const onPage = (): { x: number; y: number; z: number } | null => {
       const wrap = wrapRef.current?.getBoundingClientRect();
       const view = canvasRef.current?.querySelector('.canvas-scroll')?.getBoundingClientRect();
       const inBox = (b: DOMRect | undefined) => !!b && point.x >= b.left && point.x <= b.right && point.y >= b.top && point.y <= b.bottom;
@@ -1836,24 +1858,44 @@ export function Canvas() {
       const top = document.elementFromPoint(point.x, point.y);
       if (!top || !wrapRef.current?.contains(top)) return null;
       const z = wrap.width / getState().viewport;
-      return { x: (point.x - wrap.left) / z, y: (point.y - wrap.top) / z };
+      return { x: (point.x - wrap.left) / z, y: (point.y - wrap.top) / z, z };
     };
     const show = () => {
-      const over = !!onPage();
-      let target: ImageTarget | null = null;
-      let outline: Rect | null = null;
-      if (over && pointed) {
+      // A drag that has ended (an answer it was waiting on found the pointer off the page) shows nothing again.
+      if (done) return;
+      const page = onPage();
+      over = !!page;
+      aim = { kind: 'pending' };
+      if (page && pointed) {
         const picture = pointed.picture ? { src: pointed.picture.src, own: pointed.picture.own } : null;
         const hit = resolveImageDrop(st, targets, { chain: pointed.chain, picture }, showing);
         // On the image, the element under the pointer; off it, the empty image's box.
-        if (hit) outline = hit.direct ? (hit.target.code ? (pointed.picture?.rect ?? null) : pointed.rect) : boxOf(hit.target);
-        if (outline) target = hit!.target;
+        const outline = hit ? (hit.direct ? (hit.target.code ? (pointed.picture?.rect ?? null) : pointed.rect) : boxOf(hit.target)) : null;
+        aim = assetAim(hit, outline, !!measured && !!lists, () => (lists ? dest.aim(lists, page.x, page.y, page.z) : null));
       }
-      aim = { target, over };
-      const label = !over ? `Drag ${word} onto an image on the page` : target ? (target.unfilled ? `Place ${word} as ${target.label}` : `Replace ${target.label} with ${word}`) : `Point at an image to put ${word} there`;
-      setImageDrop({ name: word, x: point.x, y: point.y, over, outline, label });
+      // Off the page nothing is shown to go anywhere.
+      if (!over) seen = { kind: 'pending' };
+      else if (aim.kind !== 'pending') seen = aim;
+      const ins = aim.kind === 'insert' ? aim.aim : null;
+      const label = !over
+        ? `Drag ${word} onto the page`
+        : aim.kind === 'image'
+          ? aim.target.unfilled
+            ? `Place ${word} as ${aim.target.label}`
+            : `Replace ${aim.target.label} with ${word}`
+          : ins?.refused
+            ? `Can’t place ${word} here`
+            : ins?.where
+              ? `Place ${word} ${whereText(ins.where)}`
+              : aim.kind === 'pending'
+                ? `Place ${word} on the page`
+                : `Point at an image or between content to put ${word} there`;
+      const idle = over && aim.kind !== 'image' && !ins?.at && !ins?.refused;
+      setImageDrop({ name: word, x: point.x, y: point.y, over, idle, outline: aim.kind === 'image' ? aim.outline : null, line: ins?.line ?? null, list: ins?.outline ?? null, label, refused: ins?.refused ?? null });
     };
-    const ready = () => released && fresh && !!pointed && pointed.at.x === point.x && pointed.at.y === point.y && !!measured && !asking;
+    // An image the page says is at the release point needs nothing measured; anywhere else, what was measured after the
+    // page's answer about it (see `ask`).
+    const ready = () => released && fresh && !!pointed && pointed.at.x === point.x && pointed.at.y === point.y && !asking && (aim.kind === 'image' || (!!measured && !!lists));
     /** Ask the page what is under the pointer; one question on its way at a time, the latest place asked after it. */
     const ask = () => {
       if (done) return;
@@ -1872,6 +1914,7 @@ export function Canvas() {
       askAgain = false;
       const asked = { ...point };
       const late = released;
+      const step = scrolls;
       const requestId = Math.random().toString(36).slice(2);
       requests.push(requestId);
       measureWaiters.current.set(requestId, (raw) => {
@@ -1879,22 +1922,35 @@ export function Canvas() {
         asking = false;
         if (done) return;
         // An answer from a page still showing an older version of the project than the drag found counts for nothing
-        // (its elements may show other fields): the page is asked again once it shows that version (see `applied`).
-        const p = shownRevision.current >= revision ? pointedAt(raw) : null;
+        // (its elements may show other fields): the page is asked again once it shows that version (see `applied`). Nor
+        // does one asked before the page last scrolled, which is asked again (see `wheel`).
+        const p = shownRevision.current >= revision && step === scrolls ? pointedAt(raw) : null;
         pointed = p ? { ...p, at: asked } : null;
         if (late && p) fresh = true;
         if (p) scrolled = p.scroll;
-        if (p && p.scroll !== measuredAt) measure();
+        const moved = !!p && p.scroll !== measuredAt;
+        if (moved) measure();
         if (askAgain) ask();
+        if (done) return;
+        // Covered since it was let go (a menu or note of the editor's over the release point): nothing changes.
+        if (late && p && !onPage()) return end(false);
         show();
+        // Let go anywhere but on an image: the place goes by the page as it lays out now (a picture or font that loaded
+        // while the pointer was still can move it without a scroll), measured again after this answer, never ahead of it.
+        if (late && p && !remeasured && aim.kind !== 'image') {
+          remeasured = true;
+          if (!moved) measure();
+          return;
+        }
         if (ready()) end(true);
       });
       post('pointAt', { requestId, x: at.x, y: at.y });
     };
-    /** Measure the boxes outlined for empty images, in batches the page answers (it reads at most 200 at a time). */
+    /** Measure the boxes outlined for empty images and the page's lists, together. */
     const measure = () => {
-      if (!boxes.length || done) return;
+      if (done) return;
       measured = null;
+      lists = null;
       if (measuring) {
         measureAgain = true;
         return;
@@ -1902,29 +1958,12 @@ export function Canvas() {
       measuring = true;
       measureAgain = false;
       measuredAt = scrolled;
-      const next = new Map<string, Measured | null>();
-      const batches: BridgeDesc[][] = [];
-      for (let i = 0; i < boxes.length; i += 200) batches.push(boxes.slice(i, i + 200));
-      void Promise.all(
-        batches.map(
-          (batch) =>
-            new Promise<void>((resolve) => {
-              const requestId = Math.random().toString(36).slice(2);
-              requests.push(requestId);
-              measureWaiters.current.set(requestId, (raw) => {
-                measureWaiters.current.delete(requestId);
-                const rects = measuredRects(raw, batch.length);
-                batch.forEach((d, i) => next.set(descKey(d), rects?.[i] ?? null));
-                resolve();
-              });
-              post('measure', { requestId, descs: batch.map((d) => ({ ctx: d.ctx, node: d.node, items: d.items })) });
-            })
-        )
-      ).then(() => {
+      void measureDescs([...boxes, ...listDescs(owner, listIds)], requests).then((rects) => {
         measuring = false;
         if (done) return;
         if (measureAgain) return measure();
-        measured = next;
+        measured = new Map(boxes.map((d, i) => [descKey(d), rects[i]]));
+        lists = dest.lists(new Map(listIds.map((id, i) => [id, rects[boxes.length + i]])));
         show();
         if (ready()) end(true);
       });
@@ -1953,9 +1992,19 @@ export function Canvas() {
       assetDrag.current = null;
       setDragging(false);
       setImageDrop(null);
-      const target = aim.target;
-      if (!commit || !aim.over || !target || getState().snapshot?.workspaceKey !== opening) return;
-      void dropAsset(drag.assetId, target, revision);
+      if (!commit || !over || getState().snapshot?.workspaceKey !== opening) return;
+      const at = aim.kind === 'insert' ? aim.aim.at : null;
+      // What is at the release point is not what the drag showed there as it was let go (the pointer outran the page's
+      // answers, or the page moved under it): neither is done. Nothing shown yet promised nothing, so it is done.
+      const promised = aimKey(shown);
+      if (promised !== null && promised !== aimKey(aim)) {
+        const acts = (a: AssetAim) => a.kind === 'image' || (a.kind === 'insert' && !!a.aim.at);
+        if (acts(shown) || acts(aim)) toast(`Where ${word} would go changed as it was let go, so it wasn’t placed. Drag it again.`, 'info');
+        return;
+      }
+      if (aim.kind === 'image') void dropAsset(drag.assetId, aim.target, revision);
+      else if (at) void dropAssetAt(drag.assetId, at, revision);
+      else if (aim.kind === 'insert' && aim.aim.refused) toast(`${word} wasn’t placed: ${aim.aim.refused}`, 'info');
     };
     const mine = (ev: PointerEvent) => ev.pointerId === start.pointerId;
     const move = (ev: PointerEvent) => {
@@ -1971,6 +2020,8 @@ export function Canvas() {
       listen(false);
       // Let go off the page (or over the editor's own menus and notes): nothing changes.
       if (!onPage()) return end(false);
+      // What the drag last showed on the page as it is let go: a release does that, or nothing.
+      shown = seen;
       // The drop goes where it was let go, once the page has said what is there now.
       timer = setTimeout(() => {
         if (done) return;
@@ -1990,12 +2041,16 @@ export function Canvas() {
       end(false);
     };
     // The page scrolls inside its frame, which takes no pointer while a drag runs: the wheel over the canvas scrolls it
-    // there, and the page is asked again where it now shows (its answer says it scrolled, so the boxes are measured
-    // again).
+    // there. What the page said and what was measured no longer hold until it is asked again where it now shows (its
+    // answer then has the boxes and lists measured again).
     const wheel = (ev: WheelEvent) => {
       if (released || !onPage() || !ev.deltaY) return;
       ev.preventDefault();
       post('scrollBy', { y: ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY });
+      scrolls++;
+      pointed = null;
+      measuredAt = null;
+      show();
       ask();
     };
     listen(true);
@@ -2012,7 +2067,7 @@ export function Canvas() {
     };
     setDragging(true);
     show();
-    // The boxes are measured once the page has said where it is scrolled to.
+    // The boxes and lists are measured once the page has said where it is scrolled to.
     ask();
     return true;
   }
@@ -2289,6 +2344,8 @@ export function Canvas() {
       </button>
     );
   // The strip offers the first steps when there is no room for the card, or on a page that has only its title.
+  // Where a drag of something new would go between content, the same for a tile from Insert and an image from Assets.
+  const between = insertDrop ?? (imageDrop && { outline: imageDrop.list, line: imageDrop.line, refused: imageDrop.refused });
   const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !imageDrop && !(placement === 'strip' && firstSel) && ((emptyPage && emptyTop !== null && !emptyFits) || titleOnly);
 
   return (
@@ -2502,7 +2559,7 @@ export function Canvas() {
               </div>
             )}
             {imageDrop && (
-              <div className={`ov-moving ov-placing${imageDrop.over && !imageDrop.outline ? ' idle' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} data-testid="image-drop-label">
+              <div className={`ov-moving ov-placing${imageDrop.refused ? ' refused' : imageDrop.idle ? ' idle' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} title={imageDrop.refused ?? undefined} data-testid="image-drop-label">
                 <Image />
                 <span className="what">{imageDrop.label}</span>
                 <span className="sep">·</span>
@@ -2634,11 +2691,11 @@ export function Canvas() {
                     const d = dropBox(reorder.line);
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" />;
                   })()}
-                {insertDrop?.outline && <div className={`ov-box ov-drop-target${insertDrop.refused ? ' refused' : ''}`} style={toBox(insertDrop.outline)} data-testid="insert-drop-target" />}
+                {between?.outline && <div className={`ov-box ov-drop-target${between.refused ? ' refused' : ''}`} style={toBox(between.outline)} data-testid="insert-drop-target" />}
                 {imageDrop?.outline && <div className="ov-box ov-image-drop" style={toBox(imageDrop.outline)} data-testid="image-drop-target" />}
-                {insertDrop?.line &&
+                {between?.line &&
                   (() => {
-                    const d = dropBox(insertDrop.line);
+                    const d = dropBox(between.line);
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" data-testid="insert-drop-line" />;
                   })()}
               </div>
@@ -2698,7 +2755,7 @@ export function Canvas() {
       {/* The image a drag from Assets carries, beside the pointer wherever it is in the window. */}
       {imageDrop &&
         createPortal(
-          <div className="insert-ghost" style={{ left: imageDrop.x + 14, top: imageDrop.y + 12 }} aria-hidden="true">
+          <div className={`insert-ghost${imageDrop.refused ? ' refused' : ''}`} style={{ left: imageDrop.x + 14, top: imageDrop.y + 12 }} aria-hidden="true">
             <Image />
             <span>{imageDrop.name}</span>
           </div>,
@@ -2784,7 +2841,6 @@ function itemOf(state: ProjectState, ref: ElementRef): { n: number; count: numbe
 
 const CHIP_H = 28;
 /** Near a container's top or bottom edge, in screen pixels, a dragged element goes beside it rather than into it. */
-const INSERT_EDGE = 10;
 const CHIP_GAP = 4;
 
 /**

@@ -10,6 +10,9 @@ import { partsShown } from '@shared/page-shell';
 import { findParent } from '@engine/tree';
 import { renderedImages, repeatsAbove, type ImageField } from '@generator/checks';
 import { descOf, encodeItemId, parseCtx, resolveRef, type BridgeDesc } from './model';
+import { insertOps, type InsertAt } from './insert-at';
+import type { InsertAim } from './insert-drop';
+import type { Box } from './reorder';
 
 /** One image on the page (or the header or footer it shows) a dragged image can be dropped on. */
 export interface ImageTarget {
@@ -213,4 +216,41 @@ export function imageDropOps(owner: OwnerRef, field: ImageField, assetId: string
       value: assetId
     }
   ];
+}
+
+/**
+ * The change a drop between content makes (#506), the one Place on page makes: a new Image element at `at` (in a Section
+ * of its own at a page's top level), named `nodeId`, showing the library image with its suggested alt text.
+ */
+export function imageInsertOps(at: InsertAt, assetId: string, nodeId: string): EditOperation[] {
+  return [...insertOps(at, { primitive: 'image' }, 'element', nodeId), { type: 'node.setContent', owner: at.owner, nodeId, field: 'image', value: assetId }];
+}
+
+/**
+ * What a release of an Assets image at the pointer does: fill or replace an image on the page (#505), go between
+ * content as a new Image element, where an Insert tile would (#506; `aim.at` null where nothing can go), nothing, or
+ * not known yet, which a release waits out.
+ */
+export type AssetAim = { kind: 'pending' } | { kind: 'none' } | { kind: 'image'; target: ImageTarget; outline: Box } | { kind: 'insert'; aim: InsertAim };
+
+/**
+ * The image the page says is at the pointer takes the drop first (#505); a new Image goes between content only where
+ * no image is targeted (#506). `hit`: what resolveImageDrop found, `outline` the box it shows; `ready`: whether what
+ * an empty image off the pointer and a place between content are found by is measured where the page now shows (an
+ * empty image not yet measured is not yet counted, so a miss means nothing until then); `insert`: where it would go
+ * between content. An image that takes it but can't be outlined (one shown more than once) takes it nowhere.
+ */
+export function assetAim(hit: { target: ImageTarget; direct: boolean } | null, outline: Box | null, ready: boolean, insert: () => InsertAim | null): AssetAim {
+  if (hit?.direct || (hit && ready)) return outline ? { kind: 'image', target: hit.target, outline } : { kind: 'none' };
+  if (!ready) return { kind: 'pending' };
+  const aim = insert();
+  return aim ? { kind: 'insert', aim } : { kind: 'none' };
+}
+
+/** What an aim would do, to tell whether two aims at the same point agree: null while it is not known yet. */
+export function aimKey(a: AssetAim): string | null {
+  if (a.kind === 'pending') return null;
+  if (a.kind === 'image') return JSON.stringify(['image', descKey(a.target.desc), a.target.field && fieldKey(a.target.owner, a.target.field)]);
+  if (a.kind === 'insert') return JSON.stringify(['insert', a.aim.at && [a.aim.at.owner, a.aim.at.parentId, a.aim.at.slot ?? null, a.aim.at.index ?? null]]);
+  return 'none';
 }

@@ -1,8 +1,9 @@
-// Dragging an image from Assets onto the page, against the real app (#505). Held over the Split hero's empty image,
-// the tile outlines that image and the strip says what a drop does; released, the image takes the picture with its
-// suggested alt text as one change, the hero is selected with its inspector open, and one Undo empties it again.
-// Anywhere else on the hero the drop goes to the same empty image; on a section with no empty image nothing is
-// outlined and a release changes nothing; Escape cancels.
+// Dragging an image from Assets onto the page, against the real app (#505, #506). Held over the Split hero's empty
+// image, the tile outlines that image and the strip says what a drop does; released, the image takes the picture with
+// its suggested alt text as one change, the hero is selected with its inspector open, and one Undo empties it again.
+// Anywhere else on the hero the drop goes to the same empty image, with no insertion line; Escape cancels. Between two
+// sections with no empty image, the insertion line an Insert tile shows marks where a new Image goes; released, it goes
+// there in a Section of its own as one change, selected with its inspector open, and one Undo takes it away.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -22,6 +23,7 @@ const apply = (operations, label) =>
 const newest = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).at(-1) ?? null);
 const dropLabel = win.locator('[data-testid="image-drop-label"]');
 const dropTarget = win.locator('[data-testid="image-drop-target"]');
+const dropLine = win.locator('[data-testid="insert-drop-line"]');
 
 const start = await snapshot();
 const home = start.site.homePageId;
@@ -62,8 +64,9 @@ const pointIn = async (locator, fx, fy) => {
   }
   return at;
 };
-/** Press on the tile and move it a little, so it is dragged rather than clicked, then over a point of the page. */
-const dragTo = async (tile, locator, fx = 0.5, fy = 0.5) => {
+/** Press on the tile and move it a little, so it is dragged rather than clicked, then over a point of the page (`dy`
+ *  screen pixels below it). */
+const dragTo = async (tile, locator, fx = 0.5, fy = 0.5, dy = 0) => {
   // Scrolled to before the drag starts, as an author would.
   await pointIn(locator, fx, fy);
   await win.waitForTimeout(150);
@@ -73,7 +76,7 @@ const dragTo = async (tile, locator, fx = 0.5, fy = 0.5) => {
   await win.mouse.down();
   await win.mouse.move(t.x + t.width / 2 + 12, t.y + t.height / 2 + 4, { steps: 3 });
   const at = await pointIn(locator, fx, fy);
-  await win.mouse.move(at.x, at.y, { steps: 12 });
+  await win.mouse.move(at.x, at.y + dy, { steps: 12 });
   return at;
 };
 
@@ -89,6 +92,7 @@ await tile.waitFor();
 step('held over the placeholder, the placeholder is outlined; released, it takes the picture as one change');
 const at = await dragTo(tile, placeholder);
 await eventually(async () => assert.match(await dropLabel.innerText(), /^Place .+ as Image in /, 'the strip says the image fills the hero’s image'));
+assert.equal(await dropLine.count(), 0, 'no insertion line while an image takes it');
 await eventually(async () => {
   const box = await dropTarget.boundingBox();
   assert.ok(box, 'the image is outlined');
@@ -122,6 +126,7 @@ step('anywhere else on the hero, the drop goes to its one empty image, outlined 
 await dragTo(tile, heading);
 await eventually(async () => assert.match(await dropLabel.innerText(), /^Place .+ as Image in /, 'over the heading, the hero’s empty image would take it'));
 await eventually(() => outlines(placeholder, 'the hero’s empty image'));
+assert.equal(await dropLine.count(), 0, 'no insertion line over a component whose empty image takes it');
 await win.mouse.up();
 await eventually(async () => assert.deepEqual(await heroImage(), { assetId: 'a_reading', alt: reading.altSuggestion }, 'the hero’s image takes it'));
 assert.match((await newest()).label, /^Place /);
@@ -170,15 +175,47 @@ await eventually(async () => assert.equal((await logo())?.assetId, other, 'the l
 await win.locator('[aria-label^="Undo"]').first().click();
 await eventually(async () => assert.equal((await logo())?.assetId, 'a_reading', 'one Undo puts the first logo back'));
 
-step('over a section with no empty image, nothing is outlined and a release changes nothing');
+step('between two sections with no empty image, a line shows where a new Image goes; released, it goes there in a Section of its own');
+const roots = async () => (await snapshot()).pages[home].rootIds;
+const rootsBefore = await roots();
+const after = rootsBefore.indexOf(stats);
+assert.ok(after >= 0 && after < rootsBefore.length - 1, 'a section follows the stats row');
 const plain = frame.locator(`[data-so-ctx$="|${stats}"]`).first();
-await dragTo(tile, plain);
-await eventually(async () => assert.match(await dropLabel.innerText(), /^Point at an image/, 'the strip asks for an image'));
-assert.equal(await dropTarget.count(), 0, 'nothing is outlined');
+// Just inside the stats row's bottom edge: between it and the section after it.
+const edge = await dragTo(tile, plain, 0.5, 1, -3);
+await eventually(async () => assert.match(await dropLabel.innerText(), /^Place .+ in a new section after /, 'the strip says the image goes in a new section after the stats row'));
+await eventually(async () => assert.ok(await dropLine.isVisible(), 'the insertion line shows'));
+const lineBox = await dropLine.boundingBox();
+assert.ok(Math.abs(lineBox.y + lineBox.height / 2 - edge.y) < 4, `the line is at the stats row’s bottom edge (${lineBox.y} vs ${edge.y})`);
+assert.equal(await dropTarget.count(), 0, 'no image is outlined');
+await win.screenshot({ path: join(SHOTS, 'asset-drag-between-sections.png') });
 const still = await newest();
+const applied = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).length);
+const changesBefore = await applied();
 await win.mouse.up();
-await win.waitForTimeout(500);
-assert.equal((await newest()).id, still.id, 'no change is made');
+await eventually(async () => assert.equal((await roots()).length, rootsBefore.length + 1, 'a section is added'));
+assert.equal(await applied(), changesBefore + 1, 'as one change');
+const placedAt = await snapshot();
+const nowRoots = placedAt.pages[home].rootIds;
+assert.deepEqual([...nowRoots.slice(0, after + 1), ...nowRoots.slice(after + 2)], rootsBefore, 'it goes right after the stats row, before the section that followed it');
+const made = placedAt.pages[home].nodes[nowRoots[after + 1]];
+assert.equal(placedAt.components[made.definitionId]?.componentId, 'layout.section', 'in a Section of its own');
+assert.equal(made.slots.content.length, 1);
+const newImage = placedAt.pages[home].nodes[made.slots.content[0]];
+assert.equal(newImage.kind, 'image');
+assert.deepEqual(newImage.image, { assetId: 'a_reading', alt: reading.altSuggestion }, 'the new Image holds the reading nook, with its suggested alt text');
+const placedChange = await newest();
+assert.notEqual(placedChange.id, still.id);
+assert.match(placedChange.label, /^Place /, 'one change');
+assert.equal(await dropLine.count(), 0, 'the insertion line goes away');
+await eventually(async () => assert.ok(await win.locator('#dock-panel-inspect').isVisible(), 'the inspector is open'));
+await eventually(async () => assert.equal(await win.locator('#dock-panel-inspect [role="group"][aria-label="Image"]').count(), 1, 'it shows the new image’s field'));
+const placedNote = win.locator('.toast').filter({ hasText: /^Placed “.+” in a new section after / });
+await eventually(async () => assert.equal(await placedNote.count(), 1, 'it says where it went'));
+await win.screenshot({ path: join(SHOTS, 'asset-drag-between-placed.png') });
+await placedNote.getByRole('button', { name: 'Undo' }).click();
+await eventually(async () => assert.deepEqual(await roots(), rootsBefore, 'its Undo takes the image and its section away'));
+assert.equal((await snapshot()).pages[home].nodes[newImage.id], undefined);
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();

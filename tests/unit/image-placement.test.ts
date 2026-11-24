@@ -63,6 +63,7 @@ interface ActionsModule {
   insertionPoint(kind: 'section' | 'element', from?: unknown): Placement['at'];
   assetDropRefusal(assetId: string): string | null;
   dropAsset(assetId: string, target: ImageTarget, revision: number): Promise<boolean>;
+  dropAssetAt(assetId: string, at: NonNullable<Placement['at']>, revision: number): Promise<boolean>;
 }
 
 interface ReviewModule {
@@ -1174,6 +1175,167 @@ describe('placing a library image from Assets (issue #13)', () => {
       expect(await actions.dropAsset(photo.id, target, revision)).toBe(false);
       expect(lastToast()).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
       expect((page().nodes[hero] as InstanceNode).props.image).toEqual({ assetId: nook.id, alt: nook.altSuggestion });
+    });
+  });
+
+  describe('dropped between content on the canvas (#506)', () => {
+    /**
+     * Home with a flexible Section first, holding two paragraphs and a Grid whose one column is an empty Stack. Each
+     * place a drop between content can go: between two sections, between the paragraphs, and into the column.
+     */
+    async function onHome() {
+      const lib = await library();
+      const { owner } = lib;
+      const [section] = (await write([{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' }])).results!.map((r) => r.nodeId as string);
+      const [intro, more, grid] = (
+        await write([
+          { type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Intro' },
+          { type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'More' },
+          { type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'grid' }
+        ])
+      ).results!.map((r) => r.nodeId as string);
+      const [column] = (await write([{ type: 'node.insert', owner, parentId: grid, primitive: 'stack' }])).results!.map((r) => r.nodeId as string);
+      const revision = () => store.getState().snapshot!.revision;
+      return { ...lib, section, intro, more, grid, column, revision };
+    }
+
+    it('between two sections, puts a new Image in a Section of its own there, as one change one Undo takes back, selected with its inspector open', async () => {
+      const { owner, page, section, intro, revision, entries, uses } = await onHome();
+      const next = page().rootIds[1];
+      const history = entries();
+      // The AI tab is open, the dock closed: the new image's inspector opens all the same.
+      store.setState({ rightTab: 'chat', dockOpen: false });
+      expect(await actions.dropAssetAt(photo.id, { owner, parentId: null, index: 1 }, revision())).toBe(true);
+      expect(page().rootIds[0]).toBe(section);
+      expect(page().rootIds[2]).toBe(next);
+      const made = page().nodes[page().rootIds[1]] as InstanceNode;
+      expect(session!.state.components[made.definitionId].componentId).toBe('layout.section');
+      const img = page().nodes[made.slots!.content[0]];
+      expect(img).toMatchObject({ kind: 'image', image: { assetId: photo.id, alt: photo.altSuggestion } });
+      expect(applyCalls).toBe(1);
+      expect(entries()).toBe(history + 1);
+      expect(store.getState()).toMatchObject({ selection: { owner, instancePath: [], nodeId: img.id }, rightTab: 'inspect', dockOpen: true });
+      const note = lastToast()!;
+      expect(note).toMatchObject({ kind: 'info', text: 'Placed “Studio at sunrise.png” in a new section after Section on Home.' });
+      note.action!.run();
+      await vi.waitFor(() => expect(page().rootIds).not.toContain(made.id));
+      expect(page().nodes[img.id]).toBeUndefined();
+      expect(uses(photo.id)).toBe(0);
+      // The project changes before its news reaches the renderer: the next drag starts once the window has heard of it.
+      await vi.waitFor(() => expect(revision()).toBe(session!.revision));
+      // Its Undo is for that change alone: with an edit made since, it takes neither away.
+      expect(await actions.dropAssetAt(photo.id, { owner, parentId: null, index: 0 }, revision())).toBe(true);
+      expect(session!.state.components[(page().nodes[page().rootIds[0]] as InstanceNode).definitionId].componentId).toBe('layout.section');
+      expect(page().rootIds[1]).toBe(section);
+      const again = lastToast()!;
+      await write([{ type: 'node.setContent', owner, nodeId: intro, field: 'text', value: 'Welcome' }]);
+      again.action!.run();
+      await vi.waitFor(() => expect(lastToast()).toMatchObject({ kind: 'error' }));
+      expect(page().nodes[intro]).toMatchObject({ text: 'Welcome' });
+      expect(uses(photo.id)).toBe(1);
+    });
+
+    it('between two elements inside a section, and inside a column of a grid', async () => {
+      const { owner, page, section, intro, more, grid, column, revision } = await onHome();
+      expect(await actions.dropAssetAt(photo.id, { owner, parentId: section, slot: 'content', index: 1 }, revision())).toBe(true);
+      const content = (page().nodes[section] as InstanceNode).slots!.content;
+      expect(content).toHaveLength(4);
+      expect([content[0], content[2], content[3]]).toEqual([intro, more, grid]);
+      expect(page().nodes[content[1]]).toMatchObject({ kind: 'image', image: { assetId: photo.id, alt: photo.altSuggestion } });
+      expect(lastToast()!.text).toBe('Placed “Studio at sunrise.png” after Text in Section on Home.');
+
+      store.setState({ rightTab: 'chat', dockOpen: false });
+      expect(await actions.dropAssetAt(nook.id, { owner, parentId: column, index: 0 }, revision())).toBe(true);
+      expect(store.getState()).toMatchObject({ rightTab: 'inspect', dockOpen: true });
+      const inColumn = (page().nodes[column] as ElementNode).children;
+      expect(inColumn).toHaveLength(1);
+      expect(page().nodes[inColumn[0]]).toMatchObject({ kind: 'image', image: { assetId: nook.id, alt: nook.altSuggestion } });
+      expect((page().nodes[grid] as ElementNode).children).toEqual([column]);
+      expect(store.getState().selection).toMatchObject({ owner, nodeId: inColumn[0] });
+      expect(lastToast()!.text).toMatch(/^Placed “Reading nook” inside .+ on Home\.$/);
+    });
+
+    it('is refused for the reasons Place on page gives, and changes nothing', async () => {
+      const { owner, page, section, revision } = await onHome();
+      const at = { owner, parentId: section, slot: 'content', index: 0 };
+      const before = structuredClone(page());
+      const rev = revision();
+      const calls = applyCalls;
+      const refused = async (text: string) => {
+        expect(await actions.dropAssetAt(photo.id, at, rev)).toBe(false);
+        expect(lastToast()).toMatchObject({ kind: 'error', text });
+      };
+      store.setState({ mode: 'preview' });
+      await refused('Switch to Edit to place the image on a page.');
+      store.setState({ mode: 'edit', definitionMode: { definitionId: (page().nodes[section] as InstanceNode).definitionId, returnPageId: page().id } });
+      await refused('Finish editing this component to place the image on a page.');
+      store.setState({ definitionMode: null, snapshot: { ...snapshot()!, aiBusy: true } });
+      await refused('The AI is making changes. Stop it to place the image.');
+      store.setState({ snapshot: { ...snapshot()!, readOnly: { reason: 'Made by a newer version.' } } as unknown as ProjectSnapshot });
+      await refused('This project is open read-only, so the image can’t be placed.');
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
+      await refused('Locate the file to place this image.');
+      expect(applyCalls).toBe(calls);
+      expect(page()).toEqual(before);
+      publish();
+      expect(await actions.dropAssetAt(photo.id, at, rev)).toBe(true);
+    });
+
+    it('writes nothing when the project changed while the image was dragged, or on a page the author has left', async () => {
+      const { owner, page, section, intro, revision } = await onHome();
+      const at = { owner, parentId: section, slot: 'content', index: 1 };
+      const rev = revision();
+      await write([{ type: 'node.setContent', owner, nodeId: intro, field: 'text', value: 'Hello' }]);
+      expect(await actions.dropAssetAt(photo.id, at, rev)).toBe(false);
+      expect(lastToast()).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
+      // Between sections too, where a Section is made for it.
+      const sections = page().rootIds.length;
+      expect(await actions.dropAssetAt(photo.id, { owner, parentId: null, index: 1 }, rev)).toBe(false);
+      expect(page().rootIds).toHaveLength(sections);
+      expect(placed(page(), photo.id)).toEqual([]);
+      // Changed where this window has not heard of it yet: the project itself refuses it, once, without trying again.
+      const calls = applyCalls;
+      beforeApply = () => write([{ type: 'node.setContent', owner, nodeId: intro, field: 'text', value: 'Hi' }]);
+      expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(false);
+      expect(applyCalls).toBe(calls + 1);
+      expect(lastToast()).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
+      expect(placed(page(), photo.id)).toEqual([]);
+      publish();
+      // Another page is open now (About): the place on Home is not where the author is.
+      const about = Object.keys(session!.state.pages).find((id) => id !== owner.id)!;
+      store.setState({ pageId: about });
+      expect(actions.assetDropRefusal(photo.id)).toBeNull();
+      const toasts = store.getState().toasts.length;
+      expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(false);
+      // Nor is a place that is on no page, even one named like the page now open.
+      expect(await actions.dropAssetAt(photo.id, { owner: { kind: 'template', id: about }, parentId: null }, revision())).toBe(false);
+      expect(applyCalls).toBe(calls + 1);
+      expect(store.getState().toasts).toHaveLength(toasts);
+      expect(placed(page(), photo.id)).toEqual([]);
+    });
+
+    it('leaves a selection, tab or dock the author changed while it saved', async () => {
+      const { owner, page, section, intro, revision } = await onHome();
+      const at = { owner, parentId: section, slot: 'content', index: 0 };
+      store.setState({ rightTab: 'inspect', dockOpen: true });
+      const picked = { owner, instancePath: [], nodeId: intro };
+      beforeApply = async () => store.setState({ selection: picked });
+      expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(true);
+      expect(store.getState().selection).toBe(picked);
+      // The new image is still selected when only the tab or the dock changed.
+      const selectedImage = () => page().nodes[(store.getState().selection as { nodeId: string }).nodeId]?.kind;
+      beforeApply = async () => store.setState({ rightTab: 'chat' });
+      expect(await actions.dropAssetAt(nook.id, at, revision())).toBe(true);
+      expect(store.getState()).toMatchObject({ rightTab: 'chat', dockOpen: true });
+      expect(selectedImage()).toBe('image');
+      store.setState({ rightTab: 'inspect', selection: picked });
+      beforeApply = async () => store.setState({ dockOpen: false });
+      expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(true);
+      expect(store.getState()).toMatchObject({ rightTab: 'inspect', dockOpen: false });
+      expect(selectedImage()).toBe('image');
+      // Each was placed all the same.
+      expect(placed(page(), photo.id)).toHaveLength(2);
+      expect(placed(page(), nook.id)).toHaveLength(1);
     });
   });
 });

@@ -10,14 +10,14 @@ import { applyOperations } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
 import { postWorkspace } from './posts';
-import { imageDropOps, type ImageTarget } from './image-drop';
+import { imageDropOps, imageInsertOps, type ImageTarget } from './image-drop';
 import { flushOpenPost } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
-import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, whereFor, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
@@ -420,7 +420,7 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
     markArrival(ref);
     setState({ selection: ref, rightTab: 'inspect' });
   }
-  toast(`Added ${name}${w ? ` ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : ''}.`, 'info', undoAction(r));
+  toast(`Added ${name}${w ? ` ${whereText(w)}` : ''}.`, 'info', undoAction(r));
   return true;
 }
 
@@ -489,6 +489,42 @@ export async function dropAsset(assetId: string, target: ImageTarget, revision: 
     setState({ selection: ref, ...(dock ? { rightTab: 'inspect' as const, dockOpen: true } : {}), ...(focus ? { inspectorFocus: focus } : {}) });
   }
   toast(target.unfilled ? `Placed “${name}” as ${target.label}.` : `Replaced ${target.label} with “${name}”.`, 'info', undoAction(r));
+  return true;
+}
+
+/**
+ * Put a library image on the page being edited as a new Image element at `at`, the place between content it was
+ * dropped on (#506), with the image's suggested alt text: in a Section of its own at the page's top level, as Place on
+ * page puts it. Refused, and said why, as a drop on an image is (see assetDropRefusal). One change, written only on
+ * `revision`, the project the drag found the place in; the new image is then selected with its inspector open, while
+ * the author is still where it was dropped. Returns whether it was placed.
+ */
+export async function dropAssetAt(assetId: string, at: InsertAt, revision: number): Promise<boolean> {
+  const start = getState();
+  const snap = start.snapshot;
+  const why = assetDropRefusal(assetId, snap);
+  if (why || !snap) {
+    toast(why ?? 'No project is open.', 'error');
+    return false;
+  }
+  const owner = at.owner;
+  // A drop goes on the page the drag was on; one that has moved on (another page opened) places nothing.
+  if (owner.kind !== 'page' || owner.id !== start.pageId) return false;
+  const name = snap.state.assets.assets[assetId].name.trim() || 'the image';
+  const w = elementWhere(snap.state, at);
+  const nodeId = newId('n');
+  const r = await commitOps(imageInsertOps(at, assetId, nodeId), `Place ${name} ${placeWords(snap.state, owner)}`, undefined, revision);
+  // Refused, and said why (the project changed meanwhile, the AI started): that change's own record reports it.
+  if (!r) return false;
+  const now = getState();
+  if (r.results?.some((x) => x?.nodeId === nodeId) && now.snapshot?.workspaceKey === r.workspaceKey && now.pageId === owner.id && now.mode === 'edit' && !now.definitionMode && !now.templateMode && now.selection === start.selection) {
+    const ref: ElementRef = { owner, instancePath: [], nodeId };
+    markArrival(ref);
+    // Its inspector opens only if the author has not moved the dock meanwhile (to the AI, say).
+    setState({ selection: ref, ...(now.rightTab === start.rightTab && now.dockOpen === start.dockOpen ? { rightTab: 'inspect' as const, dockOpen: true } : {}) });
+  }
+  const page = snap.state.pages[owner.id]?.title ?? '';
+  toast(`Placed “${name}”${w ? ` ${whereText(w)}${w.node && page ? ` on ${page}` : ''}` : ''}.`, 'info', undoAction(r));
   return true;
 }
 
@@ -569,8 +605,7 @@ export async function placeAsset(assetId: string, shown: string): Promise<boolea
       const name = asset.name.trim() || 'the image';
       const nodeId = newId('n');
       const owner = p.at.owner;
-      const ops: EditOperation[] = [...insertOps(p.at, { primitive: 'image' }, 'element', nodeId), { type: 'node.setContent', owner, nodeId, field: 'image', value: asset.id }];
-      const r = await commitOps(ops, `Place ${name} ${placeWords(snap.state, owner)}`, undefined, snap.revision, { replanStale: tries < 2 });
+      const r = await commitOps(imageInsertOps(p.at, asset.id, nodeId), `Place ${name} ${placeWords(snap.state, owner)}`, undefined, snap.revision, { replanStale: tries < 2 });
       // Refused, and said why (the AI started, the project changed again): that change's own record reports it.
       if (!r) return false;
       if (!r.ok) {
