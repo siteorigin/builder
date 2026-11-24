@@ -25,7 +25,7 @@ import { stopMediaWorker } from './project/assets';
 import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
-import { installHeadlessDesktop, launchMode } from './headless-desktop';
+import { desktopForLaunch, launchMode } from './headless-desktop';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 
@@ -51,10 +51,10 @@ app.commandLine.appendSwitch('use-mock-keychain');
 // Automated runs never put a window on screen or take focus. Playwright's Electron loader defines
 // __playwright_run before this module loads; SITEORIGIN_HEADLESS=1 forces it for other drivers, and
 // SITEORIGIN_HEADED=1 shows the window when debugging a test.
-const { automated, headless } = launchMode(process.env, globalThis);
+const { headless } = launchMode(process.env, globalThis);
 // Nor do they show a native dialog, open a link or open Finder: the test answers every chooser and sees every hand-off
 // to the desktop (headless-desktop.ts), headed or not. A normal launch keeps Electron's own.
-const desktop = automated ? installHeadlessDesktop({ dialog, shell }) : null;
+const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
 if (headless) {
   // A hidden window must keep painting, running timers and animation frames at full speed.
   app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -594,6 +594,9 @@ async function createWindow() {
   const self = win;
   const selfId = self.id;
   desktop?.windows.opened(selfId);
+  // An automated run's chooser answers belong to the editor they were set for, and expire with it: when it closes, or
+  // a page that has loaded is replaced or crashes. The page a crash brings back is a first load again.
+  let committed = false;
   let closeApproved = false;
   self.on('close', (e) => {
     if (closeApproved || quitState === 'closing' || quitState === 'done' || !controller.session || self.webContents.isCrashed()) return;
@@ -605,6 +608,8 @@ async function createWindow() {
     });
   });
   self.webContents.on('render-process-gone', () => {
+    desktop?.windows.gone(selfId, { closed: false });
+    committed = false;
     menuCommands.unready(self);
     leaveGate.editorGone();
     // A project ZIP file being unpacked for this editor is called off: no one is left to answer its trust prompt.
@@ -646,8 +651,6 @@ async function createWindow() {
   // A new page has replaced the editor (it committed): only it may say it is ready for menu commands from here on.
   // A navigation the editor refuses never commits, so it leaves the editor ready.
   // A project ZIP file being opened for the replaced editor is called off too: its trust prompt has no one to answer it.
-  // An automated run's chooser answers belong to the editor they were set for, and expire with it.
-  let committed = false;
   self.webContents.on('did-navigate', () => {
     menuCommands.unready(self);
     controller.cancelOpen();

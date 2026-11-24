@@ -4,18 +4,23 @@
  * answers a test set beforehand, and every hand-off to the desktop (a link, a file to reveal or open) is recorded as
  * what the app asked for instead of done.
  *
- * Answers are used in order, one per chooser. A chooser takes the answer at the head of the batch only when it is
- * meant for it (the same dialog, and the title, message and selection it names, when it names them); otherwise, or
- * with no answer left, the chooser is closed as a person closing it would be (cancelled, or a message box's cancel
- * button) and recorded as mismatched or unanswered, so a test that forgot an answer gets a bounded, explained outcome
- * and never a dialog on screen. An answer a real chooser could not give (a file where it takes folders, a path that
- * does not exist, two files where it takes one, a type its filters leave out, a button it does not have) is used up
- * and refused, closing the chooser the same way. A save answer naming a file that already exists meets the system's
- * own Replace? question, which it answers itself (`overwrite`); unanswered, replacing is declined.
+ * Answers are used in order, one per chooser, and only by a chooser shown over the editor window they belong to: the
+ * one open when the batch was set or, set while there was none, the next one. A chooser takes the answer at the head
+ * of the batch only when it is meant for it (the same dialog, and the title, message and selection it names, when it
+ * names them). Otherwise, or with no answer left, the chooser is closed as a person closing it would be (cancelled, or
+ * a message box's cancel button) and recorded as mismatched or unanswered, so a test that forgot an answer gets a
+ * bounded, explained outcome and never a dialog on screen. A chooser over the right window that is not the one the
+ * head answer expects means the run went another way than the test planned: what is left of the batch is withdrawn
+ * rather than kept for a later chooser that happens to match.
  *
- * A batch belongs to the editor window that was open when it was set (or, set while there was none, to the next one):
- * when that window closes or a new page replaces its editor, whatever is left of it expires, so a later window never
- * gets an answer meant for one that went.
+ * An answer a real chooser could not give (a file where it takes folders, a path that does not exist, two files where
+ * it takes one, a type its filters leave out, a button it does not have, a path that has since left the folders it
+ * was allowed in) is used up and refused, closing the chooser the same way. A save answer naming a file that already
+ * exists meets the system's own Replace? question, which it answers itself (`overwrite`); unanswered, replacing is
+ * declined.
+ *
+ * When that window closes, a new page replaces its editor, or the editor crashes, whatever is left of its batch
+ * expires, so a later window or page never gets an answer meant for one that went.
  *
  * Installed only in automated runs, and reachable only from the main process itself (a test's app.evaluate, through
  * the debugger Playwright starts the app with), under DESKTOP_FIXTURES on globalThis. No IPC channel, preload API or
@@ -23,8 +28,8 @@
  *
  * No electron import: the caller passes Electron's dialog and shell, so this is tested with stand-ins.
  */
-import { statSync } from 'node:fs';
-import { dirname, extname, isAbsolute } from 'node:path';
+import { lstatSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, extname, isAbsolute, join, relative } from 'node:path';
 
 /** Where the installed fixtures are found on the main process's globalThis. */
 export const DESKTOP_FIXTURES = Symbol.for('siteorigin.desktopFixtures');
@@ -65,6 +70,8 @@ export interface Answer {
   button?: string;
   /** message: whether its checkbox ends up ticked. Default: as the app showed it. */
   checkbox?: boolean;
+  /** The folders (absolute, canonical) its paths must still really be in when the chooser shows. */
+  within?: string[];
 }
 
 export interface QueuedAnswer extends Answer {
@@ -82,9 +89,9 @@ export interface FileFilter {
 
 /**
  * chosen: the answer was taken and its choice returned. cancelled: closed without a choice, as the answer said (or as
- * the system's Replace? question was declined). unanswered: no answer was left. mismatched: the next answer is for
- * another chooser, and stays for it. refused: the answer could not be given here, and is used up. closed: an error box,
- * which needs no answer.
+ * the system's Replace? question was declined). unanswered: no answer was left. mismatched: the next answer is not for
+ * this chooser (another window's answers stay for it; a different chooser over its own window withdraws the batch).
+ * refused: the answer could not be given here, and is used up. closed: an error box, which needs no answer.
  */
 export type ChooserOutcome = 'chosen' | 'cancelled' | 'unanswered' | 'mismatched' | 'refused' | 'closed';
 
@@ -109,7 +116,7 @@ export interface ChooserEvent {
   buttons?: string[];
   cancelId?: number;
   outcome: ChooserOutcome;
-  /** The answer it took (or, mismatched, the one left for another chooser), or null. */
+  /** The answer it took (or, mismatched, the one at the head of the batch), or null. */
   answer: string | null;
   /** Who set that answer. */
   request: string | null;
@@ -143,9 +150,9 @@ export interface AnswersEvent {
   type: 'answers';
   seq: number;
   at: string;
-  /** set: a batch replaced what was left; expired: its window went. */
-  change: 'set' | 'expired';
-  /** The answers set, or the ones that expired. */
+  /** set: a batch replaced what was left; expired: its window or page went; withdrawn: a different chooser came first. */
+  change: 'set' | 'expired' | 'withdrawn';
+  /** The answers set, or the ones that expired or were withdrawn. */
   answers: string[];
   /** set: the answers it replaced, unused. */
   replaced?: string[];
@@ -174,6 +181,8 @@ export interface DesktopFixtures {
   noteMenu(path: string[], window: number | null, request?: string | null): number;
   /** The last sequence number given out. */
   readonly seq: number;
+  /** The editor window open now (from the moment it is made, before its page loads), or null. */
+  readonly editor: number | null;
 }
 
 /** The parts of Electron's dialog module replaced. */
@@ -205,16 +214,49 @@ const pathKind: PathKind = (path) => {
   }
 };
 
+/**
+ * Where `path` really is: its links followed, as far as it exists (a missing leaf keeps its name). Null when it leads
+ * through a link to nowhere, which a write would follow to wherever that link points.
+ */
+export type RealPath = (path: string) => string | null;
+
+const realPath: RealPath = (path) => {
+  const rest: string[] = [];
+  let at = path;
+  for (;;) {
+    try {
+      return join(realpathSync(at), ...rest.reverse());
+    } catch {
+      try {
+        lstatSync(at);
+        // Something is there (a dangling link) that cannot be followed.
+        return null;
+      } catch {
+        // Nothing is there: look at its parent.
+      }
+      const parent = dirname(at);
+      if (parent === at) return null;
+      rest.push(basename(at));
+      at = parent;
+    }
+  }
+};
+
 export interface DesktopOptions {
   /** How many events are kept. */
   limit?: number;
   now?: () => string;
   kind?: PathKind;
+  real?: RealPath;
 }
 
 const DIALOGS: DialogKind[] = ['open', 'save', 'message'];
 const SELECTIONS: Selection[] = ['file', 'files', 'folder', 'fileOrFolder'];
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+const inside = (parent: string, child: string) => {
+  const rel = relative(parent, child);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
+};
 
 /** Electron's (window?, options) argument forms. */
 function splitArgs(args: unknown[]): { window: number | null; options: Record<string, any> } {
@@ -246,8 +288,8 @@ export function selectionOf(properties: unknown): Selection {
 export function checkAnswer(a: unknown): Answer {
   if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error('An answer is an object.');
   const x = a as Record<string, unknown>;
-  const known = new Set(['dialog', 'title', 'message', 'selection', 'cancel', 'paths', 'path', 'overwrite', 'button', 'checkbox']);
-  for (const k of Object.keys(x)) if (!known.has(k)) throw new Error(`An answer does not take "${k}".`);
+  const known = new Set(['dialog', 'title', 'message', 'selection', 'cancel', 'paths', 'path', 'overwrite', 'button', 'checkbox', 'within']);
+  for (const k of Object.keys(x)) if (!known.has(k)) throw new Error(`An answer does not take ${JSON.stringify(k).slice(0, 60)}.`);
   if (!DIALOGS.includes(x.dialog as DialogKind)) throw new Error('"dialog" is open, save or message.');
   for (const k of ['title', 'message'] as const) if (x[k] !== undefined && (typeof x[k] !== 'string' || !x[k])) throw new Error(`"${k}" is the chooser's own ${k}, a non-empty string.`);
   if (x.selection !== undefined && (x.dialog !== 'open' || !SELECTIONS.includes(x.selection as Selection))) throw new Error(`"selection" is one of ${SELECTIONS.join(', ')}, for an open chooser.`);
@@ -262,11 +304,12 @@ export function checkAnswer(a: unknown): Answer {
     if (x.dialog !== 'save') throw new Error('"path" answers a save chooser.');
     if (typeof x.path !== 'string' || !isAbsolute(x.path)) throw new Error('"path" is an absolute path.');
   }
-  if (x.overwrite !== undefined && (x.dialog !== 'save' || (x.overwrite !== 'replace' && x.overwrite !== 'decline'))) throw new Error('"overwrite" is replace or decline, for a save chooser.');
+  if (x.overwrite !== undefined && (x.path === undefined || (x.overwrite !== 'replace' && x.overwrite !== 'decline'))) throw new Error('"overwrite" is replace or decline, beside a save chooser\'s "path".');
   if (x.button !== undefined && (x.dialog !== 'message' || typeof x.button !== 'string' || !x.button)) throw new Error('"button" is the label of a button, for a message chooser.');
-  if (x.checkbox !== undefined && (x.dialog !== 'message' || typeof x.checkbox !== 'boolean')) throw new Error('"checkbox" is true or false, for a message chooser.');
+  if (x.checkbox !== undefined && (x.button === undefined || typeof x.checkbox !== 'boolean')) throw new Error('"checkbox" is true or false, beside a message chooser\'s "button".');
+  if (x.within !== undefined && (!Array.isArray(x.within) || !x.within.length || !x.within.every((p) => typeof p === 'string' && isAbsolute(p)))) throw new Error('"within" is a non-empty list of absolute folders.');
   const out: Answer = { dialog: x.dialog as DialogKind };
-  for (const k of ['title', 'message', 'selection', 'cancel', 'paths', 'path', 'overwrite', 'button', 'checkbox'] as const) if (x[k] !== undefined) (out as any)[k] = Array.isArray(x[k]) ? [...(x[k] as string[])] : x[k];
+  for (const k of ['title', 'message', 'selection', 'cancel', 'paths', 'path', 'overwrite', 'button', 'checkbox', 'within'] as const) if (x[k] !== undefined) (out as any)[k] = Array.isArray(x[k]) ? [...(x[k] as string[])] : x[k];
   return out;
 }
 
@@ -284,6 +327,7 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
   const limit = opts.limit ?? 500;
   const now = opts.now ?? (() => new Date().toISOString());
   const kind = opts.kind ?? pathKind;
+  const real = opts.real ?? realPath;
   let queue: QueuedAnswer[] = [];
   let log: DesktopEvent[] = [];
   let dropped = 0;
@@ -315,8 +359,8 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
   });
 
   /**
-   * The answer for this chooser, taken from the head of the batch, or why there is none (the event says so). A head
-   * meant for another chooser stays where it is.
+   * The answer for this chooser, taken from the head of the batch, or why there is none (the event says so). Answers
+   * for another window stay for it; a different chooser over their own window withdraws them.
    */
   const take = (e: Omit<ChooserEvent, 'seq' | 'at'>): QueuedAnswer | null => {
     const head = queue[0];
@@ -325,22 +369,36 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
       e.reason = `No answer was set for this ${e.dialog} chooser; it was closed without a choice.`;
       return null;
     }
+    e.answer = head.id;
+    e.request = head.request;
+    if (head.window === null || head.window !== e.window) {
+      e.outcome = 'mismatched';
+      e.reason = `The next answer, ${describeAnswer(head)}, is for ${head.window === null ? 'the next editor window' : `window ${head.window}`}, and this chooser was shown over ${e.window === null ? 'no window' : `window ${e.window}`}. It was closed without a choice, and the answer is kept for its own window.`;
+      return null;
+    }
     const differs: string[] = [];
     if (head.dialog !== e.dialog) differs.push(`it is a ${e.dialog} chooser`);
     if (head.title !== undefined && head.title !== e.title) differs.push(`its title is ${JSON.stringify(e.title)}`);
     if (head.message !== undefined && head.message !== e.message) differs.push(`its message is ${JSON.stringify(e.message)}`);
     if (head.selection !== undefined && head.selection !== e.selection) differs.push(`it takes ${e.selection}`);
     if (differs.length) {
+      const withdrawn = queue.filter((a) => a.window === head.window);
+      queue = queue.filter((a) => a.window !== head.window);
       e.outcome = 'mismatched';
-      e.answer = head.id;
-      e.request = head.request;
-      e.reason = `The next answer, ${describeAnswer(head)}, is not for this chooser: ${differs.join(', ')}. It was closed without a choice, and the answer is kept for its own chooser.`;
+      e.reason = `The next answer, ${describeAnswer(head)}, is not for this chooser: ${differs.join(', ')}. It was closed without a choice, and the answers left for this window (${withdrawn.map((a) => a.id).join(', ')}) were withdrawn: set them again for what comes next.`;
+      record<AnswersEvent>({ type: 'answers', change: 'withdrawn', answers: withdrawn.map((a) => a.id), window: head.window, request: null });
       return null;
     }
     queue.shift();
-    e.answer = head.id;
-    e.request = head.request;
     return head;
+  };
+
+  /** Why `path` cannot be given now that it has left the folders it was allowed in, or null. */
+  const strayed = (a: QueuedAnswer, path: string): string | null => {
+    if (!a.within) return null;
+    const where = real(path);
+    if (where === null) return `${path} leads through a link to nowhere`;
+    return a.within.some((root) => inside(root, where)) ? null : `${path} is no longer inside ${a.within.join(' or ')}`;
   };
 
   const filtersOf = (o: Record<string, any>): FileFilter[] | undefined =>
@@ -363,6 +421,8 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
           ? `it takes one ${selection === 'folder' ? 'folder' : selection === 'file' ? 'file' : 'file or folder'}, and ${paths.length} were given`
           : (paths
               .map((p) => {
+                const away = strayed(a, p);
+                if (away) return away;
                 const k = kind(p);
                 if (!k) return `${p} does not exist`;
                 if (k === 'folder' && !folders) return `${p} is a folder, and it takes files`;
@@ -393,8 +453,12 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
     if (a?.cancel) e.outcome = 'cancelled';
     else if (a) {
       const path = a.path!;
+      const away = strayed(a, path);
       const here = kind(path);
-      if (kind(dirname(path)) !== 'folder') {
+      if (away) {
+        e.outcome = 'refused';
+        e.reason = `The answer could not be chosen here: ${away}. It was closed without a choice.`;
+      } else if (kind(dirname(path)) !== 'folder') {
         e.outcome = 'refused';
         e.reason = `The answer could not be chosen here: ${dirname(path)} is not a folder. It was closed without a choice.`;
       } else if (here === 'folder') {
@@ -484,6 +548,9 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
     },
     get seq() {
       return seq;
+    },
+    get editor() {
+      return editor;
     }
   };
 
@@ -514,12 +581,12 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
 
   /** The app's editor window comes and goes. */
   const windows = {
-    /** An editor window opened: a batch set while there was none belongs to it. */
+    /** An editor window was made: a batch set while there was none belongs to it. */
     opened(window: number) {
       editor = window;
       for (const a of queue) if (a.window === null) a.window = window;
     },
-    /** It closed, or a new page replaced its editor: what is left of its batch expires. */
+    /** It closed, or its page was replaced or crashed: what is left of its batch expires. */
     gone(window: number, { closed }: { closed: boolean }) {
       expire(window);
       if (closed && editor === window) editor = null;
@@ -542,4 +609,9 @@ export function installHeadlessDesktop(electron: { dialog: DialogLike; shell: Sh
   Object.assign(electron.shell, desktop.shell);
   (globalThis as Record<symbol, unknown>)[DESKTOP_FIXTURES] = desktop.fixtures;
   return desktop;
+}
+
+/** The fixtures for this launch: installed when a test drives it, and nothing at all for a normal launch. */
+export function desktopForLaunch(env: Record<string, string | undefined>, global: object, electron: { dialog: DialogLike; shell: ShellLike }): HeadlessDesktop | null {
+  return launchMode(env, global).automated ? installHeadlessDesktop(electron) : null;
 }

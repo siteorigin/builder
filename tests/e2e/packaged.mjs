@@ -18,7 +18,9 @@ const defaults = {
   linux: 'dist/linux-unpacked/siteorigin-builder'
 };
 const minimalPath = process.platform === 'win32' ? 'C:\\Windows\\System32;C:\\Windows' : '/usr/bin:/bin';
-const env = { PATH: minimalPath, SITEORIGIN_USER_DATA: join(WORK, 'u') };
+// Launched by path, the app does not see Playwright's loader: SITEORIGIN_HEADLESS says a test drives it, so it stays
+// off screen and answers its own native choosers (#494).
+const env = { PATH: minimalPath, SITEORIGIN_USER_DATA: join(WORK, 'u'), SITEORIGIN_HEADLESS: '1' };
 for (const k of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SystemRoot', 'DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR']) if (process.env[k]) env[k] = process.env[k];
 const app = await electron.launch({
   executablePath: process.env.APP_BIN ?? defaults[process.platform],
@@ -37,10 +39,15 @@ try {
   // A packaged build registers none of the development-only builderTest handlers (#494). Driven by a test it still
   // answers its own native choosers, so a chooser nobody answered is closed and recorded, never shown on screen.
   assert.equal(await app.evaluate(({ app: a }) => a.isPackaged), true, 'this is the packaged app');
-  const devHook = await win.evaluate(() => window.builderTest.thumbCaptures().then(() => 'answered', (e) => String(e?.message ?? e)));
-  assert.match(devHook, /No handler registered for 'test:thumbCaptures'/, 'a packaged build has no builderTest handlers');
-  assert.equal(await win.evaluate(() => window.builder.dialogs.chooseFolder('Choose a folder')), null, 'an unanswered folder chooser chooses nothing');
-  const choosers = await app.evaluate(() => globalThis[Symbol.for('siteorigin.desktopFixtures')]?.events(0).entries.filter((e) => e.type === 'chooser').map((e) => [e.title, e.outcome]));
+  const devHooks = await win.evaluate(() =>
+    Promise.all(Object.entries(window.builderTest).map(([name, call]) => call().then(() => [name, 'answered'], (e) => [name, String(e?.message ?? e)])))
+  );
+  assert.ok(devHooks.length >= 7, `the preload offers the builderTest calls (${devHooks.length})`);
+  for (const [name, outcome] of devHooks) assert.match(outcome, /No handler registered for 'test:/, `a packaged build has no handler for builderTest.${name}`);
+  assert.equal(await app.evaluate(() => typeof globalThis[Symbol.for('siteorigin.desktopFixtures')]?.events), 'function', 'the packaged app answers its choosers from the test');
+  const picked = await Promise.race([win.evaluate(() => window.builder.dialogs.chooseFolder('Choose a folder')), new Promise((_, reject) => setTimeout(() => reject(new Error('the folder chooser did not close within 10s')), 10000))]);
+  assert.equal(picked, null, 'an unanswered folder chooser chooses nothing');
+  const choosers = await app.evaluate(() => globalThis[Symbol.for('siteorigin.desktopFixtures')].events(0).entries.filter((e) => e.type === 'chooser').map((e) => [e.title, e.outcome]));
   assert.deepEqual(choosers, [['Choose a folder', 'unanswered']], 'it was closed and recorded, not shown');
 
   const progress = [];

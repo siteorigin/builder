@@ -109,14 +109,23 @@ try {
   assert.equal(await page().locator('.welcome').count(), 1, 'Welcome is still shown');
   await expectHiddenWindow(win1.generation, win1.nativeId, 'after an unanswered chooser');
 
-  step('cancel is an answer: Welcome’s Open project… is closed without a choice');
-  mark = await cursor();
-  const cancel = await answer([{ dialog: 'open', cancel: true }]);
-  await page().locator('.welcome-action', { hasText: 'Open project…' }).click();
-  const cancelled = await nextChooser(mark);
-  assert.deepEqual([cancelled.outcome, cancelled.answer, cancelled.request], ['cancelled', cancel.ids[0], cancel.request], 'the record names the answer and the request that set it');
-  assert.equal(await page().locator('.welcome').count(), 1, 'Welcome is still shown');
-  assert.deepEqual((await ok('desktop.events', { after: mark })).pending, [], 'the answer was used');
+  step('cancel is an answer: Open project… on Welcome and in the File menu is closed without a choice');
+  for (const [where, open] of [
+    ['Welcome', () => page().locator('.welcome-action', { hasText: 'Open project…' }).click()],
+    ['File', () => ok('menu.invoke', { path: ['File', 'Open Project…'] })]
+  ]) {
+    mark = await cursor();
+    const cancel = await answer([{ dialog: 'open', cancel: true }]);
+    await open();
+    const cancelled = await nextChooser(mark);
+    assert.deepEqual([cancelled.outcome, cancelled.answer, cancelled.request, cancelled.window], ['cancelled', cancel.ids[0], cancel.request, win1.nativeId], `${where}: the record names the answer and the request that set it`);
+    // Opening ends once the chooser is closed: Welcome is back, with nothing to trust and no error.
+    await eventually(async () => assert.equal(await page().locator('.welcome-action[aria-busy="true"]').count(), 0, `${where}: opening finished`));
+    assert.equal(await page().locator('.welcome').count(), 1, `${where}: Welcome is still shown`);
+    assert.equal(await page().getByRole('dialog').count(), 0, `${where}: nothing is offered to trust`);
+    assert.equal(await page().locator('.toast.error').count(), 0, `${where}: a cancelled chooser is no error`);
+    assert.deepEqual((await ok('desktop.events', { after: mark })).pending, [], `${where}: the answer was used`);
+  }
 
   step('a project is created from Welcome in a folder chosen in the native chooser');
   mark = await cursor();
@@ -207,6 +216,7 @@ try {
 
   step('exporting over the ZIP file meets the system’s Replace? question: declined, the file is kept as it was');
   const exportedHash = sha(zip);
+  const exportedAt = statSync(zip).mtimeMs;
   mark = await cursor();
   const decline = await answer([{ dialog: 'save', path: 'exports/harbour-bakery-source.zip', overwrite: 'decline' }]);
   await exportSourceZip();
@@ -214,7 +224,7 @@ try {
   assert.deepEqual([declined.outcome, declined.answer], ['cancelled', decline.ids[0]]);
   assert.match(declined.reason, /already exists, and the system's question whether to replace it was declined/);
   await eventually(async () => assert.equal(await modal.locator('.export-progress').innerText(), '', 'the export stopped'));
-  assert.equal(sha(zip), exportedHash, 'the ZIP file is unchanged');
+  assert.deepEqual([sha(zip), statSync(zip).mtimeMs], [exportedHash, exportedAt], 'the ZIP file is unchanged, and was not written again');
   assert.equal(await history.getByRole('listitem').count(), 1, 'nothing new was exported');
   await closeExport();
 
@@ -268,6 +278,29 @@ try {
   assert.equal((await nextChooser(mark)).outcome, 'chosen');
   await expectHiddenWindow(win1.generation, win1.nativeId, 'with the copy open');
 
+  step('every chooser so far is on the record, each taken by the answer set for it');
+  const record = await ok('desktop.events', { after: 0, limit: 1000 });
+  assert.equal(record.dropped, 0);
+  assert.deepEqual(record.pending, [], 'no answer is left waiting');
+  assert.deepEqual(
+    record.entries.filter((e) => e.type === 'chooser').map((c) => `${c.dialog} ${c.title}: ${c.outcome}`),
+    [
+      'open Open a SiteOrigin Builder project: unanswered',
+      'open Open a SiteOrigin Builder project: cancelled',
+      'open Open a SiteOrigin Builder project: cancelled',
+      'open Choose where to create the project: chosen',
+      `open ${imported.title}: chosen`,
+      'save Export source project as a ZIP file: chosen',
+      'save Export source project as a ZIP file: cancelled',
+      'save Export source project as a ZIP file: chosen',
+      'open Open a SiteOrigin Builder project: chosen',
+      'open Choose where to save Harbour Bakery: chosen',
+      'open Open a SiteOrigin Builder project: chosen'
+    ],
+    'the choosers shown, in order, and how each was answered'
+  );
+  assert.ok(record.entries.filter((e) => e.type === 'chooser').every((c) => c.window === win1.nativeId), 'each over the editor window');
+
   step('File > Close Project returns to Welcome in the same window');
   await ok('menu.invoke', { path: ['File', 'Close Project'] });
   await page().waitForSelector('.welcome', { timeout: 30000 });
@@ -310,9 +343,6 @@ try {
     await eventually(async () => assert.equal((await refused('window.info')).code, 'APP_EXITED'), 60000);
   }
 
-  step('no chooser was ever left to the system');
-  const all = (await ok('desktop.events', { after: 0, limit: 1000 }).catch(() => ({ entries: [] }))).entries;
-  if (all.length) assert.ok(all.filter((e) => e.type === 'chooser').every((c) => ['chosen', 'cancelled', 'unanswered'].includes(c.outcome)), 'each was answered, cancelled or closed unanswered');
   assert.deepEqual(session.pageErrors, [], 'no page errors');
   passed = true;
 } finally {

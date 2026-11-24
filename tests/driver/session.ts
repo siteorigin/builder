@@ -821,14 +821,10 @@ export class Session {
     for (const k of Object.keys(a)) if (k !== 'answers') throw new DriverError('BAD_REQUEST', `desktop.setAnswers does not take "${k}".`);
     if (!Array.isArray(a.answers)) throw new DriverError('BAD_REQUEST', '"answers" is a list ([] clears them).');
     const answers = await Promise.all(a.answers.map((x) => resolveAnswer(this.areas(), x)));
-    try {
-      return { answers: (await inMain(this.app!, desktopInMain, { op: 'setAnswers', answers, request: request.id })) as string[] };
-    } catch (e) {
-      // A malformed answer changes nothing: the app says which one and why.
-      const m = /(Answer \d+: [^\n]*)/.exec(e instanceof Error ? e.message : String(e));
-      if (m) throw new DriverError('BAD_REQUEST', m[1]);
-      throw e;
-    }
+    const set = (await inMain(this.app!, desktopInMain, { op: 'setAnswers', answers, request: request.id })) as { ids: string[] } | { error: string };
+    // A malformed answer changes nothing: the app says which one and why.
+    if ('error' in set) throw new DriverError('BAD_REQUEST', set.error);
+    return { answers: set.ids };
   }
 
   private async desktopEvents(args: Record<string, unknown> | undefined) {

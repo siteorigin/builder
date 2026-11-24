@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { copyFile, lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { ElectronApplication } from 'playwright';
 import { DriverError } from './protocol.ts';
 
@@ -89,7 +89,10 @@ export function invokeMenuInMain({ Menu, BrowserWindow }: { Menu: any; BrowserWi
   };
   const target = inv.window === null ? null : BrowserWindow.fromId(inv.window);
   if (inv.window !== null && (!target || target.isDestroyed())) fail('window-closed', `Editor window ${inv.window} is gone.`);
-  if (inv.window === null && BrowserWindow.getAllWindows().some((w: any) => !w.isDestroyed() && isEditor(w))) fail('window-open', 'An editor window is open: choose the item for it.');
+  // The app knows its editor window from the moment it is made, before its page has an address to recognise it by.
+  const editor = fixtures ? fixtures.editor : null;
+  const editorOpen = editor !== null && editor !== undefined ? !!BrowserWindow.fromId(editor) && !BrowserWindow.fromId(editor).isDestroyed() : BrowserWindow.getAllWindows().some((w: any) => !w.isDestroyed() && isEditor(w));
+  if (inv.window === null && editorOpen) fail('window-open', 'An editor window is open: choose the item for it.');
   const done: { seq: number | null; path: string[]; window: number | null }[] = [];
   for (const path of inv.paths) {
     const menu = Menu.getApplicationMenu();
@@ -144,7 +147,14 @@ export function desktopInMain(_electron: unknown, call: DesktopCall): any {
   const fixtures = (globalThis as any)[Symbol.for('siteorigin.desktopFixtures')];
   if (call.op === 'installed') return !!fixtures;
   if (!fixtures) throw new Error('[not-installed] This build answers no choosers: it predates desktop fixtures, or was not launched by a test. Rebuild it (npm run build).');
-  if (call.op === 'setAnswers') return fixtures.setAnswers(call.answers, { request: call.request });
+  if (call.op === 'setAnswers') {
+    // A malformed answer is the caller's mistake, said as such rather than thrown as the app's failure.
+    try {
+      return { ids: fixtures.setAnswers(call.answers, { request: call.request }) };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
   if (call.op === 'cursor') return fixtures.seq;
   return fixtures.events(call.after ?? 0, call.limit ?? 200);
 }
@@ -155,7 +165,8 @@ export async function inMain<A, R>(app: ElectronApplication, fn: (electron: any,
     return (await app.evaluate(fn as any, arg)) as Awaited<R>;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    const m = /\[([a-z-]+)\] ([^\n]*)/.exec(message);
+    // The reason an *InMain function throws starts its own message (Playwright puts "Error: " before it).
+    const m = /(?:^|Error: )\[([a-z-]+)\] ([^\n]*)/.exec(message);
     if (!m) throw e;
     if (m[1] === 'window-closed') throw new DriverError('WINDOW_CLOSED', m[2], { retryable: true });
     // An editor window that has just opened is bound by the session a moment later: asking again then works.
@@ -171,24 +182,29 @@ export async function inMain<A, R>(app: ElectronApplication, fn: (electron: any,
 export type Area = 'imports' | 'exports' | 'workspace';
 export const AREAS: Area[] = ['imports', 'exports', 'workspace'];
 
-/** What a chooser of each kind may be answered with: open reads, save writes. */
-export const ANSWER_AREAS: Record<'open' | 'save', Area[]> = { open: ['imports', 'exports', 'workspace'], save: ['exports', 'workspace'] };
+/** What a chooser of each kind may be answered with: open reads a staged file, an export or a project; save writes
+ *  only into exports, so no save can land on a project or anything else the session holds. */
+export const ANSWER_AREAS: Record<'open' | 'save', Area[]> = { open: ['imports', 'exports', 'workspace'], save: ['exports'] };
 
 const inside = (parent: string, child: string) => {
   const rel = relative(parent, child);
   return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
 };
 
-/** The real path of `p`, resolving links in the part of it that exists. */
-async function realish(p: string): Promise<string> {
+/**
+ * The real path of `p`, resolving links in the part of it that exists (a missing leaf keeps its name), or null when it
+ * leads through a link to nowhere, which a write would follow to wherever the link points.
+ */
+async function realish(p: string): Promise<string | null> {
   const rest: string[] = [];
   let at = p;
   for (;;) {
     try {
       return join(await realpath(at), ...rest.reverse());
     } catch {
+      if (await lstat(at).then(() => true, () => false)) return null;
       const parent = resolve(at, '..');
-      if (parent === at) return p;
+      if (parent === at) return null;
       rest.push(basename(at));
       at = parent;
     }
@@ -210,19 +226,33 @@ export async function resolveSessionPath(areas: Record<Area, string>, input: unk
     if (!AREAS.includes(first as Area)) throw new DriverError('BAD_REQUEST', `"${input}" starts with one of the session's folders: ${allowed.map((a) => `${a}/`).join(', ')}.`);
     abs = resolve(areas[first as Area], ...rest);
   }
-  // Named inside an allowed folder, and really there once links are followed (a link between two of them is fine).
+  // Named inside an allowed folder before anything is looked up, and really there once links are followed (a link
+  // between two of them is fine). The folders are the session's as it made them (their real paths): one replaced by a
+  // link since leads nowhere allowed.
+  const outside = new DriverError('BAD_REQUEST', `"${input}" is not inside the session's ${allowed.map((a) => `${a}/`).join(', ')}.`);
+  if (!allowed.some((a) => inside(areas[a], abs))) throw outside;
   const real = await realish(abs);
-  const roots = await Promise.all(allowed.map((a) => realish(areas[a])));
-  if (allowed.some((a) => inside(areas[a], abs)) && roots.some((root) => inside(root, real))) return real;
-  throw new DriverError('BAD_REQUEST', `"${input}" is not inside the session's ${allowed.map((a) => `${a}/`).join(', ')}.`);
+  if (real === null) throw new DriverError('BAD_REQUEST', `"${input}" leads through a link to nowhere.`);
+  if (!allowed.some((a) => inside(areas[a], real))) throw outside;
+  return real;
 }
 
-/** Resolve every path an answer names, for the chooser it answers. */
+/**
+ * Resolve every path an answer names, for the chooser it answers, and name the folders they must still really be in
+ * when that chooser shows (the app checks again then, in case a link was put in their way meanwhile).
+ */
 export async function resolveAnswer(areas: Record<Area, string>, answer: unknown): Promise<unknown> {
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return answer;
   const a = { ...(answer as Record<string, unknown>) };
-  if (a.dialog === 'open' && Array.isArray(a.paths)) a.paths = await Promise.all(a.paths.map((p) => resolveSessionPath(areas, p, ANSWER_AREAS.open)));
-  if (a.dialog === 'save' && a.path !== undefined) a.path = await resolveSessionPath(areas, a.path, ANSWER_AREAS.save);
+  if (a.within !== undefined) throw new DriverError('BAD_REQUEST', 'An answer does not take "within": the session sets it.');
+  if (a.dialog === 'open' && Array.isArray(a.paths)) {
+    a.paths = await Promise.all(a.paths.map((p) => resolveSessionPath(areas, p, ANSWER_AREAS.open)));
+    a.within = ANSWER_AREAS.open.map((k) => areas[k]);
+  }
+  if (a.dialog === 'save' && a.path !== undefined) {
+    a.path = await resolveSessionPath(areas, a.path, ANSWER_AREAS.save);
+    a.within = ANSWER_AREAS.save.map((k) => areas[k]);
+  }
   return a;
 }
 
@@ -240,8 +270,10 @@ export async function stageImport(appRoot: string, imports: string, args: Record
   const samples = await sampleImages(appRoot);
   if (typeof a.sample !== 'string' || !samples.includes(a.sample)) throw new DriverError('BAD_REQUEST', `"sample" is one of ${samples.join(', ')}.`);
   const name = a.name ?? a.sample;
-  if (typeof name !== 'string' || !name || name !== basename(name) || name.startsWith('.') || name.includes(sep)) throw new DriverError('BAD_REQUEST', '"name" is a file name, with no folder.');
+  if (typeof name !== 'string' || !name || name !== basename(name) || name.startsWith('.') || /[\\/]/.test(name)) throw new DriverError('BAD_REQUEST', '"name" is a file name, with no folder.');
   if (extname(name).toLowerCase() !== extname(a.sample).toLowerCase()) throw new DriverError('BAD_REQUEST', `"name" keeps the sample's type (${extname(a.sample)}).`);
+  // The folder the session made, not something put in its place since.
+  if ((await realpath(imports).catch(() => null)) !== imports) throw new DriverError('OP_FAILED', 'The session\'s imports folder is no longer the one it made.', { details: { reason: 'moved' } });
   const dest = join(imports, name);
   try {
     await copyFile(join(appRoot, 'resources', 'starter-assets', a.sample), dest, constants.COPYFILE_EXCL);

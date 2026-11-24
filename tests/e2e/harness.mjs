@@ -126,7 +126,11 @@ export async function knownFailure(issue, check) {
  * (open), { path, overwrite? } (save) or { button } (message), paths absolute. A chooser with no answer meant for it is
  * closed without a choice and recorded. Returns the answers' ids.
  */
-export const answerChoosers = (app, answers) => app.evaluate(desktopInMain, { op: 'setAnswers', answers, request: null });
+export async function answerChoosers(app, answers) {
+  const set = await app.evaluate(desktopInMain, { op: 'setAnswers', answers, request: null });
+  if (set.error) throw new Error(set.error);
+  return set.ids;
+}
 
 /** What happened at the desktop after the cursor `after`: { entries, next, dropped, pending }. */
 export const desktopEvents = (app, after = 0) => app.evaluate(desktopInMain, { op: 'events', after, limit: 1000 });

@@ -684,6 +684,16 @@ for (let open = 0; open < 2; open++) {
       return r[0].target;
     });
     assert.equal(shown, realpathSync(e.path), `row ${i} reveals its own export`);
+    if (!e.previewUrl) continue;
+    // A browser never opens during tests: the app records the address it handed over instead.
+    await preview.click();
+    const opened = await eventually(async () => {
+      const r = (await desktopIntents(app, revealMark)).filter((x) => x.kind === 'open-external');
+      assert.equal(r.length, 1, 'Preview in browser opens one address');
+      revealMark = r[0].seq;
+      return r[0].target;
+    });
+    assert.equal(opened, new URL(e.previewUrl).href, `row ${i} opens its own proof in the browser`);
   }
   await closeDialog();
 }

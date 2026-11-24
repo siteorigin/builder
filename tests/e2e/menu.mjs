@@ -7,7 +7,7 @@
 // carry. The folder picker is answered by the app's chooser fixtures, which record the window it was shown over.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { answerChoosers, chooseMenu, choosersShown, desktopCursor, eventually, launch, menuItem, scratch, step, withTimeout } from './harness.mjs';
+import { answerChoosers, chooseMenu, choosersShown, desktopCursor, desktopEvents, eventually, launch, menuItem, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('menu');
 const dirA = join(WORK, 'sites', 'harbour-bakery');
@@ -158,6 +158,8 @@ if (process.platform === 'darwin') {
   await chooseWithNoWindow('New Project…', 'Open Project…');
   await expectEditorFor('Harbour Bakery', dirA);
   await expectOnePicker('that came up for it');
+  const chosen = (await desktopEvents(app, pickerMark)).entries.filter((e) => e.type === 'menu').map((e) => [e.path.join(' > '), e.window]);
+  assert.deepEqual(chosen, [['File > New Project…', null], ['File > Open Project…', null]], 'both were chosen, in order, with no window open');
   assert.equal(await newProjectDialog().count(), 0, 'New Project was replaced by Open Project');
   await expectProjectItems(true, 'after opening a project with no window');
 

@@ -52,17 +52,33 @@ function fakeMenu() {
           item({ label: 'Close Window', role: 'close' })
         ])
       }),
-      item({ label: 'Edit', type: 'submenu', submenu: sub([item({ label: 'Undo', id: 'edit-undo' }), item({ label: 'Secret', visible: false }), item({ label: 'Cut', role: 'cut' }), item({ label: 'Twice' }), item({ label: 'Twice' })]) }),
+      item({
+        label: 'Edit',
+        type: 'submenu',
+        submenu: sub([item({ label: 'Undo', id: 'edit-undo' }), item({ label: 'Secret', visible: false }), item({ label: 'Cut', role: 'cut' }), item({ label: 'Twice' }), item({ label: 'Twice' }), item({ label: 'Smart quotes', type: 'checkbox', checked: true })])
+      }),
       item({ label: 'Window', type: 'submenu', enabled: false, submenu: sub([item({ label: 'Minimize' })]) })
     ]
   };
   const windows = new Map<number, { id: number; webContents: { id: number; getURL: () => string }; isDestroyed: () => boolean }>();
-  const addWindow = (id: number, url = 'app://editor/index.html') => windows.set(id, { id, webContents: { id: id * 10, getURL: () => url }, isDestroyed: () => false });
+  const destroyed = new Set<number>();
+  const addWindow = (id: number, url = 'app://editor/index.html') => windows.set(id, { id, webContents: { id: id * 10, getURL: () => url }, isDestroyed: () => destroyed.has(id) });
   const electron = {
     Menu: { getApplicationMenu: () => menu },
     BrowserWindow: { fromId: (id: number) => windows.get(id) ?? null, getAllWindows: () => [...windows.values()] }
   };
-  return { electron, clicks, windows, addWindow, menu };
+  return { electron, clicks, windows, addWindow, destroyed, menu };
+}
+
+/** Run with fixtures installed where the *InMain functions find them. */
+function withFixtures<T>(fn: (d: ReturnType<typeof createDesktopFixtures>) => T): T {
+  const d = createDesktopFixtures();
+  (globalThis as Record<symbol, unknown>)[DESKTOP_FIXTURES] = d.fixtures;
+  try {
+    return fn(d);
+  } finally {
+    delete (globalThis as Record<symbol, unknown>)[DESKTOP_FIXTURES];
+  }
 }
 
 describe('the application menu', () => {
@@ -78,6 +94,9 @@ describe('the application menu', () => {
     ]);
     expect(findMenuNode(tree, ['Edit', 'Undo'])).toMatchObject({ path: ['Edit', 'Undo'], id: 'edit-undo', visible: true, role: null });
     expect(findMenuNode(tree, ['Edit', 'Secret'])).toMatchObject({ visible: false });
+    expect(findMenuNode(tree, ['Edit', 'Cut'])).toMatchObject({ role: 'cut', invokable: false });
+    expect(findMenuNode(tree, ['Edit', 'Smart quotes'])).toMatchObject({ type: 'checkbox', checked: true, invokable: true });
+    expect(findMenuNode(tree, ['Edit', 'Undo'])).toMatchObject({ checked: false });
     expect(findMenuNode(tree, ['File'])).toMatchObject({ invokable: false, type: 'submenu' });
     expect(findMenuNode(tree, ['File', 'Nothing'])).toBeNull();
   });
@@ -116,15 +135,36 @@ describe('the application menu', () => {
       [['File', 'Print…'], /^\[not-found\] There is no menu item File > Print…/],
       [['File', 'New Project…', 'More'], /^\[not-found\] File > New Project… has no submenu/]
     ];
-    for (const [path, message] of refused) expect(() => invokeMenuInMain(electron, { paths: [path], window: 3, request: null })).toThrow(message);
-    // Items chosen in one turn stop at the first refused.
-    expect(() => invokeMenuInMain(electron, { paths: [['File', 'Export…'], ['File', 'New Project…']], window: 3, request: null })).toThrow(/disabled/);
-    expect(clicks).toEqual([]);
+    withFixtures((d) => {
+      for (const [path, message] of refused) expect(() => invokeMenuInMain(electron, { paths: [path], window: 3, request: null })).toThrow(message);
+      // Items chosen in one turn stop at the first refused.
+      expect(() => invokeMenuInMain(electron, { paths: [['File', 'Export…'], ['File', 'New Project…']], window: 3, request: null })).toThrow(/disabled/);
+      expect(clicks).toEqual([]);
+      expect(d.fixtures.events().entries.filter((e) => e.type === 'menu'), 'nothing refused is recorded as chosen').toEqual([]);
+    });
+  });
+
+  it('each item is checked as it is chosen: one an earlier item disabled is refused', () => {
+    const { electron, clicks, addWindow, menu } = fakeMenu();
+    addWindow(3);
+    const file = (menu.items[1] as any).submenu.items;
+    const open = file.find((i: any) => i.label === 'Open Project…');
+    const newProject = file.find((i: any) => i.label === 'New Project…');
+    newProject.click = () => {
+      clicks.push({ label: 'New Project…', args: [] });
+      open.enabled = false;
+    };
+    expect(() => invokeMenuInMain(electron, { paths: [['File', 'New Project…'], ['File', 'Open Project…']], window: 3, request: null })).toThrow(/^\[disabled\] File > Open Project…/);
+    expect(clicks.map((c) => c.label)).toEqual(['New Project…']);
   });
 
   it('chooses for no window only while none is open, and never for one that went', () => {
-    const { electron, clicks, addWindow, windows } = fakeMenu();
+    const { electron, clicks, addWindow, windows, destroyed } = fakeMenu();
     expect(() => invokeMenuInMain(electron, { paths: [['File', 'New Project…']], window: 3, request: null })).toThrow(/^\[window-closed\] Editor window 3 is gone/);
+    addWindow(3);
+    destroyed.add(3);
+    expect(() => invokeMenuInMain(electron, { paths: [['File', 'New Project…']], window: 3, request: null })).toThrow(/^\[window-closed\] Editor window 3 is gone/);
+    windows.clear();
     invokeMenuInMain(electron, { paths: [['File', 'New Project…']], window: null, request: null });
     expect(clicks[0].args.slice(1)).toEqual([undefined, undefined]);
     // A hidden window of another page (the thumbnails') is no editor.
@@ -134,6 +174,18 @@ describe('the application menu', () => {
     expect(() => invokeMenuInMain(electron, { paths: [['File', 'New Project…']], window: null, request: null })).toThrow(/^\[window-open\]/);
     windows.clear();
     expect(clicks.map((c) => c.label)).toEqual(['New Project…', 'Open Project…']);
+  });
+
+  it('knows the app’s editor window from the moment it is made, before its page has an address', () => {
+    const { electron, clicks, addWindow } = fakeMenu();
+    addWindow(6, '');
+    withFixtures((d) => {
+      d.windows.opened(6);
+      expect(() => invokeMenuInMain(electron, { paths: [['File', 'New Project…']], window: null, request: null })).toThrow(/^\[window-open\]/);
+      d.windows.gone(6, { closed: true });
+      invokeMenuInMain(electron, { paths: [['File', 'New Project…']], window: null, request: null });
+    });
+    expect(clicks.map((c) => c.label)).toEqual(['New Project…']);
   });
 });
 
@@ -152,6 +204,10 @@ describe('session paths', () => {
   it('refuses anything outside the folders allowed: the profile, the caller’s, a way out by .. or a link', async () => {
     const { root, areas, outside } = folders();
     symlinkSync(outside, join(areas.imports, 'escape'));
+    // Named outside, leading in: refused by the name, before anything is looked up.
+    symlinkSync(areas.exports, join(outside, 'into-exports'));
+    // A link to nowhere: a write would follow it out.
+    symlinkSync(join(outside, 'not-yet'), join(areas.exports, 'dangling.zip'));
     const refused: [unknown, Area[]][] = [
       ['profile/api-keys.json', ['imports', 'exports', 'workspace']],
       [join(root, 'profile', 'api-keys.json'), ['imports', 'exports', 'workspace']],
@@ -159,17 +215,30 @@ describe('session paths', () => {
       ['imports/../profile/api-keys.json', ['imports', 'exports', 'workspace']],
       ['imports/escape/secret.txt', ['imports', 'exports', 'workspace']],
       ['imports/logo.jpg', ['exports', 'workspace']],
+      [join(outside, 'into-exports', 'site.zip'), ['exports']],
+      ['exports/dangling.zip', ['exports']],
+      ['exports/dangling.zip/inside', ['exports']],
       ['', ['exports']],
       [42, ['exports']]
     ];
     for (const [input, allowed] of refused) await expect(resolveSessionPath(areas, input, allowed), String(input)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
   });
 
-  it('resolves the paths an answer names, for what its chooser does: open reads, save writes', async () => {
+  it('a session folder replaced by a link since the session made it leads nowhere allowed', async () => {
+    const { areas, outside } = folders();
+    rmSync(areas.exports, { recursive: true });
+    symlinkSync(outside, areas.exports);
+    for (const input of ['exports/secret.txt', 'exports', join(areas.exports, 'new.zip')]) await expect(resolveSessionPath(areas, input, ['exports']), input).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(listSessionFolder(areas, 'exports')).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+
+  it('resolves the paths an answer names, for what its chooser does: open reads, save writes only into exports', async () => {
     const { areas } = folders();
-    expect(await resolveAnswer(areas, { dialog: 'open', paths: ['exports/site.zip', 'workspace'] })).toEqual({ dialog: 'open', paths: [join(areas.exports, 'site.zip'), areas.workspace] });
-    expect(await resolveAnswer(areas, { dialog: 'save', path: 'exports/out.zip', overwrite: 'replace' })).toEqual({ dialog: 'save', path: join(areas.exports, 'out.zip'), overwrite: 'replace' });
-    await expect(resolveAnswer(areas, { dialog: 'save', path: 'imports/out.zip' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    const open = ['imports', 'exports', 'workspace'].map((k) => areas[k as Area]);
+    expect(await resolveAnswer(areas, { dialog: 'open', paths: ['exports/site.zip', 'workspace'] })).toEqual({ dialog: 'open', paths: [join(areas.exports, 'site.zip'), areas.workspace], within: open });
+    expect(await resolveAnswer(areas, { dialog: 'save', path: 'exports/out.zip', overwrite: 'replace' })).toEqual({ dialog: 'save', path: join(areas.exports, 'out.zip'), overwrite: 'replace', within: [areas.exports] });
+    for (const path of ['imports/out.zip', 'workspace/SiteOrigin/bakery/siteorigin.project.json', 'workspace/copy']) await expect(resolveAnswer(areas, { dialog: 'save', path }), path).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(resolveAnswer(areas, { dialog: 'open', paths: ['imports'], within: ['/'] })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     expect(await resolveAnswer(areas, { dialog: 'message', button: 'OK' })).toEqual({ dialog: 'message', button: 'OK' });
   });
 });
@@ -182,9 +251,17 @@ describe('session files', () => {
     expect(readFileSync(staged.path)).toEqual(readFileSync(join(REPO_ROOT, 'resources', 'starter-assets', 'hero.jpg')));
     await expect(stageImport(REPO_ROOT, areas.imports, { name: 'harbour.jpg', sample: 'studio.jpg' })).rejects.toMatchObject({ code: 'OP_FAILED', details: { reason: 'exists' } });
     expect(readFileSync(staged.path)).toEqual(readFileSync(join(REPO_ROOT, 'resources', 'starter-assets', 'hero.jpg')));
-    for (const args of [{ name: '../x.jpg', sample: 'hero.jpg' }, { name: 'x.png', sample: 'hero.jpg' }, { sample: 'nope.jpg' }, { name: '.hidden.jpg', sample: 'hero.jpg' }, { sample: 'hero.jpg', from: '/etc/passwd' }])
+    for (const args of [{ name: '../x.jpg', sample: 'hero.jpg' }, { name: 'a\\b.jpg', sample: 'hero.jpg' }, { name: 'x.png', sample: 'hero.jpg' }, { sample: 'nope.jpg' }, { name: '.hidden.jpg', sample: 'hero.jpg' }, { sample: 'hero.jpg', from: '/etc/passwd' }])
       await expect(stageImport(REPO_ROOT, areas.imports, args), JSON.stringify(args)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     expect(existsSync(join(areas.imports, 'x.png'))).toBe(false);
+  });
+
+  it('never stages into an imports folder something has put in place of the session’s', async () => {
+    const { areas, outside } = folders();
+    rmSync(areas.imports, { recursive: true });
+    symlinkSync(outside, areas.imports);
+    await expect(stageImport(REPO_ROOT, areas.imports, { name: 'x.jpg', sample: 'hero.jpg' })).rejects.toMatchObject({ code: 'OP_FAILED', details: { reason: 'moved' } });
+    expect(existsSync(join(outside, 'x.jpg'))).toBe(false);
   });
 
   it('lists one level of a session folder', async () => {
@@ -247,10 +324,13 @@ describe('the session’s desktop operations', () => {
     ]);
     expect(err(await s.call(req('desktop.setAnswers', { answers: [{ dialog: 'open', paths: ['profile/api-keys.json'] }] })))).toMatchObject({ code: 'BAD_REQUEST' });
     expect(err(await s.call(req('desktop.setAnswers', { answers: [{ dialog: 'save', button: 'OK' }] })))).toMatchObject({ code: 'BAD_REQUEST', message: 'Answer 1: "button" is the label of a button, for a message chooser.' });
+    // A malformed answer is the client's mistake, however it is worded.
+    expect(err(await s.call(req('desktop.setAnswers', { answers: [{ dialog: 'open', cancel: true, '[window-closed] x': 1 }] })))).toMatchObject({ code: 'BAD_REQUEST', retryable: false });
+    expect(err(await s.call(req('desktop.setAnswers', { answers: [{ dialog: 'save', path: 'workspace/copy' }] })))).toMatchObject({ code: 'BAD_REQUEST' });
     expect(err(await s.call(req('desktop.setAnswers', { answers: 'all' })))).toMatchObject({ code: 'BAD_REQUEST' });
     expect(err(await s.call(req('desktop.setAnswers', { answers: [], extra: 1 })))).toMatchObject({ code: 'BAD_REQUEST' });
     // Refusals changed nothing.
-    expect(desktop.fixtures.events().pending).toHaveLength(2);
+    expect(desktop.fixtures.events().pending.map((a) => a.id)).toEqual(set.answers);
     ok(await s.call(req('desktop.setAnswers', { answers: [] })));
     expect(desktop.fixtures.events().pending).toEqual([]);
   });
@@ -261,6 +341,9 @@ describe('the session’s desktop operations', () => {
     const first = ok<any>(await s.call(req('desktop.events')));
     expect(first.entries.map((e: any) => [e.type, e.outcome])).toEqual([['chooser', 'unanswered']]);
     expect(ok<any>(await s.call(req('desktop.events', { after: first.next }))).entries).toEqual([]);
+    await desktop.dialog.showOpenDialog({ id: 1 }, { title: 'Open again', properties: ['openFile'] });
+    expect(ok<any>(await s.call(req('desktop.events', { after: first.next, limit: 1 }))).entries.map((e: any) => e.title)).toEqual(['Open again']);
+    expect(ok<any>(await s.call(req('desktop.events', { limit: 1 }))).entries.map((e: any) => e.title)).toEqual(['Open']);
     expect(err(await s.call(req('desktop.events', { after: -1 })))).toMatchObject({ code: 'BAD_REQUEST' });
     expect(err(await s.call(req('desktop.events', { limit: 0 })))).toMatchObject({ code: 'BAD_REQUEST' });
   });
@@ -285,6 +368,7 @@ describe('the session’s desktop operations', () => {
     const { s } = started();
     const staged = ok<any>(await s.call(req('files.stageImport', { name: 'team.jpg', sample: 'person-1.jpg' })));
     expect(staged.logical).toBe('imports/team.jpg');
+    expect(readFileSync(staged.path)).toEqual(readFileSync(join(REPO_ROOT, 'resources', 'starter-assets', 'person-1.jpg')));
     expect(ok<any>(await s.call(req('files.list', { path: 'imports' }))).entries.map((e: any) => e.name)).toEqual(['team.jpg']);
     expect(err(await s.call(req('files.list', { path: 'imports', deep: true })))).toMatchObject({ code: 'BAD_REQUEST' });
   });
