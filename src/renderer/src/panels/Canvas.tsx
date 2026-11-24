@@ -805,6 +805,9 @@ export function Canvas() {
     const s = getState();
     // While a collection's layout is open, another of its entries keeps it open on that entry; a page closes it.
     const to = viewAt(st, s.templateMode, path);
+    // While a post is visited (visitAddress), an entry's page is that visit, not its collection's layout opened for
+    // editing: the editor keeps the page it shows, and Back to writing returns the canvas there.
+    if (to && 'templateMode' in to && visitWanted !== null) return;
     // Another entry of the same collection keeps what is selected in its layout; another collection's starts afresh.
     if (to && 'templateMode' in to) setState({ templateMode: to.templateMode, definitionMode: null, ...(to.templateMode.collectionId === s.templateMode?.collectionId ? {} : { selection: null }) });
     else if (to && (to.pageId !== s.pageId || s.templateMode)) setState({ pageId: to.pageId, templateMode: null, selection: null });

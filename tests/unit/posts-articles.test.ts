@@ -283,6 +283,8 @@ describe('the post page', () => {
     expect(page).toContain('SoRichText');
     expect(page).toContain('Saturday at the studio.');
     expect(page).toContain('.so-rich__figure');
+    // An entry whose text has no section heading or picture gets no article rules.
+    expect(generateEntry(blog(), 'posts', 'en_spring')).not.toContain('.so-rich__figure');
     expect(RICHTEXT_SVELTE).toContain("import SoImage from './Image.svelte';");
     expect(RICHTEXT_SVELTE).toMatch(/block\.type === 'image'[\s\S]*<figure class="so-rich__figure">[\s\S]*<figcaption>\{block\.caption\}<\/figcaption>/);
     expect(RICHTEXT_SVELTE).toContain('<h2>{@render inline(block.spans)}</h2>');

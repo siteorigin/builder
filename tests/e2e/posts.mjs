@@ -147,13 +147,14 @@ await win.getByRole('button', { name: 'Preview in site' }).click();
 const route = (await snapshot()).state.collections.posts.entries[entryId].slug;
 const path = `/blog/${route}/`;
 await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), path, 'the canvas shows the post'), 60000);
-const article = frame.locator('article.so-entry');
+// The post's page is its collection's layout, read for this post.
+const article = frame.locator('article', { has: frame.locator('h1') });
 await eventually(async () => assert.equal(await article.locator('h1').innerText(), 'Opening the kiln'), 60000);
 assert.equal(await frame.locator('header.so-header').count(), 1, 'in the site’s own header');
 assert.ok((await frame.locator('footer').count()) >= 1, 'and its footer');
-assert.equal(await article.locator('.so-entry__body h2').innerText(), 'What we fired');
-assert.deepEqual(await article.locator('.so-entry__body ul li').allInnerTexts(), ['Bowls', 'Mugs']);
-assert.equal(await article.locator('.so-entry__body a', { hasText: 'studio hours' }).getAttribute('href'), about.route);
+assert.equal(await article.locator('.so-rich h2').innerText(), 'What we fired');
+assert.deepEqual(await article.locator('.so-rich ul li').allInnerTexts(), ['Bowls', 'Mugs']);
+assert.equal(await article.locator('.so-rich a', { hasText: 'studio hours' }).getAttribute('href'), about.route);
 const img = article.locator('figure.so-rich__figure img');
 assert.equal(await img.getAttribute('alt'), 'The kiln, glowing orange');
 await eventually(async () => assert.ok(await img.evaluate((el) => el.complete && el.naturalWidth > 0), 'the picture loads'), 20000);
@@ -176,7 +177,7 @@ await win.screenshot({ path: join(SHOTS, 'posts-writer.png') });
 step('the published post in the site');
 await win.getByRole('button', { name: 'Preview in site' }).click();
 await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), path), 60000);
-await eventually(async () => assert.equal(await frame.locator('article.so-entry time').getAttribute('datetime'), '2025-06-01', 'the page shows the backdated day'), 60000);
+await eventually(async () => assert.equal(await frame.locator('article time').getAttribute('datetime'), '2025-06-01', 'the page shows the backdated day'), 60000);
 await win.locator('.posts-panel').getByRole('button', { name: 'Back to writing' }).click();
 // Back on the page the editor shows (Home), editing again.
 await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), '/', 'the canvas returns to the page'), 60000);

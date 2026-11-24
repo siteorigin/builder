@@ -1160,15 +1160,16 @@ const legacyHash = (def: object) => fnv(0x811c9dc5, JSON.stringify(def)).toStrin
 
 /**
  * Two values for a string field that give the definition the same 32-bit FNV-1a hash. The hash runs left to right,
- * so values that leave it in the same state collide whatever follows; a birthday search finds a pair in about 2^16
- * tries.
+ * so values that leave it in the same state collide whatever follows. These short, similar values collide far later
+ * than a birthday bound suggests (past two million tries for some prefixes, which the definition's schemaVersion is
+ * part of), so the search runs well beyond that.
  */
 function fnvCollidingValues(def: object, field: string): [string, string] {
   const marker = 'FNV_COLLISION_MARKER';
   const [prefix] = JSON.stringify({ ...def, [field]: marker }).split(marker);
   const start = fnv(0x811c9dc5, prefix);
   const seen = new Map<number, string>();
-  for (let i = 0; i < 2_000_000; i++) {
+  for (let i = 0; i < 10_000_000; i++) {
     const value = `Hero ${i.toString(36)}`;
     const h = fnv(start, value);
     const other = seen.get(h);
