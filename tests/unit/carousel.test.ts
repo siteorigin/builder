@@ -211,15 +211,17 @@ describe('the carousel helper', () => {
 
   it('prints every slide in a stack, without its buttons, unless the design hides the list', () => {
     const print = CAROUSEL_SVELTE.slice(CAROUSEL_SVELTE.indexOf('@media print'));
-    expect(print).toMatch(/:global\(:where\(\.so-carousel__list\)\) \{[^}]*display: grid;[^}]*overflow: visible;/);
-    expect(print).toMatch(/:global\(:where\(\.so-carousel__list\) > \*\) \{\s*width: auto !important;/);
+    // The row wraps, one slide to a line, without changing its display, which a design that hides the list sets.
+    expect(print).toMatch(/:global\(:where\(\.so-carousel__list\)\) \{[^}]*flex-wrap: wrap !important;[^}]*overflow: visible !important;[^}]*scroll-snap-type: none;/);
+    expect(print).not.toMatch(/:global\(:where\(\.so-carousel__list\)\) \{[^}]*display:/);
+    expect(print).toMatch(/:global\(:where\(\.so-carousel__list\) > \*\) \{\s*width: 100% !important;/);
     expect(print).toMatch(/\.so-carousel__controls \{\s*display: none !important;/);
   });
 
   it('gives way to whatever the design sets on its list and slides', () => {
     const css = compile(CAROUSEL_SVELTE, { filename: 'Carousel.svelte', generate: 'client', runes: true }).css!.code;
     // Weightless rules: a single class of the design's (hiding the list, its overflow, a slide's width) wins.
-    expect(css).toMatch(/:where\(\.so-carousel__list\) \{[^}]*display: flex;[^}]*scroll-snap-type: x mandatory;/);
+    expect(css).toMatch(/:where\(\.so-carousel__list\) \{[^}]*display: flex;[^}]*overflow-x: auto;[^}]*scroll-snap-type: x mandatory;/);
     expect(css).toMatch(/:where\(\.so-carousel__list\) > \* \{[^}]*flex: none;[^}]*scroll-snap-align: start;/);
     expect(css).not.toMatch(/\.so-carousel__list\.svelte-[a-z0-9]+ \{/);
   });
@@ -340,6 +342,7 @@ describe('what may be a carousel', () => {
     expect(carouselErrors(ownCopy((t) => ((t.nodes.track as ElementNode).link = { type: 'url', target: 'https://example.com' })))).toHaveLength(1);
     expect(carouselErrors(ownCopy((t) => ((t.nodes.track as ElementNode).tag = { $prop: 'headingLevel' } as never)))).toHaveLength(1);
     expect(carouselErrors(ownCopy((t) => ((t.nodes.track as { carousel: unknown }).carousel = 'yes')))).toHaveLength(1);
+    expect(carouselErrors(ownCopy((t) => ((t.nodes.track as { carousel: unknown }).carousel = false)))).toHaveLength(1);
     const text = carouselErrors(ownCopy((t) => ((t.nodes.caption as { carousel?: boolean }).carousel = true)));
     expect(text.map((d) => d.nodeId)).toEqual(['caption']);
   });

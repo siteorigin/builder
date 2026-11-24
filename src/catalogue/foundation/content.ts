@@ -303,7 +303,8 @@ export const carousel = managed({
     sectionShell(b, [
       headingBlock(b),
       // Named by the heading. An empty carousel leaves no empty list (and no buttons) behind.
-      b.el('track', 'ul', { name: 'Slides', carousel: true, collapseEmpty: true, ariaLabel: { $prop: 'heading' }, styles: { gap: SLIDE_GAP } }, [
+      // A row of its own, so a copy that hides the list and shows it again shows it as a row.
+      b.el('track', 'ul', { name: 'Slides', carousel: true, collapseEmpty: true, ariaLabel: { $prop: 'heading' }, styles: { layout: 'row', gap: SLIDE_GAP } }, [
         b.repeat('slides', 'slides', [
           b.el('slide', 'li', { name: 'Slide', styles: { base: { width: '85%' }, tablet: { width: slidesAcross(2) }, desktop: { width: slidesAcross(3) } } }, [
             // A slide with a destination is one link around its picture and caption.

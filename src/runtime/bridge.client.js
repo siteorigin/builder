@@ -108,6 +108,7 @@ function scheduleRects() {
   raf = requestAnimationFrame(() => {
     raf = 0;
     if (revealDirty) reconcileReveal();
+    else if (revealPlace) placeReveal();
     keepInView();
     sendRects();
     // Checked again every frame while a change of width settles, whatever moves the page meanwhile.
@@ -274,6 +275,8 @@ let revealScroll = false;
  * changes neither, so where they put it stays.
  */
 let revealSide = null;
+/** The page changed size: where the item is is checked again before the next frame is drawn (see placeReveal). */
+let revealPlace = false;
 /** Disclosures opened for the item. Only these are closed again; one the page or the author opened stays open. */
 const revealOpened = new Set();
 /**
@@ -375,6 +378,15 @@ function reconcileReveal() {
     revealOpened.add(d);
   }
   showDrafts(textEls, reveal && reveal.text ? reveal.text.value : null, reveal ? ofNodes(els, reveal.restore) : []);
+  placeReveal(roots);
+}
+/**
+ * Where the item is: scrolled to while that is still to be done, and brought back into its sideways list when that
+ * list was rendered afresh, the item moved inside it, or the list only now scrolls (shown at last). Only geometry,
+ * so it can run whenever the page changes size without touching its disclosures or typed text.
+ */
+function placeReveal(roots = revealRoots()) {
+  revealPlace = false;
   if (revealScroll) {
     const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
     if (el) {
@@ -392,7 +404,6 @@ function reconcileReveal() {
       if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
     }
   } else if (reveal) {
-    // A list rendered afresh, an item moved inside its list, or a list that only now scrolls (shown at last).
     const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
     const side = el ? sideScroller(el) : null;
     if (side) {
@@ -416,8 +427,14 @@ function sideScroller(el) {
   }
   return null;
 }
-/** How much larger a box is drawn than it is laid out (a scale on it or around it), as scrolling measures it. */
-const drawnScale = (box) => (box.offsetWidth ? box.getBoundingClientRect().width / box.offsetWidth : 1) || 1;
+/**
+ * How much larger a box is drawn than it is laid out (a scale on it or around it), as scrolling measures it. Within
+ * a percent of 1 it is 1: a laid-out width is rounded to a whole pixel, which is not a scale.
+ */
+function drawnScale(box) {
+  const k = box.offsetWidth ? box.getBoundingClientRect().width / box.offsetWidth : 1;
+  return k > 0 && Math.abs(k - 1) >= 0.01 ? k : 1;
+}
 /** Where `el` sits along `list`, however far the list is scrolled, in the list's own units. */
 function offsetIn(list, el) {
   return (el.getBoundingClientRect().left - list.getBoundingClientRect().left) / drawnScale(list) + list.scrollLeft;
@@ -427,16 +444,27 @@ function offsetIn(list, el) {
  * list's edge, which in a carousel is where it stops. One wider than the list shows from its start.
  */
 function bringInside(list, el) {
+  const dx = clipped(list, el, false);
+  if (!dx) return;
+  list.scrollBy({ left: dx, behavior: 'instant' });
+  // A list that stops at each item can stop short of that edge, leaving part of it out: then its start, a stop.
+  const again = clipped(list, el, true);
+  if (again) list.scrollBy({ left: again, behavior: 'instant' });
+}
+/**
+ * How far `list` must scroll, in its own units, to show all of `el`: to its nearer edge, or its start when `toStart`
+ * (or when it is wider than the list). 0 when all of it shows.
+ */
+function clipped(list, el, toStart) {
   const k = drawnScale(list);
   const l = list.getBoundingClientRect();
   const r = el.getBoundingClientRect();
   const left = l.left + list.clientLeft * k;
   const right = left + list.clientWidth * k;
-  let dx = 0;
-  if (r.width > right - left + 1) dx = getComputedStyle(list).direction === 'rtl' ? r.right - right : r.left - left;
-  else if (r.left < left - 1) dx = r.left - left;
-  else if (r.right > right + 1) dx = r.right - right;
-  if (dx) list.scrollBy({ left: dx / k, behavior: 'instant' });
+  if (r.left >= left - 1 && r.right <= right + 1) return 0;
+  const start = getComputedStyle(list).direction === 'rtl' ? r.right - right : r.left - left;
+  if (toStart || r.width > right - left + 1) return start / k;
+  return (r.left < left - 1 ? r.left - left : r.right - right) / k;
 }
 /**
  * Typed text (`value`, or null for none), shown in the given plain text elements in a text node of the bridge's own.
@@ -3169,9 +3197,10 @@ window.addEventListener('resize', () => {
   lastWidth = innerWidth;
   scheduleRects();
 });
-// The page changing size can show the item being revealed at last (its section no longer hidden): it is looked for again.
+// The page changing size can show the item being revealed at last (its section no longer hidden): where it is is
+// checked again, and nothing else, so a disclosure the page closed meanwhile stays closed.
 new ResizeObserver(() => {
-  if (reveal) revealDirty = true;
+  if (reveal) revealPlace = true;
   scheduleRects();
 }).observe(document.documentElement);
 new MutationObserver(() => {

@@ -88,6 +88,7 @@ try {
   await caption.fill('Fitting day');
   await eventually(async () => assert.equal(await track.locator('li[data-so-items="s5"] figcaption').innerText(), 'Fitting day', 'the typed caption shows on the slide'));
   await caption.press('Escape');
+  await eventually(async () => assert.equal(await track.locator('li[data-so-items="s5"] figcaption').innerText(), 'Slide 5', 'Escape gives the slide its saved caption back'));
   await win.getByRole('button', { name: 'Phone', exact: true }).click();
   await eventually(async () => assert.equal(await track.evaluate(() => innerWidth), 390, 'the canvas is a phone’s width'), 15000);
   await eventually(async () => assert.equal((await slideShows('s5')).inList, true, 'at phone width the fifth slide is brought back into its list'), 15000);
@@ -272,6 +273,7 @@ try {
       const boxes = [...ul.children].map((li) => li.getBoundingClientRect());
       return {
         display: s.display,
+        wrap: s.flexWrap,
         overflowX: s.overflowX,
         visible: [el, ul, ...ul.children].every((x) => getComputedStyle(x).visibility === 'visible' && x.getBoundingClientRect().height > 0),
         controls: [...el.querySelectorAll('.so-carousel__controls')].map((x) => getComputedStyle(x).display),
@@ -280,7 +282,7 @@ try {
         overflow: document.documentElement.scrollWidth - innerWidth
       };
     });
-    assert.deepEqual(printed, { display: 'grid', overflowX: 'visible', visible: true, controls: ['none'], stacked: true, full: true, overflow: printed.overflow }, 'every slide prints, stacked, as wide as the column, without buttons');
+    assert.deepEqual(printed, { display: 'flex', wrap: 'wrap', overflowX: 'visible', visible: true, controls: ['none'], stacked: true, full: true, overflow: printed.overflow }, 'every slide prints, stacked, as wide as the column, without buttons');
     assert.ok(printed.overflow <= 0, 'and the printed page is no wider than the sheet');
     await context.close();
   }

@@ -432,6 +432,23 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
       expect((await where('s5')).outlines).toEqual([]);
     });
 
+    it('leaves the list where the author scrolled it when its width is not a whole number of pixels', async () => {
+      await startOver();
+      await inFrame(`${track}.style.width = '300.5px';`);
+      await settle();
+      await revealSlide('s1');
+      await inFrame(`${track}.scrollLeft = ${track}.scrollWidth;`);
+      await settle();
+      const at = (await where('s1')).scrollLeft;
+      expect(at).toBeGreaterThan(900);
+      // Another change to the page is not the slide moving.
+      await inFrame(`${slide('s2')}.querySelector('p').textContent = 'Slide two';`);
+      await settle();
+      expect((await where('s1')).scrollLeft).toBe(at);
+      await revealSlide(null);
+      await inFrame(`${track}.style.width = '';`);
+    });
+
     it('follows a slide moved to another place in its list', async () => {
       await startOver();
       await revealSlide('s2');

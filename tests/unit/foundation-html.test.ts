@@ -954,8 +954,10 @@ describe('media.carousel (issue #381)', () => {
     const decorative = { ...slide('d', '', away), image: { assetId: 'as_room', alt: '', decorative: true } };
     // No picture chosen: the placeholder is named.
     expect(named(slide('p', '', away))).toMatch(/role="img" aria-label="Slide"/);
-    // A decorative picture keeps its empty description and says it as hidden text.
+    // A decorative picture keeps its empty description and says it as hidden text, chosen or not.
     expect(named(decorative)).toMatch(/<img\b[^>]*alt=""[\s\S]*<span class="so-visually-hidden">Slide<\/span>/);
+    const decorativeMissing = { ...slide('m', '', away), image: { assetId: null, alt: '', decorative: true } };
+    expect(named(decorativeMissing)).toMatch(/aria-hidden="true"[\s\S]*<span class="so-visually-hidden">Slide<\/span>/);
     // Its own description and its caption name it otherwise.
     expect(named(slide('c', 'Kitchen', away))).toContain('Kitchen</figcaption>');
     expect(named(slide('a', '', away, 'A calm kitchen'))).toContain('aria-label="A calm kitchen"');

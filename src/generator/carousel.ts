@@ -19,7 +19,9 @@ export function measure(list) {
 	const rtl = getComputedStyle(list).direction === 'rtl';
 	const box = list.getBoundingClientRect();
 	// A list drawn larger or smaller than it is laid out (a scale on it or around it) is measured as it is laid out.
-	const k = (list.offsetWidth ? box.width / list.offsetWidth : 1) || 1;
+	// Within a percent of 1 it is not scaled: its laid-out width is only rounded to a whole pixel.
+	const scale = list.offsetWidth ? box.width / list.offsetWidth : 1;
+	const k = scale > 0 && Math.abs(scale - 1) >= 0.01 ? scale : 1;
 	const left = box.left + list.clientLeft * k;
 	const right = left + list.clientWidth * k;
 	// A right-to-left list scrolls to negative positions.
@@ -272,17 +274,17 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 	.so-carousel__step:dir(rtl) svg {
 		transform: scaleX(-1);
 	}
-	/* Printed, every slide shows, one below the other, and the buttons, which only work on screen, are left out. A
-	   list the design hides stays hidden; the slides' widths for each screen give way. */
+	/* Printed, every slide shows, one below the other, as wide as the list, and the buttons, which only work on screen,
+	   are left out. The row wraps rather than changing what kind of box the list is, so a list the design hides
+	   stays hidden. */
 	@media print {
 		:global(:where(.so-carousel__list)) {
-			display: grid;
-			gap: 1rem;
-			overflow: visible;
+			flex-wrap: wrap !important;
+			overflow: visible !important;
 			scroll-snap-type: none;
 		}
 		:global(:where(.so-carousel__list) > *) {
-			width: auto !important;
+			width: 100% !important;
 		}
 		.so-carousel__controls {
 			display: none !important;
