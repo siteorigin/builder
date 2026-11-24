@@ -27,6 +27,8 @@ import { photoMetadata } from './project/photo-metadata';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
+import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
+import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, trust, untrust } from './settings';
 import { newId } from '@shared/ids';
@@ -198,6 +200,8 @@ export class Controller {
   private restaged: ProjectSession | null = null;
   /** The last preview status sent while no preview process runs (setting up, copying, or why it cannot start). */
   private pendingStatus: RuntimeState | null = null;
+  /** Isolated component previews prepared for the preview server running now, by key, with the folder each is in. */
+  private componentPreviews = new Map<string, string>();
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
   private closing: Promise<void> | null = null;
@@ -792,6 +796,9 @@ export class Controller {
         if (this.prepareAbort === abort) this.prepareAbort = null;
       }
     }
+    // Previews an earlier run left behind (it crashed, or the app did not close) are never shown again: cleared while
+    // the project is this app's to write, ahead of the last look at the lock below, so nothing waits after it.
+    if (!session.readOnly && (await session.stillOwner())) await clearComponentPreviews(session.dir).catch(() => undefined);
     // Read the lock again right before running anything in the folder: a takeover the heartbeat has not seen yet would
     // otherwise get a live preview. A takeover found here has already queued a preview from a copy.
     if (!session.readOnly && !(await session.stillOwner())) return;
@@ -889,9 +896,18 @@ export class Controller {
   }
 
   /** Stop the preview, then remove the private copy it ran from (again once its process has really gone). */
+  /** Remove the files of every component preview prepared for the preview server running now. */
+  private async dropComponentPreviews() {
+    const previews = [...this.componentPreviews];
+    this.componentPreviews.clear();
+    await Promise.all(previews.map(([key, root]) => removeComponentPreview(root, key).catch(() => undefined)));
+  }
+
   private async stopPreview() {
     const dev = this.dev;
     const stage = this.stage;
+    // Prepared for this preview server alone: a frame showing one fails to load once the server is gone anyway.
+    await this.dropComponentPreviews();
     for (const w of this.stageWatchers) w.close();
     this.stageWatchers = [];
     if (this.stageTimer) clearTimeout(this.stageTimer);
@@ -900,10 +916,55 @@ export class Controller {
     await dev?.stop();
     if (this.dev === dev) this.dev = null;
     if (this.stage === stage) this.stage = null;
+    // One prepared while the server stopped is gone with it too.
+    await this.dropComponentPreviews();
     if (!stage) return;
     await this.stageSync;
     await removePreviewStage(stage).catch(() => undefined);
     if (dev) void dev.exited.then(() => removePreviewStage(stage)).catch(() => undefined);
+  }
+
+  /**
+   * Prepare an isolated preview of one component (see @shared/component-preview) for the preview server running now:
+   * its files are written under a new key, and the address the server shows it at is returned. Release it with
+   * releaseComponentPreview once it is no longer shown.
+   */
+  async prepareComponentPreview(request: unknown): Promise<{ ok: true; key: string; path: string; definitionId: string } | { ok: false; message: string }> {
+    const session = this.session;
+    const dev = this.dev;
+    if (!session || !dev || dev.status.state !== 'ready') return { ok: false, message: 'The preview is not running.' };
+    // A project another app took over is previewed from a copy once its preview restarts: nothing is written into its
+    // folder meanwhile.
+    if (!this.stage && session.readOnly) return { ok: false, message: 'The preview is not running.' };
+    const spec = previewSpec(request);
+    if (!spec) return { ok: false, message: 'That is not a component preview request.' };
+    const made = generateComponentPreview(session.state, spec);
+    if ('error' in made) return { ok: false, message: made.error };
+    const root = this.stage ?? session.dir;
+    // The lock is read again before writing into the project: a takeover the heartbeat has not seen yet gets nothing.
+    if (!this.stage && !(await session.stillOwner())) return { ok: false, message: 'The preview is not running.' };
+    let written: { key: string; path: string };
+    try {
+      written = await writeComponentPreview(root, made.files);
+    } catch (e) {
+      return { ok: false, message: `The component preview could not be prepared: ${(e as Error).message}` };
+    }
+    // The preview server it was made for stopped (or started stopping) meanwhile: its files go with it.
+    if (this.dev !== dev || dev.status.state !== 'ready' || this.session !== session || (this.stage ?? session.dir) !== root) {
+      await removeComponentPreview(root, written.key).catch(() => undefined);
+      return { ok: false, message: 'The preview is not running.' };
+    }
+    this.componentPreviews.set(written.key, root);
+    return { ok: true, ...written, definitionId: made.definitionId };
+  }
+
+  /** Remove a prepared component preview's files. */
+  async releaseComponentPreview(key: unknown): Promise<void> {
+    if (typeof key !== 'string') return;
+    const root = this.componentPreviews.get(key);
+    if (!root) return;
+    this.componentPreviews.delete(key);
+    await removeComponentPreview(root, key).catch(() => undefined);
   }
 
   /** Look for the library's image files again, and tell the window when what is missing changed. */

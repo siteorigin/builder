@@ -1168,6 +1168,52 @@ async function imageReport(deadline) {
   return { summary, issues };
 }
 
+/**
+ * In an isolated component preview (one component on a page of its own, see @shared/component-preview): whether it
+ * rendered, why not, the box it fills and the text it shows; undefined on a page of the site.
+ */
+function previewState() {
+  const p = window.__siteoriginPreview;
+  if (!p || typeof p !== 'object') return undefined;
+  const out = { key: String(p.key || ''), mounted: p.mounted === true };
+  if (p.error) out.error = String(p.error).slice(0, 2000);
+  // Everything the component puts on the page: its boxes, and text with no box of its own, looking through wrappers
+  // that take no box (a code component's, and any it has inside).
+  let bounds = null;
+  const add = (r) => {
+    if (!r || (!r.width && !r.height)) return;
+    if (!bounds) bounds = { x: r.x, y: r.y, width: r.width, height: r.height };
+    else {
+      const x2 = Math.max(bounds.x + bounds.width, r.x + r.width);
+      const y2 = Math.max(bounds.y + bounds.height, r.y + r.height);
+      bounds.x = Math.min(bounds.x, r.x);
+      bounds.y = Math.min(bounds.y, r.y);
+      bounds.width = x2 - bounds.x;
+      bounds.height = y2 - bounds.y;
+    }
+  };
+  const visit = (node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (!child.textContent.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        add(range.getBoundingClientRect());
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (getComputedStyle(child).display === 'contents') visit(child);
+        else add(child.getBoundingClientRect());
+      }
+    }
+  };
+  const main = document.getElementById('main');
+  if (main) visit(main);
+  out.bounds = bounds;
+  // What it says, as a reader would read it: evidence of the sample values without a picture of them.
+  const text = main ? (main.innerText || '').trim().replace(/\s+/g, ' ') : '';
+  out.text = text.length > 1000 ? text.slice(0, 999) + '…' : text;
+  return out;
+}
+
 async function inspect(deadline) {
   // Images first: one that arrives while they are requested again can still change the layout measured below.
   const images = await imageReport(deadline);
@@ -1191,8 +1237,10 @@ async function inspect(deadline) {
   issues.push(...images.issues);
   const placeholders = document.querySelectorAll('.so-img--placeholder').length;
   if (placeholders) issues.push({ kind: 'image-placeholder', message: `${placeholders} image placeholder(s) have no image chosen.` });
+  const preview = previewState();
+  // A page has one h1; a component shown on its own is not a page.
   const h1 = document.querySelectorAll('h1').length;
-  if (h1 !== 1) issues.push({ kind: 'heading-structure', message: `The page has ${h1} h1 headings (expected 1).` });
+  if (h1 !== 1 && !preview) issues.push({ kind: 'heading-structure', message: `The page has ${h1} h1 headings (expected 1).` });
   for (const a of document.querySelectorAll('a')) if (!a.textContent.trim() && !a.getAttribute('aria-label')) issues.push({ kind: 'empty-link', message: 'A link has no accessible name.' });
   // Which top-level page sections rendered ("page:<id>|<node>"), so the editor can tell a stale page load.
   const sections = new Set();
@@ -1200,7 +1248,7 @@ async function inspect(deadline) {
     const ctx = el.getAttribute('data-so-ctx');
     sections.add(ctx.includes('|') ? ctx.split('|').slice(0, 2).join('|') : `${ctx}|${el.getAttribute('data-so-node')}`);
   }
-  return { path: location.pathname, sections: [...sections].slice(0, 500), viewportWidth: vw, documentWidth: docWidth, documentHeight: document.documentElement.scrollHeight, images: images.summary, issues: issues.slice(0, 40), runtimeErrors: errors.slice(-10) };
+  return { path: location.pathname, sections: [...sections].slice(0, 500), viewportWidth: vw, documentWidth: docWidth, documentHeight: document.documentElement.scrollHeight, images: images.summary, issues: issues.slice(0, 40), runtimeErrors: errors.slice(-10), ...(preview ? { preview } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1411,7 +1459,8 @@ style.textContent =
   ' html[data-so-editing] [data-so-unlinked] { cursor: default; box-shadow: none; opacity: 0.6; outline: 2px dashed #d97706; outline-offset: 2px; }';
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);
-send('ready', { path: location.pathname, title: document.title });
+const previewAtStart = previewState();
+send('ready', { path: location.pathname, title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
 reportHistory();
 reportTextFocus();
 reportForms();

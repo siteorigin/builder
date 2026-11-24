@@ -4,6 +4,7 @@ import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
+import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { externalLink } from '@shared/links';
 import { visitorStepKey } from '@shared/preview-keys';
 import { checkLocalBaseURL } from '@shared/local';
@@ -57,6 +58,30 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: t
 // ---------------------------------------------------------------------------
 
 const pendingInspections = new Map<string, (report: unknown) => void>();
+const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
+
+/**
+ * Show components in isolated preview frames in the editor window, step by step (see ComponentPreviewStep), and give
+ * back what each frame reported.
+ */
+function previewComponents(steps: ComponentPreviewStep[]): Promise<ComponentPreviewResult[]> {
+  return new Promise((resolve, reject) => {
+    const requestId = Math.random().toString(36).slice(2);
+    const timer = setTimeout(
+      () => {
+        pendingComponentPreviews.delete(requestId);
+        reject(new Error('The preview did not respond in time.'));
+      },
+      // A step may wait for its files (15s), its page (12s) and its measurement (8s).
+      40000 * Math.max(1, steps.length)
+    );
+    pendingComponentPreviews.set(requestId, (r) => {
+      clearTimeout(timer);
+      resolve(Array.isArray(r) ? (r as ComponentPreviewResult[]) : []);
+    });
+    controller.send('component-preview:request', { requestId, steps });
+  });
+}
 
 // Leaving a project (Close Project, switching, closing the window, quitting) first lets the editor save what
 // is still being typed, and ask the author about a change that cannot be saved.
@@ -300,6 +325,8 @@ function registerIpc() {
       : controller.exportStatic(format === 'zip' ? 'zip' : 'folder', Array.isArray(published) ? published.filter((id): id is string => typeof id === 'string') : undefined)
   );
   handle('project:retryPreview', () => controller.startRuntime());
+  handle('project:prepareComponentPreview', (spec: unknown) => controller.prepareComponentPreview(spec));
+  handle('project:releaseComponentPreview', (key: unknown) => controller.releaseComponentPreview(key));
   handle('project:repairDependencies', () => controller.repairDependencies());
   handle('project:readSource', (id: string) => controller.readSource(id));
   handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
@@ -317,6 +344,7 @@ function registerIpc() {
   if (!app.isPackaged) {
     handle('test:exportStatic', (dest: string, format?: unknown) => controller.buildStaticTo(dest, format === 'zip' ? 'zip' : 'folder'));
     handle('test:exportSource', (dest: string, format?: unknown) => controller.exportSourceTo(dest, format === 'zip' ? 'zip' : 'folder'));
+    handle('test:previewComponent', (steps: unknown) => previewComponents(Array.isArray(steps) ? (steps as ComponentPreviewStep[]) : []));
   }
   handle('ai:providers', () => providerStatuses());
   handle('ai:setKey', async (p: ProviderId, key: string | null) => {
@@ -393,6 +421,11 @@ function registerIpc() {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
     pendingInspections.get(requestId)?.(report);
     pendingInspections.delete(requestId);
+  });
+  ipcMain.on('component-preview:result', (event, requestId: string, results: unknown) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
+    pendingComponentPreviews.get(requestId)?.(results);
+    pendingComponentPreviews.delete(requestId);
   });
 }
 

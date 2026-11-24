@@ -1,9 +1,11 @@
 // The component library in Insert > Your components, against the real app (#56): Make unique asks for a name and
 // never stacks "(unique)", each tile says how often it is used, and its menu renames it, lists and shows where it
-// is placed, and deletes it once unused, with Undo bringing it back.
+// is placed, and deletes it once unused, with Undo bringing it back. A component is also shown on its own, in an
+// isolated preview, whether or not any page places it (#347), and that preview never reaches the site's files.
 import assert from 'node:assert/strict';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('component-library');
 const { app, win, errors } = await launch(WORK);
@@ -150,6 +152,111 @@ await eventually(async () => assert.ok(await win.evaluate(() => !!document.activ
 await undo.click();
 await eventually(async () => assert.deepEqual((await snapshot()).components[blue.id], blue, 'Undo restores the same variant'));
 await tile('Exhibitor card blue').waitFor();
+
+step('an unplaced component is shown on its own, at any width (#347)');
+/** Show components in isolated preview frames in the editor, step by step, and give back what each reported. */
+const preview = (steps) => withTimeout(win.evaluate((s) => window.builderTest.previewComponent(s), steps), 180000, 'Component preview');
+const ready = (r, what) => {
+  assert.equal(r.state, 'ready', `${what}: ${r.error}`);
+  assert.deepEqual(r.report.runtimeErrors, [], `${what}: no errors in the preview`);
+  assert.ok(r.bounds && r.bounds.width > 0 && r.bounds.height > 0, `${what}: the component takes up room (${JSON.stringify(r.bounds)})`);
+  return r;
+};
+const blueDef = Object.values((await snapshot()).components).find((d) => d.name === 'Exhibitor card blue');
+assert.equal((await library())['Exhibitor card blue'], 0, 'the card is placed nowhere');
+const [alone] = await preview([{ spec: { definitionId: blueDef.id }, width: 437 }]);
+ready(alone, 'an unplaced project component');
+assert.equal(alone.definitionId, blueDef.id);
+assert.equal(alone.report.viewportWidth, 437, 'it is shown at exactly the width asked for');
+assert.ok(alone.bounds.width <= 437, 'and fits it');
+assert.equal(alone.text, 'Exhibitor', 'it shows the component alone: no header, footer or page around it');
+
+step('sample values and each variant of a catalogue component, in two frames at once');
+const componentsBefore = Object.keys((await snapshot()).components).sort();
+const grid = (frame, layout, heading, width = 1280) => ({ frame, width, spec: { componentId: 'features.grid', variants: { layout }, props: { heading } } });
+const [two, four, other, twoAgain, narrow] = await preview([
+  grid(0, 'two-columns', 'Two up'),
+  grid(0, 'four-columns', 'Four up'),
+  grid(1, 'two-columns', 'Other frame'),
+  grid(0, 'two-columns', 'Two up'),
+  grid(0, 'four-columns', 'Four up', 437)
+]);
+for (const [r, what] of [[two, 'two columns'], [four, 'four columns'], [other, 'a second frame'], [twoAgain, 'the first frame again'], [narrow, 'a narrow width']]) ready(r, what);
+assert.match(two.text, /Two up/, 'the sample heading is shown');
+assert.match(four.text, /Four up/);
+assert.match(other.text, /Other frame/);
+assert.doesNotMatch(other.text, /Two up|Four up/, 'each frame shows its own preview');
+assert.match(twoAgain.text, /Two up/);
+assert.ok(two.bounds.height > four.bounds.height + 40, `two columns put the three cards on two rows, four on one (${two.bounds.height} vs ${four.bounds.height})`);
+assert.equal(twoAgain.bounds.height, two.bounds.height, 'the same choices show the same layout');
+assert.equal(narrow.report.viewportWidth, 437);
+assert.ok(narrow.bounds.width <= 437 && narrow.bounds.height > four.bounds.height, 'at a phone width the cards stack, whatever the layout chosen');
+assert.deepEqual(Object.keys((await snapshot()).components).sort(), componentsBefore, 'previewing a catalogue component never adds it to the project');
+
+step('a code component with its variant and sample values, and a component that does not exist');
+const NOTE = `<script>\n\tlet { title = 'Hello', variant = 'plain', class: className = '' } = $props();\n</script>\n\n<p class="sample sample--{variant} {className}">{title}</p>\n\n<style>\n\t.sample { margin: 0; font-size: 16px; line-height: 1.25; }\n\t.sample--loud { font-size: 48px; }\n</style>\n`;
+await win.evaluate(() => window.builder.app.setSettings({ developerMode: true }));
+const [{ definitionId: note }] = await apply([{ type: 'component.createCode', name: 'Sample note', source: NOTE, properties: { title: { type: 'string', label: 'Title', default: 'Hello' } } }], 'Create code component');
+await apply(
+  [
+    { type: 'component.setVariant', definitionId: note, axis: 'tone', axisLabel: 'Tone', variant: 'plain', label: 'Plain', makeDefault: true },
+    { type: 'component.setVariant', definitionId: note, axis: 'tone', variant: 'loud', label: 'Loud' }
+  ],
+  'Add tones'
+);
+const [plain, loud, missing] = await preview([
+  { spec: { definitionId: note, props: { title: 'Quiet words' } }, width: 437 },
+  { spec: { definitionId: note, variants: { tone: 'loud' }, props: { title: 'Loud words' } }, width: 437 },
+  { spec: { definitionId: 'no-such-component' }, width: 437 }
+]);
+ready(plain, 'a code component');
+ready(loud, 'its loud variant');
+assert.equal(plain.text, 'Quiet words');
+assert.equal(loud.text, 'Loud words');
+assert.ok(loud.bounds.height > plain.bounds.height * 2, `the loud variant is styled as loud (${loud.bounds.height} vs ${plain.bounds.height})`);
+assert.equal(missing.state, 'error');
+assert.match(missing.error, /no component "no-such-component"/);
+const BROKEN = `<script>\n\tlet { class: className = '' } = $props();\n\tthrow new Error('Boom while mounting');\n</script>\n\n<p class={className}>Never shown</p>\n`;
+const [{ definitionId: broken }] = await apply([{ type: 'component.createCode', name: 'Broken note', source: BROKEN }], 'Create a broken component');
+const [failed] = await preview([{ spec: { definitionId: broken }, width: 437 }]);
+assert.equal(failed.state, 'error', 'a component that throws while mounting is reported, not shown');
+assert.match(failed.error, /Boom while mounting/, 'with the reason it gave');
+await apply([{ type: 'component.remove', definitionId: broken }], 'Remove the broken component');
+
+step('a prepared preview never reaches the project source or its exports');
+const projectDir = await win.evaluate(async () => (await window.builder.project.snapshot()).dir);
+const MARK = 'Isolated preview words 347';
+const prepared = await win.evaluate((heading) => window.builder.project.prepareComponentPreview({ componentId: 'features.grid', props: { heading } }), MARK);
+assert.equal(prepared.ok, true, prepared.message);
+const isolated = join(projectDir, '.siteorigin/cache/dev/isolated', prepared.key);
+assert.ok(existsSync(join(isolated, 'src/lib/siteorigin/preview/Preview.svelte')), 'the preview is written to the editor’s dev cache');
+const sourceOut = join(WORK, 'export-source');
+const staticOut = join(WORK, 'export-static');
+const src = await withTimeout(win.evaluate((dest) => window.builderTest.exportSource(dest), sourceOut), 120000, 'Source export');
+assert.equal(src.ok, true, `source export succeeds: ${src.message}`);
+const stat = await withTimeout(win.evaluate((dest) => window.builderTest.exportStatic(dest), staticOut), 300000, 'Static export');
+assert.equal(stat.ok, true, `static export succeeds: ${stat.message} ${stat.warnings?.join(' ')}`);
+/** Every file under `root`, by its path from there, leaving out the folders a site keeps its tools and editor data in. */
+const files = (root, rel = '') =>
+  readdirSync(join(root, rel)).flatMap((name) => {
+    const r = rel ? `${rel}/${name}` : name;
+    if (!rel && ['node_modules', '.siteorigin', '.svelte-kit', '.git'].includes(name)) return [];
+    return statSync(join(root, r)).isDirectory() ? files(root, r) : [r];
+  });
+for (const [root, what] of [[sourceOut, 'the source export'], [staticOut, 'the static export'], [projectDir, 'the project folder']]) {
+  const all = files(root);
+  assert.ok(all.length > 5, `${what} has files`);
+  for (const f of all) {
+    assert.doesNotMatch(f, /__siteorigin|isolated|preview\/Preview\.svelte/, `${what} has no preview file (${f})`);
+    if (/\.(svelte|js|json|html|css|txt|xml|md)$/.test(f)) {
+      const text = readFileSync(join(root, f), 'utf8');
+      assert.ok(!text.includes(MARK) && !text.includes('__siteorigin/component') && !text.includes('siteorigin-component-preview'), `${what}: ${f} carries nothing of the preview`);
+    }
+  }
+}
+for (const out of [sourceOut, staticOut]) assert.equal(existsSync(join(out, '.siteorigin', 'cache', 'dev', 'isolated')), false, `no preview cache in ${out}`);
+await win.evaluate((key) => window.builder.project.releaseComponentPreview(key), prepared.key);
+assert.equal(existsSync(isolated), false, 'a released preview’s files are removed');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

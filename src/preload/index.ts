@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BuilderApi } from '@shared/api';
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking']);
 
 const api: BuilderApi = {
   platform: process.platform,
@@ -45,6 +45,8 @@ const api: BuilderApi = {
     exportSource: invoke('project:exportSource'),
     exportStatic: invoke('project:exportStatic'),
     retryPreview: invoke('project:retryPreview'),
+    prepareComponentPreview: invoke('project:prepareComponentPreview'),
+    releaseComponentPreview: invoke('project:releaseComponentPreview'),
     repairDependencies: invoke('project:repairDependencies'),
     readSource: invoke('project:readSource'),
     generatedSource: invoke('project:generatedSource'),
@@ -78,6 +80,7 @@ const api: BuilderApi = {
     return () => ipcRenderer.removeListener(channel, listener);
   }) as BuilderApi['on'],
   inspectResult: (requestId, report) => ipcRenderer.send('inspect:result', requestId, report),
+  componentPreviewResult: (requestId, results) => ipcRenderer.send('component-preview:result', requestId, results),
   menuReady: () => ipcRenderer.send('menu:ready'),
   menuReceived: (id) => ipcRenderer.send('menu:received', id),
   leaveResult: (requestId, answer) => ipcRenderer.send('lifecycle:result', requestId, answer),
@@ -86,4 +89,4 @@ const api: BuilderApi = {
 
 contextBridge.exposeInMainWorld('builder', api);
 // Development-only hooks; the main process registers these handlers only in unpackaged builds.
-contextBridge.exposeInMainWorld('builderTest', { exportStatic: invoke('test:exportStatic'), exportSource: invoke('test:exportSource') });
+contextBridge.exposeInMainWorld('builderTest', { exportStatic: invoke('test:exportStatic'), exportSource: invoke('test:exportSource'), previewComponent: invoke('test:previewComponent') });

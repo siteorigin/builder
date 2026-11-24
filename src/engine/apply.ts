@@ -42,7 +42,7 @@ import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeR
 import { editTable } from './table';
 import { bindingSlots, enclosingList, normalizeProperties } from './schema';
 import { declaredTokens, findTokenCycle, forEachTokenRef, tokenUsageCounts } from './tokens';
-import { settleFormKeys } from './form-keys';
+import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import {
   componentRemove,
@@ -1559,12 +1559,6 @@ function keepingFormKeys(state: ProjectState, op: Op<'instance.setProp' | 'insta
     node.props.fields = settleFormKeys(before, after as ListItem[], new Set(cleared), formDefaults(def));
   }
   return result;
-}
-
-/** The name and label a form field without its own gets on export. */
-function formDefaults(def: ComponentDefinition): { name?: unknown; label?: unknown } {
-  const schema = def.properties.fields;
-  return schema?.type === 'list' ? { name: schema.fields.name?.default, label: schema.fields.label?.default } : {};
 }
 
 /**

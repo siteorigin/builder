@@ -12,8 +12,14 @@
  * Fields that still share a key are reported by `validateState`, not refused, so names can be swapped one at a
  * time and older forms that already clash still open.
  */
-import type { ListItem } from '@shared/types';
+import type { ComponentDefinition, ListItem } from '@shared/types';
 import { formFieldKey, formKeyFrom, formNameDecides, type FormField } from '@catalogue/foundation/form';
+
+/** The name and label a form field without its own gets on export. */
+export function formDefaults(def: ComponentDefinition): { name?: unknown; label?: unknown } {
+  const schema = def.properties.fields;
+  return schema?.type === 'list' ? { name: schema.fields.name?.default, label: schema.fields.label?.default } : {};
+}
 
 /**
  * The fields after an edit, with keys settled. `before` is the list as it was, `after` the list the edit made,

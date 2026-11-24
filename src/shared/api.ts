@@ -2,6 +2,7 @@ import type { ApplyResult, EditBatch } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
+import type { ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
 import type { ThemePack } from '@catalogue/pack';
 
 export type Appearance = 'system' | 'light' | 'dark';
@@ -598,6 +599,13 @@ export interface BuilderApi {
      */
     exportStatic(format?: ExportFormat, published?: string[]): Promise<ExportResult>;
     retryPreview(): Promise<void>;
+    /**
+     * Prepare an isolated preview of one component (a definition of the project, or a component of the theme's
+     * catalogue) with chosen variants and sample property values, for the preview server running now. `path` is the
+     * address it is shown at; release the key once nothing shows it.
+     */
+    prepareComponentPreview(spec: unknown): Promise<PreparedComponentPreview>;
+    releaseComponentPreview(key: string): Promise<void>;
     repairDependencies(): Promise<void>;
     readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;
     generatedSource(kind: 'component' | 'page', id: string): Promise<string>;
@@ -646,6 +654,8 @@ export interface BuilderApi {
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
   on(channel: 'appearance', cb: (dark: boolean) => void): () => void;
   on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number }) => void): () => void;
+  /** Show components in isolated preview frames, step by step, and answer with componentPreviewResult. */
+  on(channel: 'component-preview:request', cb: (req: { requestId: string; steps: ComponentPreviewStep[] }) => void): () => void;
   /** A File menu command: confirm it with menuReceived(id); the same id may be offered again until then. */
   on(channel: 'menu:command', cb: (command: { cmd: string; id: number }) => void): () => void;
   /** The app is about to leave the project (close, switch, close the window, quit): settle edits, then answer with leaveResult. */
@@ -654,6 +664,7 @@ export interface BuilderApi {
   on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
   on(channel: 'input:key', cb: (k: { key: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
+  componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */
   menuReady(): void;
   /** The File menu command `id` arrived, so the main process stops offering it. */
