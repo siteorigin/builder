@@ -295,7 +295,7 @@ export function Canvas() {
             if (r.node?.kind === 'text' || r.node?.kind === 'link')
               toast(
                 s.definitionMode && inDefinition(ref, s.definitionMode.definitionId)
-                  ? 'This text is filled in on each placement. Click Done editing, then change it on the page.'
+                  ? 'Each placement fills in this text. Change its default in the Inspector, or click Done editing to change it on a page.'
                   : 'This text is part of the component design. Use Edit everywhere or Make unique to change it.'
               );
           }

@@ -321,6 +321,21 @@ export function inDefinition(ref: ElementRef | null | undefined, definitionId: s
   return !!ref && ref.owner.kind === 'component' && ref.owner.id === definitionId;
 }
 
+/**
+ * What the Inspector shows for a selection while a component is edited everywhere: one of the design's own nodes, a
+ * part of a component placed in the design (its row under that component in Layers), or the overview (nothing
+ * selected, or something outside the design).
+ */
+export function definitionView(state: ProjectState, definitionId: string, ref: ElementRef | null): { kind: 'node'; node: GraphNode } | { kind: 'nested-part'; def: ComponentDefinition; instance: InstanceNode; node: GraphNode } | { kind: 'overview' } {
+  if (!ref || !inDefinition(ref, definitionId)) return { kind: 'overview' };
+  const r = resolveRef(state, ref);
+  if (!r.node) return { kind: 'overview' };
+  if (!ref.instancePath.length) return { kind: 'node', node: r.node };
+  // One level in, through a managed component: deeper parts belong to that component's own design.
+  if (ref.instancePath.length === 1 && r.instance && r.def?.kind === 'managed') return { kind: 'nested-part', def: r.def, instance: r.instance, node: r.node };
+  return { kind: 'overview' };
+}
+
 /** The component's own reference for a reference made through one of its placements (and that placement);
  *  null when the reference is not inside a placement of the component. */
 export function toDefinitionRef(state: ProjectState, definitionId: string, ref: ElementRef): { ref: ElementRef; placement: ElementRef } | null {

@@ -4,6 +4,7 @@
  */
 import type { Bindable, ComponentDefinition, InstanceNode, ResponsiveStyles, VariantAxis, VariantDef } from './types';
 import { isBinding } from './types';
+import { cascadeStyles, type StyleLayer } from './styles';
 
 /** Axis and option IDs become generated identifiers and class names, so only plain ones are ever used. */
 const AXIS_ID = /^[a-z][a-zA-Z0-9]{0,39}$/;
@@ -55,6 +56,28 @@ export function selectedVariantStyles(def: Pick<ComponentDefinition, 'variantAxe
     if (styles) out.push(styles);
   }
   return out;
+}
+
+/**
+ * What a component's design gives one of its nodes at each size: the node's own styles, then the selected options'
+ * styles, cascaded as the generated stylesheet does (a variant rule carries one more class than a node rule, so it
+ * wins at every size). A placement's own changes come on top of this.
+ */
+export function designStyles(def: Pick<ComponentDefinition, 'variantAxes' | 'tree'>, nodeId: string, chosen: InstanceNode['variants']): ResponsiveStyles {
+  const own = def.tree?.nodes[nodeId]?.styles;
+  const selected = selectedVariants(def, chosen);
+  const axes = axesOf(def);
+  const layers: StyleLayer[] = [{ styles: own, strength: 1 }];
+  axes.forEach(([axis, a], index) => {
+    const v = selected[axis];
+    const styles = a.options[typeof v === 'string' ? v : a.default]?.styles?.[nodeId];
+    if (!styles) return;
+    // Showing the node again undoes a hide in its own styles or in any option of an earlier axis, as the stylesheet
+    // writes it whichever of those options is chosen.
+    const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).map((o) => o.styles?.[nodeId]));
+    layers.push({ styles, strength: 2, wideColumns: true, unhides: [own, ...earlier] });
+  });
+  return cascadeStyles(layers);
 }
 
 function describe(def: ComponentDefinition): string {

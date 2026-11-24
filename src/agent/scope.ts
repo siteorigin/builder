@@ -66,6 +66,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'component.remove': 'wider',
   'component.setPropSchema': 'definition',
   'component.removePropSchema': 'wider',
+  // A new default changes every placement without a value of its own.
+  'component.setPropDefault': 'wider',
   'component.setPart': 'definition',
   'component.removePart': 'wider',
   'component.setVariant': 'definition',

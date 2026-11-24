@@ -299,6 +299,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const how = op.type === 'component.removePropSchema' ? 'Removed' : had ? 'Changed' : 'Added';
         return plain(op, `${how} the property ${quoted(label)} ${how === 'Removed' ? 'from' : 'of'} the ${quoted(componentName(op.definitionId))} component`);
       }
+      case 'component.setPropDefault': {
+        const label = before.components[op.definitionId]?.properties[op.prop]?.label ?? op.prop;
+        return plain(op, `Changed the default ${quoted(label)} of the ${quoted(componentName(op.definitionId))} component`);
+      }
       case 'component.setPart':
       case 'component.removePart': {
         const had = before.components[op.definitionId]?.parts[op.partId];

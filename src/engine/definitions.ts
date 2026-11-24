@@ -201,6 +201,17 @@ export function setPropSchema(state: ProjectState, op: Op<'component.setPropSche
   return {};
 }
 
+/**
+ * Change only a property's default: what placements without a value of their own show, and what new placements start
+ * with. Its schema and every placement's own value stay as they are.
+ */
+export function setPropDefault(state: ProjectState, op: Op<'component.setPropDefault'>): OpResult {
+  const def = projectDef(state, op.definitionId);
+  const schema = own(def.properties, op.prop) ?? fail(`"${def.name}" has no property "${op.prop}".`);
+  (schema as { default: unknown }).default = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`);
+  return {};
+}
+
 export function removePropSchema(state: ProjectState, op: Op<'component.removePropSchema'>): OpResult {
   const def = projectDef(state, op.definitionId);
   if (!own(def.properties, op.prop)) fail(`"${def.name}" has no property "${op.prop}".`);

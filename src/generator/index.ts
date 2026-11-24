@@ -27,7 +27,7 @@ import type {
   TokenValue
 } from '@shared/types';
 import { ELEMENT_TAGS, GENERATOR_VERSION, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
-import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, linkOf, styleToCss, textLinkLeadsToText, textStyleValue, tokenVar } from '@shared/styles';
+import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, linkOf, resolveVisibility, styleDeclOrder, styleToCss, textLinkLeadsToText, textStyleValue, tokenVar, wideOnlyStyle } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
@@ -376,35 +376,8 @@ function unhider(def: ComponentDefinition, nodeId: string, variants: InstanceNod
  * Declaration order inside a rule. Composite values come first so the specific ones win (`gap` before `columnGap`,
  * which would otherwise sort ahead of it); custom CSS follows the named properties and visibility has the last word.
  */
-const ORDER = (k: string) => (k === 'textStyle' || k === 'gap' ? 0 : k === 'customCss' ? 2 : k === 'hidden' ? 3 : 1);
+const ORDER = styleDeclOrder;
 
-/** A base-scope value that would break a narrower layout if it also applied on phones. */
-function wideOnly(prop: string, value: unknown, opts: RuleOpts): boolean {
-  // A span wider than a phone's single column would create extra columns, whichever layer sets it.
-  if (prop === 'columnSpan') return value !== 'full' && Number(value) > 1;
-  if (!opts.wideColumns) return false;
-  if (prop === 'columns') return Number(value) > 1;
-  return prop === 'gridTemplate';
-}
-
-/**
- * "Hidden at all sizes" plus "visible on phone" is expressed by hiding only in the other ranges,
- * so the element keeps whatever display mode its own styles give it.
- */
-function resolveVisibility(styles: ResponsiveStyles): ResponsiveStyles {
-  const ranges = ['phone', 'tablet', 'desktop'] as const;
-  if (!ranges.some((r) => styles[r]?.hidden === false)) return styles;
-  const out: ResponsiveStyles = structuredClone(styles);
-  const hiddenBase = out.base?.hidden === true;
-  if (out.base) delete out.base.hidden;
-  for (const r of ranges) {
-    const visible = out[r]?.hidden === false;
-    const hidden = out[r]?.hidden === true;
-    if (out[r]) delete out[r]!.hidden;
-    if (hidden || (hiddenBase && !visible)) out[r] = { ...(out[r] ?? {}), hidden: true };
-  }
-  return out;
-}
 
 function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | undefined, opts: RuleOpts = {}) {
   if (!input) return;
@@ -429,7 +402,7 @@ function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | un
         out.splice(0, out.length, ...out.map((d) => d.replace(/^background:/, '--so-btn-bg:')), `--so-btn-bg-hover: ${typeof v === 'string' && isValidGradient(v) ? v.trim() : 'initial'}`);
       }
       if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
-      const target = scope === 'base' && wideOnly(k, props[k], opts) ? wide : decls;
+      const target = scope === 'base' && wideOnlyStyle(k, props[k], opts.wideColumns) ? wide : decls;
       target.push(...out.filter(safeDecl));
     }
     if (decls.length) rules[scope].push(`${selector} {\n${decls.map((d) => `\t${d};`).join('\n')}\n}`);
@@ -1003,7 +976,7 @@ function boxStyle(box: SizingBox, prop: string, range: SizeRange): unknown {
       value = styles[range]![prop];
     } else if (styles.base?.[prop] !== undefined) {
       value = styles.base[prop];
-      block = wideOnly(prop, value, { wideColumns: tier > 0 }) ? (range === 'phone' ? -1 : 1) : 0;
+      block = wideOnlyStyle(prop, value, tier > 0) ? (range === 'phone' ? -1 : 1) : 0;
     }
     const r = block < 0 ? -1 : (tier * 3 + block) * 1000 + order;
     if (r > rank) [rank, best] = [r, value];

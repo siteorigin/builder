@@ -552,12 +552,12 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
       <div className="col" style={{ gap: 10 }}>
         {uses.length === 1 ? (
           <p style={{ margin: 0 }}>
-            Used once, on <strong>{uses[0].label}</strong>. This changes its layout and styles, here and anywhere you add it later. It keeps its text, images and changes made on the page.
+            Used once, on <strong>{uses[0].label}</strong>. This changes its layout, styles and the content it starts with, here and anywhere you add it later. It keeps its own text, images and changes made on the page.
           </p>
         ) : (
           <>
             <p style={{ margin: 0 }}>
-              This changes the layout and styles of <strong>all {uses.length} placements</strong>. Each keeps its own text, images and changes made on the page.
+              This changes the layout, styles and starting content of <strong>all {uses.length} placements</strong>. Each keeps its own text, images and changes made on the page.
             </p>
             <div className="field-label">Used on</div>
             <ul style={{ margin: '-6px 0 0', paddingLeft: 18 }}>
