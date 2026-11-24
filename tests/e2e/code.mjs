@@ -108,6 +108,19 @@ await eventually(async () => {
 }, 15000);
 await eventually(async () => assert.equal(await saveButton.isDisabled(), true, 'nothing is left unsaved after the rename'));
 const label = win.getByLabel('prop1 label');
+const savedLabel = await label.inputValue();
+await label.fill('Abandoned');
+// Escape reverts and leaves the field, and only that: the dialog stays open, with nothing lost. The field
+// itself spends the key (the dialog's own check reads it), whatever wraps it, so this records the event.
+await win.evaluate(() => {
+  window.__escapes = [];
+  window.addEventListener('keydown', (e) => e.key === 'Escape' && window.__escapes.push(e), true);
+});
+await label.press('Escape');
+assert.equal(await win.evaluate(() => window.__escapes.at(-1)?.defaultPrevented), true, 'the field handled the Escape, so nothing else acts on it');
+await eventually(async () => assert.equal(await label.inputValue(), savedLabel, 'Escape puts the field back'));
+assert.equal(await win.locator('.modal').count(), 1, 'Escape inside a field does not close the dialog');
+assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), null, 'the field has let go of focus');
 await label.fill('Tone');
 assert.equal(await saveButton.isDisabled(), false, 'typing a label enables Save before the field is left');
 await saveButton.click();
@@ -162,6 +175,10 @@ assert.deepEqual(Object.keys((await counter()).saved.properties), ['title', 'tex
 await win.getByRole('button', { name: 'Revert' }).click();
 await win.getByRole('button', { name: 'Revert changes' }).click();
 await eventually(async () => assert.equal(await saveButton.isDisabled(), true, 'Revert starts again from the saved properties'));
+// One Escape ends the edit in a field and keeps the dialog; the next, with no field being edited, closes it.
+await label.fill('Abandoned again');
+await label.press('Escape');
+assert.equal(await win.locator('.modal').count(), 1, 'the first Escape leaves the dialog open');
 await win.keyboard.press('Escape');
 await win.locator('.modal').waitFor({ state: 'detached' });
 // Undo the two schema saves and the two content edits too, so the steps below unwind creation as before.

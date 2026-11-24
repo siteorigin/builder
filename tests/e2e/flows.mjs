@@ -284,6 +284,22 @@ assert.equal(
 );
 await eventually(async () => assert.equal(await previewReading.count(), shownBefore + 1, 'the preview shows the placed copy beside the Gallery’s'));
 await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Image' }).waitFor();
+// Edit on the selection chip moves focus to the first control in the inspector, a picker button included.
+await win.locator('.dock-tab', { hasText: 'AI' }).click();
+await win.locator('#dock-panel-inspect').waitFor({ state: 'hidden' });
+await win.locator('.ov-chip .chip-text', { hasText: 'Edit' }).click();
+await eventually(async () => {
+  const at = await win.evaluate(() => {
+    const el = document.activeElement;
+    const panel = document.getElementById('dock-panel-inspect');
+    if (!el || !panel?.contains(el)) return null;
+    // The control the page would reach first among the open sections' fields.
+    const first = [...panel.querySelectorAll('.section-body input:not([type="hidden"]), .section-body textarea, .section-body select, .section-body button, .section-body [role="switch"]')].find((n) => n.offsetParent !== null && !n.disabled);
+    return { tag: el.tagName, first: first === el };
+  });
+  assert.ok(at, 'focus is inside the inspector');
+  assert.equal(at.first, true, 'on the first control of its open sections');
+});
 await win.screenshot({ path: join(OUT, '16-placed-image.png') });
 await win.locator('[aria-label^="Undo"]').first().click();
 await eventually(async () => assert.deepEqual(await placedReading(), [], 'one Undo takes the placed copy away'));

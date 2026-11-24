@@ -761,31 +761,42 @@ export interface ConfirmRequest {
   /** true = confirm, false = the cancel button, null = dismissed (Escape, ×, backdrop): stay where you were. */
   resolve: (ok: boolean | null) => void;
 }
-let confirmQueue: ConfirmRequest | null = null;
+/** The open question first, then the ones waiting their turn, in the order they were asked. */
+let confirmQueue: ConfirmRequest[] = [];
 const confirmListeners = new Set<() => void>();
+const notifyConfirm = () => confirmListeners.forEach((f) => f());
+/** The question on screen. */
 export function getConfirm() {
+  return confirmQueue[0] ?? null;
+}
+/** Every question not yet answered, the one on screen first. */
+export function pendingConfirms(): readonly ConfirmRequest[] {
   return confirmQueue;
 }
 export function onConfirmChange(fn: () => void) {
   confirmListeners.add(fn);
   return () => confirmListeners.delete(fn);
 }
-/** Ask a yes/no question in the app's own dialog (never the system's), resolving to the answer. */
+/** Ask a yes/no question in the app's own dialog (never the system's), resolving to the answer. A question
+ *  asked while another is open waits its turn, so every caller hears its own answer. */
 let confirmIds = 0;
 export function confirmDialog(req: Omit<ConfirmRequest, 'resolve' | 'id'>): Promise<boolean | null> {
-  // One question at a time: a new one dismisses an open one (as Escape would), so its caller hears an
-  // answer instead of waiting forever.
-  confirmQueue?.resolve(null);
   return new Promise((resolve) => {
-    confirmQueue = {
+    const entry: ConfirmRequest = {
       ...req,
       id: ++confirmIds,
       resolve: (ok) => {
-        confirmQueue = null;
-        confirmListeners.forEach((f) => f());
+        // Answered once: a second click or a late dismissal finds it already gone.
+        if (!confirmQueue.includes(entry)) return;
+        const wasOpen = confirmQueue[0] === entry;
+        confirmQueue = confirmQueue.filter((q) => q !== entry);
+        // The host only shows the question on screen: a waiting one that leaves changes nothing it draws.
+        if (wasOpen) notifyConfirm();
         resolve(ok);
       }
     };
-    confirmListeners.forEach((f) => f());
+    confirmQueue = [...confirmQueue, entry];
+    // Only a question that takes the screen changes what the host shows.
+    if (confirmQueue.length === 1) notifyConfirm();
   });
 }

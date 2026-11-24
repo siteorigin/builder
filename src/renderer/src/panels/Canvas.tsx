@@ -20,6 +20,7 @@ import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { runPhase } from '../lib/savestate';
+import { focusInspector } from '../lib/inspector-focus';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
 import { isShellPart, showsPart } from '@shared/page-shell';
@@ -1244,7 +1245,7 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
           onClick={() => {
             setState({ dockOpen: true, rightTab: 'inspect' });
             // Focus follows into the inspector, landing on the selection's first control.
-            setTimeout(() => document.querySelector<HTMLElement>('#dock-panel-inspect :is(input, textarea, select, button.link, .insp-jump button)')?.focus(), 120);
+            focusInspector();
           }}
         >
           <PanelRight /> Edit
