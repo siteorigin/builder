@@ -66,6 +66,7 @@ describe('Wrap and Ungroup on a page', () => {
     const b = apply(a.state, [{ type: 'node.wrap', owner: page(s), nodeIds: ['n_call', 'n_after'], primitive: 'row' }]);
     s = b.state;
     const r = apply(s, [{ type: 'node.unwrap', owner: page(s), nodeIds: [b.results[0].nodeId as string, a.results[0].nodeId as string] }]);
+    expect(r.results[0]).toEqual({ nodeId: 'n_heading', nodeIds: ['n_heading', 'n_book', 'n_call', 'n_after'] });
     expect(content(r.state)).toEqual(['n_heading', 'n_book', 'n_call', 'n_after']);
     expect(Object.keys(home(r.state).nodes)).not.toContain(a.results[0].nodeId);
     expect(Object.keys(home(r.state).nodes)).not.toContain(b.results[0].nodeId);
@@ -198,7 +199,7 @@ describe('Wrap and Ungroup in a slot with a limit', () => {
     const w = apply(s, [{ type: 'node.wrap', owner: page(s), nodeIds: ['n_book', 'n_call'], primitive: 'row' }]);
     const row = w.results[0].nodeId as string;
     // A heading inside the Row is the Row's own; ungrouped, it would be the slot's.
-    const held = apply(w.state, [{ type: 'node.insert', owner: page(s), parentId: row, primitive: 'heading' }]).state;
+    const held = apply(w.state, [{ type: 'node.insert', owner: page(s), parentId: row, index: 0, primitive: 'heading' }]).state;
     expect(() => apply(held, [{ type: 'node.unwrap', owner: page(s), nodeIds: [row] }])).toThrow('The “Content” slot of “Section” takes buttons and containers, not text.');
   });
 });
@@ -276,7 +277,7 @@ describe('Wrap and Ungroup in a component’s design', () => {
 
   it('wraps what a group hiding when empty holds in a container that hides with it, so the group still hides', () => {
     const { s, id, own } = features();
-    const w = apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['eyebrow', 'heading', 'lead'], primitive: 'stack' }]);
+    const w = apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['eyebrow', 'heading', 'lead'], primitive: 'row' }]);
     expect(tree(w.state, id).nodes[w.results[0].nodeId as string]).toMatchObject({ collapseEmpty: true, children: ['eyebrow', 'heading', 'lead'] });
     expect(errors(w.state)).toEqual([]);
     // On a page nothing hides when empty, and the new container is as Insert makes it.
@@ -296,12 +297,22 @@ describe('Wrap and Ungroup in a component’s design', () => {
     t.nodes.t1 = tab('t1', 'a');
     t.nodes.t2 = tab('t2', 'b');
     t.nodes.srep = { id: 'srep', kind: 'repeat', list: { $prop: 'items' }, appearStagger: true, children: ['sitem'] };
-    t.nodes.sitem = { id: 'sitem', kind: 'element', tag: 'div', appear: 'fade', children: [] };
-    inner.children.push('fbox', 'tabs', 'srep');
+    // Its entrance may come from a placed component's design rather than its own setting: any item of the list counts.
+    t.nodes.sitem = { id: 'sitem', kind: 'element', tag: 'div', children: [] };
+    // A list whose group hides while it is empty: the editor shows where its images go there.
+    t.nodes.ibox = { id: 'ibox', kind: 'element', tag: 'div', collapseEmpty: true, children: ['irep'] };
+    t.nodes.irep = { id: 'irep', kind: 'repeat', list: { $prop: 'items' }, children: [] };
+    // A yes/no state's button is no tab.
+    t.nodes.toggles = { id: 'toggles', kind: 'element', tag: 'div', children: ['b1'] };
+    t.nodes.b1 = { id: 'b1', kind: 'link', link: { type: 'none', target: '' }, label: 'More', appearance: 'primary', stateAction: { state: 'open', op: 'set', value: true } };
+    inner.children.push('fbox', 'tabs', 'srep', 'ibox', 'toggles');
     expect(() => apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['fbox'] }])).toThrow(/category filter pills/);
     expect(() => apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['tabs'] }])).toThrow(/choose what the component shows/);
     expect(() => apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['t1'], primitive: 'stack' }])).toThrow(/choose what the component shows/);
-    expect(() => apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['sitem'], primitive: 'stack' }])).toThrow(/enters in turn/);
+    expect(() => apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['sitem'], primitive: 'stack' }])).toThrow(/items enter in turn/);
+    expect(() => apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['irep'], primitive: 'stack' }])).toThrow(/inside a group that hides when empty too/);
+    expect(apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['b1'], primitive: 'row' }]).results[0].nodeId).toBeTruthy();
+    expect(ungroupRefusal(s, own, ['toggles'])).toBeNull();
   });
 
   it('wraps an older design’s top level whole, which gives it its one root', () => {
@@ -361,6 +372,7 @@ describe('what an assistant run may wrap and ungroup', () => {
     const run: Authority = { kind: 'component', definitionId: id, label: 'the Features design' };
     expect(checkAuthority(f.state, [{ type: 'node.wrap', owner: own, nodeIds: ['card-title', 'card-text'], primitive: 'stack' }], run)).toBeNull();
     expect(checkAuthority(f.state, [{ type: 'node.wrap', owner: own, nodeIds: ['root'], primitive: 'stack' }], run)).toMatch(/root/);
+    expect(checkAuthority(f.state, [{ type: 'node.wrap', owner: own, nodeIds: ['card-title', 'n_elsewhere'], primitive: 'stack' }], run)).toMatch(/outside the Features design/);
     expect(checkAuthority(f.state, [{ type: 'node.unwrap', owner: page(st), nodeIds: [placed.id] }], run)).toMatch(/outside the Features design/);
   });
 });

@@ -1406,11 +1406,17 @@ function nodeWrap(state: ProjectState, op: Op<'node.wrap'>): OpResult {
   const run = siblingRun(tree, op.owner, op.nodeIds, 'wrapped');
   if (def && settled && run.list === tree.rootIds) fail(ROOT_IS_COMPONENT('wrapped'));
   const parent = run.parentId !== null && Object.hasOwn(tree.nodes, run.parentId) ? tree.nodes[run.parentId] : undefined;
+  const hides = def && parent?.kind === 'element' && parent.collapseEmpty;
   for (const id of run.ids) {
     const n = tree.nodes[id];
     const name = `“${displayName(state, n, def)}”`;
     if (choosesState(n)) fail(`${name} is one of the buttons that choose what the component shows (its tabs), which are known by the list holding them, so it can’t be wrapped.`);
-    if (parent?.kind === 'repeat' && parent.appearStagger && 'appear' in n && n.appear && n.appear !== 'none') fail(`${name} enters in turn with the other items of its list, which a container around it would stop, so it can’t be wrapped.`);
+    // Items enter in turn as the list's own children: one inside a container would enter on its own.
+    if (parent?.kind === 'repeat' && parent.appearStagger) fail(`${name} is an item of a list whose items enter in turn, which a container around it would stop, so it can’t be wrapped.`);
+    // A list, or what hides with it, is where the editor shows where its images go while it is empty: a container
+    // between it and a group that hides too would hide that.
+    const list = n.kind === 'repeat' || (n.kind === 'element' && n.collapseEmpty && n.children.some((c) => tree.nodes[c]?.kind === 'repeat'));
+    if (hides && list) fail(`${name} is a list, or hides while its list is empty, inside a group that hides when empty too, so it can’t be wrapped there.`);
   }
   const landed = slotLanding(state, op.owner, tree, run.parentId, run.list);
   const wrapper = primitiveNode(state, op.primitive)[0] as ElementNode;
@@ -1426,8 +1432,8 @@ function nodeWrap(state: ProjectState, op: Op<'node.wrap'>): OpResult {
   return { nodeId: wrapper.id };
 }
 
-/** A button that picks one option of the component's UI state: a tab, known by the list that holds exactly those buttons. */
-const choosesState = (n: GraphNode | undefined) => n?.kind === 'link' && n.stateAction?.op === 'set';
+/** A button that picks one option of a choice the component shows (a tab), known by the list that holds exactly those buttons. */
+const choosesState = (n: GraphNode | undefined) => n?.kind === 'link' && n.stateAction?.op === 'set' && typeof n.stateAction.value === 'string';
 
 /**
  * Why a node can't be ungrouped, or null when it is a plain container: one that only lays out what it holds, so taking
