@@ -31,7 +31,8 @@ import {
   rootsLeft,
   selectionToolbar,
   shape,
-  valueRefs
+  valueRefs,
+  walk
 } from './snapshot.ts';
 import type { Binding, ElementFacts, RawNode, Scope, Semantic, Shaped, StaleReason, UiNode } from './snapshot.ts';
 
@@ -603,77 +604,108 @@ export interface Located {
   node: UiNode;
 }
 
-/** The most elements a search follows up; past this it answers AMBIGUOUS_TARGET with the count. */
+/** The most elements a search follows up; past this it answers AMBIGUOUS_TARGET. */
 const MATCH_LIMIT = 50;
+/** The most observed nodes of one role a search pairs its matches with. */
+const CANDIDATE_LIMIT = 2000;
 
 export async function uiLocate(env: ObserveEnv, args: LocateArgs): Promise<Located> {
+  const obs = await observe(env);
+  const minter = new Minter(env, obs);
   if (args.ref) {
-    const obs = await observe(env);
-    const minter = new Minter(env, obs);
     const { node } = await checkRef(env, args.ref, obs, minter);
     return located(node, minter, args);
   }
-  // Find through Playwright's own role matching (what acting by role and name uses), then place each match in a full
-  // observation by its ref: an accessibility snapshot leaves out a name a child repeats, so its names are not matched.
-  const first = await observe(env);
-  const firstMinter = new Minter(env, first);
+  // Found through Playwright's own role matching (what acting by role and name uses), and placed in the observation
+  // by element identity: an accessibility snapshot leaves out a name a child repeats, so its names are not matched.
   const scopes: Scope[] = args.scope === 'editor' ? ['editor'] : args.scope === 'preview' ? ['preview'] : ['editor', 'preview'];
-  const roots: { scope: Scope; locator: (l: Page | Frame | Locator) => Locator; base: Page | Frame | Locator; byRef: boolean }[] = [];
-  const byRole = (base: Page | Frame | Locator) => base.getByRole(args.role as Parameters<Page['getByRole']>[0], { ...(args.name !== undefined ? { name: args.name, exact: args.exact !== false } : {}) });
+  const roots: { scope: Scope; base: Page | Frame | Locator }[] = [];
   if (args.within) {
-    const { binding } = await checkRef(env, args.within, first, firstMinter);
-    roots.push({ scope: binding.scope, base: env.page.locator(`aria-ref=${binding.pwRef}`), locator: byRole, byRef: true });
+    const { binding } = await checkRef(env, args.within, obs, minter);
+    roots.push({ scope: binding.scope, base: env.page.locator(`aria-ref=${binding.pwRef}`) });
   } else {
     for (const scope of scopes) {
-      if (scope === 'preview' && (first.previewState !== 'ready' || !first.docs.preview || !first.preview)) {
-        if (args.scope === 'preview') throw new DriverError('TARGET_NOT_FOUND', `The preview is ${first.previewState === 'absent' ? 'not shown' : 'still loading'}: nothing in it can be found yet.`, { details: { preview: first.previewState, hint: 'Wait for context.preview.state to be "ready" (ui.snapshot), then locate again.' } });
+      if (scope === 'preview' && (obs.previewState !== 'ready' || !obs.docs.preview || !obs.preview)) {
+        if (args.scope === 'preview')
+          throw new DriverError('TARGET_NOT_FOUND', `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}: nothing in it can be found yet.`, {
+            details: { preview: obs.previewState, hint: 'Wait for context.preview.state to be "ready" (ui.snapshot), then locate again.' }
+          });
         continue;
       }
-      const tree = scope === 'editor' ? first.editor : first.preview!;
-      if (args.region) for (const r of regionNodes(tree, args.region)) roots.push({ scope, base: env.page.locator(`aria-ref=${r.pwRef}`), locator: byRole, byRef: true });
-      else roots.push({ scope, base: scope === 'editor' ? env.page : first.docs.preview!.frame, locator: byRole, byRef: false });
+      const tree = scope === 'editor' ? obs.editor : obs.preview!;
+      if (args.region) for (const r of regionNodes(tree, args.region)) roots.push({ scope, base: env.page.locator(`aria-ref=${r.pwRef}`) });
+      else roots.push({ scope, base: scope === 'editor' ? env.page : obs.docs.preview!.frame });
     }
   }
   const query = { role: args.role, ...(args.name !== undefined ? { name: args.name } : {}), ...(args.exact === false ? { exact: false } : {}), ...(args.region ? { region: args.region } : {}), ...(args.within ? { within: args.within } : {}), scope: args.scope ?? 'all' };
   if (!roots.length) throw new DriverError('TARGET_NOT_FOUND', args.region ? `There is no region "${args.region}" to search.` : 'There is nothing to search.', { details: { query, hint: REFRESH_HINT } });
-  // How many elements match, before any snapshot of a match replaces a frame's last full one.
-  const counts = await Promise.all(roots.map((r) => r.locator(r.base).count().catch(() => 0)));
-  const count = counts.reduce((a, b) => a + b, 0);
-  const pwRefs: { scope: Scope; ref: string }[] = [];
-  if (count <= MATCH_LIMIT) {
-    let partial = false;
-    for (let i = 0; i < roots.length; i++) {
-      if (!counts[i]) continue;
-      // A container named by its ref is found through the frame's last full snapshot: take one again after any
-      // snapshot of a single match replaced it (refs stay the same).
-      if (partial && roots[i].byRef) await env.page.locator('body').ariaSnapshotJSON({ mode: 'ai', signal: env.signal });
-      for (const ref of await refsOf(env.page, roots[i].locator(roots[i].base), MATCH_LIMIT)) pwRefs.push({ scope: roots[i].scope, ref });
-      partial = true;
-    }
-  }
-  const obs = await observe(env);
-  const minter = new Minter(env, obs);
-  if (args.within) await checkRef(env, args.within, obs, minter);
-  const seen = new Set<string>();
-  const found: Shaped[] = [];
-  for (const { scope, ref } of pwRefs) {
-    if (seen.has(ref)) continue;
-    seen.add(ref);
-    const tree = scope === 'editor' ? obs.editor : obs.preview;
-    const node = tree ? findByPwRef(tree, ref) : null;
-    if (node) found.push(node);
-  }
-  if (count > MATCH_LIMIT) throw new DriverError('AMBIGUOUS_TARGET', `${count} elements are ${args.role}${args.name ? ` "${args.name}"` : ''}: name a region or a ref to search within.`, { details: { count, candidates: [], query, hint: 'Narrow it with "region" or "within" (a ref from ui.snapshot).' } });
+  const found = await matchesIn(env, obs, roots, args);
+  aborted(env.signal);
+  if (found === 'too-many') throw new DriverError('AMBIGUOUS_TARGET', `More than ${MATCH_LIMIT} elements are ${args.role}${args.name ? ` "${args.name}"` : ''}: name a region or a ref to search within.`, { details: { count: `>${MATCH_LIMIT}`, candidates: [], query, hint: 'Narrow it with "region" or "within" (a ref from ui.snapshot).' } });
   if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see what there is.' } });
   if (found.length > 1) {
     const shown = found.slice(0, LIMITS.candidates);
     await minter.read(shown);
-    const candidates = shown.map((n) => ({ ...(minter.ref(n) ? { ref: minter.ref(n)! } : {}), scope: n.scope, role: n.role, ...(n.name ? { name: n.name } : {}), region: n.regions }));
+    const candidates = shown.map((n) => {
+      const ref = minter.ref(n);
+      return { ...(ref ? { ref } : {}), scope: n.scope, role: n.role, ...(n.name ? { name: n.name } : args.name && args.exact !== false ? { name: args.name } : {}), region: n.regions };
+    });
     throw new DriverError('AMBIGUOUS_TARGET', `${found.length} elements are ${args.role}${args.name ? ` "${args.name}"` : ''}: tell them apart by region, or use a ref.`, {
       details: { count: found.length, candidates, query, hint: 'Locate again with "region" set to one of the candidates\' regions, or use a candidate\'s ref.' }
     });
   }
   return located(found[0], minter, args);
+}
+
+/**
+ * The observed nodes Playwright's role matching finds under each root, in order and without repeats. Every element
+ * is held as a handle and paired with the observed nodes of that role by identity in the page, all before anything
+ * replaces the frames' last snapshot (which `aria-ref` resolves against).
+ */
+async function matchesIn(env: ObserveEnv, obs: Observation, roots: { scope: Scope; base: Page | Frame | Locator }[], args: LocateArgs): Promise<Shaped[] | 'too-many'> {
+  const held: ElementHandle[] = [];
+  try {
+    const matches: { scope: Scope; handle: ElementHandle }[] = [];
+    for (const r of roots) {
+      const loc = r.base.getByRole(args.role as Parameters<Page['getByRole']>[0], args.name !== undefined ? { name: args.name, exact: args.exact !== false } : {});
+      const n = await loc.count().catch(() => 0);
+      if (matches.length + n > MATCH_LIMIT) return 'too-many';
+      for (let i = 0; i < n; i++) {
+        const h = (await loc
+          .nth(i)
+          .elementHandle({ timeout: 1000 })
+          .catch(() => null)) as ElementHandle | null;
+        if (!h) continue;
+        held.push(h);
+        matches.push({ scope: r.scope, handle: h });
+      }
+    }
+    const out: Shaped[] = [];
+    for (const scope of ['editor', 'preview'] as const) {
+      const mine = matches.filter((m) => m.scope === scope);
+      const tree = scope === 'editor' ? obs.editor : obs.preview;
+      if (!mine.length || !tree) continue;
+      const nodes = [...walk(tree)].filter((n) => n.pwRef && n.role === args.role).slice(0, CANDIDATE_LIMIT);
+      const handles = await Promise.all(
+        nodes.map(async (n) => {
+          const loc = env.page.locator(`aria-ref=${n.pwRef}`);
+          if ((await loc.count().catch(() => 0)) !== 1) return null;
+          return (await loc.elementHandle({ timeout: 1000 }).catch(() => null)) as ElementHandle | null;
+        })
+      );
+      for (const h of handles) if (h) held.push(h);
+      const present = handles.map((h, i) => (h ? i : -1)).filter((i) => i >= 0);
+      const list = present.map((i) => handles[i]!);
+      for (const m of mine) {
+        const at = await m.handle.evaluate((x: Dom, all: Dom[]) => all.indexOf(x), list).catch(() => -1);
+        const node = at >= 0 ? nodes[present[at]] : null;
+        if (node && !out.includes(node)) out.push(node);
+      }
+    }
+    return out;
+  } finally {
+    await Promise.all(held.map((h) => h.dispose().catch(() => undefined)));
+  }
 }
 
 async function located(node: Shaped, minter: Minter, args: LocateArgs): Promise<Located> {
