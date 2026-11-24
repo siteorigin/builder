@@ -505,9 +505,12 @@ export function Editor() {
         else if (prev.mode === 'edit' && s.mode === 'preview' && s.leftTab === 'posts' && s.postView === 'write') {
           if (!s.post) return setState({ postView: 'preview' });
           // The writer stays until what it holds is saved: text that could not be stays in view, with its note.
+          const asked = s.post;
           void saveOpenPost().then((saved) => {
             const now = getState();
             if (now.mode !== 'preview' || now.leftTab !== 'posts' || now.postView !== 'write') return;
+            // Another post opened while this one saved: the preview was this one's, and the other's text may not be saved.
+            if (now.post?.collectionId !== asked.collectionId || now.post?.entryId !== asked.entryId) return setMode('edit');
             if (!saved) {
               setMode('edit');
               return toast('Part of the post is not saved yet, so the preview would not show it. See the note above its text.', 'error');

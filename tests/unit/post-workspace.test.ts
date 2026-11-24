@@ -31,6 +31,7 @@ describe('the Posts workspace in front of the editor', () => {
     expect(postWorkspace({ ...base, post: null })).toBe('write');
     // Preview chosen in the toolbar: the writer stays until what was typed is saved.
     expect(postWorkspace({ ...base, mode: 'preview' })).toBe('write');
+    expect(postWorkspace({ ...base, mode: 'preview', post: null })).toBe('write');
   });
 
   it('is the post’s preview whichever panel the sidebar shows, and nothing once the page is shown', () => {
@@ -38,6 +39,7 @@ describe('the Posts workspace in front of the editor', () => {
     expect(postWorkspace(previewing)).toBe('preview');
     expect(postWorkspace({ ...previewing, leftTab: null })).toBe('preview');
     expect(postWorkspace({ ...previewing, leftTab: 'pages' })).toBe('preview');
+    expect(postWorkspace({ ...previewing, leftTab: 'layers' })).toBe('preview');
     // Preview with no post open is the page's own preview.
     expect(postWorkspace({ ...previewing, post: null })).toBeNull();
     // Another panel while writing shows the page again.
@@ -69,12 +71,17 @@ describe('what the editor names while the Posts workspace is in front', () => {
   it('names the Posts workspace itself while no post is open, or the open one has gone', () => {
     expect(postShown(s, 'write', null, null)).toEqual({ kind: 'post', ref: null, title: 'Posts', draft: false });
     expect(postShown(s, 'write', { collectionId: 'posts', entryId: 'en_gone' }, null)).toEqual({ kind: 'post', ref: null, title: 'Posts', draft: false });
+    expect(postShown(s, 'preview', { collectionId: 'posts', entryId: 'en_gone' }, null)).toEqual({ kind: 'post', ref: null, title: 'Posts', draft: false });
+    // A post with no title yet is named as the Posts list names it.
+    const blank = structuredClone(s);
+    blank.collections.posts.entries.en_spring.title = '';
+    expect(postShown(blank, 'write', spring, null)).toMatchObject({ kind: 'post', ref: spring, title: 'Untitled' });
   });
 
   it('names the previewed post until the canvas reports where it is, then wherever a visitor went on to', () => {
     // On its way: the page being left is never named in its place.
     expect(postShown(s, 'preview', spring, null)).toMatchObject({ kind: 'post', ref: spring, title: 'Spring open studio' });
-    expect(postShown(s, 'preview', spring, '/blog/spring-open-studio/')).toMatchObject({ kind: 'post', ref: spring });
+    expect(postShown(s, 'preview', spring, '/blog/spring-open-studio/')).toMatchObject({ kind: 'post', ref: spring, draft: false });
     expect(postShown(s, 'preview', spring, '/blog/spring-open-studio')).toMatchObject({ kind: 'post', ref: spring });
     // A visitor's link to the home page, to another page, or to another post.
     expect(postShown(s, 'preview', spring, home.route)).toEqual({ kind: 'page', pageId: home.id });
