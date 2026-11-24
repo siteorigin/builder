@@ -207,7 +207,7 @@ try {
   await until('ui.context', { dialog: null });
   // The key, and a folder of the host's, sent later as arguments: the record keeps neither, whatever the field.
   ok(await call('project.summary', { find: KEY }), 'a search for the key');
-  failed(await call('ui.locate', { role: KEY }), 'TARGET_NOT_FOUND', 'the key as a role');
+  failed(await call('ui.locate', { role: KEY }), 'BAD_REQUEST', 'the key as a role');
   failed(await call('exports.inspect', { path: '/Volumes/Backup/elsewhere-site' }), 'BAD_REQUEST', 'a path outside the session');
 
   step('the record: ordered, classed, bounded, without credentials or host paths');
