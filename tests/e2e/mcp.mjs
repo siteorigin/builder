@@ -198,6 +198,27 @@ try {
     assert.equal(r.structuredContent.result.surface, shot.id.endsWith('-preview') ? 'preview' : 'editor');
   }
 
+  step('once a credential is known, no screenshot comes back, not even one taken before');
+  const KEY = `sk-mcp-${Date.now().toString(36)}-not-a-real-key`;
+  await ok('ui_click', { target: { ref: (await ok('ui_locate', { role: 'button', name: 'Settings', scope: 'editor' })).node.ref } });
+  const settings = (await ok('ui_waitFor', { role: 'dialog', name: 'Settings', scope: 'editor' })).node;
+  await ok('ui_click', { target: { ref: (await ok('ui_locate', { role: 'tab', name: 'AI assistant', within: settings.ref })).node.ref } });
+  const keyField = (await ok('ui_waitFor', { role: 'textbox', name: 'API key (optional)', scope: 'editor' })).node;
+  await ok('ui_fill', { target: { ref: keyField.ref }, text: KEY });
+  const withheld = await reply('evidence_read', { id: shots[0].editor.id });
+  assert.ok(!withheld.isError, JSON.stringify(withheld.structuredContent.error ?? null));
+  assert.match(withheld.structuredContent.result.withheld, /credential/);
+  assert.deepEqual(withheld.content.map((c) => c.type), ['text'], 'no image block');
+  assert.equal(withheld.structuredContent.result.data, undefined);
+  // The key left unsaved: the editor asks, and it is discarded.
+  await ok('ui_press', { key: 'Escape' });
+  const question = (await ok('ui_waitFor', { role: 'dialog', name: 'Save the API key you entered?', scope: 'editor' })).node;
+  await ok('ui_click', { target: { ref: (await ok('ui_locate', { role: 'button', name: 'Discard', within: question.ref })).node.ref } });
+  await ok('ui_waitFor', { role: 'dialog', state: 'absent', scope: 'editor' });
+  const still = await reply('evidence_read', { id: shots[1].preview.id });
+  assert.match(still.structuredContent.result.withheld ?? '', /credential/, 'a credential once seen is remembered for the rest of the session');
+  for (const r of [withheld, still]) assert.equal(JSON.stringify(r).includes(KEY), false, 'the key never comes back');
+
   step('the client disconnects without closing it: server, host, app, preview and run folder all go');
   const live = (await ok('session_describe', {})).session;
   assert.ok(live.processes.length >= 3 && live.processes.every(isAlive), `the app and its helpers run (${live.processes})`);
