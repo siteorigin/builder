@@ -197,7 +197,16 @@ describe('buildSeoGraph', () => {
         nodes: [{ '@type': 'Offer', '@id': ids.site('offer'), itemOffered: { '@id': ids.site('service') } }]
       }))
     ).toThrow(/@included/);
-    // JSON-LD keywords beside an @id keep it a reference, and an IRI of another scheme is an address.
+    expect(
+      refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { mentions: { '@included': [{ '@id': ids.site('x'), '@type': 'Thing' }] } }, add: { mentions: { '@id': ids.organization } } }] }))
+    ).toThrow(/@included/);
+    // An entity has properties, not a value; addresses have whole escapes and no backslashes.
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': 'https://other.example/#a', '@value': 'text' } } }] }))).toThrow(/@value/);
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { citation: { '@id': 'urn:isbn:%ZZ' } } }] }))).toThrow(/not an absolute address/);
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { citation: { '@id': 'https://\\elsewhere.example' } } }] }))).toThrow(/not an absolute address/);
+    // An @nest beside an @id describes the entity in place.
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': ids.page('alice'), '@nest': { name: 'Alice' } } } }] }))).not.toThrow();
+    // An @index beside an @id keeps it a reference, and an IRI of another scheme is an address.
     expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': ids.organization, '@index': 'publisher' } } }] }))).not.toThrow();
     expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { citation: { '@id': 'urn:isbn:9780000000001', '@type': 'Book', name: 'Clay' } } }] }))).not.toThrow();
     // An entity is described once, in place or as a node.

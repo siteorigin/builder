@@ -162,14 +162,15 @@ function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSe
 }
 
 /**
- * What a value says of other entities, at any depth: the ones it refers to (an `@id` with nothing but JSON-LD keywords
- * beside it, such as `@index`) and the ones it describes in place (an `@id` with an `@type` or properties of its own).
+ * What a value says of other entities, at any depth: the ones it refers to (an `@id` with nothing beside it but an
+ * `@index`) and the ones it describes in place (an `@id` with anything else: an `@type`, properties, `@nest`, `@reverse`).
  */
 function mentions(value: JsonValue, out: { refs: string[]; inline: string[] } = { refs: [], inline: [] }) {
   if (Array.isArray(value)) for (const v of value) mentions(v, out);
   else if (value && typeof value === 'object') {
     const id = value['@id'];
-    const describes = Object.keys(value).some((k) => k === '@type' || !k.startsWith('@'));
+    if (typeof id === 'string' && '@value' in value) throw new Error(`${id} is given a @value: an entity has properties, not a value.`);
+    const describes = Object.keys(value).some((k) => k !== '@id' && k !== '@index');
     if (typeof id === 'string') (describes ? out.inline : out.refs).push(id);
     for (const [k, v] of Object.entries(value)) if (k !== '@id') mentions(v, out);
   }
@@ -177,11 +178,11 @@ function mentions(value: JsonValue, out: { refs: string[]; inline: string[] } = 
 }
 
 /**
- * An absolute IRI, written without spaces: a web address with its host (`https://example.com/#org`), or another scheme
+ * An absolute IRI, written without spaces, backslashes or broken %-escapes: a web address with its host (`https://example.com/#org`), or another scheme
  * (`urn:isbn:…`). A web address the URL parser would have to repair (`https:example.com`) is not one.
  */
 const isAbsolute = (id: string) => {
-  if (/\s/.test(id) || !/^[a-z][a-z0-9+.-]*:./i.test(id)) return false;
+  if (/[\s\\]/.test(id) || /%(?![0-9a-f]{2})/i.test(id) || !/^[a-z][a-z0-9+.-]*:./i.test(id)) return false;
   if (!/^https?:/i.test(id)) return true;
   if (!/^https?:\/\/[^/?#]/i.test(id)) return false;
   try {
@@ -249,7 +250,7 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
     const node = nodes.get(id) as JsonObject | undefined;
     if (!node) throw new Error(`Graph contributor ${from + 1} extends ${id}, which the graph does not have.`);
     for (const k of [...Object.keys(set ?? {}), ...Object.keys(add ?? {})]) if (k === '@id' || k === '@context') throw new Error(`Graph contributor ${from + 1} tried to change ${k} of ${id}.`);
-    if (includes({ ...set, ...add })) throw new Error(`Graph contributor ${from + 1} extends ${id} with @included entities: add them as nodes of their own.`);
+    if (includes(set ?? {}) || includes(add ?? {})) throw new Error(`Graph contributor ${from + 1} extends ${id} with @included entities: add them as nodes of their own.`);
     for (const [k, v] of Object.entries(set ?? {})) {
       const pending = sets.get(node) ?? new Map<string, JsonValue>();
       sets.set(node, pending);
