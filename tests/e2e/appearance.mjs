@@ -167,27 +167,44 @@ assert.ok(await settings.getByRole('radio', { name: 'System' }).isEnabled(), 'Sy
 await closeSettings(settings);
 
 step('a switch draws the editor in what its save answered, one press at a time, whether or not main says so');
-// Main's answer is held, and it never sends the appearance event: the toggle must not save twice or wait for one.
+// Main's answer is held, and it never sends the appearance event unless the test does: the toggle must not save
+// twice, wait for an event, or let an answer overrule an event that came after it was asked.
 const before = await win.evaluate(() => window.builder.app.getSettings());
 await app.evaluate(({ BrowserWindow }, base) => {
   globalThis.heldSaves = [];
-  BrowserWindow.getAllWindows()[0].webContents.ipc.handle('app:setSettings', (_e, patch) => new Promise((resolve) => globalThis.heldSaves.push({ patch, answer: () => resolve({ ...base, ...patch }) })));
+  BrowserWindow.getAllWindows()[0].webContents.ipc.handle('app:setSettings', (_e, patch) => new Promise((resolve) => globalThis.heldSaves.push({ patch, answer: (appearance) => resolve({ ...base, ...patch, ...(appearance ? { appearance } : {}) }) })));
 }, before);
-const held = () => app.evaluate(() => globalThis.heldSaves.map((s) => s.patch));
-const answer = () => app.evaluate(() => globalThis.heldSaves.at(-1).answer());
-await toggle().click();
-await toggle().click();
-await win.keyboard.press('Enter');
-await eventually(async () => assert.deepEqual(await held(), [{ appearance: system }], 'one save, for the other scheme'));
-assert.equal((await editor()).scheme, other, 'the editor stays drawn as it is until the save answers');
-await answer();
-await eventually(async () => assert.equal((await editor()).scheme, system, 'the editor is drawn in what the save answered'));
-await eventually(async () => assert.equal(await toggle().getAttribute('aria-checked'), String(system === 'dark'), 'the toggle shows it'));
-await toggle().click();
-await eventually(async () => assert.deepEqual(await held(), [{ appearance: system }, { appearance: other }], 'the next press saves the scheme back'));
-await answer();
-await eventually(async () => assert.equal((await editor()).scheme, other, 'and is drawn in it'));
-await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.ipc.removeHandler('app:setSettings'));
+try {
+  const held = () => app.evaluate(() => globalThis.heldSaves.map((s) => s.patch));
+  /** Answers the newest held save: with what it asked for, or with another Appearance saved meanwhile. */
+  const answer = (appearance) => app.evaluate((_, a) => globalThis.heldSaves.at(-1).answer(a), appearance);
+  const event = (appearance) => app.evaluate(({ BrowserWindow }, a) => BrowserWindow.getAllWindows()[0].webContents.send('appearance', a), appearance);
+  const drawn = (scheme, what) => eventually(async () => assert.equal((await editor()).scheme, scheme, what));
+  await toggle().click();
+  await toggle().click();
+  await win.keyboard.press('Enter');
+  await eventually(async () => assert.deepEqual(await held(), [{ appearance: system }], 'one save, for the other scheme'));
+  assert.equal((await editor()).scheme, other, 'the editor stays drawn as it is until the save answers');
+  await answer();
+  await drawn(system, 'with no event, the editor is drawn in what the save answered');
+  await eventually(async () => assert.equal(await toggle().getAttribute('aria-checked'), String(system === 'dark'), 'the toggle shows it'));
+  await toggle().click();
+  await eventually(async () => assert.deepEqual(await held(), [{ appearance: system }, { appearance: other }], 'the next press saves the scheme back'));
+  // Another save got there first and put back what was drawn: the answer says so, and the editor stays.
+  await answer(system);
+  await drawn(system, 'the editor is drawn in what was saved, not what was asked');
+  await toggle().click();
+  await eventually(async () => assert.equal((await held()).length, 3, 'a third save'));
+  // Settings saves the drawn scheme while the toggle's save is on its way, and its event comes before the toggle's answer.
+  await event(system);
+  await answer();
+  await win.waitForTimeout(300);
+  await drawn(system, 'an answer never overrules an event that came after it was asked');
+  await event(other);
+  await drawn(other, 'the next event is drawn as always');
+} finally {
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.ipc.removeHandler('app:setSettings'));
+}
 assert.equal(await saved(), other, `${label(other)} is still the saved Appearance`);
 
 step('the toggle’s choice survives a restart, and the first-run screen has the toggle too');
