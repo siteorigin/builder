@@ -263,6 +263,10 @@ export interface InspectorFocus {
   label: string;
 }
 
+let focusSeq = 0;
+/** A new request to focus a content field (see InspectorFocus), numbered apart from every earlier one. */
+export const inspectorFocusRequest = (f: Omit<InspectorFocus, 'seq' | 'at'>): InspectorFocus => ({ ...f, seq: ++focusSeq, at: Date.now() });
+
 /** The status of a request that may change the site; a read-only question is not one. */
 export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
 

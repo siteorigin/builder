@@ -27,6 +27,15 @@ const owner = z
   })
   .describe('Owner document of the node.');
 
+/** One use of a library image (ImageUseTarget): list items are reached by their ID, never by position. */
+const USE_PATH = z.array(z.string().min(1)).min(1).max(64);
+const IMAGE_USE = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('node'), owner, nodeId: z.string(), path: USE_PATH }),
+  z.object({ kind: z.literal('default'), definitionId: z.string(), path: USE_PATH }),
+  z.object({ kind: z.literal('pageSharing'), pageId: z.string() }),
+  z.object({ kind: z.literal('site'), field: z.enum(['favicon', 'socialImage']) })
+]);
+
 const scope = z.enum(['base', 'phone', 'tablet', 'desktop']).describe('Responsive scope. "base" applies at all sizes.');
 /** A web font's face. The family becomes a CSS font-family name, so only plain characters are allowed. */
 const FONT_FACE = z.object({
@@ -395,7 +404,9 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('asset.replace'),
     assetId: z.string(),
     withAssetId: z.string(),
-    keepAlt: z.boolean().optional().describe('Keep every use’s alt text as it is, for a copy of the same picture. Otherwise a use with the old image’s suggested alt text takes the new image’s.')
+    keepAlt: z.boolean().optional().describe('Keep every use’s alt text as it is, for a copy of the same picture. Otherwise a use with the old image’s suggested alt text takes the new image’s.'),
+    // Editor only: the uses the author chose. Every one must still show the image, or nothing is replaced.
+    uses: z.array(IMAGE_USE).min(1).optional().describe('Replace only these uses of the image. Without it, every use is replaced.')
   }),
   // Editor only: the file an existing library image or document has, after the author located or chose it. Its uses,
   // name and descriptions stay; the file details are replaced as a whole.

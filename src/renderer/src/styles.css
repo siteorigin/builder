@@ -3234,6 +3234,23 @@ button.asset-use:hover svg.go { color: var(--text); }
 .asset-replace-add { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 0 10px 10px; }
 .asset-replace-add p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-3); }
 .asset-uses .asset-more { margin: 2px 0 0; }
+.asset-replace-head .asset-choose-open { margin-top: 4px; font-size: 12px; }
+/* Replacing in some places: each use ticked or not, with Show beside it, then what the change will do. */
+.asset-choose { margin: 0 10px 10px; padding: 8px 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); min-width: 0; }
+.asset-choose legend { padding: 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
+.asset-choose ul { display: flex; flex-direction: column; max-height: 220px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.asset-choose li { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.asset-choose label.asset-use { flex: 1; min-width: 0; cursor: pointer; }
+.asset-choose label.asset-use:hover { background: var(--hover); color: var(--text); }
+.asset-choose input[type='checkbox'] { flex: none; margin: 0 2px 0 0; }
+.asset-choose input:disabled + svg, .asset-choose input:disabled ~ span { opacity: 0.6; }
+.asset-choose-show { flex: none; width: 26px; padding: 0; justify-content: center; }
+.asset-choose-sum { margin: 8px 4px 0; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
+.asset-choose-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 4px 0; }
+.asset-tile.picked .asset-thumb::after { box-shadow: inset 0 0 0 2px var(--accent); }
+.asset-tile.picked .asset-name { color: var(--text); font-weight: 600; }
+.asset-picked { position: absolute; top: 5px; left: 5px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; pointer-events: none; }
+.asset-picked svg { width: 13px; height: 13px; }
 .token-title { display: flex; align-items: center; gap: 4px; min-height: 20px; }
 .token-row.set .token-title { color: var(--text); font-weight: 500; }
 /* The safe default in a dialog is visibly focused from the start, even when it was focused by the app. */

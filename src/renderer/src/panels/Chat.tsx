@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCh
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatImageRef, type ChatMessage, type FieldLocation } from '@shared/api';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
-import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft } from '../store';
+import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
@@ -1050,8 +1050,6 @@ function AssistantMessage({
   );
 }
 
-let revealSeq = 0;
-
 /** The located fields of a result read back from disk: anything malformed is left out, never shown broken. */
 function storedLocations(list: unknown): FieldLocation[] {
   if (!Array.isArray(list)) return [];
@@ -1081,7 +1079,7 @@ function openLocation(l: FieldLocation) {
     mode: 'edit',
     rightTab: 'inspect',
     dockOpen: true,
-    inspectorFocus: { seq: ++revealSeq, at: Date.now(), opening: s.snapshot.workspaceKey, owner: target.selection.owner, nodeId: l.nodeId, prop: l.prop, ...(l.itemId !== undefined ? { itemId: l.itemId, field: l.field } : l.field !== undefined ? { field: l.field } : {}), label: l.path.at(-1) ?? 'That field' }
+    inspectorFocus: inspectorFocusRequest({ opening: s.snapshot.workspaceKey, owner: target.selection.owner, nodeId: l.nodeId, prop: l.prop, ...(l.itemId !== undefined ? { itemId: l.itemId, field: l.field } : l.field !== undefined ? { field: l.field } : {}), label: l.path.at(-1) ?? 'That field' })
   });
 }
 
