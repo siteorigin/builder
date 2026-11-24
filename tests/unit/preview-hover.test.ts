@@ -216,6 +216,38 @@ describe.skipIf(!browserInstalled)('pointer movement and page changes in the pre
     expect(hovers(messages)).toEqual([[TITLE, BOX, SEC], [item('a'), BOX, SEC], [item('a', 'page:p|card2'), BOX2, SEC], [item('b'), BOX, SEC], [CODE, BOX, SEC], [SEC], []]);
   });
 
+  it('reports the same part of a component placed in another list item, which differs only further out', async () => {
+    // A component placed in each item of a list: its label carries the same descriptor in both, its root the item.
+    const points = await frame.evaluate<Array<{ x: number; y: number }>>(`(() => {
+      const plain = document.getElementById('plain');
+      return ['r1', 'r2'].map((row) => {
+        const root = document.createElement('span');
+        root.setAttribute('data-so-ctx', 'page:p|team|badge');
+        root.setAttribute('data-so-node', 'root');
+        root.setAttribute('data-so-items', row);
+        const label = document.createElement('b');
+        label.textContent = ' ' + row + ' ';
+        label.setAttribute('data-so-ctx', 'page:p|team|badge');
+        label.setAttribute('data-so-node', 'label');
+        root.append(label);
+        plain.append(root);
+        const r = label.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      });
+    })()`);
+    await flushed();
+    await reset();
+    for (const p of points) await page.mouse.move(p.x, p.y);
+    const chains = hovers(await flushed());
+    expect(chains.map((chain) => (chain ?? []).map((d: Desc) => desc(d)))).toEqual(
+      ['r1', 'r2'].map((row) => [
+        { ctx: 'page:p|team|badge', node: 'label', items: '' },
+        { ctx: 'page:p|team|badge', node: 'root', items: row },
+        desc(SEC)
+      ])
+    );
+  });
+
   it('gives a click, double-click and right-click the same chain, without reading text or laying out the page', async () => {
     await counting(true);
     await page.mouse.click(at.b.x, at.b.y);

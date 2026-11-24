@@ -587,6 +587,19 @@ export function formConnectionProblem(def: ComponentDefinition, props: Record<st
   return service.invalid && text(value ?? '').trim() ? service.invalid : service.missing;
 }
 
+/**
+ * The Netlify form name a placed contact form submits under, trimmed as the component trims it, or undefined when it
+ * does not send to Netlify Forms (or has no name yet). `props` are the placement's effective values.
+ */
+export function netlifyFormName(def: ComponentDefinition, props: Record<string, unknown>): string | undefined {
+  // The theme's contact form or a copy of it, whatever its code now looks like: its settings are what it is sent with.
+  if (def.kind !== 'code' || (def.componentId !== 'contact.form' && def.provenance?.componentId !== 'contact.form')) return undefined;
+  if (def.properties.provider?.type !== 'enum' || def.properties.formName?.type !== 'string') return undefined;
+  if (exported(def, props, 'provider') !== 'netlify') return undefined;
+  const name = exported(def, props, 'formName');
+  return typeof name === 'string' && name.trim() ? name.trim() : undefined;
+}
+
 /** What the inspector shows for a contact form's service: the selected service's setting, and the others to hide. */
 export interface FormServiceSetup {
   /** The property the selected service needs. */

@@ -140,6 +140,23 @@ export function codeTakesOverrides(def: ComponentDefinition): boolean {
   return /\bclass\s*:/.test(script) || /\bso_o\b/.test(src) || /\bprops\.class\b/.test(src);
 }
 
+/**
+ * The CSS properties a code component's own styles mark `!important`, sorted. Placement styles are important too,
+ * which beats any selector the component writes, but not its own important values: the Inspector says so.
+ */
+export function codeImportantProps(def: ComponentDefinition): string[] {
+  if (def.kind !== 'code') return [];
+  // Its style blocks and its markup's inline styles (not its scripts), without comments.
+  const src = (def.source ?? '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<!--[\s\S]*?-->/g, '');
+  const blocks = [...src.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]);
+  const markup = src.replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, '');
+  const inline = [...markup.matchAll(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map((m) => m[1] ?? m[2]);
+  const css = [...blocks, ...inline].join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
+  const out = new Set<string>();
+  for (const m of css.matchAll(/([a-z-]+)\s*:[^;{}]*!\s*important/gi)) out.add(m[1].toLowerCase());
+  return [...out].sort();
+}
+
 /** The shared header instance whose `links` list (label + link items) is the site's menu, if there is one. */
 export function headerMenu(state: ProjectState): { node: InstanceNode; schema: Extract<ComponentDefinition['properties'][string], { type: 'list' }> } | null {
   const header = state.site.shell.header;
@@ -221,8 +238,11 @@ export function displayName(state: ProjectState, node: GraphNode, def?: Componen
   }
 }
 
-/** IDs the generated layout already uses: the main landmark and the header's navigation. */
-export const RESERVED_ANCHORS = new Set(['main', 'so-site-nav']);
+/**
+ * IDs the generated site already uses: the main landmark and the header's navigation, and the ids no element may
+ * have that give the theme's print and reduced-motion rules (and the editor's hiding) an id's weight.
+ */
+export const RESERVED_ANCHORS = new Set(['main', 'so-site-nav', 'so-print', 'so-motion', 'so-editor']);
 
 /**
  * Anchors that would share a document with one placed in `owner`: a page renders with the shared header and

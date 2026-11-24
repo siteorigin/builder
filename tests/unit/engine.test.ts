@@ -816,7 +816,7 @@ describe('definition editing operations (§2.5)', () => {
     expect(def.parts.cardText.styleControls).toContain('textStyle');
     expect(def.variantAxes!.layout.options.compact.styles!.grid.desktop!.gap).toEqual({ token: 'space.sm' });
     const css = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
-    expect(css).toMatch(/--layout-compact \.so-[^{]*__grid \{\n\t\tgap: var\(--so-space-sm\)/);
+    expect(css).toMatch(/--layout-compact\.so-[^{]*__grid \{\n\t\tgap: var\(--so-space-sm\)/);
     expect(errors(s)).toEqual([]);
     expect(() => applyOperations(s, [{ type: 'component.setPart', definitionId: id, partId: 'again', nodeId: 'card-text', label: 'x' }])).toThrow(/already the "cardText" part/);
     expect(() => applyOperations(s, [{ type: 'component.removePart', definitionId: id, partId: 'root' }])).toThrow();

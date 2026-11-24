@@ -282,7 +282,7 @@ describe('responsive overrides', () => {
     hero.variants = { tone: 'brand' };
     const files = generateProject(s);
     const components = files.get(`${STYLES_DIR}/components.css`)!;
-    const rule = components.match(/hero-centered--tone-brand \.so-foundation-hero-centered__primary \{[^}]*\}/)![0];
+    const rule = components.match(/\.so-foundation-hero-centered--tone-brand\.so-foundation-hero-centered__primary \{[^}]*\}/)![0];
     expect(rule).toContain('--so-btn-bg: var(--so-color-on-brand)');
     expect(rule).toContain('--so-btn-bg-hover: initial');
     expect(rule).toContain('--so-btn-fg: var(--so-color-brand-strong)');

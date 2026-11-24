@@ -2,7 +2,9 @@
 export const FOUNDATION_BASE_CSS = `/* Foundation theme base styles */
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: smooth; }
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+/* A placement's styles for a code component are important; ":not(#so-motion)" (an id no element has) gives the
+   reduced-motion rule an id's weight, so it still wins over them. */
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } :not(#so-motion), :not(#so-motion)::before, :not(#so-motion)::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
 body {
   margin: 0;
   background: var(--so-color-background);
@@ -161,11 +163,12 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
   details > summary :is([class$='__toggle-icon'], [class*='__toggle-icon ']) { display: none; }
   /* Controls that only work on screen: submit and reset buttons (a button whose label is content, such as an
      address it copies, stays), the skip link, the menu button and phone menu, and the contact form's actions and
-     service messages. Components' own (scoped) styles show some of them, hence !important. */
-  :is(button, input):is([type='submit'], [type='reset']), form button:not([type]),
-  .so-skip-link, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap, .so-viewer { display: none !important; }
+     service messages. Components' own (scoped) styles show some of them, hence !important, and a placement's styles
+     for a code component are important too, hence the weight of an id no element has (":not(#so-print)"). */
+  :is(:is(button, input):is([type='submit'], [type='reset']), form button:not([type]),
+  .so-skip-link, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap, .so-viewer):not(#so-print) { display: none !important; }
   .so-action--image::after { display: none; }
-  .so-header { position: static !important; }
+  .so-header:not(#so-print) { position: static !important; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
      the section), stays with what follows it, and short units (a plan, a contact method, a question and its
      answer, a gallery image and its caption, the contact form) stay whole. */

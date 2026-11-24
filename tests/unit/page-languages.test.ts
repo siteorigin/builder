@@ -293,7 +293,8 @@ describe('page languages in the website', () => {
       expect(content).not.toMatch(/hreflang/);
       // Only the not-found page links through resolve(), to the home page; no page of the site needs it.
       if (!path.startsWith(`${NOT_FOUND_DIR}/`)) expect(content).not.toMatch(/\$app\/paths/);
-      expect(ld(content).map((d) => d['@type'])).toEqual(path === 'src/routes/+page.svelte' ? ['WebSite'] : []);
+      // No page says which language it is in (a contact section's business or an FAQ is the page's content, not language).
+      expect(ld(content).map((d) => d['@type']).filter((t) => t === 'WebSite' || t === 'WebPage')).toEqual(path === 'src/routes/+page.svelte' ? ['WebSite'] : []);
     }
     expect(ld(files.get('src/routes/+page.svelte')!)[0]).toMatchObject({ '@type': 'WebSite', url: 'https://example.com/', inLanguage: 'en' });
     // A page that names the site's own language changes nothing either.

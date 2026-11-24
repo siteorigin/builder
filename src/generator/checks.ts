@@ -6,14 +6,17 @@ import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, type Condition } fr
 import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
-import { anchorCapable, anchorsInUse, displayName } from '@engine/tree';
-import { formFieldSettingsHidden, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
+import { anchorCapable, anchorsInUse, displayName, findParent } from '@engine/tree';
+import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
 import { codeTakesBlocks, isDraftPage, liveRedirects, resolveLink } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
+import { derived } from './cache';
+import { selectedVariantStyles } from '@shared/variants';
+import { itemStylesOf } from '@shared/item-styles';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
@@ -47,6 +50,8 @@ interface Scope {
   feedProps?: Set<string>;
   /** The definition's own lists the design around it fills from one of its computed lists. */
   fedLists?: Set<string>;
+  /** The instance node rendering the definition walked, wherever it is placed (the page, the shell or a design). */
+  instance?: GraphNode & { kind: 'instance' };
 }
 
 function evaluate(v: unknown, scope: Scope): unknown {
@@ -71,8 +76,8 @@ function shown(v: unknown, state: ProjectState): boolean {
 }
 
 interface Visit {
-  /** Every node about to render, before its kind's own callback. */
-  node?: (n: GraphNode, scope: Scope, reportId: string, inDef: boolean) => void;
+  /** Every node about to render, before its kind's own callback; `def` is the definition it belongs to, for a component's node. */
+  node?: (n: GraphNode, scope: Scope, reportId: string, inDef: boolean, def?: ComponentDefinition) => void;
   /**
    * A link node about to render; `inDef` when it is a component definition's node rather than the tree's own, and
    * `ownId` the id its markup carries.
@@ -196,7 +201,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     if (page) visit.enter?.(n);
     // A definition's root takes the id its placement gives it first (`so_id ?? anchor`).
     const ownId = frame.def && frame.def.tree?.rootIds[0] === id ? (frame.soId ?? n.anchor) : n.anchor;
-    visit.node?.(n, frame.scope, reportId, !!frame.def);
+    visit.node?.(n, frame.scope, reportId, !!frame.def, frame.def);
     switch (n.kind) {
       case 'link':
         visit.link?.(n, frame.scope, reportId, !!frame.def, ownId);
@@ -235,7 +240,8 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const k = `${from.owner}:${n.slot}`;
         const supplier = from.frame.origin ?? from.frame;
         const walked = slotsWalked.get(supplier) ?? new Set<string>();
-        const slot = JSON.stringify([from.frame.n, from.owner, n.slot]);
+        // Named by the supplying frame and the item it renders for: rows of one list copy one frame, each its own slot.
+        const slot = JSON.stringify([from.frame.n, from.owner, n.slot, from.frame.scope.path ?? []]);
         if (walked.has(k)) {
           visit.again?.(slot);
           break;
@@ -243,7 +249,10 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         slotsWalked.set(supplier, walked.add(k));
         // Content a slot inside a list shows once per item, though it is walked once, in the frame that supplied it.
         const multiple = from.frame.scope.multiple || frame.scope.multiple || (frame.scope.repeats ?? 0) > (from.frame.scope.repeats ?? 0);
-        const target = { ...from.frame, origin: supplier, scope: { ...from.frame.scope, multiple, slots: [...(from.frame.scope.slots ?? []), slot] } };
+        // Shown through this slot and every slot the receiving frame is itself shown through (a slot handed on into
+        // another design's slot shows again wherever that one does).
+        const slots = [...new Set([...(from.frame.scope.slots ?? []), ...(frame.scope.slots ?? []), slot])];
+        const target = { ...from.frame, origin: supplier, scope: { ...from.frame.scope, multiple, slots } };
         for (const c of from.content[n.slot] ?? []) walk(target, c, inner);
         break;
       }
@@ -269,7 +278,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const feedProps = new Set(Object.entries(def.properties).filter(([, p]) => isFeed(p)).map(([k]) => k));
           const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots, codeSlot: frame.scope.codeSlot };
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
-          const child: Frame = { tree: def.tree, def, scope: { props, trail, ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const child: Frame = { tree: def.tree, def, scope: { props, trail, instance: n, ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);
@@ -288,6 +297,195 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   };
   const top: Frame = { tree, scope: { props: {} }, n: 0, defs: new Set() };
   for (const r of tree.rootIds) walk(top, r, new Set());
+}
+
+/** A question and its answer, as an FAQ on a page shows them. */
+export interface FaqEntry {
+  question: string;
+  answer: string;
+}
+
+/** The contact facts one contact section shows, as the page writes them. */
+export interface BusinessFacts {
+  email: string[];
+  telephone: string[];
+  address: string[];
+}
+
+/** Icons a contact method shows beside an address. */
+const ADDRESS_ICONS = new Set(['map-pin', 'map-pinned', 'map', 'building', 'building-2', 'house', 'store', 'navigation']);
+
+/** Whether a definition is a catalogue component, or a project copy made from one. */
+const isComponent = (def: ComponentDefinition | undefined, componentId: string) => !!def && (def.componentId === componentId || def.provenance?.componentId === componentId);
+
+/** Text as a visitor reads it: rich text (a rich node's string included) as its plain words, any run of whitespace as one space. */
+const plainText = (v: unknown, rich = false) => (typeof v === 'string' && !rich ? v : typeof v === 'string' || Array.isArray(v) ? richTextToPlain(toRichText(v)) : '').replace(/\s+/g, ' ').trim();
+
+/** A label that is itself a telephone number, as opposed to words such as "Call reception". */
+const phoneLike = (s: string) => /^[+(\d][\d\s().\-/+]*$/.test(s) && (s.match(/\d/g)?.length ?? 0) >= 6;
+
+type Size = (typeof SIZES)[number];
+
+/**
+ * The sizes at which layers of styles, weaker first, hide an element, as the stylesheet decides: within a layer a
+ * size's own value beats its all-sizes value, and a stronger layer's all-sizes value (a hide, or a layout or display
+ * that shows it) beats a weaker layer's values at every size.
+ */
+function hiddenSizes(layers: Array<ResponsiveStyles | undefined>): Set<Size> {
+  const hidden = new Map<Size, boolean>(SIZES.map((z) => [z, false]));
+  for (const l of layers) {
+    if (!l || typeof l !== 'object') continue;
+    const base = l.base && typeof l.base === 'object' ? (l.base as Record<string, unknown>) : undefined;
+    if (base?.hidden === true) for (const z of SIZES) hidden.set(z, true);
+    else if (showsAt(base)) for (const z of SIZES) hidden.set(z, false);
+    for (const z of SIZES) {
+      const at = l[z] as Record<string, unknown> | undefined;
+      if (at && typeof at === 'object' && at.hidden === true) hidden.set(z, true);
+      else if (showsAt(at)) hidden.set(z, false);
+    }
+  }
+  return new Set(SIZES.filter((z) => hidden.get(z)));
+}
+
+/** Whether what sits inside every one of these is hidden at every size: each size hidden by one of them at least. */
+const hiddenEverySize = (sets: Array<Set<Size>>) => SIZES.every((z) => sets.some((s) => s.has(z)));
+
+/**
+ * The sizes at which a design's node is hidden, by itself or one of its ancestors in the design: by the design, the
+ * options its placement chose, the placement's styles for that part, or the current item's own. A placement made in
+ * the page or inside another design is read the same way; whether that design hides the placement itself is not
+ * known here.
+ */
+function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope): Array<Set<Size>> {
+  if (!def.tree) return [];
+  const inst = scope.instance;
+  const itemId = typeof scope.item?.id === 'string' ? scope.item.id : undefined;
+  const out: Array<Set<Size>> = [];
+  const seen = new Set<string>();
+  for (let id: string | null | undefined = nodeId; id && !seen.has(id); id = findParent(def.tree, id)?.parentId) {
+    seen.add(id);
+    const part = Object.entries(def.parts).find(([, p]) => p.nodeId === id)?.[0];
+    const own = part && inst ? [inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined] : [];
+    out.push(hiddenSizes([def.tree.nodes[id]?.styles, ...selectedVariantStyles(def, inst?.variants, id), ...own]));
+  }
+  return out;
+}
+
+/**
+ * What a page shows that search engines read as structured data: each question and answer of its FAQ sections, in
+ * order, and the email addresses, telephone numbers and addresses of each contact section, in its own content and in
+ * the shared header and footer it shows. Read as the page renders them (conditions, list items, slot content and the
+ * placement's values), from the theme's FAQ and Contact details and project copies of them whose design still has
+ * those nodes; what is hidden at every size is left out, as visitors never see it.
+ */
+export function structuredContent(state: ProjectState, page: PageDoc): StructuredContent {
+  // The shared header and footer are read once per run, and a page depends on what they show, not on every edit to them.
+  const shell = (part: ShellPart): StructuredContent => (showsPart(page, part) ? derived(state, `structured:${part}`, (s) => structuredIn(s, [s.site.shell[part]])) : { faq: [], businesses: [] });
+  const parts = [shell('header'), structuredIn(state, [page]), shell('footer')];
+  return { faq: parts.flatMap((p) => p.faq), businesses: parts.flatMap((p) => p.businesses) };
+}
+
+/** What `structuredContent` reads from page or shell trees, in their order. */
+interface StructuredContent {
+  faq: FaqEntry[];
+  businesses: BusinessFacts[];
+}
+
+function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent {
+  const faq: Array<Partial<FaqEntry>> = [];
+  const businesses: BusinessFacts[] = [];
+  // Each rendering of a placement evaluates its values afresh: that object tells two renderings apart, even where
+  // lists inside lists give them the same trail.
+  const faqIn = new Map<object, Map<string, Partial<FaqEntry>>>();
+  const factsIn = new Map<object, BusinessFacts>();
+  for (const tree of trees) {
+    // The sizes each page node around what renders hides it at, from the outermost one in.
+    const hiding: Array<Set<Size>> = [];
+    const shown = (def: ComponentDefinition, nodeId: string, scope: Scope) => !hiddenEverySize([...hiding, ...hiddenInDesign(def, nodeId, scope)]);
+    walkRendered(state, tree, {
+      enter: (n) => {
+        hiding.push(hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]));
+      },
+      leave: () => {
+        hiding.pop();
+      },
+      text: (n, scope, _reportId, inDef, def) => {
+        if (!inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || !shown(def, n.id, scope)) return;
+        // One entry per item of each rendering: its question and answer render together.
+        const byItem = faqIn.get(scope.props) ?? new Map<string, Partial<FaqEntry>>();
+        faqIn.set(scope.props, byItem);
+        const key = JSON.stringify(scope.path ?? []);
+        let entry = byItem.get(key);
+        if (!entry) {
+          entry = {};
+          byItem.set(key, entry);
+          faq.push(entry);
+        }
+        entry[n.id] = plainText(evaluate(n.text, scope), !!n.rich);
+      },
+      node: (n, scope, _reportId, inDef, def) => {
+        if (!inDef || !def || n.kind !== 'link' || n.id !== 'method-value' || !isComponent(def, 'contact.details') || !shown(def, n.id, scope)) return;
+        let facts = factsIn.get(scope.props);
+        if (!facts) {
+          facts = { email: [], telephone: [], address: [] };
+          factsIn.set(scope.props, facts);
+          businesses.push(facts);
+        }
+        const link = evaluate(n.link, scope) as LinkValue | undefined;
+        const label = plainText(evaluate(n.label, scope));
+        const target = typeof link?.target === 'string' ? link.target.trim() : '';
+        const add = (list: string[], v: string) => v && !list.includes(v) && list.push(v);
+        if (link?.type === 'email') add(facts.email, target.split('?')[0]);
+        // The number as shown, unless the label is words: then the number it dials.
+        else if (link?.type === 'tel') add(facts.telephone, phoneLike(label) ? label : target);
+        // An address shown beside an address icon, not words such as "Get directions".
+        else if (ADDRESS_ICONS.has(String(scope.item?.icon ?? '')) && /\d|,/.test(label)) add(facts.address, label);
+      }
+    });
+  }
+  return {
+    faq: faq.filter((e): e is FaqEntry => !!e.question && !!e.answer),
+    businesses: businesses.filter((b) => b.email.length || b.telephone.length || b.address.length)
+  };
+}
+
+/** Contact forms that submit to Netlify under one form name, each where the site shows it. */
+export interface FormNameClash {
+  name: string;
+  forms: Array<{ owner: OwnerRef; nodeId: string }>;
+}
+
+/**
+ * Contact forms the site shows that send to Netlify Forms under the same form name. Netlify files a site's messages
+ * by form name, so theirs would be mixed together in one list. Each published page, and the shared header and footer
+ * where a published page shows them, is walked once as it renders: a form repeated in a list counts once per item.
+ */
+export function netlifyFormClashes(state: ProjectState): FormNameClash[] {
+  const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
+  const trees: Array<{ owner: OwnerRef; tree: NodeTree }> = [
+    ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p })),
+    ...SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
+  ];
+  const byName = new Map<string, FormNameClash['forms']>();
+  const add = (name: string, form: FormNameClash['forms'][number]) => byName.set(name, [...(byName.get(name) ?? []), form]);
+  for (const { owner, tree } of trees) {
+    // Content shown through a slot the receiving design renders more than once (inside its list) is walked once;
+    // each further rendering shows its forms again.
+    const bySlot = new Map<string, Array<[string, FormNameClash['forms'][number]]>>();
+    walkRendered(state, tree, {
+      code: (def, props, reportId, _placement, _n, scope) => {
+        const name = netlifyFormName(def, props);
+        if (!name) return;
+        const form = { owner, nodeId: reportId };
+        add(name, form);
+        for (const slot of scope.slots ?? []) bySlot.set(slot, [...(bySlot.get(slot) ?? []), [name, form]]);
+      },
+      again: (slot) => {
+        for (const [name, form] of bySlot.get(slot) ?? []) add(name, form);
+      }
+    });
+  }
+  return [...byName].filter(([, forms]) => forms.length > 1).map(([name, forms]) => ({ name, forms }));
 }
 
 /** A content field of a placement: one of its properties, or one field of one item in a list property. */

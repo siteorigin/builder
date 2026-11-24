@@ -6,13 +6,16 @@ import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isCompari
 import { validateRoute } from '@shared/routes';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
-import { EngineError, allTrees, childLists, displayName, subtreeIds } from './tree';
+import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds } from './tree';
 import { normalizeTable } from './table';
 import { bindingProblem, bindingSlots, boundSchema } from './schema';
 import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle } from './tokens';
-import { missingSectionLinks, pageHeadings, unlinkedButtons } from '@generator/checks';
-import { isDraftPage } from '@generator/index';
+import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, type FormNameClash } from '@generator/checks';
+import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
+import { codeNeeds } from './definitions';
+import { showsPart } from '@shared/page-shell';
+import { effectiveTokens, isDraftPage } from '@generator/index';
 import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
@@ -349,13 +352,85 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   picture(state.site.favicon, 'The site icon', 'favicon');
   picture(state.site.socialImage, 'The site’s sharing image', 'socialImage');
   for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
-  if (opts.sectionLinks !== false) out.push(...headingDiagnostics(state));
+  if (opts.sectionLinks !== false) out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state));
   out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {
     // A download is the size it is; only what pages load and show is worth making smaller.
     if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
   }
   return out;
+}
+
+/**
+ * The definitions the published site renders: those placed on a published page or in a shared header or footer a
+ * published page shows, those their designs place, and the code components their code imports.
+ */
+function renderedDefinitions(state: ProjectState): Set<string> {
+  const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
+  const trees = [...pages, ...(['header', 'footer'] as const).filter((part) => pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part])];
+  const out = new Set<string>();
+  const queue = trees.flatMap((t) => Object.values(t.nodes).flatMap((n) => (n.kind === 'instance' ? [n.definitionId] : [])));
+  while (queue.length) {
+    const id = queue.pop()!;
+    const def = Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+    if (!def || out.has(id)) continue;
+    out.add(id);
+    if (def.tree) for (const n of Object.values(def.tree.nodes)) if (n.kind === 'instance') queue.push(n.definitionId);
+    if (def.kind === 'code') for (const other of Object.values(state.components)) if (codeNeeds(state, def, other.id)) queue.push(other.id);
+  }
+  return out;
+}
+
+/**
+ * Project code components that may choose a theme font while they run. The site ships only the theme fonts whose
+ * family name its documents spell out, so a family made up in code can be left out: each one the site renders is
+ * flagged while a theme font is left out, until its source says which theme fonts it uses in a `Fonts:` comment. A
+ * theme's own components are known to name theirs.
+ */
+export function runtimeFontDiagnostics(state: ProjectState): Diagnostic[] {
+  const families = installedFonts(state).map((f) => f.family);
+  const candidates = Object.values(state.components).filter((d) => d.kind === 'code' && d.owner === 'project' && choosesFontAtRunTime(d.source ?? '') && !declaresFonts(d.source ?? '', families));
+  if (!candidates.length) return [];
+  const rendered = renderedDefinitions(state);
+  const code = candidates.filter((d) => rendered.has(d.id));
+  if (!code.length) return [];
+  const used = new Set(usedPackFonts(state, effectiveTokens(state).map((t) => t.value)).map((f) => f.family));
+  const left = installedFonts(state).filter((f) => !used.has(f.family));
+  if (!left.length) return [];
+  return code
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((def) => ({
+      severity: 'warning' as const,
+      code: 'FONT_USAGE_UNVERIFIED',
+      message: `${def.name} sets a font in its code, where the export cannot tell which family it is, so a theme font it shows (${listed(left.map((f) => f.name))}) may be left out of the site. Name the theme fonts it uses in a comment in its source, such as <!-- Fonts: ${left[0].family} -->, so the export includes them, or use a font site style.`,
+      owner: { kind: 'component', id: def.id }
+    }));
+}
+
+/** Where a form is, for a message: its page's title, or the shared header or footer. */
+const formPlace = (state: ProjectState, f: FormNameClash['forms'][number]) =>
+  f.owner.kind === 'shell' ? (f.owner.id === 'header' ? 'the shared header' : 'the shared footer') : (state.pages[f.owner.id]?.title ?? 'a page');
+
+/** What is wrong with contact forms that send to Netlify under one form name, said once for all of them. */
+export function formNameClashMessage(state: ProjectState, clash: FormNameClash): string {
+  const counts = new Map<string, number>();
+  for (const f of clash.forms) counts.set(formPlace(state, f), (counts.get(formPlace(state, f)) ?? 0) + 1);
+  const places = listed([...counts].map(([place, n]) => (n > 1 ? `${n} on ${place}` : place)));
+  return `${clash.forms.length} contact forms send to the Netlify form “${clash.name}” (${places}), so Netlify files their messages together. Give each form its own Netlify form name.`;
+}
+
+/**
+ * Contact forms that send to Netlify under one form name, each flagged where it is: Netlify would file their messages
+ * together. A warning, so the site still saves and exports, but it is listed before an export.
+ */
+export function formNameDiagnostics(state: ProjectState): Diagnostic[] {
+  return netlifyFormClashes(state).flatMap((clash) => {
+    const message = formNameClashMessage(state, clash);
+    const label = (f: FormNameClash['forms'][number]) => (f.owner.kind === 'shell' ? (f.owner.id === 'header' ? 'Header' : 'Footer') : formPlace(state, f));
+    // A form shown more than once (through a slot inside a list) is flagged once where it is.
+    const forms = clash.forms.filter((f, i) => clash.forms.findIndex((g) => g.owner.kind === f.owner.kind && g.owner.id === f.owner.id && g.nodeId === f.nodeId) === i);
+    return forms.map((f) => ({ severity: 'warning' as const, code: 'FORM_NAME_DUPLICATE', message: `${label(f)}: ${message}`, owner: f.owner, nodeId: f.nodeId }));
+  });
 }
 
 /** A heading's words, quoted, for a message. */

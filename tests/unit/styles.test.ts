@@ -303,7 +303,8 @@ describe('custom CSS in the wide range', () => {
 
 describe('style precedence', () => {
   const grid = (s: ProjectState) => instanceOf(s, 'features.grid');
-  const VARIANT = '.so-foundation-features-grid--layout-two-columns .so-foundation-features-grid__grid';
+  // The option's class and the node's, on the node itself.
+  const VARIANT = '.so-foundation-features-grid--layout-two-columns.so-foundation-features-grid__grid';
 
   it('orders definition, variant and instance rules by strength', () => {
     const s = fresh();
@@ -411,8 +412,8 @@ describe('style precedence', () => {
     def.tree!.nodes.heading.styles = { ...def.tree!.nodes.heading.styles, base: { ...def.tree!.nodes.heading.styles?.base, hidden: true } };
     def.variantAxes!.layout.options['two-columns'].styles = { heading: { base: { hidden: false } } };
     const out = css(s, 'components');
-    for (const q of [PHONE, TABLET]) expect(ruleOf(section(out, q), '.so-foundation-features-grid--layout-two-columns .so-foundation-features-grid__heading')).toContain('display: revert');
-    expect(section(out, null)).not.toMatch(/--layout-two-columns \.so-foundation-features-grid__heading \{[^}]*display/);
+    for (const q of [PHONE, TABLET]) expect(ruleOf(section(out, q), '.so-foundation-features-grid--layout-two-columns.so-foundation-features-grid__heading')).toContain('display: revert');
+    expect(section(out, null)).not.toMatch(/--layout-two-columns\.so-foundation-features-grid__heading \{[^}]*display/);
   });
 
   it('restores display only where a part is hidden, leaving other ranges their own layout', () => {
@@ -423,7 +424,7 @@ describe('style precedence', () => {
     const out = css(s, 'components');
     expect(ruleOf(section(out, PHONE), VARIANT)).toContain('display: grid');
     expect(section(out, TABLET)).not.toContain(VARIANT);
-    expect(section(out, null)).not.toMatch(/--layout-two-columns \.so-foundation-features-grid__grid \{[^}]*display/);
+    expect(section(out, null)).not.toMatch(/--layout-two-columns\.so-foundation-features-grid__grid \{[^}]*display/);
   });
 
   it('shows a hidden button again as a button, not as the browser default', () => {
@@ -593,7 +594,8 @@ describe('transforms and transitions', () => {
 
   it('never outranks the reduced-motion rule in the theme', () => {
     // The theme turns every transition off for visitors who ask for less motion, with !important.
-    expect(FOUNDATION_BASE_CSS).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\}\s*\*, \*::before, \*::after \{ transition-duration: 0\.01ms !important;/);
+    // Every element, with the weight of an id none has (`:not(#so-motion)`), so a placement's important styles lose too.
+    expect(FOUNDATION_BASE_CSS).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\}\s*:not\(#so-motion\), :not\(#so-motion\)::before, :not\(#so-motion\)::after \{ transition-duration: 0\.01ms !important;/);
     const s = fresh();
     const inst = instanceOf(s, 'hero.split');
     inst.overrides = { root: { base: { transition: 'common', transitionDuration: 3000, transitionEasing: 'overshoot', translateY: '-4px', scale: 1.05, rotate: 2 } } };

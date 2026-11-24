@@ -864,7 +864,7 @@ describe('gallery items that open a full image or a link (#75)', () => {
     // The whole figure, image and caption, is the one link: to the full-size file, which the thumbnail never offers.
     expect(wrapped(kitchen, new RegExp(`^[^>]*><a href="/studio/images/kitchen\\.jpg" class="so-card-link so-action so-action--image" aria-haspopup="dialog" data-viewer-group="[^"]+" data-alt="The kitchen photo"[^>]*>${figure}<img `), '</figure><span class="so-visually-hidden">View full image</span></a>')).toBe(true);
     expect(kitchen).toContain('alt="The kitchen photo"');
-    expect(kitchen).toContain('<figcaption class="so-foundation-media-gallery__caption">Kitchen, Millbrook</figcaption></figure>');
+    expect(kitchen).toContain('<figcaption class="so-foundation-media-gallery__caption so-foundation-media-gallery--tone-default">Kitchen, Millbrook</figcaption></figure>');
     expect(kitchen).toContain('data-sveltekit-reload=""');
     expect(kitchen).toMatch(/<img src="\/studio\/images\/kitchen-1440\.jpg" srcset="\/studio\/images\/kitchen-960\.jpg 960w, \/studio\/images\/kitchen-1440\.jpg 1440w, \/studio\/images\/kitchen-480\.jpg 480w" /);
     expect(kitchen.match(/kitchen\.jpg/g)).toHaveLength(1);
