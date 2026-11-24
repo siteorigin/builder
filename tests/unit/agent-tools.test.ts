@@ -1716,6 +1716,23 @@ describe('review regressions', () => {
     expect(reply.warnings?.join(' ')).toContain('The footer keeps its own name, “Studio”');
   });
 
+  it('puts an asked-for copyright line in every footer, even where the rename could not have grown the old line', async () => {
+    const { session, run } = await setup([() => [call('b', 'update_site_brand', { siteName: 'Acme Studio Group', copyright: '© The team' })], () => finish()], {}, 'business', (s) => {
+      const tree = s.site.shell.footer;
+      const first = tree.nodes[tree.rootIds[0]] as InstanceNode;
+      // The footer's line holds at most 40 characters: "© year Acme Studio Group. All rights reserved." would not fit.
+      const def = s.components[first.definitionId];
+      def.properties.copyright = { ...def.properties.copyright, maxLength: 40 } as typeof def.properties.copyright;
+      const second = { ...structuredClone(first), id: 'n_second_footer' };
+      tree.nodes[second.id] = second;
+      tree.rootIds.push(second.id);
+    });
+    await run('Rename the site to Acme Studio Group, and the copyright to "© The team"');
+    expect(session.state.site.name).toBe('Acme Studio Group');
+    const tree = session.state.site.shell.footer;
+    expect(tree.rootIds.map((id) => (tree.nodes[id] as InstanceNode).props.copyright)).toEqual(['© The team', '© The team']);
+  });
+
   it('nudges for a page that was rejected and never retried, even with no other change', async () => {
     const { adapter, run } = await setup([
       () => [call('a', 'upsert_page_with_sections', { slug: 'gone', sections: [{ componentId: 'nope' }] })],

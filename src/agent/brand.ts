@@ -13,7 +13,7 @@ import { getTheme } from '@catalogue/index';
 import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
 import { contactInText } from '@shared/contact-links';
-import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteName } from '@shared/site-name';
+import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteName, siteNameText } from '@shared/site-name';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -205,29 +205,32 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   const phone = contactLink('contactPhone', args.contactPhone, 'tel');
   if (issues.length) return fieldError(issues, 'Nothing was applied. Send the call again with these fields fixed.');
 
-  if (args.siteName !== undefined || args.description !== undefined || (args.tagline !== undefined && !state.site.description)) {
-    const description = args.description ?? (!state.site.description ? args.tagline : undefined);
-    ops.push({ type: 'site.update', ...(args.siteName !== undefined ? { name: args.siteName } : {}), ...(description !== undefined ? { description } : {}) });
-  }
-
   const setProp = (shell: 'header' | 'footer', node: InstanceNode, prop: string, value: unknown) => {
     if (Object.hasOwn(state.components[node.definitionId]?.properties ?? {}, prop) && node.props[prop] !== value) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: shell }, nodeId: node.id, prop, value });
   };
+  // A line asked for goes in every footer that holds one. Set before the rename, the rename never grows a line that is
+  // about to be replaced; set again after it, it wins over the line the rename leaves, even when it is the line there now.
+  const copyrightOps: EditOperation[] = [];
+  if (args.copyright !== undefined)
+    for (const id of state.site.shell.footer.rootIds) {
+      const node = Object.hasOwn(state.site.shell.footer.nodes, id) ? state.site.shell.footer.nodes[id] : undefined;
+      if (node?.kind !== 'instance' || !Object.hasOwn(state.components[node.definitionId]?.properties ?? {}, COPYRIGHT_PROP)) continue;
+      if (args.siteName !== undefined || node.props[COPYRIGHT_PROP] !== args.copyright) copyrightOps.push({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: node.id, prop: COPYRIGHT_PROP, value: args.copyright });
+    }
+  ops.push(...copyrightOps);
+  if (args.siteName !== undefined || args.description !== undefined || (args.tagline !== undefined && !state.site.description)) {
+    const description = args.description ?? (!state.site.description ? args.tagline : undefined);
+    ops.push({ type: 'site.update', ...(args.siteName !== undefined ? { name: args.siteName } : {}), ...(description !== undefined ? { description } : {}) });
+    if (args.siteName !== undefined) ops.push(...copyrightOps);
+  }
+
   // The rename itself carries the name into the header and footer that showed the old one (shared/site-name.ts);
   // a label of the author's own stays, and the reply says where, so the model can mention it.
   const footer = shellInstance(state, 'footer');
-  if (args.siteName !== undefined && args.siteName.trim() !== state.site.name) {
+  if (args.siteName !== undefined && siteNameText(args.siteName) !== state.site.name) {
     for (const p of brandPlacements(state))
       if (followsSiteName(state, p.node, BRAND_PROP) === false) warnings.push(`The ${p.part} keeps its own name, “${brandLabel(p)}”, so it still shows that. Set its siteName with instance.setProp if it should change too.`);
   }
-  // A line asked for goes in every footer that holds one, and wins over the line a rename in this call leaves, even
-  // when it is the line there now.
-  if (args.copyright !== undefined)
-    for (const { part, node, def } of brandPlacements(state)) {
-      if (part !== 'footer' || !Object.hasOwn(def.properties, COPYRIGHT_PROP)) continue;
-      if (args.siteName !== undefined) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: node.id, prop: COPYRIGHT_PROP, value: args.copyright });
-      else setProp('footer', node, COPYRIGHT_PROP, args.copyright);
-    }
   if (footer) {
     if (args.tagline !== undefined) setProp('footer', footer, 'tagline', args.tagline);
 

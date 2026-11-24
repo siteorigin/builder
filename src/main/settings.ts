@@ -157,10 +157,13 @@ export async function renameRecent(dir: string, name: string) {
   const s = await loadSettings();
   const real = canonicalDir(dir);
   const at = s.recents.findIndex((r) => r.dir === dir || canonicalDir(r.dir) === real);
-  // Nothing to write when the list already has the name and the last write landed: closing a project never waits on
-  // the disk for nothing, but a write that failed (the rename's, say) is tried again.
-  if (at < 0 || (s.recents[at].name === name && !unwritten)) return;
-  if (s.recents[at].name !== name) s.recents = s.recents.map((r, i) => (i === at ? { ...r, name } : r));
+  if (at < 0) return;
+  if (s.recents[at].name === name) {
+    // Nothing to write when the list already has the name and its last write landed: closing a project never waits on
+    // the disk for nothing. A write still under way is waited for, and one that failed (the rename's, say) is tried again.
+    await writes;
+    if (!unwritten) return;
+  } else s.recents = s.recents.map((r, i) => (i === at ? { ...r, name } : r));
   await saveSettings();
 }
 

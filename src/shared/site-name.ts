@@ -38,7 +38,13 @@ const maxLength = (def: ComponentDefinition, prop: string): number => {
 export const brandLabel = (p: { node: InstanceNode; def: ComponentDefinition }): string => (shown(p.def, p.node, BRAND_PROP) ?? '').trim();
 
 /** A header showing its logo alone shows no name (the shared header's "Show site name" turned off). */
-const nameHidden = (node: InstanceNode): boolean => node.props.showSiteName === false && !!(node.props.logo as { assetId?: unknown } | null | undefined)?.assetId;
+function nameHidden(def: ComponentDefinition, node: InstanceNode): boolean {
+  const value = (prop: string) => (Object.hasOwn(node.props, prop) ? node.props[prop] : undefined) ?? (Object.hasOwn(def.properties, prop) ? def.properties[prop].default : undefined);
+  return value('showSiteName') === false && !!(value('logo') as { assetId?: unknown } | null | undefined)?.assetId;
+}
+
+/** A site name as the site keeps it: one line, without spaces around it. */
+export const siteNameText = (name: string): string => name.replace(/\s*[\r\n]+\s*/g, ' ').trim();
 
 /** The shared header and footer themselves: each one's top-level placement whose design shows the site's name. */
 export function brandPlacements(state: ProjectState): Array<{ part: ShellPart; node: InstanceNode; def: ComponentDefinition }> {
@@ -143,7 +149,7 @@ export function followNote(state: ProjectState, node: InstanceNode, prop: string
  * each one that keeps a name of its own. Undefined when neither shows a name.
  */
 export function siteNameNote(state: ProjectState): string | undefined {
-  const placed = brandPlacements(state).filter((p) => !nameHidden(p.node));
+  const placed = brandPlacements(state).filter((p) => !nameHidden(p.def, p.node));
   if (!placed.length) return undefined;
   const following = placed.filter((p) => followsSiteName(state, p.node, BRAND_PROP));
   const own = placed.filter((p) => !following.includes(p));
