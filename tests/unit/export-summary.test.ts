@@ -61,9 +61,10 @@ describe('entries in the export summary', () => {
   it('names up to three collections, and totals the entries of more of them', () => {
     const ids = ['one', 'two', 'three', 'four'];
     const collections = (n: number): EditOperation[] => ids.slice(0, n).flatMap((id): EditOperation[] => [{ type: 'collection.create', collectionId: id, name: id, route: `/${id}/` }, entry(id, `en_${id}1`, false), entry(id, `en_${id}2`, false)]);
-    // Two entries in each collection: the total of collections is not the total of entries.
+    // Two entries in each collection: the total of collections is not the total of entries (an uneven one follows).
     expect(entryCounts(entriesOf(site(...collections(3)), false), 'entry')).toBe('2 entries from one, 2 entries from three and 2 entries from two');
     expect(publishedEntriesSentence(entriesOf(site(...collections(4)), false))).toBe('It also publishes 8 entries from 4 collections.');
+    expect(publishedEntriesSentence(entriesOf(site(...collections(4), entry('one', 'en_one3', false)), false))).toBe('It also publishes 9 entries from 4 collections.');
     const drafts = run(site(...collections(4)), ...ids.flatMap((id): EditOperation[] => [1, 2].map((n): EditOperation => ({ type: 'entry.update', collectionId: id, entryId: `en_${id}${n}`, draft: true }))));
     expect(draftEntriesSentence(entriesOf(drafts, true), false)).toBe('8 draft entries from 4 collections are left out.');
   });
@@ -118,13 +119,16 @@ describe('the words of the summary', () => {
   it('adds the published entries to the pages that are named', () => {
     const s = blog();
     const text = pagesSummaryText({ published: pages('Home', 'About'), drafts: [], publishedEntries: entriesOf(s, false), draftEntries: [] });
+    expect(text.long).toBe(false);
     expect(text.published).toEqual({ lead: 'The website publishes 2 pages:', rest: ' Home and About. It also publishes 2 entries from Posts.' });
     expect(text.drafts).toBeNull();
   });
 
   it('puts draft pages and draft entries in one line, with the note about search engines', () => {
     const s = blog();
-    expect(pagesSummaryText({ published: pages('Home'), drafts: pages('Winter'), publishedEntries: entriesOf(s, false), draftEntries: entriesOf(s, true) }).drafts).toEqual({
+    const mixed = pagesSummaryText({ published: pages('Home'), drafts: pages('Winter'), publishedEntries: entriesOf(s, false), draftEntries: entriesOf(s, true) });
+    expect(mixed.published).toEqual({ lead: 'The website publishes 1 page:', rest: ' Home. It also publishes 2 entries from Posts.' });
+    expect(mixed.drafts).toEqual({
       lead: '1 draft is left out:',
       rest: ` Winter. 1 draft entry from Posts is also left out. ${NOTE}`
     });

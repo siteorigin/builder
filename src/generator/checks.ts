@@ -1360,9 +1360,9 @@ export interface PublicationPlan {
   draftLinks: DraftLink[];
 }
 
-/** The IDs of what a website export publishes: its pages and its collection entries (an entry's ID is unique among them). */
+/** What a website export publishes, by ID: its pages, and its collection entries as `entry:ID`, so no entry shares an ID with a page. */
 export function publicationIds(plan: Pick<PublicationPlan, 'published' | 'publishedEntries'>): string[] {
-  return [...plan.published.map((p) => p.id), ...plan.publishedEntries.map((e) => e.entry.id)];
+  return [...plan.published.map((p) => p.id), ...plan.publishedEntries.map((e) => `entry:${e.entry.id}`)];
 }
 
 /**

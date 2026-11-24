@@ -234,6 +234,9 @@ describe('draft entries and the website export', () => {
     const onlyDrafts = publicationPlan(run(s, ...['en_winter', 'en_spring'].map((entryId): EditOperation => ({ type: 'entry.update', collectionId: 'posts', entryId, draft: true }))));
     expect(onlyDrafts.publishedEntries).toEqual([]);
     expect(onlyDrafts.draftEntries.map((e) => e.entry.id).sort()).toEqual(['en_secret', 'en_spring', 'en_winter']);
+    // Entries of every collection are counted.
+    const two = publicationPlan(run(s, { type: 'collection.create', collectionId: 'news', name: 'News', route: '/news/' }, { type: 'entry.create', collectionId: 'news', entryId: 'en_news1', title: 'Opening', publishedAt: '2026-05-01', draft: false }));
+    expect(two.publishedEntries.map((e) => e.entry.id).sort()).toEqual(['en_news1', 'en_spring', 'en_winter']);
     // A site without collections has none.
     expect(publicationPlan(createStarterState('business', 'Riverside Studio', false))).toMatchObject({ publishedEntries: [], draftEntries: [] });
     // An entry at an address the site cannot have is no page of the website, so it is not counted.
@@ -251,9 +254,15 @@ describe('draft entries and the website export', () => {
   it('stops a website export when the entries it publishes are not the ones the author was shown (#568)', () => {
     const s = blog();
     const shown = publicationIds(publicationPlan(s));
-    expect(shown).toEqual(expect.arrayContaining(['en_spring', 'en_winter']));
-    expect(shown).not.toContain('en_secret');
+    expect(shown).toEqual(expect.arrayContaining(['entry:en_spring', 'entry:en_winter']));
+    expect(shown).not.toContain('entry:en_secret');
     expect(publishedChanged(s, shown)).toBeNull();
+    // A hand-edited page that shares an entry's ID is still told apart: the export is not stopped for it.
+    const shared = structuredClone(s);
+    const [aboutId] = shared.site.pageOrder.filter((id) => id !== shared.site.homePageId);
+    shared.pages['en_winter'] = { ...shared.pages[aboutId], id: 'en_winter', route: '/winter-page/' };
+    shared.site.pageOrder.push('en_winter');
+    expect(publishedChanged(shared, publicationIds(publicationPlan(shared)))).toBeNull();
     // The draft was published while the export was starting: the author saw it counted among the drafts.
     const published = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false });
     expect(publishedChanged(published, shown)?.message).toMatch(/changed while the export was starting/);
