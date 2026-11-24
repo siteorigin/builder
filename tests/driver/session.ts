@@ -26,7 +26,7 @@ import type { ElectronApplication, ElementHandle, Page } from 'playwright';
 import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
 import { desktopInMain, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, stageImport } from './desktop.ts';
 import type { Area } from './desktop.ts';
-import { SECRET_INPUTS, elementFor, frameSecrets, painted, parseLocateArgs, parseSnapshotArgs, uiLocate, uiSnapshot } from './observe.ts';
+import { SECRET_INPUTS, elementFor, frameSecrets, parseLocateArgs, parseSnapshotArgs, uiLocate, uiSnapshot } from './observe.ts';
 import type { ObserveEnv } from './observe.ts';
 import { killTree, killTreeSync, ownedEntries, processTable } from './processes.ts';
 import type { ProcessEntry } from './processes.ts';
@@ -791,7 +791,8 @@ export class Session {
       storedSecrets: () => this.storedSecrets(),
       remember: (secrets) => {
         for (const x of secrets) if (x) this.secrets.add(x);
-      }
+      },
+      remembered: () => [...this.secrets]
     };
   }
 
@@ -814,20 +815,26 @@ export class Session {
     if (!done) throw new DriverError('BUSY', 'An earlier request that ran out of time is still stopping; try again shortly.', { retryable: true });
   }
 
-  /** The provider keys the app saved in this session's own profile. */
+  /**
+   * The provider keys the app saved in the profile this session made (the app is started with it as its user data;
+   * a profile the app reports elsewhere fails isolation and is never read).
+   */
   private async storedSecrets(): Promise<string[]> {
-    const dir = this.appIdentity?.paths.userData ?? this.paths?.profile;
+    const dir = this.paths?.profile;
     if (!dir) return [];
     const keys = await readFile(join(dir, 'api-keys.json'), 'utf8').then(
       (t) => JSON.parse(t) as Record<string, unknown>,
       () => ({})
     );
-    return Object.values(keys).filter((v): v is string => typeof v === 'string' && !!v);
+    const found = Object.values(keys).filter((v): v is string => typeof v === 'string' && !!v);
+    for (const x of found) this.secrets.add(x);
+    return found;
   }
 
   private context(began: number): ReplyContext {
-    // A page's own error can quote what was on it, a credential included.
-    const events = this.secrets.size ? scrubDeep(this.events, [...this.secrets]) : this.events;
+    // A page's own error can quote what was on it, a credential included: scrubbed whole, then cut to length.
+    const scrubbed = this.secrets.size ? scrubDeep(this.events, [...this.secrets]) : this.events;
+    const events = scrubbed.map((e) => (e.type === 'page.error' ? { ...e, message: e.message.slice(0, 2000) } : e));
     this.events = [];
     if (this.droppedEvents) {
       events.unshift({ type: 'events.dropped', at: now(), count: this.droppedEvents });
@@ -951,7 +958,11 @@ export class Session {
     this.bound = bound;
     page.on('pageerror', (e) => {
       this.pageErrors.push(String(e));
-      this.event({ type: 'page.error', at: now(), generation: ref.generation, message: String(e).slice(0, 2000) });
+      const at = now();
+      // Reported once the saved keys are known, so the reply that carries it can be scrubbed of them.
+      void this.storedSecrets()
+        .catch(() => undefined)
+        .then(() => this.event({ type: 'page.error', at, generation: ref.generation, message: String(e) }));
     });
     page.on('close', () => {
       bound.closed = true;
@@ -1257,13 +1268,13 @@ export class Session {
     this.refs.clear();
     if (this.keeping && this.bound && !this.bound.closed && !this.appExited) {
       const page = this.bound.page;
-      // Credential fields are masked in every frame, as in every screenshot the session takes, and nothing is kept
-      // when a credential shows anywhere else.
+      // As with every screenshot the session takes, none while any credential is known (or that cannot be told in
+      // time), and credential fields masked in every frame.
       const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
-      const known = async () => [...this.secrets, ...(await this.storedSecrets().catch((): string[] => [])), ...(await frameSecrets(page))];
-      if (!(await bounded(painted(page, await known()), 3000, true))) {
+      const clear = async () => !this.secrets.size && !(await this.storedSecrets()).length && !(await frameSecrets(page)).length;
+      if (await bounded(clear().catch(() => false), 3000, false)) {
         const png = await page.screenshot({ timeout: 5000, mask }).catch(() => null);
-        if (png && !(await bounded(painted(page, await known()), 3000, true))) await writeFile(join(this.paths!.artifacts, 'final.png'), png).catch(() => undefined);
+        if (png && (await bounded(clear().catch(() => false), 3000, false))) await writeFile(join(this.paths!.artifacts, 'final.png'), png).catch(() => undefined);
       }
     }
     let ended: CloseResult['ended'] = !wasStarted || !this.pid ? 'not-started' : this.appExited ? 'already-exited' : 'quit';

@@ -11,8 +11,8 @@
  * element's ref while its role and name stay the same, so the session's refs stay the same too.
  *
  * Credentials: every reply and every error an operation produces is scrubbed of every credential its observation
- * knows (scrubDeep), on top of the raw tree's own redaction, and screenshots mask credential fields in every frame and
- * are withheld when a credential shows anywhere else on screen.
+ * knows (scrubDeep), on top of the raw tree's own redaction. Screenshots are taken only while no credential is known
+ * at all: pixels cannot be scrubbed, and a credential can be painted where no text check sees it.
  */
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -29,7 +29,6 @@ import {
   findByPwRef,
   focusFrom,
   looksLikeRef,
-  modeFrom,
   redact,
   regionMatches,
   regionNodes,
@@ -62,6 +61,8 @@ export interface ObserveEnv {
   storedSecrets?: () => Promise<string[]>;
   /** Told every credential an observation learns, so the session can keep them out of what else it reports. */
   remember?: (secrets: string[]) => void;
+  /** Every credential the session has seen before: scrubbed from this observation too. */
+  remembered?: () => string[];
 }
 
 /** The canvas's iframe: the live preview. */
@@ -82,6 +83,8 @@ interface EditorDoc {
   selected: string | null;
   /** Whether the canvas draws an outline around the selection now. */
   outlined: boolean;
+  /** The editor's mode, from the canvas itself (not from text a credential could be scrubbed out of); null without one. */
+  mode: 'edit' | 'preview' | null;
   secrets: string[];
   viewport: { width: number; height: number };
 }
@@ -152,6 +155,7 @@ async function readEditor(page: Page): Promise<EditorDoc> {
       selection: canvas ? canvas.getAttribute('data-selection') : null,
       selected: canvas ? canvas.getAttribute('data-selected-ref') : null,
       outlined: !!canvas?.querySelector('.ov-selected'),
+      mode: canvas ? (canvas.classList.contains('edit-mode') ? 'edit' : 'preview') : null,
       viewport: { width: w.innerWidth, height: w.innerHeight }
     };
   });
@@ -190,23 +194,6 @@ async function readPreview(page: Page): Promise<{ iframe: boolean; doc: PreviewD
 export async function frameSecrets(page: Page): Promise<string[]> {
   const read = await Promise.all(page.frames().map((f) => f.evaluate(secretsIn, SECRET_INPUTS).catch((): string[] => [])));
   return read.flat();
-}
-
-/** Whether any known credential (two characters or more) shows in the visible text of any frame. */
-export async function painted(page: Page, secrets: string[]): Promise<boolean> {
-  const list = [...new Set(secrets)].filter((x) => x.length >= 2);
-  if (!list.length) return false;
-  const shown = await Promise.all(
-    page.frames().map((f) =>
-      f
-        .evaluate((all: string[]) => {
-          const text = String((globalThis as Dom).document.body?.innerText ?? '');
-          return all.some((x) => text.includes(x));
-        }, list)
-        .catch(() => false)
-    )
-  );
-  return shown.some(Boolean);
 }
 
 async function readDocs(page: Page): Promise<Docs> {
@@ -305,7 +292,11 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   const classified = await factsByRef(page, valued);
   const secretRefs = new Set(valued.filter((r) => classified.get(r)?.secret));
   const unknownRefs = new Set(valued.filter((r) => !classified.get(r)));
-  const redacted = redact(raw, { secretRefs, unknownRefs, secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored] });
+  const redacted = redact(raw, {
+    secretRefs,
+    unknownRefs,
+    secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored, ...(env.remembered?.() ?? [])]
+  });
   env.remember?.(redacted.secrets);
   const editor = shape(raw, 'editor');
   // An iframe Playwright could not enter has no children: its page is not there to observe yet.
@@ -313,7 +304,8 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   const previewIframe = previewRaw?.ref ? findByPwRef(editor, previewRaw.ref) : null;
   // Ready: the page is hydrated and has taken the editor's current mode, the canvas calls it ready, and it stayed the
   // same document throughout.
-  const mode = modeFrom(editor);
+  if (first.editor.mode !== docs.editor.mode) throw changing('The editor changed mode');
+  const mode = docs.editor.mode;
   let previewState: PreviewState = 'ready';
   if (!docs.iframe) previewState = 'absent';
   else if (
@@ -682,7 +674,7 @@ async function snapshotOf(env: ObserveEnv, args: SnapshotArgs, id: number, seen:
   result.context = {
     screen: obs.docs.editor.screen,
     title: obs.docs.editor.title,
-    mode: modeFrom(obs.editor),
+    mode: obs.docs.editor.mode,
     dialog: brief(dialog),
     focus: brief(focus),
     preview: { state: obs.previewState, path: preview?.path ?? null, editing: preview ? preview.editing : null },
@@ -721,11 +713,11 @@ async function snapshotOf(env: ObserveEnv, args: SnapshotArgs, id: number, seen:
 async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promise<{ editor: Shot | null; preview: Shot | null; withheld?: string }> {
   const { page, signal } = env;
   if (!env.artifacts) throw new DriverError('OP_FAILED', 'This session has no artifacts folder to save screenshots in.');
-  // Masks cover credential fields; a credential showing anywhere else cannot be masked, so nothing is captured. It
-  // is checked in the observation, and in the visible text of every frame either side of the capture.
-  const withheld = { editor: null, preview: null, withheld: 'A credential shows on screen outside its own field.' };
-  const known = [...obs.secrets, ...(await frameSecrets(page))];
-  if (obs.echoes || (await painted(page, known))) return withheld;
+  // Pixels cannot be scrubbed, and a credential can be painted where no text check finds it: nothing is captured while
+  // the session knows any credential (a filled credential field, a saved key, one seen before), or cannot tell.
+  const withheld = { editor: null, preview: null, withheld: 'A credential is known in this session, and screenshots could show it.' };
+  const known = await Promise.all([frameSecrets(page), env.storedSecrets?.() ?? Promise.resolve([])]).catch(() => null);
+  if (!known || obs.secrets.length || obs.echoes || known.flat().length || env.remembered?.().length) return withheld;
   const dir = join(env.artifacts, 'snapshots');
   const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
   const vp = await page.evaluate(() => ({ width: (globalThis as Dom).innerWidth as number, height: (globalThis as Dom).innerHeight as number }));
@@ -745,7 +737,8 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
     if (width >= 1 && height >= 1) clip = { x: Math.floor(x), y: Math.floor(y), width: Math.floor(width), height: Math.floor(height) };
   }
   const previewPng = clip ? await page.screenshot({ mask, clip, timeout: 10_000 }) : null;
-  if (await painted(page, [...known, ...(await frameSecrets(page))])) return withheld;
+  // A credential typed while the pixels were taken counts as well.
+  if ((await frameSecrets(page).catch(() => ['?'])).length) return withheld;
   // A capture that outlived its request leaves nothing behind.
   aborted(signal);
   await mkdir(dir, { recursive: true });
@@ -805,10 +798,10 @@ export interface Located {
   node: UiNode;
 }
 
-/** The most elements one search follows up in a scope; past this it cannot tell, and says so. */
-const MATCH_LIMIT = 2000;
-/** The most observed nodes of one role a search pairs its matches with; past this the search is incomplete. */
-const CANDIDATE_LIMIT = 3000;
+/** The most elements of one role and name one search places in a scope; past this it says so. */
+const MATCH_LIMIT = 10_000;
+/** The most observed nodes of one role a search places its matches among; past this it says so. */
+const CANDIDATE_LIMIT = 10_000;
 
 export function uiLocate(env: ObserveEnv, args: LocateArgs): Promise<Located> {
   return sealed((seen) => locateIn(env, args, seen));
@@ -846,7 +839,7 @@ async function locateIn(env: ObserveEnv, args: LocateArgs, seen: string[]): Prom
     throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, hint: 'Take a ui.snapshot to see the regions there are.' } });
   const all = await matchesIn(env, obs, searchable, args);
   aborted(env.signal);
-  if (all === 'too-many') throw new DriverError('OP_FAILED', `More than ${MATCH_LIMIT} elements in one scope are ${args.role}${args.name ? ` "${args.name}"` : ''}: too many to place.`, { details: { query, hint: 'Give a name, or search one scope.' } });
+  if (all === 'too-many') throw new DriverError('OP_FAILED', `More than ${MATCH_LIMIT} elements in one scope are ${args.role}s: too many to place.`, { details: { query, hint: 'Take a ui.snapshot and drill in with "within" instead.' } });
   if (all === 'incomplete') throw new DriverError('OP_FAILED', 'Not every match could be placed in the observation (the page changed, or a match is outside the accessibility tree); locate again.', { retryable: true, details: { query, hint: REFRESH_HINT } });
   const found = all.filter((n) => (!args.region || regionMatches(n.regions, args.region)) && (!inside || inside.has(n)));
   if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}${args.within ? ' within that ref' : ''}.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see what there is.' } });
@@ -878,22 +871,14 @@ async function matchesIn(env: ObserveEnv, obs: Observation, scopes: Scope[], arg
       const base: Page | Frame = scope === 'editor' ? env.page : obs.docs.preview!.frame;
       const tree = scope === 'editor' ? obs.editor : obs.preview!;
       const loc = base.getByRole(args.role as Parameters<Page['getByRole']>[0], args.name !== undefined ? { name: args.name, exact: args.exact !== false } : {});
-      const n = await loc.count().catch(() => -1);
-      if (n < 0) return 'incomplete';
-      if (n > MATCH_LIMIT) return 'too-many';
-      if (!n) continue;
-      const matches: ElementHandle[] = [];
-      for (let i = 0; i < n; i++) {
-        const h = (await loc
-          .nth(i)
-          .elementHandle({ timeout: 1000 })
-          .catch(() => null)) as ElementHandle | null;
-        if (!h) return 'incomplete';
-        held.push(h);
-        matches.push(h);
-      }
+      // Every match in one query: elements that move between reads cannot be counted twice or missed.
+      const matches = (await loc.elementHandles().catch(() => null)) as ElementHandle[] | null;
+      if (!matches) return 'incomplete';
+      held.push(...matches);
+      if (matches.length > MATCH_LIMIT) return 'too-many';
+      if (!matches.length) continue;
       const nodes = [...walk(tree)].filter((x) => x.pwRef && x.role === args.role);
-      if (nodes.length > CANDIDATE_LIMIT) return 'incomplete';
+      if (nodes.length > CANDIDATE_LIMIT) return 'too-many';
       const handles = await Promise.all(
         nodes.map(async (x) => {
           const l = env.page.locator(`aria-ref=${x.pwRef}`);
@@ -904,11 +889,11 @@ async function matchesIn(env: ObserveEnv, obs: Observation, scopes: Scope[], arg
       for (const h of handles) if (h) held.push(h);
       const present = handles.map((h, i) => (h ? i : -1)).filter((i) => i >= 0);
       const list = present.map((i) => handles[i]!);
-      for (const m of matches) {
-        const at = await m.evaluate((x: Dom, everyone: Dom[]) => everyone.indexOf(x), list).catch(() => -1);
-        if (at < 0) return 'incomplete';
-        const node = nodes[present[at]];
-        // Two matches on one element: the page moved them while they were read, so the count cannot be trusted.
+      // Every match placed in one call in the page, by identity.
+      const at = (await base.evaluate(([ms, all]: [Dom[], Dom[]]) => ms.map((m) => all.indexOf(m)), [matches, list] as [ElementHandle[], ElementHandle[]]).catch(() => null)) as number[] | null;
+      if (!at || at.some((i) => i < 0)) return 'incomplete';
+      for (const i of at) {
+        const node = nodes[present[i]];
         if (out.includes(node)) return 'incomplete';
         out.push(node);
       }

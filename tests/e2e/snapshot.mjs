@@ -193,6 +193,13 @@ try {
     assert.equal(node.redacted, true, 'the key field says its value was left out');
     assert.equal(node.value, undefined);
   }
+  // Pixels cannot be scrubbed: no screenshot while a credential is known.
+  const shotDir = join(session.paths.artifacts, 'snapshots');
+  const pngsBefore = readdirSync(shotDir).length;
+  const covered = ok(await call('ui.snapshot', { maxNodes: 5, screenshot: true }), 'a snapshot with a key typed');
+  assert.deepEqual([covered.screenshots.editor, covered.screenshots.preview], [null, null]);
+  assert.match(covered.screenshots.withheld, /credential/);
+  assert.equal(readdirSync(shotDir).length, pngsBefore, 'no PNG was written');
   // An ordinary field's value is still reported.
   assert.ok(flatten(typed.result.editor.nodes).some((x) => x.role === 'spinbutton' && x.value === '1280'), 'other values are kept');
   assert.equal(typed.result.context.focus?.name, 'API key (optional)', 'focus is reported');

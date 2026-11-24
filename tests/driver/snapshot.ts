@@ -530,17 +530,6 @@ export function regionNodes(roots: Shaped[], filter: string): Shaped[] {
 // Context read from the tree
 // ---------------------------------------------------------------------------
 
-/** The editor's mode from its Mode group: the pressed button, `edit` or `preview`; null without one. */
-export function modeFrom(editor: Shaped[]): 'edit' | 'preview' | null {
-  for (const n of walk(editor)) {
-    if (n.role !== 'group' || norm(n.name) !== 'Mode') continue;
-    const on = [...walk(n.children)].find((c) => c.role === 'button' && c.pressed === true);
-    const name = norm(on?.name).toLowerCase();
-    return name === 'edit' || name === 'preview' ? name : null;
-  }
-  return null;
-}
-
 /** The topmost open dialog: the last one in document order (dialogs are rendered after what they cover). */
 export function dialogFrom(nodes: Shaped[]): Shaped | null {
   let last: Shaped | null = null;

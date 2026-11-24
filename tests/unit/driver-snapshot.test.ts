@@ -13,7 +13,6 @@ import {
   findByPwRef,
   focusFrom,
   looksLikeRef,
-  modeFrom,
   redact,
   regionNodes,
   render,
@@ -130,6 +129,10 @@ describe('redaction', () => {
     );
     expect(out.nodes.slice(1).map((n) => (n as RawNode).text)).toEqual([`saw ${REDACTED}`, `saw ${REDACTED}`, `prefix ${REDACTED}`]);
     expect(out.echoes).toBe(3);
+    // The value as a whole is a secret too, where it shows joined up.
+    const joined = redact([{ role: 'textbox', ref: 'k', children: ['abc', 'def'] }, { role: 'paragraph', ref: 'p', text: 'saw abcdef' }], { ...none, secretRefs: new Set(['k']) });
+    expect(joined.secrets).toContain('abcdef');
+    expect((joined.nodes[1] as RawNode).text).toBe(`saw ${REDACTED}`);
   });
 
   it('scrubs a whole reply, error details included, but never the driver’s own refs or the protocol’s fixed words', () => {
@@ -141,6 +144,15 @@ describe('redaction', () => {
     expect(scrubDeep({ context: { mode: 'edit', screen: 'editor', preview: { state: 'ready' } }, more: { continue: { scope: 'editor', offset: 2 } } }, ['ed'])).toEqual({
       context: { mode: 'edit', screen: 'editor', preview: { state: 'ready' } },
       more: { continue: { scope: 'editor', offset: 2 } }
+    });
+    // Each fixed word survives a secret that occurs in it.
+    expect(scrubDeep({ role: 'button', type: 'page.error', code: 'STALE_REF', op: 'ui.locate', reason: 'gone', label: 'button' }, ['tt', 'ge', 'ST', 'oc', 'on'])).toEqual({
+      role: 'button',
+      type: 'page.error',
+      code: 'STALE_REF',
+      op: 'ui.locate',
+      reason: 'gone',
+      label: `bu${REDACTED}${REDACTED}`
     });
   });
 
@@ -197,7 +209,8 @@ describe('shaping', () => {
 
   it('keeps the site’s wrappers in the preview: they are its structure', () => {
     const roots = shape(raw, 'preview');
-    expect(roots.map((n) => n.pwRef)).toEqual(['g0']);
+    expect(roots.map((n) => [n.pwRef, n.role])).toEqual([['g0', 'generic']]);
+    expect(roots[0].children[1]).toMatchObject({ role: 'generic', pwRef: 'g1' });
     expect(roots[0].children.map((n) => n.pwRef)).toEqual(['t1', 'g1', 'c1', 's1', 'm1', 'g2', 'g3']);
     expect(roots[0].children[1].children.map((n) => n.pwRef ?? n.text)).toEqual(['b2', 'px']);
   });
@@ -251,6 +264,12 @@ describe('bounding', () => {
     // What was left out says how much, and resumes after the last child shown.
     expect(L.more).toEqual({ children: 2, nodes: 4, continue: { within: 'r:L', after: 'r:Li2', offset: 3 } });
     expect(L.children![0].more).toEqual({ children: 1, nodes: 1, continue: { within: 'r:Li0', offset: 0 } });
+  });
+
+  it('continues from an offset with the rest of the children, in order', () => {
+    const roots = list(5);
+    const rest = roots[0].children.slice(3);
+    expect(render(rest, opts(choose(rest, { maxNodes: 100 }))).map((n) => n.ref)).toEqual(['r:Li3', 'r:Li4']);
   });
 
   it('stops at a depth', () => {
@@ -333,7 +352,7 @@ describe('finding and context', () => {
     expect(regionNodes(page, 'nothing')).toEqual([]);
   });
 
-  it('reads the mode, the topmost dialog, focus and the selection toolbar from the editor', () => {
+  it('reads the topmost dialog, focus and the selection toolbar from the editor', () => {
     const editor = shape(
       [
         { role: 'toolbar', name: 'Row actions', ref: 'x' },
@@ -344,12 +363,9 @@ describe('finding and context', () => {
       ],
       'editor'
     );
-    expect(modeFrom(editor)).toBe('preview');
     expect(dialogFrom(editor)?.name).toBe('Discard?');
     expect(focusFrom(editor)?.name).toBe('Move up');
     expect(selectionToolbar(editor)?.name).toBe('Split hero actions');
-    expect(modeFrom(shape([{ role: 'group', name: 'Mode', ref: 'm', children: [{ role: 'button', name: 'Edit', ref: 'e', pressed: true }] }], 'editor'))).toBe('edit');
-    expect(modeFrom(shape([{ role: 'button', name: 'Edit', ref: 'x', pressed: true }], 'editor'))).toBeNull();
     expect(selectionToolbar(shape([{ role: 'toolbar', name: 'Row actions', ref: 'x' }], 'editor'))).toBeNull();
     expect(findByPwRef(editor, 'u')?.name).toBe('Move up');
     expect([...walk(editor)].length).toBe(10);
