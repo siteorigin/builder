@@ -544,15 +544,21 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
 }
 
 /** A field to return to, opening the closed Section that keeps it first (Keep editing after leaving a project). */
-function revealable(el: HTMLElement): Refocusable {
+function revealable(el: HTMLElement, reveal?: () => void): Refocusable {
   return {
     get isConnected() {
       return el.isConnected;
     },
     focus: () => {
+      reveal?.();
       const body = el.closest<HTMLElement>('.section-body[hidden]');
       if (body?.id) document.querySelector<HTMLButtonElement>(`.section-head[aria-controls="${CSS.escape(body.id)}"]`)?.click();
-      el.focus();
+      // What shows it renders over the next frames: keep trying until the field can take focus.
+      const tryFocus = (frames: number) => {
+        el.focus();
+        if (document.activeElement !== el && frames > 0) requestAnimationFrame(() => tryFocus(frames - 1));
+      };
+      tryFocus(10);
     }
   };
 }
@@ -702,6 +708,8 @@ export function DraftInput({
   'aria-invalid': invalid,
   check,
   onProblem,
+  onDirty,
+  reveal,
   handle
 }: {
   id?: string;
@@ -722,6 +730,10 @@ export function DraftInput({
   autoFocus?: boolean;
   check?: (v: string) => DraftProblem | null;
   onProblem?: (problem: DraftProblem | null) => void;
+  /** Hears whether the field holds text other than the saved value. */
+  onDirty?: (dirty: boolean) => void;
+  /** Shows the field (its panel may be closed) before leaving the project's Keep editing returns to it. */
+  reveal?: () => void;
   handle?: RefObject<DraftHandle | null>;
 }) {
   const [draft, setDraft] = useState(value);
@@ -770,15 +782,29 @@ export function DraftInput({
   // the AI), until the project holds that very text.
   useEffect(() => {
     if (kept.current && startedAt.current) {
-      if (draftRef.current !== value) return;
-      forget();
-      release();
-      mark(false);
+      if (draftRef.current === value) {
+        forget();
+        release();
+        mark(false);
+        return;
+      }
+      // The saved value it was refused against is gone, and the field now says what is saved instead: the edit
+      // that corrects it starts from what is saved now, never from a value the project no longer holds.
+      startedAt.current = { base: useStore.getState().snapshot, value, commit: onCommit, ai: aiActivity() };
       return;
     }
     if (!focused.current) forget();
     if (!startedAt.current) setDraft(value);
   }, [value]);
+  useEffect(() => onDirty?.(draft !== value), [draft, value, onDirty]);
+  // A kept refusal follows the project too: fixed somewhere else (the translations it named unlinked), its
+  // reason goes, and the text is only an unsaved change.
+  useEffect(() => {
+    if (!kept.current || !shown.current || !check) return;
+    const p = check(draftRef.current);
+    showProblem(p);
+    if (!p) retainRefused(draftKey, null);
+  });
   const aiRan = (from: { ai: number }) => !!useStore.getState().snapshot?.aiBusy || aiActivity() !== from.ai;
   /** Commit what was typed; returns what the commit returned (false: the project refused it). */
   const commit = (text: string): unknown => {
@@ -828,8 +854,8 @@ export function DraftInput({
       held.current = false;
       mark(true);
       showProblem(problem);
-      retainRefused(draftKey, named(el), revealable(el));
-      reportRefused(named(el), draftKey, revealable(el));
+      retainRefused(draftKey, named(el), revealable(el, reveal));
+      reportRefused(named(el), draftKey, revealable(el, reveal));
       return;
     }
     const refused = commit(text) === false;
@@ -856,7 +882,9 @@ export function DraftInput({
     handle.current = {
       commit: (text) => {
         const el = input.current;
-        if (!el || focused.current) return;
+        if (!el) return;
+        // Still in the field (a click that took no focus): leave it first, as moving to the button would have.
+        if (focused.current) el.blur();
         startedAt.current ??= { base: useStore.getState().snapshot, value: draftRef.current, commit: onCommit, ai: aiActivity() };
         edit.current++;
         draftRef.current = text;
@@ -898,7 +926,11 @@ export function DraftInput({
       mark(e.target.value !== value);
       onLive?.(e.target.value);
       // Refused text is checked again as it is corrected; the reason goes once it can be saved.
-      if (shown.current) showProblem(e.target.value === valueRef.current ? null : (check?.(e.target.value) ?? null));
+      if (shown.current) {
+        const p = e.target.value === valueRef.current ? null : (check?.(e.target.value) ?? null);
+        showProblem(p);
+        if (!p) retainRefused(draftKey, null);
+      }
     },
     onKeyDown: (e: React.KeyboardEvent) => {
       if (isImeComposing(e)) return;

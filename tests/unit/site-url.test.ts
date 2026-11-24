@@ -18,6 +18,12 @@ const refusal = (s: ProjectState, op: Partial<Extract<Parameters<typeof applyOpe
   return null;
 };
 const about = (s: ProjectState) => generateProject(s).get('src/routes/about/+page.svelte')!;
+/** The site with a sharing image, so its absolute address is written too. */
+const withSocialImage = (s: ProjectState) => {
+  s.assets.assets['a1'] = { id: 'a1', name: 'Social', file: 'static/assets/social.jpg', mime: 'image/jpeg', bytes: 1, width: 1200, height: 630, hash: 'x', kind: 'image', createdAt: '' };
+  s.site.socialImage = 'a1';
+  return s;
+};
 
 describe('the public URL', () => {
   it('stores a normal https address in the form browsers use', () => {
@@ -53,13 +59,28 @@ describe('the public URL', () => {
     expect(message('https://example.com/?')).toMatch(/query/);
     expect(message('https://example.com/#')).toMatch(/“#”/);
     expect(message('https:///about')).toMatch(/needs a host name/);
-    expect(message('https://example.com/a/../b')).toMatch(/“\.\.” can’t be part/);
+    expect(message('https://example.com/a/../b')).toBe('The path of the public URL can’t have a “..” part. Write the folder the site is published in.');
     expect(message('https://example.com/a/%2e%2e/b')).toMatch(/“%2e%2e” can’t be part/);
     expect(message('https://example.com//studio')).toMatch(/empty part/);
     expect(message('https://exa_mple.com')).toMatch(/“exa_mple\.com” is not a host name/);
     expect(message('https://exa mple.com')).toMatch(/spaces/);
+    expect(message('https://example.com\u0000/')).toMatch(/control characters/);
+    expect(message('https://example.com\\studio')).toMatch(/rather than “\\”/);
+    expect(message('https:/example.com')).toBe('Write https:// with two slashes before the host name.');
+    expect(message('https://example.com/./studio')).toMatch(/can’t have a “\.” part/);
+    expect(message(`https://${'a'.repeat(64)}.example`)).toMatch(/is not a host name/);
+    expect(checkPublicUrl(`https://${'a'.repeat(63)}.example`)).toMatchObject({ ok: true });
+    // A port the URL parser takes but browsers refuse to open.
+    expect(message('https://example.com:25/studio/')).toBe('Browsers refuse to open web pages on port 25. Use another port, or leave it out for the usual 443.');
+    expect(message('https://example.com:10080')).toMatch(/port 10080/);
+    expect(checkPublicUrl('https://example.com:8443')).toMatchObject({ ok: true });
     expect(message('ftp://example.com')).toMatch(/not ftp:/);
-    expect(message(`https://example.com/${'a'.repeat(200)}`)).toMatch(/at most 200/);
+    // As typed, and once an accented host name is encoded for DNS.
+    expect(message(`https://example.com/${'a'.repeat(181)}`)).toMatch(/at most 200/);
+    expect(checkPublicUrl(`https://example.com/${'a'.repeat(180)}`)).toMatchObject({ ok: true });
+    const accented = `https://bücher.example/${'a'.repeat(175)}`;
+    expect(accented.length).toBeLessThanOrEqual(200);
+    expect(message(accented)).toMatch(/at most 200/);
     expect(checkPublicUrl('https://[::1]:8080/')).toEqual({ ok: true, url: 'https://[::1]:8080' });
     expect(checkPublicUrl('https://bücher.example')).toEqual({ ok: true, url: 'https://xn--bcher-kva.example' });
   });
@@ -68,8 +89,12 @@ describe('the public URL', () => {
     expect(checkPublicUrl('kloof.example')).toEqual({ ok: false, message: 'Start the public URL with https://, as in https://kloof.example.', suggestion: 'https://kloof.example' });
     expect(checkPublicUrl('kloof.example:8443/studio/')).toMatchObject({ ok: false, suggestion: 'https://kloof.example:8443/studio' });
     expect(checkPublicUrl('http://kloof.example/')).toMatchObject({ ok: false, message: expect.stringMatching(/Change http:\/\/ to https:\/\//), suggestion: 'https://kloof.example' });
-    // Not an address anyone meant: no offer.
-    for (const t of ['English', 'localhost:3000', '/studio', '//kloof.example', 'kloof.example:65536']) expect(checkPublicUrl(t)).not.toHaveProperty('suggestion');
+    // Not an address anyone meant, or a port named for plain http: refused, with no offer.
+    for (const t of ['English', 'localhost:3000', '/studio', '//kloof.example', 'kloof.example:65536', 'http://kloof.example:80/studio', 'http://kloof.example:8080']) {
+      const c = checkPublicUrl(t);
+      expect(c.ok).toBe(false);
+      expect(c).not.toHaveProperty('suggestion');
+    }
   });
 });
 
@@ -85,9 +110,11 @@ describe('links built from the public URL', () => {
   });
 
   it('agree with the accepted address in a subdirectory', () => {
-    const s = apply(fresh(), { type: 'site.update', baseUrl: 'https://me.github.io/studio/' });
+    const s = withSocialImage(apply(fresh(), { type: 'site.update', baseUrl: 'https://me.github.io/studio/' }));
     const files = generateProject(s);
     expect(about(s)).toContain('<link rel="canonical" href={"https://me.github.io/studio/about/"} />');
+    expect(about(s)).toContain('<meta property="og:url" content={"https://me.github.io/studio/about/"} />');
+    expect(about(s)).toContain('<meta property="og:image" content={"https://me.github.io/studio/assets/social.jpg"} />');
     expect(files.get('static/sitemap.xml')).toContain('<loc>https://me.github.io/studio/about/</loc>');
     expect(files.get('static/robots.txt')).toContain('Sitemap: https://me.github.io/studio/sitemap.xml');
     expect(JSON.parse(files.get(`${GEN_ROOT}/paths.json`)!)).toEqual({ base: '/studio' });
@@ -97,23 +124,25 @@ describe('links built from the public URL', () => {
 
   it('leave out every absolute link when the saved address cannot be used', () => {
     // Saved by an earlier version, or by hand: the build must not crawl a link browsers reject.
-    for (const saved of ['https://example.com:65536', 'http://studio.example', 'kloof.example', 'https://studio.example/a b']) {
-      const s = fresh();
+    for (const saved of ['https://example.com:65536', 'https://example.com:25', 'http://studio.example', 'kloof.example', 'https://studio.example/a b']) {
+      const s = withSocialImage(fresh());
       s.site.baseUrl = saved;
+      expect(generateRedirect(s, '/old/', s.pages[s.site.pageOrder[1]])).not.toContain('canonical');
       expect(publicUrl(s.site)).toBeUndefined();
       const files = generateProject(s);
       expect(files.has('static/sitemap.xml')).toBe(false);
       expect(generateSitemap(s)).toBeNull();
       expect(generateRobots(s)).not.toContain('Sitemap');
-      expect(about(s)).not.toMatch(/canonical|og:url/);
+      expect(about(s)).not.toMatch(/canonical|og:url|og:image"/);
       expect(JSON.parse(files.get(`${GEN_ROOT}/paths.json`)!)).toEqual({ base: '' });
     }
   });
 
-  it('read an old address with a trailing slash as the address without it', () => {
+  it('read an address saved before it was normalized in the form browsers use', () => {
     const s = fresh();
-    s.site.baseUrl = 'https://me.github.io/studio/';
+    s.site.baseUrl = 'https://Me.GitHub.io:443/studio/';
     expect(generateSitemap(s)).toContain('<loc>https://me.github.io/studio/about/</loc>');
+    expect(JSON.parse(generateProject(s).get(`${GEN_ROOT}/paths.json`)!)).toEqual({ base: '/studio' });
   });
 });
 
@@ -127,6 +156,9 @@ describe('the export warning about the public URL', () => {
     expect(publicUrlWarning(s)).toBe(
       'The public site URL “https://example.com:65536” can’t be used, so canonical links, social image URLs and the sitemap were omitted. The port 65536 is not valid. Use a port from 1 to 65535. Correct it in Site settings.'
     );
+    // A value of another kind, written by hand, is one that can't be used rather than none.
+    (s.site as unknown as Record<string, unknown>).baseUrl = 65536;
+    expect(publicUrlWarning(s)).toMatch(/^The public site URL “65536” can’t be used/);
     s.site.baseUrl = 'https://studio.example/';
     expect(publicUrlWarning(s)).toBeNull();
   });

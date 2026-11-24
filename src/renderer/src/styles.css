@@ -1023,6 +1023,8 @@ iframe { color-scheme: light dark; }
 .section-head svg.chev { width: 12px; height: 12px; color: var(--text-3); transition: transform 120ms; }
 .section-head[aria-expanded='false'] svg.chev { transform: rotate(-90deg); }
 .section-body { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 11px; }
+/* A closed section that keeps its fields (Section keepMounted) hides them: its flex layout must not show them. */
+.section-body[hidden] { display: none; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 /* Component authoring. Where a shared design is used, and the property editor: one compact row per property
    (label, code name, type, a summary of its settings), with the rest behind the row's disclosure. */

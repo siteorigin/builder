@@ -15,8 +15,15 @@ export type PublicUrlCheck = { ok: true; url: string } | ({ ok: false } & Public
 
 /** One path segment SvelteKit takes in its base path, and that every generated link carries unchanged. */
 const SEGMENT = /^[\w.-]+$/;
-/** One label of a host name: letters, digits and inner hyphens ("xn--bcher-kva" once an accented name is encoded). */
-const LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
+/** One label of a host name, as DNS can hold it: up to 63 letters, digits and inner hyphens ("xn--bcher-kva" once an
+ *  accented name is encoded). */
+const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+/** Ports browsers refuse to open whatever the URL parser says (the Fetch Standard's "bad ports"). */
+const BLOCKED_PORTS = new Set([
+  0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427,
+  465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666,
+  6667, 6668, 6669, 6679, 6697, 10080
+]);
 const NEEDS_HOST = 'The public URL needs a host name after https://, such as https://example.com.';
 
 const refuse = (message: string, suggestion?: string): PublicUrlCheck => (suggestion ? { ok: false, message, suggestion } : { ok: false, message });
@@ -31,16 +38,18 @@ export function checkPublicUrl(input: string): PublicUrlCheck {
   const text = input.trim();
   if (!text) return { ok: true, url: '' };
   if (text.length > PUBLIC_URL_MAX) return refuse(`The public URL can be at most ${PUBLIC_URL_MAX} characters.`);
-  if (/\s/.test(text)) return refuse('The public URL can’t contain spaces.');
+  if (/[\s\u0000-\u001f\u007f]/.test(text)) return refuse('The public URL can’t contain spaces or control characters.');
   if (text.includes('\\')) return refuse('Use “/” rather than “\\” in the public URL.');
   const scheme = /^([a-z][a-z\d+.-]*):/i.exec(text)?.[1];
   // "kloof.example", or "kloof.example:8443/studio", whose host reads like a scheme: a host typed without https://.
   if (!scheme || (!text.includes('://') && /^[^/?#@]+:\d+(?:[/?#]|$)/.test(text))) return withoutScheme(text);
   if (scheme.toLowerCase() === 'http') {
-    const meant = checkPublicUrl(text.replace(/^http:/i, 'https:'));
-    return refuse('Change http:// to https://, which browsers expect of a published site.', meant.ok ? meant.url : undefined);
+    // A port named for plain http ("http://host:8080") is no port to offer https on.
+    const meant = /^http:\/\/[^/?#]*:\d*(?:[/?#]|$)/i.test(text) ? null : checkPublicUrl(text.replace(/^http:/i, 'https:'));
+    return refuse('Change http:// to https://, which browsers expect of a published site.', meant?.ok ? meant.url : undefined);
   }
   if (scheme.toLowerCase() !== 'https') return refuse(`The public URL must start with https://, not ${scheme}:.`);
+  if (!/^https:\/\//i.test(text)) return refuse('Write https:// with two slashes before the host name.');
   const parts = /^https:\/\/([^/?#]*)([^?#]*)/i.exec(text);
   if (!parts || !parts[1]) return refuse(NEEDS_HOST);
   const [, authority, rawPath] = parts;
@@ -55,11 +64,14 @@ export function checkPublicUrl(input: string): PublicUrlCheck {
     if (port === '') return refuse('Add the port number after “:”, or remove the “:”.');
     if (!/^\d+$/.test(port)) return refuse(`The port “${port}” is not a number.`);
     if (Number(port) < 1 || Number(port) > 65535) return refuse(`The port ${port} is not valid. Use a port from 1 to 65535.`);
+    if (BLOCKED_PORTS.has(Number(port))) return refuse(`Browsers refuse to open web pages on port ${Number(port)}. Use another port, or leave it out for the usual 443.`);
   }
   const path = rawPath.replace(/\/+$/, '');
   const segments = path ? path.split('/').slice(1) : [];
   if (segments.includes('')) return refuse('The path of the public URL has an empty part (“//”).');
-  const bad = segments.find((s) => !SEGMENT.test(s) || s === '.' || s === '..');
+  const dots = segments.find((s) => s === '.' || s === '..');
+  if (dots) return refuse(`The path of the public URL can’t have a “${dots}” part. Write the folder the site is published in.`);
+  const bad = segments.find((s) => !SEGMENT.test(s));
   if (bad !== undefined) return refuse(`“${bad}” can’t be part of the public URL’s path. Use letters, numbers, “-”, “_” and “.”.`);
   let url: URL;
   try {

@@ -56,7 +56,9 @@ assert.equal(await input('Public URL').getAttribute('aria-invalid'), 'true', 'th
 assert.match(await error('Public URL').innerText(), /Start the public URL with https:\/\/, as in https:\/\/kloof\.example\./);
 assert.match(await error('Public URL').innerText(), /Not saved\. Nothing is saved here yet\./, 'the field says nothing is saved yet');
 const describedBy = await input('Public URL').getAttribute('aria-describedby');
+assert.ok(describedBy, 'the field is described');
 assert.equal(await error('Public URL').getAttribute('id'), describedBy, 'the reason describes the field');
+assert.equal(await field('Public URL').locator('[role="alert"]').count(), 1, 'the refusal is announced');
 assert.equal(await status().innerText(), 'Unsaved change', 'the toolbar does not claim the change is saved');
 assert.equal(site().baseUrl, undefined, 'nothing invalid was saved');
 await field('Public URL').screenshot({ path: join(SHOTS, 'site-details-url-refused.png') });
@@ -66,7 +68,22 @@ await field('Public URL').getByRole('button', { name: 'Add https://' }).click();
 await eventually(() => assert.equal(site().baseUrl, 'https://kloof.example', 'the corrected address is on disk'));
 await eventually(async () => assert.equal(await error('Public URL').count(), 0, 'the reason has gone'));
 assert.equal(await input('Public URL').inputValue(), 'https://kloof.example');
+assert.equal(await input('Public URL').getAttribute('aria-invalid'), null, 'the field is no longer marked invalid');
 assert.equal(await focused('Public URL'), true, 'focus stays with the field');
+await eventually(async () => assert.equal(await status().innerText(), 'Saved'));
+
+step('an undo under a refused draft updates the saved value beside it, and the fix still saves');
+await input('Public URL').fill('kloof.example');
+await input('Public URL').press('Tab');
+await afterRevert();
+assert.match(await error('Public URL').innerText(), /The saved value is still https:\/\/kloof\.example\./);
+await win.evaluate(() => document.activeElement?.blur());
+assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true, 'the project undoes the saved address');
+await eventually(() => assert.equal(site().baseUrl, undefined, 'the address is undone on disk'));
+await eventually(async () => assert.match(await error('Public URL').innerText(), /Nothing is saved here yet\./, 'the field says what is saved now'));
+assert.equal(await input('Public URL').inputValue(), 'kloof.example', 'the refused text survived the undo');
+await field('Public URL').getByRole('button', { name: 'Add https://' }).click();
+await eventually(() => assert.equal(site().baseUrl, 'https://kloof.example', 'the fix is saved over the undone value'));
 await eventually(async () => assert.equal(await status().innerText(), 'Saved'));
 
 step('a port browsers reject is named, and the saved address is kept and shown');
@@ -80,8 +97,9 @@ assert.equal(await field('Public URL').getByRole('button').count(), 0, 'no fix i
 assert.equal(site().baseUrl, 'https://kloof.example', 'the last valid address is kept');
 assert.equal(await status().innerText(), 'Unsaved change');
 
-step('a closed Site details section keeps the draft and its reason');
+step('a closed Site details section hides the draft and keeps it with its reason');
 await head().click();
+assert.equal(await input('Public URL').isVisible(), false, 'the closed section shows nothing');
 await expand();
 assert.equal(await input('Public URL').inputValue(), 'https://example.com:65536', 'the draft survived closing the section');
 assert.match(await error('Public URL').innerText(), /port 65536/);
@@ -109,12 +127,22 @@ await eventually(async () => assert.equal(await input('Language').inputValue(), 
 assert.equal(await error('Language').count(), 0);
 await eventually(async () => assert.equal(await status().innerText(), 'Saved'));
 
-step('leaving the project with a refused draft asks first, and Keep editing opens the section and returns to it');
+step('a language code saves');
+await input('Language').fill('en-AU');
+await input('Language').press('Tab');
+await eventually(() => assert.equal(site().language, 'en-AU'));
+assert.equal(await error('Language').count(), 0);
+
+step('leaving the project with a refused draft asks first, and Keep editing shows Site details and returns to it');
 await input('Language').fill('English');
 await input('Language').press('Tab');
 await afterRevert();
+assert.match(await error('Language').innerText(), /The saved value is still en-AU\./);
 await head().click();
 assert.equal(await head().getAttribute('aria-expanded'), 'false', 'the section is closed');
+await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
+await win.locator('#dock-panel-inspect').waitFor();
+assert.equal(await win.locator('#dock-panel-styles').isVisible(), false, 'Site styles is out of sight');
 await menu('Close Project');
 const dialog = win.getByRole('dialog', { name: 'Leave without your last change?' });
 await dialog.waitFor();
@@ -123,6 +151,7 @@ await win.waitForTimeout(400);
 await dialog.getByRole('button', { name: 'Keep editing' }).click();
 await eventually(async () => assert.equal(await focused('Language'), true, 'focus is back in the Language field'));
 assert.equal(await head().getAttribute('aria-expanded'), 'true', 'the section opened to show it');
+assert.equal(await input('Language').isVisible(), true, 'Site styles is shown again');
 assert.equal(await input('Language').inputValue(), 'English', 'what was typed is still there');
 assert.match(await error('Language').innerText(), /Language must be a code/);
 assert.equal(await win.locator('.editor').count(), 1, 'the project stayed open');
@@ -132,7 +161,7 @@ await menu('Close Project');
 await dialog.waitFor();
 await dialog.getByRole('button', { name: /Leave without/ }).click();
 await win.waitForSelector('.welcome');
-assert.equal(site().language, language);
+assert.equal(site().language, 'en-AU');
 assert.equal(site().baseUrl, 'https://studio.example/studio');
 
 assert.deepEqual(errors, [], 'no page errors');

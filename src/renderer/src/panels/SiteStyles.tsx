@@ -7,6 +7,7 @@ import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { allTrees, instancesOf } from '@engine/tree';
 import { api, applyOps, useStore } from '../store';
+import { openSiteStyles } from '../lib/actions';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
@@ -395,6 +396,12 @@ function ResetDot({ label, theme, onReset }: { label: string; theme: string; onR
   );
 }
 
+/** Site details, wherever the author has gone since: Keep editing returns to a field in it. */
+const revealSiteDetails = () => {
+  openSiteStyles();
+  openSection('site-settings', { scroll: false });
+};
+
 /** Why the Public URL field can't save this text, with the address most likely meant. */
 function publicUrlProblem(text: string): DraftProblem | null {
   const c = checkPublicUrl(text);
@@ -407,11 +414,14 @@ function publicUrlProblem(text: string): DraftProblem | null {
  * reason, the value still saved, and a correction when there is one, until it is corrected or discarded (Escape).
  * A saved value that can't be used (saved by hand or by an earlier version) is pointed out the same way.
  */
-function CheckedField({ label, hint, value, check, onCommit, unusable, className, placeholder }: { label: string; hint: string; value: string; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string }) {
+function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder }: { label: string; hint: string; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string }) {
+  // A value of another kind (written by hand into the project's files) is shown as text, to be corrected.
+  const value = typeof saved === 'string' ? saved : saved == null ? '' : String(saved);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
+  const [dirty, setDirty] = useState(false);
   const handle = useRef<DraftHandle | null>(null);
-  const saved = value ? check(value) : null;
-  const shown = problem ?? saved;
+  // What is wrong with the saved value describes the field only while it shows that value.
+  const shown = problem ?? (value && !dirty ? check(value) : null);
   const fix = shown?.suggestion;
   const error = shown && (
     <>
@@ -434,7 +444,7 @@ function CheckedField({ label, hint, value, check, onCommit, unusable, className
   );
   return (
     <Field label={label} hint={hint} error={error}>
-      <DraftInput className={className} value={value} placeholder={placeholder} check={check} onProblem={setProblem} handle={handle} onCommit={onCommit} />
+      <DraftInput className={className} value={value} placeholder={placeholder} check={check} onProblem={setProblem} onDirty={setDirty} reveal={revealSiteDetails} handle={handle} onCommit={onCommit} />
     </Field>
   );
 }
@@ -1228,7 +1238,7 @@ export function SiteStyles() {
           key={`url-${snap?.workspaceKey}`}
           label="Public URL"
           hint="For canonical links and the sitemap."
-          value={site.baseUrl ?? ''}
+          value={site.baseUrl}
           placeholder="https://example.com"
           check={publicUrlProblem}
           unusable="The website is built without it until it is corrected."

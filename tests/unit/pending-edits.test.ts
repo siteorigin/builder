@@ -142,14 +142,30 @@ describe('settling pending edits', () => {
     expect(second.refused).toBeNull();
   });
 
-  it('does not report a kept refusal twice when the field is left again during the settle', async () => {
+  it('names each field keeping a refusal, returns to the first, and forgets one whose draft has closed', async () => {
     const url = { focus: () => undefined, isConnected: true };
+    const lang = { focus: () => undefined, isConnected: true };
     setDraft('url', true);
     retainRefused('url', 'What you typed in Public URL can’t be saved.', url);
-    const { problems, refused, finish } = await settle({ blur: () => reportRefused('What you typed in Public URL can’t be saved.', 'url', url), wait });
+    setDraft('lang', true);
+    retainRefused('lang', 'What you typed in Language can’t be saved.', lang);
+    // A field whose draft has gone (saved, or discarded with Escape) is not reported, whatever it registered.
+    retainRefused('name', 'What you typed in Site name can’t be saved.', { focus: () => undefined, isConnected: true });
+    const { problems, refused, finish } = await settle({ blur: () => undefined, wait });
     finish();
-    expect(problems).toEqual(['What you typed in Public URL can’t be saved.']);
+    expect(problems).toEqual(['What you typed in Public URL can’t be saved.', 'What you typed in Language can’t be saved.']);
     expect(refused).toBe(url);
+  });
+
+  it('lets a refusal made while leaving speak for its field, not the one it kept from before', async () => {
+    const kept = { focus: () => undefined, isConnected: true };
+    const now = { focus: () => undefined, isConnected: true };
+    setDraft('url', true);
+    retainRefused('url', 'Kept from before.', kept);
+    const { problems, refused, finish } = await settle({ blur: () => reportRefused('Refused while leaving.', 'url', now), wait });
+    finish();
+    expect(problems).toEqual(['Refused while leaving.']);
+    expect(refused).toBe(now);
   });
 
   it('reports unsaved code and a field typed in while it waited, but not a refusal twice', async () => {
