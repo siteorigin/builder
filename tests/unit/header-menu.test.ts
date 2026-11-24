@@ -151,6 +151,8 @@ interface Focus {
 }
 
 const MENU_LINKS = [...LABELS, 'Book a call'];
+/** Two frames, or a tenth of a second where a headless engine holds frames back. */
+const SETTLED = 'new Promise((done) => { requestAnimationFrame(() => requestAnimationFrame(done)); setTimeout(done, 100); })';
 
 if (!ENGINES.length) describe.skip('the phone menu (needs Chromium or WebKit)', () => it('runs in a browser', () => {}));
 
@@ -230,6 +232,20 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
     await page.keyboard.press(shift ? 'Shift+Tab' : 'Tab');
     return focus(page);
   };
+  /** The menu button as Chromium's accessibility tree exposes it to screen readers. */
+  const announced = async (page: Page, context: BrowserContext) => {
+    const cdp = await context.newCDPSession(page);
+    try {
+      const { root } = await cdp.send('DOM.getDocument', { depth: 0 });
+      const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '.so-header__toggle' });
+      const { nodes } = await cdp.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false });
+      const node = nodes[0];
+      return { name: node.name?.value, expanded: node.properties?.find((p) => p.name === 'expanded')?.value.value, focusable: node.properties?.find((p) => p.name === 'focusable')?.value.value };
+    } finally {
+      await cdp.detach();
+    }
+  };
+
   /** Tabs from the top of the page until the menu button has focus. */
   const tabToToggle = async (page: Page) => {
     for (let i = 0; i < 5; i++) if ((await tab(page))?.toggle) return;
@@ -263,10 +279,12 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       await expect.poll(() => menuOpen(page)).toBe(false);
     });
     if (engineName !== 'chromium') return;
-    await withSite('name', { width: 390, height: 844 }, 'off', async (page) => {
+    await withSite('name', { width: 390, height: 844 }, 'off', async (page, _start, context) => {
+      expect(await announced(page, context)).toEqual({ name: 'Menu', expanded: false, focusable: true });
       await tabToToggle(page);
       await page.keyboard.press('Enter');
       await expect.poll(() => menuOpen(page)).toBe(true);
+      expect(await announced(page, context)).toEqual({ name: 'Menu', expanded: true, focusable: true });
       const reached: string[] = [];
       for (let i = 0; i < MENU_LINKS.length; i++) reached.push((await tab(page))?.text ?? '');
       expect(reached).toEqual(MENU_LINKS);
@@ -278,7 +296,7 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       await page.locator('.so-header__toggle').tap();
       await expect.poll(() => menuOpen(page)).toBe(true);
       await start();
-      await page.evaluate('new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))');
+      await page.evaluate(SETTLED);
       expect(await menuOpen(page), 'still open once the script runs').toBe(true);
       expect(await page.evaluate(tappable('#so-site-nav .so-header__cta'))).toBe(true);
 
@@ -330,6 +348,15 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       expect(skip?.inHeader).toBe(false);
       await expect.poll(() => menuOpen(page)).toBe(false);
       expect(await focus(page)).toEqual(skip);
+
+      // Opening it and moving focus out in the same task, before the browser reports the toggle, still closes it.
+      await page.evaluate(`(() => {
+        document.querySelector('.so-header__toggle').click();
+        document.querySelector('main a[href]').focus();
+      })()`);
+      await page.evaluate(SETTLED);
+      expect(await menuOpen(page), 'closed after a same-task exit').toBe(false);
+      expect((await focus(page))?.inHeader).toBe(false);
     });
   }, 60_000);
 
@@ -349,7 +376,7 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       await page.mouse.move(nav.x + nav.width / 2, nav.y + nav.height / 2);
       for (let i = 0; i < 20 && !(await page.evaluate(tappable(last))); i++) {
         await page.mouse.wheel(0, 80);
-        await page.evaluate('new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))');
+        await page.evaluate(SETTLED);
       }
       expect(await page.evaluate(tappable(last)), 'Book a call scrolled into reach').toBe(true);
       expect(await page.evaluate('scrollY')).toBe(scrolled);
@@ -365,7 +392,7 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
     await withSite('name', { width: 667, height: 375 }, 'now', async (page, _start, context) => {
       const cdp = await context.newCDPSession(page);
       await cdp.send('Page.setFontSizes', { fontSizes: { standard: 32, fixed: 26 } });
-      await page.evaluate('new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))');
+      await page.evaluate(SETTLED);
       await tabToToggle(page);
       await page.keyboard.press('Enter');
       await expect.poll(() => menuOpen(page)).toBe(true);
