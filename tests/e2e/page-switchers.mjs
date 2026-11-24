@@ -70,7 +70,7 @@ await eventually(async () => assert.match(await current(), /\/portfolio-archive\
 
 step('keyboard choice from the toolbar menu opens the page shown');
 await openToolbar();
-await win.locator('[role="menu"] [role^="menuitem"]', { hasText: '/lookbook/' }).focus();
+await win.locator('[role="menu"] [role^="menuitem"]', { hasText: /\/lookbook\/$/ }).focus();
 await win.keyboard.press('Enter');
 await win.locator('[role="menu"]').waitFor({ state: 'detached' });
 await eventually(async () => assert.match(await current(), /\/lookbook\/$/, 'the lookbook page is open'));
