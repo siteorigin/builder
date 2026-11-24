@@ -243,13 +243,13 @@ const arrived = Object.values(now.state.assets.assets).filter((a) => !before.has
 const byName = Object.fromEntries(arrived.map((a) => [a.name, a]));
 assert.deepEqual(Object.keys(byName).sort(), [...(CONVERTS ? ['IMG 0042'] : []), 'field scan', 'plain'].sort(), 'the photos and the plain picture arrive; the text file does not');
 assert.deepEqual([byName['field scan'].mime, byName['field scan'].width, byName['field scan'].height], ['image/jpeg', 2560, 1707], 'the large PNG arrives as its web-sized JPEG');
-assert.deepEqual(byName['field scan'].variants.map((v) => v.width), [480, 960, 1440], 'the web-sized copy has its responsive copies');
+assert.deepEqual(byName['field scan'].variants.map((v) => v.width), [160, 480, 960, 1440], 'the web-sized copy has its responsive copies');
 assert.equal(byName.plain.mime, 'image/jpeg');
 const first = CONVERTS ? byName['IMG 0042'] : byName['field scan'];
 assert.equal(await win.locator('.asset-detail h4').innerText(), first.name, 'the first picture made opens in Assets');
 if (CONVERTS) {
   assert.deepEqual([first.mime, first.width, first.height], ['image/jpeg', 1200, 1600], 'the HEIC photo arrives as an upright JPEG');
-  assert.deepEqual(first.variants.map((v) => v.width), [480, 960], 'the converted photo has its responsive copies');
+  assert.deepEqual(first.variants.map((v) => v.width), [160, 480, 960], 'the converted photo has its responsive copies');
 }
 
 step('the inspector image picker: Choose image → Import reviews the photo and places it at once');
@@ -293,7 +293,7 @@ await copyButton.click();
 await eventually(async () => assert.equal(await win.locator('.asset-detail h4').innerText(), 'camera (web-sized)'), 60000);
 now = await win.evaluate(() => window.builder.project.snapshot());
 const copy = Object.values(now.state.assets.assets).find((a) => a.name === 'camera (web-sized)');
-assert.deepEqual([copy.mime, copy.width, copy.height, copy.variants.map((v) => v.width)], ['image/jpeg', 2560, 1920, [480, 960, 1440]], 'the copy is web-sized with its responsive copies');
+assert.deepEqual([copy.mime, copy.width, copy.height, copy.variants.map((v) => v.width)], ['image/jpeg', 2560, 1920, [160, 480, 960, 1440]], 'the copy is web-sized with its responsive copies');
 assert.ok(copy.bytes < original.bytes, 'the copy is lighter than the original');
 assert.ok(now.state.assets.assets[original.id], 'the original stays in Assets');
 
