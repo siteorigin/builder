@@ -16,7 +16,7 @@ import { flattenStates, flattenStyles, type StyleLayer } from '@shared/styles';
 import { designLayers, selectedVariants } from '@shared/variants';
 import { liveItemStyles } from '@shared/item-styles';
 import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/index';
-import { effectiveProps, evaluate, rendersIn, type Scope } from '@generator/checks';
+import { effectiveProps, evaluate, filterShowsAt, rendersIn, type Scope } from '@generator/checks';
 import { anchorCapable, anchorsInUse, fail, findParent, getNode, getTree, settledRoot } from './tree';
 import { slotLandingProblem } from './slots';
 import { repeatFilterProblem } from './schema';
@@ -69,19 +69,10 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     fail(`“${label}” lists posts that come and go with their collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
   if (Object.keys(def.state ?? {}).length) fail(`“${label}” has UI state its buttons change, which elements on a page would not keep. Remove its UI state first.`);
   // Nor can they filter themselves: a list whose category buttons show here would lose them.
-  const filtering = Object.values(def.tree.nodes).some((n) => {
-    if (n?.kind !== 'repeat' || n.filter === undefined || repeatFilterProblem(def, n)) return false;
-    const on = n.filter.when?.$prop;
-    // As the site reads it: a stored value that is not true or false shows the property's default.
-    const v = on === undefined ? true : Object.hasOwn(inst.props, on) ? inst.props[on] : undefined;
-    if ((typeof v === 'boolean' ? v : def.properties[on!]?.default) !== true) return false;
-    // The buttons show once the items name two categories (told apart as the site tells them, see util.js filterKey).
-    const field = n.filter.field;
-    const rows = Object.hasOwn(inst.props, n.list.$prop) ? inst.props[n.list.$prop] : def.properties[n.list.$prop]?.default;
-    const keys = new Set((Array.isArray(rows) ? rows : []).map((r) => (r && typeof r === 'object' ? (r as Record<string, unknown>)[field] : undefined)).filter((c): c is string => typeof c === 'string' && !!c.trim()).map((c) => c.trim().toLowerCase()));
-    return keys.size > 1;
-  });
-  if (filtering) fail(`“${label}” filters its items by category here, which elements on a page would not keep. Turn its filter off first.`);
+  const placedScope: Scope = { props: withObjectFields(def, effectiveProps(state, def, inst, { props: {} }, op.owner.id)) };
+  const filtering = Object.values(def.tree.nodes).find((n) => n?.kind === 'repeat' && n.filter !== undefined && !repeatFilterProblem(def, n) && filterShowsAt(state, def, n, placedScope));
+  if (filtering?.kind === 'repeat')
+    fail(`“${label}” filters its items by category here, which elements on a page would not keep. ${filtering.filter!.when ? 'Turn its filter off' : 'Give its items one category between them, or none,'} first.`);
   const design = def.tree;
   if (!settledRoot(design)) fail(`“${label}” has no single element at the top of its design, so it cannot be detached. Fix its design first.`);
   const parent = findParent(tree, op.nodeId) ?? fail('This placement is not on the page.');

@@ -409,15 +409,23 @@ describe('editing designs that filter', () => {
     expect(() => apply(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'filterable', schema: { type: 'string', label: 'Filter', default: '' } } as EditOperation])).toThrow(/needs a boolean/);
   });
 
-  it('reports a change that breaks a working filter without refusing it, as Create component from a card is', () => {
-    const unique = fresh();
-    const def = gridDef(unique);
-    place(unique, def, { items: items('A', 'B') });
+  it('refuses a change that takes away pills a page shows, and reports one where no placement shows them', () => {
     // The card becomes a component of its own: the list's item is no longer one element the filter can hide.
-    const next = applyOperations(unique, [{ type: 'component.createFromNode', owner: { kind: 'component', id: def.id }, nodeId: 'card', name: 'Project card' }]).state;
-    expect(introducedDiagnostics(validateState(unique).filter(blocksSaving), validateState(next).filter(blocksSaving))).toEqual([]);
+    const makeCard = (s: ProjectState, def: ComponentDefinition) => applyOperations(s, [{ type: 'component.createFromNode', owner: { kind: 'component', id: def.id }, nodeId: 'card', name: 'Project card' }]).state;
+    const introduced = (before: ProjectState, after: ProjectState) => introducedDiagnostics(validateState(before).filter(blocksSaving), validateState(after).filter(blocksSaving)).map((d) => d.code);
+    const shown = fresh();
+    const def = gridDef(shown);
+    place(shown, def, { items: items('A', 'B') });
+    expect(introduced(shown, makeCard(shown, def))).toEqual(['FILTER_INVALID']);
+    // Switched off everywhere it is placed: the design keeps its filter, and the edit saves with a warning.
+    const off = fresh();
+    const quiet = gridDef(off);
+    place(off, quiet, { filterable: false, items: items('A', 'B') });
+    place(off, quiet, { items: items('A', 'a') });
+    const next = makeCard(off, quiet);
+    expect(introduced(off, next)).toEqual([]);
     expect(filterProblems(next).map((d) => [d.severity, d.message])).toEqual([['warning', expect.stringMatching(/shows items that are not one element each.*Its items all show, without category buttons\./)]]);
-    expect(generateProject(next).get(defFile(next.components[def.id]))).not.toContain('so_filter_0');
+    expect(generateProject(next).get(defFile(next.components[quiet.id]))).not.toContain('so_filter_0');
   });
 
   it('copies a filter with a design built whole, and refuses one that would not work', () => {
@@ -473,7 +481,13 @@ describe('editing designs that filter', () => {
     const off = portfolio(s, ['Homes', 'homes ']).node;
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: on.id }])).toThrow(/filters its items by category here/);
+    expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: on.id }])).toThrow(/Give its items one category between them, or none, first/);
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: off.id }])).not.toThrow();
+    // Only cards that render count: the second category is on a card whose page link goes nowhere.
+    const t = fresh();
+    const { node } = portfolio(t, ['Homes', 'Offices']);
+    ((node.props.items as ListItem[])[1] as Record<string, unknown>).pageLink = { type: 'none', target: '' };
+    expect(() => apply(t, [{ type: 'component.detachInstance', owner: { kind: 'page', id: t.site.homePageId }, nodeId: node.id }])).not.toThrow();
   });
 
   it('refuses to detach a placement whose switch the site reads as its default, on', () => {
