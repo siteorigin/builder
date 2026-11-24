@@ -289,7 +289,7 @@ describe('responsive overrides', () => {
     // A direct background would beat the hover rule whenever the styling rule is more specific.
     expect(rule).not.toMatch(/(^|\s)background:/);
     const theme = files.get(`${STYLES_DIR}/theme.css`)!;
-    expect(theme).toContain('--so-btn-bg-hover: var(--so-color-brand-strong)');
+    expect(theme).toContain('--so-btn-bg-hover: var(--so-surface-ink-hover, var(--so-color-brand-strong))');
     expect(theme).toContain(':is(a, button).so-btn--primary:hover { background: var(--so-btn-bg-hover, color-mix(in srgb, var(--so-btn-bg) 84%, #000)); }');
   });
 

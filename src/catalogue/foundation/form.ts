@@ -366,7 +366,7 @@ ${FIELD_NAME_SOURCE}
 	}
 	.so-form__field input:focus-visible,
 	.so-form__field textarea:focus-visible {
-		outline: 2px solid var(--so-color-focus);
+		outline: 2px solid var(--so-surface-ink, var(--so-color-focus));
 		outline-offset: 1px;
 	}
 	.so-form__choices {

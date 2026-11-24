@@ -238,7 +238,7 @@ const SEARCH_SOURCE = `<script>
 		font-size: max(1rem, 16px);
 	}
 	.so-search__input:focus-visible {
-		outline: 2px solid var(--so-color-focus);
+		outline: 2px solid var(--so-surface-ink, var(--so-color-focus));
 		outline-offset: 1px;
 	}
 	.so-search__button {
@@ -283,7 +283,7 @@ const SEARCH_SOURCE = `<script>
 		text-underline-offset: 0.18em;
 	}
 	.so-search__link:focus-visible {
-		outline: 2px solid var(--so-color-focus);
+		outline: 2px solid var(--so-surface-ink, var(--so-color-focus));
 		outline-offset: 2px;
 	}
 	.so-search__excerpt {

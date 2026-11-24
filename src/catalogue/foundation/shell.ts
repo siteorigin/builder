@@ -300,19 +300,21 @@ const HEADER_SOURCE = `<script>
 		/* Pinned by the brand row: a notice above it scrolls away with the page (publishOffset measures it). */
 		top: calc(-1 * var(--so-header-notice, 0px));
 	}
-	.so-header--surface,
-	.so-header--surface .so-header__nav {
+	/* The phone menu takes the header's own background and text colour (see the phone rules), so a colour set on
+	   the header reaches the menu too. */
+	.so-header--surface {
 		background: var(--so-color-surface);
 	}
-	.so-header--subtle,
-	.so-header--subtle .so-header__nav {
+	.so-header--subtle {
 		background: var(--so-color-surface-alt);
+	}
+	.so-header--inverse {
+		background: var(--so-color-inverse);
+		color: var(--so-color-on-inverse);
 	}
 	.so-header--inverse,
 	.so-header--inverse .so-header__nav {
-		background: var(--so-color-inverse);
 		border-color: transparent;
-		color: var(--so-color-on-inverse);
 	}
 	/* The notice spans the header's full width above the brand row. On a phone its words wrap and push the row
 	   (and the menu that hangs from the header's bottom edge) down, so it never covers the menu button, and it
@@ -438,7 +440,7 @@ const HEADER_SOURCE = `<script>
 		bottom: -6px;
 		height: 2px;
 		border-radius: 2px;
-		background: var(--so-color-brand);
+		background: var(--so-surface-ink, var(--so-color-brand));
 	}
 	.so-header__cta {
 		min-height: 40px;
@@ -463,7 +465,6 @@ const HEADER_SOURCE = `<script>
 			align-items: stretch;
 			gap: var(--so-space-md);
 			padding: var(--so-space-md) var(--so-container-gutter) var(--so-space-xl);
-			background: var(--so-color-background);
 			border-bottom: 1px solid var(--so-color-border);
 			box-shadow: var(--so-shadow-md);
 			/* The menu hangs from a sticky header, so the page cannot scroll to it. When enlarged text or a short
@@ -472,6 +473,12 @@ const HEADER_SOURCE = `<script>
 			max-height: calc(100vh - 100% + var(--so-header-notice, 0px));
 			max-height: calc(100dvh - 100% + var(--so-header-notice, 0px));
 			overflow-y: auto;
+		}
+		/* The menu hangs below the brand row in the header's own background, which the row passes on, and its links
+		   inherit the header's text colour: whatever colours the header has, the menu reads the same. */
+		.so-header__inner,
+		.so-header__nav {
+			background: inherit;
 		}
 		.so-header--open .so-header__nav {
 			display: flex;

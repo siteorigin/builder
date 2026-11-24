@@ -391,7 +391,11 @@ describe('what ships', () => {
     expect(byId(results, 'button')).toMatchObject({ fg: '#ffffff', bg: '#1f5a4c' });
     expect(byId(results, 'brand-text-surface')).toMatchObject({ fg: '#1f5a4c', bg: '#ffffff' });
     expect(byId(results, 'brand-text-surface-alt')).toMatchObject({ fg: '#1f5a4c', bg: '#f2efe8' });
-    expect(PAIRS.map((p) => p.id).sort()).toEqual(['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'dark-accent', 'dark-text', 'light-button', 'light-button-hover', 'muted-background', 'muted-surface', 'muted-surface-alt', 'text-background', 'text-surface', 'text-surface-alt']);
+    expect(PAIRS.map((p) => p.id).sort()).toEqual([
+      'brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'dark-accent', 'dark-button', 'dark-button-hover', 'dark-text',
+      'focus-background', 'focus-surface', 'focus-surface-alt', 'light-button', 'light-button-hover', 'muted-background', 'muted-surface', 'muted-surface-alt',
+      'text-background', 'text-surface', 'text-surface-alt'
+    ]);
   });
 
   it('lists the pairs that involve a token as foreground or background, hover mixes included', () => {

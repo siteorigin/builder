@@ -1,3 +1,33 @@
+/** A class ending in `suffix` anywhere in an element's class list (a component's scoped class may follow it). */
+const ends = (suffix: string) => `:is([class$='${suffix}'], [class*='${suffix} '])`;
+
+/** The brand panel of a Call to action, in the panel's own tone. */
+const ctaPanel = (tone: string) => `${ends(`-cta-banner--tone-${tone}`)} ${ends('-cta-banner__panel')}`;
+
+/**
+ * Where a section paints a dark or brand ground, the colours drawn straight on it (focus rings, links, text buttons,
+ * check marks and the primary button's fill) switch to the ground's own text colour, which the theme keeps readable
+ * there. Sections and the light cards inside them start afresh, so a white card in a dark section keeps the theme's
+ * colours. All three lists match with no specificity, in this order: light, dark, brand.
+ */
+const SURFACES = `:where(
+  [class*='--tone-'], ${ends('-features-grid__card')}, ${ends('-pricing-plans__plan')}, ${ends('-contact-details__method')}, ${ends('-testimonials-grid__card')},
+  .so-header, .so-form, .so-search, .so-table, .so-video-section
+) { --so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; }
+:where(
+  ${ends('--tone-inverse')}:not(${ends('-cta-banner__root')}), ${ctaPanel('inverse')}, ${ends('-shell-footer--tone-default')},
+  .so-header--inverse, .so-form--inverse, .so-search--inverse, .so-table--inverse, .so-video-section--inverse
+) {
+  --so-surface-ink: var(--so-color-on-inverse);
+  --so-surface-ink-text: var(--so-color-inverse);
+  --so-surface-ink-hover: color-mix(in srgb, var(--so-color-on-inverse) 88%, var(--so-color-inverse));
+}
+:where(${ends('--tone-brand')}, ${ctaPanel('default')}) {
+  --so-surface-ink: var(--so-color-on-brand);
+  --so-surface-ink-text: var(--so-color-brand-strong);
+  --so-surface-ink-hover: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand));
+}`;
+
 /** Foundation base stylesheet: reset, document defaults and shared primitive styles. */
 export const FOUNDATION_BASE_CSS = `/* Foundation theme base styles */
 *, *::before, *::after { box-sizing: border-box; }
@@ -30,7 +60,9 @@ address, cite { font-style: normal; }
 /* Jump links land 1rem below the sticky site header instead of under it. The header publishes the height it
    occupies (0 when it does not stick); before it has, the default assumes one 72px row. */
 [id] { scroll-margin-top: calc(var(--so-header-offset, 4.5rem) + 1rem); }
-:focus-visible { outline: 2px solid var(--so-color-focus); outline-offset: 3px; border-radius: 4px; }
+/* Dark and brand sections set the colours drawn on them (--so-surface-ink and its pair); elsewhere the theme's own apply. */
+${SURFACES}
+:focus-visible { outline: 2px solid var(--so-surface-ink, var(--so-color-focus)); outline-offset: 3px; border-radius: 4px; }
 ::selection { background: color-mix(in srgb, var(--so-color-brand) 22%, transparent); }
 
 /* Moved up by its own height, so it stays out of sight at any text size until it is focused. */
@@ -46,7 +78,7 @@ address, cite { font-style: normal; }
 .so-rich--number { padding-inline-start: 1.5em; list-style: decimal; display: grid; gap: 0.65em; }
 .so-rich--number > * + * { margin-top: 0; }
 
-.so-link { color: var(--so-color-brand); background: var(--so-btn-bg, none); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.so-link { color: var(--so-surface-ink, var(--so-color-brand)); background: var(--so-btn-bg, none); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 
 .so-plain-link { background: var(--so-btn-bg, none); text-decoration: none; }
 .so-plain-link:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -102,11 +134,14 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 /* Colours come from --so-btn-bg / --so-btn-fg, which the generator sets wherever a button's colours are styled
    (resetting --so-btn-bg-hover), so the hover state follows the colour actually shown. */
 :is(a, button).so-btn:active { transform: translateY(1px); }
-.so-btn--primary { --so-btn-bg: var(--so-color-brand); --so-btn-fg: var(--so-color-on-brand); --so-btn-bg-hover: var(--so-color-brand-strong); box-shadow: var(--so-shadow-sm); }
+.so-btn--primary {
+  --so-btn-bg: var(--so-surface-ink, var(--so-color-brand)); --so-btn-fg: var(--so-surface-ink-text, var(--so-color-on-brand));
+  --so-btn-bg-hover: var(--so-surface-ink-hover, var(--so-color-brand-strong)); box-shadow: var(--so-shadow-sm);
+}
 :is(a, button).so-btn--primary:hover { background: var(--so-btn-bg-hover, color-mix(in srgb, var(--so-btn-bg) 84%, #000)); }
 .so-btn--secondary { border-color: color-mix(in srgb, currentColor 28%, transparent); }
 :is(a, button).so-btn--secondary:hover { border-color: currentColor; }
-.so-btn--text { min-height: 0; padding: 0.2em 0; border-radius: 0; --so-btn-fg: var(--so-color-brand); background: none; }
+.so-btn--text { min-height: 0; padding: 0.2em 0; border-radius: 0; --so-btn-fg: var(--so-surface-ink, var(--so-color-brand)); background: none; }
 .so-btn--text::after { content: '→'; transition: transform 160ms ease; }
 :is(a, button).so-btn--text:hover::after { transform: translateX(3px); }
 .so-btn--light { --so-btn-bg: var(--so-color-on-brand); --so-btn-fg: var(--so-color-brand-strong); --so-btn-bg-hover: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand)); }
@@ -131,12 +166,12 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 .so-rich--check li { position: relative; padding-left: 1.75em; }
 .so-rich--check li::before {
   content: ''; position: absolute; left: 0; top: 0.32em; width: 1.05em; height: 1.05em; border-radius: 50%;
-  background: color-mix(in srgb, var(--so-color-brand) 14%, transparent);
+  background: color-mix(in srgb, var(--so-surface-ink, var(--so-color-brand)) 14%, transparent);
   -webkit-mask: none;
 }
 .so-rich--check li::after {
   content: ''; position: absolute; left: 0.33em; top: 0.52em; width: 0.38em; height: 0.6em;
-  border: solid var(--so-color-brand); border-width: 0 2px 2px 0; transform: rotate(45deg);
+  border: solid var(--so-surface-ink, var(--so-color-brand)); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 .so-rich--bullet li { position: relative; padding-left: 1.25em; }
 .so-rich--bullet li::before { content: ''; position: absolute; left: 0.2em; top: 0.7em; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.6; }
