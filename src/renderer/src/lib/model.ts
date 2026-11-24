@@ -3,7 +3,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree
 import { propBindingValue } from '@shared/bindings';
 import { articleRows, feedLimit } from '@shared/articles';
 import { isBinding, refKey } from '@shared/types';
-import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
+import { displayName, enclosingRepeatProp, findParent, isEmptyLayout } from '@engine/tree';
 import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
 import type { InspectionDesc, InspectionRef } from '@shared/inspection';
 import { placementItems, repeatedPartList } from '@shared/item-styles';
@@ -304,11 +304,13 @@ function ancestry(state: ProjectState, ref: ElementRef): Set<string> {
  * the outermost level; each further click steps in one level from the selection (Section, then the Card in
  * it, then the Card's heading). A click elsewhere inside something already selected or worked in selects the
  * level just inside it there, so moving between a component's parts stays at the parts. `deep` (a modifier,
- * a double-click) goes straight to the innermost level.
+ * a double-click) goes straight to the innermost level, and so does a click on an empty container's own frame
+ * (a Grid inserted a moment ago): the frame names that container, and Insert then fills it.
  */
 export function selectionFromChain(state: ProjectState, chain: BridgeDesc[], current: ElementRef | null, deep: boolean): ElementRef | null {
   // Descriptors that name nothing in the project (stale, or not the editor's) are ignored.
-  const refs = chain.map((d) => refFromDesc(state, d)).filter((r): r is ElementRef => !!r && !!resolveRef(state, r).node);
+  const chainRefs = chain.map((d) => refFromDesc(state, d));
+  const refs = chainRefs.filter((r): r is ElementRef => !!r && !!resolveRef(state, r).node);
   if (!refs.length) return null;
   let levels: ElementRef[] = [];
   const seen = new Set<string>();
@@ -328,7 +330,9 @@ export function selectionFromChain(state: ProjectState, chain: BridgeDesc[], cur
   // pointer, still selects it, and each repeated item (a Card) stays a step of its own.
   levels = levels.filter((l, i) => i === levels.length - 1 || !layoutPart(state, l));
   if (!levels.length) return boundaryOf(state, refs[0]);
-  if (deep) return levels[levels.length - 1];
+  // The pointer on an empty container's frame: the innermost element under it is that container.
+  const onFrame = refs[0] === chainRefs[0] && isEmptyLayout(resolveRef(state, refs[0]).node);
+  if (deep || onFrame) return levels[levels.length - 1];
   if (current) {
     const around = ancestry(state, current);
     let j = -1;

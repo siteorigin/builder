@@ -1,5 +1,5 @@
-import type { AppearPreset, ComponentDefinition, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { isAppearPreset, isBinding } from '@shared/types';
+import type { AppearPreset, ComponentDefinition, ElementNode, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import { RESPONSIVE_SCOPES, isAppearPreset, isBinding } from '@shared/types';
 import { pageParents } from '@shared/page-tree';
 
 export class EngineError extends Error {
@@ -280,14 +280,34 @@ export function displayName(state: ProjectState, node: GraphNode, def?: Componen
       return 'Repeated items';
     case 'slot':
       return `Slot: ${def?.slots?.[node.slot]?.label ?? node.slot}`;
-    case 'element': {
-      const layout = node.styles?.base?.layout;
-      if (layout === 'grid') return 'Grid';
-      if (layout === 'row') return 'Row';
-      if (layout === 'stack') return 'Stack';
-      return node.tag === 'section' ? 'Section' : 'Container';
-    }
+    case 'element':
+      return elementKind(node);
   }
+}
+
+/** The kind of container an element is, by its layout at all sizes, as Layers and Insert name it. */
+export function elementKind(node: ElementNode): string {
+  const layout = node.styles?.base?.layout;
+  if (layout === 'grid') return 'Grid';
+  if (layout === 'row') return 'Row';
+  if (layout === 'stack') return 'Stack';
+  return node.tag === 'section' ? 'Section' : 'Container';
+}
+
+const LAYOUTS = new Set(['block', 'stack', 'row', 'grid']);
+
+/**
+ * A container laid out as one (a layout chosen at some size, as every Container, Stack, Row and Grid inserted has)
+ * with nothing in it yet. The editor frames it while editing, so it can be seen and picked, and Insert then puts
+ * what comes next inside it. An empty element with no layout of its own (a spacer, a decorative block) is drawn as
+ * it is designed.
+ */
+export function isEmptyLayout(node: GraphNode | undefined): node is ElementNode {
+  if (node?.kind !== 'element' || !Array.isArray(node.children) || node.children.length) return false;
+  return RESPONSIVE_SCOPES.some((scope) => {
+    const layout: unknown = node.styles?.[scope]?.layout;
+    return typeof layout === 'string' && LAYOUTS.has(layout);
+  });
 }
 
 /**

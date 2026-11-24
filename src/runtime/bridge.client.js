@@ -3496,6 +3496,12 @@ style.textContent =
   // An empty slot, where the author can put content: a labelled drop area, never part of the site.
   ' html[data-so-editing] [data-so-slot-empty] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; box-sizing: border-box; min-height: 72px; padding: 12px 16px; border: 2px dashed rgba(100, 116, 139, 0.55); border-radius: 8px; background: rgba(148, 163, 184, 0.08); color: #475569; font: 13px/1.35 system-ui, -apple-system, sans-serif; text-align: center; }' +
   ' html[data-so-editing] [data-so-slot-empty] strong { font-weight: 600; } html[data-so-editing] [data-so-slot-empty] span { opacity: 0.8; }' +
+  // An empty container (a Grid, Row or Stack with nothing in it yet): a dashed frame naming its kind, tall enough to
+  // see and pick, with a grid's columns ruled in its gaps where its items will go. The label spans every column, so
+  // even columns that fit as many as they can are all there. In the container's own colours, so it shows on a dark
+  // section too. Preview leaves the container as visitors get it: with nothing in it, often no height at all.
+  ' html[data-so-editing] [data-so-empty-layout] { outline: 1px dashed color-mix(in srgb, currentColor 45%, transparent); outline-offset: -1px; column-rule: 1px dashed color-mix(in srgb, currentColor 35%, transparent); column-rule-break: none; }' +
+  ' html[data-so-editing] [data-so-empty-layout]::before { content: attr(data-so-empty-layout) / ""; display: block; grid-column: 1 / -1; flex: 1 1 auto; align-self: stretch; box-sizing: border-box; min-block-size: 72px; min-inline-size: 0; padding: 6px 10px; color: color-mix(in srgb, currentColor 65%, transparent); font: 600 12px/1.35 system-ui, -apple-system, sans-serif; letter-spacing: normal; text-align: start; text-transform: none; }' +
   // Edit shows every section as designed: an entrance the site's observer armed (it arms nothing in Edit) never hides one.
   ' html[data-so-editing] [data-appear-state]:not(#so-editor) { animation: none !important; }';
 document.head.appendChild(style);

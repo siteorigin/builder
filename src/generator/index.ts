@@ -77,6 +77,7 @@ import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, 
 import { derived, isTracked, type GenerationCache } from './cache';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
+import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { notFoundSectionRoutes, structuredContent } from './checks';
 
@@ -911,6 +912,8 @@ interface EmitCtx {
   firstSection?: boolean;
   /** Set when the markup refers to the per-instance `uid` from `$props.id()`. */
   usesUid?: boolean;
+  /** Editor variants: set when the markup shows something only while editing (`so_editing`, see `editingState`). */
+  usesEditing?: boolean;
   /** The list properties of the repeats currently open (outermost first), for the schema of an item field. */
   lists?: PropSchema[];
   /** Cards that render as their plain container because something interactive renders inside them. */
@@ -1921,7 +1924,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const list = !!ctx.widgets?.lists.has(node.id);
       const label = list ? '' : elementLabelAttrs(ctx, node);
       const choices = tagChoices(ctx, node);
-      const attrs = `class=${classExpr(ctx, node, list ? [js('so-tablist')] : [])}${anchorAttr(ctx, node)}${label}${stateElementAttrs(ctx, node)}${ids}`;
+      const attrs = `class=${classExpr(ctx, node, list ? [js('so-tablist')] : [])}${anchorAttr(ctx, node)}${label}${stateElementAttrs(ctx, node)}${ids}${emptyFrameAttr(ctx, node)}`;
       let markup: string;
       if (card && !acting) {
         // One link around the whole card; the runtime helper renders the container's own tag without a destination.
@@ -2196,7 +2199,10 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
       if (!childIds.length) {
         // The editor's preview marks an empty slot where content can go. Visitors, and every export, see nothing.
         const marker = ctx.instrument && def.kind === 'managed' ? emptySlotMarker(def.slots[slotName], slotName) : '';
-        if (marker) snippets.push(`${p}\t{#snippet slot_${safeIdent(slotName)}()}\n${p}\t\t${marker}\n${p}\t{/snippet}`);
+        if (!marker) continue;
+        // Only while editing: Preview, as visitors see the page, has nothing in the slot at all.
+        ctx.usesEditing = true;
+        snippets.push(`${p}\t{#snippet slot_${safeIdent(slotName)}()}\n${p}\t\t{#if so_editing}\n${p}\t\t\t${marker}\n${p}\t\t{/if}\n${p}\t{/snippet}`);
         continue;
       }
       ctx.indent += 2;
@@ -2216,8 +2222,9 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
 }
 
 /**
- * The placeholder an empty slot shows in the editor: its label, and what belongs there. Editor-only (the bridge hides
- * it in Preview and styles it), and never written into a clean file. A slot closed to content (max 0) shows none.
+ * The placeholder an empty slot shows in the editor: its label, and what belongs there. Editor-only (rendered only
+ * while editing, and styled by the bridge), and never written into a clean file. A slot closed to content (max 0)
+ * shows none.
  */
 function emptySlotMarker(decl: SlotDef | undefined, slotName: string): string {
   if (!decl || decl.max === 0) return '';
@@ -2225,6 +2232,37 @@ function emptySlotMarker(decl: SlotDef | undefined, slotName: string): string {
   const description = typeof decl.description === 'string' ? decl.description.trim() : '';
   // Phrasing content only, so it is valid wherever the slot sits (a paragraph included); the bridge lays it out as a box.
   return `<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={${js(slotName)}}><strong>{${js(label)}}</strong>${description ? `<span>{${js(description)}}</span>` : ''}</span>`;
+}
+
+/**
+ * Editor variants: an empty container (see isEmptyLayout) names its kind for the frame the bridge draws while
+ * editing, with a grid's columns ruled in its gaps. Only an attribute: the page has no element more, and Preview,
+ * which the bridge leaves unstyled, shows the container exactly as visitors get it. A carousel's track is left to
+ * its own helper.
+ */
+function emptyFrameAttr(ctx: EmitCtx, node: GraphNode & { kind: 'element' }): string {
+  if (!ctx.instrument || !isEmptyLayout(node) || isCarouselTrack(node)) return '';
+  return ` data-so-empty-layout="${elementKind(node)}"`;
+}
+
+/**
+ * Editor variants: `so_editing`, whether the editor shows the page in Edit (the bridge marks <html> with
+ * `data-so-editing`), for what the markup shows only then. False until mounted, so the server's render and the
+ * first paint have none of it, as Preview has none.
+ */
+function editingState(ctx: EmitCtx): string {
+  if (!ctx.usesEditing) return '';
+  return [
+    `\tlet so_editing = $state(false);`,
+    `\t$effect(() => {`,
+    `\t\tconst html = document.documentElement;`,
+    `\t\tconst sync = () => (so_editing = html.hasAttribute('data-so-editing'));`,
+    `\t\tsync();`,
+    `\t\tconst watch = new MutationObserver(sync);`,
+    `\t\twatch.observe(html, { attributes: true, attributeFilter: ['data-so-editing'] });`,
+    `\t\treturn () => watch.disconnect();`,
+    `\t});`
+  ].join('\n') + '\n';
 }
 
 /**
@@ -2426,7 +2464,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   const states = [...ctx.states!.values()].map((s) => `\tlet ${s.local} = $state(${js(s.schema.initial)});\n`).join('');
   return (
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
-    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
+    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}${editingState(ctx)}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
   );
 }
 
@@ -2537,9 +2575,10 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
     head.push(ldScript({ '@context': 'https://schema.org', '@type': 'WebPage', name: page.seo.title || page.title, url: base + page.route, inLanguage: pageLanguage(site, page) }));
   }
   const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : ''].filter(Boolean).join('\n');
+  const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   return (
     HEADER_NOTE(`siteorigin/pages/${page.id}.json`) +
-    (imports ? `<script>\n${imports}\n</script>\n\n` : '') +
+    (script ? `<script>\n${script}\n</script>\n\n` : '') +
     `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n${opts.instrument ? hotBoundary(markup, page.rootIds.length) : markup}\n`
   );
 }
@@ -2567,7 +2606,7 @@ export function generateIsolatedInstance(state: ProjectState, file: string, node
   };
   const markup = emitNode(ectx, node.id);
   const imports = renderImports(ectx.imports);
-  return `<!-- SiteOrigin Builder's isolated preview of one component. Editor-only: never part of the website. -->\n<script>\n${imports}\n</script>\n\n<main id="main">\n${markup}\n</main>\n`;
+  return `<!-- SiteOrigin Builder's isolated preview of one component. Editor-only: never part of the website. -->\n<script>\n${imports}\n${editingState(ectx)}</script>\n\n<main id="main">\n${markup}\n</main>\n`;
 }
 
 export function generateLayout(state: ProjectState, opts: GenerateOptions): string {
@@ -2591,6 +2630,9 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   fctx.imports = hctx.imports;
   const footer = emitNodes(fctx, state.site.shell.footer.rootIds);
   const imports = renderImports(hctx.imports);
+  // The header's and footer's empty slots share one `so_editing`.
+  hctx.usesEditing ||= fctx.usesEditing;
+  const editing = editingState(hctx);
   // An old address only sends visitors on: it shows no header or footer while it does.
   const redirects = liveRedirects(state).map((r) => routeId(r.from));
   const without = (part: ShellPart) => {
@@ -2642,7 +2684,7 @@ ${imports}${languages}${devBridge}
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
 	const showHeader = $derived(!pagesWithoutHeader.has(page.route.id ?? ''));
 	const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));
-</script>
+${editing}</script>
 
 <svelte:head>
 	<link rel="icon" href={asset(${js(iconHref)})} type=${js(iconType)} />
