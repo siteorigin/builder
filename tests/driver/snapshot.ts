@@ -221,9 +221,10 @@ export interface Redaction {
   /** Credential values read from the page, scrubbed wherever they appear. */
   secrets: string[];
   /**
-   * The values ordinary fields hold now (never a credential field's), read from the page. A node with no ref, or whose
-   * element could not be read, is an ordinary field when its value is one of these and no credential: Playwright gives
-   * no refs to the editor's fields while a menu is open, and their text is not a secret for that.
+   * The values visible ordinary fields show now (never a credential field's), read from the page. A node with no ref,
+   * or whose element could not be read, is an ordinary field when its value is one of these and no credential (each
+   * compared with its whitespace collapsed, as the snapshot gives it): Playwright gives no refs to the editor's fields
+   * while a menu is open, and their text is not a secret for that.
    */
   plain?: Set<string>;
 }
@@ -281,13 +282,15 @@ export function scrubDeep<T>(value: T, secrets: string[]): T {
  */
 export function redact(nodes: (RawNode | string)[], r: Redaction): Redacted {
   const captured: string[] = [];
-  const known = new Set(r.secrets);
+  const norm = (v: string) => v.replace(/\s+/g, ' ').trim();
+  const known = new Set(r.secrets.map(norm));
+  const plain = new Set([...(r.plain ?? [])].map(norm));
   /** A value whose field is a credential, or cannot be told apart from one. */
   const hidden = (n: RawNode) => {
     if (n.ref && r.secretRefs.has(n.ref)) return true;
     if (n.ref && !r.unknownRefs.has(n.ref)) return false;
-    const v = valueOf(n);
-    return !(r.plain?.has(v) && !known.has(v));
+    const v = norm(valueOf(n));
+    return !(v && plain.has(v) && !known.has(v));
   };
   for (const n of rawNodes(nodes)) {
     if (!holdsValue(n) || !hidden(n)) continue;

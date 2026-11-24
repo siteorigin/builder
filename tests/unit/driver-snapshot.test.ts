@@ -128,6 +128,14 @@ describe('redaction', () => {
     expect(strict.secrets).toEqual(expect.arrayContaining(['Rooms that work beautifully', '1280', 'sk-LOST-1', 'hunter2']));
     // A field classified as a credential stays one, whatever ordinary fields hold.
     expect((redact(nodes(), { ...none, secretRefs: new Set(['w']), plain }).nodes[1] as RawNode).redacted).toBe(true);
+    // Compared as the snapshot gives values, whitespace collapsed, on both sides.
+    const spaced = redact([{ role: 'textbox', name: 'Notes', text: 'Line one line two' }, { role: 'textbox', name: 'Pass', text: 'open sesame' }], {
+      ...none,
+      secrets: ['open  sesame'],
+      plain: new Set(['Line one\n   line two', 'open sesame'])
+    });
+    expect((spaced.nodes[0] as RawNode).redacted).toBeUndefined();
+    expect((spaced.nodes[1] as RawNode).redacted).toBe(true);
   });
 
   it('scrubs secrets read from the page wherever they appear, from two characters; one only as a whole value', () => {

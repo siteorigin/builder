@@ -79,7 +79,8 @@ describe('action requests', () => {
       ['ui.drag', { from: { ref: REF }, to: { ref: REF }, by: { x: 1, y: 0 } }, /exactly one/],
       ['ui.drag', { from: { ref: REF }, by: { x: 0, y: 0 } }, /not \{ "x": 0, "y": 0 \}/],
       ['ui.drag', { from: { ref: REF }, by: { x: 1, y: 0 }, steps: 0 }, /"steps"/],
-      ['ui.drag', { from: { ref: REF }, by: { x: 1, y: 0 }, steps: 101 }, /"steps"/]
+      ['ui.drag', { from: { ref: REF }, by: { x: 1, y: 0 }, steps: 101 }, /"steps"/],
+      ['ui.drag', { from: { ref: REF }, by: { x: 1, y: 0 }, steps: 2.5 }, /"steps"/]
     ];
     for (const [op, args, message] of cases) {
       const e = refused(() => parseAction(op, args));
@@ -108,11 +109,12 @@ describe('key chords', () => {
   });
 
   it('never pastes: the system clipboard belongs to the person running the session', () => {
-    for (const chord of ['ControlOrMeta+v', 'Meta+v', 'Control+V', 'Meta+Shift+v', 'ControlOrMeta+KeyV', 'Shift+Insert']) {
-      const e = refused(() => parseChord(chord, 'darwin'));
-      expect([chord, e.code], chord).toEqual([chord, 'BAD_REQUEST']);
-      expect(e.message).toMatch(/system clipboard/);
-    }
+    for (const platform of ['darwin', 'linux', 'win32'] as const)
+      for (const chord of ['ControlOrMeta+v', 'Meta+v', 'Control+V', 'Meta+Shift+v', 'ControlOrMeta+KeyV', 'Shift+Insert']) {
+        const e = refused(() => parseChord(chord, platform));
+        expect([platform, chord, e.code]).toEqual([platform, chord, 'BAD_REQUEST']);
+        expect(e.message).toMatch(/system clipboard/);
+      }
   });
 
   it('refuses the whole chord before any key goes down', () => {
@@ -127,6 +129,7 @@ describe('key chords', () => {
       ['Control+Shift+Control+z', /Control twice/],
       ['Esc', /did you mean "Escape"/],
       ['enter', /did you mean "Enter"/],
+      ['Return', /did you mean "Enter"/],
       ['é', /not a key/],
       ['Shift+Foo', /not a key/],
       ['a'.repeat(ACTION_LIMITS.key + 1), /at most/]
@@ -191,6 +194,7 @@ describe('screenshot points', () => {
     expect(sceneChange(was, scene({ frame: { scale: { x: 0.575, y: 0.6 } } }))).toBe('zoom');
     expect(sceneChange(was, scene({ frame: { offsetHeight: 900 } }))).toBe('zoom');
     expect(sceneChange(was, scene({ frame: { origin: { x: 336, y: 120 } } }))).toBe('moved');
+    expect(sceneChange(was, scene({ frame: { width: 700 } }))).toBe('moved');
     expect(sceneChange(was, scene({ preview: { scroll: { x: 30, y: 0 } } }))).toBe('scrolled');
     expect(sceneChange(was, scene({ frame: { offsetWidth: 834 } }))).toBe('zoom');
     expect(sceneChange(was, scene({ frame: { origin: { x: 300, y: 94 } } }))).toBe('moved');
@@ -226,6 +230,7 @@ describe('screenshot points', () => {
     expect(imagePoint(record, 'preview', 10, 749)).toEqual({ x: 346, y: 843 });
     expect(imagePoint(record, 'preview', 10, 750)).toBeNull();
     expect(imagePoint(record, 'preview', -1, 10)).toBeNull();
+    expect(imagePoint(record, 'preview', 10, -1)).toBeNull();
   });
 
   it('keep only the latest screenshot, until an action uses it up or it expires', () => {

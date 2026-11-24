@@ -90,6 +90,7 @@ try {
   });
   failed(await call('ui.locate', { ref: dialog.ref }), 'STALE_REF', 'the closed dialog');
   assert.deepEqual(readdirSync(session.paths.workspace).sort(), workspaceBefore, 'nothing was created');
+  assert.equal(existsSync(PROJECT()), false, 'no project folder either');
 
   step('the dialog again: name, starter and folder chosen through its controls, and the project created');
   await click(newProject.ref);

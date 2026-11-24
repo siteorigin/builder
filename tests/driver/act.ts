@@ -307,7 +307,7 @@ const HINTS: Record<NotActionableReason, string> = {
   'position-outside': '"position" is measured from the element\'s top-left corner and must be inside its box.',
   'outside-window': 'The pointer would leave the editor window: choose a shorter offset.',
   'no-movement': 'A drag ends somewhere other than where it starts.',
-  moved: 'Where the drag was going moved before it was released, so it was cancelled; observe again.',
+  moved: 'Where the drag was going moved before it was released, so it was cancelled; observe again. A handle that moves what it is dragged to (a resize edge) is dragged "by" an offset.',
   'focus-moved': 'Something moved the keyboard focus while typing (an Enter that commits, a field that moves on): observe, and type the rest where it belongs.',
   'no-time': 'The request\'s deadline left no time to act safely; give it a longer timeoutMs.'
 };
@@ -635,8 +635,7 @@ function pointIn(a: { x: number; y: number; surface: 'editor' | 'preview'; selec
         }
       }
   }
-  const control = h.closest('button, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="option"], [role="treeitem"], [role="checkbox"], [role="radio"], [role="switch"]');
-  const disabled = !!control && ((typeof control.matches === 'function' && control.matches(':disabled')) || control.getAttribute('aria-disabled') === 'true');
+  const disabled = !!h.closest(':disabled, [aria-disabled="true"]');
   const frame = !!a.selector && h.matches(a.selector);
   const out: PointHit = { inView, hit: { surface: a.surface, tag: String(h.tagName).toLowerCase(), ...(role ? { role } : {}), ...(name ? { name } : {}) }, disabled, frame, inert: !!h.closest('[inert]'), witness };
   if (frame) {
@@ -761,16 +760,40 @@ function activeIn(a: { selector: string | null }): { frame: boolean; editable: b
   };
 }
 
+/**
+ * Runs in a document: whether everything that covered a pixel when the screenshot `token` was taken is still there,
+ * unchanged (by geometry alone: it holds while a drag is under way and hit testing is the gesture's).
+ */
+function coversIn(a: { x: number; y: number; token: string; key: string }): boolean {
+  const shot = (globalThis as Dom)[Symbol.for(a.key)];
+  if (!shot || shot.token !== a.token) return false;
+  for (const el of shot.list) {
+    const b = shot.boxes.get(el);
+    if (!b || b[2] <= 0 || b[3] <= 0 || a.x < b[0] || a.x >= b[0] + b[2] || a.y < b[1] || a.y >= b[1] + b[3]) continue;
+    if (!el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    if (Math.abs(r.x - b[0]) > 1 || Math.abs(r.y - b[1]) > 1 || Math.abs(r.width - b[2]) > 1 || Math.abs(r.height - b[3]) > 1) return false;
+  }
+  return true;
+}
+
 const TYPING_KEY = 'siteorigin.driver.typing';
 
-/** Runs in a document: note what has the keyboard focus (`mark`), or say whether it still has it (`check`). */
-function focusMark(a: { key: string; mark: boolean }): boolean {
+/**
+ * Runs in a document: note what has the keyboard focus (`mark`; in the page, it must take text, and in the editor
+ * holding the preview's frame, be that frame), or say whether it still has it.
+ */
+function focusMark(a: { key: string; mark: boolean; frame: string | null }): boolean {
   const w = globalThis as Dom;
   let n = w.document.activeElement;
   while (n && n.shadowRoot && n.shadowRoot.activeElement) n = n.shadowRoot.activeElement;
   if (a.mark) {
     Object.defineProperty(w, Symbol.for(a.key), { value: n, configurable: true, enumerable: false, writable: true });
-    return !!n;
+    if (!n) return false;
+    if (a.frame) return n.matches(a.frame);
+    const type = String(n.type ?? '').toLowerCase();
+    const fieldOk = !n.disabled && !n.readOnly;
+    return !!n.isContentEditable || (n.tagName === 'TEXTAREA' && fieldOk) || (n.tagName === 'INPUT' && ['', 'text', 'search', 'url', 'tel', 'email', 'password', 'number'].includes(type) && fieldOk);
   }
   return !!n && w[Symbol.for(a.key)] === n;
 }
@@ -797,11 +820,12 @@ function selectAllIn(el: Dom) {
 }
 
 /** Runs in the element's document: the options of a <select> that fit, by label or value. */
-function optionsIn(el: Dom, o: { label?: string; value?: string }): { value: string; label: string; disabled: boolean }[] {
+function optionsIn(el: Dom, o: { label?: string; value?: string }): { index: number; value: string; label: string; disabled: boolean }[] {
   const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
   return [...el.options]
-    .filter((x: Dom) => (o.value !== undefined ? x.value === o.value : norm(x.label || x.textContent || '') === norm(o.label ?? '')))
-    .map((x: Dom) => ({ value: String(x.value), label: norm(x.label || x.textContent || ''), disabled: !!x.disabled || !!x.closest('optgroup[disabled]') }));
+    .map((x: Dom, index: number) => ({ x, index }))
+    .filter(({ x }: Dom) => (o.value !== undefined ? x.value === o.value : norm(x.label || x.textContent || '') === norm(o.label ?? '')))
+    .map(({ x, index }: Dom) => ({ index, value: String(x.value), label: norm(x.label || x.textContent || ''), disabled: !!x.disabled || !!x.closest('optgroup[disabled]') }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1094,8 +1118,11 @@ export async function runAction(env: ActEnv, action: Action): Promise<ActionResu
   try {
     return canon(
       await sealed(async (seen) => {
+        if (env.deadline - RESERVE_MS <= Date.now()) throw notActionable('no-time');
         const [frames, stored] = await Promise.all([frameSecrets(env.page).catch((): string[] => []), env.observe.storedSecrets?.().catch((): string[] => []) ?? Promise.resolve([])]);
         seen.push(...(env.observe.remembered?.() ?? []), ...frames, ...stored);
+        // Remembered by the session too, so the events that come back with this reply are scrubbed of them as well.
+        env.observe.remember?.([...frames, ...stored]);
         return perform(env, action, seen);
       })
     );
@@ -1203,7 +1230,12 @@ async function aimAt(env: ActEnv, target: PointerTarget, need: Need, d: Dispatch
       if (again.hit.tag !== aim.hit.tag || again.hit.name !== aim.hit.name || again.surface !== aim.surface) return { miss: 'obscured', blocker: { surface: again.surface, tag: again.hit.tag ?? '', ...(again.hit.role ? { role: again.hit.role } : {}), ...(again.hit.name ? { name: again.hit.name } : {}) } };
       return again;
     },
-    stays: async () => !sceneChange(record.scene, await readScene(env.page, frame, PREVIEW_IFRAME).catch(() => record.scene))
+    // The scene as it was, and whatever covered the pixel then still there unchanged, in both documents.
+    stays: async () => {
+      if (sceneChange(record.scene, await readScene(env.page, frame, PREVIEW_IFRAME).catch(() => record.scene))) return false;
+      if (!(await env.page.evaluate(coversIn, { x: point.x, y: point.y, token: record.token, key: SHOT_WITNESS_KEY }).catch(() => false))) return false;
+      return !aim.at || !frame || !!(await frame.evaluate(coversIn, { x: aim.at.x, y: aim.at.y, token: record.token, key: SHOT_WITNESS_KEY }).catch(() => false));
+    }
   };
 }
 
@@ -1247,11 +1279,13 @@ const TYPE_MS_PER_CHAR = 8;
 async function typeHeld(env: ActEnv, frame: Frame | null, text: string, target: Hit) {
   const { page } = env;
   const docs: (Page | Frame)[] = frame ? [page, frame] : [page];
-  for (const doc of docs) await doc.evaluate(focusMark, { key: TYPING_KEY, mark: true });
+  // What takes the keys is marked now; it must be what was checked (the frame, then text that takes keys).
+  const marked = await Promise.all(docs.map((doc, i) => doc.evaluate(focusMark, { key: TYPING_KEY, mark: true, frame: frame && i === 0 ? PREVIEW_IFRAME : null })));
+  if (!marked.every(Boolean)) throw notActionable('focus-moved', { dispatched: 'partial', target, message: 'The keyboard focus moved before typing began; nothing was typed.' });
   const keys = [...text];
   for (let i = 0; i < keys.length; i++) {
     if (i > 0) {
-      const still = await Promise.all(docs.map((doc) => doc.evaluate(focusMark, { key: TYPING_KEY, mark: false }).catch(() => false)));
+      const still = await Promise.all(docs.map((doc) => doc.evaluate(focusMark, { key: TYPING_KEY, mark: false, frame: null }).catch(() => false)));
       if (!still.every(Boolean)) throw notActionable('focus-moved', { dispatched: 'partial', target, message: `The keyboard focus moved after ${i} of ${keys.length} characters; the rest was not typed.` });
       if (Date.now() > env.deadline - RESERVE_MS / 2) throw notActionable('no-time', { dispatched: 'partial', target, message: `Typing ran out of time after ${i} of ${keys.length} characters.` });
     }
@@ -1345,11 +1379,11 @@ async function keys(env: ActEnv, action: Extract<Action, { op: 'ui.fill' | 'ui.t
     await focusOn(t, aim, d);
     const selected = { label: found[0].label, value: found[0].value };
     // Choosing the option already chosen changes nothing, and sends no change for the app to act on.
-    if ((await inTarget(t, (el: Dom) => String(el.value), undefined)) === found[0].value) return { ...done, selected };
+    if ((await inTarget(t, (el: Dom) => el.selectedIndex as number, undefined)) === found[0].index) return { ...done, selected };
     d.markSent();
     // The list's own input and change events go to the app; what it makes of them (a list the app controls shows the
     // choice once it has applied it) is for observations to check.
-    await t.handle.selectOption({ value: found[0].value }, { timeout: Math.max(1000, d.end - Date.now()) });
+    await t.handle.selectOption({ index: found[0].index }, { timeout: Math.max(1000, d.end - Date.now()) });
     return { ...done, selected };
   }
   await focusOn(t, aim, d);
@@ -1399,6 +1433,10 @@ async function drag(env: ActEnv, action: Extract<Action, { op: 'ui.drag' }>, d: 
   const late = () => {
     if (Date.now() > env.deadline - RESERVE_MS / 2) throw new DriverError('TIMEOUT', 'The drag ran out of time part way.');
   };
+  if (Date.now() > env.deadline - RESERVE_MS - needs) {
+    await disarm(page, aim, pv);
+    throw notActionable('no-time', { dispatched: 'partial', target: aim.hit, message: 'Too little time was left to start the drag; the pointer moved, nothing was pressed.' });
+  }
   try {
     await page.mouse.down();
     down = true;
@@ -1428,15 +1466,16 @@ async function drag(env: ActEnv, action: Extract<Action, { op: 'ui.drag' }>, d: 
       await page.mouse.move(end.x + (t % 2 ? 0 : 1), end.y);
       await sleep(50);
     }
+    late();
     await page.evaluate(quietIn, { idle: 80, max: 1500 }).catch(() => undefined);
     late();
-    // Where it is going must not have moved meanwhile (a panel that scrolled a row under the pointer would take the
-    // drop instead): if it has, the drag is cancelled.
-    if (stays && !(await stays())) throw notActionable('moved', { dispatched: 'partial', target: aim.hit });
     await page.mouse.move(end.x, end.y);
     await sleep(SETTLE_MS);
     // A drag is never a click: a release that would be one (a tile that never started dragging) is stopped.
     await arm(page, aim, pv, true);
+    // Where it is going must not have moved meanwhile (a panel that scrolled a row under the pointer would take the
+    // drop instead): if it has, the drag is cancelled. Checked last, just before the release.
+    if (stays && !(await stays())) throw notActionable('moved', { dispatched: 'partial', target: aim.hit });
     await page.mouse.up();
     down = false;
     await disarm(page, aim, pv);

@@ -195,13 +195,17 @@ async function readPreview(page: Page): Promise<{ iframe: boolean; doc: PreviewD
   }
 }
 
-/** Runs in a document: the values of its ordinary fields (never a credential field's), open shadow roots included. */
+/**
+ * Runs in a document: the values its visible ordinary fields show (never a credential field's, nor a hidden input's),
+ * open shadow roots included. A value one of them shows is reported through that field anyway.
+ */
 function plainIn(secret: string): string[] {
   const w = globalThis as Dom;
   const out: string[] = [];
   const visit = (root: Dom) => {
     for (const el of root.querySelectorAll('input, textarea, select')) {
-      if (el.matches(secret)) continue;
+      if (el.matches(secret) || String(el.type).toLowerCase() === 'hidden') continue;
+      if (typeof el.checkVisibility === 'function' ? !el.checkVisibility({ visibilityProperty: true }) : !el.getClientRects().length) continue;
       if (el.tagName === 'SELECT') for (const o of el.selectedOptions) out.push(String(o.label || o.textContent || ''), String(o.value));
       else if (el.value) out.push(String(el.value));
     }
