@@ -272,18 +272,26 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
     expect(gap, describeLanding(where, l)).toBeLessThanOrEqual(GAP.max);
   }
 
-  it.each([1024, 768, 390])('a direct visit to a heading or a section clears the sticky header at %ipx', async (width) => {
+  // Wrapped labels make the header taller than the fallback margin on wider screens. On a phone the menu is
+  // collapsed and the name wraps beside the full-size menu button: onto three lines at 390px (taller than the
+  // margin), two at 430px (shorter).
+  it.each([
+    [1024, 'covered'],
+    [768, 'covered'],
+    [430, 'clear'],
+    [390, 'covered']
+  ] as const)('a direct visit to a heading or a section clears the sticky header at %ipx', async (width, start) => {
     await withSite('sticky', width, async ({ page }) => {
       for (const id of [HEADING, SECTION]) {
         const { before, after } = await visit(page, id);
         // The browser jumped to the fragment before the script ran, using the theme's 5.5rem fallback margin.
         expect(before.top, `${id} at ${width}px: the browser jumped to the fragment before the script ran`).toBeCloseTo(88, 0);
-        if (width >= 768) {
-          // Wrapped labels make the header taller than that; the script reveals what it covers.
+        if (start === 'covered') {
+          // The script reveals what the header covers.
           expect(before.top, `${id} at ${width}px starts under the header`).toBeLessThan(before.headerBottom);
           expectLanded(`${id} at ${width}px`, after);
         } else {
-          // The collapsed phone header is shorter, so the target was already clear and stays where it is.
+          // The header is shorter, so the target was already clear and stays where it is.
           expect(before.top, `${id} at ${width}px starts clear of the header`).toBeGreaterThanOrEqual(before.headerBottom);
           expectClear(`${id} at ${width}px`, after);
           expect(Math.abs(after.top - before.top), describeLanding(`${id} at ${width}px`, after)).toBeLessThan(1);
