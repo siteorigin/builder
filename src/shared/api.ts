@@ -980,9 +980,9 @@ export interface BuilderApi {
      * Name a stored conversation (or the open one). `workspaceKey` is the opening of the project it was renamed in;
      * main refuses any other. Resolves with its new title.
      */
-    renameConversation(id: string, title: string, workspaceKey?: string): Promise<{ id: string; title: string }>;
+    renameConversation(id: string, title: string, workspaceKey: string): Promise<{ id: string; title: string }>;
     /** Delete one stored conversation; the open one is replaced by a new conversation. Resolves with the open one. */
-    deleteConversation(id: string, workspaceKey?: string): Promise<Conversation>;
+    deleteConversation(id: string, workspaceKey: string): Promise<Conversation>;
     /** `workspaceKey` is the opening of the project the user confirmed this in; main refuses any other. */
     clearHistory(workspaceKey?: string): Promise<Conversation>;
     /**

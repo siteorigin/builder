@@ -13,6 +13,7 @@ import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { autoTitle, byRecentActivity, cleanTitle, matchConversation, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import { ProjectSession } from '../../src/main/project/session';
+import { activityHint, activityPhrase, matchExcerpt } from '../../src/renderer/src/lib/conversations';
 
 describe('conversation titles', () => {
   it('cuts a long first request at the end of a word, never mid-word', () => {
@@ -83,6 +84,35 @@ describe('finding a conversation', () => {
       ]
     };
     expect(summarize(c)).toEqual({ id: 'c_s', title: 'First', createdAt: c.createdAt, updatedAt: '2026-11-24T08:00:00.000Z', prompts: ['First', 'Second'] });
+  });
+});
+
+describe('how the list words a conversation', () => {
+  const now = new Date(2026, 10, 25, 16, 30);
+  it('says the time of day for today, so a day’s conversations read apart, and a date before that', () => {
+    const today = activityHint(new Date(2026, 10, 25, 9, 5).toISOString(), now, 'en-GB');
+    expect(today).toBe('9:05');
+    expect(activityHint(new Date(2026, 10, 25, 14, 40).toISOString(), now, 'en-GB')).not.toBe(today);
+    expect(activityHint(new Date(2026, 10, 24, 23, 0).toISOString(), now, 'en-GB')).toBe('Yesterday');
+    expect(activityHint(new Date(2026, 10, 20, 12, 0).toISOString(), now, 'en-GB')).toBe('20 Nov');
+    expect(activityHint(new Date(2025, 10, 20, 12, 0).toISOString(), now, 'en-GB')).toBe('20 Nov 2025');
+    expect(activityHint('not a date', now)).toBe('');
+    expect(activityPhrase(new Date(2026, 10, 25, 9, 5).toISOString(), now, 'en-GB')).toBe('today at 9:05');
+    expect(activityPhrase(new Date(2026, 10, 24, 9, 5).toISOString(), now, 'en-GB')).toBe('yesterday');
+    expect(activityPhrase(new Date(2026, 10, 20, 9, 5).toISOString(), now, 'en-GB')).toBe('on 20 Nov');
+  });
+
+  it('shows a match deep in a long request where it is, with a few words either side', () => {
+    const text = `${'Start with a long opening about the studio and its classes. '.repeat(4)}Then add a terracotta accent to the hero.\nKeep the rest.`;
+    const m = matchConversation({ title: 'Homepage', prompts: [text] }, 'terracotta accent')!;
+    const x = matchExcerpt(m, 30);
+    expect(x.hit).toBe('terracotta accent');
+    expect(x.before.startsWith('…')).toBe(true);
+    expect(x.before.endsWith('add a ')).toBe(true);
+    expect(x.after).toBe(' to the hero. Keep the rest.');
+    // A match at the start has nothing cut before it.
+    const first = matchExcerpt(matchConversation({ title: 'x', prompts: ['Terracotta everywhere, please'] }, 'terracotta')!);
+    expect(first).toEqual({ before: '', hit: 'Terracotta', after: ' everywhere, please' });
   });
 });
 

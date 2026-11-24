@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type FieldLocation } from '@shared/api';
+import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation } from '@shared/api';
+import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
@@ -18,6 +19,8 @@ import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questio
 import { isImeComposing } from '../lib/ime';
 import { Spinner, useMenu } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
+import { ConversationsModal } from './Conversations';
+import { activityHint } from '../lib/conversations';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
 function Md({ text }: { text: string }) {
@@ -247,8 +250,8 @@ export function Chat() {
   // Work that has been undone is not continued from (its card offers a fresh attempt instead): History says which.
   const resumable = running ? undefined : resumableId(msgs, history);
   const retryable = running ? undefined : retryableId(msgs);
-  const firstAsk = msgs.find((m) => m.role === 'user')?.text;
-  const title = msgs.length ? (conversation?.title && conversation.title !== 'New conversation' ? conversation.title : firstAsk ?? 'New conversation') : 'New conversation';
+  // The title Earlier conversations lists it by: the author's name for it, or its first request cut at a word.
+  const title = conversation && (msgs.length || conversation.named) ? storedTitle(conversation) : NEW_CONVERSATION;
 
   useLayoutEffect(() => {
     const el = logRef.current;
@@ -687,6 +690,8 @@ export function Chat() {
       (e: Error) => stillOpen() && toast(e.message || 'Could not open that conversation.', 'error')
     );
 
+  // Earlier conversations, managed: found, named and deleted one at a time (issue 235).
+  const [managing, setManaging] = useState<ConversationSummary[] | null>(null);
   const openHistory = async (el: HTMLElement) => {
     const listed = await api.ai.conversations().catch((e: Error) => {
       if (stillOpen()) toast(e.message || 'Could not list the earlier conversations.', 'error');
@@ -697,11 +702,7 @@ export function Chat() {
     // A new conversation left before anything was sent is not saved, so its draft is offered here instead.
     const unsent = unsentDrafts(getState().chatDrafts, list.map((c) => c.id), getState().conversation?.id, getState().chatImages);
     if (!list.length && !unsent.length) return toast('No earlier conversations yet.', 'info');
-    const day = (iso: string) => {
-      const d = new Date(iso);
-      const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(d).setHours(0, 0, 0, 0)) / 86400000);
-      return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    };
+    const now = new Date();
     menu.openAt(
       el,
       [
@@ -711,8 +712,10 @@ export function Chat() {
               ...unsent.map((d) => ({ label: d.text.trim().split('\n')[0].slice(0, 60) || `Message with ${d.images === 1 ? '1 image' : `${d.images} images`}`, hint: d.images ? `Draft · ${d.images === 1 ? '1 image' : `${d.images} images`}` : 'Draft', onSelect: () => show(api.ai.newConversation(), (c) => (moveWidened(d.id, c.id), { chatDrafts: moveDraft(getState().chatDrafts, d.id, c.id), chatImages: moveImages(getState().chatImages, d.id, c.id) })) }))
             ]
           : []),
-        ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: day(c.createdAt), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
+        // Listed by their latest activity, so a conversation continued today is near the top.
+        ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: activityHint(c.updatedAt, now), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
+        ...(list.length ? [{ label: 'Find, rename or remove…', icon: <Search />, onSelect: () => setManaging(list) }] : []),
         // Unsent drafts belong to the conversations being removed, so they go with them.
         { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => ({ chatDrafts: {}, chatImages: {} }))) }
       ],
@@ -757,6 +760,17 @@ export function Chat() {
             <Plus />
           </button>
         </div>
+      )}
+      {managing && (
+        <ConversationsModal
+          list={managing}
+          opening={opening}
+          onClose={() => setManaging(null)}
+          onOpen={(id) => {
+            setManaging(null);
+            show(api.ai.openConversation(id));
+          }}
+        />
       )}
       <div className="chat-body">
       <div

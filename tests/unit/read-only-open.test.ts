@@ -93,6 +93,11 @@ async function exercise(session: ProjectSession, chat: boolean) {
   const loaded = await orchestrator.loadConversations();
   expect(loaded.list.map((c) => c.id)).toEqual(chat ? ['c_saved'] : []);
   for (const c of loaded.list) await orchestrator.openConversation(c.id);
+  // Naming or deleting one conversation is refused, the open one or a saved one, and writes nothing (#235).
+  for (const id of [loaded.active.id, ...loaded.list.map((c) => c.id)]) {
+    await expect(orchestrator.renameConversation(id, 'Renamed')).rejects.toThrow(session.readOnly!.reason);
+    await expect(orchestrator.deleteConversation(id)).rejects.toThrow(session.readOnly!.reason);
+  }
   await orchestrator.newConversation();
   await orchestrator.clearHistory();
   // An edit is refused outright. A question is taken only while another app holds the project (#203): it writes
