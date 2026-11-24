@@ -10,6 +10,7 @@ import { anchorCapable, anchorsInUse, displayName } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 import { isDraftPage, liveRedirects, resolveLink, takesParagraphs } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
+import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
@@ -528,8 +529,8 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
 export function placeholderImageCount(state: ProjectState): number {
   let count = 0;
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
-  // The header and footer only render when at least one page uses them.
-  const shell = pages.some((p) => p.shell !== 'none') ? [state.site.shell.header, state.site.shell.footer] : [];
+  // The header and footer each render only when at least one page shows it.
+  const shell = SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part]);
   const trees = [...shell, ...pages];
   for (const tree of trees)
     walkRendered(state, tree, {
@@ -563,8 +564,8 @@ function literalIds(def: ComponentDefinition): string[] {
   return ids;
 }
 
-/** Whether a page renders the shared header and footer. */
-const hasShell = (page: PageDoc) => page.shell !== 'none';
+/** The trees a page renders, in order: the shared header when it shows it, its own content, the shared footer when it shows it. */
+const renderedTrees = (state: ProjectState, page: PageDoc): NodeTree[] => [...(showsPart(page, 'header') ? [state.site.shell.header] : []), page, ...(showsPart(page, 'footer') ? [state.site.shell.footer] : [])];
 
 /** The element IDs a tree renders. Code components add the IDs their markup writes out literally. */
 function treeIds(state: ProjectState, trees: NodeTree[], out = new Set<string>()): Set<string> {
@@ -578,38 +579,50 @@ function idCounts(state: ProjectState, pageId: string): Map<string, number> {
   const out = new Map<string, number>();
   const page = state.pages[pageId];
   const visit: Visit = { id: (id) => out.set(id, (out.get(id) ?? 0) + 1) };
-  if (page) for (const tree of hasShell(page) ? [state.site.shell.header, page, state.site.shell.footer] : [page]) walkRendered(state, tree, visit);
+  if (page) for (const tree of renderedTrees(state, page)) walkRendered(state, tree, visit);
   return out;
 }
 
-/** The IDs the shared header and footer render, on every page that shows them. */
-const shellIds = (state: ProjectState) => treeIds(state, [state.site.shell.header, state.site.shell.footer]);
+/** The IDs the shared header and the shared footer render, each on every page that shows it. */
+export type ShellIds = Record<ShellPart, Set<string>>;
+
+/** No IDs from the shared header or footer: for a page's own IDs alone. */
+export const NO_SHELL_IDS: ShellIds = { header: new Set(), footer: new Set() };
+
+/** The IDs the shared header or the shared footer renders. */
+const partIds = (state: ProjectState, part: ShellPart) => treeIds(state, [state.site.shell[part]]);
+
+/** The IDs both shared parts render, worked out once for a check over many pages. */
+const shellIds = (state: ProjectState): ShellIds => ({ header: partIds(state, 'header'), footer: partIds(state, 'footer') });
 
 /**
- * The element IDs a page's generated HTML will hold: its layout's, its own sections' and elements', and the shared
- * header and footer's when the page shows them. `shell` passes the header and footer's IDs when already known.
+ * The element IDs a page's generated HTML will hold: its layout's, its own sections' and elements', and those of the
+ * shared header and footer it shows. `shell` passes the header and footer's IDs when already known.
  */
-export function pageIds(state: ProjectState, pageId: string, shell?: Set<string>): Set<string> {
+export function pageIds(state: ProjectState, pageId: string, shell?: ShellIds): Set<string> {
   const out = new Set(LAYOUT_IDS);
   const page = state.pages[pageId];
   if (!page) return out;
-  if (hasShell(page)) for (const id of shell ?? shellIds(state)) out.add(id);
+  for (const part of partsShown(page)) for (const id of shell?.[part] ?? partIds(state, part)) out.add(id);
   return treeIds(state, [page], out);
 }
 
-/** The IDs a page's elements render, the shared header and footer's included when it shows them: not the layout's. */
+/** The IDs a page's elements render, those of the shared header and footer it shows included: not the layout's. */
 export function elementIds(state: ProjectState, pageId: string): Set<string> {
   const page = state.pages[pageId];
   if (!page) return new Set();
-  return treeIds(state, hasShell(page) ? [state.site.shell.header, page, state.site.shell.footer] : [page]);
+  return treeIds(state, renderedTrees(state, page));
 }
 
-/** The IDs every page that shows the shared header and footer has: where their "on this page" links can go. */
-export function sharedPageIds(state: ProjectState): Set<string> {
-  const pages = state.site.pageOrder.map((id) => state.pages[id]).filter((p) => p && hasShell(p));
+/**
+ * The IDs every page that shows a shared part has: where that part's "on this page" links can go. The header and
+ * footer can show on different pages, so each has its own.
+ */
+export function sharedPageIds(state: ProjectState, part: ShellPart): Set<string> {
+  const pages = pagesShowing(state, part);
+  if (!pages.length) return new Set(LAYOUT_IDS);
   const shell = shellIds(state);
   const sets = pages.map((p) => pageIds(state, p.id, shell));
-  if (!sets.length) return new Set(LAYOUT_IDS);
   return new Set([...sets[0]].filter((id) => sets.every((x) => x.has(id))));
 }
 
@@ -692,7 +705,7 @@ function renderedLinks(state: ProjectState, tree: NodeTree): RenderedLink[] {
 }
 
 /** A link the shared header or footer shows that goes to a page, with the words visitors see on it. */
-export type ShellPageLink = { part: 'header' | 'footer'; nodeId: string; label: string; pageId: string; anchor?: string };
+export type ShellPageLink = { part: ShellPart; nodeId: string; label: string; pageId: string; anchor?: string };
 
 /**
  * The header and footer links visitors see that go to any of `pageIds`, in order: menu items, buttons, links in
@@ -700,7 +713,9 @@ export type ShellPageLink = { part: 'header' | 'footer'; nodeId: string; label: 
  */
 export function shellPageLinks(state: ProjectState, pageIds: string[]): ShellPageLink[] {
   const out: ShellPageLink[] = [];
-  for (const part of ['header', 'footer'] as const) {
+  for (const part of SHELL_PARTS) {
+    // A header or footer no page shows has no links visitors see.
+    if (!pagesShowing(state, part).length) continue;
     for (const r of renderedLinks(state, state.site.shell[part])) {
       if (r.link.type !== 'page' || !pageIds.includes(r.link.target)) continue;
       out.push({ part, nodeId: r.reportId, label: r.label, pageId: r.link.target, ...(r.link.anchor ? { anchor: r.link.anchor } : {}) });
@@ -734,20 +749,15 @@ export interface SectionLinkIssue {
  */
 export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
-  const shellPages = pages.filter(hasShell);
-  const shell = shellPages.length ? shellIds(state) : new Set<string>();
+  const shell = shellIds(state);
   const ids = new Map<string, Set<string>>();
   const idsOf = (pageId: string) => {
     if (!ids.has(pageId)) ids.set(pageId, pageIds(state, pageId, shell));
     return ids.get(pageId)!;
   };
+  // The header and footer are checked on the pages that show each: they can differ.
   const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[] }> = [
-    ...(shellPages.length
-      ? [
-          { owner: { kind: 'shell' as const, id: 'header' }, tree: state.site.shell.header, on: shellPages },
-          { owner: { kind: 'shell' as const, id: 'footer' }, tree: state.site.shell.footer, on: shellPages }
-        ]
-      : []),
+    ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0),
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] }))
   ];
   const out: SectionLinkIssue[] = [];
@@ -826,7 +836,7 @@ function draftAtAddress(state: ProjectState, target: string, withheld: Map<strin
 
 /**
  * Which pages the website export publishes and which drafts it leaves out, with every link the published pages
- * show (the shared header and footer included, when a published page shows them) that goes to a draft: a link to
+ * show (the shared header or footer included, when a published page shows it) that goes to a draft: a link to
  * the page, or a typed address on the site's own public URL that opens it. Those links would lead visitors to a
  * page the website does not have, so the website export stops until they change. Links on a draft are not checked:
  * the draft is not published.
@@ -847,12 +857,8 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
   ]);
   const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
-    ...(published.some(hasShell)
-      ? [
-          { owner: { kind: 'shell' as const, id: 'header' }, tree: state.site.shell.header },
-          { owner: { kind: 'shell' as const, id: 'footer' }, tree: state.site.shell.footer }
-        ]
-      : [])
+    // Each shared part, when a published page shows it: the header and footer can be on different pages.
+    ...SHELL_PARTS.filter((part) => published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
   ];
   const seen = new Set<string>();
   for (const src of sources)

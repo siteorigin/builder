@@ -3,6 +3,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree
 import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
 import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
+import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
 import { layerLabel } from './layers';
 
 export interface BridgeDesc {
@@ -180,6 +181,15 @@ export function keepPagesValid(state: ProjectState, pageId: string | null, defin
   };
 }
 
+/**
+ * Where a selected shared header or footer shows: on how many pages, and whether the page on screen is one. An Undo
+ * or the AI can hide it on that page while it stays selected, and edits to it still reach the pages that show it.
+ */
+export function shellReach(state: ProjectState, part: string, pageId: string | null): { pages: number; here: boolean } {
+  const here = !!pageId && Object.hasOwn(state.pages, pageId) && isShellPart(part) && showsPart(state.pages[pageId], part);
+  return { pages: pagesUsingShell(state, part), here };
+}
+
 export function ownerLabel(state: ProjectState, owner: OwnerRef): string {
   if (owner.kind === 'page') return state.pages[owner.id]?.title ?? 'Page';
   if (owner.kind === 'shell') return owner.id === 'header' ? 'Header' : 'Footer';
@@ -275,8 +285,9 @@ export function textPreview(v: unknown): string {
   return '';
 }
 
-export function pagesUsingShell(state: ProjectState): number {
-  return state.site.pageOrder.filter((id) => state.pages[id]?.shell !== 'none').length;
+/** How many pages show the shared header or the shared footer: each page chooses them separately. */
+export function pagesUsingShell(state: ProjectState, part: string): number {
+  return isShellPart(part) ? pagesShowing(state, part).length : 0;
 }
 
 export function assetUrl(devUrl: string | null, file: string): string | null {
@@ -335,7 +346,7 @@ export function definitionPick(state: ProjectState, definitionId: string, chain:
 export function placementsOn(state: ProjectState, definitionId: string, pageId: string): ElementRef[] {
   const page = state.pages[pageId];
   if (!page) return [];
-  const owners: OwnerRef[] = [{ kind: 'page', id: pageId }, ...(page.shell !== 'none' ? [{ kind: 'shell' as const, id: 'header' }, { kind: 'shell' as const, id: 'footer' }] : [])];
+  const owners: OwnerRef[] = [{ kind: 'page', id: pageId }, ...partsShown(page).map((part) => ({ kind: 'shell' as const, id: part }))];
   const out: ElementRef[] = [];
   for (const owner of owners) {
     const tree = treeFor(state, owner);

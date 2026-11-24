@@ -157,8 +157,14 @@ describe('deleting a page with a replacement', () => {
     expect(missing(s)).toEqual([]);
     const shown = applyOperations(s, [{ type: 'page.remove', pageId: contact.id, replacementPageId: about.id }]).state;
     expect(cta(shown)).toEqual({ type: 'page', target: about.id, anchor: 'studio-hours' });
+    // The section is in the footer: a replacement without the header still has it, one without the footer does not.
+    const headerless = applyOperations(s, [
+      { type: 'page.update', pageId: about.id, showHeader: false },
+      { type: 'page.remove', pageId: contact.id, replacementPageId: about.id }
+    ]).state;
+    expect(cta(headerless)).toEqual({ type: 'page', target: about.id, anchor: 'studio-hours' });
     const bare = applyOperations(s, [
-      { type: 'page.update', pageId: about.id, shell: 'none' },
+      { type: 'page.update', pageId: about.id, showFooter: false },
       { type: 'page.remove', pageId: contact.id, replacementPageId: about.id }
     ]).state;
     expect(cta(bare)).toEqual({ type: 'page', target: about.id });

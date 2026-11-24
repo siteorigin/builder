@@ -163,11 +163,16 @@ describe('what the website publishes', () => {
     const contact = byTitle(s, 'Contact').id;
     s.pages[about].draft = true;
     s.pages[contact].draft = true;
-    for (const id of s.site.pageOrder) if (!s.pages[id].draft) s.pages[id].shell = 'none';
+    for (const id of s.site.pageOrder) if (!s.pages[id].draft) Object.assign(s.pages[id], { showHeader: false, showFooter: false });
     // Home links to About in its own content; the header and footer are shown only on drafts.
     const plan = publicationPlan(s);
     expect(plan.draftLinks.every((l) => l.owner.kind === 'page' && l.owner.id === s.site.homePageId)).toBe(true);
     expect(plan.draftLinks.length).toBeGreaterThan(0);
+    // A published page that shows only the footer has the footer's links checked, and still not the header's.
+    s.pages[s.site.homePageId].showFooter = true;
+    const owners = new Set(publicationPlan(s).draftLinks.map((l) => l.owner.id));
+    expect(owners.has('footer')).toBe(true);
+    expect(owners.has('header')).toBe(false);
   });
 
   it('flags a typed address on the site’s own URL that opens a draft or an old address of one', () => {

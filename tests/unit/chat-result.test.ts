@@ -31,7 +31,7 @@ describe('AI result card', () => {
   it('opens page elements, shared header elements on a page that shows them, and says when one is gone', () => {
     let state = createStarterState('business', 'Test', false);
     const [home, about] = state.site.pageOrder;
-    state = applyOperations(state, [{ type: 'page.update', pageId: about, shell: 'none' }]).state;
+    state = applyOperations(state, [{ type: 'page.update', pageId: about, showHeader: false, showFooter: false }]).state;
     const hero = state.pages[home].rootIds[0];
     const nav = state.site.shell.header.rootIds[0];
     const header = { kind: 'shell' as const, id: 'header' };
@@ -165,7 +165,10 @@ describe('opening a shared header field the AI located (#203)', () => {
     const about = Object.values(state.pages).find((p) => p.title === 'About')!;
     const location = { owner, nodeId, prop: 'siteName', path: ['Header', 'Header', 'Content', 'Site name'] };
     expect(locationTarget(state, about.id, location)).toEqual({ pageId: about.id, selection: { owner, instancePath: [], nodeId } });
-    about.shell = 'none';
+    // Hiding only the footer leaves the header on About; hiding the header sends it to the first page with one.
+    about.showFooter = false;
+    expect(locationTarget(state, about.id, location)).toEqual({ pageId: about.id, selection: { owner, instancePath: [], nodeId } });
+    about.showHeader = false;
     expect(locationTarget(state, about.id, location)).toEqual({ pageId: state.site.homePageId, selection: { owner, instancePath: [], nodeId } });
   });
 });

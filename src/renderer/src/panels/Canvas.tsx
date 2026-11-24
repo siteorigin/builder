@@ -22,6 +22,7 @@ import { AppMark } from '../components/AppMark';
 import { runPhase } from '../lib/savestate';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
+import { isShellPart, showsPart } from '@shared/page-shell';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -532,7 +533,7 @@ export function Canvas() {
     // A remembered placement counts only while it is on the page the canvas shows.
     const page = s.pageId ? st.pages[s.pageId] : undefined;
     const isPlacement = (pl: ElementRef | null) => {
-      if (!pl || !page || (pl.owner.kind === 'page' ? pl.owner.id !== page.id : pl.owner.kind !== 'shell' || page.shell === 'none')) return false;
+      if (!pl || !page || (pl.owner.kind === 'page' ? pl.owner.id !== page.id : pl.owner.kind !== 'shell' || !isShellPart(pl.owner.id) || !showsPart(page, pl.owner.id))) return false;
       const n = resolveRef(st, pl).node;
       return n?.kind === 'instance' && n.definitionId === dm.definitionId;
     };

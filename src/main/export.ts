@@ -17,6 +17,7 @@ import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
 import type { MissingAssetFiles } from '@shared/api';
+import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 
 const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
 
@@ -753,17 +754,12 @@ export function sectionLinkWarnings(state: ProjectState): string[] {
 const UNLINKED_LISTED = 6;
 
 /**
- * Warnings for buttons the site leaves out because they have no destination: the pages (and the shared header and
- * footer, when a page shows them) in site order, each button named by where it is and its label.
+ * Warnings for buttons the site leaves out because they have no destination: the pages (and the shared header or
+ * footer, when a page shows it) in site order, each button named by where it is and its label.
  */
 export function unlinkedButtonWarnings(state: ProjectState): string[] {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
-  const shell = pages.some((p) => p.shell !== 'none')
-    ? [
-        { tree: state.site.shell.header, label: 'Header' },
-        { tree: state.site.shell.footer, label: 'Footer' }
-      ]
-    : [];
+  const shell = SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => ({ tree: state.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' }));
   const found: string[] = [];
   for (const { tree, label } of [...pages.map((p) => ({ tree: p, label: p.title })), ...shell]) {
     for (const b of unlinkedButtons(state, tree)) {

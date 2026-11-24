@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
-import { EditOperationSchema, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
+import { EditOperationSchema, legacyShellError, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
 import { normalizeRoute, slugify } from '@shared/routes';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
@@ -264,6 +264,10 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Arguments were not valid JSON.' } };
   }
   const schema = TOOL_ARGS[name as ToolName];
+  // Checked before parsing, which drops fields the schema does not name.
+  const raw = name === 'apply_operations' && parsed && typeof parsed === 'object' ? (parsed as { operations?: unknown }).operations : undefined;
+  const legacy = Array.isArray(raw) ? raw.map(legacyShellError).find(Boolean) : null;
+  if (legacy) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: legacy } };
   const r = schema.safeParse(parsed);
   if (!r.success) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: r.error.issues.slice(0, 8).map((i) => `${i.path.join('.') || 'arguments'}: ${i.message}`).join('; ') } };
   const args = r.data as never;

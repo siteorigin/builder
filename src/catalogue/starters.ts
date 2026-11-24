@@ -42,7 +42,7 @@ function page(id: string, title: string, route: string, nodes: GraphNode[], seo:
   for (const n of nodes) map[n.id] = n;
   const rootIds = nodes.filter((n) => !(n as { _child?: boolean })._child).map((n) => n.id);
   for (const n of nodes) delete (n as { _child?: boolean })._child;
-  return { schemaVersion: SCHEMA_VERSION, id, title, route, seo, shell: 'default', rootIds, nodes: map };
+  return { schemaVersion: SCHEMA_VERSION, id, title, route, seo, showHeader: true, showFooter: true, rootIds, nodes: map };
 }
 
 function emptyState(name: string, themeId = 'foundation'): ProjectState {

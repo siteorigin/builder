@@ -3,6 +3,7 @@ import type { ChatChange, ChatContext, ChatMessage, FieldLocation } from '@share
 import type { ElementRef, ProjectState } from '@shared/types';
 import { locateField } from '@engine/locate';
 import { resolveRef } from './model';
+import { pageShowing, partName } from '@shared/page-shell';
 
 /** Checks that need attention, read from the wording of results stored before checks carried a status. */
 const ISSUE = /wider than the screen|overflows its box|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)|^stopped at /i;
@@ -32,16 +33,15 @@ export const canOpen = (c: ChatChange) => !!c.pageId || (c.owner?.kind === 'shel
 export type ChangeTarget = { error: string } | { pageId: string; selection: ElementRef | null; note?: string };
 
 /**
- * Where showing a change goes: its page (for the shared header and footer, the page on screen when it shows
- * them, or else the first page that does), and the element when it is still there. Null when there is nothing
+ * Where showing a change goes: its page (for the shared header or footer, the page on screen when it shows
+ * it, or else the first page that does), and the element when it is still there. Null when there is nothing
  * to show.
  */
 export function changeTarget(state: ProjectState, currentPageId: string | null, c: ChatChange): ChangeTarget | null {
   const owner = c.pageId ? { kind: 'page' as const, id: c.pageId } : c.owner?.kind === 'shell' ? c.owner : null;
   if (!owner) return null;
-  const showsShell = (id: string | null | undefined) => !!id && !!state.pages[id] && state.pages[id].shell !== 'none';
-  const pageId = owner.kind === 'page' ? (state.pages[owner.id] ? owner.id : undefined) : showsShell(currentPageId) ? currentPageId! : state.site.pageOrder.find(showsShell);
-  if (!pageId) return { error: owner.kind === 'page' ? 'That page is no longer in the site.' : 'No page shows the shared header and footer.' };
+  const pageId = owner.kind === 'page' ? (state.pages[owner.id] ? owner.id : undefined) : pageShowing(state, owner.id, currentPageId);
+  if (!pageId) return { error: owner.kind === 'page' ? 'That page is no longer in the site.' : `No page shows ${partName(owner.id)}.` };
   if (!c.nodeId) return { pageId, selection: null };
   const ref: ElementRef = { owner, instancePath: [], nodeId: c.nodeId };
   let exists = false;

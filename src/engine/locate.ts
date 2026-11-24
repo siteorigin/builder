@@ -4,6 +4,7 @@ import { groupFields, listRowTitle } from '@shared/fields';
 import { effectiveItem } from '@shared/page-teasers';
 import { formServiceSetup } from '@catalogue/foundation/form';
 import { displayName } from './tree';
+import { pageShowing, partName } from '@shared/page-shell';
 
 /** A content field of a placed component, named by IDs. */
 export type FieldTarget = Omit<FieldLocation, 'path'>;
@@ -15,7 +16,6 @@ export type FieldTarget = Omit<FieldLocation, 'path'>;
 export type Located = { ok: true; pageId: string; owner: OwnerRef; path: string[]; value: unknown; shown?: string } | { ok: false; message: string; hint?: string };
 
 const has = <T>(o: Record<string, T> | undefined, k: string): T | undefined => (o && Object.hasOwn(o, k) ? o[k] : undefined);
-const showsShell = (state: ProjectState, id: string | null | undefined): id is string => !!id && !!has(state.pages, id) && state.pages[id].shell !== 'none';
 /** For a choice, the option label the Inspector shows for a stored value. */
 const shownAs = (schema: PropSchema, value: unknown): { shown?: string } => {
   const option = schema.type === 'enum' ? schema.options.find((o) => o.value === value) : undefined;
@@ -46,9 +46,9 @@ export function locateField(state: ProjectState, target: FieldTarget, currentPag
     where = page.title;
   } else if (owner?.kind === 'shell' && (owner.id === 'header' || owner.id === 'footer')) {
     tree = state.site.shell[owner.id];
-    // The page being viewed when it shows the header and footer, else the first page that does.
-    pageId = showsShell(state, currentPageId) ? currentPageId : state.site.pageOrder.find((id) => showsShell(state, id));
-    if (!pageId) return { ok: false, message: 'No page shows the shared header and footer.' };
+    // The page being viewed when it shows this part, else the first page that does: pages choose each on its own.
+    pageId = pageShowing(state, owner.id, currentPageId);
+    if (!pageId) return { ok: false, message: `No page shows ${partName(owner.id)}.` };
     where = owner.id === 'header' ? 'Header' : 'Footer';
   } else return { ok: false, message: 'Only fields of a component placed on a page, or in the shared header or footer, can be opened in the Inspector.' };
   const node = has(tree?.nodes, nodeId);

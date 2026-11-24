@@ -1,6 +1,7 @@
 /** Whether a measured preview load showed the page as it is now. Pure, so the checks are testable. */
 import type { ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { partsShown } from '@shared/page-shell';
 
 interface Report {
   error?: unknown;
@@ -113,7 +114,7 @@ function usedImageFiles(state: ProjectState): Set<string> {
  * Theme code components show library images only through their properties, which are read above.
  */
 function showsCode(state: ProjectState, pageId: string): boolean {
-  const trees = [state.pages[pageId], ...(state.pages[pageId].shell !== 'none' ? [state.site.shell.header, state.site.shell.footer] : [])];
+  const trees = [state.pages[pageId], ...partsShown(state.pages[pageId]).map((part) => state.site.shell[part])];
   return trees.some((t) =>
     Object.values(t.nodes).some((n) => {
       const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;

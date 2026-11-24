@@ -6,7 +6,7 @@ import { api, applyOps, attachToChat, commitOps, getState, setState, toast, undo
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { Picture, Thumb } from '../components/AssetPicture';
-import { imagePlacement, openSiteStyles, placeAsset, selectPage } from '../lib/actions';
+import { goToShellPart, imagePlacement, openSiteStyles, placeAsset, selectPage } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
@@ -138,6 +138,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
   const out: Place[] = [];
   const reveal = (owner: OwnerRef, nodeId: string) => () => {
     if (owner.kind === 'page') selectPage(owner.id);
+    else if (owner.kind === 'shell' && !goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id}, so this image is not on any page.`, 'info');
     setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true });
   };
   for (const t of allTrees(state)) {

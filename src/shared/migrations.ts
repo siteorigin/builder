@@ -15,7 +15,7 @@
  * The pipeline advances each document's `schemaVersion` after every step and keeps the theme lock truthful, so a
  * migration deals with neither.
  */
-import type { ComponentDefinition, GraphNode, NodeTree, ProjectState, VariantAxis, VariantDef } from './types';
+import type { ComponentDefinition, GraphNode, NodeTree, PageDoc, ProjectState, VariantAxis, VariantDef } from './types';
 import { stableHash } from './ids';
 import { sha256Hex } from './sha256';
 
@@ -188,7 +188,7 @@ export const MIGRATIONS: Migration[] = [
       for (const page of Object.values(project.pages)) {
         if (!due(page)) continue;
         page.seo ??= {};
-        page.shell ??= 'default';
+        (page as LegacyPage).shell ??= 'default';
       }
     }
   },
@@ -227,8 +227,36 @@ export const MIGRATIONS: Migration[] = [
       for (const page of Object.values(project.pages)) if (due(page)) convert(page);
       for (const def of Object.values(project.components)) if (due(def) && def.tree) convert(def.tree);
     }
+  },
+  {
+    id: 'independent-header-footer',
+    description: 'Let each page show the shared header and the shared footer independently, instead of both or neither.',
+    migrate(project, due) {
+      for (const page of Object.values(project.pages) as LegacyPage[]) {
+        if (!due(page)) continue;
+        // A page already in this format (put back from a newer copy and stamped older) keeps its own choices.
+        if (typeof page.showHeader === 'boolean' && typeof page.showFooter === 'boolean') {
+          delete page.shell;
+          continue;
+        }
+        const shows = page.shell !== 'none';
+        const flags: Array<[string, unknown]> = [
+          ['showHeader', typeof page.showHeader === 'boolean' ? page.showHeader : shows],
+          ['showFooter', typeof page.showFooter === 'boolean' ? page.showFooter : shows]
+        ];
+        // The two settings take the old one's place in the document, so a page file still reads in the same order.
+        const rest = Object.entries(page).filter(([k]) => k !== 'showHeader' && k !== 'showFooter');
+        const at = rest.findIndex(([k]) => k === 'shell');
+        const entries = at < 0 ? [...rest, ...flags] : [...rest.slice(0, at), ...flags, ...rest.slice(at + 1)];
+        for (const k of Object.keys(page)) delete (page as unknown as Record<string, unknown>)[k];
+        Object.assign(page, Object.fromEntries(entries));
+      }
+    }
   }
 ];
+
+/** A page as formats before independent header and footer settings stored it: one setting for both. */
+type LegacyPage = Omit<PageDoc, 'showHeader' | 'showFooter'> & { shell?: 'default' | 'none'; showHeader?: unknown; showFooter?: unknown };
 
 type LegacyDefinition = ComponentDefinition & { variants?: Record<string, VariantDef>; defaultVariant?: string };
 

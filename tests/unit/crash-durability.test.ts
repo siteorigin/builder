@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
+import { SCHEMA_VERSION } from '@shared/types';
+import { sha } from '../../src/main/project/fsutil';
 import { ProjectSession } from '../../src/main/project/session';
 
 const dirs: string[] = [];
@@ -311,6 +313,48 @@ describe('crash durability', { timeout: 300_000 }, () => {
       const again = await reopen(dir);
       expect(again.state.site.name).toBe('Persist');
       expect(again.historyInfo().entries.find((e) => e.runId === 'run_x')).toBeUndefined();
+      expect(again.recoveryNotes.join(' ')).toMatch(/could not be finished/);
+    });
+
+    it('finishes a run whose completion was saved by the previous format, without installing its undo steps', async () => {
+      const { dir, s } = await make();
+      expect(await s.beginRun('run_v')).toBeNull();
+      expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_v', history: false })).ok).toBe(true);
+      crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      await s.completeRun('AI: test').catch(() => undefined);
+      disarm?.();
+      // The app was updated to a new document format before the project was opened again.
+      const journalPath = join(dir, '.siteorigin/journal.json');
+      const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
+      expect(journal.finishRun).toBe('run_v');
+      journal.history.schemaVersion = SCHEMA_VERSION - 1;
+      writeFileSync(journalPath, JSON.stringify(journal));
+      const again = await reopen(dir);
+      expect(again.state.site.name).toBe('AI name');
+      expect(existsSync(join(dir, '.siteorigin/sessions/active-run.json'))).toBe(false);
+      // Its undo steps hold documents of the old format, so they are not offered.
+      expect(again.historyInfo().entries.find((e) => e.runId === 'run_v')).toBeUndefined();
+      expect(again.recoveryNotes.join(' ')).not.toMatch(/could not be finished/);
+      expect(again.recoveryNotes.join(' ')).toMatch(/cannot be undone/);
+    });
+
+    it('never trusts a previous-format completion that also changes files', async () => {
+      const { dir, s } = await make();
+      expect(await s.beginRun('run_w')).toBeNull();
+      expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_w', history: false })).ok).toBe(true);
+      crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      await s.completeRun('AI: test').catch(() => undefined);
+      disarm?.();
+      const journalPath = join(dir, '.siteorigin/journal.json');
+      const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
+      journal.history.schemaVersion = SCHEMA_VERSION - 1;
+      // A completion never writes files of its own; one that claims to is not what this app wrote.
+      const site = readFileSync(join(dir, 'siteorigin/site.json'), 'utf8');
+      const blob = journal.history.entries.find((e: { runId?: string }) => e.runId === 'run_w').docs['siteorigin/site.json'].after;
+      journal.writes = [{ path: 'siteorigin/site.json', before: sha(site), blob }];
+      writeFileSync(journalPath, JSON.stringify(journal));
+      const again = await reopen(dir);
+      expect(again.state.site.name).toBe('Persist');
       expect(again.recoveryNotes.join(' ')).toMatch(/could not be finished/);
     });
 

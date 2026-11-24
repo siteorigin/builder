@@ -101,7 +101,7 @@ export function projectSummary(state: ProjectState, revision: number) {
     homePageId: state.site.homePageId,
     pages: state.site.pageOrder.map((id) => {
       const p = state.pages[id];
-      return { id, title: p.title, route: p.route, sections: p.rootIds.length, shell: p.shell, ...(isDraftPage(state, p) ? { draft: true } : {}) };
+      return { id, title: p.title, route: p.route, sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}) };
     }),
     shell: {
       header: state.site.shell.header.rootIds.map((id) => compactNode(state, state.site.shell.header, id)),
@@ -178,7 +178,8 @@ export function pageDetail(state: ProjectState, pageId: string) {
     title: p.title,
     route: p.route,
     seo: p.seo,
-    shell: p.shell,
+    showHeader: p.showHeader,
+    showFooter: p.showFooter,
     ...(isDraftPage(state, p) ? { draft: true } : {}),
     owner: { kind: 'page', id: p.id },
     sections: p.rootIds.map((id) => compactNode(state, p, id))

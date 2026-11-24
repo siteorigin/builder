@@ -8,6 +8,7 @@ import { commitOps, getState, setState, toast, undoAction, useStore } from '../s
 import { elementWhere, insert, insertionPoint, nodeBefore, nodeLabel, selectPage, type Primitive, type Where } from '../lib/actions';
 import { ownerLabel } from '../lib/model';
 import { gridKeys, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
+import { pageShowing, partName } from '@shared/page-shell';
 
 export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
   const key = (name ?? 'box')
@@ -235,10 +236,9 @@ function showPlacement(definitionId: string, owner: OwnerRef) {
   const st = s.snapshot?.state;
   const place = st && placesOf(st, definitionId).find((p) => p.owner.kind === owner.kind && p.owner.id === owner.id);
   if (!st || !place) return toast('That placement has been removed since the menu opened.', 'info');
-  const showsShell = (id: string | null | undefined) => !!id && Object.hasOwn(st.pages, id) && st.pages[id].shell !== 'none';
   const current = s.definitionMode?.returnPageId ?? s.pageId;
-  const pageId = owner.kind === 'page' ? owner.id : showsShell(current) ? current : st.site.pageOrder.find(showsShell);
-  if (!pageId) return toast('No page shows the shared header and footer, so this placement is not visible anywhere.', 'info');
+  const pageId = owner.kind === 'page' ? owner.id : pageShowing(st, owner.id, current);
+  if (!pageId) return toast(`No page shows ${partName(owner.id)}, so this placement is not visible anywhere.`, 'info');
   selectPage(pageId);
   setState({ selection: { owner, instancePath: [], nodeId: place.nodeIds[0] }, rightTab: 'inspect', dockOpen: true });
 }

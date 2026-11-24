@@ -6,7 +6,7 @@ import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, toast
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { selectPage } from '../lib/actions';
+import { goToShellPart, selectPage } from '../lib/actions';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
 
@@ -143,6 +143,8 @@ export function PagesPanel() {
   /** Select the shared header and land on its navigation list, ready to edit. */
   const editMenu = () => {
     if (!headerMenu) return;
+    // Its menu is edited on a page that shows the header.
+    if (!goToShellPart('header')) return toast('No page shows the shared header. Turn it on in a page’s settings to edit its menu.', 'info');
     setState({ selection: { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: headerMenu.id }, rightTab: 'inspect', dockOpen: true, definitionMode: null });
     setTimeout(() => {
       openSection('content');

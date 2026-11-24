@@ -25,6 +25,7 @@ import { effectiveItem } from '@shared/page-teasers';
 import { groupFields, listRowTitle, type PropGroup } from '@shared/fields';
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
+import { isShellPart, type ShellPart } from '@shared/page-shell';
 
 export { groupFields };
 
@@ -43,13 +44,13 @@ const OTHER_SECTION = '\u0000other';
  * from its heading when it is chosen), the shared header and footer's IDs, or any ID typed in. `top` offers the top
  * of the page (no section); without it an empty value asks for a choice.
  */
-function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { state: ProjectState; pageId: string | null | undefined; value: string; onPick: (anchor: string, edit?: PendingEdit) => void; label: string; top?: boolean; shared?: boolean }) {
+function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { state: ProjectState; pageId: string | null | undefined; value: string; onPick: (anchor: string, edit?: PendingEdit) => void; label: string; top?: boolean; shared?: ShellPart }) {
   const [typing, setTyping] = useState(false);
   const picker = useRef<HTMLSelectElement>(null);
   const revision = useStore((s) => s.snapshot?.revision);
   const page = pageId ? state.pages[pageId] : undefined;
-  // A shared header or footer link to a section "on this page" shows on every page with the header, so only IDs all
-  // of those pages have will work there, and choosing one never gives a section on one page a new ID.
+  // A shared header or footer link to a section "on this page" shows on every page with that header or footer, so only
+  // IDs all of those pages have will work there, and choosing one never gives a section on one page a new ID.
   const { ids, options } = sectionOptions(state, pageId, shared);
   // A section that is gone (or was typed in) stays visible until another is chosen.
   if (value && !options.some((o) => o.value === `#${value}`)) options.push({ value: `#${value}`, text: ids.has(value) ? `#${value}` : `#${value} (not found)` });
@@ -125,8 +126,8 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { s
 export function LinkEditor({ value, onChange, state, label, everywhere }: { value: LinkValue; onChange: (v: LinkValue, edit?: PendingEdit) => void; state: ProjectState; label?: string; everywhere?: boolean }) {
   const v = value ?? { type: 'none', target: '' };
   const currentPageId = useStore((s) => s.pageId);
-  // A link in the shared header or footer shows on every page that has them.
-  const shared = useStore((s) => s.selection?.owner.kind === 'shell');
+  // A link in the shared header or footer shows on every page that shows that part.
+  const shared = useStore((s) => (s.selection?.owner.kind === 'shell' && isShellPart(s.selection.owner.id) ? s.selection.owner.id : undefined));
   // A type that needs a destination before it is a valid link (an address, a number) waits here until one
   // is entered; a new value (an undo, another selection) ends the wait.
   const [pending, setPending] = useState<LinkValue['type'] | null>(null);
@@ -157,7 +158,7 @@ export function LinkEditor({ value, onChange, state, label, everywhere }: { valu
       onChange(withAnchor({ type: t, target: page, newTab: v.newTab }, anchor));
     }
     // A section carries over only when it is on this page; otherwise one is chosen first.
-    else if (t === 'anchor' && anchor && currentPageId && (shared ? sharedPageIds(state) : pageIds(state, currentPageId)).has(anchor)) onChange({ type: t, target: anchor });
+    else if (t === 'anchor' && anchor && currentPageId && (shared ? sharedPageIds(state, shared) : pageIds(state, currentPageId)).has(anchor)) onChange({ type: t, target: anchor });
     else setPending(t);
   };
   return (

@@ -60,7 +60,8 @@ export const OPERATION_SCHEMAS = {
     description: z.string().max(320).optional(),
     noindex: z.boolean().optional(),
     draft: z.boolean().optional().describe('true keeps the page as a draft: still editable and previewed, but left out of the exported website. false publishes it. The Home page cannot be a draft.'),
-    shell: z.enum(['default', 'none']).optional(),
+    showHeader: z.boolean().optional().describe('Whether this page shows the site\'s shared header. Only this page changes; the footer setting is separate.'),
+    showFooter: z.boolean().optional().describe('Whether this page shows the site\'s shared footer. Only this page changes; the header setting is separate.'),
     socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.')
   }),
   'page.duplicate': z.object({ type: z.literal('page.duplicate'), pageId: z.string(), title: z.string().optional() }),
@@ -363,6 +364,15 @@ function hasForbidden(v: unknown, depth = 0): boolean {
   return false;
 }
 
+/**
+ * Pages once had one setting for both shared parts. The schema no longer names it, so parsing would drop it and an
+ * edit that still sends it (a model repeating an earlier call) would quietly change nothing: it is refused instead.
+ */
+export function legacyShellError(op: unknown): string | null {
+  if (!op || typeof op !== 'object' || (op as { type?: unknown }).type !== 'page.update' || !Object.hasOwn(op, 'shell')) return null;
+  return 'shell: a page shows the shared header and footer separately. Use showHeader and showFooter.';
+}
+
 export function validateOperation(op: unknown): { ok: true; op: EditOperation } | { ok: false; message: string } {
   if (!op || typeof op !== 'object' || !('type' in op)) return { ok: false, message: 'Operation must be an object with a "type".' };
   // Object-prototype names are never valid IDs or keys; rejecting them keeps lookups safe.
@@ -370,6 +380,8 @@ export function validateOperation(op: unknown): { ok: true; op: EditOperation } 
   const type = String((op as { type: unknown }).type);
   const schema = Object.hasOwn(OPERATION_SCHEMAS, type) ? OPERATION_SCHEMAS[type as OperationType] : undefined;
   if (!schema) return { ok: false, message: `Unknown operation type "${(op as { type: string }).type}". Valid types: ${Object.keys(OPERATION_SCHEMAS).join(', ')}.` };
+  const legacy = legacyShellError(op);
+  if (legacy) return { ok: false, message: legacy };
   const r = schema.safeParse(op);
   if (!r.success) return { ok: false, message: r.error.issues.map((i) => `${i.path.join('.') || 'operation'}: ${i.message}`).join('; ') };
   return { ok: true, op: r.data as EditOperation };
