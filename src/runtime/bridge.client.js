@@ -424,15 +424,17 @@ let pendingScroll = null;
 const SCROLL_WAIT_MS = 3000;
 /**
  * Scrolls the element `desc` names into view, unless it already shows comfortably. False while there is nothing to
- * scroll to yet: it is not on the page, or it is a component's wrapper whose content has not arrived. One that is on
- * the page without a box of its own (hidden at this width, in a closed disclosure, an empty anchor) is asked to
- * scroll as it is, and never waited for: the page is not moved to it later, when something else shows it.
+ * scroll to yet: it is not on the page, or it is a component's wrapper whose content has not arrived. One already on
+ * the page when asked, without a box of its own (hidden at this width, in a closed disclosure, an empty anchor), is
+ * asked to scroll as it is, and never waited for: the page is not moved to it later, when something else shows it.
+ * Once `waiting` for one that was not there, a hidden copy mounting first (one a component shows at another width)
+ * is not it: the wait goes on for one that shows.
  */
-function scrollToDesc(desc, show) {
+function scrollToDesc(desc, show, waiting = false) {
   const all = findAll(desc);
   let el = all.find((e) => rectOf(e));
   if (!el) {
-    if (!all.length || all.some((e) => getComputedStyle(e).display === 'contents')) return false;
+    if (waiting || !all.length || all.some((e) => getComputedStyle(e).display === 'contents')) return false;
     el = all[0];
   }
   stopKeeping();
@@ -455,7 +457,7 @@ function retryScroll() {
   const p = pendingScroll;
   if (!p) return;
   if (performance.now() > p.until || mode !== 'edit') pendingScroll = null;
-  else if (scrollToDesc(p.desc, p.show)) pendingScroll = null;
+  else if (scrollToDesc(p.desc, p.show, true)) pendingScroll = null;
 }
 /**
  * The keys that scroll the page, or move focus to what the page then scrolls to (Tab). A modifier alone (Shift as a

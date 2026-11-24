@@ -176,6 +176,16 @@ describe.skipIf(!browserInstalled)('scrolling to a new selection the page shows 
     expect(await inView('copied')).toBe(true);
   });
 
+  it('waits past a hidden copy that mounts first for the one that shows', async () => {
+    await send('track', { selected: sel('copied'), hovered: null });
+    await send('scrollTo', { desc: sel('copied') });
+    await inFrame(`win.mount('copied'); doc.getElementById('copied').style.display = 'none';`);
+    await settle();
+    expect(await scrollY()).toBe(0);
+    await mount('copied');
+    expect(await inFrame<boolean>(`const r = doc.querySelectorAll('#copied')[1].getBoundingClientRect(); return r.top >= 0 && r.bottom <= win.innerHeight;`)).toBe(true);
+  });
+
   it('scrolls to one the page puts in place of another, with nothing selected, the page no taller', async () => {
     // Nothing selected or hovered, and the page keeps its height: only the change to the page itself wakes the wait.
     await send('scrollTo', { desc: sel('swapped') });

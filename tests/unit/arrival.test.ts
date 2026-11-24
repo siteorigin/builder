@@ -92,23 +92,26 @@ describe('arrival cue and Preview', () => {
     // The editor's store and actions are DOM code, outside this test project's types: loaded by path, with a stand-in
     // for the preload bridge and just the shapes used here.
     vi.stubGlobal('window', { builder: { project: { saveLocalState: async () => ({ ok: true }) } } });
-    const load = (path: string) => import(/* @vite-ignore */ path);
-    const { setMode } = (await load('../../src/renderer/src/lib/actions')) as { setMode: (m: 'edit' | 'preview') => void };
-    const { getState, setState } = (await load('../../src/renderer/src/store')) as {
-      getState: () => { selection: ElementRef | null; mode: string };
-      setState: (s: Record<string, unknown>) => void;
-    };
-    const state = createStarterState('business', 'Studio', false);
-    const page = state.pages[state.site.homePageId];
-    const added: ElementRef = { owner: { kind: 'page', id: page.id }, instancePath: [], nodeId: page.rootIds[0] };
-    const snapshot = { state, revision: 1, workspaceKey: 'w' } as unknown as ProjectSnapshot;
-    setState({ snapshot, pageId: page.id, mode: 'edit', selection: added, definitionMode: null });
-    markArrival(added);
-    setMode('preview');
-    setMode('edit');
-    // Edit brings back the selection Preview was entered with: the same object the cue was waiting for.
-    expect(getState().selection).toBe(added);
-    expect(takeArrival(getState().selection, true)).toBe(false);
-    vi.unstubAllGlobals();
+    try {
+      const load = (path: string) => import(/* @vite-ignore */ path);
+      const { setMode } = (await load('../../src/renderer/src/lib/actions')) as { setMode: (m: 'edit' | 'preview') => void };
+      const { getState, setState } = (await load('../../src/renderer/src/store')) as {
+        getState: () => { selection: ElementRef | null; mode: string };
+        setState: (s: Record<string, unknown>) => void;
+      };
+      const state = createStarterState('business', 'Studio', false);
+      const page = state.pages[state.site.homePageId];
+      const added: ElementRef = { owner: { kind: 'page', id: page.id }, instancePath: [], nodeId: page.rootIds[0] };
+      const snapshot = { state, revision: 1, workspaceKey: 'w' } as unknown as ProjectSnapshot;
+      setState({ snapshot, pageId: page.id, mode: 'edit', selection: added, definitionMode: null });
+      markArrival(added);
+      setMode('preview');
+      setMode('edit');
+      // Edit brings back the selection Preview was entered with: the same object the cue was waiting for.
+      expect(getState().selection).toBe(added);
+      expect(takeArrival(getState().selection, true)).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
