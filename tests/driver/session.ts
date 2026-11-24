@@ -15,8 +15,7 @@ import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { execFile } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import type { WriteStream } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
@@ -27,13 +26,18 @@ import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
 import { parseAction, runAction } from './act.ts';
 import { desktopInMain, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, stageImport } from './desktop.ts';
 import type { Area } from './desktop.ts';
+import { CLASS_OF, Journal, LogKeeper, REPLAY_KIND, REPLAY_VERSION, clipJson, hideDeep, machineRoots, pathHider } from './evidence.ts';
+import type { EntryOutcome, JournalEntry, ReplayRecord, TargetDescriptor } from './evidence.ts';
 import { SECRET_INPUTS, elementFor, frameSecrets, parseLocateArgs, parseSnapshotArgs, uiLocate, uiSnapshot } from './observe.ts';
-import type { ObserveEnv } from './observe.ts';
+import type { ObserveEnv, SnapshotResult } from './observe.ts';
+import { CONDITIONS, inspectExport, judgeApp, judgeContext, judgeLocate, judgeTerminal, parseCondition, parseInspectArgs, probeApp, readProjectDocs, toSessionPath } from './outcomes.ts';
+import type { AppProbe, Checkpoint, Condition, ExportBrief, LocateSample, Verdict } from './outcomes.ts';
 import { killTree, killTreeSync, ownedEntries, processTable } from './processes.ts';
 import type { ProcessEntry } from './processes.ts';
-import { DriverError, PROTOCOL_VERSION, failure, frameIdentity, parseRequest, success } from './protocol.ts';
+import { DriverError, PROTOCOL_VERSION, errorInfo, failure, frameIdentity, parseRequest, success } from './protocol.ts';
 import type { Capability, CloseArgs, CloseResult, FixtureName, KeepArtifacts, OpKind, Reply, ReplyContext, Request, SessionEvent, StartArgs, WindowRef } from './protocol.ts';
-import { RefRegistry, scrubDeep } from './snapshot.ts';
+import { RefRegistry, scrubDeep, scrubber } from './snapshot.ts';
+import type { Scope } from './snapshot.ts';
 import { ShotRegistry } from './shots.ts';
 
 export const REPO_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -46,6 +50,12 @@ const DEFAULT_CLOSE_MS = 15_000;
 /** How long a launch still in flight when the session closes gets to settle once its process is gone. */
 const SETTLE_MS = 30_000;
 const MAX_EVENTS = 100;
+/** Page errors kept for evidence (the count goes on): the latest ones. */
+const MAX_PAGE_ERRORS = 200;
+/** How often a wait looks again at what it waits for. */
+const POLL_MS = 200;
+/** How long a replay record's observation (and its screenshots) may take. */
+const RECORD_OBSERVATION_MS = 8000;
 
 const FIXTURES: Record<Exclude<FixtureName, 'welcome'>, { name: string; starter: 'business' | 'blank'; sampleImages: boolean }> = {
   'business-v1': { name: 'Fixture Business', starter: 'business', sampleImages: false }
@@ -225,6 +235,46 @@ export const OPERATIONS: Record<string, OpSpec> = {
     usesWindow: true,
     summary:
       'Press on `from`, move to `to` (a drop target) or `by` an offset in the editor window\'s CSS pixels (a resize handle), in `steps` moves, and release: { from, to? | by?: { x, y }, steps? }. Both ends are checked before the button goes down; a drag that stops part way is cancelled (Escape) where it started.'
+  },
+  'wait.for': {
+    kind: 'observe',
+    defaultTimeoutMs: 30_000,
+    needsApp: true,
+    usesWindow: true,
+    summary:
+      `Wait, within the request's timeoutMs, for a named condition: { condition: ${CONDITIONS.join(' | ')}, ...its params }. ui.present / ui.absent take ui.locate's role, name, exact, region, within, scope; ui.context takes screen, mode, dialog (a name, or null); preview.ready takes path; save.settled (the editor shows Saved, and with changed (default true) the project moved on since the last input); project.revision takes atLeast (default: above the revision before the last input); export.finished (an export finished or failed since the last input: outcome exported | failed); outcome.terminal takes since: input | start (the app exited, the window closed, a page error, a preview failure). Answers with what met it, or TIMEOUT (retryable) with details: the pending condition, the last sample, an observation and the page, preview and app errors.`
+  },
+  'project.summary': {
+    kind: 'observe',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary:
+      'The open project, read independently of its UI: its opening, revision, save indicator, preview runtime, history, conflicts and recent exports from the app, and its site and pages from the documents on disk. With find, every document string that holds the text (file and JSON path), bounded; complete says whether every document was read.'
+  },
+  'exports.inspect': {
+    kind: 'observe',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: false,
+    summary:
+      'Read what an export wrote into the session\'s exports/ folder: { path: "exports/...", file?: a file inside a folder, find?: text, read?: true }. A folder lists its files; find searches its text files (or the file) for the text, bounded, with complete saying whether everything was read. Links are never followed.'
+  },
+  'evidence.log': {
+    kind: 'observe',
+    defaultTimeoutMs: 10_000,
+    needsApp: false,
+    usesWindow: false,
+    summary:
+      'The session\'s ordered record of requests after a cursor ({ after?: seq, limit?: 1-200 }): each with its class (setup, input, observation, session), args, the targets of an input as role, name and region, and how it ended. Bounded: dropped counts entries let go.'
+  },
+  'evidence.save': {
+    kind: 'observe',
+    defaultTimeoutMs: 30_000,
+    needsApp: false,
+    usesWindow: false,
+    summary:
+      'Write replay.json into the session\'s artifacts and return it: the build, the fixture and provider scenario, every recorded step, the latest observation (with screenshots unless withheld or screenshot: false), the last failure, page errors and app output that read as trouble, and the artifacts. Credentials and host paths are left out. A session closing with its artifacts kept writes one too.'
   },
   'session.close': {
     kind: 'session',
@@ -667,6 +717,23 @@ function parseCloseArgs(args: Record<string, unknown> | undefined): CloseArgs {
 
 const now = () => new Date().toISOString();
 
+function aborted(signal: AbortSignal) {
+  if (signal.aborted) throw new DriverError('TIMEOUT', 'The request ran out of time.');
+}
+
+/** Wait `ms`, or less if the request is told to stop: the pause between a wait's looks, never a guess at timing. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((r) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      r();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
 /** `promise`, or `fallback` once `ms` pass; the timer never outlives the race. */
 async function bounded<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -685,8 +752,10 @@ export class Session {
   get page(): Page | null {
     return this.bound?.page ?? null;
   }
-  /** Page errors the editor raised, across every window the session bound. */
+  /** Page errors the editor raised, across every window the session bound: the latest MAX_PAGE_ERRORS of them. */
   readonly pageErrors: string[] = [];
+  /** How many page errors there have been in all. */
+  pageErrorCount = 0;
   paths: SessionPaths | null = null;
   pid: number | null = null;
   mock: MockOpenAIServer | null = null;
@@ -709,7 +778,24 @@ export class Session {
   private build: BuildIdentity | null = null;
   private appIdentity: AppIdentity | null = null;
   private fixtureProject: string | null = null;
-  private log: WriteStream | null = null;
+  /** The app's stdout and stderr, bounded; written to the artifacts as app.log when they are kept. */
+  private readonly appLog = new LogKeeper();
+  private readonly created = Date.now();
+  /** Every request, in order, classed as setup, input, observation or session (#497). */
+  private readonly journal = new Journal();
+  /** The app as it was just before the last input that sent anything: what change conditions compare with. */
+  private lastInput: Checkpoint | null = null;
+  /** The search that found each ref, while it was unique: how a replay finds the element again. */
+  private readonly recipes = new Map<string, { scope: Scope; role: string; name?: string; exact?: boolean; region?: string }>();
+  /** The wait running now: what a deadline that cuts it short reports. */
+  private waiting: { condition: Condition; samples: number; pending: string; last: unknown } | null = null;
+  /** The last request that failed, for the evidence. */
+  private lastFailure: Record<string, unknown> | null = null;
+  /** The latest observation's context and a bounded tree, for the evidence. */
+  private lastObservation: unknown = null;
+  /** Whether the session got as far as ready: only then is there a run to replay. */
+  private reachedReady = false;
+  private hide: ((s: string) => string) | null = null;
   private closeRequested = false;
   /** Whether closing keeps the artifacts: settled by the first close, so a later one cannot change it. */
   private keeping: boolean | null = null;
@@ -754,13 +840,19 @@ export class Session {
       return failure(frameIdentity(raw), e, await this.replyContext(began));
     }
     const spec = OPERATIONS[request.op];
+    // Every request the session knows is numbered as it comes in, whatever becomes of it.
+    const entry = spec ? this.admit(request, spec, began) : null;
+    const done = (reply: Reply) => {
+      if (entry) this.record(entry, request, reply);
+      return reply;
+    };
     try {
       if (!spec) throw new DriverError('UNKNOWN_OP', `There is no operation "${request.op}".`, { details: { ops: Object.keys(OPERATIONS) } });
       if (request.op !== 'session.close' && this.inFlight) throw new DriverError('BUSY', `Request "${this.inFlight}" is still running; requests run one at a time.`, { retryable: true });
       if (request.op !== 'session.close' && request.op !== 'session.describe' && (this.state === 'closing' || this.state === 'closed')) throw new DriverError('CLOSED', 'The session is closed.');
       if (spec.needsApp && this.state !== 'ready') throw new DriverError('NOT_STARTED', 'Start the session first (session.start).');
     } catch (e) {
-      return failure(request, e, await this.replyContext(began));
+      return done(failure(request, e, await this.replyContext(began)));
     }
     if (request.op !== 'session.close') this.inFlight = request.id;
     try {
@@ -768,20 +860,20 @@ export class Session {
       let result: unknown;
       if (request.op === 'session.start') result = await this.start(parseStartArgs(request.args), { timeoutMs });
       else if (request.op === 'session.close') result = await this.close(parseCloseArgs(request.args));
-      else result = await this.withDeadline(request, spec, timeoutMs);
-      return success(request, result, await this.replyContext(began));
+      else result = await this.withDeadline(request, spec, timeoutMs, entry);
+      return done(success(request, result, await this.replyContext(began)));
     } catch (e) {
-      return failure(request, e, await this.replyContext(began));
+      return done(failure(request, e, await this.replyContext(began)));
     } finally {
       if (this.inFlight === request.id) this.inFlight = null;
     }
   }
 
-  private async withDeadline(request: Request, spec: OpSpec, timeoutMs: number): Promise<unknown> {
+  private async withDeadline(request: Request, spec: OpSpec, timeoutMs: number, entry: JournalEntry | null): Promise<unknown> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     // Work that outlives its deadline is told to stop, so a late observation publishes no refs and saves no files.
     const abort = new AbortController();
-    const work = this.run(request, abort.signal, Date.now() + timeoutMs);
+    const work = this.run(request, abort.signal, Date.now() + timeoutMs, entry);
     work.catch(() => undefined);
     const expired = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -795,7 +887,9 @@ export class Session {
           this.failed = true;
           void this.close({ failed: true }).catch(() => undefined);
         }
-        reject(new DriverError('TIMEOUT', `${request.op} did not finish within ${timeoutMs / 1000}s.`, { details: { phase: request.op, sessionState: terminal ? 'closing' : this.state } }));
+        // A wait cut short still says what it was waiting for and what it saw last.
+        const waited = request.op === 'wait.for' && this.waiting ? this.present({ condition: this.waiting.condition, pending: this.waiting.pending, samples: this.waiting.samples, last: this.waiting.last }) : {};
+        reject(new DriverError('TIMEOUT', `${request.op} did not finish within ${timeoutMs / 1000}s.`, { retryable: request.op === 'wait.for', details: { phase: request.op, sessionState: terminal ? 'closing' : this.state, ...waited } }));
       }, timeoutMs);
     });
     try {
@@ -805,7 +899,23 @@ export class Session {
     }
   }
 
-  private async run(request: Request, signal: AbortSignal, deadline: number): Promise<unknown> {
+  private async run(request: Request, signal: AbortSignal, deadline: number, entry: JournalEntry | null): Promise<unknown> {
+    // An input is compared against the app as it was just before it: taken now, kept once the input sent something.
+    if (OPERATIONS[request.op]?.kind === 'act') {
+      const checkpoint = await this.takeCheckpoint(entry?.seq ?? this.journal.last);
+      try {
+        const result = await this.runOp(request, signal, deadline, entry);
+        this.lastInput = checkpoint;
+        return result;
+      } catch (e) {
+        if (e instanceof DriverError && e.details?.dispatched === 'partial') this.lastInput = checkpoint;
+        throw e;
+      }
+    }
+    return this.runOp(request, signal, deadline, entry);
+  }
+
+  private async runOp(request: Request, signal: AbortSignal, deadline: number, entry: JournalEntry | null): Promise<unknown> {
     switch (request.op) {
       case 'session.describe':
         return this.describe();
@@ -848,6 +958,10 @@ export class Session {
       case 'ui.drag': {
         try {
           const action = parseAction(request.op, request.args);
+          if (entry) {
+            entry.targets = this.targetsOf(request.args);
+            this.journal.measure(entry);
+          }
           // Never past the point where the action could still fail with a reason rather than run out of time.
           await this.settled(Math.max(0, deadline - Date.now() - 2000));
           const page = this.windowFor(request);
@@ -860,6 +974,25 @@ export class Session {
           }
           throw e;
         }
+      }
+      case 'wait.for':
+        return this.waitFor(request, signal, deadline);
+      case 'project.summary':
+        return this.projectSummary(request);
+      case 'exports.inspect':
+        return this.present(await inspectExport(this.areas(), parseInspectArgs(request.args)));
+      case 'evidence.log': {
+        const a = request.args ?? {};
+        for (const k of Object.keys(a)) if (k !== 'after' && k !== 'limit') throw new DriverError('BAD_REQUEST', `evidence.log does not take "${k}".`);
+        if (a.after !== undefined && (!Number.isInteger(a.after) || (a.after as number) < 0)) throw new DriverError('BAD_REQUEST', '"after" is a cursor: a whole number from 0.');
+        if (a.limit !== undefined && (!Number.isInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 200)) throw new DriverError('BAD_REQUEST', '"limit" is a whole number from 1 to 200.');
+        return this.present(this.journal.read(a.after as number | undefined, (a.limit as number | undefined) ?? 100));
+      }
+      case 'evidence.save': {
+        const a = request.args ?? {};
+        for (const k of Object.keys(a)) if (k !== 'screenshot') throw new DriverError('BAD_REQUEST', `evidence.save does not take "${k}".`);
+        if (a.screenshot !== undefined && typeof a.screenshot !== 'boolean') throw new DriverError('BAD_REQUEST', '"screenshot" is true or false.');
+        return this.saveReplay(signal, a.screenshot !== false);
       }
       default:
         throw new DriverError('UNKNOWN_OP', `There is no operation "${request.op}".`);
@@ -880,6 +1013,333 @@ export class Session {
       remembered: () => [...this.secrets],
       shots: this.shots
     };
+  }
+
+  // -- the record of the run (#497) ------------------------------------------------
+
+  /** Number a request as it comes in, with what it asked for (cut to length; typed text held back until it is known). */
+  private admit(request: Request, spec: OpSpec, began: number): JournalEntry {
+    const args = request.args ? ({ ...(clipJson(request.args) as Record<string, unknown>) } as Record<string, unknown>) : undefined;
+    let unreplayable: string | undefined;
+    if (args && (request.op === 'ui.fill' || request.op === 'ui.type')) delete args.text;
+    if (args && request.op === 'desktop.setAnswers' && Array.isArray(args.answers) && this.paths) {
+      // Absolute session paths as session paths, which mean the same in a fresh session.
+      const logical = (p: unknown) => (typeof p === 'string' && isAbsolute(p) ? (toSessionPath(this.areas(), p) ?? p) : p);
+      args.answers = (args.answers as unknown[]).map((x) => (x && typeof x === 'object' ? { ...(x as Record<string, unknown>), ...('paths' in x && Array.isArray((x as { paths: unknown[] }).paths) ? { paths: (x as { paths: unknown[] }).paths.map(logical) } : {}), ...('path' in x ? { path: logical((x as { path: unknown }).path) } : {}) } : x));
+    }
+    if (request.op === 'wait.for' && request.args?.within !== undefined) unreplayable = 'it searches within a ref of this session';
+    const entry = this.journal.admit({
+      id: request.id,
+      op: request.op,
+      class: CLASS_OF[spec.kind],
+      t: began - this.created,
+      window: this.bound && !this.bound.closed ? this.bound.ref.generation : null,
+      ...(args ? { args } : {}),
+      ...(unreplayable ? { unreplayable } : {})
+    });
+    if (request.op === 'ui.fill' || request.op === 'ui.type') this.heldText.set(entry, typeof request.args?.text === 'string' ? request.args.text : '');
+    return entry;
+  }
+
+  private readonly heldText = new WeakMap<JournalEntry, string>();
+
+  /** Record how a request ended, and what the evidence keeps of it. */
+  private record(entry: JournalEntry, request: Request, reply: Reply) {
+    const outcome: EntryOutcome = reply.ok ? { ok: true } : { ok: false, code: reply.error.code, message: reply.error.message, ...(typeof reply.error.details?.dispatched === 'string' ? { dispatched: reply.error.details.dispatched } : {}) };
+    if (reply.ok) {
+      const summary = this.summarize(request, reply.result);
+      if (summary) outcome.summary = summary;
+    } else if (request.op !== 'evidence.log' && request.op !== 'evidence.save') {
+      this.lastFailure = { seq: entry.seq, op: request.op, class: entry.class, ...(clipJson(reply.error) as Record<string, unknown>) };
+    }
+    // Typed text is kept only once the action went through and the session does not know it as a credential: one typed
+    // into a credential field was learned as one while it was typed.
+    const text = this.heldText.get(entry);
+    if (text !== undefined) {
+      const secret = !!this.secrets.size && scrubber([...this.secrets])(text) !== text;
+      if (reply.ok && !secret) entry.args = { ...entry.args, text: clipJson(text) };
+      else {
+        entry.args = { ...entry.args, textLeftOut: { length: [...text].length } };
+        entry.unreplayable ??= 'its typed text was left out of the record';
+      }
+      this.heldText.delete(entry);
+    }
+    this.journal.finish(entry, outcome, reply.elapsedMs);
+  }
+
+  /** A few facts from a reply for the record; observations also leave the latest one for the evidence. */
+  private summarize(request: Request, result: unknown): Record<string, unknown> | undefined {
+    const r = result as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (!r || typeof r !== 'object') return undefined;
+    switch (request.op) {
+      case 'ui.snapshot': {
+        const snap = r as SnapshotResult;
+        this.lastObservation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
+        return { observation: snap.id, screen: snap.context.screen, preview: snap.context.preview.state, dialog: snap.context.dialog?.name ?? null };
+      }
+      case 'ui.locate': {
+        const a = request.args ?? {};
+        const ref = r.node?.ref as string | undefined;
+        // Remembered while it is the search's one answer: a replay repeats the search rather than guess one from the tree.
+        if (ref && typeof a.role === 'string' && a.ref === undefined && a.within === undefined) {
+          this.recipes.delete(ref);
+          this.recipes.set(ref, { scope: r.scope, role: a.role, ...(typeof a.name === 'string' ? { name: a.name } : {}), ...(a.exact === false ? { exact: false } : {}), ...(typeof a.region === 'string' ? { region: a.region } : {}) });
+          if (this.recipes.size > 2000) this.recipes.delete(this.recipes.keys().next().value as string);
+        }
+        return { ref, role: r.node?.role, name: r.node?.name };
+      }
+      case 'wait.for':
+        return { condition: r.condition, met: true, ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.revision === 'number' ? { revision: r.revision } : {}) };
+      case 'project.summary':
+        return { revision: r.revision, ...(r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {}) };
+      case 'exports.inspect':
+        return { type: r.type, ...(r.find ? { found: r.find.matches.length, complete: r.find.complete } : {}) };
+      case 'evidence.save':
+        return { file: 'replay.json' };
+      default:
+        if (OPERATIONS[request.op]?.kind === 'act') return { ...(r.dispatched ? { dispatched: r.dispatched } : {}), ...(r.target ? { target: { surface: r.target.surface, role: r.target.role, name: r.target.name, tag: r.target.tag } } : {}), ...(r.status ? { status: r.status } : {}) };
+        return undefined;
+    }
+  }
+
+  /** How a replay finds each target of an input again: the search that found its ref, else what was seen of it. */
+  private targetsOf(args: Record<string, unknown> | undefined): TargetDescriptor[] {
+    const out: TargetDescriptor[] = [];
+    for (const at of ['target', 'from', 'to'] as const) {
+      const t = args?.[at] as Record<string, unknown> | undefined;
+      if (!t || typeof t !== 'object') continue;
+      const position = t.position && typeof t.position === 'object' ? (t.position as { x: number; y: number }) : undefined;
+      if (typeof t.ref !== 'string') {
+        out.push({ at, replayable: false, reason: 'a screenshot point names pixels of this run' });
+        continue;
+      }
+      const recipe = this.recipes.get(t.ref);
+      const b = this.refs.get(t.ref);
+      if (recipe) out.push({ at, ...recipe, ...(position ? { position } : {}), replayable: true });
+      else if (b) {
+        const region = b.regions?.length ? b.regions[b.regions.length - 1] : undefined;
+        out.push({ at, scope: b.scope, role: b.role, ...(b.name ? { name: b.name } : {}), ...(region ? { region } : {}), ...(position ? { position } : {}), replayable: true });
+      } else out.push({ at, replayable: false, reason: 'a ref this session does not know' });
+    }
+    return out;
+  }
+
+  /** The app as it is now, for conditions that ask what an input changed: bounded, and empty when it cannot be read. */
+  private async takeCheckpoint(seq: number): Promise<Checkpoint> {
+    const b = this.bound && !this.bound.closed && !this.appExited ? this.bound : null;
+    const probe = b ? await bounded(probeApp(b.page, true).catch(() => null), 2000, null) : null;
+    return { seq, generation: b?.ref.generation ?? null, opening: probe?.opening ?? null, revision: probe?.revision ?? null, newestExport: probe?.exports.newest ?? null, pageErrors: this.pageErrorCount };
+  }
+
+  /** The page errors since the `since`-th, as far as they are kept. */
+  private pageErrorsSince(since: number): string[] {
+    const n = Math.max(0, Math.min(this.pageErrorCount - since, this.pageErrors.length));
+    return n ? this.pageErrors.slice(-n) : [];
+  }
+
+  /** What leaves the session from its record and evidence: scrubbed of every credential it knows, host paths hidden. */
+  private present<T>(v: T): T {
+    this.hide ??= pathHider([
+      ...(this.paths ? [{ path: this.paths.root, label: '<session>' }, ...(this.artifactsOutside ? [{ path: this.paths.artifacts, label: '<artifacts>' }] : [])] : []),
+      { path: this.appRoot, label: '<repo>' },
+      ...machineRoots()
+    ]);
+    const scrubbed = this.secrets.size ? scrubDeep(v, [...this.secrets]) : v;
+    return hideDeep(scrubbed, this.hide);
+  }
+
+  /** A probe as a client sees it: the project folder and export paths as session paths. */
+  private publicProbe(p: AppProbe) {
+    const areas = this.areas();
+    const at = (abs: string | null) => (abs ? (toSessionPath(areas, abs) ?? abs) : null);
+    const brief = (e: ExportBrief | null) => (e ? { ...e, path: at(e.path) } : null);
+    const { dir, exports, ...rest } = p;
+    return { ...rest, project: at(dir), exports: { count: exports.count, newest: brief(exports.newest) } };
+  }
+
+  // -- waits -----------------------------------------------------------------------
+
+  private async waitFor(request: Request, signal: AbortSignal, deadline: number) {
+    const c = parseCondition(request.args);
+    const began = Date.now();
+    const base = this.lastInput;
+    const since = c.condition === 'outcome.terminal' && c.since === 'start' ? 0 : (base?.pageErrors ?? 0);
+    const progress = { condition: c, samples: 0, pending: 'nothing has been looked at yet', last: null as unknown };
+    this.waiting = progress;
+    // What a wait still needs once it stops looking: an observation and the errors, before its deadline.
+    const reserve = Math.min(2000, Math.max(300, Math.floor((deadline - began) / 4)));
+    try {
+      await this.settled(Math.max(0, deadline - Date.now() - reserve));
+      for (;;) {
+        aborted(signal);
+        if (this.closeRequested) throw new DriverError('CLOSED', 'The session closed while it waited.');
+        const { verdict, last } = await this.sample(c, request, signal, base, since);
+        progress.samples++;
+        progress.last = last;
+        if (verdict.met) return this.present({ condition: c.condition, met: true, waitedMs: Date.now() - began, samples: progress.samples, ...verdict.value });
+        progress.pending = verdict.pending ?? 'not yet';
+        if (Date.now() + POLL_MS >= deadline - reserve) break;
+        await pause(POLL_MS, signal);
+      }
+      const details = await this.waitEvidence(progress, request, signal, deadline, since, began);
+      throw new DriverError('TIMEOUT', `${c.condition} did not hold within ${Math.round((deadline - began) / 100) / 10}s: ${progress.pending}.`, { retryable: true, details });
+    } finally {
+      if (this.waiting === progress) this.waiting = null;
+    }
+  }
+
+  /** One look at what a condition needs, judged. A window that closed or an app that ended fails the wait at once. */
+  private async sample(c: Condition, request: Request, signal: AbortSignal, base: Checkpoint | null, since: number): Promise<{ verdict: Verdict; last: unknown }> {
+    switch (c.condition) {
+      case 'ui.present':
+      case 'ui.absent': {
+        const page = this.windowFor(request);
+        const { condition: _, ...args } = c;
+        let s: LocateSample;
+        try {
+          s = { ok: true, located: await uiLocate(this.observer(page, signal), args) };
+        } catch (e) {
+          // A ref to search within that went stale can never be searched again: the wait cannot be met.
+          if (e instanceof DriverError && (e.code === 'STALE_REF' || e.code === 'BAD_REQUEST')) throw e;
+          aborted(signal);
+          s = { ok: false, error: errorInfo(e) };
+        }
+        const last = s.ok ? { found: { ref: s.located.node.ref, role: s.located.node.role, name: s.located.node.name, region: s.located.region } } : { search: { code: s.error.code, message: s.error.message, ...(s.error.details?.preview ? { preview: s.error.details.preview } : {}), ...(s.error.details?.count ? { count: s.error.details.count } : {}) } };
+        return { verdict: judgeLocate(c, s), last };
+      }
+      case 'ui.context':
+      case 'preview.ready': {
+        const page = this.windowFor(request);
+        const snap = await uiSnapshot(this.observer(page, signal), { scope: 'editor', maxNodes: 1, depth: 0 }, ++this.observations);
+        return { verdict: judgeContext(c, snap.context), last: { context: snap.context } };
+      }
+      case 'save.settled':
+      case 'project.revision':
+      case 'export.finished': {
+        const page = this.windowFor(request);
+        const probe = await probeApp(page);
+        return { verdict: judgeApp(c, probe, base), last: { app: this.publicProbe(probe) } };
+      }
+      case 'outcome.terminal': {
+        const alive = this.bound && !this.bound.closed && !this.appExited ? this.bound.page : null;
+        const probe = alive ? await bounded(probeApp(alive).catch(() => null), 2000, null) : null;
+        const state = { appExited: this.appExited, windowClosed: !this.appExited && (!this.bound || this.bound.closed), pageErrors: this.pageErrorsSince(since).map((m) => m.slice(0, 2000)), runtime: probe?.runtime ?? null };
+        return { verdict: judgeTerminal(state), last: { appExited: state.appExited, windowClosed: state.windowClosed, pageErrors: state.pageErrors.length, runtime: state.runtime } };
+      }
+    }
+  }
+
+  /** What a wait that ran out of time reports: the condition, the last sample, an observation now, and the errors. */
+  private async waitEvidence(progress: { condition: Condition; samples: number; pending: string; last: unknown }, request: Request, signal: AbortSignal, deadline: number, since: number, began: number) {
+    const left = () => Math.max(0, deadline - Date.now() - 200);
+    const page = this.bound && !this.bound.closed && !this.appExited ? this.bound.page : null;
+    let observation: unknown = null;
+    let probe: AppProbe | null = null;
+    if (page) {
+      const snap = await bounded(
+        uiSnapshot(this.observer(page, signal), { maxNodes: 40 }, ++this.observations).catch(() => null),
+        Math.floor(left() * 0.7),
+        null
+      );
+      if (snap) observation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
+      probe = await bounded(probeApp(page).catch(() => null), left(), null);
+    }
+    const errors = {
+      page: this.pageErrorsSince(since).slice(-5).map((m) => (m.length > 500 ? `${m.slice(0, 500)}…` : m)),
+      pageTotal: this.pageErrorCount - since,
+      ...(probe?.runtime && (probe.runtime.state === 'error' || probe.runtime.state === 'unavailable') ? { runtime: probe.runtime } : {}),
+      log: this.appLog.troubles(8)
+    };
+    return this.present({
+      phase: 'wait.for',
+      sessionState: this.state,
+      condition: progress.condition,
+      pending: progress.pending,
+      samples: progress.samples,
+      waitedMs: Date.now() - began,
+      last: progress.last,
+      observation,
+      ...(probe ? { app: this.publicProbe(probe) } : {}),
+      errors,
+      ...(request.expectWindow !== undefined ? { expectWindow: request.expectWindow } : {})
+    });
+  }
+
+  // -- independent checks ----------------------------------------------------------
+
+  private async projectSummary(request: Request) {
+    const a = request.args ?? {};
+    for (const k of Object.keys(a)) if (k !== 'find') throw new DriverError('BAD_REQUEST', `project.summary does not take "${k}".`);
+    if (a.find !== undefined && (typeof a.find !== 'string' || !a.find || a.find.length > 1000)) throw new DriverError('BAD_REQUEST', '"find" is the text to look for in the documents (at most 1000 characters).');
+    const page = this.windowFor(request);
+    const probe = await probeApp(page);
+    const app = this.publicProbe(probe);
+    if (!probe.dir) return this.present({ ...app, project: null });
+    // Only a project inside the session's own folders is read.
+    const dir = await realpath(probe.dir).catch(() => null);
+    const at = dir ? toSessionPath(this.areas(), dir) : null;
+    if (!dir || !at) throw new DriverError('OP_FAILED', 'The open project is not in the session\'s folders, so it is not read.', { details: { reason: 'outside' } });
+    const docs = await readProjectDocs(dir, a.find !== undefined ? { find: a.find as string } : {});
+    return this.present({ ...app, project: { path: at, ...docs } });
+  }
+
+  // -- evidence ----------------------------------------------------------------------
+
+  /** Build the replay record now: with a fresh observation while the window is there, else the latest one. */
+  private async replayRecord(signal: AbortSignal, screenshot: boolean): Promise<ReplayRecord> {
+    let observation: unknown = this.lastObservation;
+    let screenshots: ReplayRecord['evidence']['screenshots'];
+    const page = this.bound && !this.bound.closed && !this.appExited && this.paths ? this.bound.page : null;
+    if (page) {
+      const snap = await bounded(
+        uiSnapshot(this.observer(page, signal), { maxNodes: 80, screenshot }, ++this.observations).catch(() => null),
+        RECORD_OBSERVATION_MS,
+        null
+      );
+      if (snap) {
+        observation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
+        const shot = snap.screenshots;
+        const rel = (p: string | undefined) => (p && this.paths ? relative(this.paths.artifacts, p).split('\\').join('/') : undefined);
+        if (shot) screenshots = { ...(shot.editor ? { editor: rel(shot.editor.path) } : {}), ...(shot.preview ? { preview: rel(shot.preview.path) } : {}), ...(shot.withheld ? { withheld: shot.withheld } : {}) };
+      }
+    }
+    const artifacts = this.paths ? (await readdir(this.paths.artifacts, { recursive: true }).catch(() => [] as string[])).map((n) => String(n).split('\\').join('/')).filter((n) => n !== OWNER_MARK).sort().slice(0, 200) : [];
+    const b = this.build;
+    const record: ReplayRecord = {
+      kind: REPLAY_KIND,
+      version: REPLAY_VERSION,
+      savedAt: now(),
+      build: b ? { fingerprint: b.fingerprint, files: b.files, builtAt: b.builtAt, packageVersion: b.packageVersion, git: b.git } : null,
+      platform: { os: process.platform, arch: process.arch, electron: this.appIdentity?.electron ?? null, chrome: this.appIdentity?.chrome ?? null },
+      scenario: { fixture: this.args.fixture ?? 'welcome', provider: this.args.provider ?? 'scripted' },
+      steps: this.journal.entries(),
+      dropped: this.journal.dropped,
+      complete: this.journal.dropped === 0,
+      evidence: {
+        observation,
+        ...(screenshots ? { screenshots } : {}),
+        failure: this.lastFailure,
+        pageErrors: { total: this.pageErrorCount, latest: this.pageErrors.slice(-5).map((m) => (m.length > 500 ? `${m.slice(0, 500)}…` : m)) },
+        log: this.appLog.troubles(8)
+      },
+      artifacts: [...new Set([...artifacts, 'replay.json'])].sort()
+    };
+    return this.present(record);
+  }
+
+  /** Write replay.json into the artifacts, and return where and what. */
+  private async saveReplay(signal: AbortSignal, screenshot: boolean) {
+    if (!this.paths) throw new DriverError('NOT_STARTED', 'The session has no artifacts folder yet: start it first.');
+    const record = await this.replayRecord(signal, screenshot);
+    const file = join(this.paths.artifacts, 'replay.json');
+    await writeFile(file, JSON.stringify(record, null, 2));
+    return { file, record };
+  }
+
+  /** The app's output as it is kept: bounded, and scrubbed of every credential the session knows. */
+  private logText(): string {
+    const text = this.appLog.text();
+    return this.secrets.size ? scrubber([...this.secrets])(text) : text;
   }
 
   /**
@@ -1054,6 +1514,8 @@ export class Session {
     this.bound = bound;
     page.on('pageerror', (e) => {
       this.pageErrors.push(String(e));
+      this.pageErrorCount++;
+      if (this.pageErrors.length > MAX_PAGE_ERRORS) this.pageErrors.shift();
       // Kept whole: the reply that carries it is scrubbed of credentials first, then cuts it to length.
       this.event({ type: 'page.error', at: now(), generation: ref.generation, message: String(e) });
     });
@@ -1088,6 +1550,7 @@ export class Session {
     // The description is part of starting: the deadline covers it too.
     const ready = steps.then(() => {
       this.state = 'ready';
+      this.reachedReady = true;
       return this.describe();
     });
     try {
@@ -1133,9 +1596,6 @@ export class Session {
     this.build = await buildIdentity(this.appRoot);
     left();
     this.paths = await this.makeRoot();
-    this.log = createWriteStream(join(this.paths.artifacts, 'app.log'), { flags: 'a' });
-    // A full disk must not end the process hosting the session: the log is evidence, not a requirement.
-    this.log.on('error', () => undefined);
     await reach('root');
     await reach('provider');
     if ((this.args.provider ?? 'scripted') === 'scripted') this.mock = await new MockOpenAIServer().start();
@@ -1156,8 +1616,8 @@ export class Session {
         this.proc = child;
         this.pid = child.pid!;
         void identify(child.pid!).then((e) => e && this.seen.set(e.pid, e));
-        child.stdout?.on('data', (d) => this.log?.write(d));
-        child.stderr?.on('data', (d) => this.log?.write(d));
+        child.stdout?.on('data', (d) => this.appLog.write(d));
+        child.stderr?.on('data', (d) => this.appLog.write(d));
         if (this.closeRequested) void killTree(child.pid!).catch(() => undefined);
         else void Promise.resolve(this.options.hooks?.phase?.('app.spawned', this)).catch(() => undefined);
       }
@@ -1359,6 +1819,13 @@ export class Session {
     this.keeping = this.keepsArtifacts(args);
     this.abortStart?.(new DriverError('CLOSED', 'The session was closed while it started.'));
     this.refs.clear();
+    // The record of a run that got going, with what the app shows now when it still can (bounded).
+    if (this.keeping && this.reachedReady && this.paths)
+      await bounded(
+        this.saveReplay(new AbortController().signal, true).catch(() => undefined),
+        RECORD_OBSERVATION_MS + 4000,
+        undefined
+      );
     if (this.keeping && this.bound && !this.bound.closed && !this.appExited) {
       const page = this.bound.page;
       // As with every screenshot the session takes, none while any credential is known (or that cannot be told in
@@ -1410,7 +1877,8 @@ export class Session {
     if (survivors.length) problems.push(`processes ${survivors.map((e) => e.pid).join(', ')} did not end`);
     const processes = [...this.seen.keys()];
     await this.mock?.stop().catch(() => undefined);
-    if (this.log) await bounded(new Promise<void>((r) => this.log!.end(() => r())), 5000, undefined);
+    // The app's output, once it can write no more: kept with the artifacts, or with a run folder that stays as evidence.
+    if (this.paths && (this.keeping || problems.length)) await writeFile(join(this.paths.artifacts, 'app.log'), this.logText()).catch(() => undefined);
     this.state = 'closed';
     if (problems.length) {
       throw new DriverError('CLEANUP_FAILED', `The run folder ${this.paths?.root ?? '(none)'} was kept: ${problems.join('; ')}.`, {
@@ -1506,6 +1974,13 @@ export class Session {
       }
     };
     const p = this.paths;
+    if (p && keeping) {
+      try {
+        writeFileSync(join(p.artifacts, 'app.log'), this.logText());
+      } catch {
+        // The process is exiting: the log is evidence, not a requirement.
+      }
+    }
     try {
       if (p && ours(p.root)) {
         if (keeping && !this.artifactsOutside) {

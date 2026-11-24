@@ -585,6 +585,8 @@ export interface Binding {
   name: string;
   /** The element's preview ids when it was seen, as JSON; null when it had none. */
   semantic: string | null;
+  /** The named regions it sat in when it was first seen, outermost first: how a replay finds it again (#497). */
+  regions?: string[];
 }
 
 export type StaleReason = 'unknown' | 'window' | 'project' | 'document' | 'loading' | 'gone' | 'changed';

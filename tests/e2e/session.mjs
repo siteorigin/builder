@@ -102,6 +102,11 @@ try {
       'ui.press:act',
       'ui.scroll:act',
       'ui.drag:act',
+      'wait.for:observe',
+      'project.summary:observe',
+      'exports.inspect:observe',
+      'evidence.log:observe',
+      'evidence.save:observe',
       'session.close:session'
     ]
   );

@@ -442,7 +442,8 @@ class Minter {
       pwRef: n.pwRef,
       role: n.role,
       name: n.name ?? '',
-      semantic: facts.semantic ? JSON.stringify(facts.semantic) : null
+      semantic: facts.semantic ? JSON.stringify(facts.semantic) : null,
+      regions: n.regions
     });
   }
 
