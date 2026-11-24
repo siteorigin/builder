@@ -913,7 +913,7 @@ async function locateIn(env: ObserveEnv, args: LocateArgs, seen: string[]): Prom
     return false;
   });
   if (args.region && !searchable.some((scope) => regionNodes(scope === 'editor' ? obs.editor : obs.preview!, args.region!).length))
-    throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, hint: 'Take a ui.snapshot to see the regions there are.' } });
+    throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see the regions there are.' } });
   const all = await matchesIn(env, obs, searchable, args);
   aborted(env.signal);
   if (all === 'too-many') throw new DriverError('OP_FAILED', `More than ${MATCH_LIMIT} elements in one scope are ${args.role}s: too many to place.`, { details: { query, hint: 'Take a ui.snapshot and drill in with "within" instead.' } });

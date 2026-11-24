@@ -26,7 +26,7 @@ import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
 import { parseAction, runAction } from './act.ts';
 import { desktopInMain, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, stageImport } from './desktop.ts';
 import type { Area } from './desktop.ts';
-import { CLASS_OF, Journal, LogKeeper, REPLAY_KIND, REPLAY_VERSION, clipJson, hideDeep, machineRoots, pathHider } from './evidence.ts';
+import { CLASS_OF, CLIP, Journal, LogKeeper, REPLAY_KIND, REPLAY_VERSION, clipJson, hideDeep, machineRoots, pathHider, scrubAll, scrubText } from './evidence.ts';
 import type { EntryOutcome, JournalEntry, ReplayRecord, TargetDescriptor } from './evidence.ts';
 import { SECRET_INPUTS, elementFor, frameSecrets, parseLocateArgs, parseSnapshotArgs, uiLocate, uiSnapshot } from './observe.ts';
 import type { ObserveEnv, SnapshotResult } from './observe.ts';
@@ -56,6 +56,27 @@ const MAX_PAGE_ERRORS = 200;
 const POLL_MS = 200;
 /** Failures that end a wait at once, though a later request could succeed: the window or the app it watches is gone. */
 const WAIT_FATAL = new Set(['WINDOW_CLOSED', 'WINDOW_REPLACED', 'APP_EXITED', 'BUSY', 'CLOSED']);
+/** How a request's args are kept in the record: whole up to this (a longer one cannot be replayed). */
+const ARG_CLIP = { ...CLIP, string: 2000 };
+/** How an observation is kept as evidence. */
+const OBSERVATION_CLIP = { string: 300, items: 40, depth: 10, keys: 40 };
+/** The longest page error kept (its count goes on). */
+const PAGE_ERROR_CHARS = 8000;
+/** How often app.log is brought up to date while the app runs. */
+const LOG_FLUSH_MS = 2000;
+
+/**
+ * Whether a key chord types a character into what has the focus (a letter, a digit, a symbol, a space), rather than a
+ * shortcut or a named key: such keys can spell a credential one at a time, so the record never keeps them.
+ */
+export function printableKey(key: unknown): boolean {
+  if (typeof key !== 'string') return false;
+  const parts = key.split('+');
+  const last = parts[parts.length - 1] || (key.endsWith('+') ? '+' : '');
+  const mods = parts.slice(0, -1);
+  if (mods.some((m) => /^(Control|Meta|ControlOrMeta|Alt)$/.test(m))) return false;
+  return [...last].length === 1 || /^(Key[A-Z]|Digit\d|Numpad\d|Space)$/.test(last);
+}
 /** How long a replay record's observation (and its screenshots) may take. */
 const RECORD_OBSERVATION_MS = 8000;
 
@@ -790,7 +811,10 @@ export class Session {
   /** The search that found each ref, while it was unique: how a replay finds the element again. */
   private readonly recipes = new Map<string, { scope: Scope; role: string; name?: string; exact?: boolean; region?: string }>();
   /** The wait running now: what a deadline that cuts it short reports. */
-  private waiting: { condition: Condition; samples: number; pending: string; last: unknown } | null = null;
+  private waiting: { condition: Condition; samples: number; pending: string; last: unknown; since: number } | null = null;
+  /** How much of the app's output app.log holds, and the timer that keeps it up to date. */
+  private logFlushed = 0;
+  private logTimer: ReturnType<typeof setInterval> | null = null;
   /** The last request that failed, for the evidence. */
   private lastFailure: Record<string, unknown> | null = null;
   /** The latest observation's context and a bounded tree, for the evidence. */
@@ -890,7 +914,7 @@ export class Session {
           void this.close({ failed: true }).catch(() => undefined);
         }
         // A wait cut short still says what it was waiting for and what it saw last.
-        const waited = request.op === 'wait.for' && this.waiting ? this.present({ condition: this.waiting.condition, pending: this.waiting.pending, samples: this.waiting.samples, last: this.waiting.last }) : {};
+        const waited = request.op === 'wait.for' && this.waiting ? this.cutShort(this.waiting) : {};
         reject(new DriverError('TIMEOUT', `${request.op} did not finish within ${timeoutMs / 1000}s.`, { retryable: request.op === 'wait.for', details: { phase: request.op, sessionState: terminal ? 'closing' : this.state, ...waited } }));
       }, timeoutMs);
     });
@@ -902,19 +926,27 @@ export class Session {
   }
 
   private async run(request: Request, signal: AbortSignal, deadline: number, entry: JournalEntry | null): Promise<unknown> {
-    // An input is compared against the app as it was just before it: taken now, kept once the input sent something.
-    if (OPERATIONS[request.op]?.kind === 'act') {
-      const checkpoint = await this.takeCheckpoint(entry?.seq ?? this.journal.last);
-      try {
-        const result = await this.runOp(request, signal, deadline, entry);
-        this.lastInput = checkpoint;
-        return result;
-      } catch (e) {
-        if (e instanceof DriverError && e.details?.dispatched === 'partial') this.lastInput = checkpoint;
-        throw e;
+    try {
+      // An input is compared against the app as it was just before it: taken now, kept once the input sent something.
+      if (OPERATIONS[request.op]?.kind === 'act') {
+        const checkpoint = await this.takeCheckpoint(entry?.seq ?? this.journal.last);
+        // Reading the app took time: an input whose request ran out of it, or whose session is closing, is not sent.
+        aborted(signal);
+        if (this.closeRequested) throw new DriverError('CLOSED', 'The session is closing; nothing was sent.');
+        try {
+          const result = await this.runOp(request, signal, deadline, entry);
+          this.lastInput = checkpoint;
+          return result;
+        } catch (e) {
+          if (e instanceof DriverError && e.details?.dispatched === 'partial') this.lastInput = checkpoint;
+          throw e;
+        }
       }
+      return await this.runOp(request, signal, deadline, entry);
+    } catch (e) {
+      // A request can quote what it was given (a key chord, a path, a name): nothing the session knows as a credential goes back.
+      throw this.scrubError(e);
     }
-    return this.runOp(request, signal, deadline, entry);
   }
 
   private async runOp(request: Request, signal: AbortSignal, deadline: number, entry: JournalEntry | null): Promise<unknown> {
@@ -958,31 +990,22 @@ export class Session {
       case 'ui.press':
       case 'ui.scroll':
       case 'ui.drag': {
-        try {
-          const action = parseAction(request.op, request.args);
-          if (entry) {
-            entry.targets = this.targetsOf(request.args);
-            this.journal.measure(entry);
-          }
-          // Never past the point where the action could still fail with a reason rather than run out of time.
-          await this.settled(Math.max(0, deadline - Date.now() - 2000));
-          const page = this.windowFor(request);
-          return await runAction({ observe: this.observer(page, signal), page, deadline, shots: this.shots }, action);
-        } catch (e) {
-          // A request can quote what it was given (a key chord, say): nothing the session knows as a credential goes back.
-          if (e instanceof DriverError && this.secrets.size) {
-            const known = [...this.secrets];
-            throw new DriverError(e.code, scrubDeep(e.message, known), { retryable: e.retryable, ...(e.details ? { details: scrubDeep(e.details, known) } : {}) });
-          }
-          throw e;
+        const action = parseAction(request.op, request.args);
+        if (entry) {
+          entry.targets = this.targetsOf(request.args);
+          this.journal.measure(entry);
         }
+        // Never past the point where the action could still fail with a reason rather than run out of time.
+        await this.settled(Math.max(0, deadline - Date.now() - 2000));
+        const page = this.windowFor(request);
+        return runAction({ observe: this.observer(page, signal), page, deadline, shots: this.shots }, action);
       }
       case 'wait.for':
         return this.waitFor(request, signal, deadline);
       case 'project.summary':
-        return this.projectSummary(request);
+        return this.projectSummary(request, signal);
       case 'exports.inspect':
-        return this.present(await inspectExport(this.areas(), parseInspectArgs(request.args)));
+        return this.present(await inspectExport(this.areas(), parseInspectArgs(request.args), signal));
       case 'evidence.log': {
         const a = request.args ?? {};
         for (const k of Object.keys(a)) if (k !== 'after' && k !== 'limit') throw new DriverError('BAD_REQUEST', `evidence.log does not take "${k}".`);
@@ -1020,17 +1043,28 @@ export class Session {
 
   // -- the record of the run (#497) ------------------------------------------------
 
-  /** Number a request as it comes in, with what it asked for (cut to length; typed text held back until it is known). */
+  /**
+   * Number a request as it comes in, with what it asked for: cut to length (a step whose arguments had to be cut cannot
+   * be replayed), typed text and printable keys held back until it is known where they went.
+   */
   private admit(request: Request, spec: OpSpec, began: number): JournalEntry {
-    const args = request.args ? ({ ...(clipJson(request.args) as Record<string, unknown>) } as Record<string, unknown>) : undefined;
     let unreplayable: string | undefined;
-    if (args && (request.op === 'ui.fill' || request.op === 'ui.type')) delete args.text;
+    let args: Record<string, unknown> | undefined;
+    if (request.args) {
+      const raw: Record<string, unknown> = { ...request.args };
+      if (request.op === 'ui.fill' || request.op === 'ui.type') delete raw.text;
+      if (request.op === 'ui.press' && printableKey(raw.key)) delete raw.key;
+      // The caller's own folder is not the session's to show.
+      if (request.op === 'session.start' && raw.artifactsDir !== undefined) raw.artifactsDir = '<caller folder>';
+      args = clipJson(raw, ARG_CLIP) as Record<string, unknown>;
+      if (JSON.stringify(args) !== JSON.stringify(raw)) unreplayable = 'its arguments were too long to keep whole';
+    }
     if (args && request.op === 'desktop.setAnswers' && Array.isArray(args.answers) && this.paths) {
       // Absolute session paths as session paths, which mean the same in a fresh session.
       const logical = (p: unknown) => (typeof p === 'string' && isAbsolute(p) ? (toSessionPath(this.areas(), p) ?? p) : p);
       args.answers = (args.answers as unknown[]).map((x) => (x && typeof x === 'object' ? { ...(x as Record<string, unknown>), ...('paths' in x && Array.isArray((x as { paths: unknown[] }).paths) ? { paths: (x as { paths: unknown[] }).paths.map(logical) } : {}), ...('path' in x ? { path: logical((x as { path: unknown }).path) } : {}) } : x));
     }
-    if (request.op === 'wait.for' && request.args?.within !== undefined) unreplayable = 'it searches within a ref of this session';
+    if (request.op === 'wait.for' && request.args?.within !== undefined) unreplayable ??= 'it searches within a ref of this session';
     const entry = this.journal.admit({
       id: request.id,
       op: request.op,
@@ -1038,13 +1072,15 @@ export class Session {
       t: began - this.created,
       window: this.bound && !this.bound.closed ? this.bound.ref.generation : null,
       ...(args ? { args } : {}),
+      ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
       ...(unreplayable ? { unreplayable } : {})
     });
-    if (request.op === 'ui.fill' || request.op === 'ui.type') this.heldText.set(entry, typeof request.args?.text === 'string' ? request.args.text : '');
+    if (request.op === 'ui.fill' || request.op === 'ui.type') this.heldText.set(entry, { key: 'text', value: typeof request.args?.text === 'string' ? request.args.text : '' });
+    if (request.op === 'ui.press' && printableKey(request.args?.key)) this.heldText.set(entry, { key: 'key', value: String(request.args?.key) });
     return entry;
   }
 
-  private readonly heldText = new WeakMap<JournalEntry, string>();
+  private readonly heldText = new WeakMap<JournalEntry, { key: 'text' | 'key'; value: string }>();
 
   /** Record how a request ended, and what the evidence keeps of it. */
   private record(entry: JournalEntry, request: Request, reply: Reply) {
@@ -1055,15 +1091,16 @@ export class Session {
     } else if (request.op !== 'evidence.log' && request.op !== 'evidence.save') {
       this.lastFailure = { seq: entry.seq, op: request.op, class: entry.class, ...(clipJson(reply.error) as Record<string, unknown>) };
     }
-    // Typed text is kept only once the action went through and the session does not know it as a credential: one typed
-    // into a credential field was learned as one while it was typed.
-    const text = this.heldText.get(entry);
-    if (text !== undefined) {
-      const secret = !!this.secrets.size && scrubber([...this.secrets])(text) !== text;
-      if (reply.ok && !secret) entry.args = { ...entry.args, text: clipJson(text) };
+    // Typed text, and a printable key, are kept only once the action went through and the session does not know them
+    // as (part of) a credential: one typed into a credential field was learned as one while it was typed. A printable key
+    // is never kept: a credential could be typed one key at a time.
+    const held = this.heldText.get(entry);
+    if (held) {
+      const secret = !!this.secrets.size && scrubber([...this.secrets])(held.value) !== held.value;
+      if (held.key === 'text' && reply.ok && !secret && held.value.length <= ARG_CLIP.string) entry.args = { ...entry.args, text: held.value };
       else {
-        entry.args = { ...entry.args, textLeftOut: { length: [...text].length } };
-        entry.unreplayable ??= 'its typed text was left out of the record';
+        entry.args = { ...entry.args, [held.key === 'text' ? 'textLeftOut' : 'keyLeftOut']: { length: [...held.value].length } };
+        entry.unreplayable ??= held.key === 'text' ? 'its typed text was left out of the record' : 'its printable key was left out of the record';
       }
       this.heldText.delete(entry);
     }
@@ -1077,7 +1114,7 @@ export class Session {
     switch (request.op) {
       case 'ui.snapshot': {
         const snap = r as SnapshotResult;
-        this.lastObservation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
+        this.lastObservation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, OBSERVATION_CLIP);
         return { observation: snap.id, screen: snap.context.screen, preview: snap.context.preview.state, dialog: snap.context.dialog?.name ?? null };
       }
       case 'ui.locate': {
@@ -1092,7 +1129,7 @@ export class Session {
         return { ref, role: r.node?.role, name: r.node?.name };
       }
       case 'wait.for':
-        return { condition: r.condition, met: true, ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.revision === 'number' ? { revision: r.revision } : {}) };
+        return { condition: r.condition, met: true, ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.revision === 'number' ? { revision: r.revision } : {}), ...(typeof r.count === 'number' ? { count: r.count } : {}) };
       case 'project.summary':
         return { revision: r.revision, ...(r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {}) };
       case 'exports.inspect':
@@ -1127,11 +1164,21 @@ export class Session {
     return out;
   }
 
-  /** The app as it is now, for conditions that ask what an input changed: bounded, and empty when it cannot be read. */
+  /** The app as it is now, for conditions that ask what an input changed: bounded, and marked unknown when unread. */
   private async takeCheckpoint(seq: number): Promise<Checkpoint> {
     const b = this.bound && !this.bound.closed && !this.appExited ? this.bound : null;
-    const probe = b ? await bounded(probeApp(b.page, true).catch(() => null), 2000, null) : null;
-    return { seq, generation: b?.ref.generation ?? null, opening: probe?.opening ?? null, revision: probe?.revision ?? null, newestExport: probe?.exports.newest ?? null, pageErrors: this.pageErrorCount };
+    const probe = b ? await bounded(probeApp(b.page).catch(() => null), 2000, null) : null;
+    return {
+      seq,
+      // With no window there is nothing to read, and nothing is unknown: no project is open.
+      known: !b || !!probe,
+      generation: b?.ref.generation ?? null,
+      opening: probe?.opening ?? null,
+      revision: probe?.revision ?? null,
+      newestExport: probe?.exports.newest ?? null,
+      exportReport: probe?.exportView?.result?.report ?? null,
+      pageErrors: this.pageErrorCount
+    };
   }
 
   /** The page errors since the `since`-th, as far as they are kept. */
@@ -1140,15 +1187,40 @@ export class Session {
     return n ? this.pageErrors.slice(-n) : [];
   }
 
-  /** What leaves the session from its record and evidence: scrubbed of every credential it knows, host paths hidden. */
-  private present<T>(v: T): T {
+  /** The latest page errors for evidence: each scrubbed whole before it is cut, so no part of a credential is left. */
+  private latestErrors(list: string[], n = 5): string[] {
+    const secrets = [...this.secrets];
+    return list.slice(-n).map((m) => {
+      const clean = scrubText(m, secrets);
+      return clean.length > 500 ? `${clean.slice(0, 500)}…` : clean;
+    });
+  }
+
+  private hider(): (s: string) => string {
     this.hide ??= pathHider([
       ...(this.paths ? [{ path: this.paths.root, label: '<session>' }, ...(this.artifactsOutside ? [{ path: this.paths.artifacts, label: '<artifacts>' }] : [])] : []),
       { path: this.appRoot, label: '<repo>' },
       ...machineRoots()
     ]);
-    const scrubbed = this.secrets.size ? scrubDeep(v, [...this.secrets]) : v;
-    return hideDeep(scrubbed, this.hide);
+    return this.hide;
+  }
+
+  /**
+   * What leaves the session from its record and evidence: scrubbed of every credential it knows, host paths hidden.
+   * `all`: every string and key is scrubbed, whatever its key (for what callers sent: the record and a wait's evidence).
+   */
+  private present<T>(v: T, all = false): T {
+    const secrets = [...this.secrets];
+    const scrubbed = secrets.length ? (all ? scrubAll(v, secrets) : scrubDeep(v, secrets)) : v;
+    return hideDeep(scrubbed, this.hider());
+  }
+
+  /** A failure as it goes back: scrubbed of every credential the session knows, wherever the request quoted one. */
+  private scrubError(e: unknown): unknown {
+    if (!(e instanceof DriverError) || !this.secrets.size) return e;
+    const secrets = [...this.secrets];
+    // The protocol's own words in the details (a role, a reason, a ref) are kept as they are.
+    return new DriverError(e.code, scrubText(e.message, secrets), { retryable: e.retryable, ...(e.details ? { details: scrubDeep(e.details, secrets) } : {}) });
   }
 
   /** A probe as a client sees it: the project folder and export paths as session paths. */
@@ -1160,6 +1232,30 @@ export class Session {
     return { ...rest, project: at(dir), exports: { count: exports.count, newest: brief(exports.newest) } };
   }
 
+  /**
+   * Run a look with its own stop, for at most `ms`: one that takes longer is told to stop and is waited for before the
+   * next request observes (it could still replace what the page's last snapshot holds). Null when it did not finish.
+   */
+  private async boundedLook<T>(look: (signal: AbortSignal) => Promise<T>, ms: number, parent: AbortSignal): Promise<T | null> {
+    const ctl = new AbortController();
+    const stop = () => ctl.abort();
+    parent.addEventListener('abort', stop, { once: true });
+    const work = look(ctl.signal).then(
+      (v) => ({ v }),
+      () => null
+    );
+    try {
+      const done = await bounded(work, Math.max(0, ms), null);
+      if (done) return done.v;
+      ctl.abort();
+      const settling: Promise<unknown> = work.finally(() => this.lingering.delete(settling));
+      this.lingering.add(settling);
+      return null;
+    } finally {
+      parent.removeEventListener('abort', stop);
+    }
+  }
+
   // -- waits -----------------------------------------------------------------------
 
   private async waitFor(request: Request, signal: AbortSignal, deadline: number) {
@@ -1167,39 +1263,64 @@ export class Session {
     const began = Date.now();
     const base = this.lastInput;
     const since = c.condition === 'outcome.terminal' && c.since === 'start' ? 0 : (base?.pageErrors ?? 0);
-    const progress = { condition: c, samples: 0, pending: 'nothing has been looked at yet', last: null as unknown };
+    const progress = { condition: c, samples: 0, pending: 'nothing has been looked at yet', last: null as unknown, since };
     this.waiting = progress;
-    // What a wait still needs once it stops looking: an observation and the errors, before its deadline.
+    // What a wait still needs once it stops looking: a last look, an observation and the errors, before its deadline.
     const reserve = Math.min(3000, Math.max(500, Math.floor(((deadline - began) * 2) / 5)));
+    const met = (verdict: Verdict) => this.present({ condition: c.condition, met: true, waitedMs: Date.now() - began, samples: progress.samples, ...verdict.value });
+    const look = async (sig: AbortSignal): Promise<{ verdict: Verdict; last: unknown }> => {
+      try {
+        return await this.sample(c, request, sig, base, since);
+      } catch (e) {
+        // A look the app's changes cut short (a project opening, a page navigating) is looked at again; one that can
+        // never succeed (the window or the app gone, a bad argument) ends the wait.
+        aborted(sig);
+        if (e instanceof DriverError && (!e.retryable || WAIT_FATAL.has(e.code))) throw e;
+        const info = errorInfo(e);
+        return { verdict: { met: false, pending: `the last look was cut short (${info.message.split('\n')[0].slice(0, 200)})` }, last: { error: { code: info.code, message: info.message.slice(0, 300) } } };
+      }
+    };
     try {
       await this.settled(Math.max(0, deadline - Date.now() - reserve));
       for (;;) {
         aborted(signal);
         if (this.closeRequested) throw new DriverError('CLOSED', 'The session closed while it waited.');
-        let looked: { verdict: Verdict; last: unknown };
-        try {
-          looked = await this.sample(c, request, signal, base, since);
-        } catch (e) {
-          // A look the app's changes cut short (a project opening, a page navigating) is looked at again; one that can
-          // never succeed (the window or the app gone, a bad argument) ends the wait.
-          aborted(signal);
-          if (e instanceof DriverError && (!e.retryable || WAIT_FATAL.has(e.code))) throw e;
-          const info = errorInfo(e);
-          looked = { verdict: { met: false, pending: `the last look was cut short (${info.message.split('\n')[0].slice(0, 200)})` }, last: { error: { code: info.code, message: info.message.slice(0, 300) } } };
-        }
-        const { verdict, last } = looked;
+        const { verdict, last } = await look(signal);
         progress.samples++;
         progress.last = last;
-        if (verdict.met) return this.present({ condition: c.condition, met: true, waitedMs: Date.now() - began, samples: progress.samples, ...verdict.value });
+        if (verdict.met) return met(verdict);
         progress.pending = verdict.pending ?? 'not yet';
         if (Date.now() + POLL_MS >= deadline - reserve) break;
         await pause(POLL_MS, signal);
       }
+      // One last look, in the time kept back: what held by then still counts.
+      const last = await this.boundedLook(look, Math.floor((deadline - Date.now()) / 3), signal).catch(() => null);
+      if (last) {
+        progress.samples++;
+        progress.last = last.last;
+        if (last.verdict.met) return met(last.verdict);
+        progress.pending = last.verdict.pending ?? progress.pending;
+      }
       const details = await this.waitEvidence(progress, request, signal, deadline, since, began);
-      throw new DriverError('TIMEOUT', `${c.condition} did not hold within ${Math.round((deadline - began) / 100) / 10}s: ${progress.pending}.`, { retryable: true, details });
+      throw new DriverError('TIMEOUT', `${c.condition} did not hold within ${Math.round((deadline - began) / 100) / 10}s: ${String(details.pending)}.`, { retryable: true, details });
     } finally {
       if (this.waiting === progress) this.waiting = null;
     }
+  }
+
+  /** What a deadline that cut a wait short reports, from what the wait had seen: nothing here waits for the app. */
+  private cutShort(w: NonNullable<typeof this.waiting>) {
+    return this.present(
+      {
+        condition: w.condition,
+        pending: w.pending,
+        samples: w.samples,
+        last: w.last,
+        observation: this.lastObservation ? { earlier: true, ...(this.lastObservation as object) } : null,
+        errors: { page: this.latestErrors(this.pageErrorsSince(w.since)), pageTotal: this.pageErrorCount - w.since, log: this.appLog.troubles(8) }
+      },
+      true
+    );
   }
 
   /** One look at what a condition needs, judged. A window that closed or an app that ended fails the wait at once. */
@@ -1219,13 +1340,15 @@ export class Session {
           s = { ok: false, error: errorInfo(e) };
         }
         const last = s.ok ? { found: { ref: s.located.node.ref, role: s.located.node.role, name: s.located.node.name, region: s.located.region } } : { search: { code: s.error.code, message: s.error.message, ...(s.error.details?.preview ? { preview: s.error.details.preview } : {}), ...(s.error.details?.count ? { count: s.error.details.count } : {}) } };
-        return { verdict: judgeLocate(c, s), last };
+        // A search within a ref covers that ref's own scope; any other, the scopes it names.
+        const within = c.within ? this.refs.get(c.within)?.scope : undefined;
+        return { verdict: judgeLocate(c, s, within ? within === 'preview' : c.scope !== 'editor'), last };
       }
       case 'ui.context':
       case 'preview.ready': {
         const page = this.windowFor(request);
         const snap = await uiSnapshot(this.observer(page, signal), { scope: 'editor', maxNodes: 1, depth: 0 }, ++this.observations);
-        this.lastObservation = { id: snap.id, context: snap.context };
+        if (!signal.aborted) this.lastObservation = { id: snap.id, context: snap.context };
         return { verdict: judgeContext(c, snap.context), last: { context: snap.context } };
       }
       case 'save.settled':
@@ -1242,7 +1365,7 @@ export class Session {
       case 'outcome.terminal': {
         const alive = this.bound && !this.bound.closed && !this.appExited ? this.bound.page : null;
         const probe = alive ? await bounded(probeApp(alive).catch(() => null), 2000, null) : null;
-        const state = { appExited: this.appExited, windowClosed: !this.appExited && (!this.bound || this.bound.closed), pageErrors: this.pageErrorsSince(since).map((m) => m.slice(0, 2000)), runtime: probe?.runtime ?? null };
+        const state = { appExited: this.appExited, windowClosed: !this.appExited && (!this.bound || this.bound.closed), pageErrors: this.latestErrors(this.pageErrorsSince(since), 20), runtime: probe?.runtime ?? null };
         return { verdict: judgeTerminal(state), last: { appExited: state.appExited, windowClosed: state.windowClosed, pageErrors: state.pageErrors.length, runtime: state.runtime } };
       }
     }
@@ -1255,45 +1378,48 @@ export class Session {
     let observation: unknown = null;
     let probe: AppProbe | null = null;
     if (page) {
-      const snap = await bounded(this.observeForEvidence(page, signal, 40, false), Math.floor(left() * 0.8), null);
+      const snap = await this.boundedLook((sig) => this.observeForEvidence(page, sig, 40, false), Math.floor(left() * 0.8), signal);
       // One that cannot be taken in time leaves the latest one there is, saying it is older.
       observation = snap ?? (this.lastObservation ? { earlier: true, ...(this.lastObservation as object) } : null);
       probe = await bounded(probeApp(page).catch(() => null), left(), null);
     }
     const errors = {
-      page: this.pageErrorsSince(since).slice(-5).map((m) => (m.length > 500 ? `${m.slice(0, 500)}…` : m)),
+      page: this.latestErrors(this.pageErrorsSince(since)),
       pageTotal: this.pageErrorCount - since,
       ...(probe?.runtime && (probe.runtime.state === 'error' || probe.runtime.state === 'unavailable') ? { runtime: probe.runtime } : {}),
       log: this.appLog.troubles(8)
     };
-    return this.present({
-      phase: 'wait.for',
-      sessionState: this.state,
-      condition: progress.condition,
-      pending: progress.pending,
-      samples: progress.samples,
-      waitedMs: Date.now() - began,
-      last: progress.last,
-      observation,
-      ...(probe ? { app: this.publicProbe(probe) } : {}),
-      errors,
-      ...(request.expectWindow !== undefined ? { expectWindow: request.expectWindow } : {})
-    });
+    return this.present(
+      {
+        phase: 'wait.for',
+        sessionState: this.state,
+        condition: progress.condition,
+        pending: progress.pending,
+        samples: progress.samples,
+        waitedMs: Date.now() - began,
+        last: progress.last,
+        observation,
+        ...(probe ? { app: this.publicProbe(probe) } : {}),
+        errors,
+        ...(request.expectWindow !== undefined ? { expectWindow: request.expectWindow } : {})
+      },
+      true
+    );
   }
 
   /** A bounded observation for evidence (context and the first nodes), kept as the latest one; null if it fails. */
-  private async observeForEvidence(page: Page, signal: AbortSignal, maxNodes: number, screenshot: boolean): Promise<unknown> {
+  private async observeForEvidence(page: Page, signal: AbortSignal, maxNodes: number, screenshot: boolean): Promise<SnapshotResult | null> {
     const snap = await uiSnapshot(this.observer(page, signal), { maxNodes, screenshot }, ++this.observations).catch(() => null);
-    if (!snap) return null;
-    this.lastObservation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
-    return this.lastObservation;
+    if (!snap || signal.aborted) return null;
+    this.lastObservation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, OBSERVATION_CLIP);
+    return snap;
   }
 
   // -- independent checks ----------------------------------------------------------
 
-  private async projectSummary(request: Request) {
+  private async projectSummary(request: Request, signal: AbortSignal) {
     const a = request.args ?? {};
-    for (const k of Object.keys(a)) if (k !== 'find') throw new DriverError('BAD_REQUEST', `project.summary does not take "${k}".`);
+    for (const k of Object.keys(a)) if (k !== 'find') throw new DriverError('BAD_REQUEST', `project.summary does not take "${k.slice(0, 100)}".`);
     if (a.find !== undefined && (typeof a.find !== 'string' || !a.find || a.find.length > 1000)) throw new DriverError('BAD_REQUEST', '"find" is the text to look for in the documents (at most 1000 characters).');
     const page = this.windowFor(request);
     const probe = await probeApp(page);
@@ -1303,31 +1429,14 @@ export class Session {
     const dir = await realpath(probe.dir).catch(() => null);
     const at = dir ? toSessionPath(this.areas(), dir) : null;
     if (!dir || !at) throw new DriverError('OP_FAILED', 'The open project is not in the session\'s folders, so it is not read.', { details: { reason: 'outside' } });
-    const docs = await readProjectDocs(dir, a.find !== undefined ? { find: a.find as string } : {});
+    const docs = await readProjectDocs(dir, { ...(a.find !== undefined ? { find: a.find as string } : {}), signal });
     return this.present({ ...app, project: { path: at, ...docs } });
   }
 
   // -- evidence ----------------------------------------------------------------------
 
-  /** Build the replay record now: with a fresh observation while the window is there, else the latest one. */
-  private async replayRecord(signal: AbortSignal, screenshot: boolean): Promise<ReplayRecord> {
-    let observation: unknown = this.lastObservation;
-    let screenshots: ReplayRecord['evidence']['screenshots'];
-    const page = this.bound && !this.bound.closed && !this.appExited && this.paths ? this.bound.page : null;
-    if (page) {
-      const snap = await bounded(
-        uiSnapshot(this.observer(page, signal), { maxNodes: 80, screenshot }, ++this.observations).catch(() => null),
-        RECORD_OBSERVATION_MS,
-        null
-      );
-      if (snap) {
-        observation = this.lastObservation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
-        const shot = snap.screenshots;
-        const rel = (p: string | undefined) => (p && this.paths ? relative(this.paths.artifacts, p).split('\\').join('/') : undefined);
-        if (shot) screenshots = { ...(shot.editor ? { editor: rel(shot.editor.path) } : {}), ...(shot.preview ? { preview: rel(shot.preview.path) } : {}), ...(shot.withheld ? { withheld: shot.withheld } : {}) };
-      }
-    }
-    const artifacts = this.paths ? (await readdir(this.paths.artifacts, { recursive: true }).catch(() => [] as string[])).map((n) => String(n).split('\\').join('/')).filter((n) => n !== OWNER_MARK).sort().slice(0, 200) : [];
+  /** The replay record from what the session holds now, with the observation and screenshots given. */
+  private recordFrom(observation: unknown, screenshots: ReplayRecord['evidence']['screenshots'], artifacts: string[]): ReplayRecord {
     const b = this.build;
     const record: ReplayRecord = {
       kind: REPLAY_KIND,
@@ -1343,12 +1452,30 @@ export class Session {
         observation,
         ...(screenshots ? { screenshots } : {}),
         failure: this.lastFailure,
-        pageErrors: { total: this.pageErrorCount, latest: this.pageErrors.slice(-5).map((m) => (m.length > 500 ? `${m.slice(0, 500)}…` : m)) },
+        pageErrors: { total: this.pageErrorCount, latest: this.latestErrors(this.pageErrors) },
         log: this.appLog.troubles(8)
       },
-      artifacts: [...new Set([...artifacts, 'replay.json'])].sort()
+      artifacts: [...new Set([...artifacts.filter((n) => n !== OWNER_MARK).sort().slice(0, 200), 'replay.json'])].sort()
     };
-    return this.present(record);
+    return this.present(record, true);
+  }
+
+  /** Build the replay record now: with a fresh observation while the window is there, else the latest one. */
+  private async replayRecord(signal: AbortSignal, screenshot: boolean): Promise<ReplayRecord> {
+    let observation: unknown = this.lastObservation;
+    let screenshots: ReplayRecord['evidence']['screenshots'];
+    const page = this.bound && !this.bound.closed && !this.appExited && this.paths ? this.bound.page : null;
+    if (page) {
+      const snap = await this.boundedLook((sig) => this.observeForEvidence(page, sig, 80, screenshot), RECORD_OBSERVATION_MS, signal);
+      if (snap) {
+        observation = this.lastObservation;
+        const shot = snap.screenshots;
+        const rel = (p: string | undefined) => (p && this.paths ? relative(this.paths.artifacts, p).split('\\').join('/') : undefined);
+        if (shot) screenshots = { ...(shot.editor ? { editor: rel(shot.editor.path) } : {}), ...(shot.preview ? { preview: rel(shot.preview.path) } : {}), ...(shot.withheld ? { withheld: shot.withheld } : {}) };
+      }
+    }
+    const artifacts = this.paths ? (await readdir(this.paths.artifacts, { recursive: true }).catch(() => [] as string[])).slice(0, 1000).map((n) => String(n).split('\\').join('/')) : [];
+    return this.recordFrom(observation, screenshots, artifacts);
   }
 
   /** Write replay.json into the artifacts, and return where and what. */
@@ -1360,10 +1487,18 @@ export class Session {
     return { file, record };
   }
 
-  /** The app's output as it is kept: bounded, and scrubbed of every credential the session knows. */
+  /** The app's output as it is kept: bounded, scrubbed of every credential the session knows, host paths hidden. */
   private logText(): string {
-    const text = this.appLog.text();
-    return this.secrets.size ? scrubber([...this.secrets])(text) : text;
+    const secrets = [...this.secrets];
+    const hide = this.hider();
+    return this.appLog.text((part) => hide(scrubText(part, secrets)));
+  }
+
+  /** Write app.log as it is now, when there is new output: a host that is killed still leaves what came before. */
+  private async flushLog() {
+    if (!this.paths || this.appLog.written === this.logFlushed) return;
+    this.logFlushed = this.appLog.written;
+    await writeFile(join(this.paths.artifacts, 'app.log'), this.logText()).catch(() => undefined);
   }
 
   /**
@@ -1537,7 +1672,8 @@ export class Session {
     const bound: Bound = { page, ref, closed: false };
     this.bound = bound;
     page.on('pageerror', (e) => {
-      this.pageErrors.push(String(e));
+      const message = String(e);
+      this.pageErrors.push(message.length > PAGE_ERROR_CHARS ? `${message.slice(0, PAGE_ERROR_CHARS)}…` : message);
       this.pageErrorCount++;
       if (this.pageErrors.length > MAX_PAGE_ERRORS) this.pageErrors.shift();
       // Kept whole: the reply that carries it is scrubbed of credentials first, then cuts it to length.
@@ -1620,6 +1756,8 @@ export class Session {
     this.build = await buildIdentity(this.appRoot);
     left();
     this.paths = await this.makeRoot();
+    this.logTimer = setInterval(() => void this.flushLog(), LOG_FLUSH_MS);
+    this.logTimer.unref();
     await reach('root');
     await reach('provider');
     if ((this.args.provider ?? 'scripted') === 'scripted') this.mock = await new MockOpenAIServer().start();
@@ -1902,6 +2040,8 @@ export class Session {
     const processes = [...this.seen.keys()];
     await this.mock?.stop().catch(() => undefined);
     // The app's output, once it can write no more: kept with the artifacts, or with a run folder that stays as evidence.
+    if (this.logTimer) clearInterval(this.logTimer);
+    this.logTimer = null;
     if (this.paths && (this.keeping || problems.length)) await writeFile(join(this.paths.artifacts, 'app.log'), this.logText()).catch(() => undefined);
     this.state = 'closed';
     if (problems.length) {
@@ -1998,11 +2138,15 @@ export class Session {
       }
     };
     const p = this.paths;
+    if (this.logTimer) clearInterval(this.logTimer);
+    this.logTimer = null;
     if (p && keeping) {
       try {
         writeFileSync(join(p.artifacts, 'app.log'), this.logText());
+        // The record of the run from what is held now: no observation can be taken on the way out.
+        if (this.reachedReady) writeFileSync(join(p.artifacts, 'replay.json'), JSON.stringify(this.recordFrom(this.lastObservation, undefined, readdirSync(p.artifacts)), null, 2));
       } catch {
-        // The process is exiting: the log is evidence, not a requirement.
+        // The process is exiting: the evidence is kept as far as it can be.
       }
     }
     try {

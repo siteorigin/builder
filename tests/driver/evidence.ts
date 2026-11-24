@@ -11,6 +11,7 @@
  */
 import { homedir, tmpdir } from 'node:os';
 import type { OpKind, XY } from './protocol.ts';
+import { REDACTED, scrubber } from './snapshot.ts';
 import type { Scope } from './snapshot.ts';
 
 /** What a journal entry records about the request: whether a person could have done it, and if so what. */
@@ -59,8 +60,10 @@ export interface JournalEntry {
   t: number;
   /** The editor window generation it ran against, when there was one. */
   window: number | null;
-  /** The request's args, cut to length; typed text that may be a credential is left out (`textLeftOut`). */
+  /** The request's args, cut to length; typed text or a key that may be a credential is left out (`textLeftOut`, `keyLeftOut`). */
   args?: Record<string, unknown>;
+  /** The deadline the request asked for, so a replay gives it the same. */
+  timeoutMs?: number;
   targets?: TargetDescriptor[];
   outcome?: EntryOutcome;
   elapsedMs?: number;
@@ -70,8 +73,13 @@ export interface JournalEntry {
 
 /** Limits on a value kept in a journal entry or an evidence record. */
 export const CLIP = { string: 300, items: 50, depth: 6, keys: 40 };
+/** The longest key kept whole. */
+const KEY_CHARS = 100;
 
-/** A copy of a JSON value cut to the limits: long strings, long lists, deep nesting and wide objects are shortened. */
+/**
+ * A copy of a JSON value cut to the limits: long strings and keys, long lists, deep nesting and wide objects are
+ * shortened. A string cut short ends in `…` (scrubText checks that end for part of a credential).
+ */
 export function clipJson(v: unknown, limits = CLIP, depth = 0): unknown {
   if (typeof v === 'string') return v.length > limits.string ? `${v.slice(0, limits.string)}…` : v;
   if (v === null || typeof v === 'number' || typeof v === 'boolean') return v;
@@ -86,7 +94,7 @@ export function clipJson(v: unknown, limits = CLIP, depth = 0): unknown {
   const out: Record<string, unknown> = {};
   for (const [k, x] of entries.slice(0, limits.keys)) {
     const c = clipJson(x, limits, depth + 1);
-    if (c !== undefined) out[k] = c;
+    if (c !== undefined) out[k.length > KEY_CHARS ? `${k.slice(0, KEY_CHARS)}…` : k] = c;
   }
   if (entries.length > limits.keys) out['…'] = `${entries.length - limits.keys} more keys`;
   return out;
@@ -139,7 +147,15 @@ export class Journal {
   measure(entry: JournalEntry) {
     if (!this.list.includes(entry)) return;
     this.chars -= this.sizes.get(entry) ?? 0;
-    const size = sizeOf(entry);
+    let size = sizeOf(entry);
+    // One entry never takes more than a quarter of the journal: past that, what it asked for is left out.
+    if (size > this.maxChars / 4) {
+      entry.args = { leftOut: `${size} characters, too large to keep` };
+      delete entry.targets;
+      if (entry.outcome) entry.outcome = { ok: entry.outcome.ok, ...(entry.outcome.code ? { code: entry.outcome.code } : {}) };
+      entry.unreplayable = 'what it asked for was too large to keep';
+      size = sizeOf(entry);
+    }
     this.sizes.set(entry, size);
     this.chars += size;
     while (this.list.length > this.limit || (this.chars > this.maxChars && this.list.length > 1)) {
@@ -170,6 +186,56 @@ export interface PathRoot {
   label: string;
 }
 
+// ---------------------------------------------------------------------------
+// Credentials
+// ---------------------------------------------------------------------------
+
+/** The least of a credential that is taken for part of it where a string was cut. */
+const PART = 4;
+
+/**
+ * A string with every known credential replaced, including the part of one left where the string was cut to length
+ * (an end marked `…`): a credential that became known after the string was cut cannot be matched whole.
+ */
+export function scrubText(s: string, secrets: string[]): string {
+  const list = secrets.filter((x) => !!x);
+  if (!list.length) return s;
+  let out = scrubber(list)(s);
+  const tailCut = out.endsWith('…');
+  const headCut = out.startsWith('…');
+  if (!tailCut && !headCut) return out;
+  let body = out.slice(headCut ? 1 : 0, tailCut ? -1 : undefined);
+  for (const x of list) {
+    if (x.length <= PART) continue;
+    if (tailCut)
+      for (let k = Math.min(x.length - 1, body.length); k >= PART; k--)
+        if (body.endsWith(x.slice(0, k))) {
+          body = body.slice(0, body.length - k) + REDACTED;
+          break;
+        }
+    if (headCut)
+      for (let k = Math.min(x.length - 1, body.length); k >= PART; k--)
+        if (body.startsWith(x.slice(x.length - k))) {
+          body = REDACTED + body.slice(k);
+          break;
+        }
+  }
+  out = `${headCut ? '…' : ''}${body}${tailCut ? '…' : ''}`;
+  return out;
+}
+
+/** A copy of a JSON value with every string and every key scrubbed (scrubText), whatever the key: for what callers sent. */
+export function scrubAll<T>(v: T, secrets: string[]): T {
+  if (!secrets.some((x) => !!x)) return v;
+  const visit = (x: unknown): unknown => {
+    if (typeof x === 'string') return scrubText(x, secrets);
+    if (Array.isArray(x)) return x.map(visit);
+    if (x && typeof x === 'object') return Object.fromEntries(Object.entries(x).map(([k, y]) => [scrubText(k, secrets), visit(y)]));
+    return x;
+  };
+  return visit(v) as T;
+}
+
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** The ways a folder can appear in text: as it is, with forward slashes, as a file URL, percent-encoded. */
@@ -190,10 +256,17 @@ function forms(path: string): string[] {
 }
 
 /**
- * Absolute paths in the places a machine keeps people's and programs' files, wherever they appear in text: what is
- * left of the host once the known folders have been named. Route paths such as `/about/` are not among them.
+ * Absolute paths of the host, wherever they appear in text: what is left once the known folders have been named.
+ * - A path starts where a word does not, so `exports/site/home/index.html` is not one.
+ * - Any path into a folder at the top of macOS's disk that holds people's and programs' files (Users, Volumes, ...).
+ * - A path into a Unix folder whose name a site's own page could also have (home, media, var, ...) only two folders
+ *   down, so a route such as `/about/` or `/media/` is not one.
+ * - A Windows drive path, and a network (UNC) path.
  */
-const HOST_PATH = /(?:file:\/\/)?(?:\/(?:Users|home|private|var|tmp|opt|Volumes|root|mnt|media|srv|etc|Library|Applications|System|usr|nix|snap|run)(?=[\\/]|$)[^\s'"`<>|]*|\b[A-Za-z]:[\\/][^\s'"`<>|]*|\\\\[^\s'"`<>|\\]+\\[^\s'"`<>|]*)/g;
+const HOST_PATH =
+  /(?<![\w.~/\\-])(?:file:\/\/)?(?:\/(?:Users|Volumes|Library|Applications|System|private)(?=[\\/]|$)[^\s'"`<>|()]*|\/(?:home|var|tmp|opt|root|mnt|media|srv|etc|usr|nix|snap|run)\/[^\s'"`<>|()/\\]+\/[^\s'"`<>|()/\\]+[^\s'"`<>|()]*|[A-Za-z]:[\\/][^\s'"`<>|()]*|\\\\[^\s'"`<>|()\\]+\\[^\s'"`<>|()]*)/g;
+/** A dev server's file URL (`/@fs/Users/...`) carries a host path right after it. */
+const FS_URL = /(\/@fs)\/(?:Users|Volumes|private|home|var|tmp|opt|root|mnt|media|srv|usr|[A-Za-z]:)[^\s'"`<>|()]*/g;
 
 export const HOST_PATH_LABEL = '<host-path>';
 
@@ -211,7 +284,7 @@ export function pathHider(roots: PathRoot[]): (text: string) => string {
   return (text: string) => {
     let out = text;
     for (const { re, label } of compiled) out = out.replace(re, label);
-    return out.replace(HOST_PATH, HOST_PATH_LABEL);
+    return out.replace(FS_URL, `$1/${HOST_PATH_LABEL}`).replace(HOST_PATH, HOST_PATH_LABEL);
   };
 }
 
@@ -256,8 +329,12 @@ export class LogKeeper {
     this.tailChars = tailChars;
   }
 
+  /** How many characters have been written in all. */
+  written = 0;
+
   write(chunk: Buffer | string) {
     let s = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    this.written += s.length;
     if (this.head.length < this.headChars) {
       const room = this.headChars - this.head.length;
       this.head += s.slice(0, room);
@@ -272,8 +349,14 @@ export class LogKeeper {
     }
   }
 
-  text(): string {
-    return this.leftOut ? `${this.head}\n… ${this.leftOut} characters of output left out …\n${this.tail}` : this.head + this.tail;
+  /**
+   * The kept output, with `clean` applied to each kept part: a part cut where output was left out is passed with `…`
+   * at that end, so a credential cut there is still caught (scrubText).
+   */
+  text(clean?: (s: string) => string): string {
+    if (!this.leftOut) return clean ? clean(this.head + this.tail) : this.head + this.tail;
+    if (!clean) return `${this.head}\n… ${this.leftOut} characters of output left out …\n${this.tail}`;
+    return `${clean(`${this.head}…`)}\n… ${this.leftOut} characters of output left out …\n${clean(`…${this.tail}`)}`;
   }
 
   /** The last `n` lines that read as trouble, newest last, each cut to length. */

@@ -82,6 +82,11 @@ try {
   await until('ui.present', { role: 'heading', name: MARKER, scope: 'preview' });
   // The ref given for the field before the edit names the same field (its name did not change).
   assert.equal((await find({ ref: field.ref })).value, MARKER);
+  // An input that changes nothing: the editor still says Saved, but that is no save of it.
+  await act('ui.press', { key: 'Tab' });
+  const nothing = failed(await call('wait.for', { condition: 'save.settled' }, { timeoutMs: 1500 }), 'TIMEOUT', 'a save after an input that changed nothing');
+  assert.match(nothing.details.pending, new RegExp(`revision ${settled.revision}, as it was before the last input`));
+  assert.equal(nothing.details.last.app.save.text, 'Saved', 'though the indicator says Saved');
   const journey = ok(await call('evidence.save'), 'evidence.save').record;
   assert.ok(journey.evidence.screenshots?.editor, 'the record has a screenshot of the editor');
   assert.ok(existsSync(join(paths.artifacts, journey.evidence.screenshots.editor)), 'in the artifacts');
@@ -154,11 +159,17 @@ try {
   const refusedExport = await until('export.finished', {}, 60000);
   assert.equal(refusedExport.outcome, 'failed', `the export failed: ${JSON.stringify(refusedExport)}`);
   assert.match(refusedExport.message, /outside the project folder/);
+  // The failure still on screen is not the outcome of what comes next.
+  await act('ui.press', { key: 'Tab' });
+  const stale = failed(await call('wait.for', { condition: 'export.finished' }, { timeoutMs: 1500 }), 'TIMEOUT', 'the failure from before the last input');
+  assert.match(stale.details.pending, /no export has finished since the last input/);
   const afterFailure = ok(await call('project.summary'), 'project.summary after the failure');
   assert.equal(afterFailure.exports.count, 1, 'no export was added');
   assert.equal(afterFailure.exports.newest.path, exported.export.path);
   assert.deepEqual(ok(await call('files.list'), 'files.list').entries.map((e) => e.name), [exported.export.path.split('/').pop()], 'the exports folder has the one website');
   assert.equal(ok(await call('project.summary', { find: 'fixture-business-site' }), 'the project folder').project.find.matches.length, 0);
+  const inProject = ok(await call('files.list', { path: before.project.path }), 'the project folder').entries.map((e) => e.name);
+  assert.ok(!inProject.some((name) => /-site/.test(name)), `nothing was written into the project folder: ${inProject.join(', ')}`);
 
   step('a control that is not there: the wait times out with what was there instead, and the session goes on');
   const missing = failed(await call('wait.for', { condition: 'ui.present', role: 'button', name: 'Publish to the Moon' }, { timeoutMs: 3000 }), 'TIMEOUT', 'a missing control');
@@ -174,6 +185,16 @@ try {
   const going = failed(await call('wait.for', { condition: 'outcome.terminal', since: 'start' }, { timeoutMs: 1500 }), 'TIMEOUT', 'no terminal outcome');
   assert.match(going.details.pending, /the app is running/);
 
+  step('an error the page raises is a terminal outcome, reported with its host paths hidden');
+  // Test setup, outside the driver: the editor's page throws, naming a file of the host's.
+  const THROWN = 'outcomes-sentinel failure at /Users/nobody-here/private/thing.js:3:9';
+  await session.page.evaluate((m) => setTimeout(() => { throw new Error(m); }), THROWN);
+  const ended = await until('outcome.terminal', {}, 10000);
+  assert.equal(ended.outcome, 'page-error');
+  assert.equal(ended.errors.length, 1);
+  assert.match(ended.errors[0], /outcomes-sentinel failure at <host-path>/);
+  assert.ok(!JSON.stringify(ended).includes('nobody-here'), 'the host path is hidden');
+
   step('a credential typed into Settings is kept out of the record');
   await click((await find({ role: 'button', name: 'Settings', scope: 'editor' })).ref);
   await until('ui.context', { dialog: 'Settings' });
@@ -184,18 +205,25 @@ try {
   await until('ui.context', { dialog: 'Save the API key you entered?' });
   await click((await find({ role: 'button', name: 'Discard', scope: 'editor' })).ref);
   await until('ui.context', { dialog: null });
+  // The key, and a folder of the host's, sent later as arguments: the record keeps neither.
+  ok(await call('project.summary', { find: KEY }), 'a search for the key');
+  failed(await call('exports.inspect', { path: '/Volumes/Backup/elsewhere-site' }), 'BAD_REQUEST', 'a path outside the session');
 
   step('the record: ordered, classed, bounded, without credentials or host paths');
   const log = ok(await call('evidence.log', { after: 0, limit: 200 }), 'evidence.log');
   assert.equal(log.dropped, 0);
   const seqs = log.entries.map((e) => e.seq);
-  assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), 'in order');
+  assert.ok(seqs.every((x, i) => i === 0 || x > seqs[i - 1]), 'in order, each once');
   const classOf = (op) => [...new Set(log.entries.filter((e) => e.op === op).map((e) => e.class))];
   assert.deepEqual([classOf('session.start'), classOf('desktop.setAnswers'), classOf('ui.click'), classOf('menu.invoke'), classOf('wait.for'), classOf('project.summary')], [['session'], ['setup'], ['input'], ['input'], ['observation'], ['observation']]);
   const fill = log.entries.find((e) => e.op === 'ui.fill' && e.args?.text === MARKER);
   assert.deepEqual(fill.targets.map((t) => [t.at, t.role, t.name, t.replayable]), [['target', 'textbox', 'Heading', true]], 'an input says how to find its target again');
   const keyFill = log.entries.filter((e) => e.op === 'ui.fill').at(-1);
   assert.deepEqual(keyFill.args.textLeftOut, { length: KEY.length }, 'the typed credential is left out');
+  const searched = log.entries.filter((e) => e.op === 'project.summary').at(-1);
+  assert.equal(searched.args.find, '[redacted]', 'a credential sent as an argument is scrubbed');
+  const outside = log.entries.filter((e) => e.op === 'exports.inspect').at(-1);
+  assert.equal(outside.args.path, '<host-path>', 'and a host path is hidden');
   const saved = ok(await call('evidence.save'), 'evidence.save at the end');
   const record = JSON.parse(readFileSync(saved.file, 'utf8'));
   assert.deepEqual(record, saved.record, 'replay.json is what was returned');
@@ -204,8 +232,13 @@ try {
   assert.match(record.build.fingerprint, /^sha256:/);
   assert.equal(record.complete, true);
   assert.match(record.evidence.screenshots?.withheld ?? '', /credential/, 'no screenshot once a credential is known');
+  assert.equal(record.evidence.observation.context.screen, 'editor', 'the latest observation');
+  assert.ok(record.evidence.observation.editor.nodes.length > 0, 'with its tree');
+  assert.deepEqual([record.evidence.failure.op, record.evidence.failure.code, record.evidence.failure.seq], ['exports.inspect', 'BAD_REQUEST', outside.seq], 'the last failure');
+  assert.equal(record.evidence.pageErrors.total, 1);
+  assert.match(record.evidence.pageErrors.latest[0], /<host-path>/);
   const text = JSON.stringify(record);
-  for (const leak of ['OUTCOMES-SENTINEL', '4b8e1d', paths.root, REPO_ROOT, homedir()]) assert.ok(!text.includes(leak), `the record does not hold ${leak}`);
+  for (const leak of ['OUTCOMES-SENTINEL', '4b8e1d', paths.root, REPO_ROOT, homedir(), 'nobody-here', '/Volumes/']) assert.ok(!text.includes(leak), `the record does not hold ${leak}`);
   assert.ok(text.includes('<session>') || text.includes('<repo>') || text.includes('~'), 'host paths are named by label');
 
   step('the edit journey replays in a fresh session, finding its targets again');
@@ -217,7 +250,8 @@ try {
   assert.equal(again.project.find.matches.length, 1, 'the replayed session holds the edit on disk');
   assert.notEqual(replayed.session.paths.root, paths.root, 'in its own session');
 
-  assert.deepEqual(session.pageErrors, [], 'the editor raised no errors');
+  assert.equal(session.pageErrors.length, 1, 'the editor raised no errors but the one the test threw');
+  assert.match(session.pageErrors[0], /outcomes-sentinel/);
   passed = true;
   console.log('\noutcomes: all checks passed');
 } finally {

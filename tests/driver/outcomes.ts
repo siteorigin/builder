@@ -13,8 +13,10 @@
  * so a missing match is never mistaken for proof of absence.
  */
 import { createHash } from 'node:crypto';
-import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
-import { extname, isAbsolute, join, relative, sep } from 'node:path';
+import { constants as fsConstants } from 'node:fs';
+import type { Dirent } from 'node:fs';
+import { lstat, open, opendir } from 'node:fs/promises';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Page } from 'playwright';
 import { resolveSessionPath } from './desktop.ts';
 import type { Area } from './desktop.ts';
@@ -105,10 +107,14 @@ export function parseCondition(args: Record<string, unknown> | undefined): Condi
 export interface Checkpoint {
   /** The journal entry of the input it was taken for. */
   seq: number;
+  /** Whether the app could be read then: an unread checkpoint is not an empty one, and nothing compares with it. */
+  known: boolean;
   generation: number | null;
   opening: string | null;
   revision: number | null;
   newestExport: ExportBrief | null;
+  /** The export report the dialog showed then (its id), if any. */
+  exportReport: string | null;
   /** How many page errors the session had seen. */
   pageErrors: number;
 }
@@ -147,26 +153,21 @@ export interface AppProbe {
   save: { kind: string; text: string } | null;
   history: { canUndo: boolean; canRedo: boolean; undoLabel?: string; redoLabel?: string; applied: number } | null;
   exports: { count: number; newest: ExportBrief | null };
-  /** The export dialog, while it is open: whether an export is running, and the result it shows. */
-  exportView: { busy: boolean; result: { ok: boolean; text: string; fresh: boolean } | null } | null;
+  /** The export dialog, while it is open: whether an export is running, and the report it shows (with its id). */
+  exportView: { busy: boolean; result: { ok: boolean; text: string; report: string | null } | null } | null;
   conflicts: number;
   readOnly: boolean;
 }
 
-/** Where the probe keeps the export results already shown at a checkpoint, in the editor's document. */
-const SEEN_RESULTS = 'siteorigin.driver.seenExportResults';
-
 /**
  * Read the app's state from the editor's document: the project snapshot through the editor's own preload API, and
- * the save indicator and the export dialog as they show. Nothing is changed in the app; with `mark`, the export results
- * on screen now are remembered as seen, so only a result shown after this counts as fresh.
+ * the save indicator and the export dialog as they show. Nothing in the app is changed. The export report shown is
+ * named by its own id (`data-report`), so the same report drawn again after a cancelled retry is told from a new one.
  */
-export async function probeApp(page: Page, mark = false): Promise<AppProbe> {
-  return (await page.evaluate(
-    async ([key, markNow]: [string, boolean]) => {
+export async function probeApp(page: Page): Promise<AppProbe> {
+  return (await page.evaluate(async () => {
       const g = globalThis as Dom;
       const d = g.document;
-      const seen: WeakSet<object> = (g[Symbol.for(key)] ??= new WeakSet());
       const snap = await Promise.resolve(g.builder?.project?.snapshot?.()).catch(() => null);
       const screen = d.querySelector('.welcome') ? 'welcome' : d.querySelector('.editor') ? 'editor' : 'other';
       const saveEl = d.querySelector('.toolbar .save-state');
@@ -174,8 +175,7 @@ export async function probeApp(page: Page, mark = false): Promise<AppProbe> {
       const save = saveEl ? { kind: kinds.find((k) => saveEl.classList.contains(k)) ?? 'unknown', text: String(saveEl.textContent ?? '').replace(/\s+/g, ' ').trim() } : null;
       const progress = d.querySelector('.export-progress');
       const resultEl = d.querySelector('.export-result');
-      const result = resultEl ? { ok: resultEl.getAttribute('role') !== 'alert', text: String(resultEl.textContent ?? '').replace(/\s+/g, ' ').trim(), fresh: !seen.has(resultEl) } : null;
-      if (markNow) for (const el of d.querySelectorAll('.export-result')) seen.add(el);
+      const result = resultEl ? { ok: resultEl.getAttribute('role') !== 'alert', text: String(resultEl.textContent ?? '').replace(/\s+/g, ' ').trim(), report: resultEl.getAttribute('data-report') } : null;
       const exportView = progress || resultEl ? { busy: !!progress && !!String(progress.textContent ?? '').trim(), result } : null;
       const recent = (snap?.recentExports ?? []) as { kind: string; format: string; path: string; revision: number; exportedAt: string }[];
       const newest = recent.length ? [...recent].sort((a, b) => (a.exportedAt < b.exportedAt ? 1 : a.exportedAt > b.exportedAt ? -1 : 0))[0] : null;
@@ -193,9 +193,7 @@ export async function probeApp(page: Page, mark = false): Promise<AppProbe> {
         conflicts: snap?.conflicts?.length ?? 0,
         readOnly: !!snap?.readOnly
       };
-    },
-    [SEEN_RESULTS, mark] as [string, boolean]
-  )) as AppProbe;
+  })) as AppProbe;
 }
 
 const sameExport = (a: ExportBrief | null, b: ExportBrief | null) => (!a && !b) || (!!a && !!b && a.path === b.path && a.exportedAt === b.exportedAt && a.kind === b.kind);
@@ -203,11 +201,15 @@ const sameExport = (a: ExportBrief | null, b: ExportBrief | null) => (!a && !b) 
 /** Judge an app condition against a probe and the checkpoint of the last input (null when none was sent). */
 export function judgeApp(c: Extract<Condition, { condition: 'save.settled' | 'project.revision' | 'export.finished' }>, p: AppProbe, base: Checkpoint | null): Verdict {
   if (p.screen !== 'editor' || p.opening === null || p.revision === null) return { met: false, pending: `no project is open (the app shows ${p.screen === 'welcome' ? 'Welcome' : 'something else'})` };
+  // A checkpoint that could not be read says nothing about what was there: no change is judged against it.
+  const unread = !!base && !base.known;
+  const unreadPending = 'the app could not be read just before the last input, so there is nothing to compare with';
   // A checkpoint from another opening (a project closed and opened again since) has nothing to compare with.
   const other = !!base && base.opening !== null && base.opening !== p.opening;
   switch (c.condition) {
     case 'save.settled': {
       if (c.changed) {
+        if (unread) return { met: false, pending: unreadPending };
         if (!base || base.revision === null) return { met: false, pending: 'no input was sent to this project to compare with (use changed: false to wait for the indicator alone)' };
         if (other) return { met: false, pending: 'the project was opened again since the last input' };
         if (p.revision <= base.revision) return { met: false, pending: `the project is at revision ${p.revision}, as it was before the last input` };
@@ -217,17 +219,21 @@ export function judgeApp(c: Extract<Condition, { condition: 'save.settled' | 'pr
     }
     case 'project.revision': {
       if (c.atLeast !== undefined) return p.revision >= c.atLeast ? { met: true, value: { revision: p.revision } } : { met: false, pending: `the project is at revision ${p.revision}, below ${c.atLeast}` };
+      if (unread) return { met: false, pending: unreadPending };
       if (!base || base.revision === null) return { met: false, pending: 'no input was sent to this project to compare with (give atLeast)' };
       if (other) return { met: false, pending: 'the project was opened again since the last input' };
       return p.revision > base.revision ? { met: true, value: { revision: p.revision, before: base.revision } } : { met: false, pending: `the project is at revision ${p.revision}, as it was before the last input` };
     }
     case 'export.finished': {
+      if (unread) return { met: false, pending: unreadPending };
       const busy = !!p.exportView?.busy;
       const result = p.exportView?.result ?? null;
       const before = other ? null : (base?.newestExport ?? null);
       const fresh = !!p.exports.newest && !sameExport(p.exports.newest, before);
-      if (fresh && !busy) return { met: true, value: { outcome: 'exported', export: p.exports.newest, ...(result?.fresh && result.ok ? { message: result.text } : {}) } };
-      if (result?.fresh && !result.ok && !busy) return { met: true, value: { outcome: 'failed', message: result.text } };
+      // A report is new when it is not the one shown at the last input; one with no id cannot be told apart.
+      const freshReport = !!result?.report && result.report !== (base?.exportReport ?? null);
+      if (fresh && !busy) return { met: true, value: { outcome: 'exported', export: p.exports.newest, ...(freshReport && result!.ok ? { message: result!.text } : {}) } };
+      if (freshReport && !result!.ok && !busy) return { met: true, value: { outcome: 'failed', message: result!.text } };
       return { met: false, pending: busy ? 'the export is still running' : 'no export has finished since the last input' };
     }
   }
@@ -277,15 +283,15 @@ export type LocateSample = { ok: true; located: Located } | { ok: false; error: 
  * no match in a search that covered its whole scope; a preview still loading has not been searched, and a search
  * that could not place every match proves nothing.
  */
-export function judgeLocate(c: Extract<Condition, { condition: 'ui.present' | 'ui.absent' }>, s: LocateSample): Verdict {
+export function judgeLocate(c: Extract<Condition, { condition: 'ui.present' | 'ui.absent' }>, s: LocateSample, searchesPreview = c.scope !== 'editor'): Verdict {
   const what = `${c.role}${c.name !== undefined ? ` "${c.name}"` : ''}${c.region ? ` in "${c.region}"` : ''}`;
   if (s.ok) return c.condition === 'ui.present' ? { met: true, value: { count: 1, node: s.located.node, scope: s.located.scope, region: s.located.region } } : { met: false, pending: `a ${what} is there` };
   const { code, details } = s.error;
   if (code === 'AMBIGUOUS_TARGET') return c.condition === 'ui.present' ? { met: true, value: { count: details?.count, candidates: details?.candidates } } : { met: false, pending: `${String(details?.count ?? 'several')} ${what} are there` };
   if (code === 'TARGET_NOT_FOUND') {
     if (c.condition === 'ui.present') return { met: false, pending: `no ${what} is there${details?.preview && details.preview !== 'ready' ? ` (the preview is ${String(details.preview)})` : ''}` };
-    // A search of a scope that includes the preview proves nothing while the preview is loading.
-    if (c.scope !== 'editor' && details?.preview === 'loading') return { met: false, pending: 'the preview is still loading, so it has not been searched' };
+    // A search whose scope includes the preview proves nothing while the preview is loading, or when it cannot say.
+    if (searchesPreview && details?.preview !== 'ready' && details?.preview !== 'absent') return { met: false, pending: details?.preview === 'loading' ? 'the preview is still loading, so it has not been searched' : 'the search could not say whether the preview was searched' };
     return { met: true, value: { count: 0 } };
   }
   return { met: false, pending: `the search could not be completed: ${s.error.message}` };
@@ -306,11 +312,117 @@ export function toSessionPath(areas: Record<Area, string>, abs: string): string 
 }
 
 // ---------------------------------------------------------------------------
+// Reading files safely
+// ---------------------------------------------------------------------------
+
+/** Limits on any walk of a folder: how many entries it visits in all, and how many it reads from one folder. */
+export const WALK_LIMITS = { visits: 20_000, perFolder: 5_000 };
+
+/** Whether no link stands on the way from `root` to `rel` (inside it): what is not there yet is no link either. */
+async function noLinks(root: string, rel: string): Promise<boolean> {
+  let at = root;
+  for (const part of rel.split(/[\\/]/).filter(Boolean)) {
+    at = join(at, part);
+    const l = await lstat(at).catch(() => null);
+    if (!l) return true;
+    if (l.isSymbolicLink()) return false;
+  }
+  return true;
+}
+
+/**
+ * Read a file inside `root` with at most `limit` bytes: only while it, and every folder on the way to it, are no links
+ * (checked before opening, and the opened file checked to be the same one), so nothing outside is read through a link
+ * put in the way. Null when it is not there or not plain; `too-large` past the limit.
+ */
+async function readPlain(root: string, rel: string, limit: number): Promise<Buffer | null | 'too-large'> {
+  if (!(await noLinks(root, rel))) return null;
+  const abs = join(root, rel);
+  const before = await lstat(abs).catch(() => null);
+  if (!before?.isFile()) return null;
+  if (before.size > limit) return 'too-large';
+  const fh = await open(abs, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)).catch(() => null);
+  if (!fh) return null;
+  try {
+    const st = await fh.stat();
+    if (st.ino !== before.ino || st.dev !== before.dev || !st.isFile()) return null;
+    if (st.size > limit) return 'too-large';
+    const buf = Buffer.alloc(Math.min(st.size, limit) + 1);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    if (bytesRead > limit) return 'too-large';
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close().catch(() => undefined);
+  }
+}
+
+interface Walk {
+  /** Files, by path relative to the root, in path order. */
+  files: { file: string; bytes: number }[];
+  /** Whether every folder was read whole. */
+  complete: boolean;
+  skipped: string[];
+}
+
+/**
+ * Every plain file under `root/rel`, never through a link, in path order: bounded by the entries visited (folders
+ * count too) and per folder, and stopped when `signal` aborts. What it could not read makes it incomplete.
+ */
+async function walkFiles(root: string, rel: string, keep: (name: string) => boolean, maxFiles: number, signal?: AbortSignal): Promise<Walk> {
+  const out: Walk = { files: [], complete: true, skipped: [] };
+  let visits = 0;
+  const walk = async (dirRel: string): Promise<void> => {
+    if (signal?.aborted) throw new DriverError('TIMEOUT', 'The request ran out of time.');
+    const dir = await opendir(join(root, dirRel)).catch(() => null);
+    if (!dir) {
+      out.complete = false;
+      out.skipped.push(`${dirRel || '.'} (could not be read)`);
+      return;
+    }
+    const entries: Dirent[] = [];
+    try {
+      for await (const e of dir) {
+        if (entries.length >= WALK_LIMITS.perFolder) {
+          out.complete = false;
+          out.skipped.push(`${dirRel || '.'} (more than ${WALK_LIMITS.perFolder} entries)`);
+          break;
+        }
+        entries.push(e);
+      }
+    } catch {
+      out.complete = false;
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      if (++visits > WALK_LIMITS.visits || out.files.length >= maxFiles) {
+        out.complete = false;
+        return;
+      }
+      const child = dirRel ? `${dirRel}/${e.name}` : e.name;
+      if (e.isSymbolicLink()) {
+        // Never followed, so what it leads to was not read.
+        out.skipped.push(`${child} (a link)`);
+        out.complete = false;
+      } else if (e.isDirectory()) {
+        await walk(child);
+        if (!out.complete && (visits > WALK_LIMITS.visits || out.files.length >= maxFiles)) return;
+      } else if (e.isFile() && keep(e.name)) out.files.push({ file: child, bytes: (await lstat(join(root, child)).catch(() => null))?.size ?? 0 });
+    }
+  };
+  if (await noLinks(root, rel)) await walk(rel);
+  else {
+    out.complete = false;
+    out.skipped.push(`${rel} (a link)`);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // The project on disk
 // ---------------------------------------------------------------------------
 
-/** Limits on reading a project's documents. */
-export const DOC_LIMITS = { files: 2000, fileBytes: 4 * 1024 * 1024, totalBytes: 64 * 1024 * 1024, pages: 200, matches: 50, excerpt: 60 };
+/** Limits on reading a project's documents: one byte budget for the summary and the search together. */
+export const DOC_LIMITS = { files: 2000, fileBytes: 4 * 1024 * 1024, totalBytes: 64 * 1024 * 1024, pages: 200, matches: 50, excerpt: 60, text: 200 };
 
 export interface DocMatch {
   /** The document, relative to the project folder. */
@@ -326,20 +438,13 @@ export interface ProjectDocs {
   pages: { id: string; title: string; route: string; home: boolean; draft: boolean }[];
   /** More pages than the summary lists. */
   morePages?: number;
+  /** Whether every page document was read. */
+  pagesComplete: boolean;
   find?: { text: string; matches: DocMatch[]; more: boolean; files: number; complete: boolean; skipped?: string[] };
 }
 
-const readJsonFile = async (file: string, limit: number): Promise<unknown> => {
-  const s = await lstat(file).catch(() => null);
-  if (!s?.isFile() || s.size > limit) return undefined;
-  try {
-    return JSON.parse(await readFile(file, 'utf8'));
-  } catch {
-    return undefined;
-  }
-};
-
-const str = (v: unknown) => (typeof v === 'string' ? v : null);
+const cut = (v: string, max = DOC_LIMITS.text) => (v.length > max ? `${v.slice(0, max)}…` : v);
+const str = (v: unknown) => (typeof v === 'string' ? cut(v) : null);
 
 function excerptAround(text: string, at: number, len: number, room = DOC_LIMITS.excerpt): string {
   const start = Math.max(0, at - room);
@@ -363,78 +468,68 @@ function findInJson(v: unknown, text: string, file: string, out: DocMatch[], lim
   return false;
 }
 
-/** The JSON documents of a project: its manifest and everything under siteorigin/, in name order, never through a link. */
-async function documentFiles(dir: string, limit: number): Promise<{ files: string[]; complete: boolean; skipped: string[] }> {
-  const files: string[] = [];
-  const skipped: string[] = [];
-  let complete = true;
-  const manifest = join(dir, 'siteorigin.project.json');
-  if ((await lstat(manifest).catch(() => null))?.isFile()) files.push('siteorigin.project.json');
-  const walk = async (rel: string) => {
-    const entries = (await readdir(join(dir, rel), { withFileTypes: true }).catch(() => [])).sort((a, b) => (a.name < b.name ? -1 : 1));
-    for (const e of entries) {
-      const child = `${rel}/${e.name}`;
-      if (e.isSymbolicLink()) skipped.push(`${child} (a link)`);
-      else if (e.isDirectory()) await walk(child);
-      else if (e.isFile() && e.name.endsWith('.json')) {
-        if (files.length >= limit) {
-          complete = false;
-          return;
-        }
-        files.push(child);
-      }
-    }
-  };
-  if ((await lstat(join(dir, 'siteorigin')).catch(() => null))?.isDirectory()) await walk('siteorigin');
-  return { files, complete, skipped };
-}
-
 /**
  * Read a project's canonical documents from disk: the site, its pages (title, route, home, draft), and with `find`,
- * every document string that contains the text. Never through the app: what this reads is what the next opening of
- * the project, or an export, starts from.
+ * every document string that contains the text. Never through the app, and never through a link: what this reads is
+ * what the next opening of the project, or an export, starts from. One byte budget covers everything it reads.
  */
-export async function readProjectDocs(dir: string, opts: { find?: string } = {}): Promise<ProjectDocs> {
-  const manifest = (await readJsonFile(join(dir, 'siteorigin.project.json'), DOC_LIMITS.fileBytes)) as Record<string, unknown> | undefined;
-  const site = (await readJsonFile(join(dir, 'siteorigin', 'site.json'), DOC_LIMITS.fileBytes)) as Record<string, unknown> | undefined;
-  const homePageId = str(site?.homePageId);
-  const pageNames = (await readdir(join(dir, 'siteorigin', 'pages')).catch(() => [] as string[])).filter((n) => n.endsWith('.json')).sort();
+export async function readProjectDocs(dir: string, opts: { find?: string; signal?: AbortSignal } = {}): Promise<ProjectDocs> {
+  let budget = DOC_LIMITS.totalBytes;
+  /** A document as JSON: undefined when missing, not JSON, too large, or past the budget (and why, in `why`). */
+  const readJson = async (rel: string): Promise<{ doc?: unknown; why?: string }> => {
+    if (opts.signal?.aborted) throw new DriverError('TIMEOUT', 'The request ran out of time.');
+    const buf = await readPlain(dir, rel, Math.min(DOC_LIMITS.fileBytes, budget));
+    if (buf === null) return { why: 'missing or not a plain file' };
+    if (buf === 'too-large') return { why: 'too large to read' };
+    budget -= buf.length;
+    try {
+      return { doc: JSON.parse(buf.toString('utf8')) };
+    } catch {
+      return { why: 'not JSON' };
+    }
+  };
+  const manifest = (await readJson('siteorigin.project.json')).doc as Record<string, unknown> | undefined;
+  const site = (await readJson('siteorigin/site.json')).doc as Record<string, unknown> | undefined;
+  const homePageId = typeof site?.homePageId === 'string' ? site.homePageId : null;
+  const listed = await walkFiles(dir, 'siteorigin/pages', (n) => n.endsWith('.json'), DOC_LIMITS.files, opts.signal);
+  const pageFiles = listed.files.filter((f) => !f.file.slice('siteorigin/pages/'.length).includes('/'));
   const pages: ProjectDocs['pages'] = [];
-  for (const n of pageNames.slice(0, DOC_LIMITS.pages)) {
-    const p = (await readJsonFile(join(dir, 'siteorigin', 'pages', n), DOC_LIMITS.fileBytes)) as Record<string, unknown> | undefined;
-    if (!p) continue;
-    const id = str(p.id) ?? n.replace(/\.json$/, '');
-    pages.push({ id, title: str(p.title) ?? '', route: str(p.route) ?? '', home: id === homePageId, draft: p.draft === true });
+  let pagesComplete = listed.complete;
+  for (const f of pageFiles.slice(0, DOC_LIMITS.pages)) {
+    const { doc } = await readJson(f.file);
+    const p = doc as Record<string, unknown> | undefined;
+    if (!p) {
+      pagesComplete = false;
+      continue;
+    }
+    const id = typeof p.id === 'string' ? p.id : f.file.slice('siteorigin/pages/'.length).replace(/\.json$/, '');
+    pages.push({ id: cut(id), title: str(p.title) ?? '', route: str(p.route) ?? '', home: id === homePageId, draft: p.draft === true });
   }
   pages.sort((a, b) => (a.home === b.home ? (a.route < b.route ? -1 : a.route > b.route ? 1 : 0) : a.home ? -1 : 1));
   const out: ProjectDocs = {
     name: str(manifest?.workingCopyName) ?? str(manifest?.name),
-    site: { name: str(site?.name), language: str(site?.language), homePageId },
+    site: { name: str(site?.name), language: str(site?.language), homePageId: homePageId === null ? null : cut(homePageId) },
     pages,
-    ...(pageNames.length > DOC_LIMITS.pages ? { morePages: pageNames.length - DOC_LIMITS.pages } : {})
+    ...(pageFiles.length > DOC_LIMITS.pages ? { morePages: pageFiles.length - DOC_LIMITS.pages } : {}),
+    pagesComplete: pagesComplete && pageFiles.length <= DOC_LIMITS.pages
   };
   if (opts.find !== undefined) {
-    const { files, complete: listed, skipped } = await documentFiles(dir, DOC_LIMITS.files);
+    const docs = await walkFiles(dir, 'siteorigin', (n) => n.endsWith('.json'), DOC_LIMITS.files, opts.signal);
+    const manifestThere = !!(await lstat(join(dir, 'siteorigin.project.json')).catch(() => null))?.isFile();
+    const files = [...(manifestThere ? [{ file: 'siteorigin.project.json', bytes: 0 }] : []), ...docs.files];
     const matches: DocMatch[] = [];
-    let complete = listed;
-    let total = 0;
+    const skipped = [...docs.skipped];
+    let complete = docs.complete;
     let more = false;
     for (const f of files) {
-      const abs = join(dir, f);
-      const s = await lstat(abs).catch(() => null);
-      if (!s?.isFile()) continue;
-      if (s.size > DOC_LIMITS.fileBytes || total + s.size > DOC_LIMITS.totalBytes) {
-        complete = false;
-        skipped.push(`${f} (too large to read)`);
-        continue;
-      }
-      total += s.size;
-      const doc = await readJsonFile(abs, DOC_LIMITS.fileBytes);
+      const { doc, why } = await readJson(f.file);
       if (doc === undefined) {
-        skipped.push(`${f} (not JSON)`);
+        // Anything not read leaves the search unable to say a text is not there.
+        complete = false;
+        skipped.push(`${f.file} (${why})`);
         continue;
       }
-      if (findInJson(doc, opts.find, f, matches, DOC_LIMITS.matches)) {
+      if (findInJson(doc, opts.find, f.file, matches, DOC_LIMITS.matches)) {
         more = true;
         break;
       }
@@ -464,9 +559,10 @@ export interface ExportInspection {
   /** The session path inspected. */
   path: string;
   type: 'file' | 'folder';
-  /** For a folder: how many files it holds (as far as counted), and the first ones by path. */
+  /** For a folder: how many files it holds (as far as counted), the first ones by path, and whether all were counted. */
   files?: number;
   listed?: { file: string; bytes: number }[];
+  complete?: boolean;
   /** For a file: its size and digest, and its text (cut to length) when it is text and was asked for. */
   bytes?: number;
   sha256?: string;
@@ -488,10 +584,10 @@ export interface InspectArgs {
 
 export function parseInspectArgs(args: Record<string, unknown> | undefined): InspectArgs {
   const a = args ?? {};
-  for (const k of Object.keys(a)) if (!['path', 'find', 'file', 'read'].includes(k)) throw new DriverError('BAD_REQUEST', `exports.inspect does not take "${k}".`);
+  for (const k of Object.keys(a)) if (!['path', 'find', 'file', 'read'].includes(k)) throw new DriverError('BAD_REQUEST', `exports.inspect does not take "${k.slice(0, 100)}".`);
   if (typeof a.path !== 'string' || !a.path) throw new DriverError('BAD_REQUEST', '"path" is a session path in exports/, such as "exports/my-site-site".');
   if (a.find !== undefined && (typeof a.find !== 'string' || !a.find)) throw new DriverError('BAD_REQUEST', '"find" is the text to look for.');
-  if (a.file !== undefined && (typeof a.file !== 'string' || !a.file || isAbsolute(a.file) || a.file.split(/[\\/]/).includes('..'))) throw new DriverError('BAD_REQUEST', '"file" is a path inside the folder, such as "index.html".');
+  if (a.file !== undefined && (typeof a.file !== 'string' || !a.file || isAbsolute(a.file) || /^[A-Za-z]:/.test(a.file) || a.file.split(/[\\/]/).some((p) => p === '..' || p === '.'))) throw new DriverError('BAD_REQUEST', '"file" is a path inside the folder, such as "index.html".');
   if (a.read !== undefined && typeof a.read !== 'boolean') throw new DriverError('BAD_REQUEST', '"read" is true or false.');
   return a as unknown as InspectArgs;
 }
@@ -510,34 +606,32 @@ function findInText(text: string, find: string, file: string, out: ExportMatch[]
   }
 }
 
-/** A file's contents, read only while it is still really inside `root` (no link put in its way since it was listed). */
-async function readInside(root: string, abs: string): Promise<Buffer | null> {
-  const real = await realpath(abs).catch(() => null);
-  if (!real || real !== abs) return null;
-  const rel = relative(root, real);
-  if (rel.startsWith('..') || isAbsolute(rel)) return null;
-  return readFile(real);
-}
-
 /**
  * Inspect what an export wrote into the session's exports folder: a file, or a folder (its files, one of them, or a
- * search of its text files for `find`). Read-only and bounded; links are listed but never followed, and a search that
- * could not read everything says so (`complete: false`).
+ * search of its text files for `find`). Read-only and bounded; links are never followed, on the way to the path asked
+ * for either, and a listing or search that could not cover everything says so (`complete: false`).
  */
-export async function inspectExport(areas: Record<Area, string>, args: InspectArgs): Promise<ExportInspection> {
+export async function inspectExport(areas: Record<Area, string>, args: InspectArgs, signal?: AbortSignal): Promise<ExportInspection> {
   const exportsRoot = areas.exports;
   const base = await resolveSessionPath(areas, args.path, ['exports']);
+  const rel = relative(exportsRoot, base).split(sep).join('/');
   const logical = toSessionPath(areas, base) ?? args.path;
+  // Named, it is the place it resolved to with no link on the way: an alias of another export is not inspected.
+  const named = isAbsolute(args.path) ? resolve(args.path) : resolve(areas.exports, ...args.path.split(/[\\/]/).slice(1));
+  if (named !== base || !(await noLinks(exportsRoot, rel))) throw new DriverError('BAD_REQUEST', `${args.path} leads through a link; only files the export wrote are inspected.`);
   const s = await lstat(base).catch(() => null);
   if (!s) throw new DriverError('TARGET_NOT_FOUND', `There is nothing at ${logical}.`, { details: { path: logical } });
-  if (s.isSymbolicLink()) throw new DriverError('BAD_REQUEST', `${logical} is a link; only files the export wrote are inspected.`);
-  const one = async (abs: string, name: string): Promise<ExportInspection> => {
-    const st = await lstat(abs).catch(() => null);
-    if (!st) throw new DriverError('TARGET_NOT_FOUND', `There is no ${name} in ${logical}.`, { details: { path: logical, file: name } });
-    if (!st.isFile()) throw new DriverError('BAD_REQUEST', `${name} is not a file.`);
-    if (st.size > EXPORT_LIMITS.fileBytes) return { path: logical, type: 'file', bytes: st.size, ...(args.find !== undefined ? { find: { text: args.find, matches: [], more: false, searched: 0, complete: false, skipped: [`${name} (too large to read)`] } } : {}) };
-    const buf = await readInside(exportsRoot, abs);
-    if (!buf) throw new DriverError('BAD_REQUEST', `${name} is not inside the exports folder.`);
+  const one = async (fileRel: string, name: string): Promise<ExportInspection> => {
+    const buf = await readPlain(exportsRoot, fileRel, EXPORT_LIMITS.fileBytes);
+    if (buf === null) {
+      const st = await lstat(join(exportsRoot, fileRel)).catch(() => null);
+      if (!st) throw new DriverError('TARGET_NOT_FOUND', `There is no ${name} in ${logical}.`, { details: { path: logical, file: name } });
+      throw new DriverError('BAD_REQUEST', `${name} is not a plain file the export wrote (a folder, or reached through a link).`);
+    }
+    if (buf === 'too-large') {
+      const bytes = (await lstat(join(exportsRoot, fileRel)).catch(() => null))?.size;
+      return { path: logical, type: 'file', ...(bytes !== undefined ? { bytes } : {}), ...(args.find !== undefined ? { find: { text: args.find, matches: [], more: false, searched: 0, complete: false, skipped: [`${name} (too large to read)`] } } : {}) };
+    }
     const text = isText(name, buf.subarray(0, 8192)) ? buf.toString('utf8') : null;
     const out: ExportInspection = { path: logical, type: 'file', bytes: buf.length, sha256: createHash('sha256').update(buf).digest('hex') };
     if (args.read && text !== null) {
@@ -553,49 +647,33 @@ export async function inspectExport(areas: Record<Area, string>, args: InspectAr
   };
   if (s.isFile()) {
     if (args.file !== undefined) throw new DriverError('BAD_REQUEST', `${logical} is a file: "file" picks a file inside a folder.`);
-    return one(base, logical.split('/').pop()!);
+    return one(rel, logical.split('/').pop()!);
   }
   if (!s.isDirectory()) throw new DriverError('BAD_REQUEST', `${logical} is neither a file nor a folder.`);
   if (args.file !== undefined) {
-    const inspected = await one(join(base, ...args.file.split(/[\\/]/)), args.file);
-    return { ...inspected, path: `${logical}/${args.file.split(/[\\/]/).join('/')}` };
+    const inside = args.file.split(/[\\/]/).join('/');
+    const inspected = await one(rel ? `${rel}/${inside}` : inside, inside);
+    return { ...inspected, path: `${logical}/${inside}` };
   }
-  // The folder: its files in path order, never through a link.
-  const files: { file: string; bytes: number }[] = [];
-  const skipped: string[] = [];
-  let counted = true;
-  const walk = async (rel: string) => {
-    const entries = (await readdir(join(base, rel), { withFileTypes: true }).catch(() => [])).sort((a, b) => (a.name < b.name ? -1 : 1));
-    for (const e of entries) {
-      if (files.length >= EXPORT_LIMITS.files) {
-        counted = false;
-        return;
-      }
-      const child = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isSymbolicLink()) skipped.push(`${child} (a link)`);
-      else if (e.isDirectory()) await walk(child);
-      else if (e.isFile()) files.push({ file: child, bytes: (await stat(join(base, child)).catch(() => null))?.size ?? 0 });
-    }
-  };
-  await walk('');
-  const out: ExportInspection = { path: logical, type: 'folder', files: files.length, listed: files.slice(0, EXPORT_LIMITS.listed) };
+  const walked = await walkFiles(exportsRoot, rel, () => true, EXPORT_LIMITS.files, signal);
+  const strip = (f: string) => (rel ? f.slice(rel.length + 1) : f);
+  const files = walked.files.map((f) => ({ file: strip(f.file), bytes: f.bytes }));
+  const skipped = walked.skipped.map(strip);
+  const out: ExportInspection = { path: logical, type: 'folder', files: files.length, listed: files.slice(0, EXPORT_LIMITS.listed), complete: walked.complete };
   if (args.find !== undefined) {
     const matches: ExportMatch[] = [];
-    let complete = counted;
+    const notRead: string[] = [...skipped];
+    let complete = walked.complete;
     let searched = 0;
     let total = 0;
     let more = false;
     for (const f of files) {
       if (!TEXT_EXT.has(extname(f.file).toLowerCase())) continue;
-      if (f.bytes > EXPORT_LIMITS.fileBytes || total + f.bytes > EXPORT_LIMITS.totalBytes) {
+      if (signal?.aborted) throw new DriverError('TIMEOUT', 'The request ran out of time.');
+      const buf = total + f.bytes > EXPORT_LIMITS.totalBytes ? 'too-large' : await readPlain(exportsRoot, rel ? `${rel}/${f.file}` : f.file, EXPORT_LIMITS.fileBytes);
+      if (buf === 'too-large' || buf === null) {
         complete = false;
-        skipped.push(`${f.file} (too large to read)`);
-        continue;
-      }
-      const buf = await readInside(exportsRoot, join(base, ...f.file.split('/')));
-      if (!buf) {
-        complete = false;
-        skipped.push(`${f.file} (moved out of the exports folder)`);
+        notRead.push(`${f.file} (${buf === null ? 'changed or reached through a link' : 'too large to read'})`);
         continue;
       }
       total += buf.length;
@@ -606,7 +684,7 @@ export async function inspectExport(areas: Record<Area, string>, args: InspectAr
         break;
       }
     }
-    out.find = { text: args.find, matches, more, searched, complete, ...(skipped.length ? { skipped: skipped.slice(0, 20) } : {}) };
+    out.find = { text: args.find, matches, more, searched, complete, ...(notRead.length ? { skipped: notRead.slice(0, 20) } : {}) };
   } else if (skipped.length) out.skipped = skipped.slice(0, 20);
   return out;
 }

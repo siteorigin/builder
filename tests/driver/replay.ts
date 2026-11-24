@@ -1,10 +1,13 @@
 /**
  * Replay a run from its replay record (evidence.ts) in a fresh session (issue #497): the same fixture and provider
  * scenario, the same setup, every input sent again to its target found afresh by role, name and region (refs belong to
- * the session that gave them out), and the recorded waits and checks repeated, so a replay is paced by the app's own
- * state rather than by the recording's timing. Observations that only looked are not repeated.
+ * the session that gave them out), and the recorded waits and checks repeated with the deadlines they had, so a replay
+ * is paced by the app's own state rather than by the recording's timing. Observations that only looked are not
+ * repeated.
  *
- * A replay stops at the first step it cannot repeat or that ends differently, and says which and why, with the reply.
+ * A replay stops at the first step it cannot repeat or that ends differently (a check that finds otherwise, a wait
+ * that is met where it timed out or the other way round, an export that fails where it succeeded), and says which and
+ * why, with the reply.
  */
 import { REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
 import type { JournalEntry, ReplayRecord, TargetDescriptor } from './evidence.ts';
@@ -14,6 +17,8 @@ import type { SessionOptions } from './session.ts';
 
 export interface ReplayOptions {
   session?: SessionOptions;
+  /** Makes the fresh session (default: a new Session with `session`'s options). */
+  make?: () => Session;
   /** Added to the recorded scenario's start (artifactsDir, keepArtifacts, headed). */
   start?: Pick<StartArgs, 'artifactsDir' | 'keepArtifacts' | 'headed'>;
   /** Replay only the steps up to this seq. */
@@ -44,20 +49,36 @@ export interface ReplayReport {
 /** Observations a replay repeats: the waits that pace it, and the checks of what the run produced. */
 const REPEATED = new Set(['wait.for', 'project.summary', 'exports.inspect']);
 
+/** Failures of an input that come before anything is sent: such a step changed nothing and is passed over. */
+const REFUSED_BEFORE_INPUT = new Set(['BAD_REQUEST', 'UNKNOWN_OP', 'BUSY', 'NOT_STARTED', 'CLOSED', 'STALE_REF', 'STALE_OBSERVATION', 'AMBIGUOUS_TARGET', 'TARGET_NOT_FOUND', 'WINDOW_CLOSED', 'WINDOW_REPLACED', 'APP_EXITED']);
+
 export function isReplayRecord(v: unknown): v is ReplayRecord {
   const r = v as Partial<ReplayRecord> | null;
-  return !!r && r.kind === REPLAY_KIND && r.version === REPLAY_VERSION && Array.isArray(r.steps) && !!r.scenario;
+  return !!r && r.kind === REPLAY_KIND && r.version === REPLAY_VERSION && Array.isArray(r.steps) && !!r.scenario && typeof r.scenario.fixture === 'string' && (r.scenario.provider === 'scripted' || r.scenario.provider === 'none') && typeof r.complete === 'boolean';
 }
 
-/** What a check found in the recording, to compare a repeat with. */
-function found(e: JournalEntry): number | undefined {
-  const s = e.outcome?.summary;
-  return typeof s?.found === 'number' ? s.found : undefined;
+/** What a repeated check or wait answered, in the terms the record keeps (its summary). */
+function factsOf(op: string, result: unknown): Record<string, unknown> {
+  const r = result as Record<string, any> | null; // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (!r) return {};
+  if (op === 'project.summary') return r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {};
+  if (op === 'exports.inspect') return r.find ? { found: r.find.matches.length, complete: r.find.complete } : {};
+  if (op === 'wait.for') return r.outcome ? { outcome: r.outcome } : {};
+  return {};
+}
+
+/** Where a repeat differs from the recording: the same matches found, as completely; the same way an export ended. */
+function differs(e: JournalEntry, reply: Reply): string | null {
+  if (!reply.ok) return null;
+  const was = e.outcome?.summary ?? {};
+  const now = factsOf(e.op, reply.result);
+  for (const k of ['found', 'complete', 'outcome'] as const) if (k in was && was[k] !== now[k]) return `its ${k} is ${String(now[k])} where the recording had ${String(was[k])}`;
+  return null;
 }
 
 export async function replay(record: unknown, opts: ReplayOptions = {}): Promise<ReplayReport> {
   if (!isReplayRecord(record)) throw new Error(`Not a replay record (kind ${REPLAY_KIND}, version ${REPLAY_VERSION}).`);
-  const session = new Session(opts.session);
+  const session = opts.make ? opts.make() : new Session(opts.session);
   const steps: ReplayStep[] = [];
   let n = 0;
   const call = (op: string, args?: Record<string, unknown>, extra: { timeoutMs?: number; expectWindow?: number } = {}) => session.call({ v: 1, id: `replay-${++n}`, op, ...(args ? { args } : {}), ...extra });
@@ -67,24 +88,26 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
     return report(false);
   };
 
+  if (!record.complete) {
+    steps.push({ seq: 0, op: 'session.start', status: 'diverged', reason: `the record lost its first ${record.dropped} steps for space; it cannot be replayed from the start` });
+    return report(false);
+  }
   const started = await call('session.start', { fixture: record.scenario.fixture, provider: record.scenario.provider, ...opts.start }, { timeoutMs: 240_000 });
   if (!started.ok) {
     steps.push({ seq: 0, op: 'session.start', status: 'diverged', reason: `the fresh session did not start: ${started.error.code} ${started.error.message}`, reply: started });
     return report(false);
   }
-  if (!record.complete) {
-    steps.push({ seq: 0, op: 'session.start', status: 'diverged', reason: `the record lost its first ${record.dropped} steps for space; it cannot be replayed from the start` });
-    return report(false);
-  }
-  /** The window generation the recording moved on to: each new one is acknowledged as the recording did. */
+  /** The window generation the recording had moved on to: each new one is acknowledged as the recording did. */
   let window = 1;
+  /** The window a step runs against: the one the recording's step did, or none for a step taken with no window. */
+  const on = (e: JournalEntry) => (e.window === null ? {} : { expectWindow: window });
 
   /** Find a recorded target again: wait for it to be there, then look it up as the one element it must be. */
   const resolve = async (e: JournalEntry, d: TargetDescriptor): Promise<{ ref: string } | Reply> => {
     const query = { role: d.role, ...(d.name !== undefined ? { name: d.name } : {}), ...(d.exact === false ? { exact: false } : {}), ...(d.region ? { region: d.region } : {}), ...(d.scope ? { scope: d.scope } : {}) };
-    const there = await call('wait.for', { condition: 'ui.present', ...query }, { timeoutMs: opts.findMs ?? 15_000, expectWindow: window });
+    const there = await call('wait.for', { condition: 'ui.present', ...query }, { timeoutMs: opts.findMs ?? 15_000, ...on(e) });
     if (!there.ok) return there;
-    const located = await call('ui.locate', query, { expectWindow: window });
+    const located = await call('ui.locate', query, on(e));
     if (!located.ok) return located;
     return { ref: (located.result as { node: { ref: string } }).node.ref };
   };
@@ -102,15 +125,18 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       else return diverge(e, 'the recording does not say how it ended');
       continue;
     }
-    if (!e.outcome.ok) {
-      // A request that failed with nothing sent changed nothing; one that sent part of its input cannot be repeated.
-      if (e.class === 'input' && e.outcome.dispatched === 'partial') return diverge(e, 'it sent part of its input before it failed in the recording');
-      skip(`it failed in the recording (${e.outcome.code})`);
-      continue;
-    }
-    if (e.class === 'observation' && !REPEATED.has(e.op)) {
+    const repeated = e.class !== 'observation' || REPEATED.has(e.op);
+    if (!repeated) {
       skip('an observation that only looked');
       continue;
+    }
+    if (!e.outcome.ok && e.class !== 'observation') {
+      // An input refused before anything was sent changed nothing; one that may have sent something cannot be repeated.
+      if (e.outcome.dispatched === 'none' || (e.outcome.code && REFUSED_BEFORE_INPUT.has(e.outcome.code) && e.outcome.dispatched !== 'partial')) {
+        skip(`it was refused before anything was sent (${e.outcome.code})`);
+        continue;
+      }
+      return diverge(e, `it failed in the recording (${e.outcome.code}) after it may have sent input`);
     }
     if (e.unreplayable) return diverge(e, `it cannot be replayed: ${e.unreplayable}`);
     const args: Record<string, unknown> = { ...(e.args ?? {}) };
@@ -122,26 +148,24 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
         args[d.at] = { ref: got.ref, ...(d.position ? { position: d.position } : {}) };
       }
     }
-    const reply = await call(e.op, Object.keys(args).length ? args : undefined, { expectWindow: window });
-    if (!reply.ok) {
-      // The recording moved to a newer window first: that one is now the window to use.
-      if (reply.error.code === 'WINDOW_REPLACED' && typeof reply.error.details?.to === 'number') {
-        window = reply.error.details.to;
-        const again = await call(e.op, Object.keys(args).length ? args : undefined, { expectWindow: window });
-        if (again.ok) {
-          steps.push({ seq: e.seq, op: e.op, status: 'replayed', reply: again });
-          continue;
-        }
-        return diverge(e, `it failed: ${again.error.code} ${again.error.message}`, again);
-      }
-      return diverge(e, `it failed: ${reply.error.code} ${reply.error.message}`, reply);
+    const send = () => call(e.op, Object.keys(args).length ? args : undefined, { ...(e.timeoutMs !== undefined ? { timeoutMs: e.timeoutMs } : {}), ...on(e) });
+    let reply = await send();
+    // The recording moved to a newer window first: that one is now the window to use.
+    if (!reply.ok && reply.error.code === 'WINDOW_REPLACED' && typeof reply.error.details?.to === 'number' && e.window !== null) {
+      window = reply.error.details.to;
+      reply = await send();
     }
-    // A check finds what it found in the recording; an untargeted key reaches what it reached.
-    const was = found(e);
-    if (was !== undefined) {
-      const now = found({ ...e, outcome: { ok: true, summary: checkSummary(e.op, reply.result) } });
-      if ((now ?? 0) > 0 !== was > 0) return diverge(e, `it found ${now ?? 0} matches where the recording found ${was}`, reply);
+    if (!e.outcome.ok) {
+      // A check or wait that failed in the recording (a control that was not there) fails the same way, or the run is not the same.
+      if (reply.ok) return diverge(e, `it succeeded where the recording failed with ${e.outcome.code}`, reply);
+      if (reply.error.code !== e.outcome.code) return diverge(e, `it failed with ${reply.error.code} where the recording failed with ${e.outcome.code}`, reply);
+      steps.push({ seq: e.seq, op: e.op, status: 'replayed', reply });
+      continue;
     }
+    if (!reply.ok) return diverge(e, `it failed: ${reply.error.code} ${reply.error.message}`, reply);
+    const different = differs(e, reply);
+    if (different) return diverge(e, different, reply);
+    // An untargeted key reaches what it reached in the recording.
     const recorded = e.outcome.summary?.target as { role?: string; name?: string } | undefined;
     const reached = (reply.result as { target?: { role?: string; name?: string } } | null)?.target;
     if (e.class === 'input' && !(e.targets ?? []).length && recorded && reached && (recorded.role !== reached.role || recorded.name !== reached.name))
@@ -149,11 +173,4 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
     steps.push({ seq: e.seq, op: e.op, status: 'replayed', reply });
   }
   return report(true);
-}
-
-function checkSummary(op: string, result: unknown): Record<string, unknown> {
-  const r = result as { project?: { find?: { matches: unknown[] } }; find?: { matches: unknown[] } } | null;
-  if (op === 'project.summary' && r?.project?.find) return { found: r.project.find.matches.length };
-  if (op === 'exports.inspect' && r?.find) return { found: r.find.matches.length };
-  return {};
 }
