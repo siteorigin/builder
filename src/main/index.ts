@@ -27,6 +27,7 @@ import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
 import { desktopForLaunch, launchMode } from './headless-desktop';
+import { installAiJournal } from './ai-journal';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 
@@ -56,6 +57,11 @@ const { headless } = launchMode(process.env, globalThis);
 // Nor do they show a native dialog, open a link or open Finder: the test answers every chooser and sees every hand-off
 // to the desktop (headless-desktop.ts), headed or not. A normal launch keeps Electron's own.
 const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
+// And they keep every assistant event in order, for a test to follow each run by its own IDs (ai-journal.ts).
+const aiJournal = launchMode(process.env, globalThis).automated ? installAiJournal(globalThis) : null;
+const AI_TURNS_SPENT = 'This test session allows no more AI requests (its limit or its time is used up), so nothing was sent.';
+/** In a test with a deadline, a provider call that would start after it is refused, wherever in a request it comes. */
+const deadlineFetch: typeof fetch | undefined = aiJournal ? (input, init) => (aiJournal.turns().spent ? Promise.reject(new Error(AI_TURNS_SPENT)) : fetch(input, init)) : undefined;
 if (headless) {
   // A hidden window must keep painting, running timers and animation frames at full speed.
   app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -209,7 +215,10 @@ const orchestratorDeps = {
 const orchestrator = new Orchestrator({
   session: () => controller.session,
   adapter: orchestratorDeps.adapter,
-  emit: (e) => controller.send('ai:event', e),
+  emit: (e) => {
+    aiJournal?.record(e);
+    controller.send('ai:event', e);
+  },
   compileAll: async (): Promise<Diagnostic[]> => (controller.session ? compileProject(controller.session.state) : []),
   inspectLayout,
   inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
@@ -218,6 +227,12 @@ const orchestrator = new Orchestrator({
 });
 // Only a request that may change the site holds it: a read-only question leaves the author editing, exporting
 // and resolving conflicts as usual.
+// A test's deadline for the assistant stops it from here, whatever the test or the window is doing then.
+aiJournal?.onSpent(() => {
+  orchestrator.stop();
+  fixAbort?.abort();
+  for (const test of testAborts) test.abort();
+});
 controller.aiBusy = () => orchestrator.editing;
 controller.aiRunId = () => (orchestrator.editing ? orchestrator.runId : null);
 controller.onSessionOpened = async (s) => {
@@ -433,6 +448,8 @@ function registerIpc() {
     const typed = typeof typedKey === 'string' ? typedKey.trim() : '';
     const custom = typeof typedModel === 'string' ? typedModel.trim() : '';
     if (typed.length > 1000 || custom.length > 200) return { ok: false, message: 'That key or model ID is too long.' };
+    // A connection test asks the provider too: a test's cap counts it like any other request.
+    if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
     if (p === 'local') {
       // Registered before the saved setup is read, so remote access withdrawn meanwhile stops it too.
       const abort = new AbortController();
@@ -452,7 +469,8 @@ function registerIpc() {
     const key = typed || (await getKey(p))?.key;
     if (!key) return { ok: false, message: 'No API key is set.' };
     const model = custom || (await loadSettings()).settings.ai.models[p];
-    return p === 'openai' ? testOpenAI(key, model) : testAnthropic(key, model);
+    const opts = deadlineFetch ? { fetch: deadlineFetch } : {};
+    return p === 'openai' ? testOpenAI(key, model, opts) : testAnthropic(key, model, opts);
   });
   // Always the saved server, so a key is only ever sent to the address the user saved.
   handle('ai:localModels', async () => {
@@ -475,12 +493,22 @@ function registerIpc() {
     return readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory();
   });
   // A question may be asked of a project another app is editing; the orchestrator decides (it writes nothing).
-  handle('ai:send', (text: string, ctx, conversationId?: string, recipient?: unknown) => (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock) ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined, recipient)));
+  handle('ai:send', async (text: string, ctx, conversationId?: string, recipient?: unknown) => {
+    if (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock)) return { ok: false, message: readOnlyReason() };
+    // A test may cap the requests the assistant starts (ai-journal.ts): one past the cap never reaches a model.
+    if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
+    const sent = await orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined, recipient);
+    if (!sent.ok) aiJournal?.giveBack();
+    // Admitted just before the deadline, but started after it stopped everything: stopped now.
+    else if (aiJournal?.turns().spent && sent.runId) void orchestrator.stopRun(sent.runId);
+    return sent;
+  });
   // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.
   handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
   handle('ai:answer', (runId: string, questionId: string, answer: string | { assetId: string }) => orchestrator.answer(runId, questionId, answer));
   handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));
   handle('ai:fixCode', async (source: string) => {
+    if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
     // One fix at a time; closing the code editor cancels it (ai:cancelFix). The controller is registered
     // before anything is awaited so a cancel can never miss it.
     fixAbort?.abort();

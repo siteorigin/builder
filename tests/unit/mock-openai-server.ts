@@ -118,6 +118,8 @@ export class MockOpenAIServer {
   models: unknown = { object: 'list', data: [{ id: 'test-model', object: 'model' }] };
   /** Other GET routes, such as a server's own `/props`, by path. Any GET not listed here answers 404. */
   routes: Record<string, { status?: number; body: unknown; delayMs?: number }> = {};
+  /** Answers a chat request when no scripted reply is left; without one, such a request gets a 500. */
+  respond: MockResponder | null = null;
   private replies: Array<MockReply | MockResponder> = [];
   private open = new Set<ServerResponse>();
   private server: Server;
@@ -180,16 +182,11 @@ export class MockOpenAIServer {
       res.end(route ? (typeof route.body === 'string' ? route.body : JSON.stringify(route.body)) : JSON.stringify({ error: { message: 'Not found' } }));
       return;
     }
-    const next = this.replies.shift();
+    const next = this.replies.shift() ?? this.respond ?? undefined;
     const reply = typeof next === 'function' ? next(request) : next;
     if (!reply) {
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'No scripted reply left' } }));
-      return;
-    }
-    if (!reply.frames) {
-      res.writeHead(reply.status ?? 200, { 'content-type': 'application/json', ...reply.headers });
-      res.end(reply.body ?? '');
       return;
     }
     this.open.add(res);
@@ -200,9 +197,16 @@ export class MockOpenAIServer {
       this.open.delete(res);
       if (!finished) this.disconnects++;
     });
+    // A held or slow reply waits the same way whether it streams or is an error.
     if (reply.hold) await reply.hold;
     if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs));
     if (res.destroyed) return;
+    if (!reply.frames) {
+      finished = true;
+      res.writeHead(reply.status ?? 200, { 'content-type': 'application/json', ...reply.headers });
+      res.end(reply.body ?? '');
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream', ...reply.headers });
     res.flushHeaders();
     for (let i = 0; i < reply.frames.length; i++) {

@@ -220,6 +220,37 @@ const OPS = {
     summary:
       'Write replay.json into the session\'s artifacts and return it: the build, the fixture and provider scenario, every recorded step, the latest observation (with screenshots unless withheld or screenshot: false), the last failure, page errors and app output that read as trouble, and the artifacts. Credentials and host paths are left out. A session closing with its artifacts kept writes one too.'
   },
+  'assistant.script': {
+    kind: 'fixture',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: false,
+    summary:
+      'Set what the scripted model answers, one model request per step: { scenario: answer|read-and-answer|interview|edit-selection|widen|fail, params } or { steps: [{ tool, args?, status?, gate?, delayMs? } | { error: { status, message? }, gate?, delayMs? }] }, mode?: append|replace. In args, { "$context": "selection.nodeId" } reads the editor context the request carries and { "$result": "nodeId" } its latest tool result. A gated step is held until assistant.release. Scripted sessions only.'
+  },
+  'assistant.release': {
+    kind: 'fixture',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: false,
+    summary: 'Let the reply held at a gate go ({ gate }). Releasing it again changes nothing; a gate never scripted is TARGET_NOT_FOUND.'
+  },
+  'assistant.observe': {
+    kind: 'observe',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: false,
+    summary:
+      'What the assistant did after a cursor ({ after?, limit?, runId?, conversationId? }): ordered entries keyed by conversation, message and run (run.started with its request, status, step, question, answer, model, text, result), `next` to read on, each run as it stands (working, input, ending, terminal), what the chat panel shows by the same IDs (messages, the question card, the run strip, the composer, notices and errors), and the script’s gates.'
+  },
+  'assistant.wait': {
+    kind: 'observe',
+    defaultTimeoutMs: 30_000,
+    needsApp: true,
+    usesWindow: false,
+    summary:
+      'Wait until one run ({ runId, after? }) finishes or needs the author (a question, a request to change more), and say which (reason: terminal | input) with the run and, when its conversation is shown, its turn as rendered. Only that run’s events count. A question asked at or before `after` is not a new one. TIMEOUT (the session goes on) names where it stood.'
+  },
   'session.close': {
     kind: 'session',
     defaultTimeoutMs: 60_000,

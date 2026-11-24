@@ -400,8 +400,8 @@ export interface ReplayRecord {
   /** The build the steps ran against, and the checkout it sits in. */
   build: { fingerprint: string; files: number; builtAt: string; packageVersion: string | null; git: { head: string; dirty: boolean } | null } | null;
   platform: { os: string; arch: string; electron: string | null; chrome: string | null };
-  /** How the session started: the fixture project and the AI provider's scenario. */
-  scenario: { fixture: string; provider: 'scripted' | 'none' };
+  /** How the session started: the fixture project and the AI provider's scenario (a configured provider's run is not replayed). */
+  scenario: { fixture: string; provider: 'scripted' | 'none' | 'configured' };
   /** Every request the journal still holds, in order. */
   steps: JournalEntry[];
   /** Entries the journal let go for space: a replay of a record that lost its first steps starts mid-run. */
