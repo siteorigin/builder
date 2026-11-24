@@ -1907,6 +1907,32 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   );
 }
 
+/**
+ * One instance on its own, as the editor's isolated preview shows it: a Svelte module at `file` that renders the
+ * instance inside a <main> of its own, as a page renders its first section, with no header or footer. Its props,
+ * variants and identity attributes are emitted as a page placement's are, under the identity context `ctx`.
+ * Editor-only: generateProject never makes one.
+ */
+export function generateIsolatedInstance(state: ProjectState, file: string, node: InstanceNode, ctx: string): string {
+  const ectx: EmitCtx = {
+    state,
+    file,
+    imports: new Map(),
+    instrument: true,
+    def: null,
+    tree: { rootIds: [node.id], nodes: { [node.id]: node } },
+    ctxExpr: ctx,
+    items: [],
+    rctx: { state },
+    indent: 1,
+    locals: new Map(),
+    firstSection: true
+  };
+  const markup = emitNode(ectx, node.id);
+  const imports = renderImports(ectx.imports);
+  return `<!-- SiteOrigin Builder's isolated preview of one component. Editor-only: never part of the website. -->\n<script>\n${imports}\n</script>\n\n<main id="main">\n${markup}\n</main>\n`;
+}
+
 export function generateLayout(state: ProjectState, opts: GenerateOptions): string {
   const file = 'src/routes/+layout.svelte';
   const mk = (tree: NodeTree, part: 'header' | 'footer'): EmitCtx => ({
@@ -2375,18 +2401,16 @@ export function generatePathsJson(state: ProjectState): string {
 // Whole project
 // ---------------------------------------------------------------------------
 
+/** Makes a state-dependent file under a cache key, or gives back the copy an earlier run made from the same inputs. */
+type FileMaker = (key: string, make: (state: ProjectState) => string) => string;
+
 /**
- * Generate every derived file. Paths are project-relative with forward slashes. With a `cache` from earlier runs on
- * this project, a file whose inputs are unchanged since then is given back instead of being made again; the result
- * is the same bytes either way.
+ * The library every page reads, under src/lib/siteorigin: the runtime helpers, the styles and a file for every
+ * component definition, whether a page places it or not.
  */
-export function generateProject(state: ProjectState, opts: GenerateOptions = {}, cache?: GenerationCache): FileMap {
-  const files: FileMap = new Map();
+function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, file: FileMaker): void {
   const theme = getTheme(state.site.themeId);
-  const run = cache?.run(state, !!opts.instrument);
-  // Content that differs between the clean and instrumented output is kept apart by its key; the rest is shared.
   const mode = opts.instrument ? '#dev' : '#clean';
-  const file = (key: string, make: (state: ProjectState) => string): string => (run ? run.file(key, make) : make(state));
   files.set(`${RUNTIME_DIR}/Link.svelte`, linkSvelte(!!opts.instrument));
   files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
   files.set(`${RUNTIME_DIR}/Action.svelte`, ACTION_SVELTE);
@@ -2419,6 +2443,27 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
     if (def.kind === 'managed' && def.tree) files.set(defFile(def), file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
     else if (def.kind === 'code' && def.source) files.set(defFile(def), def.source);
   }
+}
+
+/** The library alone (see addLibrary), as generateProject makes it, without the routes that use it. */
+export function generateLibrary(state: ProjectState, opts: GenerateOptions = {}): FileMap {
+  const files: FileMap = new Map();
+  addLibrary(state, opts, files, (_key, make) => make(state));
+  return files;
+}
+
+/**
+ * Generate every derived file. Paths are project-relative with forward slashes. With a `cache` from earlier runs on
+ * this project, a file whose inputs are unchanged since then is given back instead of being made again; the result
+ * is the same bytes either way.
+ */
+export function generateProject(state: ProjectState, opts: GenerateOptions = {}, cache?: GenerationCache): FileMap {
+  const files: FileMap = new Map();
+  const run = cache?.run(state, !!opts.instrument);
+  // Content that differs between the clean and instrumented output is kept apart by its key; the rest is shared.
+  const mode = opts.instrument ? '#dev' : '#clean';
+  const file = (key: string, make: (state: ProjectState) => string): string => (run ? run.file(key, make) : make(state));
+  addLibrary(state, opts, files, file);
   files.set('src/routes/+layout.svelte', file(`layout${mode}`, (s) => generateLayout(s, opts)));
   files.set('src/routes/+layout.js', LAYOUT_TS);
   files.set('src/app.html', file('app.html', generateAppHtml));

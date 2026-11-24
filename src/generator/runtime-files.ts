@@ -417,10 +417,25 @@ export function usedIcons(state: ProjectState): string[] {
   return Object.keys(ICONS).filter((n) => found.has(n));
 }
 
-/** Icon data for the icons the project uses. */
-export function iconsJs(state: ProjectState): string {
+/**
+ * Icon data for the icons the project uses, and any named in `alsoShown` (values shown outside the project's
+ * documents, such as an isolated preview's sample properties).
+ */
+export function iconsJs(state: ProjectState, alsoShown?: unknown): string {
   // Any string in any document may name an icon: a file that depends on the answer, not on every document.
-  const used = Object.fromEntries(derived(state, 'icons', usedIcons).map((n) => [n, ICONS[n]]));
+  let names = derived(state, 'icons', usedIcons);
+  if (alsoShown !== undefined) {
+    const more = new Set(names);
+    const visit = (v: unknown) => {
+      if (typeof v === 'string') {
+        if (Object.hasOwn(ICONS, v)) more.add(v);
+      } else if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === 'object') Object.values(v).forEach(visit);
+    };
+    visit(alsoShown);
+    names = Object.keys(ICONS).filter((n) => more.has(n));
+  }
+  const used = Object.fromEntries(names.map((n) => [n, ICONS[n]]));
   return `${ICON_NOTICE}\nexport const ICONS = ${JSON.stringify(used)};\n`;
 }
 
