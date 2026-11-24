@@ -1294,7 +1294,8 @@ function actionOwner(ctx: EmitCtx, nodeId: string): ElementNode | null {
  * alone outside a list. Items of an outer list each make their own group.
  */
 function actionGroup(ctx: EmitCtx, node: GraphNode): string {
-  if (!ctx.def) return js([ctx.ctxExpr, node.id]);
+  // A detached gallery's items keep moving through the viewer together, as they did in the component.
+  if (!ctx.def) return js([ctx.ctxExpr, typeof node.detachedFrom?.group === 'string' ? node.detachedFrom.group : node.id]);
   ctx.usesUid = true;
   const repeat = ctx.repeats?.at(-1);
   const parts = repeat ? [js(repeat), ...ctx.items.slice(0, -1).map((v) => `${v}.id`)] : [js(node.id)];

@@ -23,10 +23,11 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
 const ELEMENT_TAG_SET = new Set<string>(ELEMENT_TAGS);
 
-/** Where the walk is inside the design: the values in scope, and the item of each list it is inside. */
+/** Where the walk is inside the design: the values in scope, the item of each list it is inside, and those lists. */
 interface At {
   scope: Scope;
   items: Record<string, string>;
+  repeats: Array<{ id: string; item: string }>;
 }
 
 /**
@@ -62,6 +63,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   if (rootAnchor) anchors.add(rootAnchor);
   const slotUses = new Map<string, number>();
   const added: GraphNode[] = [];
+  // Names the galleries this detach makes, so each stays its own viewer group, apart from any other on the page.
+  const groups = newId('g');
 
   /** The layers of rules on one of the design's nodes for this placement, weakest first, as the stylesheets cascade them. */
   const layersFor = (nodeId: string, at: At, boost: number): StyleLayer[] => {
@@ -180,6 +183,9 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     const axes = src.id === rootId ? Object.keys(def.variantAxes ?? {}) : nodeAxes(def, src.id);
     const from: DetachedFrom = { component: key, node: src.id };
     if (axes.length) from.options = Object.fromEntries(axes.map((a) => [a, option(a)]));
+    // An action repeated in a list moved through the viewer with the list's other items (in each outer item apart).
+    const list = at.repeats.at(-1);
+    if (n.kind === 'element' && n.action !== undefined && list) from.group = [groups, list.id, ...at.repeats.slice(0, -1).map((r) => r.item)].join('|');
     n.detachedFrom = from;
     keepAnchor(n, src);
     added.push(n);
@@ -248,7 +254,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         const rows = evaluate(src.list, at.scope);
         const fields = schema?.type === 'list' ? schema.fields : undefined;
         return (Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : []).flatMap((item) => {
-          const inner: At = { scope: { ...at.scope, item, fields }, items: { ...at.items, [list]: String(item?.id ?? '') } };
+          const id = String(item?.id ?? '');
+          const inner: At = { scope: { ...at.scope, item, fields }, items: { ...at.items, [list]: id }, repeats: [...at.repeats, { id: src.id, item: id }] };
           return src.children.flatMap((c) => emit(c, inner));
         });
       }
@@ -267,7 +274,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   };
 
   const props = effectiveProps(state, def, inst, { props: {} }, op.owner.id);
-  const roots = emit(rootId, { scope: { props }, items: {} });
+  const roots = emit(rootId, { scope: { props }, items: {}, repeats: [] });
   if (!roots.length) fail(`“${label}” shows nothing with its current settings, so there is nothing to detach. Delete it instead, or change its settings first.`);
   for (const [slot, ids] of Object.entries(inst.slots ?? {})) {
     if (ids.length && !slotUses.has(slot))

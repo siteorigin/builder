@@ -383,6 +383,33 @@ describe('component.detachInstance (#373)', () => {
     expect(pills[0].overrides).toEqual({ root: { base: { color: '#00aa00' }, phone: { color: '#0000ff' } } });
   });
 
+  it('keeps a detached gallery one group in the image viewer, apart from another gallery', async () => {
+    const s = createStarterState('blank', 'Gallery', false);
+    const page = home(s);
+    page.rootIds = [];
+    page.nodes = {};
+    const ids = ['a_one', 'a_two', 'a_three'];
+    for (const id of ids) s.assets.assets[id] = { id, name: id, file: `static/assets/${id}.jpg`, mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' } as never;
+    const images = (prefix: string) => ids.map((id, i) => ({ id: `${prefix}${i}`, image: { assetId: id, alt: `Photo ${i}` }, caption: `Caption ${i}`, action: 'image', link: { type: 'none', target: '' } }));
+    let placed = applyOperations(s, [{ type: 'node.insert', owner: owner(s), componentId: 'media.gallery' }]);
+    let state = placed.state;
+    const first = placed.results[0].nodeId as string;
+    state = applyOperations(state, [{ type: 'instance.setProp', owner: owner(state), nodeId: first, prop: 'images', value: images('x') }]).state;
+    placed = applyOperations(state, [{ type: 'node.insert', owner: owner(state), componentId: 'media.gallery' }]);
+    state = placed.state;
+    const second = placed.results[0].nodeId as string;
+    state = applyOperations(state, [{ type: 'instance.setProp', owner: owner(state), nodeId: second, prop: 'images', value: images('y') }]).state;
+    /** Each viewer link's group, numbered in order of first appearance: which images move through together. */
+    const grouping = (html: string) => {
+      const seen: string[] = [];
+      return [...html.matchAll(/data-viewer-group="([^"]*)"/g)].map((m) => (seen.includes(m[1]) ? seen : seen.push(m[1]) && seen).indexOf(m[1]));
+    };
+    const was = grouping(await renderHome(state));
+    expect(was).toEqual([0, 0, 0, 1, 1, 1]);
+    const detached = applyOperations(state, [{ type: 'component.detachInstance', owner: owner(state), nodeId: first }]).state;
+    expect(grouping(await renderHome(detached))).toEqual(was);
+  });
+
   it('is offered to the AI for the placement it may change', async () => {
     const { checkAuthority } = await import('../../src/agent/scope');
     const { s } = project();

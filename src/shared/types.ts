@@ -332,6 +332,8 @@ export interface DetachedFrom {
   node: string;
   /** Variant options by axis, for the axes whose class the node carried. */
   options?: Record<string, string>;
+  /** An image or link action repeated in a list: the images its viewer moved through together (one gallery). */
+  group?: string;
 }
 export interface ElementNode extends NodeBase {
   kind: 'element';
