@@ -455,8 +455,11 @@ const gridId = await win.evaluate(async () => {
 });
 const gridHeading = frame.locator(`[data-so-ctx$="|${gridId}"] h2`).first();
 const headingNode = await gridHeading.getAttribute('data-so-node');
-await gridHeading.click();
-await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${headingNode}"]`).getAttribute('aria-selected'), 'true', 'Layers selects the picked node of the design'));
+// The preview can still be settling after entering the mode: click again until the pick lands, as for the plans.
+await eventually(async () => {
+  await gridHeading.click({ timeout: 3000 });
+  assert.equal(await win.locator(`[role="tree"] [data-node="${headingNode}"]`).getAttribute('aria-selected', { timeout: 1500 }), 'true', 'Layers selects the picked node of the design');
+});
 await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'the picked node is outlined'));
 await win.locator('.insp-scope.definition').first().waitFor();
 // And back: Escape shows the overview, then the Layers row outlines that node on the canvas again.
@@ -508,15 +511,20 @@ const formState = () =>
     const warning = s.diagnostics.filter((d) => d.code === 'FORM_UNCONNECTED' && d.nodeId === node.id).map((d) => d.message).join(' ');
     return { provider, endpoint, accessKey, formName, warning };
   });
-// Exactly one service setting is in the inspector. Its own visible note gives the setup steps and, while the form
-// cannot send, exactly one warning, which the project check repeats.
+// Exactly one service setting is in the inspector. Its own visible note gives the setup steps. While the form cannot
+// send, the problems above the Inspector's sections say so with exactly one warning, which the project check repeats;
+// once a value has been entered, the note beside it gives that warning too.
 const showsOnly = (label, setup, warning) =>
   eventually(async () => {
     for (const other of SETTINGS) assert.equal(await setting(other).count(), other === label ? 1 : 0, `${other} is ${other === label ? 'shown' : 'hidden'} for this service`);
     const note = await noteOf(setting(label));
     assert.ok(note.visible, `the note under ${label} is visible in its field`);
     for (const text of setup) assert.ok(note.text.includes(text), `the note under ${label} says “${text}”: ${note.text}`);
-    assert.deepEqual(note.warnings, warning ? [warning] : [], `the note under ${label} warns ${warning ? `“${warning}”` : 'nothing'}`);
+    const entered = (await setting(label).inputValue()).trim() !== '';
+    assert.deepEqual(note.warnings, warning && entered ? [warning] : [], `the note under ${label} warns ${warning && entered ? `“${warning}”` : 'nothing'}`);
+    const problems = await inspector.locator('.insp-problems .insp-scope.danger').allInnerTexts();
+    assert.equal(problems.length, warning ? 1 : 0, `the problems above the sections: ${JSON.stringify(problems)}`);
+    if (warning) assert.ok(problems[0].includes('This form can’t send messages yet.') && problems[0].includes(warning), `the problem says the form can’t send and “${warning}”: ${problems[0]}`);
     const { warning: check } = await formState();
     if (warning) assert.ok(check.endsWith(warning), `the project check says “${warning}”: ${check}`);
     else assert.equal(check, '', 'the project check has nothing to say about the form');

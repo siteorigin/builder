@@ -31,7 +31,10 @@ const openPage = async (title, route) => {
   await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), route, `the canvas shows ${route}`), 30000);
   // With nothing selected, the inspector shows the page's own settings.
   await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
-  await win.locator('#dock-panel-inspect .section', { hasText: 'Shared header and footer' }).waitFor();
+  // Closed by default, with what the page shows beside its heading; opened here to reach its switches.
+  const head = win.locator('#dock-panel-inspect .section-head', { hasText: 'Header & footer' });
+  await head.waitFor();
+  if ((await head.getAttribute('aria-expanded')) !== 'true') await head.click();
 };
 const headerSwitch = () => win.getByRole('switch', { name: 'Show shared header', exact: true });
 const footerSwitch = () => win.getByRole('switch', { name: 'Show shared footer', exact: true });
@@ -48,8 +51,9 @@ await openPage('Kitchen', '/kitchen/');
 const kitchenHeading = 'Kitchen';
 await eventually(async () => assert.equal(await frame.locator('main h1', { hasText: kitchenHeading }).count(), 1, 'the landing page is rendered'), 60000);
 await expectShown({ header: 1, footer: 1 }, 'a new page shows both');
-const section = win.locator('#dock-panel-inspect .section', { hasText: 'Shared header and footer' });
-assert.match(await section.locator('.scope').innerText(), /This page only/, 'the settings say they apply to this page only');
+const section = win.locator('#dock-panel-inspect .section', { hasText: 'Header & footer' });
+assert.match(await section.locator('.scope').innerText(), /Both shown/, 'the heading says the page shows both');
+assert.match(await section.locator('.field-hint').innerText(), /For this page only/, 'the settings say they apply to this page only');
 assert.equal(await checked(headerSwitch()), true);
 assert.equal(await checked(footerSwitch()), true);
 
