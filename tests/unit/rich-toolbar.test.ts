@@ -300,6 +300,24 @@ describe.skipIf(!browserInstalled)('the formatting toolbar while rich text is ed
     await expect.poll(rich).toBe('<p><a href="/about/">First</a> second</p>');
   });
 
+  it('keeps two plain links apart even when one holds a line break', async () => {
+    await setRich('<p><a href="/about/">First<br>line</a> <a href="/about/">second</a></p>');
+    await beginEdit('r');
+    await select('second', 2);
+    await button('Edit link').click();
+    await frame.getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect.poll(rich).toBe('<p><a href="/about/">First<br>line</a> second</p>');
+  });
+
+  it('keeps the caret on its side of a line break when the list changes kind', async () => {
+    await setRich('<ul class="so-rich--bullet"><li>First<br>Second</li><li>Other</li></ul>');
+    await beginEdit('r');
+    await frame.evaluate(`getSelection().collapse(document.querySelector('[data-so-node="r"] li').lastChild, 0)`);
+    await button('Numbered list').click();
+    await expect.poll(rich).toContain('<ol');
+    expect(await frame.evaluate(`[getSelection().anchorNode.textContent, getSelection().anchorOffset]`)).toEqual(['Second', 0]);
+  });
+
   it('changes and removes a link over words with different marks as one link', async () => {
     // As the page shows it: the parts of one link, with the page's own markers between them.
     await setRich('<p>Meet <a href="/about/"><strong>local</strong></a><!----> <a href="/about/">makers</a> today</p>');

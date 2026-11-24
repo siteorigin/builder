@@ -172,6 +172,13 @@ describe('Inspector link commands', () => {
     expect(after(a, setLink(a, pages, typedLink('example.com', pages)!))).toBe('[First](/about/) «[second](https://example.com)»');
   });
 
+  it('finds and changes a link whose words hold a line break', () => {
+    const a = at('See [First\\\nsec|ond](/about/) here');
+    expect(linkAt(a, pages)).toMatchObject({ kind: 'link', tokens: [{ target: '/about/' }] });
+    expect(applyTextEdit(a.text, setLink(a, pages, typedLink('example.com', pages)!) as TextEdit)).toBe('See [First\\\nsecond](https://example.com) here');
+    expect(applyTextEdit(a.text, removeLink(a, pages)!)).toBe('See First\\\nsecond here');
+  });
+
   it('removes a link over touching words with different marks', () => {
     const a = at('[**A**](/about/)[***|B***](/about/)');
     const out = applyTextEdit(a.text, removeLink(a, pages)!);

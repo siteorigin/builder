@@ -333,7 +333,8 @@ export function typedLink(raw: string, pages: RichPages, newTab = false): LinkVa
 export function linkAt({ text, start, end, plainAs }: TextAt, pages: RichPages): LinkAt {
   const ls = lines(text, plainAs);
   const l = lineAt(ls, start);
-  const tokens = linkTokens(l.text, (t, n) => linkFromTarget(t, pages, n));
+  // A line break inside a link (a backslash ending a line) is read as the parser reads it: part of the words.
+  const tokens = linkTokens(l.text.replace(/\\(?=\n)/g, '\u0000'), (t, n) => linkFromTarget(t, pages, n));
   const i = tokens.findIndex((t) => start - l.from < t.end && end - l.from > t.start && (start === end ? start - l.from > t.start : true));
   if (i >= 0) {
     // Which marks a link's words carry: one link over words with the same marks is a single token, so neighbouring

@@ -291,6 +291,10 @@ describe('editing text that a place lists', () => {
     // Moved and then changed (its words linked), it is still the check item that moved, not the paragraph in its place.
     const linked = [{ tag: 'ul', check: true, children: [{ tag: 'li', children: [{ tag: 'a', href: '/a/', children: ['Task'] }] }, { tag: 'li', children: ['Intro'] }] }];
     expect(storedEdit(listed, [p('Intro'), check('Task')], blocksFromDom(linked, pages).blocks)).toEqual([{ type: 'check', items: [[{ text: 'Task', link: { type: 'page', target: 'pg_a' } }]] }, p('Intro')]);
+    // Two items moved past each other and both linked keep their kinds: their words still tell them apart.
+    const both = [{ tag: 'ul', check: true, children: [{ tag: 'li', children: [{ tag: 'a', href: '/a/', children: ['Task'] }] }, { tag: 'li', children: [{ tag: 'a', href: '/a/', children: ['Intro'] }] }] }];
+    const link = { type: 'page' as const, target: 'pg_a' };
+    expect(storedEdit(listed, [p('Intro'), check('Task')], blocksFromDom(both, pages).blocks)).toEqual([{ type: 'check', items: [[{ text: 'Task', link }]] }, { type: 'p', spans: [{ text: 'Intro', link }] }]);
     // The same words twice, of different kinds, are each matched once.
     expect(edit([check('A'), p('A'), p('B')], 'B', 'A', 'A')).toEqual([p('B'), check('A'), p('A')]);
   });

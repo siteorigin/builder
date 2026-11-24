@@ -1119,7 +1119,7 @@ const LINK_EDITOR_CSS = `
 function linkRun(anchor) {
   // Which marks an anchor's words carry: one link over words with the same marks is a single anchor, so two
   // neighbouring anchors with the same marks are two links.
-  const marks = (a) => [...a.querySelectorAll('*')].map((e) => e.tagName).join();
+  const marks = (a) => [...new Set([...a.querySelectorAll('strong, b, em, i')].map((e) => (e.tagName === 'B' ? 'STRONG' : e.tagName === 'I' ? 'EM' : e.tagName)))].sort().join();
   const same = (n, beside) => n && n.nodeType === 1 && n.tagName === 'A' && n.getAttribute('href') === anchor.getAttribute('href') && n.getAttribute('target') === anchor.getAttribute('target') && marks(n) !== marks(beside);
   const next = (n, dir) => {
     let m = dir < 0 ? n.previousSibling : n.nextSibling;
@@ -1298,7 +1298,7 @@ function placeToolbar() {
   const bar = toolbar.host.getBoundingClientRect();
   const h = bar.height || 34;
   // No room below: the end of the window away from the text's top, where the chip is.
-  const top = r.bottom + 6 + h <= innerHeight - 4 ? r.bottom + 6 : r.top > innerHeight / 2 ? 4 : Math.max(4, innerHeight - h - 4);
+  const top = r.bottom + 6 + h <= innerHeight - 4 ? Math.max(4, r.bottom + 6) : r.top > innerHeight / 2 ? 4 : Math.max(4, innerHeight - h - 4);
   const left = Math.max(4, Math.min(r.left, innerWidth - (bar.width || 260) - 4));
   toolbar.host.style.top = `${Math.round(top)}px`;
   toolbar.host.style.left = `${Math.round(left)}px`;
@@ -1511,15 +1511,26 @@ function offsetIn(el, node, offset) {
   const r = document.createRange();
   r.selectNodeContents(el);
   r.setEnd(node, offset);
-  return r.toString().length;
+  // A line break counts as a character, so a caret just after one is told from a caret just before it.
+  const part = r.cloneContents();
+  return part.textContent.length + part.querySelectorAll('br').length;
 }
-/** A caret `n` characters into `el`, or at its end. */
+/** A caret `n` characters into `el` (a line break counting as one, as offsetIn counts them), or at its end. */
 function caretAt(el, n) {
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, { acceptNode: (x) => (x.nodeType === 3 || x.tagName === 'BR' ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
   const r = document.createRange();
   r.selectNodeContents(el);
   r.collapse(false);
   for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (t.nodeType === 1) {
+      if (n === 0) {
+        r.setStartBefore(t);
+        r.collapse(true);
+        break;
+      }
+      n--;
+      continue;
+    }
     if (n <= t.nodeValue.length) {
       r.setStart(t, n);
       r.collapse(true);

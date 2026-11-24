@@ -164,8 +164,10 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
   };
   /** The field changed under the link field (the AI, or another window): the words it was for may have moved. */
   const stale = (l: LinkDraft) => {
-    if (field.current?.value === l.at.text && same(l.at.text, valueNow.current)) return false;
-    setLinkDraft({ ...l, error: 'The text changed. Select the words again.' });
+    const el = field.current;
+    const moved = !!el && (el.selectionStart !== l.at.start || el.selectionEnd !== l.at.end);
+    if (el?.value === l.at.text && same(l.at.text, valueNow.current) && !moved) return false;
+    setLinkDraft({ ...l, error: moved ? 'The selection changed. Press Link again for the words now selected.' : 'The text changed. Select the words again.' });
     return true;
   };
   const unlink = () => {
@@ -277,10 +279,12 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => closeLink(true)}>
             Cancel
           </button>
-          {link.error && (
+          {link.error ? (
             <div className="field-error" id={`${uid}-link-error`} role="alert">
               {link.error}
             </div>
+          ) : (
+            linkDirty && <div className="field-hint">Not applied yet: press Apply or Enter.</div>
           )}
         </div>
       )}
