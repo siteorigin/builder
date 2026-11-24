@@ -30,6 +30,7 @@ import {
   Split,
   SquareDashed,
   Trash2,
+  Unlink,
   Users
 } from 'lucide-react';
 import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue, TextNode } from '@shared/types';
@@ -64,7 +65,7 @@ import { useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, createComponentTarget, definitionView, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
-import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, setMode, structuralTarget } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, setMode, structuralTarget } from '../lib/actions';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -830,6 +831,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
       ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, onSelect: makeUnique }] : []),
       ...(create ? [{ label: 'Create component…', icon: <Component />, hint: 'With its content', onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
+      ...(detachable(state, selection) ? [{ label: 'Detach component', icon: <Unlink />, hint: 'Into elements', onSelect: () => void detachPlacement(selection) }] : []),
       ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
       ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
       { separator: true },

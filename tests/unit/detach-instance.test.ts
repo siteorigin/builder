@@ -237,8 +237,7 @@ describe('component.detachInstance (#373)', () => {
     expect(Object.keys(page.nodes).sort()).toEqual([...nodes.map((n) => n.id), 'n_after', 'n_before', 'n_other'].sort());
 
     // A valid page: nothing new to report.
-    const introduced = introducedDiagnostics(validateState(before), validateState(after)).filter((d) => d.severity === 'error');
-    expect(introduced).toEqual([]);
+    expect(introducedDiagnostics(validateState(before), validateState(after))).toEqual([]);
   });
 
   it('keeps the cascade the design, options and placement gave each element, at every size', () => {
@@ -315,6 +314,13 @@ describe('component.detachInstance (#373)', () => {
     expect(session.state.components).toEqual(before.components);
     await session.redo();
     expect(home(session.state)).toEqual(home(detached));
+  });
+
+  it('names what replaces an unnamed placement after its component', () => {
+    const { s } = project();
+    const r = detach(s, 'n_other');
+    expect(home(r.state).nodes[r.results[0].nodeId as string]).toMatchObject({ name: 'Showcase', tag: 'section' });
+    expect(home(r.state).nodes[r.results[0].nodeId as string].anchor).toBeUndefined();
   });
 
   it('copies slot content the design shows more than once, and refuses to drop content it does not show', () => {

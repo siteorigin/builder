@@ -275,7 +275,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   }
   const top = added.find((n) => n.id === roots[0])!;
   if (rootAnchor) top.anchor = rootAnchor;
-  top.name = inst.name ?? design.nodes[rootId].name ?? def.name;
+  // Named as the placement was in Layers: its own name, or the component's.
+  top.name = inst.name ?? def.name;
   for (const n of added) tree.nodes[n.id] = n;
   delete tree.nodes[op.nodeId];
   parent.list.splice(parent.index, 1, ...roots);
