@@ -235,6 +235,15 @@ describe('Wrap and Ungroup in a component’s design', () => {
     expect(JSON.stringify(s.components[id])).toBe(before);
   });
 
+  it('refuses a group hiding while a list inside it is empty, which shows the author where its images go', () => {
+    const { s, id, own } = features();
+    const t = tree(s, id);
+    t.nodes.box = { id: 'box', kind: 'element', tag: 'div', children: ['rep'], collapseEmpty: true };
+    t.nodes.rep = { id: 'rep', kind: 'repeat', list: { $prop: 'items' }, children: [] };
+    (t.nodes.inner as ElementNode).children.push('box');
+    expect(() => apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['box'] }])).toThrow(/hides while the list inside it is empty/);
+  });
+
   it('wraps an older design’s top level whole, which gives it its one root', () => {
     const { s, id, own } = features();
     const t = tree(s, id);
@@ -246,6 +255,23 @@ describe('Wrap and Ungroup in a component’s design', () => {
     expect(w.state.components[id].parts.root.nodeId).toBe(holder);
     // Its top level gains nothing from an ungroup meanwhile.
     expect(() => apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['root'] }])).toThrow(/no single top-level element yet/);
+  });
+});
+
+describe('Ungroup on a detached component', () => {
+  it('ungroups a plain detached container, but not one keeping its design’s tone, which the theme colours its content by', () => {
+    let s = createStarterState('blank', 'Blank', false);
+    const placed = apply(s, [{ type: 'node.insert', newNodeId: 'n_cta', owner: page(s), componentId: 'cta.banner' }]);
+    s = apply(placed.state, [{ type: 'component.detachInstance', owner: page(s), nodeId: 'n_cta' }]).state;
+    const nodes = home(s).nodes;
+    const byNode = (design: string) => Object.values(nodes).find((n) => n.detachedFrom?.node === design)!;
+    const panel = byNode('panel');
+    const actions = byNode('actions');
+    expect(panel.detachedFrom?.options).toMatchObject({ tone: 'default' });
+    expect(() => apply(s, [{ type: 'node.unwrap', owner: page(s), nodeIds: [panel.id] }])).toThrow(/keeps the “tone” look/);
+    const u = apply(s, [{ type: 'node.unwrap', owner: page(s), nodeIds: [actions.id] }]);
+    expect(home(u.state).nodes[actions.id]).toBeUndefined();
+    expect((home(u.state).nodes[panel.id] as ElementNode).children).toEqual(expect.arrayContaining((actions as ElementNode).children));
   });
 });
 

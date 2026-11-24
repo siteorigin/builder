@@ -1421,9 +1421,10 @@ function nodeWrap(state: ProjectState, op: Op<'node.wrap'>): OpResult {
  * it away loses nothing but its own layout and styles (hiding when empty among them: what it held hides by itself). One
  * that links, shows under a condition, has an entrance, is jumped to, is named for assistive technology, or gives its
  * content meaning by its tag does more, and so does a component's part or a node its variants style (every placement
- * styles those).
+ * styles those), one hiding while a list inside it is empty (the editor shows where the list's images go there), and a
+ * detached node that keeps its design's option classes (the theme colours what it holds by them).
  */
-function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined, n: GraphNode): string | null {
+function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined, tree: NodeTree, n: GraphNode): string | null {
   const name = `“${displayName(state, n, def)}”`;
   if (n.kind === 'instance') return `${name} is a component. Use Detach component to turn it into elements first.`;
   if (n.kind === 'repeat') return `${name} shows what it holds once per list item, so it can’t be ungrouped.`;
@@ -1437,6 +1438,11 @@ function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined
   if (n.ariaLabel !== undefined) return `${name} has an accessible name, so it can’t be ungrouped. Remove it first.`;
   if (n.carousel) return `${name} is a carousel, so it can’t be ungrouped.`;
   if (n.appear) return `${name} has an entrance effect, which what it holds would lose, so it can’t be ungrouped. Remove the effect first.`;
+  // Hiding while the list inside it is empty is what shows the author where a list's images go meanwhile.
+  if (n.collapseEmpty && n.children.some((c) => tree.nodes[c]?.kind === 'repeat')) return `${name} hides while the list inside it is empty, so it can’t be ungrouped. Turn off its hiding when empty first.`;
+  // A detached design's option classes (its tone) are what the theme's colours inside it read, as variant styles are.
+  const axes = Object.keys(n.detachedFrom?.options ?? {});
+  if (axes.length) return `${name} keeps the “${axes[0]}” look of the component it was detached from, which what it holds takes its colours from, so it can’t be ungrouped.`;
   if (def) {
     const part = Object.values(def.parts).find((p) => p.nodeId === n.id);
     if (part) return `${name} is the “${part.label}” part of this component, which placements can style, so it can’t be ungrouped. Remove the part first.`;
@@ -1458,7 +1464,7 @@ function nodeUnwrap(state: ProjectState, op: Op<'node.unwrap'>): OpResult {
   const run = siblingRun(tree, op.owner, op.nodeIds, 'ungrouped');
   if (def && run.list === tree.rootIds) fail(settledRoot(tree) ? ROOT_IS_COMPONENT('ungrouped') : UNSETTLED);
   for (const id of run.ids) {
-    const why = unwrapProblem(state, def, tree.nodes[id]);
+    const why = unwrapProblem(state, def, tree, tree.nodes[id]);
     if (why) fail(why);
   }
   const children = run.ids.flatMap((id) => (tree.nodes[id] as ElementNode).children);
