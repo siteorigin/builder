@@ -137,6 +137,8 @@ export interface State {
   rects: { selected: Rect[]; hovered: Rect[]; revealed: Rect[] };
   /** The list item open in the inspector, revealed on the page while it is edited. Never saved. */
   revealedItem: RevealedItem | null;
+  /** Bumped when a Layers row asks for its layer to be shown on the page, even one already selected (see showLayer). */
+  showSelection: number;
   pendingSave: number;
   modal: Modal;
   toasts: Toast[];
@@ -212,6 +214,7 @@ export const useStore = create<State>((set) => ({
   styleScope: 'base',
   rects: { selected: [], hovered: [], revealed: [] },
   revealedItem: null,
+  showSelection: 0,
   pendingSave: 0,
   modal: null,
   toasts: [],
@@ -265,6 +268,11 @@ export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.run
 
 export const getState = () => useStore.getState();
 export const setState = (p: Partial<State>) => useStore.setState(oneSelection(p));
+
+/** Selects one layer from Layers and scrolls the page to it, also when it is selected already and has scrolled away. */
+export function showLayer(ref: ElementRef) {
+  setState({ selection: ref, showSelection: getState().showSelection + 1 });
+}
 
 /** Save workspace state (open page, viewport, tabs) to the project that is open now. */
 export function saveLocal(state: LocalWorkspaceState) {

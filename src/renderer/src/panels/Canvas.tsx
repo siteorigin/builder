@@ -59,6 +59,7 @@ export function Canvas() {
   const hover = useStore((s) => s.hover);
   const rects = useStore((s) => s.rects);
   const revealedItem = useStore((s) => s.revealedItem);
+  const showSelection = useStore((s) => s.showSelection);
   const inspectorShown = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const runStatus = useStore((s) => s.runStatus);
   const reading = useStore((s) => s.runMode === 'ask');
@@ -560,10 +561,11 @@ export function Canvas() {
     if (ready) syncTrack();
   }, [ready, selection, hover, snapshot?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A new selection is scrolled to, and so is one a Layers row asks to show again (showLayer).
   useEffect(() => {
     const desc = ready ? descFor(selection) : null;
     if (desc) post('scrollTo', { desc });
-  }, [ready, selection && refKey(selection)]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The list item open in the inspector, revealed on the page while it is edited (see lib/reveal): only while

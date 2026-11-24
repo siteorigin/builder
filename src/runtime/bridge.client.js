@@ -86,16 +86,101 @@ function scheduleRects() {
   raf = requestAnimationFrame(() => {
     raf = 0;
     if (revealDirty) reconcileReveal();
+    keepInView();
     sendRects();
   });
 }
 function sendRects() {
-  const sel = selected ? findAll(selected).map(rectOf).filter(Boolean) : [];
+  const selEls = selected ? findAll(selected) : [];
+  const selBoxes = selEls.map(rectOf);
+  sampleSelection(selEls, selBoxes);
+  const sel = selBoxes.filter(Boolean);
   const hov = hovered && mode === 'edit' ? findAll(hovered).slice(0, 1).map(rectOf).filter(Boolean) : [];
   // A divider between items is not part of the item it follows.
   const rev = revealRoots().filter((el) => el.tagName !== 'HR').map(rectOf).filter(Boolean);
   send('rects', { selected: sel, hovered: hov, hoveredDesc: hovered, revealed: rev, viewport: { width: innerWidth, height: innerHeight, scrollY } });
 }
+
+// ---------------------------------------------------------------------------
+// The selection kept in view when the page changes width
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the selection showed at the last measurement: which of its elements, the point of it to keep (its top, or for
+ * one whose top is scrolled away, the middle of what showed of it, through the editor's element there when there is
+ * one) and how far down the frame that point was, as a share of its height. Null when none of it showed.
+ */
+let keepSample = null;
+/** After a change of width: the point to put back, until `until` (performance.now()). */
+let keepHold = null;
+/** How long after the last change of width the page may still move it (a re-render, an image) and have it put back. */
+const KEEP_MS = 250;
+
+function sampleSelection(els, boxes) {
+  keepSample = null;
+  if (!selected || mode !== 'edit') return;
+  const h = innerHeight;
+  const index = boxes.findIndex((b) => b && b.y < h && b.y + b.height > 0);
+  if (index < 0) return;
+  const el = els[index];
+  const b = boxes[index];
+  if (b.y >= 0) {
+    keepSample = { desc: selected, width: innerWidth, index, at: b.y / h, depth: 0, landmark: null };
+    return;
+  }
+  const y = (Math.max(0, b.y) + Math.min(h, b.y + b.height)) / 2;
+  const x = Math.min(Math.max(b.x + b.width / 2, 0), innerWidth - 1);
+  const hit = innermost(document.elementFromPoint(x, y));
+  const hb = hit && hit !== el && el.contains(hit) ? rectOf(hit) : null;
+  keepSample = { desc: selected, width: innerWidth, index, at: y / h, depth: (y - b.y) / b.height, landmark: hb ? { desc: descOf(hit), depth: (y - hb.y) / hb.height } : null };
+}
+/** The page changed width (`widthChanged`) or only height: hold the point the selection showed at the last width. */
+function holdSelection(widthChanged, lastWidth) {
+  if (!widthChanged) {
+    keepHold = null;
+    return;
+  }
+  const now = performance.now();
+  // Still settling from the last width (a drag through many): the same point is kept.
+  if (keepHold && now <= keepHold.until) keepHold.until = now + KEEP_MS;
+  else if (keepSample && keepSample.width === lastWidth && sameDesc(keepSample.desc, selected)) keepHold = { ...keepSample, until: now + KEEP_MS };
+  else keepHold = null;
+}
+/** Puts the held point back where it showed, before the outlines are measured. */
+function keepInView() {
+  const k = keepHold;
+  if (!k) return;
+  // The list item open in the inspector is brought into view by its own reveal.
+  if (performance.now() > k.until || mode !== 'edit' || editing || reveal || !sameDesc(k.desc, selected)) {
+    keepHold = null;
+    return;
+  }
+  const els = findAll(selected);
+  const el = els[k.index] || els[0];
+  if (!el) return;
+  let y = null;
+  if (k.landmark) {
+    const mark = findAll(k.landmark.desc).find((m) => el.contains(m));
+    const mb = mark && rectOf(mark);
+    if (mb) y = mb.y + k.landmark.depth * mb.height;
+  }
+  if (y === null) {
+    const b = rectOf(el);
+    if (!b) return;
+    y = b.y + k.depth * b.height;
+  }
+  const delta = y - k.at * innerHeight;
+  // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
+  if (Math.abs(delta) > 1) window.scrollBy({ top: delta, behavior: 'instant' });
+}
+/** Another page or a scroll the editor asked for: what showed before is no longer there to keep. */
+function stopKeeping() {
+  keepHold = null;
+  keepSample = null;
+}
+// The author's own scrolling (or a click, a key) just after a change of width is never undone. What shows is measured
+// again as it scrolls.
+for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => (keepHold = null), { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
 // The list item open in the editor's inspector, revealed while it is edited
@@ -1293,9 +1378,11 @@ window.addEventListener('message', async (e) => {
     case 'scrollTo': {
       const el = findAll(m.payload.desc)[0];
       if (el) {
+        stopKeeping();
         const target = getComputedStyle(el).display === 'contents' ? el.firstElementChild || el : el;
         const r = target.getBoundingClientRect();
-        if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+        // One taller than the frame shows from its top.
+        if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
       }
       break;
     }
@@ -1384,15 +1471,18 @@ window.addEventListener('message', async (e) => {
 });
 
 window.addEventListener('scroll', scheduleRects, { passive: true });
-let revealWidth = innerWidth;
+let lastWidth = innerWidth;
 window.addEventListener('resize', () => {
   // The item is checked at another width: brought back into view if the new layout moved it out. A change of
   // height alone (the editor window resized) leaves the page where the author put it.
-  if (reveal && innerWidth !== revealWidth) {
+  const widthChanged = innerWidth !== lastWidth;
+  if (reveal && widthChanged) {
     revealScroll = 'resize';
     revealDirty = true;
   }
-  revealWidth = innerWidth;
+  // The selection keeps showing what it showed at the last width, at the same place in the frame (issue #168).
+  holdSelection(widthChanged, lastWidth);
+  lastWidth = innerWidth;
   scheduleRects();
 });
 new ResizeObserver(scheduleRects).observe(document.documentElement);
@@ -1425,6 +1515,7 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 function reportNav() {
+  stopKeeping();
   send('navigated', { path: location.pathname });
   scheduleRects();
   // What a practice send says belongs to the page it started on.
