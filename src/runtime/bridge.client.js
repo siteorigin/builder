@@ -154,8 +154,9 @@ function holdSelection(widthChanged, before) {
     return;
   }
   const now = performance.now();
-  // Still settling from the last width (a drag through many): the same point is kept.
-  if (keepHold && now <= keepHold.until) keepHold.until = now + KEEP_MS;
+  // Still settling from the last width (a drag through many): the same point is kept. What the browser does to the
+  // scroll position for the new width (keeping its own place) is not the author scrolling.
+  if (keepHold && now <= keepHold.until) Object.assign(keepHold, { until: now + KEEP_MS, last: null });
   else if (keepSample && keepSample.width === before && sameDesc(keepSample.desc, selected)) keepHold = { ...keepSample, until: now + KEEP_MS, last: null };
   else keepHold = null;
 }
@@ -192,7 +193,8 @@ function keepInView() {
   // has the last word. A scroll that came with a change of layout (the browser keeping its place), or that only took
   // the page back up to its new end (content below it gone for a moment), is corrected.
   const scrolled = k.last && k.last.via === p.via ? scrollY - k.last.scrollY : 0;
-  const end = (document.scrollingElement || document.documentElement).scrollHeight - innerHeight;
+  const root = document.scrollingElement || document.documentElement;
+  const end = root.scrollHeight - root.clientHeight;
   if (Math.abs(scrolled) > 1 && Math.abs(y - (k.last.y - scrolled)) <= 1 && !(scrolled < 0 && scrollY >= end - 1)) {
     keepHold = null;
     return;
@@ -220,16 +222,16 @@ function stopKeeping() {
   keepHold = null;
   keepSample = null;
 }
-// The author's own scrolling (or a click, a key) just after a change of width is never undone. A wheel, a touch or a
-// press (a scrollbar) also means what showed before may be gone by the next change of width: it is measured afresh.
-// A key alone (a shortcut to the command menu, then a width from it) leaves what shows as it is.
-for (const type of ['wheel', 'touchstart', 'pointerdown']) {
+// The author's own scrolling (or a click, a key) just after a change of width is never undone. A wheel or a touch also
+// means what showed before may be gone by the next change of width: it is measured afresh. A click or a key alone (a
+// shortcut to the command menu, then a width from it) leaves what shows as it is.
+for (const type of ['wheel', 'touchstart']) {
   window.addEventListener(type, () => {
     stopKeeping();
     if (selected) scheduleRects();
   }, { capture: true, passive: true });
 }
-window.addEventListener('keydown', () => (keepHold = null), { capture: true, passive: true });
+for (const type of ['pointerdown', 'keydown']) window.addEventListener(type, () => (keepHold = null), { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
 // The list item open in the editor's inspector, revealed while it is edited
