@@ -464,4 +464,15 @@ describe('the editor resumes where the author was', () => {
     expect(store.getState().selection).toBeNull();
     expect(store.getState().pagePlaces[home]).toBeUndefined();
   });
+
+  it('a delete lets go of an element inside what it removed, picked while it was on its way', async () => {
+    const cta = lastSection(s, home);
+    const def = s.components[(s.pages[home].nodes[cta] as InstanceNode).definitionId];
+    store.setState({ selection: ref(page(home), cta) });
+    const deleting = actions.deleteSelection();
+    store.setState({ selection: ref(page(home), def.tree!.rootIds[0], { instancePath: [cta] }) });
+    applying!({ ok: true, revision: 9 } as ApplyResult);
+    await deleting;
+    expect(store.getState().selection).toBeNull();
+  });
 });

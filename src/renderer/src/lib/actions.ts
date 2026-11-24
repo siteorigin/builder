@@ -2,7 +2,7 @@ import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
 import { newId } from '@shared/ids';
 import { sameRichText, toRichText } from '@shared/richtext';
-import { isBinding, sameRef } from '@shared/types';
+import { isBinding } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
@@ -36,6 +36,17 @@ export function structuralTarget(ref: ElementRef | null, { withRoot = false, sta
   return b;
 }
 
+/** Whether `ref` is `target`, or inside it, in `state`'s tree of their owner. */
+function holds(state: ProjectState, target: ElementRef, ref: ElementRef | null): boolean {
+  const tree = ref && ref.owner.kind === target.owner.kind && ref.owner.id === target.owner.id ? treeFor(state, ref.owner) : undefined;
+  const seen = new Set<string>();
+  for (let id = tree && ref ? (ref.instancePath[0] ?? ref.nodeId) : null; tree && id && !seen.has(id); id = findParent(tree, id)?.parentId ?? null) {
+    if (id === target.nodeId) return true;
+    seen.add(id);
+  }
+  return false;
+}
+
 export async function deleteSelection() {
   const s = getState();
   const t = structuralTarget(s.selection);
@@ -45,8 +56,8 @@ export async function deleteSelection() {
   const r = await commitOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], `Delete ${label}`);
   // A reply that arrives after its project closed has nothing left here to select or announce.
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-  // What the author selected meanwhile (another page, opened at its place) is theirs, and stays.
-  if (sameRef(getState().selection, s.selection)) setState({ selection: null });
+  // What went with it goes, also picked again meanwhile; what the author selected elsewhere (another page) stays.
+  if (holds(s.snapshot.state, t, getState().selection)) setState({ selection: null });
   toast(`Deleted ${label}`, 'info', undoAction(r));
 }
 

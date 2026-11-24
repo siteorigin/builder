@@ -825,8 +825,12 @@ export function Canvas() {
     if (!ready || !page) return;
     // The page already went there itself (a link clicked while previewing): leave it where it is.
     if (samePath(page.route, frameAt.current)) return;
-    // A page the editor opens while previewing (a new address, a page picked) is where the visitor starts again.
-    if (getState().mode === 'preview') previewFrom.current = null;
+    // A page the editor opens while previewing (a new address, a page picked) is where the visitor starts again; Edit
+    // no longer returns to a selection on another page.
+    if (getState().mode === 'preview') {
+      previewFrom.current = null;
+      if (getState().previewReturn && getState().previewReturn?.pageId !== pageId) setState({ previewReturn: null });
+    }
     // Until the page confirms the navigation, it is "opening", not ready. Focus in the leaving page moves to the
     // canvas, which stays.
     setState({ frameReady: false });
