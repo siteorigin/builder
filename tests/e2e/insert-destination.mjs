@@ -31,8 +31,8 @@ const dropLabel = win.locator('[data-testid="insert-drop-label"]');
 const dropLine = win.locator('[data-testid="insert-drop-line"]');
 const dropTarget = win.locator('[data-testid="insert-drop-target"]');
 const openInsert = async () => {
-  if (!(await panel.locator('.insert-group[data-kind="element"]').isVisible())) await win.getByRole('button', { name: 'Insert', exact: true }).click();
-  await panel.locator('.insert-group[data-kind="element"]').waitFor();
+  if (!(await panel.locator('.insert-group[data-group="basics"]').isVisible())) await win.getByRole('button', { name: 'Insert', exact: true }).click();
+  await panel.locator('.insert-group[data-group="basics"]').waitFor();
 };
 
 /**

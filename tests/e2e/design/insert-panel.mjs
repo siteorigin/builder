@@ -155,7 +155,7 @@ await win.mouse.move(900, 6);
 await scrollPanel(0);
 
 // ---- Pointer and keyboard: resting on a section tile opens its larger preview beside the panel ----
-await win.locator('.side-panel-view:not([hidden]) button.insert-tile, .side-panel-view:not([hidden]) [data-insert-tile]').nth(1).hover();
+await win.locator('.side-panel-view:not([hidden]) button.insert-tile.section').nth(1).hover();
 await pause(700);
 await shot('hover', '.insert-peek', THEMES, { keepPointer: true, wide: true });
 // A short section further down, whose small thumbnail says least.
@@ -171,12 +171,12 @@ await shot('hover-media', '.insert-peek-inset', ['light'], { keepPointer: true, 
 await win.mouse.move(900, 6);
 await pause(300);
 await scrollPanel(0);
-// Keyboard: Down from the search field enters the palette, Right moves to the next tile.
+// Keyboard: Down from the search field enters the palette at the column layouts, Right moves to the next tile.
 await panel.locator('.search input').first().focus();
 await win.keyboard.press('ArrowDown');
 await win.keyboard.press('ArrowRight');
 await pause(400);
-await shot('focus', '.insert-peek', ['light'], { wide: true });
+await shot('focus', '.insert-grid', ['light']);
 
 // ---- Search ----
 await search('image');
