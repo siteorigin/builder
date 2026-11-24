@@ -572,6 +572,8 @@ export function Canvas() {
             if (!studioLoads.current!.shows(shown?.key)) break;
             elsewhere = studioAt.current!.definitionId !== s.definitionMode?.definitionId;
             if (shown?.mounted !== true) {
+              // Another component's failure is not this one's to report.
+              if (elsewhere) break;
               const name = studioDefName() ?? 'The component';
               setFrameError(`${name} couldn’t be shown${typeof shown?.error === 'string' && shown.error ? `: ${shown.error.slice(0, 300)}` : '.'}`);
               setRetrying(false);
@@ -590,9 +592,12 @@ export function Canvas() {
           setReady(true);
           // A page that arrives after Component Studio was opened, before its first preview, takes no picks either.
           setState({ frameReady: !elsewhere && (studio || !studioPending.current) });
-          setFrameError(null);
-          setRetrying(false);
-          markTimedOut(false);
+          // What is reported about the preview on its way (it could not be prepared) stays until that one arrives.
+          if (!elsewhere) {
+            setFrameError(null);
+            setRetrying(false);
+            markTimedOut(false);
+          }
           frameAt.current = path;
           // A page loaded in full while the frame was already up (Try again, a load that could not go in place) shows the
           // selection, as an arrival in place does (`navigated`); the first load scrolls to it once the frame is ready.
