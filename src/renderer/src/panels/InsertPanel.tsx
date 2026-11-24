@@ -13,6 +13,7 @@ import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, se
 import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, searchItems } from '../lib/insert-search';
 import { beginInsertDrag } from '../lib/insert-drag';
+import { placementMap } from '../lib/placement-map';
 import { ownerLabel, treeFor } from '../lib/model';
 import { gridKeys, openMenus, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
@@ -540,14 +541,7 @@ function LibraryPeek({ it, def, st, anchor, panel, map, onEnter, onLeave }: { it
         </span>
       )}
       {map && (
-        <span className="insert-peek-map">
-          <span className="ctx">{map.before ?? `Top of ${map.owner}`}</span>
-          <span className="new">
-            <Plus />
-            <span>{fullName(it)}</span>
-          </span>
-          <span className="ctx">{map.after ?? `End of ${map.owner}`}</span>
-        </span>
+        <PlacementMap map={map} name={fullName(it)} />
       )}
     </div>,
     document.body
@@ -555,6 +549,24 @@ function LibraryPeek({ it, def, st, anchor, panel, map, onEnter, onLeave }: { it
 }
 /** The places either side of where a new section or component lands, for the preview's map: the page's sections, or
  *  what is already in the container it goes into. */
+function PlacementMap({ map, name }: { map: Neighbours; name: string }) {
+  const { caption, rows } = placementMap(map, name);
+  return (
+    <span className="insert-peek-map">
+      <span className="insert-peek-map-cap">{caption}</span>
+      {rows.map((r, i) =>
+        r.kind === 'new' ? (
+          <span key={i} className="new">
+            <Plus />
+            <span>{r.label}</span>
+          </span>
+        ) : (
+          <span key={i} className="ctx">{r.label}</span>
+        )
+      )}
+    </span>
+  );
+}
 type Neighbours = { owner: string; before: string | null; after: string | null };
 function neighboursAt(st: ProjectState, at: InsertAt | null): Neighbours | null {
   const tree = at ? treeFor(st, at.owner) : undefined;
@@ -714,14 +726,7 @@ function InsertPeek({ it, anchor, panel, option, map, onEnter, onLeave }: { it: 
       </span>
       {it.description && <span className="insert-peek-desc">{it.description}</span>}
       {map && (
-        <span className="insert-peek-map">
-          <span className="ctx">{map.before ?? `Top of ${map.owner}`}</span>
-          <span className="new">
-            <Plus />
-            <span>{it.name}</span>
-          </span>
-          <span className="ctx">{map.after ?? `End of ${map.owner}`}</span>
-        </span>
+        <PlacementMap map={map} name={it.name} />
       )}
     </div>,
     document.body
