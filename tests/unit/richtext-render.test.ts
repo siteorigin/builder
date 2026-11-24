@@ -14,9 +14,10 @@ import { migrateProject } from '@shared/migrations';
 import { createStarterState } from '@catalogue/starters';
 import { generateProject } from '@generator/index';
 import { UTIL_JS } from '@generator/runtime-files';
-import { renderedContent } from '@generator/checks';
+import { publicationPlan, renderedContent } from '@generator/checks';
 import { applyOperations } from '@engine/apply';
 import { installComponent, makeInstance } from '@engine/install';
+import { checkPropName } from '@engine/schema';
 import { normalizeRichText } from '@engine/values';
 import { blocksFromDom, storedEdit } from '../../src/renderer/src/lib/richtext';
 
@@ -272,6 +273,10 @@ describe('editing text that a place lists', () => {
     // Items are found by their words; a new one is a paragraph, the form the text is stored in.
     expect(edit(stored, 'Intro', 'A', 'B', 'C', 'Outro')).toEqual([p('Intro'), check('A', 'B'), p('C'), p('Outro')]);
     expect(edit([p('Intro'), check('A'), p('Outro')], 'A', 'Outro', 'New')).toEqual([check('A'), p('Outro'), p('New')]);
+    // Changed to the words of a later item, a paragraph is still the paragraph in its place.
+    expect(edit(stored, 'B', 'A', 'B', 'Outro')).toEqual([p('B'), check('A', 'B'), p('Outro')]);
+    // The same words twice are each matched once, in order.
+    expect(edit([check('A'), p('A')], 'A', 'A')).toEqual([check('A'), p('A')]);
   });
 
   it('keeps a stored list a list', () => {
@@ -365,6 +370,28 @@ describe('code components take each rich text property in the form it declares',
     expect(generated).toContain('body={richParagraphs(text)}');
     expect(generated).toContain('intro={lead}');
     expectBoth(await renderHome(s));
+  });
+});
+
+describe('links a code component shows', () => {
+  it('counts a link in the default of a list field its items leave out', () => {
+    const s = fresh();
+    const about = Object.values(s.pages).find((x) => x.title === 'About')!;
+    about.draft = true;
+    const r = applyOperations(s, [
+      {
+        type: 'component.createCode',
+        name: 'Rows',
+        source: "<script>\n\timport SoRichText from '../runtime/RichText.svelte';\n\tlet { rows = [] } = $props();\n</script>\n{#each rows as row (row.id)}<SoRichText value={row.body} />{/each}\n",
+        properties: { rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { body: { type: 'richtext', label: 'Body', codeForm: 'blocks' } } } }
+      }
+    ]);
+    const def = r.state.components[r.results[0].definitionId as string];
+    (def.properties.rows as unknown as { fields: { body: { default: unknown } } }).fields.body.default = [{ type: 'p', spans: [{ text: 'draft', link: { type: 'page', target: about.id } }] }];
+    const node = makeInstance(def, { rows: [{ id: 'r1' }] });
+    home(r.state).nodes[node.id] = node;
+    home(r.state).rootIds.push(node.id);
+    expect(publicationPlan(r.state).draftLinks).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: node.id, pageId: about.id, inText: true })]));
   });
 });
 
@@ -466,9 +493,11 @@ describe('Convert to code keeps page links following their pages', () => {
 
   it('moves each literal page link into a property the project tracks', () => {
     const { copy, about } = converted();
-    expect(Object.keys(copy.properties).sort()).toEqual(['body', 'body2', 'body3', 'link2', 'link3', 'linkLabel', 'more', 'prop_variant_style', 'rows']);
+    expect(Object.keys(copy.properties).sort()).toEqual(['body', 'body2', 'body3', 'link2', 'link3', 'linkLabel', 'more', 'rows', 'variantStyle']);
+    // Every name is one the copy's property editor accepts when the schema is saved again.
+    for (const k of Object.keys(copy.properties)) expect(() => checkPropName(k), k).not.toThrow();
     expect(JSON.stringify(copy.properties.body2.default)).toContain(about.id);
-    for (const k of ['link2', 'link3', 'more', 'prop_variant_style']) expect(copy.properties[k].default).toEqual({ type: 'page', target: about.id });
+    for (const k of ['link2', 'link3', 'more', 'variantStyle']) expect(copy.properties[k].default).toEqual({ type: 'page', target: about.id });
     // A list item without the field moves as it is, and the copied schema keeps the field's default it shows.
     expect(copy.properties.rows.default).toEqual([{ id: expect.any(String) }]);
     expect(JSON.stringify((copy.properties.rows as { fields: Record<string, { default: unknown }> }).fields.body.default)).toContain(about.id);
@@ -495,7 +524,32 @@ describe('Convert to code keeps page links following their pages', () => {
   });
 });
 
-describe('Convert to code within the property limit', () => {
+describe('Convert to code within what a copy can keep', () => {
+  it('refuses a list filled in from pages whose field default links to a page', () => {
+    const s = fresh();
+    const about = Object.values(s.pages).find((x) => x.title === 'About')!;
+    const managed = (id: string, properties: Record<string, unknown>, nodes: Record<string, Record<string, unknown>>) => {
+      const def = {
+        schemaVersion: s.manifest.schemaVersion, id, componentId: id, contractVersion: 1, kind: 'managed', owner: 'project', name: id, description: '', category: 'custom', tags: [], icon: 'component',
+        properties, parts: { root: { nodeId: 'root', label: 'Root' } },
+        tree: { rootIds: ['root'], nodes: Object.fromEntries(Object.entries(nodes).map(([nid, n]) => [nid, { id: nid, ...n }])) },
+        provenance: { createdBy: 'user' }, license: 'Project'
+      } as unknown as ComponentDefinition;
+      s.components[id] = def;
+      return def;
+    };
+    managed(
+      'project.news',
+      { news: { type: 'list', label: 'News', itemLabel: 'Story', feed: 'articles', default: [], fields: { title: { type: 'string', label: 'Title', default: '' }, note: { type: 'richtext', label: 'Note', default: normalizeRichText(`[about](${about.route})`, s, 'Note') } } } },
+      { root: { kind: 'element', tag: 'section', children: ['each'] }, each: { kind: 'repeat', list: { $prop: 'news' }, children: ['note'] }, note: { kind: 'text', tag: 'div', rich: true, text: { $item: 'note' } } }
+    );
+    const outer = managed('project.outernews', {}, { root: { kind: 'element', tag: 'section', children: ['inner'] }, inner: { kind: 'instance', definitionId: 'project.news', props: {} } });
+    const node = makeInstance(outer, {});
+    home(s).nodes[node.id] = node;
+    home(s).rootIds.push(node.id);
+    expect(() => applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id }])).toThrow(/a list filled in from pages, with a page link in a field's default/);
+  });
+
   it('refuses rather than give the copy more properties than a component may have', () => {
     const s = fresh();
     const about = Object.values(s.pages).find((x) => x.title === 'About')!;

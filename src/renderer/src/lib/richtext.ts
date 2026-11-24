@@ -103,11 +103,29 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks:
 }
 
 /**
+ * For each edited item, the unchanged item it is (the longest run of items kept in order), or -1 for one that changed
+ * or is new. An edit is at most a few hundred items, so the table stays small.
+ */
+function alignItems(before: string[], after: string[]): number[] {
+  const n = before.length;
+  const m = after.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) lcs[i][j] = before[i] === after[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out = new Array<number>(m).fill(-1);
+  for (let i = 0, j = 0; i < n && j < m; ) {
+    if (before[i] === after[j]) out[j++] = i++;
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) i++;
+    else j++;
+  }
+  return out;
+}
+
+/**
  * What an inline edit of rich text stores. A node that lists paragraphs it shares with places showing them as
  * paragraphs (`paragraphList`) is edited as that list; when the text held paragraphs, each item goes back to what it
  * was (a paragraph, or an item of its list), so neither those places nor an edit that changes nothing see a
- * different kind of block. An item is found by its words, in order; a changed one takes the kind of the item in its
- * place while the edit keeps the number of items, and is a paragraph otherwise.
+ * different kind of block. Unchanged items are found by their words, in order; a changed one takes the kind of the
+ * item in its place while the edit keeps the number of items, and is a paragraph otherwise.
  */
 export function storedEdit(node: GraphNode | undefined, current: unknown, next: string | RichText): string | RichText {
   const kind = node?.kind === 'text' && node.rich ? node.paragraphList : undefined;
@@ -118,12 +136,10 @@ export function storedEdit(node: GraphNode | undefined, current: unknown, next: 
   if (!next.length || !next.every((b) => b.type === kind && isListBlock(b))) return next;
   const items = next.flatMap((b) => (b as RichListBlock).items);
   const before = shown.flatMap((b) => (isListBlock(b) ? b.items.map((spans) => ({ spans, item: true })) : [{ spans: b.spans, item: false }]));
-  const same = (a: RichSpan[], b: RichSpan[]) => JSON.stringify(a) === JSON.stringify(b);
-  let at = 0;
+  const matched = alignItems(before.map((b) => JSON.stringify(b.spans)), items.map((spans) => JSON.stringify(spans)));
   const out: RichBlock[] = [];
   items.forEach((spans, i) => {
-    const found = before.findIndex((b, j) => j >= at && same(b.spans, spans));
-    if (found >= 0) at = found + 1;
+    const found = matched[i];
     const item = found >= 0 ? before[found].item : before.length === items.length && before[i].item;
     const last = out[out.length - 1];
     if (!item) out.push({ type: 'p', spans });

@@ -721,8 +721,9 @@ export const labelKeyFor = (key: string) => (key.endsWith('Link') ? `${key.slice
  */
 function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, out: RenderedLink[], which?: string) {
   const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, fallback: string, at: string) => {
-    const v = values[key];
     const schema = schemas[key];
+    // A list item without the field shows the field's default, as the site does.
+    const v = Object.hasOwn(values, key) ? values[key] : (schema as { default?: unknown } | undefined)?.default;
     if (codeTakesBlocks(schema)) richLinks(v).forEach((sp, i) => out.push({ link: sp.link!, label: sp.text.trim(), reportId, key: `${at}:${i}`, inText: true }));
     if (schema?.type !== 'link' || !isLinkValue(v)) return;
     const labelKey = labelKeyFor(key);
