@@ -157,6 +157,21 @@ describe('keeping a preview copy up to date', () => {
     expect(existsSync(join(stage, 'node_modules/vite/package.json'))).toBe(true);
   });
 
+  it('keeps isolated component previews to the preview server each was made for', async () => {
+    const dir = project();
+    write(dir, '.siteorigin/cache/dev/isolated/aaaaaaaaaaaaaaaa/src/lib/siteorigin/preview/Preview.svelte', 'the project’s preview');
+    const stage = await createPreviewStage(dir, temp('root'));
+    // The project's previews are its own preview server's: the copy starts without them.
+    expect(existsSync(join(stage, '.siteorigin/cache/dev/isolated'))).toBe(false);
+    write(stage, '.siteorigin/cache/dev/isolated/bbbbbbbbbbbbbbbb/src/lib/siteorigin/preview/Preview.svelte', 'the copy’s preview');
+    write(dir, 'src/routes/+page.svelte', '<h1>Changed</h1>');
+    await syncPreviewStage(dir, stage);
+    expect(read(stage, 'src/routes/+page.svelte')).toBe('<h1>Changed</h1>');
+    // The copy's own preview is not in the project, and is still there after the copy follows the project.
+    expect(read(stage, '.siteorigin/cache/dev/isolated/bbbbbbbbbbbbbbbb/src/lib/siteorigin/preview/Preview.svelte')).toBe('the copy’s preview');
+    expect(existsSync(join(stage, '.siteorigin/cache/dev/isolated/aaaaaaaaaaaaaaaa'))).toBe(false);
+  });
+
   it('touches a source file whose dev variant alone changed, so the preview reloads it', async () => {
     const dir = project();
     const stage = await createPreviewStage(dir, temp('root'));

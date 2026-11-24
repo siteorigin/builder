@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { installComponent } from '@engine/install';
 import { compile } from 'svelte/compiler';
-import { COMPONENT_PREVIEW_ROUTE, PREVIEW_COMPONENT_STYLES, PREVIEW_MODULE, previewKeyOf } from '@shared/component-preview';
+import { COMPONENT_PREVIEW_ROUTE, PREVIEW_COMPONENT_STYLES, PREVIEW_KEY, PREVIEW_MODULE, previewKeyOf } from '@shared/component-preview';
+import { devPlugin } from '@runtime/dev-plugin';
+import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from '../../src/main/runtime/component-preview';
 import { generateComponentPreview, PREVIEW_NODE_ID } from '@generator/preview';
 import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
 
@@ -146,5 +151,133 @@ describe('isolated previews stay out of the website', () => {
     expect(previewKeyOf(`${COMPONENT_PREVIEW_ROUTE}${key}/?x=1`)).toBe(key);
     expect(previewKeyOf(`${COMPONENT_PREVIEW_ROUTE}${key}`)).toBe(key);
     for (const bad of [`${COMPONENT_PREVIEW_ROUTE}../${key}/`, `${COMPONENT_PREVIEW_ROUTE}${key}/x`, `${COMPONENT_PREVIEW_ROUTE}SHORT/`, '/about/', undefined]) expect(previewKeyOf(bad)).toBeNull();
+  });
+});
+
+describe('serving an isolated preview', () => {
+  const dirs: string[] = [];
+  afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  /** A project folder with a prepared preview of a catalogue component, and the dev plugin serving it. */
+  async function served() {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'so-isolated-')));
+    dirs.push(dir);
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src/app.html'), '<!doctype html>\n<html lang="de-AT">\n</html>\n');
+    const made = preview(starter(), { componentId: 'content.media', variants: { layout: 'media-end' } });
+    const { key, path } = await writeComponentPreview(dir, made.files);
+    const plugin = devPlugin(dir);
+    let middleware: ((req: { url?: string; method?: string }, res: ReturnType<typeof response>, next: (e?: unknown) => void) => void) | null = null;
+    plugin.configureServer({ middlewares: { use: (fn) => (middleware = fn as never) }, transformIndexHtml: async (_url, html) => html.replace('<head>', '<head><!--transformed-->') });
+    /** Ask the middleware for `url`: what it answered, or 'next' when it passed the request on. */
+    const request = (url: string, method = 'GET') =>
+      new Promise<ReturnType<typeof response> | 'next'>((resolve) => {
+        const res = response(() => resolve(res));
+        middleware!({ url, method }, res, () => resolve('next'));
+      });
+    return { dir, key, path, plugin, request, made };
+  }
+
+  function response(done: () => void) {
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: undefined as string | undefined,
+      setHeader: (k: string, v: string) => void (res.headers[k.toLowerCase()] = v),
+      end: (body?: string) => {
+        res.body = body;
+        done();
+      }
+    };
+    return res;
+  }
+
+  it('answers its address with a page that starts the preview, in the site’s language', async () => {
+    const { key, path, request } = await served();
+    expect(path).toBe(`${COMPONENT_PREVIEW_ROUTE}${key}/`);
+    const res = await request(path);
+    if (res === 'next') throw new Error('passed on');
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/html/);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.body).toContain('<!--transformed-->');
+    expect(res.body).toContain('<html lang="de-AT">');
+    expect(res.body).toContain(`<script type="module" src="/@id/virtual:siteorigin-component-preview/${key}.js"></script>`);
+    // No site header, footer or page of the site around it.
+    expect(res.body).not.toMatch(/<header|<footer|<main/);
+  });
+
+  it('passes every other address on, and says when a preview is gone', async () => {
+    const { key, path, request, dir } = await served();
+    expect(await request('/')).toBe('next');
+    expect(await request('/about/')).toBe('next');
+    expect(await request(path, 'POST')).toBe('next');
+    expect(await request(`${COMPONENT_PREVIEW_ROUTE}..%2F${key}/`)).toBe('next');
+    await removeComponentPreview(dir, key);
+    const gone = await request(path);
+    if (gone === 'next') throw new Error('passed on');
+    expect(gone.statusCode).toBe(404);
+  });
+
+  it('starts with the site’s tokens and base styles, then mounts the preview, then the bridge', async () => {
+    const { key, plugin } = await served();
+    const id = plugin.resolveId(`virtual:siteorigin-component-preview/${key}.js`);
+    expect(id).toBe(`\0virtual:siteorigin-component-preview/${key}.js`);
+    expect(plugin.resolveId('virtual:siteorigin-component-preview/../x.js')).toBeNull();
+    const entry = plugin.load(id!) as string;
+    const base = `/.siteorigin/cache/dev/isolated/${key}`;
+    const order = ['"/src/lib/siteorigin/styles/tokens.css"', '"/src/lib/siteorigin/styles/theme.css"', `"${base}/${PREVIEW_COMPONENT_STYLES}"`, `import("${base}/${PREVIEW_MODULE}")`, "import('virtual:siteorigin-bridge')"].map((s) => entry.indexOf(s));
+    expect(order.every((at) => at >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // Form sends are held before anything of the component runs.
+    expect(entry.indexOf('__siteoriginHold')).toBeLessThan(entry.indexOf('mount(Preview'));
+  });
+
+  it('serves the preview’s own files from the cache, and nothing outside its folder', async () => {
+    const { dir, key, plugin, made } = await served();
+    const at = (rel: string) => `${dir}/.siteorigin/cache/dev/isolated/${key}/${rel}`;
+    expect(plugin.load(at(PREVIEW_MODULE))).toBe(made.files.get(PREVIEW_MODULE));
+    // A reload stamp names the same, unchanging file; a stylesheet derived from it goes to the Svelte plugin.
+    expect(plugin.load(`${at(PREVIEW_MODULE)}?t=1700000000000`)).toBe(made.files.get(PREVIEW_MODULE));
+    expect(plugin.load(`${at(PREVIEW_MODULE)}?svelte&type=style&lang.css`)).toBeNull();
+    expect(plugin.load(`${at(PREVIEW_MODULE)}?raw`)).toBeNull();
+    expect(plugin.load(`${dir}/.siteorigin/cache/dev/isolated/${key}/../${key}/${PREVIEW_MODULE}`)).toBeNull();
+    // A link planted in a preview's folder never serves what it leads to.
+    writeFileSync(join(dir, 'secret.txt'), 'secret');
+    symlinkSync(join(dir, 'secret.txt'), join(dir, `.siteorigin/cache/dev/isolated/${key}/src/lib/siteorigin/leak.js`));
+    expect(() => plugin.load(at('src/lib/siteorigin/leak.js'))).toThrow(/no longer available/);
+    await removeComponentPreview(dir, key);
+    expect(() => plugin.load(at(PREVIEW_MODULE))).toThrow(/no longer available/);
+  });
+
+  it('writes each preview under a new key, all at once, and clears them all', async () => {
+    const { dir, key, made } = await served();
+    const again = await writeComponentPreview(dir, made.files);
+    expect(again.key).not.toBe(key);
+    expect(again.key).toMatch(PREVIEW_KEY);
+    // Nothing half-written is left beside the finished folders.
+    expect(readdirSync(join(dir, '.siteorigin/cache/dev/isolated')).sort()).toEqual([key, again.key].sort());
+    await clearComponentPreviews(dir);
+    expect(existsSync(join(dir, '.siteorigin/cache/dev/isolated'))).toBe(false);
+    // Nothing reached the project's own source.
+    expect(readdirSync(join(dir, 'src'))).toEqual(['app.html']);
+  });
+
+  it('refuses to write through a cache that leads out of the project', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'so-isolated-')));
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'so-elsewhere-')));
+    dirs.push(dir, elsewhere);
+    mkdirSync(join(dir, '.siteorigin/cache/dev'), { recursive: true });
+    symlinkSync(elsewhere, join(dir, '.siteorigin/cache/dev/isolated'));
+    await expect(writeComponentPreview(dir, new Map([[PREVIEW_MODULE, 'x']]))).rejects.toThrow(/not inside the project/);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    await clearComponentPreviews(dir);
+    expect(existsSync(elsewhere)).toBe(true);
+  });
+
+  it('keeps only well-formed preview requests', () => {
+    expect(previewSpec({ definitionId: 'c1', variants: { tone: 'dark' }, props: { heading: 'Hi' } })).toEqual({ definitionId: 'c1', variants: { tone: 'dark' }, props: { heading: 'Hi' } });
+    expect(previewSpec({ componentId: 'content.media' })).toEqual({ componentId: 'content.media' });
+    for (const bad of [null, 'c1', [], { definitionId: 3 }, { definitionId: '' }, { variants: { tone: 2 } }, { props: [] }, { props: { big: 'x'.repeat(300_000) } }]) expect(previewSpec(bad)).toBeNull();
   });
 });
