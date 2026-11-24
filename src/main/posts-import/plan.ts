@@ -115,7 +115,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   const termId = (tax: TaxonomyId, term: SourceTerm): string | null => {
     const t = taxonomies[tax];
     if (!t) return null;
-    const label = clip(term.label, 80).text;
+    // Cut at 80 characters, never at a word: two names that differ before then stay two terms.
+    const label = term.label.trim().slice(0, 80).trim();
     const index = byLabel.get(tax)!;
     const found = index.get(lower(label));
     if (found) return found;

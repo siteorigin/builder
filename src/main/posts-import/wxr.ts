@@ -18,6 +18,8 @@ import { reportNotes } from './notes';
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
 /** The longest title, name or label read: the plan shortens what it keeps, and says so. */
 const FIELD_CHARS = 1000;
+/** The longest old address kept: as long as an entry's own address can be. */
+const MAX_OLD_PATH = 1100;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -26,9 +28,9 @@ export function wordpressDay(...dates: string[]): string | null {
     const d = raw.trim();
     if (/^\d{4}-\d{2}-\d{2}/.test(d) && isArticleDate(d.slice(0, 10))) return d.slice(0, 10);
     // The day as the site wrote it, in its own time zone: never moved across midnight by a conversion.
-    const rss = /^[A-Z][a-z]{2}, (\d{1,2}) ([A-Z][a-z]{2}) (\d{4})/.exec(d);
+    const rss = /^[A-Z][a-z]{2}, (\d{1,2}) ([A-Z][a-z]{2}) (\d{4}) \d{2}:\d{2}(?::\d{2})? (?:[+-]\d{4}|[A-Z]{1,5})$/.exec(d);
     const month = rss ? MONTHS.indexOf(rss[2]) + 1 : 0;
-    if (rss && month) {
+    if (rss && month && Number.isFinite(Date.parse(d))) {
       const day = `${rss[3]}-${String(month).padStart(2, '0')}-${rss[1].padStart(2, '0')}`;
       if (isArticleDate(day)) return day;
     }
@@ -156,12 +158,12 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
       if (!onSite) return /^https?:$/.test(url.protocol) ? linkFromTarget(url.href, pages, newTab) : null;
       const tab = newTab ? { newTab: true } : {};
       // A post by its ID when the link names one: never the post at the path it happens to be read from.
-      const p = url.searchParams.get('p');
-      const post = p !== null ? byId.get(p) : url.search ? undefined : byPath.get(sitePath(url.pathname).toLowerCase());
+      const p = url.searchParams.get('p') ?? url.searchParams.get('page_id');
+      const post = p !== null ? byId.get(p) : byPath.get(sitePath(url.pathname).toLowerCase());
       if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
       // A page of the project at the same address, its section kept; never for an address with a query (`/?p=88`),
       // which named something other than the page at its path.
-      const page = url.search ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
+      const page = p !== null ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
       if (page) return page;
       // Somewhere else on the old site: kept going there while it is still up.
       if (url.protocol === 'relative:') return null;
@@ -193,7 +195,8 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
     let oldPath: string | undefined;
     try {
       const url = new URL(linkUrl, siteOrigin ? `${siteOrigin}/` : undefined);
-      if (!url.search && (!siteOrigin || url.origin === siteOrigin)) oldPath = sitePath(url.pathname);
+      // An address longer than a site's addresses can be is no old address to keep (and never worth reading whole).
+      if (!url.search && (!siteOrigin || url.origin === siteOrigin) && url.pathname.length <= MAX_OLD_PATH) oldPath = sitePath(url.pathname);
     } catch {
       oldPath = undefined;
     }
@@ -207,7 +210,7 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
       ...(status.reason ? { draftReason: status.reason } : !date && !status.draft ? { draftReason: 'it has no publication date' } : {}),
       ...(login ? { author: (authors.get(login) || login).slice(0, FIELD_CHARS) } : {}),
       ...(() => {
-        const excerpt = htmlToPlain(childText(item, 'excerpt:encoded').slice(0, 20 * FIELD_CHARS));
+        const excerpt = htmlToPlain(childText(item, 'excerpt:encoded').slice(0, 200 * FIELD_CHARS));
         return excerpt ? { excerpt } : {};
       })(),
       categories: terms(item, 'category'),

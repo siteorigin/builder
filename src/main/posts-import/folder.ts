@@ -139,8 +139,12 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
       // A file without a title in its settings is titled by its first heading, which then leaves the text.
       const h1 = /^\s*#\s+(.+?)\s*#*\s*$/m.exec(body);
       if (h1 && !body.slice(0, h1.index).trim()) {
-        title = htmlToPlain(markdownToHtml(h1[1]));
-        body = body.slice(h1.index + h1[0].length);
+        try {
+          title = htmlToPlain(markdownToHtml(h1[1])).slice(0, FIELD_CHARS);
+          body = body.slice(h1.index + h1[0].length);
+        } catch {
+          // Titled by its name instead, the heading left in its text.
+        }
       }
     }
     title ||= f.stem.replace(DATED_NAME, '$2').replace(/[-_]+/g, ' ').trim() || 'Untitled post';
@@ -156,7 +160,8 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
     notes.push(...reportNotes(report));
     const date = day(fm.data.date) ?? day(fm.data.pubdate) ?? day(fm.data.publishdate) ?? day(fm.data.published_at) ?? day(fm.data.published) ?? dated;
     const { draft, reason } = unread ? { draft: true, reason: 'its text could not be read' } : draftOf(fm.data, fm.unreadable);
-    const summary = text(fm.data.description) ?? text(fm.data.excerpt) ?? text(fm.data.summary);
+    const full = (v: FrontValue | undefined) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 20 * FIELD_CHARS) : undefined);
+    const summary = full(fm.data.description) ?? full(fm.data.excerpt) ?? full(fm.data.summary);
     let excerpt: string | undefined;
     try {
       excerpt = summary ? htmlToPlain(markdownToHtml(summary)) : undefined;

@@ -75,6 +75,7 @@ const NAMED: Record<string, number> = {
 export function decodeEntities(s: string, strict = false): string {
   if (!s.includes('&')) return s;
   return s.replace(/&(#[xX][0-9a-fA-F]{1,8}|#[0-9]{1,10}|[A-Za-z][A-Za-z0-9]{1,31});?/g, (whole, ref: string) => {
+    if (strict && !whole.endsWith(';')) return whole;
     if (ref[0] === '#') {
       const n = ref[1] === 'x' || ref[1] === 'X' ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
       return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : '�';

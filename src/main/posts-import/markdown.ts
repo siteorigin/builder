@@ -35,9 +35,10 @@ function unquoteDouble(s: string): string {
 /** One scalar as written after `key:` or `key =`: quoted text, or plain text with any trailing comment removed. */
 function scalar(raw: string): string | boolean | null {
   // A standard tag says how to read what follows: `!!str true` is the word, never true; `!!bool true` is true.
-  const tag = /^!!(bool|str|timestamp|int)\s+/.exec(raw.trim());
+  const tag = /^!!(\w+)\s+/.exec(raw.trim());
   const v = tag ? raw.trim().slice(tag[0].length) : raw.trim();
-  if (tag?.[1] === 'str') {
+  // Any tag but !!bool says the value is not true or false, whatever its words.
+  if (tag && tag[1] !== 'bool') {
     const t = scalar(v);
     return typeof t === 'boolean' ? v.replace(/\s+#.*$/, '').trim() : t;
   }
@@ -78,6 +79,9 @@ function flowList(raw: string): string[] | null {
 
 type Read = { data: Record<string, FrontValue>; problems: string[]; unreadable: string[] };
 
+/** A setting's name as written: a double-quoted one with its escapes read (`"\u0064raft"` is draft). */
+const keyName = (k: string) => (k.startsWith('"') ? unquoteDouble(k.slice(1, -1)) : k.replace(/^'|'$/g, '')).toLowerCase();
+
 /** The setting a line that could not be read seems to name: never taken from it, and never guessed either. */
 const namedIn = (line: string) => /^\s*(?:-\s+)?["']?([A-Za-z_][\w-]*)/.exec(line)?.[1]?.toLowerCase();
 
@@ -98,7 +102,7 @@ function readYaml(raw: string[], first: number): Read {
       if (k) unreadable.add(k);
       continue;
     }
-    const key = m[1].replace(/^["']|["']$/g, '').toLowerCase();
+    const key = keyName(m[1]);
     if (Object.hasOwn(data, key) || unreadable.has(key)) {
       problems.push(`line ${first + i}: ${key} is given twice`);
       unreadable.add(key);
@@ -154,7 +158,7 @@ function readToml(lines: string[], first: number): Read {
       if (k) unreadable.add(k);
       continue;
     }
-    const key = m[1].replace(/^["']|["']$/g, '').toLowerCase();
+    const key = keyName(m[1]);
     if (Object.hasOwn(data, key) || unreadable.has(key)) {
       problems.push(`line ${first + i}: ${key} is given twice`);
       unreadable.add(key);
@@ -182,7 +186,8 @@ export function readFrontmatter(text: string): Frontmatter {
   const mark = fence[1];
   const lines = src.slice(fence[0].length).split('\n');
   const end = lines.findIndex((l) => l.trim() === mark || (mark === '---' && l.trim() === '...'));
-  if (end < 0) return { data: {}, problems: ['its frontmatter is never closed'], unreadable: [], body: src };
+  // Settings never closed can't be read, a draft setting among them included.
+  if (end < 0) return { data: {}, problems: ['its frontmatter is never closed'], unreadable: ['draft', 'published'], body: src };
   const read = mark === '---' ? readYaml : readToml;
   return { ...read(lines.slice(0, end), 2), body: lines.slice(end + 1).join('\n') };
 }
@@ -262,8 +267,8 @@ export function inlineHtml(input: string, refs: Refs, depth = 0, budget = { left
         i += auto[0].length;
         continue;
       }
-      // Never past the next "<", so a run of unfinished tags is read once.
-      const tag = /^(?:<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"<]{0,1000}"|'[^'<]{0,1000}'|[^\s"'=<>`]+))?)*\s*\/?>|<!--[\s\S]{0,4000}?-->)/.exec(text.slice(i, i + 4096));
+      // An attribute name never passes a "<", and a quoted value is bounded, so a run of unfinished tags is read once.
+      const tag = /^(?:<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"]{0,1000}"|'[^']{0,1000}'|[^\s"'=<>`]+))?)*\s*\/?>|<!--[\s\S]{0,4000}?-->)/.exec(text.slice(i, i + 4096));
       if (tag) {
         out += keep(tag[0]);
         i += tag[0].length;

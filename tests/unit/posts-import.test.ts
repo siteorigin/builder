@@ -682,3 +682,67 @@ describe('second review: drafts, sizes and links read as written', () => {
     expect(plan.posts[0].notes).toContain('It links to “B”, which arrives as a draft: publish that post, or change the link, before the website is exported.');
   });
 });
+
+describe('last review: what a draft setting, an address or a name can hide', () => {
+  it('keeps a post a draft whose setting is tagged as a number, quoted with escapes, or never closed', async () => {
+    const source = await readMarkdownFolder(
+      mdFolder({
+        '2020-01-01-int.md': '---\ntitle: Int\ndraft: !!int false\n---\nText',
+        '2020-01-01-escaped.md': '+++\ntitle = "Escaped"\n"\\u0064raft" = true\n+++\nText',
+        '2020-01-01-open.md': '---\ntitle: Open\ndraft: true\nText with no end to its settings'
+      }),
+      {}
+    );
+    expect(source.posts.map((p) => [p.slug, p.draft])).toEqual([
+      ['escaped', true],
+      ['int', true],
+      ['open', true]
+    ]);
+  });
+
+  it('keeps no old address longer than a site’s addresses can be, and plans quickly', async () => {
+    const path = `/${'a'.repeat(3_000_000)}/`;
+    const source = await readWordPress(wxr([item(1, { title: 'Long', link: `https://old.example${path}`, 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, 'Text')]), {});
+    expect(source.posts[0].oldPath).toBeUndefined();
+    const t0 = performance.now();
+    planPostImport(site(), source, '2026-11-24');
+    expect(performance.now() - t0).toBeLessThan(2000);
+  });
+
+  it('reads a Markdown tag whose quoted attribute holds markup as one tag', () => {
+    expect(htmlToRichTextFromMarkdown('<span title="<img src=x.jpg>">words</span>')).toEqual([{ type: 'p', spans: [{ text: 'words' }] }]);
+  });
+
+  it('titles a post by its name when its first heading can’t be read, and reads the rest of the folder', async () => {
+    const heading = `# ${`<http://x.example/${'&'.repeat(2000)}>`.repeat(900)}`;
+    const source = await readMarkdownFolder(mdFolder({ 'huge-heading.md': `${heading}\n\nText`, 'fine.md': '---\ntitle: Fine\ndate: 2020-01-01\n---\nText' }), {});
+    expect(source.posts.map((p) => p.title)).toEqual(['Fine', 'huge heading']);
+  });
+
+  it('reads an excerpt whose words come after a lot of markup', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'E', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00', 'excerpt:encoded': `${'<span></span>'.repeat(3000)}The words.` }, 'Text')]), {});
+    expect(source.posts[0].excerpt).toBe('The words.');
+  });
+
+  it('maps a link with a tracking query by its path, and reads no RSS date whose time is not one', async () => {
+    const source = await readWordPress(
+      wxr([
+        item(10, { title: 'First', link: 'https://old.example/blog/first/', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, '<p><a href="https://old.example/blog/second/?utm_source=mail">next</a></p>'),
+        item(11, { title: 'Second', link: 'https://old.example/blog/second/', 'wp:status': 'publish', pubDate: 'Thu, 02 Jan 2020 99:99:99 +0000' })
+      ]),
+      {}
+    );
+    expect(source.posts[0].body[0]).toMatchObject({ spans: [{ text: 'next', link: { type: 'entry', target: 'post:wp:11' } }] });
+    expect(source.posts[1]).toMatchObject({ date: null, draft: true });
+  });
+
+  it('keeps two names that differ before 80 characters as two terms', () => {
+    const base = 'word '.repeat(14);
+    const plan = planPostImport(site(), { kind: 'markdown', label: 'p', root: '/x', realRoot: '/x', media: [], skipped: [], posts: [{ key: 'a', from: 'a', title: 'A', slug: 'a', date: '2020-01-01', draft: false, notes: [], tags: [], body: [], categories: [{ label: `${base}alphabetical` }, { label: `${base}alphanumeric` }] }] }, '2026-11-24');
+    expect(Object.keys(plan.termLabels.categories)).toHaveLength(2);
+  });
+
+  it('keeps a numeric reference without its semicolon as written in an address', () => {
+    expect(htmlToRichTextFromMarkdown('[go](https://example.org/?q=&#65)')[0]).toMatchObject({ spans: [{ link: { target: 'https://example.org/?q=&#65' } }] });
+  });
+});
