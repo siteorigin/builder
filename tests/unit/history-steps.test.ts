@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import { ProjectSession } from '../../src/main/project/session';
+import { appliedCount, historyStep } from '../../src/renderer/src/lib/history-steps';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -190,5 +191,44 @@ describe('stepping History to a chosen entry', () => {
     expect((await again.stepTo(ids[3], 'undo')).ok).toBe(true);
     expect(again.state.pages[about].seo.title).toBe('By hand');
     await again.close();
+  });
+});
+
+describe('what choosing a row in History does', () => {
+  const entry = (label: string, applied: boolean) => ({ id: label, label, source: 'user', time: '2026-11-24T10:00:00.000Z', applied });
+  // Oldest first: three applied, two undone.
+  const entries = [entry('Rename site', true), entry('Duplicate Split hero on Home', true), entry('Edit Heading on About', true), entry('Delete Logo strip on Home', false), entry('Insert Gallery on Home', false)];
+
+  it('undoes an applied row with every change after it', () => {
+    expect(appliedCount(entries)).toBe(3);
+    expect(historyStep(entries, 2)).toEqual({ direction: 'undo', count: 1, text: 'Undo', name: 'Undo “Edit Heading on About”', done: 'Undid “Edit Heading on About”.' });
+    expect(historyStep(entries, 0)).toEqual({
+      direction: 'undo',
+      count: 3,
+      text: 'Undo 3 changes',
+      name: 'Undo “Rename site” and 2 changes after it',
+      done: 'Undid 3 changes, back to before “Rename site”.'
+    });
+    expect(historyStep(entries, 1).name).toBe('Undo “Duplicate Split hero on Home” and 1 change after it');
+  });
+
+  it('redoes an undone row with every undone change before it', () => {
+    expect(historyStep(entries, 3)).toEqual({ direction: 'redo', count: 1, text: 'Redo', name: 'Redo “Delete Logo strip on Home”', done: 'Redid “Delete Logo strip on Home”.' });
+    expect(historyStep(entries, 4)).toEqual({
+      direction: 'redo',
+      count: 2,
+      text: 'Redo 2 changes',
+      name: 'Redo 2 changes, up to “Insert Gallery on Home”',
+      done: 'Redid 2 changes, up to “Insert Gallery on Home”.'
+    });
+  });
+
+  it('counts from the start when everything is undone, and from the end when nothing is', () => {
+    const none = entries.map((e) => ({ ...e, applied: false }));
+    expect(appliedCount(none)).toBe(0);
+    expect(historyStep(none, 4)).toMatchObject({ direction: 'redo', count: 5 });
+    const every = entries.map((e) => ({ ...e, applied: true }));
+    expect(appliedCount(every)).toBe(5);
+    expect(historyStep(every, 0)).toMatchObject({ direction: 'undo', count: 5 });
   });
 });

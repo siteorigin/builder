@@ -423,6 +423,14 @@ export function projectHistory(action: 'undo' | 'redo') {
   );
 }
 
+/**
+ * Step History to an entry chosen in it, however far (api.project.stepHistory), followed like an Undo. It goes only
+ * as far as History stood in `snap`: once the project has moved on it is refused, for the author to choose again.
+ */
+export function stepHistory(entryId: string, direction: 'undo' | 'redo', snap: ProjectSnapshot): Promise<ApplyResult> {
+  return trackHistory(api.project.stepHistory(entryId, direction, snap.revision, snap.workspaceKey));
+}
+
 /** Zoom the preview and remember it for this project. */
 export function setZoom(zoom: number | 'fit') {
   setState({ zoom });

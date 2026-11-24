@@ -2981,6 +2981,18 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .history-list li.focus { background: var(--accent-soft); }
 .history-list li.undone .grow { text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 50%, transparent); }
 .history-list time { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* Changes: each row is a button that steps History to it; the action it takes shows on hover and focus. */
+.history-steps li { padding: 0; }
+.history-step { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 0 12px; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; outline-offset: -2px; }
+.history-step:hover { background: var(--hover); }
+.history-step:focus-visible { outline: 2px solid var(--focus); }
+.history-step[aria-disabled='true'] { cursor: progress; }
+.history-step > svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+.history-step .step-action { font-size: 12px; font-weight: 500; color: var(--accent-text); white-space: nowrap; opacity: 0; }
+.history-step:hover .step-action, .history-step:focus-visible .step-action { opacity: 1; }
+.history-start { color: var(--text-3); }
+.history-said { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); }
+.history-said.failed { color: var(--red-ink); }
 .history-tabs { margin-bottom: 12px; }
 .version-save { display: flex; gap: 8px; margin: 0 0 12px; }
 .version-save .input { flex: 1; min-width: 0; }
