@@ -17,7 +17,7 @@ This is version 0.1: a working foundation to improve on, built to the [v0.1 spec
   - Typed content controls cover text, rich text, links, images, icons and lists with stable item IDs.
   - Variants, plus layout, spacing, size, typography and appearance controls, with an All sizes / Phone / Tablet / Desktop style scope.
 - **Pages.** Add, rename, duplicate, reorder, set Home and delete with link replacement. Routes and SEO fields are editable; internal links use page IDs.
-- **Components.** The Foundation theme provides 18 section families plus basics.
+- **Components.** Two built-in themes, Foundation (classic serif and sans) and Signal (geometric sans with mono accents), implement the same 18 section families plus basics, so a site can switch between them and keep its content.
   - Insert, move, duplicate and delete.
   - Edit a shared definition (theme components are forked first).
   - Make unique, create a component from a selection, and convert a copy to code.
@@ -85,14 +85,14 @@ Before a public release (spec §24 and §25.2):
 | `src/shared` | Document types, the style property registry, routes, the typed operation union (zod) and the IPC contract. |
 | `src/engine` | Applies operations to the canonical documents, validates references, handles component forks and theme switching. |
 | `src/generator` | Deterministic generation of Svelte routes, components and CSS from the documents. The instrumented variants used for editor selection are never written into the project source. |
-| `src/catalogue` | The Foundation theme as static data: tokens, base CSS and component definitions. It is kept separate so it can move to the `siteorigin-builder-components` repository. |
+| `src/catalogue` | The built-in themes (Foundation, and Signal over Foundation's contracts) as static data: tokens, base CSS and component definitions. It is kept separate so it can move to the `siteorigin-builder-components` repository. |
 | `src/runtime` | The utility-process worker that runs the project's Vite (dev server and builds), and the preview bridge injected in memory. |
 | `src/agent` | Provider adapters (OpenAI Responses, Anthropic Messages), tools, context assembly and the run orchestrator. |
 | `src/main` | Electron main process: windows, IPC authorisation, project sessions (journal, history, locks), credentials, export. |
 | `src/renderer` | The React editor. |
 | `templates/sveltekit-brochure` | The pinned SvelteKit 3 / Svelte 5 / Vite 8 starter with its lock file. |
 
-Editor components (React) and website components (Svelte, generated from Foundation definitions) never mix. The editor talks to the website only through the bounded preview bridge, and all writes, manual or AI, go through the same validated operations.
+Editor components (React) and website components (Svelte, generated from the theme's definitions) never mix. The editor talks to the website only through the bounded preview bridge, and all writes, manual or AI, go through the same validated operations.
 
 ## Licence
 

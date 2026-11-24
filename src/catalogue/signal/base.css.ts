@@ -41,8 +41,9 @@ const SIGNAL_RULES = `
 }
 @media screen and (min-width: 1024px) {
   :where(${FEATURED}) { grid-column: 1 / -2; grid-row: span 2; }
-  /* The tall tile keeps its icon at the top and sets its words at the bottom. */
-  :where(${FEATURED} > .${FEATURES}__card-title) { margin-block-start: auto; }
+  /* The tall tile keeps its icon at the top and sets its words at the bottom. The title's own class outweighs the
+     reset of heading margins, and any margin the site gives the title (a later rule of the same weight) still wins. */
+  :where(${FEATURED}) > .${FEATURES}__card-title { margin-block-start: auto; }
 }
 `;
 
