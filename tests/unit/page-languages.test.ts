@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,6 +11,7 @@ import { validateState } from '@engine/validate';
 import { HOOKS_SERVER_FILE, generateAppHtml, generateProject, pageAlternates, pageFile, publishedState } from '@generator/index';
 import { declaredLanguage, linkClash, pageLanguage, translationPeers } from '@shared/languages';
 import { pageLanguageWarning, rivalHookStop } from '../../src/main/export';
+import { ProjectSession } from '../../src/main/project/session';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
@@ -442,21 +443,61 @@ describe('page languages in the website', () => {
     // A page in the site language is checked too.
     expect(pageLanguageWarning(s, byTitle(s, 'About'), '<!doctype html><html lang="fr">')).toMatch(/“About” \(\/about\/\) was built as “fr”, not “en”/);
     expect(pageLanguageWarning(s, byTitle(s, 'About'), '<!doctype html><html lang="en">')).toBeNull();
+    // A document without the tag, after many comments, is turned down at once rather than retried every way.
+    const comments = '<!-- a -->'.repeat(2000) + '<body>';
+    const started = performance.now();
+    expect(declaredLanguage(comments)).toBeNull();
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
-  it('stops the export when the website needs the generated server hook and the project has one of its own', () => {
+  it('stops the export when the website needs the generated server hook and the project has one of its own', async () => {
     const { s, fr } = bilingual();
     const dir = tempDir();
-    mkdirSync(join(dir, 'src'));
-    expect(rivalHookStop(dir, s)).toBeNull();
+    mkdirSync(join(dir, 'src', 'hooks.server'), { recursive: true });
+    // A folder without an index is no hook: SvelteKit passes it by.
+    expect(await rivalHookStop(dir, s)).toBeNull();
+    writeFileSync(join(dir, 'src', 'hooks.server', 'index.ts'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
+    expect(await rivalHookStop(dir, s)).toMatch(/server hook of its own \(src\/hooks\.server\/index\.ts\): SvelteKit runs only one/);
+    rmSync(join(dir, 'src', 'hooks.server'), { recursive: true });
     writeFileSync(join(dir, 'src', 'hooks.server.ts'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
-    expect(rivalHookStop(dir, s)).toMatch(/server hook of its own \(src\/hooks\.server\.ts\): SvelteKit runs only one/);
-    // A folder of that name is a hook too.
+    expect(await rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\.ts\)/);
     rmSync(join(dir, 'src', 'hooks.server.ts'));
-    mkdirSync(join(dir, 'src', 'hooks.server'));
-    expect(rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\)/);
+    // A hook at the generated path is the project's own unless SiteOrigin Builder wrote it there.
+    writeFileSync(join(dir, HOOKS_SERVER_FILE), 'export const handle = ({ event, resolve }) => resolve(event);\n');
+    expect(await rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\.js\)/);
+    mkdirSync(join(dir, 'siteorigin'));
+    writeFileSync(join(dir, 'siteorigin', 'generated-manifest.json'), JSON.stringify({ files: { [HOOKS_SERVER_FILE]: 'x' } }));
+    expect(await rivalHookStop(dir, s)).toBeNull();
     // A site in one language needs no hook of ours, and neither does one whose only other language is a draft's.
-    expect(rivalHookStop(dir, fresh())).toBeNull();
-    expect(rivalHookStop(dir, publishedState(apply(s, { type: 'page.update', pageId: fr, draft: true })))).toBeNull();
+    rmSync(join(dir, 'siteorigin'), { recursive: true });
+    expect(await rivalHookStop(dir, fresh())).toBeNull();
+    expect(await rivalHookStop(dir, publishedState(apply(s, { type: 'page.update', pageId: fr, draft: true })))).toBeNull();
+  });
+
+  it('never writes the generated server hook beside one of the project’s own', async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    const theirs = 'export const handle = ({ event, resolve }) => resolve(event);\n';
+    writeFileSync(join(dir, 'src', 'hooks.server.ts'), theirs);
+    const session = await ProjectSession.create(dir, fresh());
+    try {
+      const about = byTitle(session.state, 'About').id;
+      expect((await session.apply({ operations: [{ type: 'page.update', pageId: about, language: 'fr' }] }, { label: 'French' })).ok).toBe(true);
+      // Theirs is kept; ours is not written, in the project or the preview's copies; nothing blocks editing.
+      expect(readFileSync(join(dir, 'src', 'hooks.server.ts'), 'utf8')).toBe(theirs);
+      expect(existsSync(join(dir, HOOKS_SERVER_FILE))).toBe(false);
+      expect(existsSync(join(dir, '.siteorigin', 'cache', 'dev', HOOKS_SERVER_FILE))).toBe(false);
+      expect(session.conflicts).toEqual([]);
+      // Without theirs, ours is written at the next change; when theirs comes back, ours goes at the next change.
+      rmSync(join(dir, 'src', 'hooks.server.ts'));
+      await session.apply({ operations: [{ type: 'page.update', pageId: about, language: 'de' }] }, { label: 'German' });
+      expect(readFileSync(join(dir, HOOKS_SERVER_FILE), 'utf8')).toContain('"/about": "de"');
+      writeFileSync(join(dir, 'src', 'hooks.server.ts'), theirs);
+      await session.apply({ operations: [{ type: 'page.update', pageId: about, language: 'nl' }] }, { label: 'Dutch' });
+      expect(existsSync(join(dir, HOOKS_SERVER_FILE))).toBe(false);
+      expect(session.conflicts).toEqual([]);
+    } finally {
+      await session.close();
+    }
   });
 });

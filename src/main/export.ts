@@ -19,6 +19,7 @@ import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } fro
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
+import { ownServerHook } from './project/server-hook';
 import type { MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
@@ -767,17 +768,16 @@ export function brokenSectionLinks(state: ProjectState): string[] {
  * A built page that does not declare the language it is written in: the project's own server hook or page template
  * took over from the generated ones. Null when it declares its own.
  */
-/** Server hooks SvelteKit would find in place of the generated one: it runs only one. */
-const RIVAL_HOOKS = ['src/hooks.server.ts', 'src/hooks.server'];
-
 /**
  * Why the website cannot be exported when it needs the generated server hook (it has pages in another language)
- * and the project has one of its own as well: SvelteKit would run one of them and skip the other. Null otherwise.
+ * and the project has one of its own: SvelteKit would run one of them and skip the other. Null otherwise.
  */
-export function rivalHookStop(dir: string, state: ProjectState): string | null {
+export async function rivalHookStop(dir: string, state: ProjectState): Promise<string | null> {
   if (!routeLanguages(state).length) return null;
-  const rival = RIVAL_HOOKS.find((p) => existsSync(join(dir, ...p.split('/'))));
-  return rival ? `Pages written in another language need ${HOOKS_SERVER_FILE}, and this project has a server hook of its own (${rival}): SvelteKit runs only one of them. Rename or remove yours, then export again.` : null;
+  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
+  const claimed = Object.hasOwn(manifest.files ?? {}, HOOKS_SERVER_FILE) || Object.hasOwn(manifest.pending ?? {}, HOOKS_SERVER_FILE);
+  const own = ownServerHook(dir, claimed);
+  return own ? `Pages written in another language need SiteOrigin Builder's ${HOOKS_SERVER_FILE}, and this project has a server hook of its own (${own}): SvelteKit runs only one of them. Rename or remove yours, then export again.` : null;
 }
 
 export function pageLanguageWarning(state: ProjectState, page: PageDoc, html: string): string | null {

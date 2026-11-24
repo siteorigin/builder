@@ -100,15 +100,17 @@ export function translationClashMessage(clash: Pick<TranslationClash, 'a' | 'b' 
 /**
  * A document's opening <html> tag, after any doctype, comments and white space before it: what comes before, the tag
  * name as written, its attributes, and the end of the tag. Quoted attribute values may hold anything, ">" included.
+ * Each comment ends at its first "-->", so a document without the tag is turned down in one pass.
  */
-export const HTML_START = /^((?:\s|<!--[\s\S]*?-->|<!doctype[^>]*>)*)<(html)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)(\s*\/?>)/i;
+export const HTML_START = /^((?:\s|<!--(?:(?!-->)[\s\S])*-->|<!doctype[^>]*>)*)<(html)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)(\s*\/?>)/i;
 
 /** One attribute of a tag: the white space before it, its name, and its value as written (with any quotes). */
 export const HTML_ATTR = /(\s+)([^\s"'>/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
 
 /** The lang an HTML document's opening <html> tag declares, or null when it declares none. */
 export function declaredLanguage(html: string): string | null {
-  const attrs = html.match(HTML_START)?.[3] ?? '';
+  // The opening tag is near the start; a page's whole body is never searched.
+  const attrs = html.slice(0, 65536).match(HTML_START)?.[3] ?? '';
   for (const [, , name, value] of attrs.matchAll(HTML_ATTR)) if (name.toLowerCase() === 'lang') return value === undefined ? '' : value.replace(/^["']|["']$/g, '');
   return null;
 }

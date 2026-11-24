@@ -1718,7 +1718,7 @@ export class Controller {
       const edited = await editedGeneratedFile(s.dir);
       if (edited) return stop(`${edited} was changed outside SiteOrigin Builder. Open Project health to restore it, then export again.`);
       // Both exports are the published site: its pages decide whether it needs the generated server hook.
-      const rival = rivalHookStop(s.dir, publishedState(s.state));
+      const rival = await rivalHookStop(s.dir, publishedState(s.state));
       if (rival) return stop(rival);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
