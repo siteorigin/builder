@@ -124,17 +124,23 @@ const pointCount = (text: string) => Array.from(text).length;
  * can be kept.
  */
 export function addressSlug(text: string): string {
-  const folded = Array.from(foldAddress(text).replace(/&/g, ' and '));
-  const fits = addressChars(folded.join(''));
-  const kept = folded
-    .map((ch, i) => (ch !== '-' && fits[i] ? ch : '-'))
+  // What is kept depends on what is kept before it ("ʼ" stays only after a letter that stays), so the text is
+  // filtered until nothing more changes; each pass can only turn characters into hyphens.
+  let kept = keepAddressChars(foldAddress(text).replace(/&/g, ' and '));
+  for (let next = keepAddressChars(kept); next !== kept; next = keepAddressChars(kept)) kept = next;
+  // Trimmed after the cut, which may land on the hyphen between two words.
+  return cutSegment(kept, SEGMENT_CHARS, SEGMENT_BYTES);
+}
+
+/** `text` with each character an address cannot hold where it stands as a hyphen, and no hyphen leading or doubled. */
+function keepAddressChars(text: string): string {
+  const fits = addressChars(text);
+  return Array.from(text, (ch, i) => (ch !== '-' && fits[i] ? ch : '-'))
     .join('')
     // A mark whose letter was not kept cannot start a word.
     .replace(/(^|-)\p{M}+/gu, '$1')
     .replace(/-+/g, '-')
     .replace(/^-+/, '');
-  // Trimmed after the cut, which may land on the hyphen between two words.
-  return cutSegment(kept, SEGMENT_CHARS, SEGMENT_BYTES);
 }
 
 /** A segment as pasted from a browser's address bar ("%E3%81%8A..."), decoded; anything else stays as typed. */
@@ -181,7 +187,7 @@ export function validateSegment(seg: string): string | null {
   if (/^[a-z0-9][a-z0-9-]*$/.test(seg)) return seg.length > 60 ? 'Route segments must be 60 characters or fewer.' : null;
   if (!/^[\p{L}\p{Nd}]/u.test(seg) || !addressChars(seg).every(Boolean)) return `"${seg}" may only contain lowercase letters, numbers and hyphens.`;
   if (pointCount(seg) > SEGMENT_CHARS) return 'Route segments must be 60 characters or fewer.';
-  if (utf8Bytes(seg) > SEGMENT_BYTES) return 'Route segments must be 60 characters or fewer, and fewer in scripts whose letters take more room (40 in Japanese, Chinese or Korean).';
+  if (utf8Bytes(seg) > SEGMENT_BYTES) return 'Route segments must be 60 characters or fewer, and fewer in scripts whose letters take more room (about 40 in Japanese, Chinese or Korean).';
   // One spelling per address, so two that look the same, or share a folder on disk, are the same route.
   const folded = foldAddress(seg);
   return folded === seg ? null : `"${seg}" must be written "${folded}".`;

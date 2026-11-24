@@ -76,6 +76,9 @@ describe('addresses in any script (#36)', () => {
     expect(addressSlug('Обʼєкт')).toBe('обʼєкт');
     expect(addressSlug('ㄅˊ')).toBe('ㄅˊ');
     expect(addressSlug('ʼобʼ ʼєкт')).toBe('обʼ-єкт');
+    // ...after a letter that is itself kept, whatever the title had before it.
+    for (const t of ['аʹʼб', 'аʹ\u0301ʼб', 'а-ʹʼб', 'ʹʼб']) expect(validateRoute(`/${addressSlug(t)}/`), t).toBeNull();
+    expect(addressSlug('аʹʼб')).toBe('а-б');
     expect(validateRoute('/обʼєкт/')).toBeNull();
     expect(validateRoute('/oʼneil/')).toMatch(/may only contain/);
     for (const t of ['お問い合わせ', 'Привет Мир', 'Мой дом', 'Επικοινωνία', 'ΟΔΟΣ ΕΡΜΟΥ', '한국어 페이지', 'हिन्दी पृष्ठ', 'ภาษาไทย', 'צור קשר', '联系我们', '𠮷野家', 'ｶﾌｪ', 'Ἀθῆναι ᾳ']) {
@@ -129,7 +132,7 @@ describe('addresses in any script (#36)', () => {
     // Punctuation turned into a hyphen ends the word before it, so a sigma there is then spelled as final, or not.
     expect(addressSlug('Α.Σ.')).toBe('α-σ');
     expect(addressSlug('ΟΔΟΣ.')).toBe('οδος');
-    const pool = Array.from('aZé ß-.&/_ʼˇ0１お問ガｶﾞ𠮷ΣσςΑάᾳПйъ\u0301\u0345\u3099ー・한ि्ภ่');
+    const pool = Array.from('aZé ß-.&/_ʼʹˇˊ0１お問ガｶﾞ𠮷ΣσςΑάᾳПйъєㄅ\u0301\u0345\u3099ー・한ि्ภ่');
     let seed = 36;
     const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
     for (let i = 0; i < 4000; i++) {
