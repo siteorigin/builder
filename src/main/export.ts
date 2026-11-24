@@ -13,8 +13,8 @@ import { STARTER_ASSETS } from '@catalogue/starters';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { describeDraftLink, netlifyFormClashes, publicationPlan, unlinkedButtons } from '@generator/checks';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages } from '@generator/index';
+import { describeDraftLink, draftTarget, netlifyFormClashes, publicationPlan, unlinkedButtons } from '@generator/checks';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
@@ -564,11 +564,14 @@ export function draftLinksStop(state: ProjectState): { message: string; warnings
   const { draftLinks } = publicationPlan(state);
   if (!draftLinks.length) return null;
   const warnings = draftLinks.map((l) => describeDraftLink(state, l));
-  const drafts = [...new Set(draftLinks.map((l) => state.pages[l.pageId]?.title ?? 'a draft page'))];
+  const drafts = [...new Set(draftLinks.map((l) => draftTarget(state, l)?.title ?? 'a draft page'))];
+  // A draft collection entry is named as one; pages as they always were.
+  const entries = draftLinks.some((l) => l.entryId !== undefined);
+  const one = entries && draftLinks.every((l) => l.entryId !== undefined) ? 'the entry' : 'the page';
   const message =
     draftLinks.length === 1
-      ? `A published page links to ${drafts[0]}, which is a draft and is left out of the website. Change the link or publish the page, then export again.`
-      : `${draftLinks.length} links on published pages go to ${drafts.length === 1 ? `${drafts[0]}, a draft` : 'drafts'} the website leaves out. Change the links or publish ${drafts.length === 1 ? 'the page' : 'those pages'}, then export again.`;
+      ? `${draftLinks[0].owner.kind === 'entry' ? 'A published entry' : 'A published page'} links to ${drafts[0]}, which is a draft and is left out of the website. Change the link or publish ${one}, then export again.`
+      : `${draftLinks.length} links on published pages go to ${drafts.length === 1 ? `${drafts[0]}, a draft` : 'drafts'} the website leaves out. Change the links or publish ${drafts.length === 1 ? one : entries ? 'those drafts' : 'those pages'}, then export again.`;
   return { message, warnings };
 }
 
@@ -591,22 +594,33 @@ export function publishedChanged(state: ProjectState, shown: string[] | undefine
 export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ file: string; route: string; draft: string }> {
   const live = publishedState(state);
   if (live === state) return [];
-  const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
-  const withheld = [
-    ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
-    ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.page.title }))
-  ];
   const out: Array<{ file: string; route: string; draft: string }> = [];
-  for (const { route, draft } of withheld)
+  for (const { route, draft } of withheldRoutes(state, live))
     for (const file of [`static${route}index.html`, `static${route.replace(/\/$/, '')}.html`]) if (existsSync(join(dir, file))) out.push({ file, route, draft });
   return out;
+}
+
+/**
+ * The addresses the website keeps back, each with the draft it would show: every draft page's and draft entry's own,
+ * and each old address that leads to one. `live` is the published state of `state`.
+ */
+export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string }> {
+  if (live === state) return [];
+  const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
+  const shown = new Set(siteEntries(live).map((e) => e.route.toLowerCase()));
+  return [
+    ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
+    ...siteEntries(state).filter((e) => !shown.has(e.route.toLowerCase())).map((e) => ({ route: e.route, draft: e.entry.title })),
+    ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.title }))
+  ];
 }
 
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */
 export function draftSourceNotes(state: ProjectState): string[] {
   const { drafts, draftLinks } = publicationPlan(state);
-  if (!drafts.length) return [];
-  const names = drafts.map((p) => p.title);
+  // Draft collection entries are kept the same way.
+  const names = [...drafts.map((p) => p.title), ...siteEntries(state).filter((e) => isDraftEntry(e.entry)).map((e) => e.entry.title)];
+  if (!names.length) return [];
   const notes = [
     `${names.length === 1 ? `The draft ${names[0]} is` : `The drafts ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} are`} kept in the project to edit in SiteOrigin Builder, and left out of its website build.`
   ];
@@ -631,7 +645,7 @@ export const NODE_ENGINES = '>=22.17.0';
 export async function finishExportedSource(dest: string, state: ProjectState, noticePath: string) {
   const readmePath = join(dest, 'README.md');
   const readme = await readIfExists(readmePath);
-  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0));
+  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, NOTICE, siteEntries(state).some((e) => isDraftEntry(e.entry))));
   const usesSamples = STARTER_ASSETS.some((a) => state.assets.assets[a.id]);
   if (usesSamples && !existsSync(join(dest, 'NOTICE.md')) && existsSync(noticePath)) await fs.copyFile(noticePath, join(dest, 'NOTICE.md'));
   for (const [file, at] of [['package.json', (j: Record<string, any>) => j], ['package-lock.json', (j: Record<string, any>) => j.packages?.['']]] as const) {
@@ -664,13 +678,28 @@ export function isGeneratedReadme(text: string): boolean {
   const normalized = text.replace(/\r\n/g, '\n');
   const title = normalized.match(/^# (.*)\n/)?.[1];
   if (title === undefined) return false;
-  return [projectReadme(title), projectReadme(title, true), projectReadme(title, false, NPM_FONTS_NOTICE), projectReadme(title, true, NPM_FONTS_NOTICE), legacyReadme(title)].includes(normalized);
+  return [
+    projectReadme(title),
+    projectReadme(title, true),
+    projectReadme(title, false, NOTICE, true),
+    projectReadme(title, true, NOTICE, true),
+    projectReadme(title, false, NPM_FONTS_NOTICE),
+    projectReadme(title, true, NPM_FONTS_NOTICE),
+    legacyReadme(title)
+  ].includes(normalized);
 }
 
 /** Why a README's build leaves pages out, and what opening the project in SiteOrigin Builder changes about that. */
 const DRAFTS_SECTION = `## Draft pages
 
 This project has draft pages. Their documents are in \`siteorigin/pages/\`, but this export has no page files for them, so \`npm run build\` leaves them out. Opening the project in SiteOrigin Builder writes their files back for editing and previewing, and from then on a build of that folder includes them: export the website from SiteOrigin Builder to publish without drafts.
+
+`;
+
+/** The same for draft collection entries, whose documents live with their collections. */
+const DRAFT_ENTRIES_SECTION = `## Draft entries
+
+This project has draft collection entries. Their documents are in \`siteorigin/collections/\`, but this export has no page files for them, so \`npm run build\` leaves them out. Opening the project in SiteOrigin Builder writes their files back for editing and previewing, and from then on a build of that folder includes them: export the website from SiteOrigin Builder to publish without drafts.
 
 `;
 
@@ -681,7 +710,7 @@ const NPM_FONTS_NOTICE =
   'The Foundation theme is licensed under GPL-3.0-or-later. Icons come from Lucide (ISC licence). Fonts are licensed under the SIL Open Font License 1.1 and are installed from npm (@fontsource-variable). Sample images from the Business starter, where still used, are described in NOTICE.md.';
 
 /** The README an exported project gets. One exported with drafts says how its build treats them. */
-export function projectReadme(name: string, drafts = false, notice = NOTICE): string {
+export function projectReadme(name: string, drafts = false, notice = NOTICE, draftEntries = false): string {
   return `# ${name}
 
 ${README_INTRO} It is a normal [SvelteKit](https://svelte.dev/docs/kit) project and does not need SiteOrigin Builder to run or build.
@@ -709,7 +738,7 @@ The static website is written to \`build/\`. Upload the contents of that folder 
 
 Files generated by SiteOrigin Builder start with a comment. If you edit them by hand, SiteOrigin Builder keeps your version and asks before regenerating them.
 
-${drafts ? DRAFTS_SECTION : ''}## Notices
+${drafts ? DRAFTS_SECTION : ''}${draftEntries ? DRAFT_ENTRIES_SECTION : ''}## Notices
 
 ${notice}
 `;

@@ -107,7 +107,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
         read.inside = Object.fromEntries(pagesWithin(state.pages, page.id).map((id) => [id, state.pages[id].route]));
         const to = normalizeRoute(op.route).toLowerCase();
         const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
-        read.keptFor = (kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === to) as { pageId?: unknown } | undefined)?.pageId ?? null;
+        const holder = kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === to) as { pageId?: unknown; entryId?: unknown } | undefined;
+        read.keptFor = holder?.pageId ?? (holder?.entryId !== undefined ? { entryId: holder.entryId } : null);
       }
       return found(read);
     }

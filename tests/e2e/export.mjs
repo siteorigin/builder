@@ -267,6 +267,54 @@ const kitchen75 = before75.assets.assets[gallery75.props.images[0].image.assetId
 assert.ok(kitchen75?.variants?.length, 'the sample kitchen photo has smaller copies');
 const kitchenOriginal = basename(kitchen75.file);
 
+step('#393: posts published, one renamed after publishing, and a draft');
+// The ready-made blog: a published post, another linking to it by ID, and a draft whose text must never reach the website.
+const DRAFT_MARK = 'Unannounced kiln move 393';
+const blogSetup = await win.evaluate((mark) =>
+  window.builder.project.apply(
+    {
+      operations: [
+        { type: 'collection.create', collectionId: 'posts' },
+        { type: 'entry.create', collectionId: 'posts', entryId: 'en_hours01', title: 'Opening hours', publishedAt: '2026-01-12', draft: false, author: 'Ana Ruiz', excerpt: 'When the studio is open.', body: ['Open **Tuesday to Saturday**.'] },
+        { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring01', title: 'Spring open studio', publishedAt: '2026-03-02', updatedAt: '2026-03-09', draft: false, body: ['Check [our hours](entry:en_hours01) first.'] },
+        { type: 'entry.create', collectionId: 'posts', entryId: 'en_secret01', title: 'Secret plans', publishedAt: '2026-04-01', body: [mark] }
+      ]
+    },
+    { label: 'Start the blog' }
+  ),
+  DRAFT_MARK
+);
+assert.equal(blogSetup.ok, true, `the blog is started: ${blogSetup.error?.message}`);
+// Renamed in a change of its own, after it was published: its first address must keep working.
+const renamed = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_hours01', slug: 'opening-times' }] }, { label: 'Rename the post' }));
+assert.equal(renamed.ok, true, `the post is renamed: ${renamed.error?.message}`);
+const blogState = (await win.evaluate(() => window.builder.project.snapshot())).state;
+assert.deepEqual(blogState.site.redirects?.filter((r) => r.entryId), [{ from: '/blog/opening-hours/', entryId: 'en_hours01' }], 'the old address of the renamed post is kept');
+
+/** The published posts as a built website has them, wherever it was built (`root`, served under `base`). */
+function checkBuiltPosts(root, label, base = '') {
+  // Read without the comments Svelte leaves to hydrate from.
+  const page = (...path) => readFileSync(join(root, ...path, 'index.html'), 'utf8').replace(/<!--[^]*?-->/g, '');
+  const hours = page('blog', 'opening-times');
+  assert.match(hours, /<h1 class="so-entry__title[^"]*">Opening hours<\/h1>/, `${label}: the renamed post is prerendered at its new address`);
+  assert.match(hours, /<time datetime="2026-01-12">January 12, 2026<\/time> <span class="so-entry__author">Ana Ruiz<\/span>/, `${label}: the post states its publication date in a <time> element, and its author`);
+  assert.match(hours, /<meta property="article:published_time" content="2026-01-12"/, `${label}: the post says when it was published`);
+  assert.match(hours, /<meta property="og:type" content="article"/, `${label}: the post is an article`);
+  assert.match(hours, /<strong>Tuesday to Saturday<\/strong>/, `${label}: the post shows its text`);
+  const spring = page('blog', 'spring-open-studio');
+  assert.match(spring, /<meta property="article:modified_time" content="2026-03-09"/, `${label}: the revised post says when it was revised`);
+  const springLinks = [...spring.matchAll(/<a [^>]*href="([^"]*)"[^>]*>our hours<\/a>/g)].map((m) => new URL(m[1], `https://example.test${base}/blog/spring-open-studio/`).pathname);
+  assert.deepEqual(springLinks, [`${base}/blog/opening-times/`], `${label}: the link between posts follows the rename`);
+  const old = page('blog', 'opening-hours');
+  const refresh = old.match(/<meta http-equiv="refresh" content="0; url=([^"]*)"/)?.[1];
+  assert.ok(refresh, `${label}: the old address of the renamed post sends visitors on`);
+  assert.equal(new URL(refresh.replace(/&amp;/g, '&'), `https://example.test${base}/blog/opening-hours/`).pathname, `${base}/blog/opening-times/`, `${label}: the old address leads to the post's new one`);
+  const all = files(root);
+  assert.deepEqual(all.filter((f) => f.includes('secret-plans')), [], `${label}: the draft post has no page`);
+  const leaked = all.filter((f) => /\.(html|js|json|xml|txt)$/.test(f) && readFileSync(join(root, f), 'utf8').includes(DRAFT_MARK));
+  assert.deepEqual(leaked, [], `${label}: nothing in the website carries the draft post's text`);
+}
+
 step('export through the controller');
 // Folder exports ask for a parent folder and create a new folder inside it, so nothing is ever replaced.
 const exportsDir = join(WORK, 'exports');
@@ -325,6 +373,16 @@ async function proofTab(url, size = { width: 1280, height: 900 }) {
 }
 const tab1 = await proofTab(stat.previewUrl);
 assert.equal(await tab1.title(), 'Client proof 1', 'the first proof opens with its own title');
+
+step('#393: the website has the published posts, keeps the renamed one\'s old address working, and not the draft');
+checkBuiltPosts(staticOut, 'website export');
+{
+  const tab = await proofTab(new URL('blog/opening-hours/?from=newsletter#visit', stat.previewUrl).href);
+  await eventually(async () => assert.equal(new URL(tab.url()).pathname + new URL(tab.url()).search + new URL(tab.url()).hash, '/blog/opening-times/?from=newsletter#visit', `the old address goes on to the new one, keeping the query and section: ${tab.url()}`));
+  await eventually(async () => assert.equal((await tab.locator('main h1').textContent())?.trim(), 'Opening hours', 'the renamed post is shown'));
+  await tab.close();
+  assert.equal((await fetch(new URL('blog/secret-plans/', stat.previewUrl).href)).status, 404, 'the draft post is not on the website');
+}
 
 /**
  * Search a website proof as a visitor does, from its nested Site search page, and return each result's title and
@@ -716,6 +774,15 @@ assert.equal(studio.ok, true, `the site moves under /studio: ${studio.error?.mes
 const studioStat = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Static export under /studio');
 assert.equal(studioStat.ok, true, `the export under /studio succeeds: ${studioStat.message} ${studioStat.warnings?.join(' ')}`);
 assert.match(studioStat.previewUrl ?? '', /\/studio\/$/, 'the proof is served under /studio');
+step('#393: the sitemap under /studio lists each published post with the day it last changed, and no draft');
+{
+  const sitemap = readFileSync(join(studioStat.path, 'sitemap.xml'), 'utf8');
+  assert.ok(sitemap.includes('<url><loc>https://example.com/studio/blog/opening-times/</loc><lastmod>2026-01-12</lastmod></url>'), `the sitemap lists the renamed post at its new address: ${sitemap}`);
+  assert.ok(sitemap.includes('<url><loc>https://example.com/studio/blog/spring-open-studio/</loc><lastmod>2026-03-09</lastmod></url>'), 'the sitemap dates the revised post by its revision');
+  assert.ok(!sitemap.includes('secret-plans') && !sitemap.includes('/blog/opening-hours/'), 'the sitemap lists neither the draft nor the old address');
+  checkBuiltPosts(studioStat.path, 'website export under /studio', '/studio');
+  assert.match(readFileSync(join(studioStat.path, 'blog', 'opening-times', 'index.html'), 'utf8'), /<link rel="canonical" href="https:\/\/example.com\/studio\/blog\/opening-times\/"/, 'the post names its public address');
+}
 assert.ok(studioStat.warnings.some((w) => w.includes('set the 404 error document to /studio/404.html (on Apache: ErrorDocument 404 /studio/404.html)')), `the export names the not-found page under /studio: ${studioStat.warnings.join(' ')}`);
 const missingStudio = new URL('customer-storie/deep/', studioStat.previewUrl).href;
 assert.equal((await fetch(missingStudio)).status, 404, 'a missing address under /studio is answered with HTTP 404');
@@ -762,6 +829,16 @@ assert.ok(!srcFiles.some((f) => /^(node_modules|build|\.svelte-kit)\//.test(f)),
 assert.ok(!srcFiles.some((f) => /(^|\/)\.env(\.|$)/.test(f)), 'source export has no .env files');
 noDeletedImage(srcFiles, 'source');
 for (const f of draftFiles) assert.ok(srcFiles.includes(f), `the editable source export keeps the unused draft (${f})`);
+// The draft post stays in the documents to edit, and out of the generated website source.
+assert.ok(srcFiles.includes('siteorigin/collections/posts/entries/en_secret01.json'), 'the editable source export keeps the draft post to edit');
+assert.ok(srcFiles.includes('src/routes/blog/opening-times/+page.svelte') && srcFiles.includes('src/routes/blog/opening-hours/+page.svelte'), 'the source export has the published post and its old address');
+assert.deepEqual(srcFiles.filter((f) => f.startsWith('src/') && f.includes('secret-plans')), [], 'the source export has no page for the draft post');
+const draftPost = JSON.parse(readFileSync(join(sourceOut, 'siteorigin', 'collections', 'posts', 'entries', 'en_secret01.json'), 'utf8'));
+assert.equal(draftPost.draft, true, 'the draft post is still a draft in the exported documents');
+assert.ok(JSON.stringify(draftPost.body).includes(DRAFT_MARK), 'the draft post keeps its text to edit');
+const sourceManifest = JSON.parse(readFileSync(join(sourceOut, 'siteorigin', 'generated-manifest.json'), 'utf8'));
+assert.deepEqual(Object.keys(sourceManifest.files ?? {}).filter((f) => f.includes('secret-plans')), [], 'the exported project records no generated file for the draft post');
+assert.ok(Object.hasOwn(sourceManifest.files ?? {}, 'src/routes/blog/opening-times/+page.svelte'), 'the exported project records the published post as generated');
 for (const f of ['jsconfig.json', 'NOTICE.md', 'src/lib/siteorigin/paths.json']) assert.ok(srcFiles.includes(f), `source export includes ${f}`);
 assert.ok(!srcFiles.includes('svelte.config.js'), 'no svelte.config.js: SvelteKit 3 reads its config from vite.config.js and rejects that file');
 assert.ok(!srcFiles.includes('.npmrc'), 'no engine-strict .npmrc in the export');
@@ -779,6 +856,7 @@ assert.deepEqual(staticFiles.filter((f) => draftNames.includes(basename(f))), []
 assert.ok(used.variants?.length, 'the starter image has responsive variants to check');
 for (const v of used.variants) assert.ok(staticFiles.some((f) => basename(f) === basename(v.file)), `the website keeps the responsive variants of an image it uses (${v.file})`);
 for (const f of draftFiles) assert.ok(existsSync(join(dir, f)), `the draft stays in the working project (${f})`);
+assert.ok(readFileSync(join(dir, 'src', 'routes', 'blog', 'secret-plans', '+page.svelte'), 'utf8').includes(DRAFT_MARK), 'the working project keeps the draft post’s page with its text, for the editor');
 assert.ok(staticFiles.includes('favicon.svg'), 'static export has a favicon');
 assert.ok(staticFiles.some((f) => /lora.*\.woff2$/i.test(f)), 'the chosen font is built into the site');
 assert.ok(!staticFiles.some((f) => /fraunces.*\.woff2$/i.test(f)), 'the font it replaced is not');
@@ -816,6 +894,7 @@ if (BUILD) {
   assert.match(standalone404, /<h1[^>]*>Page not found<\/h1>/, 'the standalone build writes the not-found page');
   assert.doesNotMatch(standalone404, /(?:href|src)="\.\.?\/|new URL\("\.|import\(["']\./, 'the standalone build writes a not-found page that works at any address');
   assert.ok(files(join(sourceOut, 'build')).some((f) => /lora.*\.woff2$/i.test(f)), 'the standalone build includes the chosen font');
+  checkBuiltPosts(join(sourceOut, 'build'), 'standalone build');
 } else console.log('\n(skipping the standalone npm ci && npm run build; pass --build to run it)');
 
 cleanup();

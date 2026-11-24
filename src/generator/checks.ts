@@ -4,13 +4,14 @@
 import type { Binding, ComponentDefinition, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
-import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
+import { isListBlock, isRichBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
+import { entryRoute, findEntry } from '@shared/collections';
 import { anchorCapable, anchorsInUse, displayName, findParent } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
-import { codeTakesBlocks, isDraftPage, keptPanels, liveRedirects, resolveLink, stateActionWorks } from './index';
+import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
@@ -1070,8 +1071,8 @@ export function shellPageLinks(state: ProjectState, pageIds: string[]): ShellPag
 
 
 export interface SectionLinkIssue {
-  /** Where the link is: a page or the shared header or footer. */
-  owner: { kind: 'page' | 'shell'; id: string };
+  /** Where the link is: a page, the shared header or footer, or a collection entry's text. */
+  owner: { kind: 'page' | 'shell' | 'entry'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
@@ -1086,6 +1087,11 @@ export interface SectionLinkIssue {
   key: string;
   /** The pages it shows on that lack the section, for a link to a section of the page it is on. */
   pages?: string[];
+  /**
+   * The collection entries it shows on, for a link in the shared header or footer to a section of the page it is on:
+   * an entry's page has none of a page's sections, only the layout's and the header and footer's.
+   */
+  entries?: string[];
 }
 
 /**
@@ -1121,12 +1127,17 @@ export function notFoundSectionRoutes(state: ProjectState): Record<string, strin
 
 /**
  * Links that jump to a section the destination page will not have: a page link's section, checked on that page,
- * and an "on this page" link, checked on every page that shows it. A static build refuses these links, and a
- * visitor who follows one lands at the top of the page instead of the section.
+ * and an "on this page" link, checked on every page that shows it, collection entries' pages included for the shared
+ * header and footer, which every entry shows. A static build refuses these links, and a visitor who follows one lands
+ * at the top of the page instead of the section.
  */
 export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
   const shell = shellIds(state);
+  // Only published entries are pages of the website a build has to follow links on.
+  const published = siteEntries(state).filter((e) => !isDraftEntry(e.entry));
+  const entries = published.map((e) => e.entry.id);
+  const entryIds = new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]);
   const ids = new Map<string, Set<string>>();
   // A link visitors see at first must find its section on screen. One in a panel kept in the page hidden shows with
   // that panel, so a section in a hidden panel (its own, say) will do: the build finds it in the HTML.
@@ -1135,9 +1146,12 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
     if (!ids.has(key)) ids.set(key, pageIds(state, pageId, hidden ? undefined : shell, !!hidden));
     return ids.get(key)!;
   };
+  // An entry's page shows the layout, header and footer around its own text: the same rule holds there.
+  let keptEntryIds: Set<string> | undefined;
+  const entryIdsOf = (hidden?: boolean) => (hidden ? (keptEntryIds ??= treeIds(state, [state.site.shell.header, state.site.shell.footer], new Set(LAYOUT_IDS), true)) : entryIds);
   // The header and footer are checked on the pages that show each: they can differ.
   const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[] }> = [
-    ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0),
+    ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0),
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] }))
   ];
   const out: SectionLinkIssue[] = [];
@@ -1152,7 +1166,8 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
         const missing = src.on.filter((p) => !idsOf(p.id, hidden).has(fragment)).map((p) => p.id);
-        if (missing.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing };
+        const lacking = src.owner.kind === 'shell' && !entryIdsOf(hidden).has(fragment) ? entries : [];
+        if (missing.length || lacking.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}) };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once.
       const id = JSON.stringify([src.owner, reportId, key]);
@@ -1160,23 +1175,60 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       seen.add(id);
       out.push(issue);
     }
+  // An entry's text: its page has the layout's and the header and footer's sections, and none of a page's.
+  for (const { entry } of published) {
+    const owner = { kind: 'entry' as const, id: entry.id };
+    entryTextLinks(entry.body).forEach(({ link, label }, i) => {
+      const key = `body:${i}`;
+      if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
+        if (!idsOf(link.target).has(link.anchor)) out.push({ owner, nodeId: '', key, label, inText: true, fragment: link.anchor, pageId: link.target });
+      } else if (link.type === 'anchor' && link.target) {
+        const fragment = link.target.replace(/^#/, '');
+        if (!entryIds.has(fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
+      }
+    });
+  }
+  return out;
+}
+
+/**
+ * The links in an entry's text that visitors see, in order, each with its words. Text damaged by a hand edit (a block
+ * that is not one, which Project health reports) holds none, and a link with no words shows nothing to follow.
+ */
+function entryTextLinks(body: unknown): Array<{ link: LinkValue; label: string }> {
+  const out: Array<{ link: LinkValue; label: string }> = [];
+  const spans = (list: unknown) => {
+    for (const s of Array.isArray(list) ? (list as RichSpan[]) : []) {
+      const label = typeof s?.text === 'string' ? s.text.trim() : '';
+      if (label && s.link && typeof s.link.type === 'string' && typeof s.link.target === 'string') out.push({ link: s.link, label });
+    }
+  };
+  for (const b of Array.isArray(body) ? body : []) {
+    if (!isRichBlock(b)) continue;
+    if (isListBlock(b)) b.items.forEach(spans);
+    else spans(b.spans);
+  }
   return out;
 }
 
 /** A link visitors would see on the published site that goes to a draft page. */
 export interface DraftLink {
-  /** Where the link is: a published page, or the shared header or footer shown on one. */
-  owner: { kind: 'page' | 'shell'; id: string };
+  /** Where the link is: a published page, the shared header or footer shown on one, or a published entry's text. */
+  owner: { kind: 'page' | 'shell' | 'entry'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
   label: string;
   /** A link inside rich text. */
   inText: boolean;
-  /** The draft page it goes to. */
-  pageId: string;
+  /** The draft page it goes to, or else the draft collection entry (a typed address of the entry's). */
+  pageId?: string;
+  entryId?: string;
   anchor?: string;
 }
+
+/** A draft a link can lead to: a page, or a collection entry. */
+type DraftTarget = { pageId: string; entryId?: undefined } | { entryId: string; pageId?: undefined };
 
 /** What the next website export publishes: the pages, in site order, the drafts it leaves out, and links to them. */
 export interface PublicationPlan {
@@ -1189,7 +1241,7 @@ export interface PublicationPlan {
  * The draft a typed web address opens, when it is on the site's own public URL and names a draft's address or an
  * old address that leads to a draft. `withheld` maps those addresses, lowercased, to the draft.
  */
-function draftAtAddress(state: ProjectState, target: string, withheld: Map<string, string>): { pageId: string; anchor?: string } | null {
+function draftAtAddress(state: ProjectState, target: string, withheld: Map<string, DraftTarget>): (DraftTarget & { anchor?: string }) | null {
   // Only a public URL the site is built from makes an address the site's own.
   const base = publicUrl(state.site);
   if (!base || !withheld.size) return null;
@@ -1211,37 +1263,42 @@ function draftAtAddress(state: ProjectState, target: string, withheld: Map<strin
   }
   // "/winter/index.html" is the file a static host serves at "/winter/".
   path = path.replace(/\/index\.html$/i, '/');
-  const pageId = withheld.get((path.endsWith('/') ? path : path + '/').toLowerCase());
-  if (!pageId) return null;
+  const draft = withheld.get((path.endsWith('/') ? path : path + '/').toLowerCase());
+  if (!draft) return null;
   const anchor = url.hash.replace(/^#/, '');
-  return anchor ? { pageId, anchor } : { pageId };
+  return anchor ? { ...draft, anchor } : draft;
 }
 
 /**
  * Which pages the website export publishes and which drafts it leaves out, with every link the published pages
- * show (the shared header or footer included, when a published page shows it) that goes to a draft: a link to
- * the page, or a typed address on the site's own public URL that opens it. Those links would lead visitors to a
- * page the website does not have, so the website export stops until they change. Links on a draft are not checked:
- * the draft is not published.
+ * show (the shared header or footer included, when a published page or entry shows it) that goes to a draft: a link
+ * to the page, or a typed address on the site's own public URL that opens a draft page or a draft collection entry.
+ * Those links would lead visitors to a page the website does not have, so the website export stops until they
+ * change. Links on a draft are not checked: the draft is not published.
  */
 export function publicationPlan(state: ProjectState): PublicationPlan {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
   const published = pages.filter((p) => !isDraftPage(state, p));
   const drafts = pages.filter((p) => isDraftPage(state, p));
   const draftLinks: DraftLink[] = [];
-  if (!drafts.length) return { published, drafts, draftLinks };
+  const entries = siteEntries(state);
+  const draftEntries = entries.filter((e) => isDraftEntry(e.entry));
+  if (!drafts.length && !draftEntries.length) return { published, drafts, draftLinks };
   const draftIds = new Set(drafts.map((p) => p.id));
   // The addresses visitors would find nothing at: each draft's own, and the old addresses that lead to one.
-  const withheld = new Map<string, string>([
-    ...drafts.map((p) => [p.route.toLowerCase(), p.id] as [string, string]),
-    ...liveRedirects(state)
-      .filter((r) => draftIds.has(r.page.id))
-      .map((r) => [r.from.toLowerCase(), r.page.id] as [string, string])
+  const withheld = new Map<string, DraftTarget>([
+    ...drafts.map((p): [string, DraftTarget] => [p.route.toLowerCase(), { pageId: p.id }]),
+    ...draftEntries.map((e): [string, DraftTarget] => [e.route.toLowerCase(), { entryId: e.entry.id }]),
+    ...liveRedirects(state).flatMap((r): Array<[string, DraftTarget]> =>
+      r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
+    )
   ]);
+  // An entry shows both shared parts.
+  const entryShown = entries.length > draftEntries.length;
   const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
-    ...SHELL_PARTS.filter((part) => published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
+    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
   ];
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
@@ -1260,6 +1317,22 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       seen.add(id);
       draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to });
     }
+  // A published entry's text: a link to a draft entry, a page link to a draft page, or a typed address of one.
+  const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
+  for (const { entry } of entries) {
+    if (draftEntryIds.has(entry.id)) continue;
+    for (const { link, label } of entryTextLinks(entry.body)) {
+      const to: (DraftTarget & { anchor?: string }) | null =
+        link.type === 'entry' && draftEntryIds.has(link.target)
+          ? { entryId: link.target }
+          : link.type === 'page' && draftIds.has(link.target)
+            ? { pageId: link.target, ...(link.anchor ? { anchor: link.anchor } : {}) }
+            : link.type === 'url'
+              ? draftAtAddress(state, link.target, withheld)
+              : null;
+      if (to) draftLinks.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, inText: true, ...to });
+    }
+  }
   return { published, drafts, draftLinks };
 }
 
@@ -1269,13 +1342,21 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
  * preview (/winter-stock-preview/)".
  */
 export function describeDraftLink(state: ProjectState, l: DraftLink): string {
-  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : state.pages[l.owner.id];
-  const place = l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : (state.pages[l.owner.id]?.title ?? 'A page');
+  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : l.owner.kind === 'page' ? state.pages[l.owner.id] : undefined;
+  const entry = l.owner.kind === 'entry' ? findEntry(state, l.owner.id) : undefined;
+  const place = l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[l.owner.id]?.title ?? 'A page');
   const node = tree?.nodes[l.nodeId];
   const where = node && node.kind === 'instance' ? `${place} · ${displayName(state, node)}` : place;
-  const draft = state.pages[l.pageId];
+  const draft = draftTarget(state, l);
   const to = draft ? `${draft.title} (${draft.route}${l.anchor ? `#${l.anchor}` : ''})` : 'a draft page';
   return `${where}: ${l.label ? `“${l.label}”` : l.inText ? 'a link in the text' : 'a link'} goes to ${to}`;
+}
+
+/** The draft page or collection entry a draft link goes to, by its title and address, while it is there. */
+export function draftTarget(state: ProjectState, l: Pick<DraftLink, 'pageId' | 'entryId'>): { title: string; route: string } | undefined {
+  if (l.pageId !== undefined) return Object.hasOwn(state.pages, l.pageId) ? state.pages[l.pageId] : undefined;
+  const found = l.entryId !== undefined ? findEntry(state, l.entryId) : undefined;
+  return found ? { title: found.entry.title, route: entryRoute(found.collection, found.entry) } : undefined;
 }
 
 export interface PageSection {

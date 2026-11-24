@@ -747,8 +747,9 @@ export interface SiteDoc {
   /** Shared header and footer instances. */
   shell: { header: NodeTree; footer: NodeTree };
   /**
-   * Addresses a page used to have, kept working for old links and bookmarks: each sends visitors to its page's
-   * current address. No page uses one of these routes; a page given one takes it over.
+   * Addresses a page or a published collection entry used to have, kept working for old links and bookmarks: each
+   * sends visitors to that one's current address. Nothing else uses one of these routes; a page given one takes it
+   * over, and an entry can take back its own.
    */
   redirects?: SiteRedirect[];
   /** The not-found page's heading, message and Home link label; the defaults are used while these are unset. */
@@ -763,11 +764,11 @@ export interface SiteDoc {
   visitorText?: Record<string, Record<string, string>>;
 }
 
-/** An old address that sends visitors on to a page, by ID, so it follows that page's later route changes. */
-export interface SiteRedirect {
-  from: string;
-  pageId: string;
-}
+/**
+ * An old address that sends visitors on to a page or a collection entry, by ID, so it follows that one's later moves.
+ * It names exactly one of them.
+ */
+export type SiteRedirect = { from: string; pageId: string; entryId?: never } | { from: string; entryId: string; pageId?: never };
 
 export interface AssetRecord {
   id: string;

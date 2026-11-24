@@ -312,8 +312,8 @@ describe('collections', () => {
     // Page content cannot hold one: nothing could show it there yet.
     const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
     expect(() => apply(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header.id, prop: 'ctaLink', value: { type: 'entry', target: 'en_spring' } }])).toThrow(/only be made in an entry's text/);
-    // The website shows such a link's words without a destination until entries are pages.
-    expect(resolveLink({ type: 'entry', target: 'en_spring' }, { state: s } as never)).toBeNull();
+    // The website sends such a link to the entry's page, at its current address (#393).
+    expect(resolveLink({ type: 'entry', target: 'en_spring' }, { state: s } as never)).toEqual({ href: '/blog/spring-open-studio/' });
     // Structured blocks, list items included, are held to the same rule as text.
     const list = [{ type: 'ul', items: [[{ text: 'Spring', link: { type: 'entry', target: 'en_spring' } }]] }];
     expect(normalizeRichText(list, s, 'Text', undefined, { entries: true })).toEqual(list);
@@ -549,19 +549,19 @@ describe('collections', () => {
 
 describe('collections format', () => {
   it('is format 8, which stamps collection and entry documents like any other', () => {
-    // Released as the seventh migration, upgrading format 7 to 8; the later UI state (8 to 9) and style state (9 to 10)
-    // steps only change the version.
+    // Released as the seventh migration, upgrading format 7 to 8; the later UI state (8 to 9), style state (9 to 10)
+    // and entry address (10 to 11) steps only change the version.
     expect(MIGRATIONS.findIndex((m) => m.id === 'collections') + 1).toBe(7);
-    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states']);
-    expect(SCHEMA_VERSION).toBe(10);
+    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states', 'entry-addresses']);
+    expect(SCHEMA_VERSION).toBe(11);
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['**Bold** [link](entry:en_winter)'], terms: {}, author: 'Ana' });
     for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = 7;
     s.collections.posts.settings.schemaVersion = 7;
     s.collections.posts.entries.en_spring.schemaVersion = 7;
     const r = migrateProject(s)!;
-    expect(r).toMatchObject({ from: 7, to: 10, applied: ['collections', 'ui-state', 'style-states'] });
-    expect(r.state.collections.posts.settings.schemaVersion).toBe(10);
-    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(10);
+    expect(r).toMatchObject({ from: 7, to: 11, applied: ['collections', 'ui-state', 'style-states', 'entry-addresses'] });
+    expect(r.state.collections.posts.settings.schemaVersion).toBe(11);
+    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(11);
     // Nothing else changes.
     expect({ ...r.state.collections.posts.entries.en_spring, schemaVersion: 7 }).toEqual(s.collections.posts.entries.en_spring);
     expect({ ...r.state.collections.posts.settings, schemaVersion: 7 }).toEqual(s.collections.posts.settings);

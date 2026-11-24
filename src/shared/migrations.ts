@@ -397,6 +397,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'Style rules can apply on hover, keyboard focus or while pressed ("base:hover", "phone:focus" beside each size). Nothing in the documents changes; the new version only keeps an older editor, which would drop those rules from the site, from copies and from detached sections, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'entry-addresses',
+    description:
+      'Collection entries are pages of the website, and an old address kept working can send visitors to an entry ({ from, entryId } in site.redirects) as well as to a page. Nothing in the documents changes; the new version only keeps an older editor, which would take such an address for a damaged one and neither publish entries nor keep their addresses, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

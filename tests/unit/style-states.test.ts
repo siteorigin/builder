@@ -517,13 +517,15 @@ describe('copying and detaching', () => {
 
 describe('the document format', () => {
   it('marks state rules with a version-only step, so an older editor opens such a project read-only', () => {
-    expect(MIGRATIONS.at(-1)!.id).toBe('style-states');
+    // The step upgrades format 9 to 10; the entry address step after it (10 to 11) only changes the version too.
+    const from = MIGRATIONS.findIndex((m) => m.id === 'style-states') + 1;
+    expect(from).toBe(9);
     const s = styledBox();
     const docs = (p: ProjectState) => [p.manifest, p.site, p.tokens, p.assets, p.themeLock, ...Object.values(p.pages), ...Object.values(p.components)];
-    for (const d of docs(s)) d.schemaVersion = MIGRATIONS.length;
+    for (const d of docs(s)) d.schemaVersion = from;
     const before = structuredClone(s);
     const out = migrateProject(s)!;
-    expect(out.applied).toEqual(['style-states']);
+    expect(out.applied).toEqual(['style-states', 'entry-addresses']);
     const unversioned = (p: ProjectState) => JSON.parse(JSON.stringify({ ...p, themeLock: undefined }, (k, v) => (k === 'schemaVersion' ? undefined : v)));
     expect(unversioned(out.state)).toEqual(unversioned(before));
   });
