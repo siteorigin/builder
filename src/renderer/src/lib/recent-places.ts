@@ -23,3 +23,17 @@ export function whereLabels(all: RecentProject[]): Map<string, string> {
   }
   return out;
 }
+
+/** Whether a recent project matches a filter (already trimmed and lower-cased): by its name or where it lives. */
+export function matchesFilter(r: RecentProject, filter: string): boolean {
+  return `${r.name}\n${shortPath(r.dir)}\n${r.dir}`.toLowerCase().includes(filter);
+}
+
+/**
+ * The cards Welcome shows, in two groups (#259): the pinned projects, then the rest, each newest first as listed, and
+ * each project once. A filter ('' for none) narrows both groups alike.
+ */
+export function recentGroups(all: RecentProject[], filter: string): { pinned: RecentProject[]; recent: RecentProject[] } {
+  const shown = filter ? all.filter((r) => matchesFilter(r, filter)) : all;
+  return { pinned: shown.filter((r) => r.pinned === true), recent: shown.filter((r) => r.pinned !== true) };
+}

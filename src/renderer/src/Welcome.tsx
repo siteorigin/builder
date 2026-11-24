@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Plus, Search, Settings, Sun, X } from 'lucide-react';
+import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, X } from 'lucide-react';
 import type { RecentProject } from '@shared/api';
 import { api, errorText, setState, toast, useStore } from './store';
 import { openDialogs, Spinner } from './components/ui';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
-import { shortPath, whereLabels } from './lib/recent-places';
+import { recentGroups, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark, MARK_COLORS } from './components/AppMark';
 import { switchScheme, useEditorScheme } from './lib/appearance';
@@ -125,10 +125,19 @@ export function Welcome() {
   const returnFocus = useRef<HTMLElement | null>(null);
   // The card to move to once a removed one has gone ('' when none are left: the first-run button).
   const focusAfterRemove = useRef<string | null>(null);
+  // The card whose Pin was just pressed: it moves to the other group, so its button is found again there.
+  const focusAfterPin = useRef<string | null>(null);
+  // Only the newest reading of the list is shown, whatever order the replies come back in.
+  const reads = useRef(0);
   const modal = useStore((s) => s.modal);
   const openingRecent = recents?.find((r) => r.dir === opening);
   const openingNote = openingRecent ? `${openingRecent.missing ? 'Finding' : 'Opening'} ${openingRecent.name}…` : opening ? 'Opening a project…' : '';
-  const refresh = () => void api.projects.recents().then(setRecents);
+  const refresh = () => {
+    const read = ++reads.current;
+    void api.projects.recents().then((list) => {
+      if (read === reads.current) setRecents(list);
+    });
+  };
   useEffect(() => {
     refresh();
     const onCmd = (e: Event) => {
@@ -155,9 +164,15 @@ export function Welcome() {
     const next = focusAfterRemove.current;
     if (next === null || recents === null) return;
     focusAfterRemove.current = null;
-    const card = [...document.querySelectorAll<HTMLElement>('.recent-card')].find((b) => b.title.endsWith(`\n${next}`));
     // No card left to move to: the first-run button, or the filter when it has hidden the rest.
-    (card ?? filterInput.current ?? document.querySelector<HTMLElement>('.empty-state .btn'))?.focus();
+    (cardOf(next) ?? filterInput.current ?? document.querySelector<HTMLElement>('.empty-state .btn'))?.focus();
+  }, [recents]);
+  useEffect(() => {
+    const moved = focusAfterPin.current;
+    if (moved === null || recents === null) return;
+    focusAfterPin.current = null;
+    // Its card is drawn anew in the other group: focus follows it there, unless the author has moved on meanwhile.
+    if (!document.activeElement || document.activeElement === document.body) cardOf(moved)?.parentElement?.querySelector<HTMLElement>('.pin')?.focus();
   }, [recents]);
 
   const open = async (dir?: string, opts?: { folder?: boolean; replaces?: string }) => {
@@ -184,7 +199,9 @@ export function Welcome() {
   };
 
   const filtering = filter.trim().toLowerCase();
-  const shown = recents && filtering ? recents.filter((r) => `${r.name}\n${shortPath(r.dir)}\n${r.dir}`.toLowerCase().includes(filtering)) : recents;
+  // Pinned projects above the rest (#259), each once; `shown` is every card in the order on screen.
+  const groups = recents ? recentGroups(recents, filtering) : null;
+  const shown = groups ? [...groups.pinned, ...groups.recent] : null;
   // The project to come back to: the newest, in the full, unfiltered list (a missing one too, with its Find folder).
   const latest = recents && !filtering ? recents[0]?.dir : null;
   // Once shown, the filter stays for this visit while there are projects, so removing one can never take away the
@@ -211,6 +228,100 @@ export function Welcome() {
     focusAfterRemove.current = (rest[at] ?? rest[at - 1])?.dir ?? '';
     refresh();
     toast(r.missing ? `${r.name} was removed from this list.` : `${r.name} was removed from this list. Its folder is untouched.`);
+  };
+  const pinProject = async (r: RecentProject) => {
+    const pinned = r.pinned !== true;
+    focusAfterPin.current = r.dir;
+    try {
+      await api.projects.pinRecent(r.dir, pinned);
+      toast(pinned ? `${r.name} is pinned. It stays on this list however many other projects you open.` : `${r.name} is no longer pinned.`);
+    } catch (e) {
+      toast(`Could not ${pinned ? 'pin' : 'unpin'} ${r.name}: ${errorText(e)}`, 'error');
+    } finally {
+      refresh();
+    }
+  };
+
+  /** One project's card, with its Remove and Pin buttons, in whichever group it is shown. */
+  const card = (r: RecentProject) => {
+    const busy = opening === r.dir;
+    const isLatest = r.dir === latest;
+    const twins = (recents ?? []).filter((x) => x !== r && x.name === r.name).map((x) => labels.get(x.dir) ?? x.dir);
+    const twin = twins.length > 0;
+    const where = labels.get(r.dir) ?? r.dir;
+    return (
+      <li key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}${isLatest ? ' latest' : ''}`}>
+        {/* A missing project's card finds it: the picker opens, and the same project found elsewhere takes over this entry (#217). */}
+        <button className="recent-card" disabled={!!opening} aria-busy={busy || undefined} title={`${r.name}\n${r.dir}`} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
+          <div className="recent-thumb" aria-hidden="true">
+            {busy ? <Spinner decorative /> : initials(r.name)}
+          </div>
+          <div className="recent-meta">
+            <strong>{r.name}</strong>
+            <span className="where">
+              <Folder aria-hidden="true" />
+              {r.missing ? (
+                // A missing project shows its own folder over up to two lines: that is the one to look for.
+                <>
+                  <span className="path-full" aria-hidden="true">
+                    {pathBreaks(compactPath(where, twins, 64))}
+                  </span>
+                  <span className="sr-only">{where}</span>
+                </>
+              ) : (
+                <>
+                  <span className="ellipsis" style={{ direction: 'rtl', textAlign: 'left' }}>
+                    <bdi aria-hidden="true">{compactPath(where, twins)}</bdi>
+                  </span>
+                  <span className="sr-only">{where}</span>
+                </>
+              )}
+            </span>
+            {r.missing ? (
+              <span className="recent-status">
+                {busy ? (
+                  <span className="busy">Finding folder…</span>
+                ) : (
+                  <>
+                    <span className="label">
+                      <CircleAlert aria-hidden="true" /> Folder not found
+                    </span>
+                    <span className="find">Find folder…</span>
+                  </>
+                )}
+              </span>
+            ) : (
+              <span className={`when${busy ? ' busy' : ''}`}>{busy ? 'Opening…' : `${isLatest ? 'Last opened' : 'Opened'} ${timeAgo(r.openedAt)}`}</span>
+            )}
+          </div>
+          {isLatest && !busy && !r.missing && (
+            <span className="recent-go">
+              Open <ArrowRight aria-hidden="true" />
+            </span>
+          )}
+        </button>
+        <button
+          className="icon-btn remove"
+          aria-label={twin ? `Remove ${r.name} (${where}) from recent projects` : `Remove ${r.name} from recent projects`}
+          title={r.missing ? 'Remove from this list' : 'Remove from this list (the folder is not deleted)'}
+          disabled={!!opening}
+          onClick={() => void removeProject(r)}
+        >
+          <X />
+        </button>
+        {/* Pinned, a project stays listed above the rest however many others are opened after it (#259). */}
+        <button
+          className="icon-btn pin"
+          aria-label={twin ? `Pin ${r.name} (${where})` : `Pin ${r.name}`}
+          aria-pressed={r.pinned === true}
+          title={r.pinned ? 'Unpin' : 'Pin to the top of this list'}
+          disabled={!!opening}
+          onClick={() => void pinProject(r)}
+        >
+          <Pin />
+        </button>
+      </li>
+    );
   };
 
   return (
@@ -290,7 +401,7 @@ export function Welcome() {
         <div className="sr-only" role="status">
           {openingNote}
         </div>
-        {recents === null || shown === null ? null : recents.length === 0 ? (
+        {recents === null || groups === null || shown === null ? null : recents.length === 0 ? (
           <section className="empty-state welcome-hero" aria-labelledby="welcome-hero-title">
             <div className="hero-copy">
               <h2 id="welcome-hero-title">Make your first website</h2>
@@ -371,77 +482,33 @@ export function Welcome() {
                 </button>
               </div>
             ) : (
-              <ul className="recent-grid" aria-label="Recent projects">
-                {shown.map((r) => {
-                  const busy = opening === r.dir;
-                  const isLatest = r.dir === latest;
-                  const twins = recents.filter((x) => x !== r && x.name === r.name).map((x) => labels.get(x.dir) ?? x.dir);
-                  const twin = twins.length > 0;
-                  const where = labels.get(r.dir) ?? r.dir;
-                  return (
-                    <li key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}${isLatest ? ' latest' : ''}`}>
-                      {/* A missing project's card finds it: the picker opens, and the same project found elsewhere takes over this entry (#217). */}
-                      <button className="recent-card" disabled={!!opening} aria-busy={busy || undefined} title={`${r.name}\n${r.dir}`} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
-                        <div className="recent-thumb" aria-hidden="true">
-                          {busy ? <Spinner decorative /> : initials(r.name)}
-                        </div>
-                        <div className="recent-meta">
-                          <strong>{r.name}</strong>
-                          <span className="where">
-                            <Folder aria-hidden="true" />
-                            {r.missing ? (
-                              // A missing project shows its own folder over up to two lines: that is the one to look for.
-                              <>
-                                <span className="path-full" aria-hidden="true">
-                                  {pathBreaks(compactPath(where, twins, 64))}
-                                </span>
-                                <span className="sr-only">{where}</span>
-                              </>
-                            ) : (
-                              <>
-                                <span className="ellipsis" style={{ direction: 'rtl', textAlign: 'left' }}>
-                                  <bdi aria-hidden="true">{compactPath(where, twins)}</bdi>
-                                </span>
-                                <span className="sr-only">{where}</span>
-                              </>
-                            )}
-                          </span>
-                          {r.missing ? (
-                            <span className="recent-status">
-                              {busy ? (
-                                <span className="busy">Finding folder…</span>
-                              ) : (
-                                <>
-                                  <span className="label">
-                                    <CircleAlert aria-hidden="true" /> Folder not found
-                                  </span>
-                                  <span className="find">Find folder…</span>
-                                </>
-                              )}
-                            </span>
-                          ) : (
-                            <span className={`when${busy ? ' busy' : ''}`}>{busy ? 'Opening…' : `${isLatest ? 'Last opened' : 'Opened'} ${timeAgo(r.openedAt)}`}</span>
-                          )}
-                        </div>
-                        {isLatest && !busy && !r.missing && (
-                          <span className="recent-go">
-                            Open <ArrowRight aria-hidden="true" />
-                          </span>
-                        )}
-                      </button>
-                      <button
-                        className="icon-btn remove"
-                        aria-label={twin ? `Remove ${r.name} (${where}) from recent projects` : `Remove ${r.name} from recent projects`}
-                        title={r.missing ? 'Remove from this list' : 'Remove from this list (the folder is not deleted)'}
-                        disabled={!!opening}
-                        onClick={() => void removeProject(r)}
-                      >
-                        <X />
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <>
+                {groups.pinned.length > 0 && (
+                  <section className="recent-group" aria-labelledby="recent-pinned">
+                    <h3 id="recent-pinned" className="recent-group-title">
+                      <Pin aria-hidden="true" /> Pinned
+                    </h3>
+                    <ul className="recent-grid" aria-label="Pinned projects">
+                      {groups.pinned.map(card)}
+                    </ul>
+                  </section>
+                )}
+                {groups.recent.length > 0 &&
+                  (groups.pinned.length > 0 ? (
+                    <section className="recent-group" aria-labelledby="recent-others">
+                      <h3 id="recent-others" className="recent-group-title">
+                        Recent
+                      </h3>
+                      <ul className="recent-grid" aria-label="Recent projects">
+                        {groups.recent.map(card)}
+                      </ul>
+                    </section>
+                  ) : (
+                    <ul className="recent-grid" aria-label="Recent projects">
+                      {groups.recent.map(card)}
+                    </ul>
+                  ))}
+              </>
             )}
             </div>
           </>
@@ -532,6 +599,11 @@ function SiteSketch() {
       </div>
     </div>
   );
+}
+
+/** The card of the listed project in `dir`, wherever it is shown. */
+function cardOf(dir: string) {
+  return [...document.querySelectorAll<HTMLElement>('.recent-card')].find((b) => b.title.endsWith(`\n${dir}`));
 }
 
 /** A path that wraps only after a separator, never inside a folder name such as "old-brochure-site". */

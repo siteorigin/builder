@@ -523,6 +523,11 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
 .recent-none .btn:disabled { opacity: 1; background: var(--panel-2); border-color: var(--border-strong); color: var(--text-3); box-shadow: none; }
 .recent-none q { color: var(--text); font-weight: 600; }
 
+/* Pinned projects, then the rest, each under a quiet title of its own (#259). */
+.recent-group + .recent-group { margin-top: 26px; }
+.recent-group-title { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.recent-group-title svg { width: 13px; height: 13px; color: var(--text-3); }
+.recent-group > .recent-grid { margin-top: 0; }
 .recent-grid { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 22px; }
 .recent-grid > .recent-item { display: flex; }
 .recent-item { position: relative; }
@@ -557,8 +562,15 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
 .recent-item .remove { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; color: var(--text-3); }
 .recent-item .remove:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .recent-item .remove svg { width: 14px; height: 14px; }
+/* Pin sits under Remove, so the card keeps its width for the name and folder (#259). Pinned, it is filled in the
+   accent, which tells the pinned group's cards apart at a glance. */
+.recent-item .pin { position: absolute; top: 36px; right: 6px; width: 28px; height: 28px; color: var(--text-3); }
+.recent-item .pin:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.recent-item .pin svg { width: 14px; height: 14px; }
+.recent-item .pin[aria-pressed='true'] { color: var(--accent-text); }
+.recent-item .pin[aria-pressed='true'] svg { fill: currentColor; }
 /* Unavailable while a project opens: drawn quieter than the readable text, not faded. */
-.recent-item .remove:disabled { opacity: 1; color: color-mix(in srgb, var(--text-3) 55%, var(--panel-2)); }
+.recent-item :is(.remove, .pin):disabled { opacity: 1; color: color-mix(in srgb, var(--text-3) 55%, var(--panel-2)); }
 
 /* A missing project's tile is hollow: the folder it stood for is not there. The amber is in the words beside it. */
 .recent-item.missing .recent-thumb { background: transparent; box-shadow: inset 0 0 0 1px var(--border-control); color: var(--text-3); }
@@ -578,7 +590,8 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
 .recent-item.latest .recent-meta strong { font-size: 22px; line-height: 1.25; letter-spacing: -0.02em; }
 .recent-item.latest .recent-meta .where { font-size: 13px; }
 .recent-item.latest .recent-meta :is(.when, .recent-status) { margin-top: 0; padding-top: 1px; }
-.recent-item.latest .remove { top: 50%; transform: translateY(-50%); }
+.recent-item.latest .remove { top: calc(50% - 30px); }
+.recent-item.latest .pin { top: calc(50% + 2px); }
 .recent-go { display: inline-flex; align-items: center; gap: 5px; flex: none; align-self: center; margin-left: 12px; padding: 6px 10px 6px 12px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 13px; font-weight: 600; transition: background 120ms; }
 .recent-go svg { width: 14px; height: 14px; transition: transform 160ms; }
 .recent-card:hover:not(:disabled) .recent-go { background: color-mix(in srgb, var(--accent) 18%, transparent); }
