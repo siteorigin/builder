@@ -58,6 +58,16 @@ export function descOf(state: ProjectState, ref: ElementRef): BridgeDesc {
   return { ctx, node: nodeId, items };
 }
 
+/**
+ * The context a placement's own design renders in, where its nodes (a list's rows among them) are found on the page:
+ * the placement's, whichever component renders its outer element.
+ */
+export function designCtx(state: ProjectState, ref: ElementRef): string {
+  const n = nodeAt(state, ref);
+  const def = n?.kind === 'instance' ? state.components[n.definitionId] : undefined;
+  return def?.kind === 'managed' && def.tree ? `${ctxOf(ref)}|${ref.nodeId}` : ctxOf(ref);
+}
+
 const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
 
 /** Resolve the definition and node a reference points at. */
@@ -122,6 +132,33 @@ export function boundaryOf(state: ProjectState, ref: ElementRef): ElementRef {
     b = next;
   }
   return b;
+}
+
+/**
+ * What Create component… turns into a component, if anything: one element or basic element of a page, or of a
+ * project component being edited everywhere (not its root, which is the component itself), or a placed section
+ * whose slots hold content, which goes into the component together with that content. Never a slot or a repeat, the
+ * shared header or footer, a part inside a placed component, a plain or empty placement (nothing of its own to
+ * package), or anything while the project is read-only. Canvas, Layers and the inspector all ask this, so the
+ * command is offered on the same things everywhere.
+ */
+export function createComponentTarget(snap: { state: ProjectState; readOnly?: unknown } | null | undefined, ref: ElementRef | null): ElementRef | null {
+  if (!snap || !ref || snap.readOnly || ref.instancePath.length || ref.owner.kind === 'shell') return null;
+  const { state } = snap;
+  const tree = treeFor(state, ref.owner);
+  if (!tree) return null;
+  if (ref.owner.kind === 'component') {
+    const def = own(state.components, ref.owner.id);
+    if (def?.owner !== 'project' || def.kind !== 'managed' || def.tree?.rootIds[0] === ref.nodeId) return null;
+  }
+  const node = own(tree.nodes, ref.nodeId);
+  if (!node || node.kind === 'slot' || node.kind === 'repeat' || !findParent(tree, node.id)) return null;
+  if (node.kind === 'instance') {
+    const def = own(state.components, node.definitionId);
+    const declared = def?.kind === 'managed' ? (def.slots ?? {}) : {};
+    if (!Object.entries(node.slots ?? {}).some(([slot, ids]) => Object.hasOwn(declared, slot) && ids.length > 0)) return null;
+  }
+  return { owner: ref.owner, instancePath: [], nodeId: node.id };
 }
 
 /** Is this reference a useful selection target (a primitive, a declared part or bound content)? */

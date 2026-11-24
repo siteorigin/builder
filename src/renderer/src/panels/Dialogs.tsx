@@ -10,7 +10,7 @@ import { isDraftPage } from '@generator/index';
 import { applyOps, api, getState, projectHistory, setState, toast, useStore } from '../store';
 import { Field, Modal, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { resolveRef, treeFor } from '../lib/model';
+import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { goToShellPart, selectPage } from '../lib/actions';
 import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-removal';
 import { sectionOptions } from '../lib/sections';
@@ -55,25 +55,32 @@ function GoneClose({ onClose }: { onClose: () => void }) {
 }
 
 export function CreateComponentModal({ target }: { target: ElementRef }) {
-  const st = useStore((s) => s.snapshot?.state);
+  const snap = useStore((s) => s.snapshot);
+  const st = snap?.state;
   const targetNode = st ? resolveRef(st, target).node : undefined;
   const [busy, setBusy] = useState(false);
   // The element is replaced by its component as the save lands: the form stays until the dialog closes.
   const gone = !busy && !!st && !targetNode;
+  // Still there, but no longer something to make a component from (a section emptied while the dialog was open).
+  const unfit = !busy && !gone && !!st && !createComponentTarget(snap, target);
   const [targetName] = useState(() => (st && targetNode ? displayName(st, targetNode) : null));
   const [name, setName] = useState('');
   // Asked for only once the author has typed or pressed Enter, so the dialog never opens on an error.
   const [touched, setTouched] = useState(false);
   const close = () => setState({ modal: null });
-  const ready = !gone && !!name.trim() && !busy;
+  const ready = !gone && !unfit && !!name.trim() && !busy;
   const nameError = touched && !name.trim() ? 'Enter a name for this component.' : undefined;
   const create = async () => {
     setTouched(true);
     if (!ready) return;
+    // Checked against the project as it is now, and made only if nothing changed it before the change lands (a
+    // removal of the section's last element still saving would otherwise leave an empty component).
+    const now = getState().snapshot;
+    if (!createComponentTarget(now, target)) return;
     setBusy(true);
     let r: Awaited<ReturnType<typeof applyOps>> = null;
     try {
-      r = await applyOps([{ type: 'component.createFromNode', owner: target.owner, nodeId: target.nodeId, name: name.trim() }], `Create component ${name.trim()}`);
+      r = await applyOps([{ type: 'component.createFromNode', owner: target.owner, nodeId: target.nodeId, name: name.trim() }], `Create component ${name.trim()}`, undefined, now?.revision);
     } finally {
       if (!r?.[0]?.nodeId) setBusy(false);
     }
@@ -85,9 +92,9 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
       icon={<Component />}
       onClose={close}
       busy={busy}
-      describedBy={gone ? GONE_ID : 'create-component-desc'}
+      describedBy={gone || unfit ? GONE_ID : 'create-component-desc'}
       footer={
-        gone ? (
+        gone || unfit ? (
           <GoneClose onClose={close} />
         ) : (
           <>
@@ -103,6 +110,14 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
     >
       {gone ? (
         <GoneNotice>This element is no longer on the page, so no component was made.</GoneNotice>
+      ) : unfit ? (
+        <GoneNotice>
+          {snap?.readOnly
+            ? 'This project is open read-only, so no component was made.'
+            : targetNode?.kind === 'instance'
+              ? `${targetName ?? 'This section'} no longer holds any content of its own, so no component was made.`
+              : 'This element can no longer be made into a component, so none was made.'}
+        </GoneNotice>
       ) : (
         <div className="col authoring-form" style={{ gap: 12 }}>
           <FormStatus text={busy ? 'Creating component' : nameError} />

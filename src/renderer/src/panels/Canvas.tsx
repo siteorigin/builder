@@ -14,7 +14,7 @@ import { dropAt, moveIndex } from '../lib/reorder';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
-import { boundaryOf, computedAt, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, showsInlineText, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
@@ -582,7 +582,8 @@ export function Canvas() {
     const s = getState();
     const st = s.snapshot?.state;
     const r = s.revealedItem;
-    const ctx = st && r && s.mode === 'edit' && s.dockOpen && s.rightTab === 'inspect' ? descFor(r.ref)?.ctx : undefined;
+    const at = st && r && s.mode === 'edit' && s.dockOpen && s.rightTab === 'inspect' ? pageRefFor(r.ref) : null;
+    const ctx = st && at ? designCtx(st, at) : undefined;
     const target = st && r && ctx ? revealTarget(st, r, ctx) : null;
     if (sameTarget(target, sentReveal.current)) return;
     sentReveal.current = target;
@@ -669,11 +670,18 @@ export function Canvas() {
   /** The element the page shows for a reference: a component's own node is shown through one of its
    *  placements (the one it was picked through, else the first on this page); null when there is none. */
   function descFor(ref: ElementRef | null, via: ElementRef | null = null): BridgeDesc | null {
+    const st = getState().snapshot?.state;
+    const at = pageRefFor(ref, via);
+    return st && at ? descOf(st, at) : null;
+  }
+
+  /** Where a reference shows on the page: itself, or while editing everywhere, through a placement there. */
+  function pageRefFor(ref: ElementRef | null, via: ElementRef | null = null): ElementRef | null {
     const s = getState();
     const st = s.snapshot?.state;
     if (!ref || !st) return null;
     const dm = s.definitionMode;
-    if (!dm || !inDefinition(ref, dm.definitionId)) return descOf(st, ref);
+    if (!dm || !inDefinition(ref, dm.definitionId)) return ref;
     // A remembered placement counts only while it is on the page the canvas shows.
     const page = s.pageId ? st.pages[s.pageId] : undefined;
     const isPlacement = (pl: ElementRef | null) => {
@@ -682,7 +690,7 @@ export function Canvas() {
       return n?.kind === 'instance' && n.definitionId === dm.definitionId;
     };
     const placement = [via, placementRef.current].find(isPlacement) ?? (s.pageId ? placementsOn(st, dm.definitionId, s.pageId)[0] : undefined);
-    return placement ? descOf(st, throughPlacement(ref, placement)) : null;
+    return placement ? throughPlacement(ref, placement) : null;
   }
 
   // The component being edited went away (its copy was undone): editing it everywhere ends.
@@ -708,8 +716,8 @@ export function Canvas() {
   function openContextMenu(x: number, y: number, ref: ElementRef | null, trigger?: HTMLElement, focusLast?: boolean) {
     if (!ref || !state) return;
     const t = structuralTarget(ref);
-    const r = resolveRef(state, boundaryOf(state, ref));
-    const isInstance = r.node?.kind === 'instance';
+    // Elements and basic elements, and a section together with its content: the same as Layers and the inspector.
+    const create = createComponentTarget(getState().snapshot, t);
     const parent = ref.instancePath.length ? { owner: ref.owner, instancePath: ref.instancePath.slice(0, -1), nodeId: ref.instancePath[ref.instancePath.length - 1] } : null;
     const locked = !t || t.owner.kind === 'shell';
     const sib = siblings(state, t);
@@ -730,7 +738,7 @@ export function Canvas() {
         { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: () => askAiAbout(ref) },
         ...(t
           ? [
-              ...(reorderable || !locked || !isInstance ? [{ separator: true }] : []),
+              ...(reorderable || !locked || create ? [{ separator: true }] : []),
               ...(reorderable
                 ? [
                     { label: 'Move up', icon: <ArrowUp />, shortcut: keys('⇧⌘↑'), disabled: sib!.index === 0, onSelect: on(() => moveSelection(-1)) },
@@ -738,7 +746,7 @@ export function Canvas() {
                   ]
                 : []),
               ...(locked ? [] : [{ label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
-              ...(!isInstance ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: t } }) }] : []),
+              ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: on(() => setState({ modal: { kind: 'create-component' as const, ref: create } })) }] : []),
               ...(locked ? [] : [{ separator: true }, { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: on(deleteSelection) }])
             ]
           : [])

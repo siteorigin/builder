@@ -13,7 +13,7 @@ import { copySelection } from '../lib/clipboard';
 import { styleCopyItems } from './StylePaste';
 import { everySizeEdits, eyeAction, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type VisibilityEdit } from '../lib/layers';
 import { besideOf, extendTo, inGroup, layerRef, toggle, type Group } from '../lib/layer-set';
-import { treeFor } from '../lib/model';
+import { createComponentTarget, treeFor } from '../lib/model';
 import { describeConditions } from '../lib/conditions';
 import { OutlinePanel } from './OutlinePanel';
 
@@ -300,6 +300,8 @@ export function LayersPanel() {
     const anchorOf = () => (el instanceof HTMLElement ? (() => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.bottom + 4 }; })() : el);
     const visibility = visibilityItems();
     const styleItems = styleCopyItems(ref);
+    // Elements and basic elements, and a section together with its content: the same as the canvas and the inspector.
+    const create = createComponentTarget(getState().snapshot, ref);
     const items = [
       { heading: name },
       ...(onRename ? [{ label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: onRename }] : []),
@@ -320,6 +322,7 @@ export function LayersPanel() {
             ...(visibility.length || styleItems.length ? [{ separator: true }] : []),
             ...(ref.owner.kind === 'page' && !definitionMode ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => void copySelection(plan) }] : []),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
+            ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: create } }) }] : []),
             { separator: true },
             { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
           ]

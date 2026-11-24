@@ -25,7 +25,7 @@ import type {
 import type { Binding } from '@shared/types';
 import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isBinding, isComparison, slotChildren, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
-import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
@@ -42,7 +42,7 @@ import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_D
 import { slotsInsideCards } from '@generator/card-links';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
@@ -2061,6 +2061,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   const info = findParent(tree, op.nodeId) ?? fail('Node is not attached.');
   if (root.kind === 'slot' || root.kind === 'repeat') fail('Select an element rather than a slot or repeat to create a component.');
   refuseItemStylesInto(state, tree, subtreeIds(tree, op.nodeId), 'every placement of a component shares its items.');
+  if (op.owner.kind !== 'component') refuseCodeRootStylesInto(state, tree, subtreeIds(tree, op.nodeId));
   const ownerDef = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
   const defTree: NodeTree = { rootIds: [], nodes: {} };
   const properties: Record<string, PropSchema> = {};
@@ -2082,7 +2083,10 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   // A component can be placed many times, so its root cannot hold a page-unique anchor: the placement keeps it.
   const anchor = rootNode.anchor;
   delete rootNode.anchor;
-  parts.root = { nodeId: rootCopy, label: root.name ?? 'Root', ...withControls(rootNode) };
+  // A section made into a component (with the content in its slots) is still called what it was, and its placements
+  // offer the styles the section's own root offers.
+  const named = root.name ?? (root.kind === 'instance' ? displayName(state, root) : undefined);
+  parts.root = { nodeId: rootCopy, label: named ?? 'Root', ...(rootNode.kind === 'instance' ? rootControls(state, rootNode) : withControls(rootNode)) };
 
   if (ownerDef) {
     // Inside a definition the selection may already show the owner's properties, list item fields and slots.
@@ -2177,7 +2181,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
     kind: 'managed',
     owner: 'project',
     name: op.name.trim(),
-    description: `Project component created from ${root.name ?? 'a selection'}.`,
+    description: `Project component created from ${named ?? 'a selection'}.`,
     category: 'custom',
     tags: ['custom', 'project'],
     icon: 'component',
@@ -2230,6 +2234,39 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
 function withControls(node: GraphNode): { styleControls?: string[] } {
   const controls = styleSetFor(node);
   return controls ? { styleControls: controls } : {};
+}
+
+/** A component placed at the root of a new one: the root offers what that component's own root offers. */
+function rootControls(state: ProjectState, node: InstanceNode): { styleControls?: string[] } {
+  const def = own(state.components, node.definitionId);
+  const controls = def ? partStyleControls(def, 'root') : undefined;
+  // Kept as listed, an empty list included: it offers only Hidden on a placement, never every property.
+  return controls ? { styleControls: [...controls] } : {};
+}
+
+/**
+ * Inside a component's design, a code component's root takes styles only through the class it places (its inner parts
+ * take theirs through the part classes): root styles that would no longer apply are refused rather than quietly lost.
+ * Code may place its class in ways not read here (from its props object, or passed on with the rest of them), so it is
+ * refused only when it plainly does not.
+ */
+function mayPlaceClass(def: ComponentDefinition): boolean {
+  if (codePlacesClass(def)) return true;
+  const src = (def.source ?? '').replace(/<style\b[\s\S]*?<\/style>/g, '');
+  if (/\.\s*class\b|\[\s*['"`]class['"`]\s*\]|\$\$(rest)?props\b/.test(src)) return true;
+  // Passed on with the rest of its props (`let { …, ...rest } = $props()`, then `{...rest}` on an element).
+  const rest = src.match(/\.\.\.\s*([A-Za-z_$][\w$]*)\s*\}\s*=\s*\$props\(\)/)?.[1];
+  return !!rest && new RegExp(`\\{\\s*\\.\\.\\.\\s*${rest.replace(/\$/g, '\\$')}\\s*\\}`).test(src);
+}
+
+function refuseCodeRootStylesInto(state: ProjectState, tree: NodeTree, ids: string[]) {
+  for (const id of ids) {
+    const n = tree.nodes[id];
+    const root = n?.kind === 'instance' ? n.overrides?.root : undefined;
+    if (!root || !Object.values(root).some((scope) => !!scope && Object.keys(scope).length > 0)) continue;
+    const def = own(state.components, (n as InstanceNode).definitionId);
+    if (def?.kind === 'code' && !mayPlaceClass(def)) fail(`"${n!.name ?? def.name}" has its own styles on its root, which this code component takes only on a page. Reset them first, or create the component from a different element.`);
+  }
 }
 
 function titleCase(s: string): string {

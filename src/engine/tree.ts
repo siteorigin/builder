@@ -134,11 +134,16 @@ export function itemLinkPairs(def: ComponentDefinition, listProp: string): Array
  * from its props, or by using the `so_o` part classes.
  */
 export function codeTakesOverrides(def: ComponentDefinition): boolean {
+  return codePlacesClass(def) || (def.owner !== 'theme' && /\bso_o\b/.test(def.source ?? ''));
+}
+
+/** Whether a code component places the `class` it is given: inside a component's design, the only way styles reach it. */
+export function codePlacesClass(def: ComponentDefinition): boolean {
   if (def.kind !== 'code') return true;
   if (def.owner === 'theme') return !!def.parts.root?.styleControls;
   const src = def.source ?? '';
   const script = [...src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-  return /\bclass\s*:/.test(script) || /\bso_o\b/.test(src) || /\bprops\.class\b/.test(src);
+  return /\bclass\s*:/.test(script) || /\bprops\.class\b/.test(src);
 }
 
 /**
