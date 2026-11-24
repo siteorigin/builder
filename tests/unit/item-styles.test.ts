@@ -311,10 +311,12 @@ describe('styling one repeated item', () => {
     const g = grid(s);
     const def = s.components[g.definitionId];
     // The preview writes each item ID encoded; the editor reads the same item back from what was clicked.
-    expect(generateProject(s, { instrument: true }).get(defFile(def))).toContain("data-so-items={[encodeURIComponent(item.id)].join(',')}");
+    expect(generateProject(s, { instrument: true }).get(defFile(def))).toContain("data-so-items={[(item.id + '').replaceAll('%', '%25').replaceAll(',', '%2C')].join(',')}");
     const ref = { owner: owner(s), instancePath: [g.id], nodeId: def.parts.card.nodeId, partId: 'card', itemPath: ['events,design'] };
     expect(descOf(s, ref).items).toBe('events%2Cdesign');
     expect(selectionFromChain(s, [descOf(s, ref)], null, true)?.itemPath).toEqual(['events,design']);
+    // Only "%" and "," are escaped: other characters, an unpaired surrogate included, pass through and come back.
+    for (const id of ['50%,off', '\uD800', 'café ✨']) expect(selectionFromChain(s, [descOf(s, { ...ref, itemPath: [id] })], null, true)?.itemPath).toEqual([id]);
   });
 
   it('styles a part in a nested component’s slot for every item only', () => {
@@ -436,6 +438,23 @@ describe('styling one repeated item', () => {
     const css = siteCss(s);
     const at = css.indexOf('@media (max-width: 767.98px)');
     expect(css.slice(at, css.indexOf('\n}', at))).toMatch(new RegExp(`\\.${cls}[^{]*\\{\\s*display: none`));
+  });
+
+  it('keeps an item shown where the shared style shows again what the design hides', () => {
+    let s = fresh();
+    const id = grid(s).id;
+    s = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: id }]).state;
+    const g = home(s).nodes[id] as InstanceNode;
+    const def = s.components[g.definitionId];
+    def.tree!.nodes[def.parts.card.nodeId].styles = { ...def.tree!.nodes[def.parts.card.nodeId].styles, phone: { hidden: true } };
+    const item = (g.props.items as ListItem[])[0].id;
+    s = apply(s, [
+      { type: 'node.setStyle', owner: owner(s), nodeId: id, partId: 'card', scope: 'phone', property: 'hidden', value: false },
+      { type: 'node.setStyle', owner: owner(s), nodeId: id, partId: 'card', itemId: item, scope: 'base', property: 'background', value: '#dbeeff' }
+    ]);
+    const cls = itemOverrideClass(id, 'card', item);
+    const css = siteCss(s);
+    expect(css).not.toMatch(new RegExp(`\\.${cls}[^{]*\\{\\s*display: none`));
   });
 
   it('keeps a stored item ID with a comma, and its style, when the list schema is edited', () => {

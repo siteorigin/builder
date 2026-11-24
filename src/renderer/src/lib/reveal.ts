@@ -5,7 +5,7 @@
 import type { ElementRef, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { enclosingRepeatProp, findParent, subtreeIds } from '@engine/tree';
-import { nodeAt } from './model';
+import { encodeItemId, nodeAt } from './model';
 
 /** Typed text is shown on the page up to this length; the bridge refuses longer text. */
 export const MAX_DRAFT_CHARS = 20000;
@@ -72,8 +72,8 @@ export function revealTarget(state: ProjectState, item: RevealedItem, ctx: strin
   for (const [r, depth] of repeats.map((r) => [r, depthOf(r.id)] as const).sort((x, y) => x[1] - y[1])) {
     for (const id of subtreeIds(tree, r.id)) if (id !== r.id) within[id] = depth;
   }
-  // Encoded as the preview writes item IDs, so the bridge compares like with like.
-  const target: RevealTarget = { ctx, list: item.list, items: encodeURIComponent(item.itemId), nodes, within };
+  // Escaped as the preview writes item IDs, so the bridge compares like with like.
+  const target: RevealTarget = { ctx, list: item.list, items: encodeItemId(item.itemId), nodes, within };
   const fields = def.properties[item.list]?.type === 'list' ? (def.properties[item.list] as { fields: Record<string, { type: string }> }).fields : {};
   // Only plain text is shown as typed: rich text and links are rendered by components of their own.
   const textNodes = (field: string) =>

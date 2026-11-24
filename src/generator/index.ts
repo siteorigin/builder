@@ -599,17 +599,19 @@ function overrideOpts(def: ComponentDefinition, inst: InstanceNode, partId: stri
  */
 function keepWeakerHides(def: ComponentDefinition, inst: InstanceNode, partId: string, own: ResponsiveStyles): ResponsiveStyles {
   const nodeId = def.parts[partId].nodeId;
-  // Folded the way their rules are written (see resolveVisibility), so this reads what the stylesheet says.
-  const layers = ([def.tree?.nodes[nodeId]?.styles, ...selectedVariantStyles(def, inst.variants, nodeId), inst.overrides?.[partId]].filter(Boolean) as ResponsiveStyles[]).map(resolveVisibility);
-  // What the weaker rules end on in a range, in cascade order: a hide, or a display that shows the part (a layout
-  // also writes one). Within one rule visibility has the last word.
+  const layers = [def.tree?.nodes[nodeId]?.styles, ...selectedVariantStyles(def, inst.variants, nodeId), inst.overrides?.[partId]].filter(Boolean) as ResponsiveStyles[];
+  // What the weaker rules end on in a range, in cascade order: a hide, or a display that shows the part. Hides are
+  // read folded, as the stylesheet writes them (see resolveVisibility); an explicit show writes a display of its own
+  // (see unhider), and so does a layout. Within one rule visibility has the last word.
   const hiddenAt = (range: Exclude<ResponsiveScope, 'base'>) => {
     let hidden = false;
-    for (const l of layers)
-      for (const rec of [l.base, l[range]]) {
-        if (rec?.hidden !== undefined) hidden = rec.hidden === true;
-        else if (rec?.layout !== undefined) hidden = false;
+    for (const raw of layers) {
+      const folded = resolveVisibility(raw);
+      for (const s of ['base', range] as const) {
+        if (folded[s]?.hidden === true) hidden = true;
+        else if (raw[s]?.hidden === false || raw[s]?.layout !== undefined) hidden = false;
       }
+    }
     return hidden;
   };
   let out = own;
@@ -749,8 +751,9 @@ export const slotIdent = (slot: string) => `slot_${safeIdent(slot)}`;
 
 function idAttrs(ctx: EmitCtx, nodeId: string): string {
   if (!ctx.instrument) return '';
-  // Each item ID is encoded, so an ID with a comma in it still reads back as one item (see model.ts refFromDesc).
-  const items = ctx.items.length ? ` data-so-items={[${ctx.items.map((i) => `encodeURIComponent(${i}.id)`).join(', ')}].join(',')}` : '';
+  // Each item ID escapes "%" and ",", so an ID with a comma still reads back as one item (see model.ts itemPathOf).
+  // Plain string methods: no global a property's name could hide, and nothing that can throw on odd characters.
+  const items = ctx.items.length ? ` data-so-items={[${ctx.items.map((i) => `(${i}.id + '').replaceAll('%', '%25').replaceAll(',', '%2C')`).join(', ')}].join(',')}` : '';
   const c = ctx.def ? `data-so-ctx={__so}` : `data-so-ctx=${attrJs(ctx.ctxExpr)}`;
   return ` ${c} data-so-node="${nodeId}"${items}`;
 }

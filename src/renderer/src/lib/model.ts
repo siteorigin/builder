@@ -42,8 +42,8 @@ export function descOf(state: ProjectState, ref: ElementRef): BridgeDesc {
     const def = state.components[n.definitionId];
     if (def?.kind === 'managed' && def.tree) return { ctx: [ctxOf(ref), ref.nodeId].join('|'), node: def.tree.rootIds[0], items: '' };
   }
-  // Encoded as the preview writes them, so an item ID with a comma stays one item.
-  return { ctx: ctxOf(ref), node: ref.nodeId, items: (ref.itemPath ?? []).map(encodeURIComponent).join(',') };
+  // Escaped as the preview writes them, so an item ID with a comma stays one item.
+  return { ctx: ctxOf(ref), node: ref.nodeId, items: (ref.itemPath ?? []).map(encodeItemId).join(',') };
 }
 
 const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
@@ -75,13 +75,14 @@ export function partIdFor(def: ComponentDefinition | undefined, nodeId: string):
   return Object.entries(def.parts).find(([, p]) => p.nodeId === nodeId)?.[0];
 }
 
-/** One item ID from the preview's item path. A segment that is not valid encoding is taken as it is. */
+/** One item ID as the preview writes it in an item path: "%" and "," escaped, everything else as it is. */
+export function encodeItemId(id: string): string {
+  return id.replaceAll('%', '%25').replaceAll(',', '%2C');
+}
+
+/** One item ID from the preview's item path. */
 function decodeItemId(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
+  return segment.replace(/%(25|2C)/g, (_, c: string) => (c === '25' ? '%' : ','));
 }
 
 function refFromDesc(state: ProjectState, d: BridgeDesc): ElementRef | null {

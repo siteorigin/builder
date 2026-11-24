@@ -28,7 +28,7 @@ describe('revealing the list item open in the inspector', () => {
 
   it('names nodes the page really renders for each item, with the item id on them', () => {
     const markup = generateProject(s, { instrument: true }).get(defFile(def))!;
-    expect(markup).toMatch(/<details[^>]*data-so-node="item" data-so-items=\{\[encodeURIComponent\(item\.id\)\]\.join\(','\)\}/);
+    expect(markup).toMatch(/<details[^>]*data-so-node="item" data-so-items=\{\[\(item\.id \+ ''\)\.replaceAll\('%', '%25'\)\.replaceAll\(',', '%2C'\)\]\.join\(','\)\}/);
     expect(markup).toMatch(/<hr[^>]*data-so-node="item-divider" data-so-items=/);
     expect(markup).toMatch(/<p[^>]*data-so-node="answer" data-so-items=[^>]*>\{item\.answer\}<\/p>/);
   });
