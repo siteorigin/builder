@@ -29,6 +29,10 @@ describe('the way a language is written', () => {
   it('runs right to left for Arabic, Hebrew and their kin, and by the script a code names', () => {
     for (const code of ['ar', 'AR', 'ar-EG', 'he', 'iw', 'he-IL', 'fa', 'fa-IR', 'ur', 'ps', 'dv', 'yi', 'ckb', 'syr', 'az-Arab', 'ku-Arab', 'pa-Arab', 'zh-Hebr']) expect(languageDirection(code), code).toBe('rtl');
     for (const code of ['en', 'en-GB', 'fr-CA', 'de', 'zh-Hant-TW', 'ja', 'ar-Latn', 'az-Latn', 'az', 'ku', 'sr-Cyrl']) expect(languageDirection(code), code).toBe('ltr');
+    // A language written in another script in one region goes that script's way there (Unicode's likely subtags).
+    for (const code of ['pa-PK', 'az-IR', 'ku-IQ', 'uz-AF']) expect(languageDirection(code), code).toBe('rtl');
+    for (const code of ['pa', 'pa-IN', 'az-AZ', 'sd-IN', 'pa-Guru-PK']) expect(languageDirection(code), code).toBe('ltr');
+    expect(languageDirection('sd')).toBe('rtl');
   });
 
   it('follows the site’s choice on pages in its language, and each other language’s own way', () => {
@@ -88,8 +92,14 @@ describe('visitor text', () => {
     s = apply(s, { type: 'site.update', visitorText: { language: 'he', text: { menuOpen: ' ' } } });
     expect(s.site.visitorText).toBeUndefined();
     expect(() => apply(s, { type: 'site.update', visitorText: { language: '__proto__', text: { menuOpen: 'x' } } })).toThrow(/Language must be a code/);
-    // A piece that does not exist is turned down, naming the ones that do.
+    // A piece that does not exist is turned down, naming the ones that do, even beside real ones.
     expect(() => apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { nonsense: 'x' } } })).toThrow(/“nonsense” is not a piece of visitor text\. Use one of: skipLink, menuOpen/);
+    expect(() => apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { '': 'x', menuOpen: 'y' } } })).toThrow(/“” is not a piece of visitor text/);
+    // Wording kept by hand under another case is read, and folded under the lower-case code by the next edit.
+    const hand = structuredClone(s);
+    hand.site.visitorText = { 'AR-EG': { menuOpen: 'اعرض', skipLink: '\u200b', menuClose: 7 } } as never;
+    expect(visitorTextFor(hand.site, 'ar-EG')).toMatchObject({ menuOpen: 'اعرض', skipLink: 'انتقل إلى المحتوى', menuClose: 'إغلاق القائمة' });
+    expect(apply(hand, { type: 'site.update', visitorText: { language: 'ar-EG', text: { menuClose: 'أغلق' } } }).site.visitorText).toEqual({ 'ar-eg': { menuOpen: 'اعرض', menuClose: 'أغلق' } });
   });
 
   it('gives the not-found page its default wording in the site’s language', () => {
@@ -101,6 +111,7 @@ describe('visitor text', () => {
 });
 
 describe('the generated wording', () => {
+  mkdirSync(resolve('.tmp'), { recursive: true });
   const dir = mkdtempSync(join(resolve('.tmp'), 'visitor-text-'));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -139,6 +150,7 @@ describe('the generated wording', () => {
 
 const browserInstalled = existsSync(chromium.executablePath());
 const PHONE = '+1 555 0134';
+const SERVICE = 'https://forms.test/f/abc123';
 
 /**
  * A site in Arabic with an About page in Hebrew and a Contact page in English, a contact form on its home page and
@@ -150,7 +162,7 @@ function trilingualSite() {
   s = apply(s, { type: 'page.update', pageId: byTitle(s, 'About').id, language: 'he' });
   s = apply(s, { type: 'page.update', pageId: byTitle(s, 'Contact').id, language: 'en' });
   const home = s.pages[s.site.homePageId];
-  const form = makeInstance(s.components[installComponent(s, 'contact.form')], {});
+  const form = makeInstance(s.components[installComponent(s, 'contact.form')], { provider: 'endpoint', endpoint: SERVICE });
   home.nodes[form.id] = form;
   home.rootIds.push(form.id);
   const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
@@ -254,7 +266,7 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
   it('speaks each page’s language in the header and the skip link, and turns the page around, without a reload', async () => {
     const page = await open(390);
     try {
-      await page.evaluate(() => ((window as unknown as { same: boolean }).same = true));
+      await page.evaluate(() => ((globalThis as unknown as { same: boolean }).same = true));
       const steps: Array<[string, string, string, string, string, string]> = [
         // route, lang, dir, the menu button's name (the author's own in Arabic), the skip link, the navigation's name
         [site.routes.home, 'ar', 'rtl', 'اعرض القائمة', 'انتقل إلى المحتوى', 'القائمة الرئيسية'],
@@ -263,7 +275,7 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
         [site.routes.home, 'ar', 'rtl', 'اعرض القائمة', 'انتقل إلى المحتوى', 'القائمة الرئيسية']
       ];
       for (const [route, lang, dir, menu, skip, nav] of steps) {
-        await page.evaluate((id) => (window as unknown as { go: (id: string) => void }).go(id), route);
+        await page.evaluate((id) => (globalThis as unknown as { go: (id: string) => void }).go(id), route);
         const read = (await page.evaluate(READ)) as { lang: string; dir: string; direction: string; overflow: number; toggleSide: string };
         expect([route, read.lang, read.dir, read.direction]).toEqual([route, lang, dir, dir]);
         // The names a screen reader hears, from the accessibility tree.
@@ -279,7 +291,7 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
         await page.getByRole('button', { name: builtInVisitorText(lang).menuClose, exact: true }).click();
       }
       // The same document all along: the layout and the header stayed while the page changed.
-      expect(await page.evaluate(() => (window as unknown as { same?: boolean }).same)).toBe(true);
+      expect(await page.evaluate(() => (globalThis as unknown as { same?: boolean }).same)).toBe(true);
     } finally {
       await page.close();
     }
@@ -290,19 +302,42 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
       const page = await open(width);
       try {
         for (const route of [site.routes.home, site.routes.he]) {
-          await page.evaluate((id) => (window as unknown as { go: (id: string) => void }).go(id), route);
+          await page.evaluate((id) => (globalThis as unknown as { go: (id: string) => void }).go(id), route);
           const read = (await page.evaluate(READ)) as { direction: string; overflow: number; phoneStartsLeft: boolean | null };
           expect(read.direction).toBe('rtl');
           // Nothing hangs off the page's start edge, where a right-to-left page would let it scroll: not the form's hidden trap.
           expect(read.overflow, `${route} at ${width}px`).toBeLessThanOrEqual(0);
           expect(read.phoneStartsLeft, `${route} at ${width}px`).toBe(true);
         }
-        // The form's progress and state come in the page's language too.
-        await page.evaluate((id) => (window as unknown as { go: (id: string) => void }).go(id), site.routes.home);
-        await expect(page.locator('.so-form__status').first().innerText()).resolves.toBe(builtInVisitorText('ar').formNotConnected);
       } finally {
         await page.close();
       }
+    }
+  });
+
+  it('sends a message in the page’s language from start to end: its button, its progress and its outcome', async () => {
+    const page = await open(390);
+    const ar = builtInVisitorText('ar');
+    let answer!: () => void;
+    const answered = new Promise<void>((done) => (answer = done));
+    await page.route(`${SERVICE}**`, async (route) => {
+      await answered;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}', headers: { 'access-control-allow-origin': '*' } });
+    });
+    try {
+      const form = page.locator('form.so-form__form');
+      for (const [name, value] of [['name', 'ليلى'], ['email', 'layla@example.com'], ['message', 'مرحبا']]) await form.locator(`[name="${name}"]`).fill(value);
+      // A stock form's button and messages are the site's visitor text in Arabic, never English beside it.
+      await page.getByRole('button', { name: ar.formSubmit, exact: true }).click();
+      await expect.poll(() => page.locator('.so-form__status').first().innerText()).toBe(ar.formSendingStatus);
+      await expect(form.getByRole('button').innerText()).resolves.toBe(ar.formSending);
+      answer();
+      await expect.poll(() => page.locator('.so-form__status').first().innerText()).toBe(ar.formSent);
+      await expect(page.getByRole('button', { name: ar.formSubmit, exact: true }).count()).resolves.toBe(1);
+      // An email address is typed left to right, whichever way the page runs.
+      await expect(form.locator('[name="email"]').evaluate((el) => (globalThis as unknown as { getComputedStyle: (e: unknown) => { direction: string } }).getComputedStyle(el).direction)).resolves.toBe('ltr');
+    } finally {
+      await page.close();
     }
   });
 });

@@ -333,7 +333,7 @@ export const OPERATION_SCHEMAS = {
     visitorText: z
       .object({
         language: z.string().max(20).describe('Language code, e.g. "ar": pages in it use this wording.'),
-        text: z.record(z.string(), z.string().max(VISITOR_TEXT_LIMIT)).describe(`Wording by key (${VISITOR_TEXT_KEYS.join(', ')}). "" restores the built-in wording. {braced} names are filled in.`)
+        text: z.record(z.string(), z.string().max(VISITOR_TEXT_LIMIT)).describe(`Wording by key (${VISITOR_TEXT_KEYS.join(', ')}). "" goes back to the wording used without it. {braced} names are filled in.`)
       })
       .optional()
       .describe('What the site says on its own (skip link, menu button, form progress, search, image viewer) in one language. Built in for en, ar, he.')

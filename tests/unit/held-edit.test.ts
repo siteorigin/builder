@@ -233,6 +233,13 @@ describe('held visitor text (issue #71)', () => {
     expect(check(base, apply(base, [set('ar', { skipLink: 'إلى المحتوى' }), set('he', { menuOpen: 'תפריט' })]), [op])).toEqual({ kind: 'apply' });
     // The piece itself changing is.
     expect(check(base, apply(base, [set('ar', { menuOpen: '' })]), [op])).toEqual({ kind: 'changed', current: [{ visitorText: undefined }] });
+    // Several pieces at once are read one by one, and any of them changing is a conflict.
+    const both = set('ar', { menuOpen: 'x', skipLink: 'y' });
+    expect(readFields(base, [both])).toEqual([{ found: true, value: { visitorText: { menuOpen: 'اعرض القائمة', skipLink: undefined } } }]);
+    expect(check(base, apply(base, [set('ar', { skipLink: 'إلى المحتوى' })]), [both]).kind).toBe('changed');
+    // The direction is a field of its own.
+    expect(readFields(base, [{ type: 'site.update', direction: 'rtl' }])).toEqual([{ found: true, value: { direction: undefined } }]);
+    expect(check(base, apply(base, [{ type: 'site.update', direction: 'ltr' }]), [{ type: 'site.update', direction: 'rtl' }]).kind).toBe('changed');
   });
 
   it('keeps edits of different pieces apart, and lets a newer edit of the same piece replace an older one', () => {

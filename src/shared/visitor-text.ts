@@ -25,14 +25,18 @@ export const VISITOR_TEXT_KEYS = [
   'menuClose',
   'mainNav',
   'home',
+  'formSubmit',
   'formSending',
   'formSendingStatus',
+  'formSent',
+  'formFailed',
   'formNotConnected',
   'formDuplicateNames',
   'formNoChoices',
   'searchLandmark',
   'searchLabel',
   'searchButton',
+  'searchEmpty',
   'searchSearching',
   'searchFailed',
   'searchNone',
@@ -68,14 +72,17 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'menuOpen', label: 'Open menu', hint: 'The menu button on phones, while the menu is closed.' },
       { key: 'menuClose', label: 'Close menu', hint: 'The menu button on phones, while the menu is open.' },
       { key: 'mainNav', label: 'Main navigation', hint: 'The name screen readers give the header’s links.' },
-      { key: 'home', label: 'Home link', hint: 'The name of the logo’s link when the site name is hidden and the logo has no alternative text.' }
+      { key: 'home', label: 'Home link', hint: 'The name of the logo’s link on a header without a site name, whose logo has no alternative text.' }
     ]
   },
   {
     label: 'Contact form',
     fields: [
+      { key: 'formSubmit', label: 'Send button', hint: 'The send button of a form whose own label is empty.' },
       { key: 'formSending', label: 'Sending button', hint: 'The send button while a message is on its way.' },
       { key: 'formSendingStatus', label: 'Sending message', hint: 'Announced while a message is on its way.' },
+      { key: 'formSent', label: 'Sent', hint: 'Announced once a message is sent, on a form without a message of its own.' },
+      { key: 'formFailed', label: 'Not sent', hint: 'Announced when a message could not be sent, on a form without a message of its own.' },
       { key: 'formNotConnected', label: 'Not connected', hint: 'Shown on a form that has no form service yet.' },
       { key: 'formDuplicateNames', label: 'Fields share a name', hint: 'Shown on a form with two fields of the same name.' },
       { key: 'formNoChoices', label: 'Question without answers', hint: 'Shown on a form with a choice question that has no answers.' }
@@ -87,6 +94,7 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'searchLandmark', label: 'Search area', hint: 'The name screen readers give a search box without a heading.' },
       { key: 'searchLabel', label: 'Search box', hint: 'The search box’s label when its own is empty.' },
       { key: 'searchButton', label: 'Search button', hint: 'The search button when its own label is empty.' },
+      { key: 'searchEmpty', label: 'Empty search', hint: 'Shown when the visitor searches for nothing, on a search box without a message of its own.' },
       { key: 'searchSearching', label: 'Searching', hint: 'Announced while the search runs.' },
       { key: 'searchFailed', label: 'Search failed', hint: 'Shown when the search cannot load.' },
       { key: 'searchNone', label: 'No results', hint: 'Shown before the search box’s own advice when nothing matches.', fills: ['query'] },
@@ -125,14 +133,18 @@ const EN: VisitorText = {
   menuClose: 'Close menu',
   mainNav: 'Main',
   home: 'Home',
+  formSubmit: 'Send message',
   formSending: 'Sending…',
   formSendingStatus: 'Sending your message…',
+  formSent: 'Thank you. Your message has been sent.',
+  formFailed: 'Sorry, your message could not be sent. Please try again or contact us directly.',
   formNotConnected: 'This form is not connected to a form service yet, so it cannot be sent.',
   formDuplicateNames: 'Two fields of this form have the same name, so it cannot be sent.',
   formNoChoices: 'A question in this form has no answers to choose from yet, so it cannot be sent.',
   searchLandmark: 'Site search',
   searchLabel: 'Search for',
   searchButton: 'Search',
+  searchEmpty: 'Type a word or phrase to search for.',
   searchSearching: 'Searching…',
   searchFailed: 'The search could not load. Reload the page and try again.',
   searchNone: 'No pages match “{query}”.',
@@ -159,14 +171,18 @@ const AR: VisitorText = {
   menuClose: 'إغلاق القائمة',
   mainNav: 'القائمة الرئيسية',
   home: 'الصفحة الرئيسية',
+  formSubmit: 'إرسال الرسالة',
   formSending: 'جارٍ الإرسال…',
   formSendingStatus: 'جارٍ إرسال رسالتك…',
+  formSent: 'شكرًا لك. تم إرسال رسالتك.',
+  formFailed: 'عذرًا، تعذّر إرسال رسالتك. يُرجى المحاولة مرة أخرى أو التواصل معنا مباشرة.',
   formNotConnected: 'هذا النموذج غير متصل بخدمة نماذج بعد، لذا لا يمكن إرساله.',
   formDuplicateNames: 'في هذا النموذج حقلان بالاسم نفسه، لذا لا يمكن إرساله.',
   formNoChoices: 'في هذا النموذج سؤال ليست له إجابات للاختيار منها بعد، لذا لا يمكن إرساله.',
   searchLandmark: 'البحث في الموقع',
   searchLabel: 'ابحث عن',
   searchButton: 'بحث',
+  searchEmpty: 'اكتب كلمة أو عبارة للبحث عنها.',
   searchSearching: 'جارٍ البحث…',
   searchFailed: 'تعذّر تحميل البحث. أعد تحميل الصفحة وحاول مرة أخرى.',
   searchNone: 'لا توجد صفحات تطابق «{query}».',
@@ -193,14 +209,18 @@ const HE: VisitorText = {
   menuClose: 'סגירת התפריט',
   mainNav: 'תפריט ראשי',
   home: 'דף הבית',
+  formSubmit: 'שליחת ההודעה',
   formSending: 'בשליחה…',
   formSendingStatus: 'ההודעה שלך נשלחת…',
+  formSent: 'תודה. ההודעה שלך נשלחה.',
+  formFailed: 'מצטערים, לא ניתן היה לשלוח את ההודעה. אפשר לנסות שוב או לפנות אלינו ישירות.',
   formNotConnected: 'הטופס הזה עדיין לא מחובר לשירות טפסים, ולכן אי אפשר לשלוח אותו.',
   formDuplicateNames: 'לשני שדות בטופס הזה יש אותו שם, ולכן אי אפשר לשלוח אותו.',
   formNoChoices: 'לשאלה בטופס הזה עדיין אין תשובות לבחירה, ולכן אי אפשר לשלוח אותו.',
   searchLandmark: 'חיפוש באתר',
   searchLabel: 'חיפוש',
   searchButton: 'חיפוש',
+  searchEmpty: 'יש להקליד מילה או ביטוי לחיפוש.',
   searchSearching: 'החיפוש מתבצע…',
   searchFailed: 'לא ניתן היה לטעון את החיפוש. יש לטעון מחדש את הדף ולנסות שוב.',
   searchNone: 'אין דפים שתואמים ל"{query}".',
@@ -248,9 +268,22 @@ export function builtInVisitorText(language: string): VisitorText {
 /** The author's wording for one language, read defensively: site.json may have been edited by hand. */
 function ownFor(site: Pick<SiteDoc, 'visitorText'>, language: string): Partial<Record<VisitorTextKey, unknown>> {
   const all = site.visitorText;
-  if (!all || typeof all !== 'object' || Array.isArray(all) || !Object.hasOwn(all, language)) return {};
-  const own = all[language];
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return {};
+  // Kept under the lower-case code; a key written by hand in another case still counts.
+  const key = Object.hasOwn(all, language) ? language : Object.keys(all).find((k) => visitorTextLanguage(k) === language);
+  const own = key === undefined ? undefined : all[key];
   return own && typeof own === 'object' && !Array.isArray(own) ? own : {};
+}
+
+/** The author's wording for one language as the site uses it: each piece that says something, within the limit. */
+export function ownVisitorTextFor(site: Pick<SiteDoc, 'visitorText'>, language: string): Partial<Record<VisitorTextKey, string>> {
+  const own = ownFor(site, visitorTextLanguage(language));
+  const out: Partial<Record<VisitorTextKey, string>> = {};
+  for (const key of VISITOR_TEXT_KEYS) {
+    const text = ownVisitorText(own[key]);
+    if (text) out[key] = text;
+  }
+  return out;
 }
 
 /**

@@ -27,7 +27,7 @@ import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
 import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
-import { VISITOR_TEXT_KEYS, isVisitorTextKey, ownVisitorText, visitorTextLanguage } from '@shared/visitor-text';
+import { VISITOR_TEXT_KEYS, isVisitorTextKey, ownVisitorText, ownVisitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
 import { checkPublicUrl } from '@shared/public-url';
@@ -2163,12 +2163,14 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
  */
 function setVisitorText(site: ProjectState['site'], language: string, text: Record<string, string>): void {
   if (!isLanguageCode(language)) fail(LANGUAGE_CODE_ERROR);
-  const unknown = Object.keys(text).find((key) => !isVisitorTextKey(key));
-  if (unknown) fail(`“${unknown}” is not a piece of visitor text. Use one of: ${VISITOR_TEXT_KEYS.join(', ')}.`);
+  const unknown = Object.keys(text).filter((key) => !isVisitorTextKey(key));
+  if (unknown.length) fail(`“${unknown[0]}” is not a piece of visitor text. Use one of: ${VISITOR_TEXT_KEYS.join(', ')}.`);
   const code = visitorTextLanguage(language);
   const all = site.visitorText && typeof site.visitorText === 'object' && !Array.isArray(site.visitorText) ? { ...site.visitorText } : {};
-  const before = Object.hasOwn(all, code) ? all[code] : undefined;
-  const own: Record<string, string> = before && typeof before === 'object' && !Array.isArray(before) ? { ...before } : {};
+  // The language's wording as the site reads it, under its lower-case code: a key written by hand in another case is
+  // folded in, and pieces that say nothing are dropped.
+  const own: Record<string, string> = ownVisitorTextFor({ visitorText: all }, code);
+  for (const key of Object.keys(all)) if (visitorTextLanguage(key) === code) delete all[key];
   for (const key of VISITOR_TEXT_KEYS) {
     if (!Object.hasOwn(text, key) || text[key] === undefined) continue;
     const value = ownVisitorText(text[key]);

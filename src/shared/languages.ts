@@ -27,11 +27,20 @@ const RTL_LANGUAGES = new Set(['ar', 'arc', 'azb', 'bal', 'bqi', 'ckb', 'dv', 'f
 /** Scripts written right to left. A code that names its script ("az-Arab", "ku-Latn") goes the script's way. */
 const RTL_SCRIPTS = new Set(['adlm', 'arab', 'aran', 'hebr', 'mand', 'mend', 'nkoo', 'rohg', 'samr', 'syrc', 'thaa', 'yezi']);
 
+/**
+ * Languages whose usual script in a region differs from the one it has elsewhere (Unicode's likely subtags):
+ * Punjabi in Pakistan is written in Arabic script, Sindhi in India in Devanagari.
+ */
+const REGION_DIRECTIONS: Record<string, TextDirection> = { 'pa-pk': 'rtl', 'az-ir': 'rtl', 'ku-iq': 'rtl', 'ku-ir': 'rtl', 'uz-af': 'rtl', 'tg-pk': 'rtl', 'kk-cn': 'rtl', 'ky-cn': 'rtl', 'sd-in': 'ltr' };
+
 /** The way a language is written: right to left for Arabic, Hebrew and the like, left to right otherwise. */
 export function languageDirection(code: string): TextDirection {
   const [primary = '', ...rest] = code.toLowerCase().split('-');
   const script = rest.find((s) => /^[a-z]{4}$/.test(s));
-  return (script ? RTL_SCRIPTS.has(script) : RTL_LANGUAGES.has(primary)) ? 'rtl' : 'ltr';
+  if (script) return RTL_SCRIPTS.has(script) ? 'rtl' : 'ltr';
+  const region = rest.find((s) => /^([a-z]{2}|\d{3})$/.test(s));
+  const regional = region ? REGION_DIRECTIONS[`${primary}-${region}`] : undefined;
+  return regional ?? (RTL_LANGUAGES.has(primary) ? 'rtl' : 'ltr');
 }
 
 /** The way the site's language runs: the site's own choice when it makes one, otherwise its language's way. */

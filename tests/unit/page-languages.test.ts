@@ -395,8 +395,17 @@ describe('page languages in the website', () => {
     expect(pageLanguageWarning(t, t.pages[he.id], '<html lang="he">')).toMatch(/built without a direction, not right to left/);
     // Automatic again: the direction follows the language once more, and the document keeps no choice.
     t = apply(t, { type: 'site.update', direction: 'auto' });
-    expect(t.site.direction).toBeUndefined();
+    expect('direction' in t.site).toBe(false);
     expect(generateProject(t).get('src/app.html')).toContain('<html lang="ar" dir="rtl">');
+    // A site in English set to run right to left does, and so do its pages in English; its French page runs its own way.
+    const rtl = apply(bilingual().s, { type: 'site.update', direction: 'rtl' });
+    expect(rtl.site.direction).toBe('rtl');
+    files = generateProject(rtl);
+    expect(files.get('src/app.html')).toContain('<html lang="en" dir="rtl">');
+    expect(files.get(SERVER_HOOK_FILE)).toMatch(/const DIRECTIONS = \{\n\t"\/fr\/a-propos": "ltr"\n\};/);
+    expect((await loadHook(files))('/fr/a-propos', ['<html lang="en" dir="rtl">'])[0]).toBe('<html lang="fr" dir="ltr">');
+    // The export's check reads dir in any case.
+    expect(pageLanguageWarning(rtl, byTitle(rtl, 'About'), '<html lang="en" DIR="RTL">')).toBeNull();
   });
 
   it('gives the not-found page and each page in another language one server hook that does both', async () => {

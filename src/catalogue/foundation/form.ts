@@ -68,9 +68,9 @@ const FORM_SOURCE = `<script>
 		accessKey = '',
 		formName = 'contact',
 		fields = [],
-		submitLabel = 'Send message',
-		successMessage = 'Thank you. Your message has been sent.',
-		errorMessage = 'Sorry, your message could not be sent. Please try again or contact us directly.',
+		submitLabel = '',
+		successMessage = '',
+		errorMessage = '',
 		variant = 'default',
 		class: className = ''
 	} = $props();
@@ -260,17 +260,17 @@ ${FIELD_NAME_SOURCE}
 			</div>
 			<div class="so-form__actions">
 				<button class="so-btn so-btn--primary" type="submit" disabled={!ready || status === 'sending'}>
-					{status === 'sending' ? text().formSending : submitLabel}
+					{status === 'sending' ? text().formSending : submitLabel || text().formSubmit}
 				</button>
 			</div>
 		</form>
 		<!-- Live regions stay in the page, outside the busy form, so their changes are announced. -->
 		<div class="so-form__messages">
 			<p class="so-form__status" role="status">
-				{#if !connected}{text().formNotConnected}{:else if ambiguous}{text().formDuplicateNames}{:else if unchoosable}{text().formNoChoices}{:else if status === 'sending'}{text().formSendingStatus}{:else if status === 'sent'}{successMessage}{/if}
+				{#if !connected}{text().formNotConnected}{:else if ambiguous}{text().formDuplicateNames}{:else if unchoosable}{text().formNoChoices}{:else if status === 'sending'}{text().formSendingStatus}{:else if status === 'sent'}{successMessage || text().formSent}{/if}
 			</p>
 			<p class="so-form__status so-form__status--error" role="alert">
-				{#if status === 'error'}{errorMessage}{/if}
+				{#if status === 'error'}{errorMessage || text().formFailed}{/if}
 			</p>
 		</div>
 	</div>
@@ -510,10 +510,11 @@ export const contactForm: ComponentDefinition = {
       ],
       { titleField: 'label', max: 12 }
     ),
+    // Empty, these use the site's visitor text for the page's language (Site styles > Visitor text).
     ...P.group('Messages', {
-      submitLabel: P.str('Button label', 'Send message'),
-      successMessage: P.text('Sent message', 'Thank you. Your message has been sent.'),
-      errorMessage: P.text('Error message', 'Sorry, your message could not be sent. Please try again or contact us directly.')
+      submitLabel: { ...P.str('Button label', ''), description: 'Empty: the send button of the site’s visitor text, in the page’s language.' },
+      successMessage: { ...P.text('Sent message', ''), description: 'Empty: the sent message of the site’s visitor text, in the page’s language.' },
+      errorMessage: { ...P.text('Error message', ''), description: 'Empty: the not-sent message of the site’s visitor text, in the page’s language.' }
     })
   },
   parts: { root: { nodeId: 'root', label: 'Form section' } },

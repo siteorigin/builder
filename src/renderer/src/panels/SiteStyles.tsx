@@ -1377,7 +1377,7 @@ export function SiteStyles() {
           onCommit={(v) => updSite({ language: v.trim() })}
         />
         <Field label="Text direction" hint="Automatic follows the language: right to left for Arabic, Hebrew, Persian or Urdu. Pages in another language run that language’s way.">
-          <select className="select" value={site.direction ?? 'auto'} onChange={(e) => updSite({ direction: e.target.value })}>
+          <select className="select" value={site.direction === 'ltr' || site.direction === 'rtl' ? site.direction : 'auto'} onChange={(e) => updSite({ direction: e.target.value })}>
             <option value="auto">Automatic ({languageDirection(siteLanguage(site)) === 'rtl' ? 'right to left' : 'left to right'})</option>
             <option value="ltr">Left to right</option>
             <option value="rtl">Right to left</option>
