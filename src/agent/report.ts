@@ -549,18 +549,23 @@ export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<st
  */
 export class InspectionLog {
   private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; stale: boolean }>();
-  /** Component checks (inspect_component), by component, sample and window of cases; `pageId`: the page of the placement whose content was the sample. */
-  private components = new Map<string, { ok: boolean; content: unknown; stale: boolean; pageId?: string }>();
+  /**
+   * Component checks (inspect_component), by component and sample, each window of cases kept by its offset;
+   * `pageId`: the page of the placement whose content was the sample.
+   */
+  private components = new Map<string, { windows: Map<number, { ok: boolean; content: unknown; stale: boolean }>; pageId?: string }>();
 
   record(pageId: string, viewport: string, ok: boolean, content: unknown) {
     // Setting an existing key keeps the order of first inspection while the result is the latest one.
     this.latest.set(`${pageId}\n${viewport}`, { pageId, ok, content, stale: false });
   }
 
-  /** A check of one component on its own; `key` names the component, its sample and the window of cases. */
-  recordComponent(key: string, ok: boolean, content: unknown) {
+  /** A check of one component on its own; `key` names the component and its sample, `offset` the window of its cases. */
+  recordComponent(key: string, offset: number, ok: boolean, content: unknown) {
     const owner = (content as { placement?: { owner?: { kind?: unknown; id?: unknown } } } | null)?.placement?.owner;
-    this.components.set(key, { ok, content, stale: false, ...(owner?.kind === 'page' && typeof owner.id === 'string' ? { pageId: owner.id } : {}) });
+    let e = this.components.get(key);
+    if (!e) this.components.set(key, (e = { windows: new Map(), ...(owner?.kind === 'page' && typeof owner.id === 'string' ? { pageId: owner.id } : {}) }));
+    e.windows.set(offset, { ok, content, stale: false });
   }
 
   /** An edit landed on these pages (or on what every page shares) after their checks ran. */
@@ -568,7 +573,7 @@ export class InspectionLog {
     for (const e of this.latest.values()) if (pages === 'all' || pages.has(e.pageId)) e.stale = true;
     // A component's design, the site's styles and the theme reach every page; an edit of one page's content reaches
     // only a check whose sample was a placement on it.
-    for (const e of this.components.values()) if (pages === 'all' || (e.pageId && pages.has(e.pageId))) e.stale = true;
+    for (const e of this.components.values()) if (pages === 'all' || (e.pageId && pages.has(e.pageId))) for (const w of e.windows.values()) w.stale = true;
   }
 
   /** Each check names its page, so a check is never read as being about another page the run changed. */
@@ -581,18 +586,30 @@ export class InspectionLog {
       const rows = inspectionChecks(e.ok, e.content, page ? ` on ${page.title}` : '');
       return e.stale ? stale(rows) : rows;
     });
-    const components = [...this.components.values()].flatMap((e) => (e.stale ? stale([componentCheck(e.ok, e.content)]) : [componentCheck(e.ok, e.content)]));
+    const components = [...this.components.values()].flatMap((e) => {
+      const windows = [...e.windows].sort((a, b) => a[0] - b[0]).map(([, w]) => w);
+      const row = componentCheck(windows);
+      return windows.some((w) => w.stale) ? stale([row]) : [row];
+    });
     return [...pages, ...components];
   }
 }
 
-/** One component check as the result card lists it: problems found, part of it not run, or none found. */
-export function componentCheck(ok: boolean, content: unknown): ChatCheck {
-  const c = (content ?? {}) as { name?: unknown; findings?: unknown[]; omittedFindings?: unknown; runtimeErrors?: unknown[]; incomplete?: unknown; next?: unknown };
-  const name = typeof c.name === 'string' && c.name ? c.name : 'the component';
-  if (!ok) return { status: 'unverified', text: `Couldn't check ${typeof c.name === 'string' && c.name ? c.name : 'a component'} in its variants and with long and empty content.` };
-  const problems = (c.findings?.length ?? 0) + (Number(c.omittedFindings) || 0) + (c.runtimeErrors?.length ?? 0);
+type ComponentContent = { name?: unknown; findings?: unknown[]; omittedFindings?: unknown; runtimeErrors?: unknown[]; omittedRuntimeErrors?: unknown; incomplete?: unknown; next?: unknown; unverifiedContrast?: unknown };
+
+/**
+ * One component's checks as the result card lists them, over every window of its cases (in order): problems found
+ * in any, part of it not run (a window that failed or stopped short, or cases left after the last), or none found.
+ */
+export function componentCheck(windows: Array<{ ok: boolean; content: unknown }>): ChatCheck {
+  const contents = windows.map((w) => (w.content ?? {}) as ComponentContent);
+  const named = contents.map((c) => c.name).find((n): n is string => typeof n === 'string' && !!n);
+  const name = named ?? 'the component';
+  const problems = contents.reduce((n, c, i) => n + (windows[i].ok ? (c.findings?.length ?? 0) + (Number(c.omittedFindings) || 0) + (c.runtimeErrors?.length ?? 0) + (Number(c.omittedRuntimeErrors) || 0) : 0), 0);
   if (problems) return { status: 'issue', text: `${name} has ${plural(problems, 'problem')} in its variants or with long or empty content.` };
-  if (c.incomplete || c.next) return { status: 'unverified', text: `Only part of ${name} could be checked in its variants and with long and empty content.` };
+  if (!windows.some((w) => w.ok)) return { status: 'unverified', text: `Couldn't check ${named ?? 'a component'} in its variants and with long and empty content.` };
+  if (windows.some((w) => !w.ok) || contents.some((c) => c.incomplete) || contents.at(-1)?.next) return { status: 'unverified', text: `Only part of ${name} could be checked in its variants and with long and empty content.` };
+  const unverified = contents.reduce((n, c) => n + (Number(c.unverifiedContrast) || 0), 0);
+  if (unverified) return { status: 'unverified', text: `${name} has no layout problems in its variants or with long and empty content, but the contrast of ${plural(unverified, 'text')} over pictures or effects could not be measured.` };
   return { status: 'pass', text: `${name} has no layout or readability problems in its variants or with long and empty content.` };
 }

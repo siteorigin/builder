@@ -54,7 +54,7 @@ const card = (): ComponentDefinition =>
     }
   }) as unknown as ComponentDefinition;
 
-const target = (def = card(), extra: Partial<InspectTarget> = {}): InspectTarget => ({ def, select: { definitionId: def.id }, values: { heading: 'Spring offer', body: def.properties.body.default, eyebrow: 'New', more: NONE, cta: { label: 'Book', link: LINK }, items: [{ id: 'p1', title: 'Fast' }, { id: 'p2', title: 'Kind' }] }, variants: {}, notes: [], ...extra });
+const target = (def = card(), extra: Partial<InspectTarget> = {}): InspectTarget => ({ def, select: { definitionId: def.id }, values: extra.values ?? { heading: 'Spring offer', body: card().properties.body.default, eyebrow: 'New', more: NONE, cta: { label: 'Book', link: LINK }, items: [{ id: 'p1', title: 'Fast' }, { id: 'p2', title: 'Kind' }] }, variants: {}, notes: [], ...extra });
 const labels = (cases: InspectCase[]) => cases.map((c) => c.label);
 const byLabel = (cases: InspectCase[], label: string) => cases.find((c) => c.label === label)!;
 
@@ -135,6 +135,13 @@ describe('planning the cases (#362)', () => {
     expect(long.video).toBe('https://vimeo.com/1');
     expect(long.page).toBe('/about/');
     expect(long.key).toBe('abc123');
+    // Visitor text that starts like an address is still text.
+    const only = card();
+    only.properties = { heading: { type: 'string', label: 'Heading', default: '#1 in the region' } } as never;
+    const ranked = planComponentInspection(target(only, { values: { heading: '#1 in the region' } }));
+    expect(String(byLabel(ranked, 'long text').props.heading)).toMatch(/^[A-Za-z]{60}/);
+    only.properties.anchor = { type: 'string', label: 'Jump to', default: '#contact' } as never;
+    expect(byLabel(planComponentInspection(target(only, { values: { heading: 'Hi', anchor: '#contact' } })), 'long text').props.anchor).toBe('#contact');
   });
 
   it('tries one and five items within each list’s limits, with content enough to show, never in a list that fills itself', () => {
@@ -149,6 +156,11 @@ describe('planning the cases (#362)', () => {
     expect((five.items as Array<{ id: string; title: string }>).map((i) => [i.id, i.title])).toEqual([['sweep1', 'Fast'], ['sweep2', 'Kind'], ['sweep3', 'Fast'], ['sweep4', 'Kind']]);
     expect((five.steps as unknown[]).length).toBe(5);
     for (const c of cases) expect(c.props.latest).toBeUndefined();
+    // A list already at its limit still marks the case it limits.
+    const capped = card();
+    (capped.properties.items as { max: number }).max = 1;
+    capped.properties.steps = { type: 'list', label: 'Steps', itemLabel: 'Step', fields: { label: { type: 'string', label: 'Label', default: 'Go' } }, default: [] } as never;
+    expect(labels(planComponentInspection(target(capped, { values: { ...target().values, items: [{ id: 'p1', title: 'Fast' }], steps: [] } })))).toEqual(expect.arrayContaining(['1 item', '5 items (within limits)']));
   });
 
   it('measures the same thing once, under both names', () => {
@@ -307,6 +319,16 @@ describe('the digest (#362)', () => {
       { kind: 'low-contrast', message: contrast.message, text: 'New', at: { nodeId: 'e', partId: 'root', match: 'nearest-part' }, in: ['tone=inverse: desktop'] }
     ]);
     expect(d.content.summary).toMatch(/^Offer card: 4 problems found in 8 cases/);
+    // Inside a code component every element has the wrapper's address: what they say tells them apart.
+    const wrapper = { ctx: 'preview:proj_card', node: 'preview', items: '', inside: true };
+    const two = digestComponentInspection(
+      target(),
+      cases.slice(0, 1),
+      [ready([{ kind: 'low-contrast', desc: wrapper, text: 'Heading', message: 'a' }], {}, 390), ready([{ kind: 'low-contrast', desc: wrapper, text: 'Caption', message: 'b' }], { checks: { contrast: { checked: 2, failed: 1, unverified: 2 } } }, 1280)],
+      { offset: 0, total: 1 }
+    ).content;
+    expect((two.findings as Array<{ text: string; in: string[] }>).map((f) => [f.text, f.in])).toEqual([['Heading', ['defaults: phone']], ['Caption', ['defaults: desktop']]]);
+    expect(two.unverifiedContrast).toBe(2);
   });
 
   it('reports a measurement that failed as one, never as clean, and leaves the cases not reached for the next call', () => {
@@ -436,11 +458,20 @@ describe('the digest (#362)', () => {
       expect(digest([gap(at('h', 0, 2), at('row'), 16), gap(at('row'), at('list'), 16)], [gap(at('h', 0, 1), at('list'), 0)]).findings).toBeUndefined();
     });
 
-    it('says the spacing was not compared when either side has no gaps to compare', () => {
+    it('compares as far as a short gap list goes, and says when a side was short or missing', () => {
       const out = digest([gap(at('h'), at('list'), 16)], [gap(at('h'), at('list'), 0)], { gapsIncomplete: true });
-      expect(out.findings).toEqual([expect.objectContaining({ in: ['empty: phone'] })]);
-      expect(out.summary).toContain('could not be compared at desktop width');
+      expect(out.findings).toEqual([expect.objectContaining({ in: ['empty: phone, desktop'] })]);
+      expect(out.summary).toContain('could not be fully compared at desktop width');
       expect(out.incomplete).toBe(true);
+      // No gaps from the control at desktop width.
+      const missing = digestComponentInspection(
+        target(),
+        cases,
+        resultsFor(cases, (label, w) => (label === 'filled' && w === 1280 ? ready([], { gaps: undefined }, w) : ready([], { gaps: label === 'empty' ? [gap(at('h'), at('list'), 0)] : [gap(at('h'), at('list'), 16)] }, w))),
+        { offset: 0, total: 2 }
+      ).content;
+      expect(missing.findings).toEqual([expect.objectContaining({ in: ['empty: phone'] })]);
+      expect(missing.summary).toContain('could not be fully compared at desktop width');
     });
   });
 });

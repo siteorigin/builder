@@ -1634,9 +1634,10 @@ export class Orchestrator {
             inspections.record(c.pageId ?? `?${call.arguments}`, c.viewport ?? '', outcome.ok, outcome.content);
           }
           if (call.name === 'inspect_component') {
-            // Keyed by the component the tool resolved, its sample and its window, so a repeated check replaces the last.
+            // Keyed by the component the tool resolved and its sample; each window of cases is kept apart, and a
+            // repeated check of a window replaces the last.
             const c = outcome.content as { definitionId?: string; placement?: unknown; offset?: number };
-            inspections.recordComponent(c.definitionId ? JSON.stringify([c.definitionId, c.placement ?? null, c.offset ?? 0]) : `?${call.arguments}`, outcome.ok, outcome.content);
+            inspections.recordComponent(c.definitionId ? JSON.stringify([c.definitionId, c.placement ?? null]) : `?${call.arguments}`, Number(c.offset) || 0, outcome.ok, outcome.content);
           }
           this.emitMessage(msg, runId);
           items.push({ kind: 'tool_result', callId: call.id, name: call.name, content: serializeResult(outcome.content), isError: !outcome.ok });

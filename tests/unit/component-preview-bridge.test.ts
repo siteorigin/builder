@@ -228,8 +228,13 @@ describe('the bridge in an isolated component preview', () => {
     const pairs = (report.gaps as Array<{ a: { node: string; items: string }; b: { node: string; items: string }; gap: number }>).map((g) => [g.a.node, g.b.node, g.b.items, g.gap]);
     // The hidden box keeps a and b apart and is never an end; the inline box is never an end; the wrapper is looked through.
     expect(pairs).toEqual([]);
-    const plain = `<main id="main"><div ${at('r')}><p ${at('a')} style="margin:0">A</p><div style="display:contents"><p ${at('c', 'i1')} style="margin:8px 0 0">C</p></div></div></main>`;
+    // An inline block is a box of its own, measured like any other.
+    const plain = `<main id="main"><div ${at('r')}><p ${at('a')} style="margin:0">A</p><div style="display:contents"><p ${at('c', 'i1')} style="margin:8px 0 0">C</p></div><span ${at('cta')} style="display:inline-block;width:100%;margin-top:4px">Book</span></div></main>`;
     const { report: second } = await run(plain, { key: 'abcdefabcdefabcdef', mounted: true }, { gaps: true });
-    expect(second.gaps).toEqual([{ a: { ctx: 'preview:c1|preview', node: 'a', items: '', n: 0, of: 1 }, b: { ctx: 'preview:c1|preview', node: 'c', items: 'i1', n: 0, of: 1 }, gap: 8 }]);
+    const end = (node: string, items = '') => ({ ctx: 'preview:c1|preview', node, items, n: 0, of: 1 });
+    expect(second.gaps).toEqual([
+      { a: end('a'), b: end('c', 'i1'), gap: 8 },
+      { a: end('c', 'i1'), b: end('cta'), gap: 4 }
+    ]);
   }, 30000);
 });

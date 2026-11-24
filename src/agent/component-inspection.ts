@@ -153,7 +153,7 @@ const isEmptyText = (v: unknown) => (typeof v === 'string' ? !v.trim() : Array.i
 
 /** Text a visitor never reads: an address, a key or a name forms send answers under. Long text there breaks the component instead of testing it. */
 const MACHINE_LABEL = /\b(url|web address|video address|endpoint|access key|api key|id|slug|anchor|embed|field name|form name)\b/i;
-const MACHINE_VALUE = /^(https?:\/\/|mailto:|tel:|\/|#)/i;
+const MACHINE_VALUE = /^((https?:\/\/|mailto:|tel:)\S+|\/\S*|#[\w-]+)$/i;
 const isMachineText = (schema: ScalarPropSchema, value: unknown) => MACHINE_LABEL.test(schema.label ?? '') || (typeof value === 'string' && MACHINE_VALUE.test(value.trim()));
 
 /** Where a field is, as optionalContent names it: "name", "name.field", or "list[]field" for a list item's field. */
@@ -262,10 +262,12 @@ export function planComponentInspection(target: InspectTarget): InspectCase[] {
   for (const count of ITEM_COUNTS) {
     const props = clone(shown);
     const counts = new Set<number>();
+    let limited = false;
     for (const [name, schema] of Object.entries(def.properties)) {
       if (schema.type !== 'list' || schema.feed) continue;
       const items = Array.isArray(props[name]) ? (props[name] as ListItem[]) : [];
       const n = Math.min(schema.max ?? Infinity, Math.max(schema.min ?? 0, count));
+      if (n !== count) limited = true;
       if (n === items.length) continue;
       // Copies of the items there are, or items of default values when there are none; given IDs of their own.
       const blank = Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, clone(f.default)]));
@@ -275,7 +277,7 @@ export function planComponentInspection(target: InspectTarget): InspectCase[] {
     if (!counts.size) continue;
     fill(def, props);
     // Named by the count asked for, and so told apart from the other count's case, whatever a list's limits made of it.
-    add({ label: `${count} item${count === 1 ? '' : 's'}${[...counts].some((n) => n !== count) ? ' (within limits)' : ''}`, variants: { ...target.variants }, props });
+    add({ label: `${count} item${count === 1 ? '' : 's'}${limited ? ' (within limits)' : ''}`, variants: { ...target.variants }, props });
   }
 
   // Each other option of each axis, the rest as they start, with the content filled.
@@ -385,13 +387,15 @@ const descKey = (d: Desc | undefined) => (d && typeof d.ctx === 'string' && type
 const endKey = (e: GapEnd) => `${e.ctx}\u0000${e.node}\u0000${e.items}\u0000${e.n}`;
 const baseKey = (e: GapEnd) => `${e.ctx}\u0000${e.node}\u0000${e.items}`;
 
-/** The stacked gaps a measurement reported, or null when it has none to compare (not asked for, or cut short). */
-const gapsOf = (r: ComponentPreviewResult | undefined): Gap[] | null => {
+/**
+ * The stacked gaps a measurement reported (null when it has none: not asked for), and whether the list stops short.
+ * A short list still compares truly as far as it goes: two elements touching are next to each other in it.
+ */
+const gapsOf = (r: ComponentPreviewResult | undefined): { gaps: Gap[]; incomplete: boolean } | null => {
   const report = r?.report as { gaps?: unknown; gapsIncomplete?: unknown } | undefined;
-  if (report?.gapsIncomplete) return null;
   const g = report?.gaps;
   const end = (e: unknown): e is GapEnd => isRecord(e) && typeof e.ctx === 'string' && typeof e.node === 'string' && typeof e.items === 'string' && Number.isInteger(e.n) && Number.isInteger(e.of);
-  return Array.isArray(g) ? (g as Gap[]).filter((x) => isRecord(x) && end(x.a) && end(x.b) && Number.isFinite(x.gap)) : null;
+  return Array.isArray(g) ? { gaps: (g as Gap[]).filter((x) => isRecord(x) && end(x.a) && end(x.b) && Number.isFinite(x.gap)), incomplete: report?.gapsIncomplete === true } : null;
 };
 
 /**
@@ -457,7 +461,7 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
   let measured = 0;
   let reached = 0;
   const steps = cases.length * VIEWPORTS.length;
-  const gaps = new Map<string, Gap[] | null>();
+  const gaps = new Map<string, { gaps: Gap[]; incomplete: boolean } | null>();
   /** The widths each case was measured at without failing. */
   const widthsMeasured = new Map<string, Set<Viewport>>();
 
@@ -494,8 +498,10 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
       const other = issue.with && typeof issue.with === 'object' ? { at: componentLocation(def, issue.with.desc), text: issue.with.text } : undefined;
       // The same element in every case, by where it rendered (or what it says, for markup with no address); an
       // overlap is one finding whichever of its two boxes the bridge named first.
-      const self = descKey(issue.desc) || `text:${cut(issue.text, 30)}`;
-      const partner = other ? descKey(issue.with!.desc) || `text:${cut(other.text, 30)}` : '';
+      // Markup inside a code component shares its wrapper's address: what it says tells its elements apart.
+      const key1 = (d: Desc | undefined, text: unknown, located: boolean) => (located && !d?.inside ? descKey(d) : `${descKey(d)}|text:${cut(text, 30)}`);
+      const self = key1(issue.desc, issue.text, !!at);
+      const partner = other ? key1(issue.with!.desc, other.text, !!other.at) : '';
       const key = [kind, ...(kind === 'overlap' ? [self, partner].sort() : [self, partner])].join('\u0000');
       record(
         {
@@ -525,7 +531,8 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
         unchecked.push(v);
         continue;
       }
-      for (const hit of collapsedGaps(control, empty)) {
+      if (control.incomplete || empty.incomplete) unchecked.push(v);
+      for (const hit of collapsedGaps(control.gaps, empty.gaps)) {
         const at = componentLocation(def, hit.a);
         const other = componentLocation(def, hit.b);
         record(
@@ -575,7 +582,7 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
   parts.push(`${def.name}: ${clean ? 'no problems found' : `${plural(problems, 'problem')} found`} in ${plural(done.length, 'case')} at ${widths}.`);
   parts.push(...halves);
   if (failed.length) parts.push(`${plural(reached - measured, 'measurement')} failed and ${reached - measured === 1 ? 'was' : 'were'} not checked.`);
-  if (unchecked.length) parts.push(`The spacing with content left empty could not be compared at ${[...new Set(unchecked)].join(' and ')} width.`);
+  if (unchecked.length) parts.push(`The spacing with content left empty could not be fully compared at ${[...new Set(unchecked)].join(' and ')} width.`);
   if (totals.unverified) parts.push(`${plural(totals.unverified, 'text contrast check')} could not be measured without pixels.`);
   if (totals.incomplete) parts.push('Some checks ran out of time, so they are incomplete.');
   if (remaining > 0) parts.push(`${plural(remaining, 'more case')} to measure: call again with offset ${nextOffset}.`);
@@ -592,6 +599,7 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
     ...(errors.length ? { runtimeErrors: errors.slice(0, 5) } : {}),
     ...(errors.length > 5 ? { omittedRuntimeErrors: errors.length - 5 } : {}),
     ...(failed.length ? { failed: failed.slice(0, 5) } : {}),
+    ...(totals.unverified ? { unverifiedContrast: totals.unverified } : {}),
     ...(target.notes.length ? { notes: target.notes } : {}),
     ...(remaining > 0 ? { next: { offset: nextOffset, remaining } } : {}),
     // Something in this window was not checked: a later check of fewer cases never stands in for this one.

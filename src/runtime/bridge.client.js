@@ -3101,7 +3101,7 @@ function pickIssues(lists, max) {
 }
 
 /** Stacked pairs one inspection reports at most. */
-const MAX_GAPS = 200;
+const MAX_GAPS = 400;
 
 /**
  * For the AI's component inspection: each two elements of the editor's markup that follow one another stacked in
@@ -3133,7 +3133,7 @@ function stackGaps(deadline) {
       if (p && (p === main || main.contains(p))) parents.add(p);
     }
     const end = (e) => ({ ctx: e.ctx, node: e.node, items: e.items, n: e.n, of: totals.get(e.base) });
-    /** The boxes a container lays out in the flow, in order; `edge` when one can be measured from (shown, block-level, in place). */
+    /** The boxes a container lays out in the flow, in order; `edge` when one can be measured from (shown, a box of its own, in place). */
     const laidOut = (parent) => {
       const out = [];
       for (const c of children.call(parent)) {
@@ -3145,7 +3145,8 @@ function stackGaps(deadline) {
         }
         if (s.position === 'absolute' || s.position === 'fixed') continue;
         const r = Element.prototype.getBoundingClientRect.call(c);
-        if (r.width || r.height) out.push({ el: c, r, edge: s.visibility !== 'hidden' && !s.display.startsWith('inline') && s.position !== 'sticky' });
+        // Inline text runs line up by chance; an inline block is a box like any other.
+        if (r.width || r.height) out.push({ el: c, r, edge: s.visibility === 'visible' && s.display !== 'inline' && s.position !== 'sticky' });
       }
       return out;
     };
