@@ -400,6 +400,17 @@ body.dialog-open .toast { pointer-events: none; }
 .toast.held .held-text { user-select: text; overflow-wrap: anywhere; opacity: 0.9; }
 .toast.held .held-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
 .toast.held button { opacity: 1; }
+.toast.rename-offer { align-items: flex-start; max-width: 460px; }
+.toast.rename-offer .rename-offer-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.toast.rename-offer .rename-offer-title { font-weight: 600; overflow-wrap: anywhere; }
+.toast.rename-offer .rename-offer-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
+.toast.rename-offer button { opacity: 1; }
+/* A dialog makes the editor inert; the offer waits until it closes, rather than taking edits over it. */
+body.dialog-open .toast.rename-offer { visibility: hidden; }
+.toast.rename-offer .rename-offer-list { list-style: none; margin: 2px 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.toast.rename-offer .rename-offer-list label { display: flex; align-items: center; gap: 7px; }
+.toast.rename-offer .rename-offer-list input { margin: 0; accent-color: currentColor; }
+.toast.rename-offer .rename-offer-note { opacity: 0.85; font-size: 12px; overflow-wrap: anywhere; }
 
 /* ---------- Welcome ---------- */
 /* The rail's width, shared with the drag strip over the main pane. */
@@ -3414,6 +3425,10 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .pages-add-check { display: flex; align-items: flex-start; gap: 6px; min-height: 24px; padding: 4px 2px 0; font-size: 12px; line-height: 16px; color: var(--text-2); }
 .pages-add-check input { flex: none; margin: 1px 0 0; accent-color: var(--accent); }
 .pages-add-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.pages-order-note { display: flex; flex-direction: column; gap: 6px; margin: 0 6px 12px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 16px; color: var(--text-2); }
+.pages-order-note p { margin: 0; overflow-wrap: anywhere; }
+.pages-order-note strong { color: var(--text); font-weight: 600; }
+.pages-order-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 /* Keyboard focus on a row cut short shows its whole title and address in a card under it (Escape hides it). */
 .pages-peek { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); pointer-events: none; }
 .pages-peek-title { font-weight: 500; overflow-wrap: anywhere; }

@@ -55,7 +55,7 @@ export function App() {
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
-        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, conversation: null, chatDrafts: {}, chatImages: {}, definitionMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, ...pasteStyleClosed() });
+        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, conversation: null, chatDrafts: {}, chatImages: {}, definitionMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, ...pasteStyleClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -158,6 +158,7 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     aiOutcome: null,
     inspectorFocus: null,
     styleCopy: null,
+    renameOffer: null,
     ...pasteStyleClosed()
   });
   void restoreConversation(++opened, local.chatConversation);
