@@ -55,7 +55,7 @@ function scalarSchema(s: ScalarPropSchema): JsonSchema {
       return { type: 'string', maxLength: s.maxLength ?? 2000, description };
     case 'richtext':
       // A plain string is the smallest form the value normalizer accepts, whatever the stored shape is.
-      return { type: 'string', description: `${description}. Separate paragraphs with a blank line; **bold** and *italic* are allowed.` };
+      return { type: 'string', description: `${description}. Separate paragraphs with a blank line; **bold** and *italic* are allowed. End a line with \\ for a line break inside a paragraph.` };
     case 'number':
       return { type: 'number', ...(s.min !== undefined ? { minimum: s.min } : {}), ...(s.max !== undefined ? { maximum: s.max } : {}), description };
     case 'boolean':
