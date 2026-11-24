@@ -577,6 +577,20 @@ describe('edges the final review found (#189)', () => {
     expect(tagProblem(s, defOwner(def), 'u', 'dt')).toBeNull();
   });
 
+  it('takes a group at a design’s edge where every placement puts it in a description list', () => {
+    const { s, o } = pageWithRows();
+    const terms = apply(s, [setTag(o, 'n_stack01', 'dl'), setTag(o, 'n_text0001', 'dt')]);
+    // Made into a component where it stands: still in its list.
+    const made = apply(terms, [{ type: 'component.createFromNode', owner: o, nodeId: 'n_row0001', name: 'Term group' }]);
+    expect(nesting(made)).toEqual([expect.objectContaining({ severity: 'warning', nodeId: 'n_text0002' })]);
+    expect(introduced(terms, made)).toEqual([]);
+    // And refused where a placement is not in one.
+    const def = Object.values(made.components).find((d) => d.name === 'Term group')!;
+    const termId = Object.values(def.tree!.nodes).find((n) => n.kind === 'text' && n.tag === 'dt')!.id;
+    const loose = apply(made, [{ type: 'node.insert', owner: o, parentId: null, definitionId: def.id }]);
+    expect(nesting(loose).find((d) => d.nodeId === termId && d.severity === 'error')?.message).toMatch(/is a term or description/);
+  });
+
   it('lets a paragraph hold an inline component whatever sits in a slot it never renders', () => {
     const { s, o } = pageWithStack();
     const badge = addDef(s, { componentId: 'test.badge-slot', name: 'Badge slot', properties: {}, parts: {}, slots: { unused: { label: 'Unused' } }, build: (b) => b.el('root', 'span', {}, [b.text('t', 'strong', 'New')]) }, false);

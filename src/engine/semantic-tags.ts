@@ -96,6 +96,19 @@ class Structure {
   }
 
   private brokenCards?: Set<string>;
+  private placed?: Map<string, Array<{ owner: OwnerRef; tree: NodeTree; id: string }>>;
+
+  /** Where a design's root renders: around each of its placements, unknown while it has none. */
+  placements(ctx: TreeCtx): Up {
+    if (ctx.owner.kind !== 'component') return OPEN;
+    if (!this.placed) {
+      this.placed = new Map();
+      for (const t of allTrees(this.state))
+        for (const n of Object.values(t.tree.nodes)) if (n.kind === 'instance') this.placed.set(n.definitionId, [...(this.placed.get(n.definitionId) ?? []), { owner: t.owner, tree: t.tree, id: n.id }]);
+    }
+    const ups = (this.placed.get(ctx.owner.id) ?? []).map((p) => this.up(this.ctx(p.owner, p.tree), p.id));
+    return ups.length ? { parents: ups.flatMap((u) => u.parents), open: ups.some((u) => u.open) } : OPEN;
+  }
 
   /** Whether a card renders as its plain container, because something interactive renders inside it. */
   broken(ctx: TreeCtx, id: string): boolean {
@@ -339,7 +352,9 @@ function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingP
     for (const at of structure.up(ctx, id).parents) {
       const p = reader.around(at);
       // A term and its description may be grouped in one plain container inside the list: the container's own parents.
-      const groupUp = !('outer' in at) && p.node?.kind === 'element' && every(p.tags, ['div']) ? structure.up(at.ctx, at.id) : null;
+      const nearUp = !('outer' in at) && p.node?.kind === 'element' && every(p.tags, ['div']) ? structure.up(at.ctx, at.id) : null;
+      // A group at the edge of a design is in a list when every placement of the design is.
+      const groupUp = nearUp?.open && !nearUp.parents.length && !('outer' in at) && at.ctx.tree.rootIds.includes(at.id) ? structure.placements(at.ctx) : nearUp;
       const group = groupUp ? groupUp.parents.map((g) => reader.around(g)) : null;
       if (some(tags, ['li']) && !every(p.tags, ['ul', 'ol'])) say('error', 'li', 'is a list item, so it goes directly inside a list (ul or ol).');
       // A term opened inside another term or description closes it, even through a plain container, so a group whose
