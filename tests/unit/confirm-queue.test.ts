@@ -117,4 +117,15 @@ describe('confirmDialog', () => {
     getConfirm()!.resolve(true);
     expect(await other).toBe(true);
   });
+
+  it('answers a leave question already on screen when the project closes', async () => {
+    const leaving = ask('Leave without your last change?');
+    const other = ask('Something else');
+    expect(getConfirm()?.title).toBe('Leave without your last change?');
+    leave.projectClosed();
+    expect(await leaving).toBe(null);
+    expect(getConfirm()?.title).toBe('Something else');
+    getConfirm()!.resolve(false);
+    expect(await other).toBe(false);
+  });
 });

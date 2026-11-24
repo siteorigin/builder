@@ -2,7 +2,7 @@
 const HEADER = '.insp-head';
 const CONTROL = 'input:not([type="hidden"]), textarea, select, button, [role="switch"], [contenteditable="true"]';
 
-const usable = (el: HTMLElement) => el.offsetParent !== null && !(el as HTMLButtonElement).disabled && el.getAttribute('aria-disabled') !== 'true' && !el.closest('[hidden], [inert]');
+const usable = (el: HTMLElement) => el.offsetParent !== null && !(el as HTMLButtonElement).disabled && el.getAttribute('aria-disabled') !== 'true' && el.tabIndex >= 0 && !el.closest('[hidden], [inert]');
 
 /**
  * The first control the author can work in inside the Inspector: a field of the open sections, buttons and

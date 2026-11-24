@@ -57,7 +57,8 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
     // to the dialog: Escape closes it and Tab brings focus back in.
     const stray = (e: KeyboardEvent) => {
       if (openDialogs[openDialogs.length - 1] !== el || el.contains(e.target as Node)) return;
-      if (e.key === 'Escape') (e.preventDefault(), closeRef.current());
+      // Holding Escape on a field that has just let go of focus is still one press.
+      if (e.key === 'Escape') (e.preventDefault(), !e.repeat && closeRef.current());
       else if (e.key === 'Tab') (e.preventDefault(), el.querySelector<HTMLElement>(FOCUSABLE)?.focus());
     };
     window.addEventListener('keydown', stray);
@@ -442,6 +443,11 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
   const bodyId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(() => (key && localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen));
+  // A section that starts being remembered (it gained something to show) takes the saved choice.
+  useEffect(() => {
+    const saved = key ? localStorage.getItem(key) : null;
+    if (saved !== null) setOpen(saved === '1');
+  }, [key]);
   useEffect(() => {
     if (!id) return;
     let frame = 0;
@@ -753,10 +759,9 @@ export function DraftInput({
     onKeyDown: (e: React.KeyboardEvent) => {
       if (isImeComposing(e)) return;
       if (e.key === 'Escape') {
-        // Revert: blur must not commit the abandoned draft. The key is spent on the field, so a dialog around
-        // it stays open; the next Escape, with nothing being edited, closes it.
+        // Revert: blur must not commit the abandoned draft. The key is spent on the field (a dialog around it
+        // reads that and stays open); the next Escape, with nothing being edited, closes it.
         e.preventDefault();
-        e.stopPropagation();
         cancelled.current = true;
         forget();
         setDraft(value);

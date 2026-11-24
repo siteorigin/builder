@@ -175,7 +175,10 @@ assert.deepEqual(Object.keys((await counter()).saved.properties), ['title', 'tex
 await win.getByRole('button', { name: 'Revert' }).click();
 await win.getByRole('button', { name: 'Revert changes' }).click();
 await eventually(async () => assert.equal(await saveButton.isDisabled(), true, 'Revert starts again from the saved properties'));
-// With no field being edited, the next Escape closes the dialog.
+// One Escape ends the edit in a field and keeps the dialog; the next, with no field being edited, closes it.
+await label.fill('Abandoned again');
+await label.press('Escape');
+assert.equal(await win.locator('.modal').count(), 1, 'the first Escape leaves the dialog open');
 await win.keyboard.press('Escape');
 await win.locator('.modal').waitFor({ state: 'detached' });
 // Undo the two schema saves and the two content edits too, so the steps below unwind creation as before.
