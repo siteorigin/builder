@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { applyOperations, planHomeChange } from '@engine/apply';
+import { getTheme } from '@catalogue/index';
+import { applyOperations, planHomeChange, sourceHash } from '@engine/apply';
+import { propertiesHash } from '@shared/ops';
 import { uniqueCopyName } from '@engine/definitions';
 import { pageIds, shellPageLinks } from '@generator/checks';
 import { EngineError, instancesOf } from '@engine/tree';
 import { validateState } from '@engine/validate';
-import { effectiveTokens, generateProject } from '@generator/index';
+import { effectiveTokens, generateProject, resolveInstanceProps } from '@generator/index';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -274,6 +276,106 @@ describe('review regressions', () => {
     expect(() => applyOperations(s, [{ type: 'token.set', tokenId: 'color.brand', value: { token: 'color.brand' } }])).toThrow();
   });
 
+  it('keeps what placements showed from their old definition when the new theme’s defaults differ (#103)', () => {
+    let s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    const grid = firstInstance(s, 'features.grid');
+    // An installed hero and grid whose defaults differ from the new theme's, and placements that rely on them.
+    const heroDef = s.components[hero.definitionId];
+    heroDef.properties.heading.default = 'Keepsake';
+    heroDef.variantAxes!.tone.default = 'muted';
+    // A choice naming no option shows the default too.
+    hero.variants = { tone: 'gone' };
+    const gridDef = s.components[grid.definitionId];
+    const items = gridDef.properties.items as Extract<typeof gridDef.properties.items, { type: 'list' }>;
+    items.fields.title.default = 'Untitled';
+    delete hero.props.heading;
+    const explicitLead = hero.props.lead;
+    const gridItems = grid.props.items as Array<Record<string, unknown>>;
+    delete gridItems[0].title;
+    delete grid.props.heading;
+    const shown = (st: ProjectState, id: string) => resolveInstanceProps(st.components[(home(st).nodes[id] as InstanceNode).definitionId], home(st).nodes[id] as InstanceNode, { state: st });
+    const before = { hero: shown(s, hero.id), grid: shown(s, grid.id) };
+    const after = applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state;
+    const heroAfter = home(after).nodes[hero.id] as InstanceNode;
+    const gridAfter = home(after).nodes[grid.id] as InstanceNode;
+    expect(heroAfter.definitionId).toBe('foundation-alt.hero.split');
+    // The heading it inherited, an item field left empty and the tone it never chose are what it shows still.
+    expect(shown(after, hero.id)).toEqual(before.hero);
+    expect(shown(after, grid.id)).toEqual(before.grid);
+    expect(heroAfter.props.heading).toBe('Keepsake');
+    expect(heroAfter.props.lead).toBe(explicitLead);
+    expect(heroAfter.variants).toEqual({ tone: 'muted' });
+    expect((gridAfter.props.items as Array<Record<string, unknown>>)[0].title).toBe('Untitled');
+    expect((gridAfter.props.items as Array<{ id: string }>).map((i) => i.id)).toEqual(gridItems.map((i) => i.id));
+    // A default the new theme shares is still left to the definition.
+    expect(Object.hasOwn(gridAfter.props, 'heading')).toBe(false);
+    expect(gridAfter.variants).toBeUndefined();
+    // A default the new theme cannot hold stops the switch, naming the placement.
+    const bad = structuredClone(s);
+    bad.components[hero.definitionId].properties.headingLevel = { ...bad.components[hero.definitionId].properties.headingLevel, default: 'h7' } as never;
+    (bad.components[hero.definitionId].properties.headingLevel as { options: Array<{ value: string; label: string }> }).options.push({ value: 'h7', label: 'H7' });
+    delete (home(bad).nodes[hero.id] as InstanceNode).props.headingLevel;
+    expect(() => applyOperations(bad, [{ type: 'theme.apply', themeId: 'foundation-alt' }])).toThrow(/Home: Split hero → Heading level: must be one of/);
+  });
+
+  it('keeps cards following their pages, values the generator falls back from, and the shell, on a theme switch (#103)', () => {
+    let s = fresh();
+    const about = Object.values(s.pages).find((p) => p.title === 'About')!;
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), componentId: 'content.pages' }]);
+    s = ins.state;
+    const list = home(s).nodes[ins.results[0].nodeId as string] as InstanceNode;
+    const listDef = s.components[list.definitionId];
+    // The installed card title defaults to fixed text; the new theme's follows the page.
+    (listDef.properties.items as { fields: Record<string, { default?: unknown }> }).fields.title.default = 'Untitled';
+    list.props.items = [
+      { id: 'i_follows', pageLink: { type: 'page', target: about.id }, title: null },
+      { id: 'i_fixed', pageLink: { type: 'page', target: about.id } }
+    ];
+    // The shared header: a setting stored as the wrong kind of value shows its default, which the new theme changes.
+    const header = Object.values(s.site.shell.header.nodes).find((n) => n.kind === 'instance') as InstanceNode;
+    const altSticky = getTheme('foundation-alt').components.find((c) => c.componentId === 'shell.header')!.properties.sticky.default;
+    s.components[header.definitionId].properties.sticky.default = !altSticky;
+    header.props.sticky = 'yes';
+    const shown = (st: ProjectState, tree: 'home' | 'header', id: string) => {
+      const node = (tree === 'home' ? home(st) : st.site.shell.header).nodes[id] as InstanceNode;
+      return resolveInstanceProps(st.components[node.definitionId], node, { state: st });
+    };
+    const before = { list: shown(s, 'home', list.id), header: shown(s, 'header', header.id) };
+    expect((before.list.items as Array<{ title: string }>).map((i) => i.title)).toEqual([about.title, 'Untitled']);
+    const after = applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state;
+    expect(shown(after, 'home', list.id)).toEqual(before.list);
+    expect(shown(after, 'header', header.id)).toEqual(before.header);
+    const items = (home(after).nodes[list.id] as InstanceNode).props.items as Array<Record<string, unknown>>;
+    // The card that followed its page still does; the one that showed the old default keeps it as its own.
+    expect(items[0].title).toBeNull();
+    expect(items[1].title).toBe('Untitled');
+    expect((after.site.shell.header.nodes[header.id] as InstanceNode).props.sticky).toBe(!altSticky);
+  });
+
+  it('refuses a theme switch that would hide a placement’s slot content inside an empty list (#103)', () => {
+    let s = fresh();
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), componentId: 'layout.section' }]);
+    s = ins.state;
+    const id = ins.results[0].nodeId as string;
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: id, slot: 'content', primitive: 'paragraph', text: 'My words' }]).state;
+    const alt = getTheme('foundation-alt');
+    const at = alt.components.findIndex((c) => c.componentId === 'layout.section');
+    const shipped = alt.components[at];
+    try {
+      const next = structuredClone(shipped);
+      next.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { text: { type: 'string', label: 'Text', default: '' } }, default: [] } as never;
+      const slotId = Object.values(next.tree!.nodes).find((n) => n.kind === 'slot')!.id;
+      const parent = Object.values(next.tree!.nodes).find((n) => (n.kind === 'element' || n.kind === 'repeat') && n.children.includes(slotId)) as { children: string[] };
+      parent.children = parent.children.map((c) => (c === slotId ? 'each' : c));
+      next.tree!.nodes.each = { id: 'each', kind: 'repeat', list: { $prop: 'rows' }, children: [slotId] };
+      alt.components[at] = next;
+      expect(() => applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }])).toThrow(/would no longer show the content in its "content" slot/);
+    } finally {
+      alt.components[at] = shipped;
+    }
+  });
+
   it('keeps project components pinned to their nested theme definitions on theme switch (I16)', () => {
     let s = fresh();
     const hero = firstInstance(s, 'hero.split');
@@ -450,6 +552,47 @@ describe('code component schemas (§2.2)', () => {
     s = applyOperations(s, [{ type: 'component.removePropSchema', definitionId: id, prop: 'size' }]).state;
     expect(s.components[id].properties).toEqual({});
     expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: defOf(s, 'cta.banner').id, prop: 'x', schema: { type: 'string' } }])).toThrow(/Fork it first/);
+  });
+
+  it('refuses a whole schema edited from one that has changed since, keeping the newer property and its content (#103)', () => {
+    let s = fresh();
+    const c = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: { title: { type: 'string', label: 'Title', default: 'Hi' } } }]);
+    s = c.state;
+    const id = c.results[0].definitionId as string;
+    // The Properties tab opens on this schema, and its rows are edited.
+    const opened = propertiesHash(s.components[id].properties);
+    const edited = { title: { type: 'string', label: 'Heading', default: 'Hi' } };
+    // Meanwhile another change adds a property, and a placement fills it.
+    s = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: id, prop: 'subtitle', schema: { type: 'string', label: 'Subtitle' } }]).state;
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), definitionId: id, props: { subtitle: 'Kept' } }]);
+    s = ins.state;
+    const nodeId = ins.results[0].nodeId as string;
+    const source = s.components[id].source!;
+    const save = (expectedPropertiesHash: string) => () =>
+      applyOperations(s, [{ type: 'component.updateSource', definitionId: id, source: '<p>y</p>\n', expectedHash: sourceHash(source), properties: edited, expectedPropertiesHash }]);
+    const err = (() => {
+      try {
+        save(opened)();
+      } catch (e) {
+        return e as EngineError;
+      }
+    })();
+    expect(err).toBeInstanceOf(EngineError);
+    expect(err!.code).toBe('CONFLICT');
+    expect(err!.message).toMatch(/properties of "Note" changed/);
+    // Nothing was applied: the input state still has the newer property, its content, and the old source.
+    expect(Object.keys(s.components[id].properties)).toEqual(['title', 'subtitle']);
+    expect((home(s).nodes[nodeId] as InstanceNode).props.subtitle).toBe('Kept');
+    expect(s.components[id].source).toBe(source);
+    // Saved from the current schema, the same edit goes through, and an unrelated page edit does not invalidate it.
+    s = applyOperations(s, [{ type: 'page.update', pageId: s.site.homePageId, title: 'Elsewhere' }]).state;
+    const next = save(propertiesHash(s.components[id].properties))().state;
+    expect(next.components[id].properties.title.label).toBe('Heading');
+    expect(next.components[id].source).toBe('<p>y</p>\n');
+    // A change to an existing property, with the same names, is a newer schema too.
+    const relabelled = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: id, prop: 'subtitle', schema: { type: 'string', label: 'Kicker' } }]).state;
+    expect(Object.keys(relabelled.components[id].properties)).toEqual(Object.keys(s.components[id].properties));
+    expect(() => applyOperations(relabelled, [{ type: 'component.updateSource', definitionId: id, source: '<p>y</p>\n', properties: edited, expectedPropertiesHash: propertiesHash(s.components[id].properties) }])).toThrow(/changed since they were opened/);
   });
 });
 

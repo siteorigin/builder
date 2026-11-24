@@ -2,7 +2,7 @@
  * Named variant axes. A definition offers independent choices (tone, layout, ...), and a placement picks one
  * option on each, so tone and layout combine instead of multiplying into "dark-two-columns" style variants.
  */
-import type { Bindable, ComponentDefinition, InstanceNode, ResponsiveStyles, VariantAxis, VariantDef } from './types';
+import type { Bindable, ComponentDefinition, InstanceNode, NodeTree, ProjectState, ResponsiveStyles, VariantAxis, VariantDef } from './types';
 import { isBinding } from './types';
 import { cascadeStyles, type StyleLayer } from './styles';
 
@@ -104,4 +104,43 @@ export function findVariant(def: ComponentDefinition, id: string, axis?: string)
   if (!matches.length) return { error: `"${def.name}" has no variant "${id}". Variants: ${describe(def)}.` };
   if (matches.length > 1 && id !== 'default') return { error: `"${id}" is on several variant axes of "${def.name}" (${matches.map(([a]) => a).join(', ')}). Name the axis.` };
   return { axis: matches[0][0], id };
+}
+
+/** Every tree that places components, keyed by its owner, with a name for messages. */
+function placingTrees(state: ProjectState): Map<string, { label: string; tree: NodeTree }> {
+  const out = new Map<string, { label: string; tree: NodeTree }>();
+  out.set('shell:header', { label: 'The header', tree: state.site.shell.header });
+  out.set('shell:footer', { label: 'The footer', tree: state.site.shell.footer });
+  for (const page of Object.values(state.pages)) out.set(`page:${page.id}`, { label: `The “${page.title}” page`, tree: page });
+  for (const def of Object.values(state.components)) if (def.tree) out.set(`component:${def.id}`, { label: `“${def.name}”`, tree: def.tree });
+  return out;
+}
+
+const offers = (def: ComponentDefinition | undefined, axis: string, option: string) => !!def && axesOf(def).some(([a, x]) => a === axis && Object.hasOwn(x.options, option));
+
+/**
+ * Choices that a change of definitions alone leaves naming nothing: a placement keeps its own option, which its
+ * definition offered before, but no longer offers (a component file put back from an older copy, say). The
+ * placement would quietly show the default instead. A placement whose own choice changed is not counted, nor one in a
+ * document `skip` names by owner ("page:<id>", "shell:header", "component:<id>").
+ */
+export function choicesLost(before: ProjectState, after: ProjectState, skip: (owner: string) => boolean = () => false): string[] {
+  const out: string[] = [];
+  const was = placingTrees(before);
+  for (const [key, { label, tree }] of placingTrees(after)) {
+    const old = was.get(key)?.tree;
+    if (!old || skip(key)) continue;
+    for (const node of Object.values(tree.nodes)) {
+      if (node.kind !== 'instance' || !node.variants) continue;
+      const prev = Object.hasOwn(old.nodes, node.id) ? old.nodes[node.id] : undefined;
+      if (prev?.kind !== 'instance' || prev.definitionId !== node.definitionId || !prev.variants) continue;
+      const def = after.components[node.definitionId];
+      for (const [axis, option] of Object.entries(node.variants)) {
+        if (typeof option !== 'string' || !Object.hasOwn(prev.variants, axis) || prev.variants[axis] !== option) continue;
+        if (offers(before.components[node.definitionId], axis, option) && !offers(def, axis, option))
+          out.push(`${label} uses the ${axis} “${option}” of “${def?.name ?? node.definitionId}”, which the changed component no longer has.`);
+      }
+    }
+  }
+  return out;
 }

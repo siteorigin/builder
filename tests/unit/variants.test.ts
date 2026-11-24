@@ -147,6 +147,53 @@ describe('migrating single variants to axes', () => {
     expect(state.manifest.schemaVersion).toBe(SCHEMA_VERSION);
   });
 
+  it('keeps a code placement’s value that names no variant, so its code still gets no `variant` (#103)', async () => {
+    let codeId = '';
+    const stored = await legacyProject((s) => {
+      const code = Object.values(s.components).find((d) => d.kind === 'code' && d.owner === 'project') as Legacy;
+      codeId = code.id;
+      code.variants = { default: { label: 'Default' }, wide: { label: 'Wide' } };
+      code.defaultVariant = 'default';
+      code.source = '<script>\n\tlet { text = "Note", variant = "own-fallback", variant_style = "own-style", class: className = "" } = $props();\n</script>\n\n<p class={[className, variant, variant_style]}>{text}</p>\n';
+      const page = home(s);
+      for (const [id, text, variant] of [['n_stale', 'Stale', 'gone'], ['n_empty', 'Empty', ''], ['n_wide', 'Wide', 'wide'], ['n_plain', 'Plain', undefined]] as const) {
+        page.nodes[id] = { id, kind: 'instance', definitionId: code.id, props: { text }, ...(variant !== undefined ? { variant } : {}) } as LegacyInstance;
+        page.rootIds.push(id);
+      }
+    });
+    const { state } = migrateProject(stored)!;
+    expect((home(state).nodes.n_stale as InstanceNode).variants).toEqual({ style: 'gone' });
+    expect((home(state).nodes.n_empty as InstanceNode).variants).toEqual({ style: '' });
+    expect((home(state).nodes.n_wide as InstanceNode).variants).toEqual({ style: 'wide' });
+    expect((home(state).nodes.n_plain as InstanceNode).variants).toBeUndefined();
+    const call = (s: ProjectState, text: string) => generateProject(s).get('src/routes/+page.svelte')!.match(new RegExp(`<[A-Z][^<>]*text=\\{"${text}"\\}[^<>]*>`))![0];
+    // As before axes: the stale value passes nothing, so the code's own fallback shows; the others pass their option.
+    for (const text of ['Stale', 'Empty']) expect(call(state, text)).not.toMatch(/\bvariant(_style)?=/);
+    expect(call(state, 'Wide')).toContain('variant="wide"');
+    expect(call(state, 'Wide')).toContain('variant_style="wide"');
+    expect(call(state, 'Plain')).toContain('variant="default"');
+    // Choosing an option replaces the stale value, and the code gets it.
+    const chosen = applyOperations(state, [{ type: 'instance.setVariant', owner: owner(state), nodeId: 'n_stale', variant: 'wide' }]).state;
+    expect((home(chosen).nodes.n_stale as InstanceNode).variants).toEqual({ style: 'wide' });
+    expect(call(chosen, 'Stale')).toContain('variant="wide"');
+    expect(state.components[codeId].kind).toBe('code');
+  });
+
+  it('refuses to guess an older page’s choice that is now an option on several axes (#103)', async () => {
+    const current = migrateProject(await legacyProject())!.state;
+    // A later version added the same option to the tone axis, while the layout keeps it.
+    current.components['foundation.features.grid'].variantAxes!.tone.options['four-columns'] = { label: 'Four columns tone' };
+    const page = home(current);
+    const node = Object.values(page.nodes).find((n) => n.kind === 'instance' && n.definitionId === 'foundation.features.grid') as LegacyInstance;
+    delete node.variants;
+    node.variant = 'four-columns';
+    page.schemaVersion = AXES_STEP + 1;
+    expect(() => migrateProject(current)).toThrow(/"four-columns" for "Services grid".*several of its axes \(tone, layout\)/);
+    // "default" is the plain option on each axis it is on, as the first format meant it.
+    node.variant = 'default';
+    expect((home(migrateProject(current)!.state).nodes[node.id] as InstanceNode).variants).toEqual({ tone: 'default' });
+  });
+
   it('matches the theme byte for byte where only the format changed', async () => {
     const { state } = migrateProject(await legacyProject())!;
     const theme = listThemes()[0].components.find((c) => c.id === 'foundation.faq.list')!;

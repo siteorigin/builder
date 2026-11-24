@@ -302,6 +302,7 @@ export const MIGRATIONS: Migration[] = [
     id: 'variant-axes',
     description: 'Replace the single variant of a component with named axes, so tone and layout can combine.',
     migrate(project, due) {
+      const rebuiltIds = new Set(Object.values(project.components).filter((d) => due(d)).map((d) => d.id));
       for (const def of Object.values(project.components) as LegacyDefinition[]) {
         if (!due(def)) continue;
         const axes = legacyAxes(def);
@@ -316,17 +317,40 @@ export const MIGRATIONS: Migration[] = [
           if (node.kind !== 'instance' || !('variant' in node)) continue;
           const value = node.variant;
           delete node.variant;
-          const axes = project.components[node.definitionId]?.variantAxes;
-          const selection = axes && typeof value === 'string' ? legacySelection(axes, value) : undefined;
+          const def = project.components[node.definitionId];
+          const axes = def?.variantAxes;
+          const selection = axes && typeof value === 'string' ? legacySelection(axes, value, def.name) : undefined;
           if (selection) node.variants = selection;
+          // Code was given no `variant` at all for a value naming none of its variants, so its own fallback showed.
+          // The value stays as the placement's choice, which still passes nothing, instead of becoming the default.
+          else if (def?.kind === 'code' && axes && typeof value === 'string') node.variants = { [Object.keys(axes)[0]]: value };
+        }
+      };
+      // A managed definition put back from a copy older than the placements around it (they are already on axes) is
+      // rebuilt here from its first-format variants. An option those placements chose that it does not have would
+      // quietly show the default instead, so the update stops and says why. Code is given nothing for such a choice
+      // (its own fallback shows), which a choice that was already stale also gets, so only a reload can tell them apart.
+      const rebuilt = (id: string) => (rebuiltIds.has(id) && project.components[id]?.kind === 'managed' ? project.components[id] : undefined);
+      const check = (tree: NodeTree, where: string) => {
+        for (const node of Object.values(tree.nodes)) {
+          const def = node.kind === 'instance' ? rebuilt(node.definitionId) : undefined;
+          if (!def || node.kind !== 'instance' || !node.variants) continue;
+          for (const [axis, option] of Object.entries(node.variants))
+            if (typeof option === 'string' && !Object.hasOwn(def.variantAxes?.[axis]?.options ?? {}, option))
+              throw new Error(`${where} uses the ${axis} "${option}" of "${def.name}", which the older copy of "${def.name}" does not have. Put back the matching page files too, or choose another option first.`);
         }
       };
       if (due(project.site)) {
         convert(project.site.shell.header);
         convert(project.site.shell.footer);
+      } else {
+        check(project.site.shell.header, 'The header');
+        check(project.site.shell.footer, 'The footer');
       }
       for (const page of Object.values(project.pages)) if (due(page)) convert(page);
+      else check(page, `The “${page.title}” page`);
       for (const def of Object.values(project.components)) if (due(def) && def.tree) convert(def.tree);
+      else if (def.tree) check(def.tree, `“${def.name}”`);
     }
   },
   {
@@ -410,9 +434,17 @@ function legacyAxes(def: LegacyDefinition): Record<string, VariantAxis> | undefi
   };
 }
 
-/** What a first-format variant value selects: the option, plus the plain option on any axis it was exclusive of. */
-function legacySelection(axes: Record<string, VariantAxis>, value: string): Record<string, string> | undefined {
-  const axis = Object.keys(axes).find((a) => Object.hasOwn(axes[a].options, value));
+/**
+ * What a first-format variant value selects: the option, plus the plain option on any axis it was exclusive of. A
+ * placement restored from an older copy beside a definition already on axes can name an option that has since been
+ * added to another axis too; guessing could pick the wrong one, so the update stops and says why.
+ */
+function legacySelection(axes: Record<string, VariantAxis>, value: string, name: string): Record<string, string> | undefined {
+  const holding = Object.keys(axes).filter((a) => Object.hasOwn(axes[a].options, value));
+  // "default" is the plain option on every axis it is on, which is what the first format's default meant.
+  if (holding.length > 1 && value !== 'default')
+    throw new Error(`a placement from an older copy chooses "${value}" for "${name}", which is now an option on several of its axes (${holding.join(', ')}). Restore "${name}" from the same copy, or choose the option in the current file.`);
+  const axis = holding[0];
   if (!axis) return undefined;
   const out: Record<string, string> = { [axis]: value };
   for (const [other, a] of Object.entries(axes)) if (other !== axis && a.default !== 'default' && Object.hasOwn(a.options, 'default')) out[other] = 'default';
@@ -443,6 +475,10 @@ function documents(project: ProjectState): Array<{ schemaVersion: number }> {
 
 /** A missing or malformed version counts as the first format: migrations leave current documents unchanged. */
 const versionOf = (doc: { schemaVersion?: unknown } | null): number => (Number.isInteger(doc?.schemaVersion) && (doc!.schemaVersion as number) > 0 ? (doc!.schemaVersion as number) : 1);
+export const formatOf = versionOf;
+
+/** The first format with variant axes: a document stored before it has its first-format choices converted. */
+export const AXES_FORMAT = MIGRATIONS.findIndex((m) => m.id === 'variant-axes') + 2;
 
 /** The newest format any document was written in. Above LATEST_SCHEMA_VERSION, this app cannot edit the project. */
 export function newestDocumentVersion(project: ProjectState): number {

@@ -437,6 +437,8 @@ interface RuleOpts {
   unhide?: (scope: ResponsiveScope) => string | null;
   /** Finishes each selector written (a component's own <style> block makes them `:global()`). */
   wrap?: (sel: string) => string;
+  /** Converted code's own stylesheet: each hide is written for an element not marked shown at that size (see `shownGate`). */
+  gateHides?: boolean;
 }
 
 function nodeDisplay(layout: unknown): string | null {
@@ -460,6 +462,22 @@ function unhider(def: ComponentDefinition, nodeId: string, variants: InstanceNod
     return nodeDisplay(layout) ?? natural;
   };
 }
+
+/** Classes a code placement's part takes where the placement shows it again (`hidden: false`), at all sizes or one. */
+function shownClasses(override: ResponsiveStyles | undefined): string {
+  if (!override) return '';
+  const out = override.base?.hidden === false ? [' so-shown'] : [];
+  for (const size of ['phone', 'tablet', 'desktop'] as const) if (override[size]?.hidden === false) out.push(` so-shown-${size}`);
+  return out.join('');
+}
+
+/**
+ * Code made from a managed design keeps that design's hides in its own stylesheet, where a placement's overrides can
+ * no longer see them. Each hide is written for an element not marked shown at that size (`so-shown` for every size,
+ * `so-shown-<size>`): `:where()` adds no weight, so the hide keeps its place in the cascade, and a marked element
+ * simply takes whatever display its other rules give it.
+ */
+const shownGate = (raw: string, size: 'phone' | 'tablet' | 'desktop') => `${raw}:not(:where(.so-shown, .so-shown-${size}))`;
 
 /**
  * Declaration order inside a rule. Composite values come first so the specific ones win (`gap` before `columnGap`,
@@ -492,7 +510,9 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     const reduced: string[] = [];
     // Composite text styles first so explicit typography wins; visibility last so it can override display.
     const keys = Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b));
+    const gated = !!opts.gateHides && props.hidden === true;
     for (const k of keys) {
+      if (gated && k === 'hidden') continue;
       const out = styleToCss(k, props[k]);
       // Links and buttons paint from --so-btn-bg / --so-btn-fg, so a styled button keeps its hover state
       // whatever the specificity of the rule that styles it.
@@ -509,6 +529,9 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     }
     if (fallback.length) rules[scope].push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
     if (decls.length) rules[scope].push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${d};`).join('\n')}\n}`);
+    // The hide right after the rule it came from, per size, so it keeps its place in the cascade.
+    if (gated && scope === 'base') for (const size of ['phone', 'tablet', 'desktop'] as const) rules.base.push(`@media ${MEDIA_QUERIES[size]} {\n\t${wrap(shownGate(raw, size))} {\n\t\tdisplay: none;\n\t}\n}`);
+    else if (gated && scope !== 'base') rules[scope].push(`${wrap(shownGate(raw, scope))} {\n\tdisplay: none;\n}`);
     // At every size: a transition set for one size is turned off wherever the element is.
     if (reduced.length) rules.reduced.push(`${quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
     // Shown at all sizes: each range where it is hidden gets the display its own layout gives it.
@@ -589,7 +612,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
   const wrap = (sel: string) => (standalone ? `:global(${sel})` : sel);
   for (const id of Object.keys(def.tree.nodes).sort()) {
     const n = def.tree.nodes[id];
-    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap });
+    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap, gateHides: standalone });
     if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, n, `.${nodeClass(def, id)}`, wrap);
   }
   const axes = axesOf(def);
@@ -605,7 +628,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
         const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
         // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
         const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
-        addRules(rules, sel, v.styles![nid], { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap });
+        addRules(rules, sel, v.styles![nid], { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone });
       }
     }
   });
@@ -1522,8 +1545,10 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   const name = importName(def);
   useImport(ctx, name, defFile(def));
   const attrs: string[] = [];
-  // Class: definitions pass their node class; pages pass nothing (overrides use so_o).
-  if (ctx.def) attrs.push(`class=${classExpr(ctx, node)}`);
+  // Class: definitions pass their node class; pages pass nothing (overrides use so_o). A code placement inside a
+  // definition shows its root again through the same markers a page's code placement takes (see shownClasses).
+  const rootShown = def.kind === 'code' ? shownClasses(node.overrides?.root).trim() : '';
+  if (ctx.def) attrs.push(`class=${classExpr(ctx, node, rootShown ? [js(rootShown)] : [])}`);
   for (const [propName, schema] of Object.entries(def.properties).sort(([a], [b]) => a.localeCompare(b))) {
     const raw = Object.hasOwn(node.props, propName) ? node.props[propName] : schema.default;
     const code = def.kind === 'code';
@@ -1549,13 +1574,19 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     const value = bindExpr(ctx, v);
     return `{${js(Object.keys(a.options))}.includes(${value}) ? ${value} : ${js(a.default)}}`;
   };
+  // A code placement whose own choice names none of the options is given nothing on that axis, so the code's own
+  // fallback shows, as it did before axes (a first-format value naming no variant passed no `variant`).
+  const stale = (axis: string) => {
+    const own = def.kind === 'code' && node.variants && Object.hasOwn(node.variants, axis) ? node.variants[axis] : undefined;
+    return typeof own === 'string' && !Object.hasOwn(axes.get(axis)!.options, own);
+  };
   for (const [axis, value] of chosen) {
     // A code component gets an axis prop only if its source reads it; anything else would land in its rest props.
-    if (def.kind === 'code' && (Object.hasOwn(def.properties, variantProp(axis)) || !def.source?.includes(variantProp(axis)))) continue;
+    if (def.kind === 'code' && (Object.hasOwn(def.properties, variantProp(axis)) || !def.source?.includes(variantProp(axis)) || stale(axis))) continue;
     attrs.push(`${variantProp(axis)}=${variantExpr(value, axis)}`);
   }
   // Code components read the first axis as `variant`, the contract they have always had.
-  if (def.kind === 'code' && chosen.length && !Object.hasOwn(def.properties, 'variant')) attrs.push(`variant=${variantExpr(chosen[0][1], chosen[0][0])}`);
+  if (def.kind === 'code' && chosen.length && !Object.hasOwn(def.properties, 'variant') && !stale(chosen[0][0])) attrs.push(`variant=${variantExpr(chosen[0][1], chosen[0][0])}`);
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
@@ -1571,7 +1602,8 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // same map, and their root override also through `class`, which every code component places on its root.
   if (!ctx.def && node.overrides && Object.keys(node.overrides).length) {
     const map: Record<string, string> = {};
-    for (const partId of Object.keys(node.overrides).sort()) map[partId] = overrideClass(node.id, partId);
+    // A code placement shows a part its code hides through classes, since its stylesheet cannot see those hides.
+    for (const partId of Object.keys(node.overrides).sort()) map[partId] = overrideClass(node.id, partId) + (def.kind === 'code' ? shownClasses(node.overrides[partId]) : '');
     attrs.push(`so_o={${js(map)}}`);
     if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) attrs.push(`class=${attrJs(map.root)}`);
   }

@@ -4,7 +4,7 @@ import type { AssetRecord, ComponentDefinition, GraphNode, InstanceNode, Project
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
-import { validateStyleValue } from '@shared/styles';
+import { MEDIA_QUERIES, validateStyleValue } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
 import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
 import { externalLink } from '@shared/links';
@@ -205,6 +205,46 @@ describe('responsive overrides', () => {
     footer.overrides = { brand: { base: { hidden: false } } };
     const css = generateProject(s).get(`${STYLES_DIR}/site.css`)!;
     expect(css).toMatch(/so-o-[^{]+-brand[^{]*\{[^}]*display: revert/);
+  });
+
+  it('keeps a part shown again after the placement is converted to code (#103)', async () => {
+    const s = fresh();
+    const def = defOf(s, 'shell.footer');
+    def.tree!.nodes['brand-name'].styles = { base: { ...def.tree!.nodes['brand-name'].styles?.base, hidden: true } };
+    def.tree!.nodes.tagline.styles = { ...def.tree!.nodes.tagline.styles, phone: { ...def.tree!.nodes.tagline.styles?.phone, hidden: true } };
+    const footer = Object.values(s.site.shell.footer.nodes)[0] as InstanceNode;
+    footer.overrides = { brand: { base: { hidden: false } } };
+    const r = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.id }]);
+    const code = r.state.components[r.results[0].definitionId as string];
+    const source = code.source!;
+    const cls = (node: string) => `so-${code.id.replace(/[^a-zA-Z0-9]/g, '-')}__${node}`;
+    const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const gated = (node: string, size: 'phone' | 'tablet' | 'desktop') => `:global(.${cls(node)}:not(:where(.so-shown, .so-shown-${size}))) {`;
+    // The design's hides stay in the code, each written for an element not marked shown at that size, and in no
+    // other form: the node's own rule no longer hides it outright.
+    const own = source.match(new RegExp(`:global\\(\\.${esc(cls('brand-name'))}\\) \\{[^}]*\\}`))![0];
+    expect(own).not.toContain('display: none');
+    for (const size of ['phone', 'tablet', 'desktop'] as const) {
+      expect(source).toMatch(new RegExp(`@media ${esc(MEDIA_QUERIES[size])} \\{\\s*${esc(gated('brand-name', size))}\\s*display: none;`));
+      // A hide at one size is gated at that size only.
+      expect(source.includes(gated('tagline', size))).toBe(size === 'phone');
+    }
+    // Nothing writes a display of its own to show it: the element keeps whatever its other rules give it.
+    expect(source).not.toMatch(/so-shown[^{]*\{\s*display: (?!none)/);
+    expect(() => compile(source, { filename: code.sourcePath, generate: 'server', runes: true })).not.toThrow();
+    expect((await checkSvelteSource(source, { filename: code.sourcePath })).filter((p) => p.severity === 'error')).toEqual([]);
+    // The placement marks it shown at every size, through the same hook its other part styles use.
+    const placed = (st: ProjectState) => [...generateProject(st).values()].join('\n');
+    expect(placed(r.state)).toMatch(/"brand":"so-o-[\w-]+-brand so-shown"/);
+    // Shown on phones only, it marks that size; with the override gone it marks nothing and stays hidden.
+    const phone = structuredClone(r.state);
+    (Object.values(phone.site.shell.footer.nodes)[0] as InstanceNode).overrides = { brand: { phone: { hidden: false } } };
+    expect(placed(phone)).toMatch(/"brand":"so-o-[\w-]+-brand so-shown-phone"/);
+    const plain = structuredClone(r.state);
+    delete (Object.values(plain.site.shell.footer.nodes)[0] as InstanceNode).overrides;
+    expect(placed(plain)).not.toMatch(/"brand":"[^"]*so-shown/);
+    // The site's own component stylesheet is unchanged: hides there stay plain.
+    expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).not.toContain('so-shown');
   });
 
   it('drives button colours through --so-btn-bg / --so-btn-fg so hover follows them', () => {

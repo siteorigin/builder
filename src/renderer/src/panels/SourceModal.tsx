@@ -7,6 +7,7 @@ import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor, type CodeEditorHandle } from '../components/CodeEditor';
 import { PropSchemaEditor, hiddenEdits, propertiesFromRows, renamesFromRows, rowsFromProperties, schemaProblems, type SchemaRow } from './PropSchemaEditor';
+import { propertiesHash } from '@shared/ops';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -196,9 +197,13 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     };
   }, [definitionId, def?.source, reload]);
   // A saved (or undone) manifest replaces the rows, unless there are unsaved edits to them or one is being typed.
+  // Those keep the schema they were made from as their baseline, so a change underneath them (undo, the AI, an edit
+  // outside the app) is seen.
   const propsKey = JSON.stringify(def?.properties ?? {});
   // A rename is an edit even when the schemas read the same, and so are two rows with one name.
   const propsDirty = JSON.stringify(propertiesFromRows(rows)) !== savedProps || renamesFromRows(rows).length > 0 || hiddenEdits(rows);
+  // Text still being typed in a field is an edit made from that baseline too.
+  const propsStale = (propsDirty || typing) && propsKey !== savedProps;
   // The stored properties last taken into account: only a change since then refreshes the rows, so a snapshot that
   // arrives after a save never puts back the properties from before it.
   const seenKey = useRef(propsKey);
@@ -206,6 +211,12 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   // only onto the project its edits were made against.
   const revision = useStore((s) => s.snapshot?.revision);
   const cleanAt = useRef(revision);
+  // Rows replaced from the stored schema start a new generation: an edit still on its way from a field of the rows
+  // before (a field that commits as it unmounts) is dropped rather than put back over them.
+  const generation = useRef(0);
+  const made = generation.current;
+  const latestDef = useRef(def);
+  latestDef.current = def;
   useEffect(() => {
     if (propsDirty || typing) return;
     // Only ever forward: a push the store has yet to receive must not undo what a save already recorded.
@@ -213,9 +224,19 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     if (propsKey === seenKey.current) return;
     seenKey.current = propsKey;
     if (propsKey === savedProps) return;
+    generation.current++;
     setRows(rowsFromProperties(def?.properties ?? {}));
     setSavedProps(propsKey);
   }, [propsKey, propsDirty, typing, revision]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** Take the stored schema as it is now, dropping the edits made to the rows. Unsaved Svelte source is kept. */
+  const reloadProps = () => {
+    const now = JSON.stringify(latestDef.current?.properties ?? {});
+    generation.current++;
+    setRows(rowsFromProperties(latestDef.current?.properties ?? {}));
+    setSavedProps(now);
+    seenKey.current = now;
+    setErrors([]);
+  };
   const code = edit ?? src?.source ?? '';
   const codeDirty = !!src && edit !== null && edit !== src.source;
   const dirty = !!src && (codeDirty || propsDirty || typing);
@@ -249,6 +270,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     setErrors((e) => (e.length ? [] : e));
   };
   const changeRows = (next: SchemaRow[]) => {
+    if (made !== generation.current) return;
     setRows(next);
     setSaved(false);
     setErrors((e) => (e.length ? [] : e));
@@ -257,15 +279,13 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     const ok = await confirmDialog({ title: 'Revert your changes?', body: `This puts the ${changed} back to the last saved version.`, confirmLabel: 'Revert changes', cancelLabel: 'Keep editing', danger: true });
     if (ok !== true) return;
     setEdit(null);
-    setRows(rowsFromProperties(def.properties));
-    setSavedProps(propsKey);
-    seenKey.current = propsKey;
-    setErrors([]);
+    reloadProps();
   };
   const save = async () => {
     if (!src?.editable || !dirty || saving) return;
     setErrors([]);
     setSaved(false);
+    if (propsStale) return setTab('manifest');
     const problems = propsDirty ? schemaProblems(rows) : [];
     if (problems.length) return (setErrors(problems), setTab('manifest'));
     let wrote = false;
@@ -284,14 +304,9 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       if (properties && (storedKey !== savedProps || (renames.length && snap?.revision !== cleanAt.current))) return (setErrors([STALE_PROPERTIES]), setTab('manifest'));
       wrote = true;
       setWriting(true);
-      if (
-        !(await applyOps(
-          [{ type: 'component.updateSource', definitionId, source: r.source, expectedHash: src.hash, ...(properties ? { properties } : {}), ...(renames.length ? { renames } : {}) }],
-          `Edit ${def.name} source`,
-          undefined,
-          properties ? snap?.revision : undefined
-        ))
-      )
+      // The schema the rows were edited from: the engine refuses the save if the stored one changed meanwhile.
+      const schema = properties ? { properties, expectedPropertiesHash: propertiesHash(JSON.parse(savedProps)), ...(renames.length ? { renames } : {}) } : {};
+      if (!(await applyOps([{ type: 'component.updateSource', definitionId, source: r.source, expectedHash: src.hash, ...schema }], `Edit ${def.name} source`, undefined, properties ? snap?.revision : undefined)))
         return setErrors([WRITE_FAILED]);
       // A repaired save shows the code that was stored; undo in the editor still reaches what was typed.
       if (r.source !== code) setEdit(r.source);
@@ -306,6 +321,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
           // a change to show. Anything else it shows by now is newer, and refreshes the rows.
           const now = JSON.stringify(useStore.getState().snapshot?.state.components[definitionId]?.properties ?? {});
           seenKey.current = now === storedKey ? now : JSON.stringify(stored);
+          generation.current++;
           setRows(rowsFromProperties(stored));
           setSavedProps(JSON.stringify(stored));
         }
@@ -440,10 +456,29 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
             }
           ]}
         />
+        {propsStale && (
+          <div className="scope-note danger source-stale" role="alert" style={{ alignItems: 'center' }}>
+            <span className="grow">
+              <strong>These properties changed since you started editing them.</strong> Saving your edits would replace{' '}
+              {changedProps(JSON.parse(savedProps), def.properties)}. Reload to see the current properties; your source edits stay.
+            </span>
+            <button className="btn btn-sm" disabled={saving} onClick={reloadProps}>
+              Reload properties
+            </button>
+          </div>
+        )}
         <SaveProblems problems={errors} onGoTo={goToLine} />
       </div>
     </Modal>
   );
+}
+
+/** The properties that differ between two schemas, for saying what a stale save would undo. */
+function changedProps(was: Record<string, unknown>, now: Record<string, unknown>): string {
+  const names = [...new Set([...Object.keys(was), ...Object.keys(now)])].filter((n) => JSON.stringify(was[n]) !== JSON.stringify(now[n]));
+  if (!names.length) return 'the order they are listed in';
+  const quoted = names.map((n) => `“${n}”`);
+  return `the newer ${quoted.length === 1 ? quoted[0] : `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`}`;
 }
 
 export function PageSourceModal({ pageId }: { pageId: string }) {

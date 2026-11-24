@@ -10,14 +10,14 @@
  * - neither version places another component: nested theme components only make sense as a matched set;
  * - the new version keeps the public contract its placements rely on, and accepts the content they hold.
  */
-import type { ComponentDefinition, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { getTheme, themeLockEntry } from '@catalogue/index';
 import { definitionHash, matchesLock } from '@shared/migrations';
 import { variantOptions } from '@shared/variants';
 import { clone } from './install';
-import { EngineError, fail, instancesOf, subtreeIds } from './tree';
+import { EngineError, childLists, fail, instancesOf, subtreeIds } from './tree';
 import { codeNeeds, directDependencies } from './definitions';
 import { normalizeProp } from './values';
 import { cardKey, cardLinkProblems, type CardProblem } from '@generator/card-links';
@@ -125,14 +125,46 @@ function pinnedByProject(state: ProjectState): Map<string, ComponentDefinition> 
   return pinned;
 }
 
+/**
+ * The slots `next` shows for one placement: those reachable from its roots without passing through a repeat whose list
+ * is empty for that placement (its own value, or the new default it would inherit), which renders nothing inside it.
+ */
+function shownSlots(next: ComponentDefinition, node: InstanceNode): Set<string> {
+  const out = new Set<string>();
+  const seen = new Set<string>();
+  const walk = (id: string) => {
+    const n = own(next.tree!.nodes, id);
+    if (!n || seen.has(id)) return;
+    seen.add(id);
+    if (n.kind === 'slot') out.add(n.slot);
+    if (n.kind === 'repeat') {
+      const prop = n.list?.$prop;
+      const schema = typeof prop === 'string' ? own(next.properties, prop) : undefined;
+      // A list that fills itself (articles, the current page) has rows only the site can tell, so it may show them,
+      // unless it may hold none at all.
+      const computed = schema?.type === 'list' && !!schema.feed && schema.max !== 0;
+      // As the generator reads it: the placement's own list, or the default for anything that is not one.
+      const mine = typeof prop === 'string' && Object.hasOwn(node.props, prop) ? node.props[prop] : undefined;
+      const v = Array.isArray(mine) || isBinding(mine) ? mine : schema?.default;
+      if (!computed && !isBinding(v) && !(Array.isArray(v) && v.length)) return;
+    }
+    for (const cl of childLists(n)) cl.ids.forEach(walk);
+  };
+  next.tree!.rootIds.forEach(walk);
+  return out;
+}
+
+/** The filled slots of a placement that `next` would no longer show. */
+export function hiddenSlotContent(next: ComponentDefinition, node: InstanceNode, label: string, name: string): string[] {
+  if (next.kind !== 'managed' || !next.tree) return [];
+  const shown = shownSlots(next, node);
+  return Object.entries(node.slots ?? {}).flatMap(([slot, ids]) => (ids.length && !shown.has(slot) ? [`${label}: ${name} would no longer show the content in its "${slot}" slot.`] : []));
+}
+
 /** What placements on pages and in the shell hold that `next` would no longer show or accept. */
 function placementConflicts(state: ProjectState, def: ComponentDefinition, next: ComponentDefinition): string[] {
   const out = new Set<string>();
   const rendered = new Set(next.tree ? next.tree.rootIds.flatMap((r) => subtreeIds(next.tree!, r)) : []);
-  const showsSlot = (slot: string) => [...rendered].some((id) => {
-    const n = next.tree!.nodes[id];
-    return n.kind === 'slot' && n.slot === slot;
-  });
   for (const { node, owner, label } of instancesOf(state, def.id)) {
     if (owner.kind === 'component') continue;
     for (const [name, schema] of Object.entries(next.properties)) {
@@ -145,8 +177,7 @@ function placementConflicts(state: ProjectState, def: ComponentDefinition, next:
       }
     }
     if (next.kind !== 'managed' || !next.tree) continue;
-    for (const [slot, ids] of Object.entries(node.slots ?? {}))
-      if (ids.length && !showsSlot(slot)) out.add(`${label}: ${def.name} would no longer show the content in its "${slot}" slot.`);
+    for (const m of hiddenSlotContent(next, node, label, def.name)) out.add(m);
     for (const partId of Object.keys(node.overrides ?? {})) {
       const target = own(next.parts, partId)?.nodeId;
       const kind = target && rendered.has(target) ? next.tree.nodes[target].kind : undefined;
