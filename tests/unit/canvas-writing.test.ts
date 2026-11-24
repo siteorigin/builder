@@ -38,6 +38,9 @@ let frame: Frame;
 let cdp: CDPSession;
 
 const messages = () => page.evaluate<Message[]>(`window.seen`);
+/** Whether an edit started or not, out of everything else the bridge reports meanwhile (geometry, focus). */
+const EDIT_MESSAGES = new Set(['textEditStarted', 'textCancel', 'textCommit']);
+const editMessages = (ms: Message[]) => ms.filter((m) => EDIT_MESSAGES.has(m.type)).map((m) => m.type);
 const selected = () => frame.evaluate<{ text: string; collapsed: boolean }>(`({ text: getSelection().toString(), collapsed: getSelection().isCollapsed })`);
 const html = (node: string) => frame.innerHTML(`[data-so-node="${node}"]`);
 const editable = (node: string) => frame.getAttribute(`[data-so-node="${node}"]`, 'contenteditable');
@@ -199,7 +202,7 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       const second = await doubleClick('h', 'Studio');
       const before = (await messages()).length;
       const stale = await answer(first);
-      expect((await messages()).slice(before).map((m) => [m.type, m.payload.editId])).toEqual([['textCancel', stale]]);
+      expect((await messages()).slice(before).filter((m) => EDIT_MESSAGES.has(m.type)).map((m) => [m.type, m.payload.editId])).toEqual([['textCancel', stale]]);
       expect(await editable('r')).toBeNull();
       await answer(second);
       await expect.poll(() => editable('h'), WAIT).toBe('plaintext-only');
@@ -212,7 +215,7 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       await frame.evaluate(`(() => { const el = document.querySelector('[data-so-node="r"]'); el.replaceWith(el.cloneNode(true)); })()`);
       const before = (await messages()).length;
       await answer(dbl);
-      expect((await messages()).slice(before).map((m) => m.type)).toEqual(['textCancel']);
+      expect(editMessages((await messages()).slice(before))).toEqual(['textCancel']);
       expect(await editable('r')).toBeNull();
     });
 
@@ -221,7 +224,7 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       await post('mode', { mode: 'preview' });
       const before = (await messages()).length;
       await answer(dbl);
-      expect((await messages()).slice(before).map((m) => m.type)).toEqual(['textCancel']);
+      expect(editMessages((await messages()).slice(before))).toEqual(['textCancel']);
       expect(await editable('r')).toBeNull();
     });
 
