@@ -28,6 +28,7 @@ import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
+import type { PictureStandIn } from '../lib/sharing';
 import { effectiveItem } from '@shared/page-teasers';
 import { articleRows, feedLimit } from '@shared/articles';
 import { selectPage } from '../lib/actions';
@@ -473,9 +474,11 @@ const carryKey = (x: ImageValue | null | undefined, project: string | undefined)
 
 /**
  * Image editor: one card holding the picture, its description and whether it is decorative. `title` puts the
- * field's name inside the card (like the other field groups); a standalone image passes none.
+ * field's name inside the card (like the other field groups); a standalone image passes none. `picture` makes it a
+ * picture and nothing else, with no description to write and never decorative (a page's sharing image; see
+ * PictureStandIn).
  */
-export function ImageEditor({ value, onChange, state, title, plain }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage }) {
+export function ImageEditor({ value, onChange, state, title, plain, picture }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage; picture?: PictureStandIn }) {
   const runtime = useStore((s) => s.runtime);
   // The project as this editor shows it: an import checks its placement against it.
   const snapshot = useStore((s) => s.snapshot);
@@ -484,7 +487,10 @@ export function ImageEditor({ value, onChange, state, title, plain }: { value: I
   // Where this image sits in the project, so a description refused for being too long waits for it there.
   const home = useFieldHome();
   const v = value ?? { assetId: null, alt: '' };
-  const asset = v.assetId ? state.assets.assets[v.assetId] : null;
+  // A picture-only field (a sharing image) shows only what the library has as an image: a saved ID that names a
+  // document or font, or is no record at all, is the same as an image that is gone.
+  const named = v.assetId && Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : null;
+  const asset = picture ? (named?.kind === 'image' ? named : null) : v.assetId ? state.assets.assets[v.assetId] : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   // The value as it is now, for work that finishes later (an import).
   const latest = useRef(v);
@@ -508,6 +514,8 @@ export function ImageEditor({ value, onChange, state, title, plain }: { value: I
   const pick = (id: string, suggestion?: string) => {
     const cur = latest.current;
     if (id === cur.assetId) return;
+    // A picture with no description to carry over: only the choice is written.
+    if (picture) return onChange({ assetId: id, alt: '' });
     const next = chosen(cur, id, suggestion);
     setCarried(next.carried, next.value);
     onChange(next.value);
@@ -577,6 +585,7 @@ export function ImageEditor({ value, onChange, state, title, plain }: { value: I
         place: (a) => {
           // The same picture again: the field is checked, not written.
           if (a.id === start.assetId) return write(start);
+          if (picture) return write({ assetId: a.id, alt: '' });
           const next = chosen(start, a.id, a.altSuggestion);
           carry = { on: next.carried, value: next.value };
           write(next.value);
@@ -615,18 +624,21 @@ export function ImageEditor({ value, onChange, state, title, plain }: { value: I
     }
   };
   // Until there is an image (or something already set about it), the chooser is the only thing to do.
-  const details = !plain && (!!asset || !!v.alt || !!v.decorative);
+  const details = !plain && !picture && (!!asset || !!v.alt || !!v.decorative);
   // An image the field still names but Assets no longer has: said, and removable, rather than shown as empty.
   const gone = !!v.assetId && !asset;
+  // The image a picture with none of its own stands for, while the library still has it.
+  const fallback = picture && !v.assetId && picture.inherited && Object.hasOwn(library, picture.inherited) && library[picture.inherited].kind === 'image' ? library[picture.inherited] : null;
+  const shownAsset = asset ?? fallback;
   // Remove takes its own button away: focus that was on it goes to the chooser once the image is gone.
   const removedAt = useRef(0);
   useEffect(() => {
-    if (asset || !removedAt.current) return;
+    if (asset || v.assetId || !removedAt.current) return;
     const recent = Date.now() - removedAt.current < MOVE_PENDING_MS;
     removedAt.current = 0;
     const at = document.activeElement;
     if (recent && (!at || at === document.body)) chooseBtn.current?.focus();
-  }, [asset]);
+  }, [asset, v.assetId]);
   return (
     <div
       className={`insp-image${over ? ' drop-over' : ''}${plain ? ` plain-${plain}` : ''}`}
@@ -646,27 +658,29 @@ export function ImageEditor({ value, onChange, state, title, plain }: { value: I
         {carriedSaid.text}
       </span>
       <div className="insp-image-top">
-        <div className={`insp-image-thumb${asset ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined}>{asset && devUrl ? <AssetImage key={missingKey(snapshot, asset.id)} asset={asset} devUrl={devUrl} cover alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
+        <div className={`insp-image-thumb${shownAsset ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined}>{shownAsset && devUrl ? <AssetImage key={missingKey(snapshot, shownAsset.id)} asset={shownAsset} devUrl={devUrl} cover alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
         <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
-          <span className={`insp-image-name${asset ? '' : gone ? ' gone' : ' none'}`} id={`${titleId}-now`} title={asset?.name}>
-            {asset ? (labels.get(asset.id)?.label ?? asset.name) : over ? 'Drop to use this image' : gone ? 'This image is no longer in Assets' : plain ? 'None' : 'No image chosen'}
+          <span className={`insp-image-name${shownAsset ? '' : gone ? ' gone' : ' none'}`} id={`${titleId}-now`} title={shownAsset?.name}>
+            {shownAsset ? (labels.get(shownAsset.id)?.label ?? shownAsset.name) : over ? 'Drop to use this image' : gone ? (named ? 'This file is not an image' : 'This image is no longer in Assets') : (picture?.none ?? (plain ? 'None' : 'No image chosen'))}
           </span>
-          <span className="row" style={{ gap: 4 }}>
+          {/* Whose image this is, when it is not the field's own. */}
+          {fallback && !over && <span className="faint insp-note">{picture!.from}</span>}
+          <span className="row" style={{ gap: 4, flexWrap: picture ? 'wrap' : undefined }}>
             <button ref={chooseBtn} className="btn btn-sm" aria-describedby={gone || plain ? `${titleId}-now` : undefined} aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>
               <ImagePlus />
               {importing ? 'Adding…' : asset || gone ? 'Change…' : 'Choose image…'}
             </button>
             {(asset || gone) && (
               <button
-                className="btn btn-sm insp-image-remove"
-                aria-label={`Remove ${title ? title.toLowerCase() : 'image'}`}
+                className={`btn btn-sm${picture?.inherited ? '' : ' insp-image-remove'}`}
+                aria-label={picture ? picture.back : `Remove ${title ? title.toLowerCase() : 'image'}`}
                 onClick={() => {
-                  setCarried(false);
+                  if (!picture) setCarried(false);
                   removedAt.current = Date.now();
                   onChange({ assetId: null, alt: v.alt, decorative: v.decorative });
                 }}
               >
-                Remove
+                {picture ? picture.back : 'Remove'}
               </button>
             )}
           </span>

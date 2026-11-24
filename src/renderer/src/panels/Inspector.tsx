@@ -36,7 +36,6 @@ import {
 import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue, TextNode } from '@shared/types';
 import { isBinding, parseStyleScopeKey } from '@shared/types';
 import { followNote } from '@shared/site-name';
-import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
 import { validateRoute } from '@shared/routes';
@@ -72,6 +71,8 @@ import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detac
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
+import { searchSummary, sharingView } from '../lib/sharing';
+import { openSiteSharing, SharingPreview } from './SharingPreview';
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
@@ -2439,9 +2440,6 @@ function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
 /** The Inside choice standing for where a page with folders of its own in its address is now. */
 const HERE = ':here';
 
-/** Whether a page is kept out of search, beside its Search & sharing heading; nothing when it is listed everywhere. */
-const searchSummary = (noindex: boolean, siteSearch: boolean) => (noindex && siteSearch ? 'Hidden from all search' : noindex ? 'Not in search engines' : siteSearch ? 'Not in site search' : undefined);
-
 /** A language code by name ("fr" → "French"), or the code itself when it isn't one the system knows. */
 function languageName(code: string): string {
   try {
@@ -2457,7 +2455,6 @@ const shellSummary = (header: boolean, footer: boolean) => (header && footer ? '
 
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
-  const assetSort = useStore((s) => s.assetSort);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const [titleError, setTitleError] = useState<string | null>(null);
   if (!page) return null;
@@ -2465,9 +2462,8 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const isHome = page.id === state.site.homePageId;
   const draft = isDraftPage(state, page);
   const inside = pagesWithin(state.pages, page.id);
-  // The sharing image menu lists images in the order Assets does, with the ID of any that share a name.
-  const images = sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), assetSort);
-  const imageLabels = assetLabels(images);
+  // How a shared link to the page looks, and whose sharing image it carries.
+  const sharing = sharingView(state, page);
   return (
     <div className="panel-body insp">
       <Header title={page.title} kind={`${isHome ? 'Home page' : draft ? 'Draft page' : 'Page'} · ${isHome ? '/' : page.route}`} icon={isHome ? <House /> : <FileText />}>
@@ -2542,23 +2538,28 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />
         <p className="insp-note field-hint">For this page only; other pages keep their own choice. Editing the header or footer changes it on every page that shows it.</p>
       </Section>
-      <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(!!page.seo.noindex, !!page.seo.searchHidden)}>
+      <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(page)}>
+        <SharingPreview state={state} page={page} />
         <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
           <DraftInput limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
         </Field>
         <Field label="Description" hint="Shown by search engines. About 150 characters.">
           <DraftInput multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
         </Field>
-        <Field label="Sharing image" hint="Shown when the page is shared, and on its card in page lists.">
-          <select className="select" value={page.seo.socialImage ?? ''} onChange={(e) => upd({ socialImage: e.target.value || null }, 'Change sharing image')}>
-            <option value="">Use the site’s sharing image</option>
-            {images.map((a) => (
-              <option key={a.id} value={a.id}>
-                {imageLabels.get(a.id)?.label}
-              </option>
-            ))}
-          </select>
-        </Field>
+        {/* The page's own choice, or the site's while it has none: the picker shows both, and Use the site’s image returns to it. */}
+        <div className="col" style={{ gap: 4 }}>
+          <ImageEditor
+            title="Sharing image"
+            value={{ assetId: page.seo.socialImage || null, alt: '' }}
+            state={state}
+            picture={sharing.picker}
+            onChange={(v) => upd({ socialImage: v.assetId }, v.assetId ? 'Change sharing image' : sharing.picker.inherited ? 'Use the site’s sharing image' : 'Remove sharing image')}
+          />
+          <div className="field-hint">{sharing.imageNote}</div>
+          <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={() => openSiteSharing('socialImage')}>
+            Change the site’s sharing image
+          </button>
+        </div>
         <SwitchRow
           checked={!!page.seo.noindex}
           onChange={(v) => upd({ noindex: v })}
