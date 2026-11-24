@@ -83,7 +83,8 @@ export function seoReport(project: ProjectState, revision: number, args: AuditSe
     }
     pageId = resolved;
   }
-  const scope = { ...(pageId ? { pageId } : {}), ...(args.pillar ? { pillar: args.pillar } : {}) };
+  // A page whose own ID is too long to show (see LOCATOR_CHARS) is reported on without it, as a row of it would be.
+  const scope = { ...(pageId ? shownRow({ pageId }, 'pageId') : {}), ...(args.pillar ? { pillar: args.pillar } : {}) };
   const publishedPages = documents.flatMap((d) => (d.subject.kind === 'page' ? [d.subject.pageId] : []));
   const published = new Set(publishedPages);
   if (pageId && !published.has(pageId)) return { ok: true, content: { revision, scope, published: false, total: 0, note: 'This page is not on the website (a draft is not published), so there is nothing to audit until it is.' } };
@@ -127,7 +128,7 @@ export function seoReport(project: ProjectState, revision: number, args: AuditSe
     const nextOffset = offset + shown.length < ordered.length ? offset + shown.length : null;
     const nextLinkOffset = linkOffset + rowsShown.length < rows.length ? linkOffset + rowsShown.length : null;
     const links = pageId
-      ? { ...row(pageId), from: rowsShown, ...(nextLinkOffset !== null ? { nextLinkOffset } : {}) }
+      ? { ...shownRow(row(pageId), 'pageId'), from: rowsShown, ...(nextLinkOffset !== null ? { nextLinkOffset } : {}) }
       : { pages: publishedPages.length, orphans: publishedPages.filter((id) => orphans.has(id)).length, rows: rowsShown, ...(nextLinkOffset !== null ? { nextLinkOffset } : {}) };
     return {
       revision,

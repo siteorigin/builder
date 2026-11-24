@@ -140,12 +140,14 @@ describe('audit_seo', () => {
     const linked = copy(s);
     linked.pages[home].nodes.kiln_link = { id: 'kiln_link', kind: 'link', label: 'Kiln hire prices', link: { type: 'page', target: 'pg_kilns' }, appearance: 'primary' } as never;
     linked.pages[home].rootIds.push('kiln_link');
+    linked.pages[home].nodes.kiln_link_2 = { id: 'kiln_link_2', kind: 'link', label: 'Book a firing', link: { type: 'page', target: 'pg_kilns' }, appearance: 'secondary' } as never;
+    linked.pages[home].rootIds.push('kiln_link_2');
     const after = await audit(linked);
     expect(after.content.links).toMatchObject({ pages: 4, orphans: 1 });
-    expect(after.content.links.rows.find((r: { pageId: string }) => r.pageId === 'pg_kilns')).toEqual({ pageId: 'pg_kilns', incoming: 1, outgoing: 0 });
-    expect(after.content.links.rows.find((r: { pageId: string }) => r.pageId === home)).toMatchObject({ outgoing: 1 });
+    expect(after.content.links.rows.find((r: { pageId: string }) => r.pageId === 'pg_kilns')).toEqual({ pageId: 'pg_kilns', incoming: 2, outgoing: 0 });
+    expect(after.content.links.rows.find((r: { pageId: string }) => r.pageId === home)).toMatchObject({ outgoing: 2 });
     const kilns = await audit(linked, { pageId: '/kiln-hire/' });
-    expect(kilns.content.links).toEqual({ pageId: 'pg_kilns', incoming: 1, outgoing: 0, from: [{ kind: 'page', id: home, count: 1 }] });
+    expect(kilns.content.links).toEqual({ pageId: 'pg_kilns', incoming: 2, outgoing: 0, from: [{ kind: 'page', id: home, count: 2 }] });
   });
 
   it('has nothing to audit on a draft, and refuses a page the project does not have', async () => {
@@ -241,6 +243,13 @@ describe('audit_seo', () => {
     expect(content.findings.filter((f: { locatorOmitted?: boolean }) => f.locatorOmitted).length).toBeGreaterThan(1);
     expect(content.links.rows).toContainEqual(expect.objectContaining({ idOmitted: true, orphan: true }));
     expect(content.links.rows.filter((r: { pageId?: string }) => r.pageId).length).toBe(2);
+    // That page audited on its own, by its address: the report is whole, without the ID.
+    const one = await audit(s, { pageId: '/long/' });
+    expect(one.ok).toBe(true);
+    expect(one.content.scope).toEqual({ idOmitted: true });
+    expect(one.content.links).toMatchObject({ idOmitted: true, incoming: 0, orphan: true, from: [] });
+    expect(one.content.links.pageId).toBeUndefined();
+    expect(one.content.total).toBeGreaterThan(0);
   });
 
   it('is offered to every run that may read the whole site, for every model, and changes nothing', () => {
@@ -307,7 +316,7 @@ describe('projectSummary search settings', () => {
     const { state, home } = seoSite();
     const s = copy(state);
     // Blank text and a value that is not text are no title or description; any value kept from search keeps it out.
-    s.pages[home].seo = { title: '   ', description: 42 as never, noindex: 'yes' as never };
+    s.pages[home].seo = { title: '   ', description: 42 as never, noindex: 'yes' as never, searchHidden: 1 as never };
     s.site.favicon = 'img_gone';
     s.site.socialImage = 'font_x';
     s.assets.assets.font_x = { ...s.assets.assets.img_icon, id: 'font_x', kind: 'font' } as never;
@@ -317,7 +326,7 @@ describe('projectSummary search settings', () => {
     ] as never;
     const summary = projectSummary(s, 3);
     expect(summary.site.seo).toEqual({ socialImageSet: false, faviconSet: false, redirectCount: 2 });
-    expect((summary.pages.find((p) => p.id === home) as Record<string, unknown>).seo).toEqual({ noindex: true });
+    expect((summary.pages.find((p) => p.id === home) as Record<string, unknown>).seo).toEqual({ noindex: true, searchHidden: true });
     expect(runSeoAudit(s).map((f) => f.code)).toContain('SEO_HOME_NOINDEX');
     s.site.redirects = 'two' as never;
     expect(projectSummary(s, 3).site.seo).toEqual({ socialImageSet: false, faviconSet: false });
