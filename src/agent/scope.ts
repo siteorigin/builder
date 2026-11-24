@@ -302,6 +302,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'token.replace': 'wider',
   'site.update': 'wider',
   'component.create': 'wider',
+  // A rebuild moves every placement to the new contract.
+  'component.upsert': 'wider',
   'component.createFromNode': 'wider',
   'component.makeUnique': 'node',
   // Only the placement's own page changes: the component and its other placements stay as they are.

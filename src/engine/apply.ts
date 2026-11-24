@@ -89,6 +89,7 @@ import {
 import { contractConflicts, hiddenSlotContent, themeRefresh } from './theme-updates';
 import { detachInstance } from './detach';
 import { importComponentPackage, type ComponentImport } from './component-package';
+import { componentUpsert } from './upsert';
 
 export type OpResult = Record<string, unknown>;
 
@@ -266,6 +267,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return siteUpdate(state, op);
     case 'component.create':
       return componentCreate(state, op);
+    case 'component.upsert':
+      return componentUpsert(state, op, { setStyle: (st, o) => void nodeSetStyle(st, o) });
     case 'component.createFromNode':
       return createFromNode(state, op);
     case 'component.makeUnique':
@@ -3143,13 +3146,21 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
       throw e;
     }
   }
-  // Retagged nodes must fit where they render once the batch is done (a list item in a list, say).
-  const retagged = ops.flatMap((op, i) => (op.type === 'node.setContent' && op.field === 'tag' ? [{ op, i }] : []));
+  // Retagged nodes must fit where they render once the batch is done (a list item in a list, say), and so must every
+  // node of a design built whole.
+  const retagged = ops.flatMap((op, i): Array<{ owner: OwnerRef; nodeId?: string; i: number; type: string }> =>
+    op.type === 'node.setContent' && op.field === 'tag'
+      ? [{ owner: op.owner, nodeId: op.nodeId, i, type: op.type }]
+      : op.type === 'component.upsert'
+        ? [{ owner: { kind: 'component', id: String(results[i].definitionId) }, i, type: op.type }]
+        : []
+  );
   if (retagged.length) {
-    const problem = batchTagProblem(state, draft, retagged.map(({ op }) => op.owner));
-    // Named by the edit that retagged the node out of place, when one did; else it is where the batch leaves it.
-    const by = problem ? retagged.findLast(({ op }) => op.nodeId === problem.nodeId && op.owner.kind === problem.owner.kind && op.owner.id === problem.owner.id) : undefined;
-    if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (node.setContent): ${problem.message}` : problem.message);
+    const problem = batchTagProblem(state, draft, retagged.map(({ owner }) => owner));
+    // Named by the edit that retagged the node out of place (or built the design it is in), when one did; else it is
+    // where the batch leaves it.
+    const by = problem ? retagged.findLast((r) => (r.nodeId === undefined || r.nodeId === problem.nodeId) && r.owner.kind === problem.owner.kind && r.owner.id === problem.owner.id) : undefined;
+    if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (${by.type}): ${problem.message}` : problem.message);
   }
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };

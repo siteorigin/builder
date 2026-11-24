@@ -292,6 +292,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       }
       case 'component.create':
         return plain(op, `Created the component ${quoted(op.name.trim())}`);
+      case 'component.upsert':
+        return plain(op, `${op.definitionId === undefined ? 'Built' : 'Rebuilt'} the component ${quoted(op.name.trim())}`);
       case 'component.createFromNode':
         return plain(op, `Made ${name(op.owner, op.nodeId)} on ${where(op.owner)} into the reusable component ${quoted(op.name)}`, linkTo(op.owner, res.nodeId ?? op.nodeId));
       case 'component.makeUnique':

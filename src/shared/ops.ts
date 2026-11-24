@@ -75,6 +75,81 @@ const link = z.object({
   newTab: z.boolean().optional()
 });
 
+/**
+ * The nodes of a design built in one go (component.upsert): each has an ID of its own, which the design keeps, so
+ * nodes can name each other (children, parts, variant rules) before any of them exists. A flat list, never nested:
+ * a design of any depth fits the same shape.
+ */
+const DESIGN_NODE_ID = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
+/** A literal value of a design node's field, or the property or list item field it shows. */
+const bindable = <T extends z.ZodType>(literal: T) => z.union([...contentBinding, literal]);
+const designCondition = z
+  .union([...contentBinding, z.object({ ref: z.union(contentBinding), eq: conditionValue }).strict(), z.object({ ref: z.union(contentBinding), ne: conditionValue }).strict()])
+  .describe('Shown only while the property or item field is set, or compared with "eq" / "ne".');
+const designStyles = z
+  .record(z.string(), z.unknown())
+  .describe('Style rules: { "paddingBlock": { "token": "space.lg" } } for every size, or by size and state: { "base": {...}, "desktop": {...}, "base:hover": {...} }.');
+const DESIGN_NODE_BASE = {
+  id: DESIGN_NODE_ID.describe('The node\'s ID in the design, such as "title" or "card". Kept as it is, so a rebuild that names a node again keeps it.'),
+  name: z.string().max(60).optional().describe('Layer name.'),
+  styles: designStyles.optional(),
+  when: designCondition.optional(),
+  unless: designCondition.optional().describe('Hidden while the property or item field is set, or while the comparison holds.'),
+  anchor: z.string().max(61).optional()
+};
+const DESIGN_CHILDREN = z.array(DESIGN_NODE_ID).max(200).optional().describe('IDs of the nodes inside it, in order.');
+const DESIGN_NODE = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('element'),
+      ...DESIGN_NODE_BASE,
+      tag: bindable(z.string()).optional().describe('Element tag such as "section", "article", "ul" or "li", or a choice of them. Defaults to "div".'),
+      children: DESIGN_CHILDREN,
+      link: bindable(link).optional().describe('Makes the whole container one link (a card): nothing inside may be interactive.'),
+      action: bindable(z.string()).optional(),
+      ariaLabel: bindable(z.string()).optional(),
+      collapseEmpty: z.boolean().optional().describe('Hidden when everything inside it is hidden.'),
+      carousel: z.literal(true).optional(),
+      appear: z.string().optional()
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('text'),
+      ...DESIGN_NODE_BASE,
+      tag: bindable(z.string()).optional().describe('Text tag such as "h2" or "p", or a choice of them. Defaults to "p"; rich text is always "div".'),
+      text: bindable(z.union([z.string(), z.array(z.unknown())])),
+      rich: z.boolean().optional().describe(`Rich text: paragraphs, lists and links. ${RICH_TEXT_VALUE}`),
+      datetime: bindable(z.string()).optional()
+    })
+    .strict(),
+  z.object({ kind: z.literal('image'), ...DESIGN_NODE_BASE, image: bindable(z.record(z.string(), z.unknown())), fallbackAlt: bindable(z.string()).optional() }).strict(),
+  z
+    .object({
+      kind: z.literal('link'),
+      ...DESIGN_NODE_BASE,
+      link: bindable(link),
+      label: bindable(z.string()),
+      appearance: bindable(z.string()).optional().describe('primary, secondary, text, light, link or plain. Defaults to primary.'),
+      icon: bindable(z.string()).optional(),
+      iconPosition: bindable(z.string()).optional(),
+      ariaLabel: bindable(z.string()).optional()
+    })
+    .strict(),
+  z.object({ kind: z.literal('icon'), ...DESIGN_NODE_BASE, icon: bindable(z.string()), ariaLabel: bindable(z.string()).optional() }).strict(),
+  z.object({ kind: z.literal('divider'), ...DESIGN_NODE_BASE }).strict(),
+  z
+    .object({
+      kind: z.literal('repeat'),
+      ...DESIGN_NODE_BASE,
+      list: z.string().describe('The list property shown once per item; nodes inside show item fields with {"$item": field}.'),
+      children: DESIGN_CHILDREN,
+      appearStagger: z.boolean().optional()
+    })
+    .strict(),
+  z.object({ kind: z.literal('slot'), ...DESIGN_NODE_BASE, slot: z.string().describe('The declared slot whose content shows here.') }).strict()
+]);
+
 /** Only files written by the importer, inside static/assets/. */
 const ASSET_FILE = z.string().regex(new RegExp(`^static/assets/[a-z0-9][a-z0-9-]*\\.(jpg|png|webp|gif|avif|svg|woff2?|${DOCUMENT_EXTENSIONS.join('|')})$`));
 /** A library file's new type: a picture, or one of the document formats. */
@@ -377,6 +452,57 @@ export const OPERATION_SCHEMAS = {
     })
     .describe(
       'Create a new, empty managed project component: one container element, its root, which the result names (rootNodeId) beside its definitionId. Build its design with node.insert and the other node operations under owner { kind: "component", id: definitionId }, give it properties with component.setPropSchema and node.setBinding, and place it on a page with node.insert { definitionId }.'
+    ),
+  'component.upsert': z
+    .object({
+      type: z.literal('component.upsert'),
+      definitionId: z.string().optional().describe('A managed project component to rebuild. Omit to create a new one.'),
+      newDefinitionId: z.string().optional().describe('Internal: lets one batch create a component and place it. Not offered to the model.'),
+      name: z.string().min(1).max(60),
+      description: z.string().max(300).optional(),
+      category: z.enum(COMPONENT_CATEGORIES.filter((c) => c !== 'shell') as unknown as [string, ...string[]]).optional(),
+      tags: z.array(z.string().min(1).max(40)).max(12).optional(),
+      icon: z.string().regex(/^[a-z0-9-]{1,40}$/).optional(),
+      insertAs: z.enum(['section', 'element']).nullable().optional().describe('Where Insert puts a new placement; null lets the editor tell from the design.'),
+      properties: z.record(z.string(), z.unknown()).describe('The whole property schema, in order: { propName: { type, label, default, ... } } as in component.createCode.'),
+      nodes: z.array(DESIGN_NODE).min(1).max(300).describe('Every node of the design. Exactly one is inside no other: the root, an element that carries the component.'),
+      parts: z
+        .record(z.string(), z.object({ nodeId: DESIGN_NODE_ID, label: z.string().min(1).max(60), styleControls: z.array(z.string()).max(80).optional() }).strict())
+        .optional()
+        .describe('Parts placements can style, by ID. "root" is always the root node.'),
+      slots: z
+        .record(
+          z.string(),
+          z
+            .object({
+              label: z.string().min(1).max(60),
+              description: z.string().max(300).optional(),
+              categories: z.array(z.enum(COMPONENT_CATEGORIES as unknown as [string, ...string[]])).max(20).optional(),
+              primitives: z.array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]])).max(6).optional(),
+              max: z.number().int().min(0).max(1000).optional()
+            })
+            .strict()
+        )
+        .optional()
+        .describe('Slots each placement fills with content of its own; each is shown by one slot node.'),
+      variantAxes: z
+        .record(
+          z.string(),
+          z
+            .object({
+              label: z.string().min(1).max(40),
+              default: z.string().optional().describe('The option placements show until they choose. Defaults to the first.'),
+              options: z
+                .record(z.string(), z.object({ label: z.string().min(1).max(60), styles: z.record(DESIGN_NODE_ID, designStyles).optional().describe('Style rules by node ID.') }).strict())
+                .refine((o) => Object.keys(o).length > 0, 'An axis needs at least one option.')
+            })
+            .strict()
+        )
+        .optional()
+        .describe('Independent design choices (tone, layout), each with its options.')
+    })
+    .describe(
+      'Create a managed project component, or rebuild one, from one description of its properties, design, parts, slots and variants. A rebuild replaces the whole design; placements keep the values, list items, style changes and slot content the new contract still takes, or nothing changes.'
     ),
   'component.createFromNode': z.object({ type: z.literal('component.createFromNode'), owner, nodeId: z.string(), name: z.string().min(1).max(60) }),
   'component.makeUnique': z.object({ type: z.literal('component.makeUnique'), owner, nodeId: z.string(), name: z.string().max(60).optional() }),

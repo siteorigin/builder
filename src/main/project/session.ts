@@ -20,7 +20,7 @@ import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
+import { defFile, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
 import { sendsFormMessages, type ComponentImport } from '@engine/component-package';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
@@ -408,20 +408,20 @@ export interface Conflict {
  * the publication journal and generated output. All writes pass through `apply` or `commitState`.
  */
 /**
- * Why designs a package brought don't compile as the app generates them (`files`), for the server and the browser, or
- * null when they all do.
+ * Why designs a package brought (or a batch built whole) don't compile as the app generates them (`files`), for the
+ * server and the browser, or null when they all do. `what` says what can't happen, such as "can't be imported".
  */
-async function compileDesigns(defs: ComponentDefinition[], files: Map<string, string>): Promise<string | null> {
+async function compileDesigns(defs: ComponentDefinition[], files: Map<string, string>, what = "can't be imported"): Promise<string | null> {
   if (!defs.length) return null;
   const { compile } = await import('svelte/compiler');
   for (const def of defs) {
     const source = files.get(defFile(def));
-    if (source === undefined) return `“${def.name}” can't be imported: its design could not be generated.`;
+    if (source === undefined) return `“${def.name}” ${what}: its design could not be generated.`;
     for (const generate of ['client', 'server'] as const) {
       try {
         compile(source, { filename: defFile(def), generate, runes: true });
       } catch (e) {
-        return `“${def.name}” can't be imported: its design doesn't compile (${(e as Error).message.split('\n')[0]}).`;
+        return `“${def.name}” ${what}: its design doesn't compile (${(e as Error).message.split('\n')[0]}).`;
       }
     }
   }
@@ -1958,6 +1958,18 @@ export class ProjectSession extends EventEmitter {
       // A package's designs are generated here for the first time: each must compile, for the server and the browser.
       if (brought && built) {
         const problem = await compileDesigns(brought.filter((d) => d.kind === 'managed' && d.owner === 'project' && !Object.hasOwn(this.state.components, d.id)), built);
+        if (problem) return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: problem, recoverable: true } };
+      }
+      // A design built whole is generated here before it is saved: it must compile, for the server and the browser.
+      const upserted = [...new Set(ops.flatMap((o, i) => (o.type === 'component.upsert' && typeof results[i]?.definitionId === 'string' ? [results[i].definitionId as string] : [])))];
+      if (upserted.length) {
+        const defs = upserted.flatMap((id) => (Object.hasOwn(next.components, id) ? [next.components[id]] : []));
+        let problem: string | null;
+        try {
+          problem = await compileDesigns(defs, new Map(defs.map((d) => [defFile(d), generateManagedComponent(next, d, { instrument: false })])), "can't be saved");
+        } catch (e) {
+          problem = `The design can't be generated: ${(e as Error).message}`;
+        }
         if (problem) return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: problem, recoverable: true } };
       }
       // An import is checked place by place: a problem in what it brings is new even if another component has the same.
