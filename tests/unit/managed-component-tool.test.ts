@@ -11,6 +11,7 @@ import { compile } from 'svelte/compiler';
 import type { ElementNode, InstanceNode, ListItem, ProjectState, RepeatNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
+import { isReusabilityWarning } from '@engine/reusability';
 import { defFile, generateManagedComponent } from '@generator/index';
 import { executeTool, toolsForRun, type ToolHost } from '@agent/tools';
 import { newMacroMemory } from '@agent/macros';
@@ -172,7 +173,9 @@ describe('upsert_managed_component: its schema (#359)', () => {
       { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_000 }
     ]) {
       const base = { state, selection: null, capabilities, codeEnabled: false, definitionOps: true };
-      expect(names(toolsForRun(base))).toContain('upsert_managed_component');
+      // A small site run keeps its window for pages unless the request asks for a component.
+      expect(names(toolsForRun(base)).includes('upsert_managed_component')).toBe(capabilities.toolCalling === 'native');
+      expect(names(toolsForRun({ ...base, componentRequest: true }))).toContain('upsert_managed_component');
       expect(names(toolsForRun({ ...base, task: 'component' }))[0]).toBe('upsert_managed_component');
       expect(names(toolsForRun({ ...base, ask: true }))).not.toContain('upsert_managed_component');
       expect(names(toolsForRun({ ...base, page: { route: home.route } }))).not.toContain('upsert_managed_component');
@@ -183,7 +186,7 @@ describe('upsert_managed_component: its schema (#359)', () => {
 
   it('is counted as a constrained model reads it: its signature, not its JSON schema', () => {
     const state = createStarterState('business', 'Test', false);
-    const { tools } = toolsForRun({ state, selection: null, capabilities: { toolCalling: 'constrained-json', contextWindowTokens: 16_384 }, codeEnabled: false, definitionOps: true });
+    const { tools } = toolsForRun({ state, selection: null, capabilities: { toolCalling: 'constrained-json', contextWindowTokens: 16_384 }, codeEnabled: false, definitionOps: true, componentRequest: true });
     expect(estimateRequestTokens('', tools, [], true)).toBe(estimateTokens(envelopeInstructions(tools)));
     // The grammar reads the schemas; the prompt carries only the much shorter signatures.
     expect(estimateRequestTokens('', tools, [], true) * 3).toBeLessThan(estimateRequestTokens('', tools, []));
@@ -382,6 +385,8 @@ describe('component blueprints (#359)', () => {
       expect(Object.values(def.variantAxes ?? {}).some((a) => Object.values(a.options).some((o) => o.styles))).toBe(true);
       expect(Object.values(def.tree!.nodes).some((n) => n.styles && Object.keys(n.styles).some((k) => k !== 'base'))).toBe(true);
       expect(errors(s.state)).toEqual([]);
+      // Followed as it is, a blueprint leaves nothing the reusability check would send the model back for.
+      expect(validateState(s.state).filter((d) => isReusabilityWarning(d) && d.owner?.kind === 'component' && d.owner.id === def.id).map((d) => d.message), blueprint.id).toEqual([]);
       compiles(s.state, out.content.definitionId);
     }
   });

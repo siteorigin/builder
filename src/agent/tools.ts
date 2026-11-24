@@ -360,6 +360,9 @@ export function toolsForRun(opts: {
   page?: { route: string } | null;
   /** The request asks for a new component (the Create component dialog). */
   task?: 'component';
+  /** The request typed into the chat asks for a component (see asksForComponent): a small site run is offered the tool
+   *  that builds one whole, which it otherwise leaves out to keep its window for pages. */
+  componentRequest?: boolean;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
@@ -404,7 +407,7 @@ export function toolsForRun(opts: {
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state) },
     { name: 'update_site_brand', ...describe('update_site_brand'), parameters: brandToolSchema(state) },
-    managedComponentTool()
+    ...(!focused || opts.componentRequest ? [managedComponentTool()] : [])
   ];
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
   // do (styling every card of a selected one, say).
@@ -416,6 +419,9 @@ export function toolsForRun(opts: {
  * A whole managed component in one call (#359). It needs a run that may change the whole site (a rebuild moves every
  * placement), and no Developer mode: a managed design is not code.
  */
+/** Whether a request typed into the chat asks for a component, which a small site run then builds whole. */
+export const asksForComponent = (text: string): boolean => /\bcomponents?\b/i.test(text);
+
 const managedComponentTool = (): ToolDefinition => ({ name: 'upsert_managed_component', ...describe('upsert_managed_component'), parameters: managedComponentSchema() });
 
 /** How well a component matches a search: 3 for each word in its name, 1 for each found only in the rest. */
