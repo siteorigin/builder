@@ -4,7 +4,7 @@ import type { ChatImageRef, FieldLocation } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, legacyShellError, OPERATION_SCHEMAS, PROP_OR_ITEM_BINDING, type OperationType } from '@shared/ops';
 import { MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
-import { normalizeRoute, slugify } from '@shared/routes';
+import { addressSlug, normalizeRoute } from '@shared/routes';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
@@ -873,15 +873,15 @@ function refersToNewPage(ops: EditOperation[], message: string): boolean {
   const ref = message.match(/\bpage "([^"]*)" does not exist/i)?.[1]?.trim();
   if (!ref) return false;
   const asRoute = normalizeRoute(ref);
-  return ops.some((o) => o.type === 'page.create' && (normalizeRoute(o.route ?? slugify(o.title)) === asRoute || o.title.trim().toLowerCase() === ref.toLowerCase()));
+  return ops.some((o) => o.type === 'page.create' && (normalizeRoute(o.route ?? addressSlug(o.title)) === asRoute || o.title.trim().toLowerCase() === ref.toLowerCase()));
 }
 
 function pageIdFor(state: ProjectState, ref: string): string | null {
   if (Object.hasOwn(state.pages, ref)) return ref;
   const trimmed = ref.trim();
   if (!trimmed) return null;
-  const path = trimmed.replace(/^\/+|\/+$/g, '');
-  const route = path ? `/${path}/` : '/';
+  // "/about", "about/" or an address in another script as a browser shows it, spelled as routes are stored.
+  const route = normalizeRoute(trimmed);
   return Object.values(state.pages).find((p) => p.route === route)?.id ?? null;
 }
 

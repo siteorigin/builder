@@ -65,8 +65,8 @@ export function isArticleHeader(state: ProjectState, def: ComponentDefinition, p
   );
 }
 
-/** Long enough for any valid route: four levels of 60 characters and their slashes. */
-const SLUG_CHARS = 250;
+/** Long enough for any valid route: four levels of 60 characters (each up to two UTF-16 units) and their slashes. */
+const SLUG_CHARS = 500;
 
 export const UPSERT_ARGS = z.object({
   slug: z.string().min(1).max(SLUG_CHARS).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
@@ -184,7 +184,8 @@ function sectionDefinition(state: ProjectState, id: string): { def: ComponentDef
   return null;
 }
 
-const ROUTE_LIKE = /^\/?[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)*\/?$/;
+/** A lowercase address, in any script ("/about/", "/お問い合わせ/"); a capitalised word is a label, not an address. */
+const ROUTE_LIKE = /^\/?[\p{Ll}\p{Lo}\p{Lm}\p{Nd}][\p{Ll}\p{Lo}\p{Lm}\p{M}\p{Nd}-]*(\/[\p{Ll}\p{Lo}\p{Lm}\p{Nd}][\p{Ll}\p{Lo}\p{Lm}\p{M}\p{Nd}-]*)*\/?$/u;
 
 const pageAtRoute = (state: ProjectState, route: string): PageDoc | undefined => Object.values(state.pages).find((p) => p.route === route);
 

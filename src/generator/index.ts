@@ -62,7 +62,7 @@ import {
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
-import { routeDir, validateRoute } from '@shared/routes';
+import { routeDir, validateRoute, validateSegment } from '@shared/routes';
 import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
@@ -3016,11 +3016,11 @@ export interface SiteEntry {
   route: string;
 }
 
-/** Whether an entry's address is one the site can have: its collection's prefix and one plain lowercase segment. */
+/** Whether an entry's address is one the site can have: its collection's prefix and one valid segment. */
 function isEntryPath(collection: Collection, entry: EntryDoc): boolean {
   const prefix: unknown = collection?.settings?.route;
   if (typeof prefix !== 'string' || prefix === '/' || validateRoute(prefix)) return false;
-  return typeof entry?.slug === 'string' && /^[a-z0-9][a-z0-9-]{0,59}$/.test(entry.slug) && !validateRoute(entryRoute(collection, entry));
+  return typeof entry?.slug === 'string' && !validateSegment(entry.slug) && !validateRoute(entryRoute(collection, entry));
 }
 
 /**

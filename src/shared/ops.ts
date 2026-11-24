@@ -170,7 +170,7 @@ const ARTICLE_FIELDS = {
 /** A collection's settings, as collection.create and collection.update take them (see shared/collections.ts). */
 const COLLECTION_SETTINGS = {
   name: z.string().min(1).max(80).optional(),
-  route: z.string().max(200).optional().describe('Address prefix every entry\'s address starts with, such as "/blog/". At most three levels deep. The collection owns this address too.'),
+  route: z.string().max(400).optional().describe('Address prefix every entry\'s address starts with, such as "/blog/" or "/お知らせ/". At most three levels deep. The collection owns this address too.'),
   taxonomies: z
     .record(z.string(), z.object({ label: z.string().min(1).max(60), terms: z.record(z.string(), z.object({ label: z.string().min(1).max(80) })).optional() }))
     .optional()
@@ -183,7 +183,7 @@ const COLLECTION_SETTINGS = {
 
 /** An entry's details, as entry.create and entry.update take them. */
 const ENTRY_FIELDS = {
-  slug: z.string().max(80).optional().describe('The last part of its address: lowercase letters, numbers and hyphens. Defaults to a slug of the title, numbered when taken.'),
+  slug: z.string().max(130).optional().describe('The last part of its address: lowercase letters, numbers and hyphens, in any script ("spring-sale", "春のセール"). Defaults to a slug of the title, numbered when taken.'),
   publishedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Publication date, YYYY-MM-DD; a past date backdates it. Defaults to today.'),
   updatedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe('When it was last revised, YYYY-MM-DD. null removes it.'),
   draft: z.boolean().optional().describe('true keeps it out of the website while it stays in the project; false publishes it. New entries are drafts.'),
@@ -200,7 +200,7 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('page.create'),
     pageId: z.string().regex(/^pg_[a-z0-9]{4,32}$/).optional().describe('Internal: lets one batch create a page and fill it. Not offered to the model.'),
     title: z.string().min(1).max(80),
-    route: z.string().optional().describe('Static route such as "/services/". Defaults to a slug of the title. "/services/design/" is a child page of "/services/".'),
+    route: z.string().optional().describe('Static route such as "/services/" or "/お問い合わせ/": lowercase letters, numbers and hyphens, in any script. Defaults to a slug of the title. "/services/design/" is a child page of "/services/".'),
     afterPageId: z.string().optional(),
     starter: z.enum(['empty', 'intro', 'article']).optional().describe('"intro" adds a page introduction section. "article" makes a dated article (news, an announcement): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body.'),
     addToNavigation: z.boolean().optional().describe('Also add a link to the new page to the shared header navigation (a child page\'s link goes under its parent\'s).'),
