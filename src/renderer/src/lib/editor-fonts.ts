@@ -80,8 +80,10 @@ async function load(e: Entry, a: AssetRecord, at: string) {
   }
   try {
     const descriptors = { weight: a.font!.weight, style: a.font!.style };
-    const family = new FontFace(familyAlias(a.font!.family), data.bytes, descriptors);
-    const file = new FontFace(e.alias, data.bytes, descriptors);
+    // Copied out of the IPC reply into a buffer of its own, which FontFace takes.
+    const bytes = new Uint8Array(data.bytes);
+    const family = new FontFace(familyAlias(a.font!.family), bytes, descriptors);
+    const file = new FontFace(e.alias, bytes, descriptors);
     await Promise.all([family.load(), file.load()]);
     if (entries.get(a.id) !== e || opening !== at) return;
     e.faces = [family, file];
@@ -150,6 +152,16 @@ export function useEditorFontFile(assetId: string): EditorFontFile | null {
   useSyncExternalStore(subscribe, () => version);
   const e = entries.get(assetId);
   return e ? { status: e.status, alias: e.alias, coverage: e.coverage } : null;
+}
+/** Several files at once, by asset ID, through one subscription. */
+export function useEditorFontFiles(assetIds: string[]): Map<string, EditorFontFile | null> {
+  useSyncExternalStore(subscribe, () => version);
+  return new Map(
+    assetIds.map((id) => {
+      const e = entries.get(id);
+      return [id, e ? { status: e.status, alias: e.alias, coverage: e.coverage } : null];
+    })
+  );
 }
 const subscribe = (l: () => void) => {
   listeners.add(l);

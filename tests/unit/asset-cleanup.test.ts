@@ -46,6 +46,8 @@ const face = (id: string, family: string): AssetRecord => ({
   font: { family, weight: '400', style: 'normal' }
 });
 const remove = (assetId: string): EditOperation => ({ type: 'asset.remove', assetId });
+/** A font file removed with the author's choice for its family's uses. */
+const removeFont = (assetId: string, fontUses: Extract<EditOperation, { type: 'asset.remove' }>['fontUses']): EditOperation => ({ type: 'asset.remove', assetId, fontUses });
 const ids = (n: number) => Array.from({ length: n }, (_, i) => `img${String(i).padStart(2, '0')}`);
 
 /** An image node inside a new section at the top of a page. */
@@ -169,11 +171,11 @@ describe('removing many assets in one batch', () => {
     ]).state;
     // Even with another face left, a face of the family in use goes only with a choice; an unused family's goes freely.
     rejects(() => applyOperations(s, [remove('img10'), remove('f3'), remove('f1')]), /^Operation 3 \(asset\.remove\): This font is used 1 time\. /);
-    const kept = applyOperations(s, [remove('img10'), { ...remove('f1'), fontUses: 'keep' }, remove('f3')]).state;
+    const kept = applyOperations(s, [remove('img10'), removeFont('f1', 'keep'), remove('f3')]).state;
     expect(kept.assets.assets.f2).toBeDefined();
     expect(kept.assets.assets.f1 ?? kept.assets.assets.f3).toBeUndefined();
     // The last one cannot be kept on no files.
-    rejects(() => applyOperations(s, [remove('img10'), { ...remove('f1'), fontUses: 'keep' }, { ...remove('f2'), fontUses: 'keep' }]), /^Operation 3 \(asset\.remove\): This font is used 1 time, and it is the last file of brand sans\./);
+    rejects(() => applyOperations(s, [remove('img10'), removeFont('f1', 'keep'), removeFont('f2', 'keep')]), /^Operation 3 \(asset\.remove\): This font is used 1 time, and it is the last file of brand sans\./);
     // Once the style stops naming the family, both faces can go.
     const done = applyOperations(s, [{ type: 'token.set', tokenId: 'font.display', value: 'system-ui, sans-serif' }, remove('f1'), remove('f2'), remove('img10')]).state;
     expect(done.assets.assets.f1 ?? done.assets.assets.f2).toBeUndefined();
@@ -208,7 +210,7 @@ describe('removing many assets in one batch', () => {
     const s = applyOperations(base, [{ type: 'token.set', tokenId: 'font.display', value: fonts.importedFontStack('Brand Sans') }]).state;
     expect(assetUsages(s).target).toBe(1);
     scans.mockClear();
-    const r = applyOperations(s, [remove('img10'), { ...remove('miskeyed'), fontUses: 'fallback' }, remove('target'), remove('img11')]).state;
+    const r = applyOperations(s, [remove('img10'), removeFont('miskeyed', 'fallback'), remove('target'), remove('img11')]).state;
     expect(r.assets.assets.target ?? r.assets.assets.miskeyed).toBeUndefined();
     expect(scans).toHaveBeenCalledTimes(2);
   });
