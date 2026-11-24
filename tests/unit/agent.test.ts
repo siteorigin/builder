@@ -2240,6 +2240,127 @@ describe('Edit everywhere without Developer mode (#191)', () => {
   });
 });
 
+describe('building a new component from Create component (#172)', () => {
+  const offeredOps = (req: CanonicalModelRequest) => {
+    const apply = req.tools.find((d) => d.name === 'apply_operations')?.parameters as { properties: { operations: { items: { oneOf?: Array<{ properties: Record<string, unknown> & { type: { const: string } } }>; anyOf?: Array<{ properties: Record<string, unknown> & { type: { const: string } } }> } } } } | undefined;
+    return apply?.properties.operations.items.oneOf ?? apply?.properties.operations.items.anyOf ?? [];
+  };
+  const lastTool = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const task = { task: 'component' as const };
+
+  it('builds a managed component from the designs already there, with properties, parts and a real variant, undone in one step', async () => {
+    let made = { definitionId: '', rootNodeId: '' };
+    let heading = '';
+    let first: CanonicalModelRequest | null = null;
+    let inspiration: { structure?: { nodes: unknown[] } } = {};
+    const env = await setup(
+      [
+        (req) => {
+          first = req;
+          return [calls(['s1', 'search_components', { query: 'pricing plans' }], ['s2', 'read_component', { componentId: 'pricing.plans', structure: true }])];
+        },
+        (req) => {
+          inspiration = lastTool(req);
+          return [call('a1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'component.create', name: 'Price tag', description: 'One plan and its price.' }] })];
+        },
+        (req) => {
+          made = lastTool(req).results[0];
+          const owner = { kind: 'component', id: made.definitionId };
+          return [
+            call('a2', 'apply_operations', {
+              expectedRevision: 1,
+              operations: [
+                { type: 'node.insert', owner, parentId: made.rootNodeId, primitive: 'heading', text: 'Starter' },
+                { type: 'component.setPropSchema', definitionId: made.definitionId, prop: 'plan', schema: { type: 'string', label: 'Plan name', default: 'Starter' } }
+              ]
+            })
+          ];
+        },
+        (req) => {
+          heading = lastTool(req).results[0].nodeId;
+          const owner = { kind: 'component', id: made.definitionId };
+          return [
+            call('a3', 'apply_operations', {
+              expectedRevision: 2,
+              operations: [
+                { type: 'node.setBinding', owner, nodeId: heading, field: 'text', binding: { $prop: 'plan' } },
+                { type: 'component.setPart', definitionId: made.definitionId, partId: 'plan', nodeId: heading, label: 'Plan name', styleControls: ['textStyle', 'color'] },
+                { type: 'component.setVariant', definitionId: made.definitionId, axis: 'tone', axisLabel: 'Tone', variant: 'dark', label: 'Dark' },
+                { type: 'node.setStyle', owner, nodeId: made.rootNodeId, variant: 'dark', axis: 'tone', scope: 'base', property: 'background', value: { token: 'color.inverse' } }
+              ]
+            })
+          ];
+        },
+        () => finish('Made Price tag: its plan name is a property, and it has a dark tone.')
+      ],
+      { codeEnabled: false }
+    );
+    const before = env.session.historyInfo().entries.length;
+    const { runId, result } = await env.run('Create a component called "Price tag": one plan and its price.', task);
+    expect(result?.status).toBe('completed');
+    // The run was offered the operation, without the ID only the editor names, and told how to build with it.
+    const create = offeredOps(first!).find((v) => v.properties.type.const === 'component.create');
+    expect(create).toBeDefined();
+    expect(create!.properties.definitionId).toBeUndefined();
+    expect(first!.system).toContain('read_component with structure: true');
+    expect(first!.tools.map((t) => t.name)).not.toContain('upsert_page_with_sections');
+    expect(inspiration.structure?.nodes.length).toBeGreaterThan(5);
+
+    const def = env.session.state.components[made.definitionId];
+    expect(def).toMatchObject({ kind: 'managed', owner: 'project', name: 'Price tag' });
+    expect(def.tree!.nodes[heading]).toMatchObject({ kind: 'text', text: { $prop: 'plan' } });
+    expect(def.parts.plan.nodeId).toBe(heading);
+    expect(def.variantAxes!.tone.options.dark.styles![made.rootNodeId].base!.background).toEqual({ token: 'color.inverse' });
+    expect(result!.changes.map((c) => c.label).join(' ')).toContain('Created the component “Price tag”');
+
+    expect(env.session.historyInfo().entries.length).toBe(before + 1);
+    expect((await env.session.undoGroup(runId)).ok).toBe(true);
+    expect(env.session.state.components[made.definitionId]).toBeUndefined();
+  });
+
+  it('refuses an ID the model names for a new component', async () => {
+    let refused: { error?: string; message?: string } = {};
+    const env = await setup([
+      () => [call('a1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'component.create', definitionId: 'proj.taken-abcde', name: 'Card' }] })],
+      (req) => {
+        refused = lastTool(req);
+        return finish('Could not make it.');
+      }
+    ]);
+    await env.run('Create a component called "Card".', task);
+    expect(refused.message).toMatch(/does not take a definitionId/);
+    expect(env.session.state.components['proj.taken-abcde']).toBeUndefined();
+  });
+
+  it('gives a small model only what building a component takes, and leaves other small requests as they were', async () => {
+    const seen: CanonicalModelRequest[] = [];
+    const env = await setup(
+      [
+        (req) => {
+          seen.push(req);
+          return finish('Nothing yet.');
+        },
+        (req) => {
+          seen.push(req);
+          return finish('Nothing yet.');
+        }
+      ],
+      { codeEnabled: false, capabilities: { contextWindowTokens: 32000 } }
+    );
+    await env.run('Create a component called "Price tag".', task);
+    const names = seen[0].tools.map((t) => t.name).sort();
+    expect(names).toEqual(['apply_operations', 'read_component', 'read_page', 'read_project', 'request_clarification', 'search_assets', 'search_components', 'validate_project']);
+    const ops = offeredOps(seen[0]).map((v) => v.properties.type.const);
+    expect(ops).toEqual(expect.arrayContaining(['component.create', 'node.insert', 'node.setBinding', 'component.setPropSchema', 'component.setVariant', 'node.setStyle']));
+    for (const op of ['page.create', 'token.set', 'instance.setProp', 'component.createCode']) expect(ops).not.toContain(op);
+    expect(seen[0].system).toContain('You make reusable components');
+    // The same request typed straight into the chat keeps the small site tools.
+    await env.run('Create a component called "Price tag".');
+    expect(seen[1].tools.map((t) => t.name)).toContain('upsert_page_with_sections');
+    expect(seen[1].tools.map((t) => t.name)).not.toContain('apply_operations');
+  });
+});
+
 describe('values the assistant commonly gets wrong', () => {
   const featureCards = (state: ReturnType<typeof createStarterState>) => {
     for (const p of Object.values(state.pages))
