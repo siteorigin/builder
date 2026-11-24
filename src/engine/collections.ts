@@ -8,7 +8,7 @@ import { COLLECTION_FIELD_TYPES, SCHEMA_VERSION, conditionRef, isEntryBinding } 
 import type { Op } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, findEntry, isCollectionId, isEntryId, isTermId, routeOwners, type RouteOwner } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
-import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
+import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { EngineError, fail } from './tree';
@@ -76,10 +76,10 @@ function prefixRoute(input: string): string {
   return route;
 }
 
-/** A slug as given: one lowercase segment of an address. */
+/** A slug as given: one segment of an address, spelled as addresses are (see normalizeRoute). */
 function explicitSlug(input: string): string {
-  const slug = input.trim().toLowerCase().replace(/^\/+|\/+$/g, '');
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || slug.length > 60) fail(`"${input.slice(0, 80)}" is not a slug: use up to 60 lowercase letters, numbers and hyphens, starting with a letter or number.`);
+  const slug = normalizeRoute(input).slice(1, -1);
+  if (!slug || slug.includes('/') || validateSegment(slug)) fail(`"${input.slice(0, 80)}" is not a slug: use up to 60 lowercase letters, numbers and hyphens, starting with a letter or number.`);
   return slug;
 }
 
@@ -88,11 +88,11 @@ function explicitSlug(input: string): string {
  * anything else (a page, an old page address, a collection, another entry), kept within 60 characters.
  */
 function autoSlug(state: ProjectState, collection: Collection, title: string, entryId: string): string {
-  const stem = slugify(title) || 'entry';
+  const stem = addressSlug(title) || 'entry';
   const holder = routeIndex(state);
   const free = (slug: string) => !holder(`${collection.settings.route}${slug}/`, { entryIds: new Set([entryId]) });
   let slug = stem;
-  for (let i = 2; !free(slug); i++) slug = `${stem.slice(0, 60 - `-${i}`.length).replace(/-+$/, '')}-${i}`;
+  for (let i = 2; !free(slug); i++) slug = numberedSlug(stem, i);
   return slug;
 }
 
@@ -593,7 +593,7 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
       const what = `${s.name}: “${e.title}”`;
       if (entryIds.has(eid)) out.push({ severity: 'error', code: 'ENTRY_INVALID', message: `${what} has the same ID as an entry of the ${entryIds.get(eid)} collection.`, owner: eo });
       entryIds.set(eid, s.name);
-      const slugOk = typeof e.slug === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(e.slug) && e.slug.length <= 60;
+      const slugOk = typeof e.slug === 'string' && !validateSegment(e.slug);
       if (!slugOk) out.push({ severity: 'error', code: 'ROUTE_INVALID', message: `${what}: its slug is not one lowercase part of an address.`, owner: eo });
       else if (!prefixErr) claim(entryRoute(c, e), `the entry “${e.title}”`, eo);
       if (!isArticleDate(e.publishedAt)) out.push({ severity: 'warning', code: 'ENTRY_DATE_INVALID', message: `${what}: its publication date is not a calendar date written YYYY-MM-DD.`, owner: eo });

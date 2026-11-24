@@ -4,6 +4,9 @@
 // from its page settings: Pages lists it apart from Work until Move under puts it there, and the menu stays as it
 // was. The static export, served under /studio/, loads the nested address directly, sends the old address on to the
 // new one, and its submenu works by keyboard (Enter, Space, Tab, Escape), by pointer and by touch at phone width.
+// A page titled お問い合わせ (#36) previews and gets that address, takes another typed in Japanese in Page address,
+// and the editor follows a visitor's link to it in Preview; the export has it at /studio/お問い合わせ/, escaped in
+// the sitemap, and its old address sends visitors on.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -49,7 +52,7 @@ const outline = () => pagesPanel().locator('[data-page]').evaluateAll((rows) => 
 const inspector = () => win.locator('#dock-panel-inspect');
 
 try {
-  await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
+  const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
   const site = await apply([{ type: 'site.update', baseUrl: 'https://example.test/studio/' }], 'Set the public address');
   assert.equal(site.ok, true, 'the site is published under /studio/');
   if ((await win.locator('.rail [aria-label="Pages"]').getAttribute('aria-pressed')) !== 'true') await win.locator('.rail [aria-label="Pages"]').click();
@@ -126,6 +129,61 @@ try {
   assert.equal(after.find((r) => r.target === kitchens.id)?.id, kitchensItem.id, 'it is the same link, still leading to Kitchens');
   assert.deepEqual((await snapshot()).state.site.redirects, [{ from: '/lookbook/kitchens/', pageId: kitchens.id }], 'the old address keeps leading to Kitchens');
 
+  step('a page titled in Japanese gets its natural address, and another one typed in Page address');
+  const menuBefore = (await menuRows()).map((r) => r.row);
+  await win.locator('.pages-head-add').click();
+  await win.getByLabel('New page title').fill('お問い合わせ');
+  assert.equal(await win.locator('#pages-add-route .value').innerText(), '/お問い合わせ/', 'the address previews as the title reads');
+  // Left out of the menu, so the menu the keyboard steps below walk through stays as it is.
+  await win.locator('.pages-add-form').getByRole('checkbox', { name: /Add to header menu/ }).uncheck();
+  await win.locator('.pages-add-actions .btn-primary').click();
+  await eventually(async () => assert.equal((await pageBy('お問い合わせ'))?.route, '/お問い合わせ/', 'the page gets the previewed address'));
+  const contactJa = await pageBy('お問い合わせ');
+  assert.deepEqual((await menuRows()).map((r) => r.row), menuBefore);
+  await pageRow('お問い合わせ').hover();
+  await pageRow('お問い合わせ').getByRole('button', { name: 'お問い合わせ options' }).click();
+  await win.getByRole('menuitem', { name: 'Page settings' }).click();
+  const addressField = inspector().getByLabel('Page address');
+  await eventually(async () => assert.equal(await addressField.inputValue(), '/お問い合わせ/'));
+  // One typed, one copied from a browser's address bar with its escapes.
+  for (const [typed, route] of [['/連絡先/', '/連絡先/'], [encodeURI('/お問い合わせ/'), '/お問い合わせ/']]) {
+    await addressField.fill(typed);
+    await addressField.press('Enter');
+    await eventually(async () => assert.equal((await pageBy('お問い合わせ')).route, route, `the address ${typed} is kept as ${route}`));
+    await eventually(async () => assert.equal(await addressField.inputValue(), route, 'the field shows the address the page has'));
+  }
+  assert.deepEqual((await snapshot()).state.site.redirects.find((r) => r.pageId === contactJa.id), { from: '/連絡先/', pageId: contactJa.id }, 'the address it left keeps leading to it');
+
+  step('in Preview, the editor follows a visitor to the page, and back');
+  await pageRow('Home').click();
+  const frameAt = () => frame.locator('html').evaluate(() => decodeURI(location.pathname));
+  await eventually(async () => assert.equal(await frameAt(), '/'), 30000);
+  await win.locator('button[title^="Preview:"]').click();
+  const pill = win.getByRole('group', { name: 'Preview', exact: true });
+  const pageShown = win.locator('.project-title .page');
+  await eventually(async () => assert.equal(await frame.locator('html').evaluate((html) => document.readyState === 'complete' && !html.hasAttribute('data-so-editing')), true, 'the page is ready for a visitor'), 30000);
+  // A link the site's own router follows, as a visitor's click on a link to the page would be.
+  await frame.locator('body').evaluate((body) => {
+    const a = document.createElement('a');
+    a.id = 'to-contact-ja';
+    a.href = '/お問い合わせ/';
+    a.textContent = 'お問い合わせ';
+    a.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999';
+    (body.querySelector('main') ?? body).append(a);
+  });
+  await frame.locator('#to-contact-ja').evaluate((a) => a.click());
+  await eventually(async () => {
+    assert.equal(await frameAt(), '/お問い合わせ/', 'the frame is there');
+    assert.equal(await pill.locator('output').innerText(), '/お問い合わせ/', 'the pill shows the address as written');
+    assert.match(await pageShown.innerText(), /お問い合わせ/, 'the toolbar follows the page');
+  }, 15000);
+  await pill.getByRole('button', { name: 'Back', exact: true }).click();
+  await eventually(async () => {
+    assert.equal(await frameAt(), '/');
+    assert.match(await pageShown.innerText(), /Home/, 'Back brings the editor home with the visitor');
+  }, 15000);
+  await win.locator('button[title^="Preview:"]').click();
+
   step('static export, served under /studio/');
   root = join(WORK, 'export');
   const r = await withTimeout(win.evaluate((dest) => window.builderTest.exportStatic(dest), root), 300000, 'Static export');
@@ -134,6 +192,12 @@ try {
   assert.match(served, /<h1[^>]*>\s*Kitchens\s*</, 'the nested address loads directly, with its content in the first HTML');
   assert.match(served, /<ul id="so-sub:[^"]+" class="so-header__sub[^"]*"[^>]*hidden/, 'the submenu is in the HTML, hidden until opened');
   assert.doesNotMatch(served, /data-so-|siteorigin-bridge/, 'no editor instrumentation');
+  assert.ok(existsSync(join(root, 'お問い合わせ', 'index.html')), 'the page in Japanese is written at its address as written');
+  const servedJa = await fetch(`${ORIGIN}/studio/${encodeURI('お問い合わせ')}/`);
+  assert.equal(servedJa.status, 200);
+  assert.match(await servedJa.text(), /<h1[^>]*>\s*お問い合わせ\s*</, 'its address loads directly');
+  const sitemap = readFileSync(join(root, 'sitemap.xml'), 'utf8');
+  assert.ok(sitemap.includes(`<loc>https://example.test/studio${encodeURI('/お問い合わせ/')}</loc>`), 'the sitemap lists it escaped');
 
   browser = await chromium.launch();
   /** Wait until the header has hydrated: once mounted, it publishes its height on the page root. */
@@ -150,6 +214,9 @@ try {
   await page.goto(`${ORIGIN}/studio/lookbook/kitchens/`);
   await page.waitForURL(`${ORIGIN}/studio/work/kitchens/`, { timeout: 20000 });
   assert.equal((await page.locator('main h1').first().innerText()).trim(), 'Kitchens');
+  await page.goto(`${ORIGIN}/studio/${encodeURI('連絡先')}/`);
+  await page.waitForURL(`${ORIGIN}/studio/${encodeURI('お問い合わせ')}/`, { timeout: 20000 });
+  assert.equal((await page.locator('main h1').first().innerText()).trim(), 'お問い合わせ');
 
   step('desktop: Enter, Tab and Escape; Space; focus and pointer leaving close it');
   await page.goto(`${ORIGIN}/studio/`, { waitUntil: 'networkidle' });

@@ -1,6 +1,7 @@
 import type { ChoiceOption, ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
 import { cleanBlocks, ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
 import { collectionRoutes, findEntry } from '@shared/collections';
+import { readablePath } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -35,7 +36,8 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
     // A page by its ID or route, with an optional #anchor for a section on it, as rich text links take one.
     const hash = v.indexOf('#');
     const path = hash < 0 ? v : v.slice(0, hash);
-    const page = Object.hasOwn(state.pages, path) ? path : Object.values(state.pages).find((p) => p.route === path || p.route === `/${path.replace(/^\/|\/$/g, '')}/`)?.id;
+    const route = readablePath(path);
+    const page = Object.hasOwn(state.pages, path) ? path : Object.values(state.pages).find((p) => p.route === route || p.route === `/${route.replace(/^\/|\/$/g, '')}/`)?.id;
     if (page && hash < 0) return { type: 'page', target: page };
     if (page) return normalizeLink({ type: 'page', target: page, anchor: anchorOf(v.slice(hash + 1), label) }, state, label);
     fail(`${label}: "${v}" is not a page ID, route (with an optional #anchor), https URL, mailto:, tel: or #anchor.`);
@@ -135,7 +137,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     if (t.startsWith(ENTRY_LINK_PREFIX)) return normalizeLink({ type: 'entry', target: t.slice(ENTRY_LINK_PREFIX.length), newTab }, state, label, scope);
     // Or by its address (a path of this site, never a //host one), while no page has it.
     if (scope.entries && /^\/(?!\/)/.test(t)) {
-      const route = `/${t.replace(/^\/+|\/+$/g, '')}/`;
+      const route = `/${readablePath(t).replace(/^\/+|\/+$/g, '')}/`;
       const owner = collectionRoutes(state).find((o) => o.kind === 'entry' && o.route === route);
       if (owner?.kind === 'entry') return normalizeLink({ type: 'entry', target: owner.entryId, newTab }, state, label, scope);
     }

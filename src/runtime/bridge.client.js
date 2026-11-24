@@ -26,6 +26,22 @@ const MAX_COMMIT_CHARS = 150000;
 const MAX_TEXT_CHARS = 20000;
 const errors = [];
 
+/**
+ * The page's path as the project spells its routes ("/お問い合わせ/"), where the browser keeps it escaped
+ * ("/%E3%81%8A…/"). Escapes of a slash, "?" or "#" stay escaped, as decodeURI leaves them, so the path never
+ * names another place; a path that is not valid UTF-8 is reported as it is, and matches no page.
+ */
+function readablePath(pathname) {
+  try {
+    return decodeURI(pathname);
+  } catch {
+    return pathname;
+  }
+}
+
+/** The path of the page the frame shows, as readablePath spells it. */
+const shownPath = () => readablePath(location.pathname);
+
 function send(type, payload = {}) {
   if (!sessionId || parentWin === window) return;
   parentWin.postMessage({ protocolVersion: PROTOCOL, sessionId, navigationId: location.pathname, revision, type, payload }, '*');
@@ -3299,7 +3315,7 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     sections.add(ctx.includes('|') ? ctx.split('|').slice(0, 2).join('|') : `${ctx}|${el.getAttribute('data-so-node')}`);
   }
   return {
-    path: location.pathname,
+    path: shownPath(),
     sections: [...sections].slice(0, 500),
     viewportWidth: vw,
     documentWidth: docWidth,
@@ -3388,7 +3404,7 @@ window.addEventListener('message', async (e) => {
       }
       if (navRequest !== id) break;
       navRequest = null;
-      if (id !== null) send('navigated', { path: location.pathname, navId: id });
+      if (id !== null) send('navigated', { path: shownPath(), navId: id });
       break;
     }
     // Back or Forward in a visitor's journey: a step to a neighbouring entry of this frame's own history, which
@@ -3597,7 +3613,7 @@ window.addEventListener('unhandledrejection', (e) => {
 function reportNav() {
   stopKeeping();
   pendingScroll = null;
-  send('navigated', { path: location.pathname });
+  send('navigated', { path: shownPath() });
   scheduleRects();
   // What a practice send says belongs to the page it started on.
   formEpoch++;
@@ -3616,10 +3632,10 @@ function reportHistory() {
   const current = nav && nav.currentEntry;
   const list = current ? nav.entries() : [];
   const i = current ? current.index : -1;
-  // Exactly as the page has it (site addresses are plain letters, numbers and hyphens). A very long query gives way
-  // before the #fragment does.
+  // As the page has it, its path spelled as the project's routes are (an address in another script reads as written,
+  // and is shorter than escaped). A very long query gives way before the #fragment does.
   const hash = location.hash.slice(0, 300);
-  let address = location.pathname + location.search;
+  let address = shownPath() + location.search;
   if (address.length + hash.length > 2000) address = address.slice(0, 1999 - hash.length) + '…';
   send('history', {
     address: address + hash,
@@ -3746,7 +3762,7 @@ function inkBounds() {
   if (left < 0) return null;
   return box && { x: box.x, y: box.y, width: box.right - box.x, height: box.bottom - box.y };
 }
-send('ready', { path: location.pathname, title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
+send('ready', { path: shownPath(), title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
 reportHistory();
 reportTextFocus();
 reportForms();
