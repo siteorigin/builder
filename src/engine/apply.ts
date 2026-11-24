@@ -360,7 +360,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'collection.update':
       return collectionUpdate(state, op, ctx.entryAddressesAtStart);
     case 'collection.remove':
-      return collectionRemove(state, op);
+      return collectionRemove(state, op, ctx.entryAddressesAtStart);
     case 'entry.create':
       return entryCreate(state, op);
     case 'entry.update':

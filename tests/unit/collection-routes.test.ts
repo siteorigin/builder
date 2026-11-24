@@ -460,6 +460,20 @@ describe('handing on an entry’s addresses', () => {
     expect(kept(s)).toEqual([]);
   });
 
+  it('gives nothing of a removed collection’s entries to one created again with an ID of theirs', () => {
+    const s = run(blog(), rename('en_winter', 'glazing-evenings'));
+    const after = run(
+      s,
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] },
+      { type: 'collection.remove', collectionId: 'posts' },
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_other', title: 'Other', draft: false },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_winter', title: 'Unrelated', slug: 'winter-workshop' },
+      { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_other' }
+    );
+    expect(kept(after)).toEqual([]);
+  });
+
   it('hands on an old address the removed entry had just taken back', () => {
     const s = run(blog(), rename('en_winter', 'glazing-evenings'));
     const after = run(

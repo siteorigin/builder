@@ -285,7 +285,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   return { collectionId: c.settings.id, route: c.settings.route };
 }
 
-export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>): OpResult {
+export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>, atStart?: Map<string, EntryAddress>): OpResult {
   const c = getCollection(state, op.collectionId);
   const members = new Set(Object.keys(c.entries));
   // Links between its own entries go with them; any other link to one of them would be left going nowhere.
@@ -299,6 +299,8 @@ export function collectionRemove(state: ProjectState, op: Op<'collection.remove'
   const kept = keptAddresses(state);
   const rest = kept.filter((r) => !(typeof r?.entryId === 'string' && members.has(r.entryId)));
   if (rest.length !== kept.length) setKeptAddresses(state, rest);
+  // Nothing else of the batch reaches them through these IDs, even created again.
+  if (atStart) for (const [key, a] of [...atStart]) if (members.has(a.entryId)) atStart.delete(key);
   return { collectionId: c.settings.id, removedEntries: members.size };
 }
 
