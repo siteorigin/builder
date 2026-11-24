@@ -10,11 +10,12 @@ import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout } from
 import { treeFor } from '../lib/model';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
 import { openContentMatch } from './FindReplace';
-import { websiteFormNotes, websiteTrees } from '@engine/validate';
+import { diagnosticKey, websiteFormNotes, websiteTrees } from '@engine/validate';
 import { publishedState } from '@generator/index';
 import { destinationLabel, noteState } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 import { pagesSummaryText } from '../lib/export-summary';
+import { auditForHealth, seoCountsText, seoPreflight, type SeoAuditResult } from '../lib/seo-health';
 
 type ExportKind = 'static' | 'source';
 
@@ -345,6 +346,82 @@ function FormReview({ notes, disabled, folded }: { notes: ExportNote[]; disabled
   );
 }
 
+/**
+ * The SEO and agentic preflight: what keeps the website from being found, shared or read by search engines, link
+ * previews and AI agents (the SEO audit's problems and warnings), counted, with a few of them and the way to where each
+ * is fixed, and the way to all of them in Project health. It never stops the export: an author may publish before the
+ * site has a public URL, say. With nothing to fix, it is one quiet line.
+ */
+function SeoPreflight({ audit, disabled, folded }: { audit: SeoAuditResult; disabled: boolean; folded: boolean }) {
+  const baseId = useId();
+  // Folded to its counted heading while something more urgent needs the room; the rows are one click away.
+  const [listOpen, setListOpen] = useState(false);
+  useEffect(() => {
+    if (disabled) setListOpen(false);
+  }, [disabled]);
+  // Project health says why the audit could not read the project; the export itself is not held up by it.
+  if (!audit.ok) return null;
+  const pre = seoPreflight(audit.findings);
+  const openHealth = () => setState({ modal: { kind: 'health', section: 'seo' } });
+  if (!pre.total)
+    return (
+      <p className="export-seo-ready" data-testid="export-seo-preflight">
+        <CircleCheck aria-hidden />
+        <span>
+          <strong>Ready for search and AI.</strong> {pre.notes ? `Nothing to fix; Project health has ${seoCountsText(audit.findings)} with suggestions.` : 'Nothing keeps search engines, link previews or AI agents from the website.'}{' '}
+          {pre.notes > 0 && (
+            <button type="button" className="link-btn" disabled={disabled} onClick={openHealth}>
+              Review in Project health
+            </button>
+          )}
+        </span>
+      </p>
+    );
+  const headId = `${baseId}-head`;
+  const rowsId = `${baseId}-rows`;
+  return (
+    <section className="export-review" data-testid="export-seo-preflight" aria-labelledby={headId}>
+      <div className="export-review-head">
+        <TriangleAlert aria-hidden />
+        <div className="grow">
+          <strong id={headId}>{pre.total === 1 ? 'One thing keeps the website from being found or shared well.' : `${pre.total} things keep the website from being found or shared well.`}</strong>
+          <span>Search engines, link previews and AI agents read the website as it is exported. This won’t stop the export.</span>
+        </div>
+        {folded && !disabled && (
+          <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
+            <ChevronRight size={14} aria-hidden style={{ transform: listOpen ? 'rotate(90deg)' : undefined }} />
+            {listOpen ? 'Hide' : 'Review'}
+          </button>
+        )}
+      </div>
+      <ul className="export-review-list" id={rowsId} hidden={folded && !listOpen}>
+        {pre.examples.map((f, i) => (
+          <li key={diagnosticKey(f)}>
+            <div className="export-review-row">
+              <span className="export-review-what" id={`${baseId}-${i}`}>
+                {f.message}
+              </span>
+              <div className="export-review-actions">
+                {f.destination && (
+                  <button className="btn btn-sm" disabled={disabled} aria-describedby={`${baseId}-${i}`} onClick={() => openEditorDestination(f.destination!)}>
+                    {destinationLabel(f.destination)}
+                  </button>
+                )}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p className="export-seo-more">
+        <span>{pre.more ? `${pre.more} more ${pre.more === 1 ? 'is' : 'are'} in Project health.` : pre.notes ? `Project health also has ${seoCountsText(audit.findings.filter((f) => f.severity === 'info'))} with suggestions.` : ''}</span>
+        <button type="button" className="link-btn" disabled={disabled} aria-describedby={headId} onClick={openHealth}>
+          View all in Project health
+        </button>
+      </p>
+    </section>
+  );
+}
+
 /** What an export note says once what it describes was put right after the export: the files need exporting again. */
 function fixedSince(note: ExportNote, state: 'fixed' | 'gone'): string {
   if (note.destination?.kind === 'site') return 'Public URL set since this export. Export again to include canonical links and the sitemap.';
@@ -437,6 +514,8 @@ export function ExportModal() {
   const samplesKept = samples.filter((g) => keptValues.includes(g.value));
   // The website's contact forms visitors cannot send, as the website export would name them, and where to fix each.
   const formNotes = useMemo(() => (state ? websiteFormNotes(state) : []), [state]);
+  // What keeps the website from being found or shared, as Project health's Search & AI readiness says it.
+  const seoAudit = useMemo(() => (state ? auditForHealth(state) : null), [state]);
   // What the website shows now, read once for every note about an earlier export.
   const liveTrees = useMemo(() => (state ? websiteTrees(publishedState(state)) : []), [state]);
   const [busy, setBusy] = useState<ExportKind | null>(null);
@@ -744,6 +823,7 @@ export function ExportModal() {
             )}
             {state && <FormReview notes={formNotes} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
+            {seoAudit && <SeoPreflight audit={seoAudit} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {plan && <PagesSummary published={plan.published} drafts={plan.drafts} publishedEntries={plan.publishedEntries} draftEntries={plan.draftEntries} />}
             <div className="export-choice" role="group" aria-labelledby="export-choice-title">
               <div className="export-choice-head">
