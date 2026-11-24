@@ -187,6 +187,19 @@ describe('buildSeoGraph', () => {
     // References are absolute addresses, written without spaces.
     expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { author: { '@id': '#missing' } } }] }))).toThrow(/not an absolute address/);
     expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { author: { '@id': ` ${ids.site('person')}` } } }] }))).toThrow(/not an absolute address/);
+    // A reference to the graph's own address must resolve, however its fragment is written; a web address is written whole.
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': `${ids.webpage.split('#')[0]}#service_details` } } }] }))).toThrow(/which the graph does not have/);
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': 'https:elsewhere.example' } } }] }))).toThrow(/not an absolute address/);
+    // Entities come as nodes of their own, never through @included.
+    expect(
+      refused(({ ids }) => ({
+        extend: [{ id: ids.webpage, set: { '@included': [{ '@id': ids.site('service'), '@type': 'Service', name: 'Classes' }] } }],
+        nodes: [{ '@type': 'Offer', '@id': ids.site('offer'), itemOffered: { '@id': ids.site('service') } }]
+      }))
+    ).toThrow(/@included/);
+    // JSON-LD keywords beside an @id keep it a reference, and an IRI of another scheme is an address.
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': ids.organization, '@index': 'publisher' } } }] }))).not.toThrow();
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { citation: { '@id': 'urn:isbn:9780000000001', '@type': 'Book', name: 'Clay' } } }] }))).not.toThrow();
     // An entity is described once, in place or as a node.
     expect(
       refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': ids.site('shop'), '@type': 'Store', name: 'Shop' }, mentions: { '@id': ids.site('shop'), '@type': 'Store', name: 'Other shop' } } }] }))

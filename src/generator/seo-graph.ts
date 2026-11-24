@@ -162,28 +162,38 @@ function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSe
 }
 
 /**
- * What a value says of other entities, at any depth: the ones it refers to (an object with an `@id` and nothing else)
- * and the ones it describes in place (an `@id` with properties of its own).
+ * What a value says of other entities, at any depth: the ones it refers to (an `@id` with nothing but JSON-LD keywords
+ * beside it, such as `@index`) and the ones it describes in place (an `@id` with an `@type` or properties of its own).
  */
 function mentions(value: JsonValue, out: { refs: string[]; inline: string[] } = { refs: [], inline: [] }) {
   if (Array.isArray(value)) for (const v of value) mentions(v, out);
   else if (value && typeof value === 'object') {
     const id = value['@id'];
-    if (typeof id === 'string') (Object.keys(value).length === 1 ? out.refs : out.inline).push(id);
+    const describes = Object.keys(value).some((k) => k === '@type' || !k.startsWith('@'));
+    if (typeof id === 'string') (describes ? out.inline : out.refs).push(id);
     for (const [k, v] of Object.entries(value)) if (k !== '@id') mentions(v, out);
   }
   return out;
 }
 
+/**
+ * An absolute IRI, written without spaces: a web address with its host (`https://example.com/#org`), or another scheme
+ * (`urn:isbn:…`). A web address the URL parser would have to repair (`https:example.com`) is not one.
+ */
 const isAbsolute = (id: string) => {
-  if (/\s/.test(id)) return false;
+  if (/\s/.test(id) || !/^[a-z][a-z0-9+.-]*:./i.test(id)) return false;
+  if (!/^https?:/i.test(id)) return true;
+  if (!/^https?:\/\/[^/?#]/i.test(id)) return false;
   try {
-    const url = new URL(id);
-    return url.protocol === 'https:' || url.protocol === 'http:';
+    return !!new URL(id).host;
   } catch {
     return false;
   }
 };
+
+/** Whether a value holds `@included` anywhere: a contributor adds those entities as nodes of its own instead. */
+const includes = (value: JsonValue): boolean =>
+  Array.isArray(value) ? value.some(includes) : !!value && typeof value === 'object' && Object.entries(value).some(([k, v]) => k === '@included' || includes(v));
 
 /**
  * The connected graph for one document, with what each contributor adds. Null when the document carries no
@@ -202,11 +212,13 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
   if (!meta?.visibility.jsonLd || !meta.url || !base) return null;
   const root = `${base}/`;
   const ids = graphIds(root, meta.url);
-  // One of the IDs `ids` makes: the site's own, or this document's.
-  const own = (id: string) => {
-    const at = id.lastIndexOf('#');
-    return at > 0 && (id.slice(0, at) === root || id.slice(0, at) === meta.url) && FRAGMENT.test(id.slice(at + 1));
+  // An ID at the site's address or this document's, with a fragment: one of the graph's own, written well or not.
+  const local = (id: string) => {
+    const at = id.indexOf('#');
+    return at > 0 && (id.slice(0, at) === root || id.slice(0, at) === meta.url);
   };
+  // One of the IDs `ids` makes.
+  const own = (id: string) => local(id) && FRAGMENT.test(id.slice(id.indexOf('#') + 1));
   const core = coreNodes(state, resolver, meta, root, ids);
   const nodes = new Map<string, GraphNode>(core.map((n) => [n['@id'], n]));
   const added: GraphNode[] = [];
@@ -218,6 +230,7 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
       const id = node?.['@id'];
       if (typeof id !== 'string' || !id || node['@type'] === undefined) throw new Error(`${who} added a node without an @id and an @type.`);
       if (!own(id)) throw new Error(`${who} added ${id}, which is not an ID of this site or document: make it with ids.site or ids.page.`);
+      if (includes(node)) throw new Error(`${who} added ${id} with @included entities: add them as nodes of their own.`);
       if (core.some((n) => n['@id'] === id)) throw new Error(`${who} added ${id}, which the graph already has: extend it instead.`);
       if (nodes.has(id)) throw new Error(`${who} added ${id}, which another contributor added too.`);
       // A copy, so nothing a contributor keeps can change the graph after it is built.
@@ -236,6 +249,7 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
     const node = nodes.get(id) as JsonObject | undefined;
     if (!node) throw new Error(`Graph contributor ${from + 1} extends ${id}, which the graph does not have.`);
     for (const k of [...Object.keys(set ?? {}), ...Object.keys(add ?? {})]) if (k === '@id' || k === '@context') throw new Error(`Graph contributor ${from + 1} tried to change ${k} of ${id}.`);
+    if (includes({ ...set, ...add })) throw new Error(`Graph contributor ${from + 1} extends ${id} with @included entities: add them as nodes of their own.`);
     for (const [k, v] of Object.entries(set ?? {})) {
       const pending = sets.get(node) ?? new Map<string, JsonValue>();
       sets.set(node, pending);
@@ -267,6 +281,7 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
   for (const { id, inline: described } of said)
     for (const x of described) {
       if (!isAbsolute(x)) throw new Error(`${id} describes ${x}, which is not an absolute address.`);
+      if (local(x) && !own(x)) throw new Error(`${id} describes ${x}, which is not an ID of this site or document: make it with ids.site or ids.page.`);
       if (nodes.has(x)) throw new Error(`${id} describes ${x} in place, which the graph already has: refer to it instead.`);
       if (inline.has(x)) throw new Error(`${id} describes ${x}, which ${inline.get(x)} describes too: describe it once and refer to it.`);
       inline.set(x, id);
@@ -274,7 +289,7 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
   for (const { id, refs } of said)
     for (const r of refs) {
       if (!isAbsolute(r)) throw new Error(`${id} refers to ${r}, which is not an absolute address.`);
-      if (own(r) && !nodes.has(r) && !inline.has(r)) throw new Error(`${id} refers to ${r}, which the graph does not have.`);
+      if (local(r) && !nodes.has(r) && !inline.has(r)) throw new Error(`${id} refers to ${r}, which the graph does not have.`);
     }
   // Every node is linked, one way or the other, to the graph's own entities: through references, and through the
   // entities nodes describe in place, which are linked to the node that holds them.
