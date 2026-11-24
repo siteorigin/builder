@@ -385,7 +385,6 @@ function addsOptionToExistingAxis(def: ComponentDefinition, option: string, axis
 const CONTRACT_EDITS = new Set<OperationType>([
   'component.setPropSchema',
   'component.removePropSchema',
-  'component.orderProperties',
   'component.setPropDefault',
   'component.setPart',
   'component.removePart',

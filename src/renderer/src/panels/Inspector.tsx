@@ -74,7 +74,7 @@ import { defaultReach, designContent, designContentOp, forwardedBinding, propDef
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { BindingControl, PartSection, PropertiesSection, StyleTargetField, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
 import { LivePreview } from './InsertPanel';
-import { variantStylable, type StyleTarget } from '../lib/component-contract';
+import { isHeadingLevel, placementOrder, variantStylable, type StyleTarget } from '../lib/component-contract';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
@@ -103,7 +103,6 @@ function formServiceHint(service: FormServiceSetup, entered: boolean): ReactNode
 }
 
 /** A property choosing a heading's level (Heading 1 to 6): it sets the page outline, not the look. */
-const isHeadingLevel = (schema: PropSchema | ScalarPropSchema) => schema.type === 'enum' && schema.options.length > 1 && schema.options.every((o) => /^h[1-6]$/.test(o.value));
 const HEADING_LEVEL_HINT = 'Sets the page outline screen readers use, not the look. Use Heading 1 for the page title only.';
 
 /** A video field's hint, when it has one. */
@@ -847,10 +846,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const service = formServiceSetup(def, node.props);
   // A heading level changes the page outline, not the look: it comes after the content rather than between a
   // heading and the words under it.
-  const entries = Object.entries(def.properties)
-    .filter(([key]) => !service?.hidden.includes(key))
-    .map(([key, schema]) => ({ key, schema, data: null }));
-  const fields = groupFields([...entries.filter((e) => !isHeadingLevel(e.schema)), ...entries.filter((e) => isHeadingLevel(e.schema))]);
+  const fields = groupFields(
+    placementOrder(def)
+      .filter((key) => !service?.hidden.includes(key))
+      .map((key) => ({ key, schema: def.properties[key], data: null }))
+  );
   // Buttons with no link are left out of the site: flag each at the field that sets its link. Hide is offered there
   // only when that field and the label belong to the same one button (not a link or label every item shares).
   const unlinked = unlinkedAt(state, owner, node.id);

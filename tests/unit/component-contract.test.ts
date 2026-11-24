@@ -28,6 +28,7 @@ import {
   liveStyleTarget,
   movePropOp,
   newPropSchema,
+  placementOrder,
   propertyUses,
   removeVariantOp,
   renamePartOp,
@@ -278,14 +279,15 @@ describe('the component’s properties', () => {
   it('reorders them, refusing an order that drops, repeats or invents one', () => {
     const hero = forked('hero.split');
     const keys = Object.keys(hero.def(hero.s).properties);
-    const op = movePropOp(hero.def(hero.s), keys[1], -1)!;
-    expect(op).toEqual({ type: 'component.orderProperties', definitionId: hero.defId, order: [keys[1], keys[0], ...keys.slice(2)] });
+    const shown = placementOrder(hero.def(hero.s));
+    const op = movePropOp(hero.def(hero.s), shown[1], -1)!;
+    expect(op).toEqual({ type: 'component.orderProperties', definitionId: hero.defId, order: [shown[1], shown[0], ...shown.slice(2)] });
     const s = apply(hero.s, [op]);
-    expect(Object.keys(hero.def(s).properties)).toEqual([keys[1], keys[0], ...keys.slice(2)]);
+    expect(Object.keys(hero.def(s).properties)).toEqual([shown[1], shown[0], ...shown.slice(2)]);
     // Each placement keeps its values.
     expect(placed(s, hero.defId)[0].props).toEqual(placed(hero.s, hero.defId)[0].props);
-    expect(movePropOp(hero.def(s), keys[1], -1)).toBeNull();
-    expect(movePropOp(hero.def(s), keys[keys.length - 1], 1)).toBeNull();
+    expect(movePropOp(hero.def(s), shown[1], -1)).toBeNull();
+    expect(movePropOp(hero.def(s), shown[shown.length - 1], 1)).toBeNull();
     const order = (o: string[]) => () => applyOperations(hero.s, [{ type: 'component.orderProperties', definitionId: hero.defId, order: o }]);
     expect(order(keys.slice(1))).toThrow(/leaves out/);
     expect(order([...keys, keys[0]])).toThrow(/twice/);
@@ -293,6 +295,24 @@ describe('the component’s properties', () => {
     expect(order([...keys.slice(0, -1), 'toString'])).toThrow(/no property "toString"/);
     const theme = Object.values(hero.s.components).find((d) => d.componentId === 'hero.split' && d.owner === 'theme')!;
     expect(() => applyOperations(hero.s, [{ type: 'component.orderProperties', definitionId: theme.id, order: Object.keys(theme.properties) }])).toThrow(/Fork it first/);
+  });
+
+  it('lists them as placements do, and offers only moves placements show', () => {
+    const hero = forked('hero.split');
+    // Listed first in the component, as a theme may list a heading's level beside it.
+    const first = ['headingLevel', ...Object.keys(hero.def(hero.s).properties).filter((k) => k !== 'headingLevel')];
+    const s = apply(hero.s, [{ type: 'component.orderProperties', definitionId: hero.defId, order: first }]);
+    const def = hero.def(s);
+    expect(Object.keys(def.properties)[0]).toBe('headingLevel');
+    const shown = placementOrder(def);
+    // A heading level comes after the content on every placement, wherever the component lists it.
+    expect(shown.at(-1)).toBe('headingLevel');
+    expect(movePropOp(def, 'headingLevel', -1)).toBeNull();
+    expect(movePropOp(def, shown.at(-2)!, 1)).toBeNull();
+    // A move within the content puts the properties in the order placements show, with that one moved.
+    const op = movePropOp(def, shown[1], -1)!;
+    expect(op).toEqual({ type: 'component.orderProperties', definitionId: hero.defId, order: [shown[1], shown[0], ...shown.slice(2)] });
+    expect(placementOrder(hero.def(apply(s, [op])))).toEqual([shown[1], shown[0], ...shown.slice(2)]);
   });
 
   it('keeps the order through save and reopen', () => {

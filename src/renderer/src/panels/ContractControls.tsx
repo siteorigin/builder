@@ -26,6 +26,7 @@ import {
   movePropOp,
   nodeName,
   partOf,
+  placementOrder,
   propertyUses,
   removeVariantOp,
   renamePartOp,
@@ -182,7 +183,7 @@ const TYPE_WORDS: Record<string, string> = {
 
 /** The component's properties, in the order each placement's Content lists them: rename, reorder or remove them. */
 export function PropertiesSection({ def, level }: { def: ComponentDefinition; level: number }) {
-  const entries = Object.entries(def.properties) as Array<[string, PropSchema]>;
+  const entries = placementOrder(def).map((k) => [k, def.properties[k]] as [string, PropSchema]);
   const move = (prop: string, delta: -1 | 1) => {
     const now = current(def.id);
     const op = now && movePropOp(now.def, prop, delta);
@@ -231,10 +232,10 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
                     {TYPE_WORDS[schema.type] ?? schema.type} · {uses.length ? `shown by ${uses.join(', ')}` : 'not shown in the design'}
                   </span>
                 </div>
-                <button className="icon-btn sm" disabled={i === 0} aria-label={`Move ${schema.label} up`} title="Move up" onClick={() => move(prop, -1)}>
+                <button className="icon-btn sm" disabled={!movePropOp(def, prop, -1)} aria-label={`Move ${schema.label} up`} title={i > 0 && !movePropOp(def, prop, -1) ? 'Heading levels come after the content on every placement' : 'Move up'} onClick={() => move(prop, -1)}>
                   <ArrowUp />
                 </button>
-                <button className="icon-btn sm" disabled={i === entries.length - 1} aria-label={`Move ${schema.label} down`} title="Move down" onClick={() => move(prop, 1)}>
+                <button className="icon-btn sm" disabled={!movePropOp(def, prop, 1)} aria-label={`Move ${schema.label} down`} title={i < entries.length - 1 && !movePropOp(def, prop, 1) ? 'Heading levels come after the content on every placement' : 'Move down'} onClick={() => move(prop, 1)}>
                   <ArrowDown />
                 </button>
                 <button

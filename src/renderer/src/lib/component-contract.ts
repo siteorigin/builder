@@ -3,7 +3,7 @@
  * properties, and the design's fields bound to them), which inner elements each placement may style (its parts), and
  * the looks a placement chooses between (its variants). Every helper plans operations; the engine checks them.
  */
-import type { ComponentDefinition, GraphNode, PartDef, ProjectState, PropSchema, VariantAxis } from '@shared/types';
+import type { ComponentDefinition, GraphNode, PartDef, ProjectState, PropSchema, ScalarPropSchema, VariantAxis } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { acceptedTypes, bindingProblem, bindingSites, isProtoKey, type BindField } from '@engine/schema';
@@ -185,12 +185,28 @@ export function propertyUses(def: ComponentDefinition, prop: string): string[] {
   return out;
 }
 
-/** Move a property up (-1) or down (1) the list placements show; null at either end. */
+/** A heading level: a choice of h1 to h6. It changes the page outline, not the look. */
+export const isHeadingLevel = (schema: PropSchema | ScalarPropSchema) => schema.type === 'enum' && schema.options.length > 1 && schema.options.every((o) => /^h[1-6]$/.test(o.value));
+
+/**
+ * The component's properties in the order each placement's Content lists them: in the component's order, with heading
+ * levels after the content rather than between a heading and the words under it.
+ */
+export function placementOrder(def: Pick<ComponentDefinition, 'properties'>): string[] {
+  const keys = Object.keys(def.properties);
+  return [...keys.filter((k) => !isHeadingLevel(def.properties[k])), ...keys.filter((k) => isHeadingLevel(def.properties[k]))];
+}
+
+/**
+ * Move a property up (-1) or down (1) the list placements show. Null where that would not change what they show: at
+ * either end, or across from the content to the heading levels, which always come last.
+ */
 export function movePropOp(def: ComponentDefinition, prop: string, delta: -1 | 1): EditOperation | null {
-  const order = Object.keys(def.properties);
+  const order = placementOrder(def);
   const i = order.indexOf(prop);
   const j = i + delta;
   if (i < 0 || j < 0 || j >= order.length) return null;
+  if (isHeadingLevel(def.properties[order[i]]) !== isHeadingLevel(def.properties[order[j]])) return null;
   [order[i], order[j]] = [order[j], order[i]];
   return { type: 'component.orderProperties', definitionId: def.id, order };
 }
