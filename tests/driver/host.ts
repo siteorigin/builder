@@ -36,6 +36,9 @@ export interface Server {
   end(reason: EndReason): Promise<void>;
 }
 
+/** How long replies still being written may hold up the end of a session. */
+const DRAIN_MS = 5000;
+
 export function serve({ session, input, write, onEnd }: ServeOptions): Server {
   let ending: Promise<void> | null = null;
   let disconnected = false;
@@ -46,8 +49,11 @@ export function serve({ session, input, write, onEnd }: ServeOptions): Server {
     ending ??= (async () => {
       let error: unknown;
       await session.close().catch((e: unknown) => (error = e));
-      // Replies to requests the close cut short still go out, unless there is no one left to read them.
-      await Promise.allSettled([...inFlight]);
+      // Replies to requests the close cut short still go out, unless there is no one left to read them, and a reader
+      // that stopped reading cannot hold the exit up for long.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.allSettled([...inFlight]), new Promise((r) => (timer = setTimeout(r, DRAIN_MS)))]);
+      clearTimeout(timer);
       onEnd(reason, error);
     })();
     return ending;
@@ -57,7 +63,8 @@ export function serve({ session, input, write, onEnd }: ServeOptions): Server {
     if (!line.trim() || disconnected) return;
     const handled = session.call(line).then(async (reply) => {
       await send(reply);
-      if (reply.op === 'session.close' && reply.id !== null) void end('closed');
+      // Only a close that ran ends the host: one refused for a bad frame leaves the session as it was.
+      if (reply.op === 'session.close' && (reply.ok || reply.error.code === 'CLEANUP_FAILED')) void end('closed');
     });
     inFlight.add(handled);
     void handled.finally(() => inFlight.delete(handled));

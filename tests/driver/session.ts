@@ -770,7 +770,8 @@ export class Session {
           : new DriverError('LAUNCH_FAILED', `The app did not start (at ${phase}): ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`, { details: { phase } });
       if (!interrupted && this.args.keepArtifacts !== 'never') await this.writeEvidence(err).catch(() => undefined);
       const closed = await this.close({ failed: !interrupted }).catch((c: unknown) => c);
-      const details: Record<string, unknown> = { ...err.details, phase, sessionState: 'closed' };
+      // A failure that names its own phase knows better than the last phase reached.
+      const details: Record<string, unknown> = { ...err.details, phase: err.details?.phase ?? phase, sessionState: 'closed' };
       if (closed && typeof closed === 'object' && 'processes' in closed) Object.assign(details, { artifacts: (closed as CloseResult).artifacts, processes: (closed as CloseResult).processes });
       else details.cleanup = closed instanceof DriverError ? { code: closed.code, message: closed.message, ...closed.details } : String(closed);
       throw new DriverError(err.code, err.message, { retryable: err.retryable, details });

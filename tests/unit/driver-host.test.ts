@@ -10,7 +10,7 @@ import { connect } from '../driver/client.ts';
 import { serve } from '../driver/host.ts';
 import type { HostedSession } from '../driver/host.ts';
 import type { Failure, Reply, Success } from '../driver/protocol.ts';
-import { OPERATIONS, Session, isInside, sessionEnv } from '../driver/session.ts';
+import { OPERATIONS, Session, buildIdentity, isInside, sessionEnv } from '../driver/session.ts';
 import type { StartPhase } from '../driver/session.ts';
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'driver-host-')));
@@ -58,7 +58,19 @@ describe('a session before it starts', () => {
       ['window.info', 'observe'],
       ['session.close', 'session']
     ]);
-    for (const c of d.capabilities) expect(c.defaultTimeoutMs).toBe(OPERATIONS[c.op].defaultTimeoutMs);
+    expect(Object.fromEntries(d.capabilities.map((c: any) => [c.op, c.defaultTimeoutMs]))).toEqual({ 'session.start': 180000, 'session.describe': 15000, 'window.info': 10000, 'session.close': 60000 });
+  });
+
+  it('fingerprints the build by the bytes of its files', async () => {
+    const first = await buildIdentity(appRoot);
+    expect(first).toMatchObject({ files: 2, packageVersion: '9.9.9', git: null, fingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) });
+    expect((await buildIdentity(appRoot)).fingerprint).toBe(first.fingerprint);
+    writeFileSync(join(appRoot, 'out', 'main', 'index.js'), '// main, rebuilt');
+    try {
+      expect((await buildIdentity(appRoot)).fingerprint).not.toBe(first.fingerprint);
+    } finally {
+      writeFileSync(join(appRoot, 'out', 'main', 'index.js'), '// main');
+    }
   });
 
   it('answers what it cannot do with the matching error', async () => {
@@ -70,6 +82,8 @@ describe('a session before it starts', () => {
     expect(err(await s.call(req('session.start', { args: { fixture: 'unknown' } }))).error.code).toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { artifactsDir: 'relative/path' } }))).error.code).toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { colour: 'red' } }))).error.code).toBe('BAD_REQUEST');
+    expect(err(await s.call(req('session.start', { args: { provider: 'openai' } }))).error.code).toBe('BAD_REQUEST');
+    expect(err(await s.call(req('session.start', { args: { keepArtifacts: 'sometimes' } }))).error.code).toBe('BAD_REQUEST');
     expect(s.state).toBe('new');
   });
 
@@ -111,6 +125,17 @@ describe('starting', () => {
     expect(session.state).toBe('closed');
   });
 
+  it('rolls back the run folder when the artifacts folder cannot be made', async () => {
+    const parentDir = mkdtempSync(join(scratch, 'parent-'));
+    const file = join(scratch, `not-a-folder-${n}`);
+    writeFileSync(file, 'a file, not a folder');
+    const s = new Session({ appRoot, parentDir });
+    const r = err(await s.call(req('session.start', { args: { artifactsDir: file } })));
+    expect(r.error).toMatchObject({ code: 'LAUNCH_FAILED', details: { phase: 'root', sessionState: 'closed' } });
+    expect(readdirSync(parentDir)).toEqual([]);
+    expect(existsSync(file)).toBe(true);
+  });
+
   it('keeps nothing when told to keep nothing', async () => {
     const { session, parentDir } = heldSession('provider');
     const r = err(await session.call(req('session.start', { timeoutMs: 300, args: { keepArtifacts: 'never' } })));
@@ -136,6 +161,29 @@ describe('starting', () => {
     }
   });
 
+  it('the first close decides what is kept; a later one gets the same answer', async () => {
+    const { session, atPhase } = heldSession('root');
+    const starting = session.call(req('session.start', { args: { keepArtifacts: 'never' } }));
+    await atPhase;
+    const first = ok<any>(await session.call(req('session.close', { args: { keepArtifacts: 'always' } })));
+    await starting;
+    expect(first.result.artifacts).toBe(session.paths!.artifacts);
+    expect(existsSync(session.paths!.artifacts)).toBe(true);
+    expect(ok<any>(await session.call(req('session.close', { args: { keepArtifacts: 'never' } }))).result).toEqual(first.result);
+    expect(existsSync(session.paths!.artifacts)).toBe(true);
+  });
+
+  it('leaves a caller-folder artifacts child alone once it no longer carries the session’s mark', async () => {
+    const callerDir = mkdtempSync(join(scratch, 'caller-'));
+    const { session, atPhase } = heldSession('root');
+    const starting = session.call(req('session.start', { args: { artifactsDir: callerDir, keepArtifacts: 'never' } }));
+    await atPhase;
+    writeFileSync(join(callerDir, session.id, '.siteorigin-test-session.json'), JSON.stringify({ sessionId: 'someone-else' }));
+    expect(err(await session.call(req('session.close'))).error.code).toBe('CLEANUP_FAILED');
+    await starting;
+    expect(existsSync(join(callerDir, session.id))).toBe(true);
+  });
+
   it('leaves a run folder alone once it no longer carries the session’s mark', async () => {
     const { session, atPhase } = heldSession('root');
     const starting = session.call(req('session.start', { args: { keepArtifacts: 'never' } }));
@@ -153,6 +201,7 @@ describe('the app environment', () => {
     const paths = { root: '/r', profile: '/r/profile', workspace: '/r/workspace', projects: '/r/workspace/SiteOrigin', home: '/r/home', tmp: '/r/tmp', artifacts: '/r/artifacts' };
     const base = {
       PATH: '/bin',
+      DISPLAY: ':0',
       LANG: 'en_ZA.UTF-8',
       LC_ALL: 'C',
       HOME: '/Users/me',
@@ -169,6 +218,7 @@ describe('the app environment', () => {
     const env = sessionEnv(paths, { base });
     expect(env).toEqual({
       PATH: '/bin',
+      DISPLAY: ':0',
       LANG: 'en_ZA.UTF-8',
       LC_ALL: 'C',
       HOME: '/r/home',
@@ -229,25 +279,46 @@ describe('the stdio host', () => {
     const input = new PassThrough();
     const lines: string[] = [];
     const ended = new Promise<string>((resolve) => serve({ session: fake.session, input, write: (line, done) => (lines.push(line), done()), onEnd: (reason) => resolve(reason) }));
+    let endedYet = false;
+    void ended.then(() => (endedYet = true));
     input.write('{"v":1,"id":"a","op":"session.start"}\n');
     await new Promise((r) => setTimeout(r, 20));
     input.end();
     await new Promise((r) => setTimeout(r, 20));
     expect(fake.closes()).toBe(1);
+    expect(endedYet, 'the host waits for the request in flight').toBe(false);
     finish();
     expect(await ended).toBe('disconnected');
     expect(lines).toEqual([]);
   });
 
+  it('a close refused for a bad frame leaves the session running', async () => {
+    const s = new Session({ appRoot });
+    const input = new PassThrough();
+    const lines: string[] = [];
+    let ended: string | null = null;
+    serve({ session: s, input, write: (line, done) => (lines.push(line), done()), onEnd: (reason) => (ended = reason) });
+    input.write('{"v":1,"id":"c1","op":"session.close","args":{"failed":"yes"}}\n{"v":2,"id":"c2","op":"session.close"}\n');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(lines.map((l) => [JSON.parse(l).id, JSON.parse(l).error?.code])).toEqual([
+      ['c1', 'BAD_REQUEST'],
+      ['c2', 'UNSUPPORTED_VERSION']
+    ]);
+    expect([ended, s.state]).toEqual([null, 'new']);
+    input.write('{"v":1,"id":"c3","op":"session.close"}\n');
+    await new Promise((r) => setTimeout(r, 100));
+    expect([ended, s.state]).toEqual(['closed', 'closed']);
+  });
+
   it('a client disconnecting mid-start closes a real session and removes its folders', async () => {
     const { session, parentDir, atPhase } = heldSession('root');
     const input = new PassThrough();
-    const ended = new Promise<string>((resolve) => serve({ session, input, write: (_line, done) => done(), onEnd: (reason) => resolve(reason) }));
+    const ended = new Promise<[string, unknown]>((resolve) => serve({ session, input, write: (_line, done) => done(), onEnd: (reason, error) => resolve([reason, error]) }));
     input.write(`${JSON.stringify(req('session.start'))}\n`);
     await atPhase;
     expect(readdirSync(parentDir)).toHaveLength(1);
     input.end();
-    expect(await ended).toBe('disconnected');
+    expect(await ended).toEqual(['disconnected', undefined]);
     expect(session.state).toBe('closed');
     expect(readdirSync(parentDir)).toEqual([]);
   });

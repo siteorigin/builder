@@ -19,10 +19,11 @@ describe('requests', () => {
     const r = parseRequest('{"v":1,"id":"a1","op":"window.info","args":{"x":1},"timeoutMs":500,"expectWindow":2,"extra":true}');
     expect(r).toEqual({ v: 1, id: 'a1', op: 'window.info', args: { x: 1 }, timeoutMs: 500, expectWindow: 2 });
     expect(parseRequest({ v: 1, id: 'b', op: 'session.describe' })).toEqual({ v: 1, id: 'b', op: 'session.describe' });
+    expect(parseRequest({ v: 1, id: 'c', op: 'canvas.text.typeInto' }).op).toBe('canvas.text.typeInto');
   });
 
   it('answers a frame that is not a request with BAD_REQUEST', () => {
-    for (const frame of ['not json', '[]', 'null', { v: 1, op: 'session.describe' }, { v: 1, id: '', op: 'session.describe' }, { v: 1, id: 'x' }, { v: 1, id: 'x', op: 'describe' }, { v: 1, id: 'x', op: 'Session.Describe' }]) {
+    for (const frame of ['not json', '[]', 'null', { v: 1, op: 'session.describe' }, { v: 1, id: '', op: 'session.describe' }, { v: 1, id: 'x' }, { v: 1, id: 'x', op: 'describe' }, { v: 1, id: 'x', op: 'Session.Describe' }, { v: 1, id: 'x', op: 'window.Info' }, { v: 1, id: 'x', op: 'window.' }]) {
       expect(refused(frame).code, JSON.stringify(frame)).toBe('BAD_REQUEST');
     }
     expect(refused({ id: 'x', op: 'session.describe' }).code).toBe('BAD_REQUEST');
@@ -33,21 +34,25 @@ describe('requests', () => {
   it('bounds deadlines and window generations', () => {
     for (const timeoutMs of [0, -1, 1.5, '100', MAX_TIMEOUT_MS + 1]) expect(refused({ v: 1, id: 'x', op: 'window.info', timeoutMs }).code).toBe('BAD_REQUEST');
     expect(parseRequest({ v: 1, id: 'x', op: 'window.info', timeoutMs: MAX_TIMEOUT_MS }).timeoutMs).toBe(MAX_TIMEOUT_MS);
+    expect(parseRequest({ v: 1, id: 'x', op: 'window.info', timeoutMs: 1, expectWindow: 1 })).toMatchObject({ timeoutMs: 1, expectWindow: 1 });
     for (const expectWindow of [0, 1.5, '2']) expect(refused({ v: 1, id: 'x', op: 'window.info', expectWindow }).code).toBe('BAD_REQUEST');
   });
 
   it('refuses a frame over the size limit before reading it', () => {
     const big = JSON.stringify({ v: 1, id: 'x', op: 'window.info', args: { pad: 'y'.repeat(MAX_FRAME) } });
     expect(refused(big)).toMatchObject({ code: 'BAD_REQUEST', message: expect.stringContaining(String(MAX_FRAME)) });
+    // Refused for its size, not for being unreadable.
+    expect(refused(`{${'x'.repeat(MAX_FRAME)}`)).toMatchObject({ code: 'BAD_REQUEST', message: expect.stringContaining(String(MAX_FRAME)) });
   });
 
   it('names the versions it speaks when asked for another', () => {
-    expect(refused({ v: 2, id: 'x', op: 'window.info' })).toEqual({ code: 'UNSUPPORTED_VERSION', message: expect.any(String), retryable: false, details: { supported: [PROTOCOL_VERSION] } });
+    for (const v of [0, 2, 3]) expect(refused({ v, id: 'x', op: 'window.info' })).toEqual({ code: 'UNSUPPORTED_VERSION', message: expect.any(String), retryable: false, details: { supported: [PROTOCOL_VERSION] } });
   });
 
   it('keeps what correlates a broken frame with its sender', () => {
     expect(frameIdentity({ id: 'q', op: 'window.info', v: 9 })).toEqual({ id: 'q', op: 'window.info' });
     expect(frameIdentity({ id: 3, op: '' })).toEqual({ id: null, op: null });
+    expect(frameIdentity({ op: 'session.close' })).toEqual({ id: null, op: 'session.close' });
     expect(frameIdentity('text')).toEqual({ id: null, op: null });
   });
 });
@@ -70,7 +75,19 @@ describe('replies', () => {
       events: [],
       error: { code: 'WINDOW_REPLACED', message: 'replaced', retryable: false, details: { from: 1, to: 2 } }
     });
-    expect(failure({ id: null, op: null }, new Error('boom'), { ...ctx, window: null }).error).toEqual({ code: 'OP_FAILED', message: 'boom', retryable: false });
+    const event = { type: 'window.replaced' as const, at: '2026-11-24T00:00:00.000Z', from: 1, to: 2 };
+    expect(failure({ id: null, op: null }, new Error('boom'), { ...ctx, window: null, events: [event] })).toEqual({
+      v: 1,
+      id: null,
+      op: null,
+      ok: false,
+      sessionId: 's-1',
+      window: null,
+      elapsedMs: 12,
+      events: [event],
+      error: { code: 'OP_FAILED', message: 'boom', retryable: false }
+    });
+    expect(success({ id: 'a', op: 'session.describe' }, 1, { ...ctx, events: [event] }).events).toEqual([event]);
     expect(errorInfo(new DriverError('BUSY', 'later', { retryable: true }))).toEqual({ code: 'BUSY', message: 'later', retryable: true });
   });
 

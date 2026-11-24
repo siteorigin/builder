@@ -60,9 +60,19 @@ export class DriverClient {
     this.host = host;
     this.graceMs = graceMs;
     this.exited = new Promise((resolve) => host.once('exit', (code, signal) => resolve({ code, signal })));
-    void this.exited.then(({ code, signal }) => this.fail(new TransportError(`The session host exited (code ${code}, signal ${signal}).`)));
     host.stdin!.on('error', () => undefined);
-    createInterface({ input: host.stdout!, crlfDelay: Infinity }).on('line', (line) => this.receive(line));
+    const lines = createInterface({ input: host.stdout!, crlfDelay: Infinity });
+    lines.on('line', (line) => this.receive(line));
+    // Requests still waiting fail once every reply the host wrote has been read, not when it exits: its exit can be
+    // seen before its last lines are.
+    lines.on('close', () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<null>((r) => (timer = setTimeout(() => r(null), 1000)));
+      void Promise.race([this.exited, late]).then((exit) => {
+        clearTimeout(timer);
+        this.fail(new TransportError(exit ? `The session host exited (code ${exit.code}, signal ${exit.signal}).` : 'The session host closed its output.'));
+      });
+    });
   }
 
   get pid(): number {
@@ -86,6 +96,12 @@ export class DriverClient {
   }
 
   private send(request: Request): Promise<Reply> {
+    let frame: string;
+    try {
+      frame = JSON.stringify(request);
+    } catch (e) {
+      return Promise.reject(e);
+    }
     return new Promise<Reply>((resolve, reject) => {
       // The host's own deadline answers first; this one only catches a host that stopped answering at all.
       const wait = (request.timeoutMs ?? 180_000) + this.graceMs;
@@ -95,7 +111,7 @@ export class DriverClient {
         void this.disconnect();
       }, wait);
       this.pending.set(request.id, { resolve, reject, timer });
-      this.host.stdin!.write(`${JSON.stringify(request)}\n`);
+      this.host.stdin!.write(`${frame}\n`);
     });
   }
 
@@ -106,7 +122,8 @@ export class DriverClient {
     } catch {
       return;
     }
-    const pending = reply.id === null ? undefined : this.pending.get(reply.id);
+    if (!reply || typeof reply !== 'object') return;
+    const pending = typeof reply.id === 'string' ? this.pending.get(reply.id) : undefined;
     if (!pending) {
       this.unmatched.push(reply);
       return;
@@ -127,13 +144,20 @@ export class DriverClient {
 
   /**
    * Go away without closing the session: the host notices its input end and closes the session itself. Waits up to
-   * `waitMs` for the host to exit, then kills it.
+   * `waitMs` for the host to exit. The host is never killed: it alone can still end the app it started, so one that
+   * takes longer is left to finish (and no longer keeps this process alive), with `timedOut` set.
    */
-  async disconnect(waitMs = 90_000): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  async disconnect(waitMs = 90_000): Promise<{ code: number | null; signal: NodeJS.Signals | null; timedOut?: true }> {
     this.host.stdin!.end();
-    const timer = setTimeout(() => this.host.kill('SIGKILL'), waitMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<{ code: null; signal: null; timedOut: true }>((r) => (timer = setTimeout(() => r({ code: null, signal: null, timedOut: true }), waitMs)));
     try {
-      return await this.exited;
+      const result = await Promise.race([this.exited, late]);
+      if ('timedOut' in result) {
+        this.host.stdout?.destroy();
+        this.host.unref();
+      }
+      return result;
     } finally {
       clearTimeout(timer);
     }
@@ -150,5 +174,5 @@ export async function connect(opts: ConnectOptions = {}): Promise<DriverClient> 
     host.once('spawn', () => resolve());
     host.once('error', reject);
   });
-  return new DriverClient(host, opts.graceMs ?? 60_000);
+  return new DriverClient(host, opts.graceMs ?? 90_000);
 }

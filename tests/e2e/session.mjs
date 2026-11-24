@@ -1,12 +1,13 @@
 // The isolated test session (tests/driver, issue #491) against the built app. A separate Node client starts a
 // session, makes several calls against the same window, reads the session's and the build's identity, and closes it.
 // Two sessions one after another share no project, settings, API key or chat; two at once each get an app of their
-// own. A start that runs out of time, a close while the app is still launching, and a client that disappears all end
-// the app and every process it started (the preview's dev server, npm) and remove the run's data, keeping only the
-// artifacts asked for and never a folder the caller owns. A replaced editor window is reported, not used silently.
+// own, and a session never reaches a Builder already running in the profile its caller names. A start that runs out
+// of time, a close while the app is still launching, and a client that disappears all end the app and every process
+// it started (the preview's dev server, npm) and remove the run's data, keeping only the artifacts asked for and never
+// a folder the caller owns. A replaced editor window is reported, not used silently.
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
@@ -14,7 +15,7 @@ import { connect } from '../driver/client.ts';
 import { isAlive, ownedProcesses, processTable } from '../driver/processes.ts';
 import { Session, isInside } from '../driver/session.ts';
 import { envelopeReply } from '../unit/mock-openai-server.ts';
-import { eventually, scratch, step } from './harness.mjs';
+import { eventually, launch, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('session');
 const sessions = [];
@@ -35,18 +36,26 @@ const session = (opts = {}) => {
 };
 /** Every one of `pids` has ended. */
 const allGone = (pids, what, ms = 30000) => eventually(() => assert.deepEqual(pids.filter(isAlive), [], `${what}: still running`), ms, 200);
-/** Processes whose command line names `dir`: a check that does not rely on the session's own bookkeeping. */
-const naming = (dir) =>
-  new Promise((resolve) =>
-    execFile('ps', ['-A', '-o', 'pid=,command='], { maxBuffer: 16 * 1024 * 1024 }, (_e, out) =>
-      resolve(
-        String(out)
-          .split('\n')
-          .filter((l) => l.includes(dir) && !l.includes(' ps -A'))
-          .map((l) => l.trim())
-      )
-    )
+/** Every process's command line, by pid: checks that do not rely on the session's own bookkeeping. */
+const commands = () =>
+  new Promise((resolve, reject) =>
+    execFile('ps', ['-A', '-o', 'pid=,command='], { maxBuffer: 16 * 1024 * 1024 }, (e, out) => {
+      if (e) return reject(e);
+      const map = new Map();
+      for (const line of String(out).split('\n')) {
+        const m = line.match(/^\s*(\d+)\s+(.*)$/);
+        if (m) map.set(Number(m[1]), m[2]);
+      }
+      resolve(map);
+    })
   );
+/** Processes whose command line names `dir`. */
+const naming = async (dir) => [...(await commands())].filter(([, c]) => c.includes(dir)).map(([pid, c]) => `${pid} ${c}`);
+/** Of `pids`, those that are Electron utility processes: the preview's dev server runs as one. */
+const utilities = async (pids) => {
+  const all = await commands();
+  return pids.filter((pid) => /--type=utility\b/.test(all.get(pid) ?? '') && /node\.mojom\.NodeService/.test(all.get(pid) ?? ''));
+};
 
 try {
   step('a client starts a session and reads who it is: session, build, app and capabilities');
@@ -68,8 +77,8 @@ try {
   assert.equal(one.provider.kind, 'scripted', 'the default AI provider is a local scripted server that costs nothing');
   assert.match(one.provider.baseURL, /^http:\/\/127\.0\.0\.1:\d+\/v1$/);
   assert.equal(one.headless, true);
-  assert.deepEqual(one.window, { generation: 1, nativeId: one.window.nativeId });
   assert.ok(one.processes[0] === one.pid && one.processes.length >= 3, `the session owns the app and its helpers (${one.processes})`);
+  assert.ok((await naming(one.root)).length > 0, 'the app names its own profile from the start (a control for the checks below)');
   assert.deepEqual(
     started.capabilities.map((c) => `${c.op}:${c.kind}`),
     ['session.start:session', 'session.describe:session', 'window.info:observe', 'session.close:session']
@@ -78,6 +87,7 @@ try {
   step('several calls in a row run against the same, hidden window');
   const first = ok(await client.request('window.info'), 'window.info');
   const again = ok(await client.request('window.info'), 'window.info again');
+  assert.deepEqual(one.window, { generation: 1, nativeId: first.nativeId });
   assert.deepEqual([first.generation, again.generation, again.nativeId], [1, 1, first.nativeId]);
   assert.equal(first.url, 'app://editor/index.html');
   assert.equal(first.visible, false, 'the window is never shown');
@@ -100,19 +110,52 @@ try {
   const besideClosed = await beside.close();
   await allGone(besideClosed.processes, 'the second session');
 
+  step('a Builder already running in the profile the caller names is never reached');
+  // A stand-in for the person's own Builder: started the old way, in a profile the caller's environment points to.
+  const devWork = join(WORK, 'developer');
+  mkdirSync(devWork);
+  const dev = await launch(devWork);
+  try {
+    await dev.app.evaluate(({ app }) => {
+      globalThis.secondInstances = 0;
+      app.on('second-instance', () => globalThis.secondInstances++);
+    });
+    const callerProfile = process.env.SITEORIGIN_USER_DATA;
+    process.env.SITEORIGIN_USER_DATA = join(devWork, 'userdata');
+    let isolated;
+    try {
+      isolated = session();
+      await isolated.start({ fixture: 'welcome', keepArtifacts: 'never' });
+    } finally {
+      if (callerProfile === undefined) delete process.env.SITEORIGIN_USER_DATA;
+      else process.env.SITEORIGIN_USER_DATA = callerProfile;
+    }
+    const d = await isolated.describe();
+    assert.notEqual(isolated.pid, dev.app.process().pid);
+    assert.ok(isInside(isolated.paths.root, d.app.paths.userData), `the session's app uses its own profile (${d.app.paths.userData})`);
+    assert.equal(await dev.app.evaluate(() => globalThis.secondInstances), 0, 'the running Builder was not told of a second launch');
+    assert.equal(code(await isolated.call(req('window.info'))), 'ok');
+    await allGone((await isolated.close()).processes, 'the isolated session');
+  } finally {
+    await dev.app.close().catch(() => undefined);
+  }
+
   step('closing ends every process and removes the run, keeping the artifacts asked for');
   const closed = ok(await client.request('session.close'), 'session.close');
   assert.equal(closed.ended, 'quit');
-  await allGone(closed.processes, 'after session.close');
+  for (const pid of one.processes) assert.ok(closed.processes.includes(pid), `close accounts for ${pid}`);
+  await allGone([...one.processes, ...closed.processes], 'after session.close');
   assert.equal(existsSync(one.root), false, 'the run root is gone');
   assert.equal(closed.artifacts, join(callerArtifacts, one.id));
   assert.ok(existsSync(join(closed.artifacts, 'app.log')), 'the app log was kept');
-  assert.ok(existsSync(join(callerArtifacts, 'sentinel.txt')), 'the caller’s own file is untouched');
+  assert.equal(readFileSync(join(callerArtifacts, 'sentinel.txt'), 'utf8'), 'the caller’s own file', 'the caller’s own file is untouched');
   assert.deepEqual(await client.exited, { code: 0, signal: null }, 'the host exits once its session is closed');
 
   step('session A: a project, a setting, an API key, a recent project and a chat');
   const a = session();
+  const aBegan = Date.now();
   await a.start({ fixture: 'business-v1', keepArtifacts: 'never' });
+  const fixtureStartMs = Date.now() - aBegan;
   const pa = a.page;
   const projectA = (await a.describe()).session.project;
   assert.ok(projectA && isInside(a.paths.projects, projectA), `the fixture project is in A's workspace (${projectA})`);
@@ -180,6 +223,7 @@ try {
     assert.notEqual(after.nativeId, before.nativeId);
     assert.equal(ok(await call(req('window.info')), 'window.info once acknowledged').generation, 2);
     assert.equal(code(await call(req('window.info', { expectWindow: 1 }))), 'WINDOW_REPLACED', 'the old window is never used again');
+    assert.equal(code(await call(req('window.info', { expectWindow: 3 }))), 'WINDOW_REPLACED', 'nor a window that does not exist');
   } else {
     // Elsewhere the last window closing quits the app.
     await eventually(async () => assert.equal(code(await call(req('window.info'))), 'APP_EXITED'), 15000);
@@ -202,11 +246,12 @@ try {
   const earlyClosed = await early.close();
   assert.equal(earlyClosed.ended, 'killed');
   assert.ok(earlyClosed.processes.includes(spawned));
-  await allGone([spawned], 'the app closed mid-launch');
+  await allGone(ownedProcesses(await processTable(), spawned), 'the app closed mid-launch, and its group');
   assert.equal(existsSync(early.paths.root), false);
 
   step('a start that runs out of time ends the app and its preview, keeping only its failure artifacts');
   const seen = new Set();
+  let previewWorkers = [];
   let sampler;
   const sample = async (s) => {
     if (s.pid) for (const pid of ownedProcesses(await processTable(), s.pid)) seen.add(pid);
@@ -218,17 +263,20 @@ try {
         // Once the preview is up, the start waits here until its deadline passes.
         if (p === 'fixture.ready') {
           await sample(s);
+          previewWorkers = await utilities([...seen]);
           return new Promise(() => undefined);
         }
       }
     }
   });
   let timedOut;
-  await assert.rejects(late.start({ fixture: 'business-v1' }, { timeoutMs: 45000 }), (e) => ((timedOut = e), e.code === 'TIMEOUT'));
+  // Long enough to reach the preview, as session A's start did, so the deadline passes while the start waits there.
+  await assert.rejects(late.start({ fixture: 'business-v1' }, { timeoutMs: fixtureStartMs + 20000 }), (e) => ((timedOut = e), e.code === 'TIMEOUT'));
   clearInterval(sampler);
-  console.log(`timed out at ${timedOut.details.phase}, having seen ${seen.size} processes of the session's`);
+  console.log(`timed out at ${timedOut.details.phase}, having seen ${seen.size} processes of the session's, ${previewWorkers.length} of them utility processes`);
+  assert.equal(timedOut.details.phase, 'fixture.ready');
   assert.equal(timedOut.details.sessionState, 'closed');
-  assert.ok(seen.size >= 4, `the app and its children were running (${[...seen]})`);
+  assert.ok(previewWorkers.length >= 1, `the preview's dev server was running (${[...seen]})`);
   await allGone([...seen], 'after the start timed out');
   assert.deepEqual(await naming(late.paths.root), [], 'no process names the run root');
   const keptLate = timedOut.details.artifacts;
@@ -259,7 +307,8 @@ setInterval(() => undefined, 1000);
     });
   });
   vanishing.removeAllListeners('exit');
-  assert.ok(info.processes.length >= 4 && info.processes.every(isAlive), `the app and its preview are running (${info.processes})`);
+  assert.ok(info.processes.every(isAlive), `the app is running (${info.processes})`);
+  assert.ok((await utilities(info.processes)).length >= 1, `the preview's dev server is running (${info.processes})`);
   vanishing.kill('SIGKILL');
   await allGone([info.host, ...info.processes], 'after the client disappeared', 60000);
   await eventually(() => assert.equal(existsSync(info.root), false, 'the run root is gone'), 30000);
