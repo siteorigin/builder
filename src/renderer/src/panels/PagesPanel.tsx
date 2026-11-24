@@ -3,7 +3,7 @@ import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, Menu,
 import { suggestRoute } from '@shared/routes';
 import { collectionRoutes } from '@shared/collections';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
+import { aiActivity, applyOps, commitDraft, commitOps, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { limitNote } from '../lib/kept-drafts';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -13,6 +13,7 @@ import { goToShellPart, selectPage } from '../lib/actions';
 import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { headerOrderPlan, inHeaderMenu } from '../lib/page-navigation';
 
 /** Addresses are at most four levels deep, so a page four levels down cannot have pages inside it. */
 const MAX_DEPTH = 4;
@@ -254,6 +255,38 @@ export function PagesPanel() {
   // The row whose full title and address show in a card under it: a clipped row that keyboard focus reached.
   const [peek, setPeek] = useState<{ id: string; top: number; left: number; width: number } | null>(null);
   const peekRef = useRef<HTMLDivElement>(null);
+  // The page just moved here, with the pages listed under it that moved along. Pages and the header menu have orders
+  // of their own, so once the project shows the move (`revision`, the project's once it was saved, and `order`, Pages
+  // as it left it) the move says what it did to the menu: nothing, for pages outside it or a menu already in that
+  // order, or else a note offering to bring the menu along (`shown`). The note goes once answered, once the two orders
+  // agree, or once Pages moves on (an Undo, a move).
+  const [lastMove, setLastMove] = useState<{ pageId: string; pages: string[]; opening: string; revision: number; order: string[]; shown?: boolean } | null>(null);
+  const [matching, setMatching] = useState(false);
+  const movedIn = lastMove && snap?.workspaceKey === lastMove.opening && snap.revision >= lastMove.revision ? snap : null;
+  const standing = !!lastMove && !!movedIn && movedIn.state.site.pageOrder.length === lastMove.order.length && movedIn.state.site.pageOrder.every((id, i) => id === lastMove.order[i]);
+  // A section moves with its pages: any of them in the menu (at the top level or in a submenu) has a place to follow.
+  const inMenu = standing && lastMove!.pages.some((id) => inHeaderMenu(movedIn!.state, id));
+  const orderPlan = inMenu ? headerOrderPlan(movedIn!.state) : null;
+  useEffect(() => {
+    if (!lastMove) return;
+    if (snap?.workspaceKey !== lastMove.opening) return setLastMove(null);
+    // Not shown in the project yet.
+    if (!movedIn) return;
+    if (orderPlan) {
+      if (!lastMove.shown) setLastMove({ ...lastMove, shown: true });
+      return;
+    }
+    const name = movedIn.state.pages[lastMove.pageId]?.title;
+    const along = lastMove.pages.length > 1;
+    if (!lastMove.shown && standing && name && findHeaderMenu(movedIn.state))
+      toast(
+        inMenu
+          ? `Moved “${name}” in Pages. The header menu has its own order, and it already lists these pages this way.`
+          : `Moved “${name}” in Pages. ${along ? 'Neither it nor the pages inside it are' : 'It isn’t'} in the header menu, so the menu is unchanged.`,
+        'info'
+      );
+    setLastMove(null);
+  }, [lastMove, snap]);
   const menu = useMenu();
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -489,12 +522,18 @@ export function PagesPanel() {
   };
   /**
    * Reorder, then bring the page that moved into view and say where it is now ("Services moved up, 2 of 7 at the
-   * top level"). A move made from the keyboard or a row's menu ends with focus on that row, where its keys work.
+   * top level"). A move made from the keyboard or a row's menu ends with focus on that row, where its keys work. The
+   * header menu keeps its own order, and the move says so (see lastMove).
    */
   const moveTo = async (id: string, o: string[] | null, how: string, focus: boolean) => {
     if (!o) return;
-    const r = await applyOps([{ type: 'page.reorder', pageIds: o }], 'Reorder pages');
+    const opening = snap.workspaceKey;
+    // The page and the pages listed under it, which move with it.
+    const pages = blockOf(order, place, id);
+    const r = await commitOps([{ type: 'page.reorder', pageIds: o }], 'Reorder pages');
     if (!r) return;
+    // The header menu keeps its own order: once the project shows the move, the move says what it did to the menu.
+    if (r.workspaceKey === opening && getState().snapshot?.workspaceKey === opening) setLastMove({ pageId: id, pages, opening, revision: r.revision, order: o });
     const after = outline(st, o);
     const section = after.get(id)?.parent;
     const level = o.filter((x) => after.get(x)?.parent === section && (after.get(x)?.depth ?? 0) === (after.get(id)?.depth ?? 0));
@@ -512,6 +551,24 @@ export function PagesPanel() {
     const end = blockOf(order, place, section);
     return moved(st, order, place, id, end[end.length - 1], true, section);
   };
+  /** Answer the move's note: focus goes back to the page that moved, where the list's keys work. */
+  const endNote = (id: string) => {
+    setLastMove(null);
+    refocus(`[data-page="${id}"]`);
+  };
+  /** Reorder the header menu's page links to follow Pages, keeping every other link where it is and each submenu whole. */
+  const matchMenu = async () => {
+    const now = getState().snapshot;
+    const plan = now && headerOrderPlan(now.state);
+    if (!now || !plan) return setLastMove(null);
+    setMatching(true);
+    // Against the project the plan was made from: one that has changed since is planned again.
+    const r = await commitOps(plan.ops, 'Match header menu to page order', undefined, now.revision);
+    setMatching(false);
+    if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+    if (lastMove) endNote(lastMove.pageId);
+    toast('The header menu now lists its pages in the same order as Pages.', 'info', undoAction(r));
+  };
   const endDrag = () => (setDragId(null), setDropAt(null));
   const endRename = (id: string, value?: string) => {
     setRenaming(null);
@@ -524,14 +581,15 @@ export function PagesPanel() {
     // Too long for a title: nothing is cut off or saved. The whole text goes to the page's Title field, refused there
     // with the reason as if typed there (Escape there keeps the old title), and the page's settings open to show it.
     if (v.length > TEXT_LIMITS.pageTitle) {
-      const commit = (t: string) => void applyOps([{ type: 'page.update', pageId: id, title: t.trim() }], 'Rename page');
+      const commit = (t: string) => void renamePage(id, was ?? '', t.trim());
       keepRefusedText(`page:${id}:title`, v, { base: from?.snap ?? getState().snapshot, value: was ?? '', commit, ai: from?.ai ?? aiActivity() }, 'Title', TEXT_LIMITS.pageTitle, () => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id));
       selectPage(id, null);
       setState({ rightTab: 'inspect', dockOpen: true, keptHandoff: getState().keptHandoff + 1 });
       toast(`A page title can be up to ${TEXT_LIMITS.pageTitle} characters, and this one is ${v.length}, so it was not saved. It is in the page’s settings to shorten.`, 'error');
       return;
     }
-    const rename = () => void applyOps([{ type: 'page.update', pageId: id, title: v }], 'Rename page');
+    // The labels that still say the old title are offered alongside once the rename is saved.
+    const rename = () => void renamePage(id, was ?? '', v);
     if (from && (getState().snapshot?.aiBusy || aiActivity() !== from.ai)) commitDraft(from.snap, rename, v, { check: true });
     // Otherwise written only while the title is still the one renaming began from (see commitOps).
     else commitDraft(from?.snap ?? null, rename, v);
@@ -1013,6 +1071,27 @@ export function PagesPanel() {
             />
           )}
         </div>
+        <span className="sr-only" role="status">
+          {orderPlan ? `Moved in Pages only. The header menu still lists ${orderPlan.before.join(', ')}.` : ''}
+        </span>
+        {orderPlan && (
+          <div className="pages-order-note" role="group" aria-label="Header menu order">
+            <p>
+              <strong>Moved in Pages only.</strong> The header menu has its own order and still lists {orderPlan.before.join(' · ')}.
+            </p>
+            <div className="pages-order-actions">
+              <button className="btn btn-sm btn-primary" disabled={matching} onClick={() => void matchMenu()} title={`The menu would list ${orderPlan.after.join(' · ')}. Other links stay where they are.`}>
+                Match header menu
+              </button>
+              <button className="btn btn-sm btn-ghost" disabled={matching} onClick={editMenu}>
+                Edit menu
+              </button>
+              <button className="btn btn-sm btn-ghost" disabled={matching} onClick={() => lastMove && endNote(lastMove.pageId)}>
+                Keep menu as is
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       {menu.node}
     </div>

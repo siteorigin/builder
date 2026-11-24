@@ -85,9 +85,11 @@ interface StoreState {
   runMode: 'ask' | 'edit' | null;
   pendingSave: number;
   toasts: Array<{ action?: { label: string } }>;
+  renameOffer: { opening: string; pageId: string; from: string; to: string; revision: number } | null;
 }
 interface StoreModule {
   applyOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<unknown>;
+  renamePage(pageId: string, from: string, title: string): Promise<unknown>;
   applyHeld(id: number, opts?: { replace?: boolean; stopRunId?: string }): Promise<void>;
   discardHeld(id: number): void;
   commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean; shown?: string; review?: boolean }): void;
@@ -157,7 +159,7 @@ afterEach(async () => {
   stopCalls.length = 0;
   applyCalls = 0;
   beforeApply = null;
-  store.setState({ snapshot: null, heldEdits: [], aiOutcome: null, runStatus: null, pendingSave: 0 });
+  store.setState({ snapshot: null, heldEdits: [], aiOutcome: null, runStatus: null, pendingSave: 0, renameOffer: null });
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
@@ -582,6 +584,122 @@ describe('Stop AI and apply my edit', () => {
     expect(store.getState().toasts.at(-1)?.action?.label).toBe('Stop AI');
     expect(applyCalls).toBe(0);
     g.release();
+  });
+});
+
+describe('the labels a page rename leaves behind (#28)', () => {
+  /** Rename a page as the Pages panel and the inspector do: a typed edit, committed when the field is left. */
+  async function rename(pageId: string, from: string, title: string) {
+    let result: Promise<unknown> = Promise.resolve();
+    store.commitDraft(store.getState().snapshot, () => (result = store.renamePage(pageId, from, title)), title);
+    await result;
+  }
+
+  it('offers them once the rename is saved, from the title the author renamed', async () => {
+    const { about, session } = await setup([]);
+    await rename(about, 'About', 'Our story');
+    expect(session.state.pages[about].title).toBe('Our story');
+    // From the revision the rename was saved at: a snapshot from before it does not show it.
+    expect(store.getState().renameOffer).toEqual({ pageId: about, from: 'About', to: 'Our story', opening: `${current!.dir}#1`, revision: session.revision });
+    expect(store.getState().heldEdits).toEqual([]);
+    // Renamed again before answering: the labels still say the name before both.
+    store.setState({ snapshot: snapshot() });
+    await rename(about, 'Our story', 'Our studio');
+    expect(store.getState().renameOffer).toMatchObject({ from: 'About', to: 'Our studio' });
+  });
+
+  it('offers a rename held while the AI works only once it is saved, and never one discarded', async () => {
+    const g = gate();
+    const { about, send, session } = await setup([g.turn]);
+    await send('Think about it');
+    store.setState({ snapshot: snapshot() });
+    await rename(about, 'About', 'Our story');
+    const held = store.getState().heldEdits.at(-1)!;
+    expect(held).toMatchObject({ phase: 'waiting', label: 'Rename page' });
+    // Not saved yet: nothing to offer.
+    expect(store.getState().renameOffer).toBeNull();
+    store.discardHeld(held.id);
+    expect(store.getState().renameOffer).toBeNull();
+
+    await rename(about, 'About', 'Our studio');
+    const again = store.getState().heldEdits.at(-1)!;
+    expect(store.getState().renameOffer).toBeNull();
+    const applying = stopAndApply(again.id);
+    g.release();
+    await applying;
+    expect(session.state.pages[about].title).toBe('Our studio');
+    expect(store.getState().renameOffer).toEqual({ opening: `${current!.dir}#1`, pageId: about, from: 'About', to: 'Our studio', revision: session.revision });
+  });
+
+  it('offers a rename main held back because the AI had just started, once it is saved', async () => {
+    const g = gate();
+    const { session, about, send } = await setup([g.turn]);
+    const idle = snapshot();
+    await send('Think about it');
+    // The renderer has not heard yet that the AI started: main answers that it is busy, and the rename is held then.
+    store.setState({ snapshot: idle });
+    await rename(about, 'About', 'Our story');
+    expect(applyCalls).toBe(1);
+    const held = store.getState().heldEdits.at(-1)!;
+    expect(held).toMatchObject({ phase: 'waiting', label: 'Rename page' });
+    expect(store.getState().renameOffer).toBeNull();
+    store.setState({ snapshot: snapshot() });
+    const applying = stopAndApply(held.id);
+    g.release();
+    await applying;
+    expect(session.state.pages[about].title).toBe('Our story');
+    expect(store.getState().renameOffer).toMatchObject({ pageId: about, from: 'About', to: 'Our story', revision: session.revision });
+  });
+
+  it('gives the offer only to the rename itself, never to another edit of the page held while it commits', async () => {
+    const g = gate();
+    const { about, send } = await setup([g.turn]);
+    await send('Think about it');
+    store.setState({ snapshot: snapshot() });
+    await rename(about, 'About', 'Our story');
+    await commitWhileBusy(browserTitle(about, 'Meet the team'));
+    const [title, seo] = store.getState().heldEdits as Array<Held & { rename?: unknown }>;
+    expect(title.rename).toMatchObject({ pageId: about, to: 'Our story' });
+    expect(seo.rename).toBeUndefined();
+    g.release();
+  });
+
+  it('keeps each held rename’s offer with it: another page’s discarded, or a refused rename of the same page, takes nothing', async () => {
+    const g = gate();
+    const { about, send, session } = await setup([g.turn]);
+    const contact = Object.values(session.state.pages).find((p) => p.title === 'Contact')!.id;
+    await send('Think about it');
+    store.setState({ snapshot: snapshot() });
+    await rename(about, 'About', 'Our story');
+    const kept = store.getState().heldEdits.at(-1)!;
+    await rename(contact, 'Contact', 'Visit us');
+    store.discardHeld(store.getState().heldEdits.at(-1)!.id);
+    g.release();
+    await until(() => store.getState().snapshot?.aiBusy === false && statusOf() === null, 'the request to end');
+    store.setState({ snapshot: snapshot() });
+    // A title the project refuses is not held: the held rename of the same page keeps its own offer.
+    await rename(about, 'About', '');
+    expect(store.getState().heldEdits.map((h) => h.id)).toEqual([kept.id]);
+    await store.applyHeld(kept.id);
+    expect(session.state.pages[about].title).toBe('Our story');
+    expect(store.getState().renameOffer).toMatchObject({ pageId: about, from: 'About', to: 'Our story' });
+  });
+
+  it('offers a rename typed while the AI ran and checked once it had ended', async () => {
+    const { about, session } = await setup([]);
+    const base = store.getState().snapshot;
+    // The AI ran while the author typed; the edit is checked against what they saw, then saved.
+    let result: Promise<unknown> = Promise.resolve();
+    store.commitDraft(base, () => (result = store.renamePage(about, 'About', 'Our story')), 'Our story', { check: true });
+    await result;
+    await until(() => session.state.pages[about].title === 'Our story' && store.getState().heldEdits.length === 0, 'the checked rename to be saved');
+    expect(store.getState().renameOffer).toMatchObject({ pageId: about, from: 'About', to: 'Our story' });
+  });
+
+  it('offers nothing for a rename that was refused', async () => {
+    const { about } = await setup([]);
+    await rename(about, 'About', '');
+    expect(store.getState().renameOffer).toBeNull();
   });
 });
 

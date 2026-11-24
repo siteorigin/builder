@@ -166,9 +166,14 @@ export function codeImportantProps(def: ComponentDefinition): string[] {
 
 /** The shared header instance whose `links` list (label + link items) is the site's menu, if there is one. */
 export function headerMenu(state: ProjectState): { node: InstanceNode; schema: Extract<ComponentDefinition['properties'][string], { type: 'list' }> } | null {
-  const header = state.site.shell.header;
-  for (const id of header.rootIds) {
-    const n = header.nodes[id];
+  return shellMenu(state, 'header');
+}
+
+/** The shared header's or footer's instance whose `links` list (label + link items) is that part's menu, if there is one. */
+export function shellMenu(state: ProjectState, part: 'header' | 'footer'): { node: InstanceNode; schema: Extract<ComponentDefinition['properties'][string], { type: 'list' }> } | null {
+  const shell = state.site.shell[part];
+  for (const id of shell.rootIds) {
+    const n = shell.nodes[id];
     if (n?.kind !== 'instance') continue;
     const schema = state.components[n.definitionId]?.properties.links;
     // A computed list fills itself from the site's pages: a menu link stored in it would never show.

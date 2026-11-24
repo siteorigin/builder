@@ -9,6 +9,7 @@ import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, keepDraft, keptDraft, keptDraftKey, keptField, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
 import type { ProjectSnapshot } from '@shared/api';
+import { RenameOffer } from './RenameOffer';
 
 const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => useStore.setState({ toasts });
 
@@ -1322,6 +1323,7 @@ export function Toasts() {
   // Rendered outside the app root, so toasts stay readable (and actionable) while a dialog makes the root inert.
   return createPortal(
     <div className="toasts" ref={stack}>
+      <RenameOffer />
       {held.length > 0 && (
         <div className="toast-group" role="region" aria-label="Edits not saved yet">
           {held.map((h) => (

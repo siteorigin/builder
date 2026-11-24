@@ -68,6 +68,8 @@ export interface HeldEdit {
    * outside the app, say) while the author typed. Absent: typed while the AI was working.
    */
   cause?: 'elsewhere';
+  /** For a page rename: the labels to offer once it is saved (see renamePage). Discarding the edit drops them. */
+  rename?: PendingRename;
 }
 
 /**
@@ -80,6 +82,24 @@ export interface AiOutcome {
   runId?: string;
   edit?: 'saved' | 'held';
 }
+
+/**
+ * A page renamed by the author, once the rename is saved: the offer to bring the labels visitors read (its heading,
+ * its menu links) along from `from` to the page's title. Shown while the page is still called `to`; what it offers is
+ * read from the project as it is then, and it ends once there is nothing left to offer.
+ */
+export interface RenameOffer {
+  /** The opening of the project it was made in (its snapshot's workspaceKey). */
+  opening: string;
+  pageId: string;
+  from: string;
+  to: string;
+  /** The project's revision once the rename was saved: a snapshot older than that does not show it yet. */
+  revision: number;
+}
+
+/** A rename on its way, for the edit to carry if it is held (see renamePage): its offer, before it is saved. */
+type PendingRename = Omit<RenameOffer, 'revision'>;
 
 /** Counts AI activity (every status the AI reports). An edit typed while it changed knows the AI ran meanwhile. */
 let aiEpoch = 0;
@@ -180,6 +200,8 @@ export interface State {
   assetSort: AssetSort;
   /** What Copy style took, for Paste style in the same opening of the project (`opening`). Never saved. */
   styleCopy: (StyleCopy & { opening: string }) | null;
+  /** The labels a rename left behind, offered until the author updates or keeps them. Never saved. */
+  renameOffer: RenameOffer | null;
   setState: (p: Partial<State>) => void;
 }
 
@@ -250,6 +272,7 @@ export const useStore = create<State>((set) => ({
   aiOutcome: null,
   assetSort: savedAssetSort(),
   styleCopy: null,
+  renameOffer: null,
   setState: (p) => set(oneSelection(p))
 }));
 
@@ -458,7 +481,9 @@ export async function commitOps(operations: EditOperation[], label: string, coal
   let landed!: (o: ApplyOutcome) => void;
   trackApply(new Promise<ApplyOutcome>((r) => (landed = r)));
   const s = getState();
-  const typed = draft ? { base: draft.base ?? s.snapshot, text: draft.text, seq: ++commitSeq, check: !!draft.check, shown: draft.shown, review: !!draft.review } : null;
+  // A rename being committed goes with its typed edit, so whichever way that edit is held (now, when main answers
+  // that the AI has just started, or because the title changed elsewhere) it carries the rename's offer.
+  const typed = draft ? { base: draft.base ?? s.snapshot, text: draft.text, seq: ++commitSeq, check: !!draft.check, shown: draft.shown, review: !!draft.review, rename: renaming } : null;
   if (typed) newestCommit.set(fieldOf(typed.base?.workspaceKey, operations), typed.seq);
   if (s.snapshot?.aiBusy) {
     landed({ ok: false, message: refuseWhileAiBusy(typed, operations, label) });
@@ -466,7 +491,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
   }
   // Typed while the AI ran: checked against what the author saw before it is applied, never blindly.
   if (typed?.check && typed.base) {
-    const held = holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq });
+    const held = holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq, rename: typed.rename });
     if (held) {
       const id = held.id;
       if (id === null) landed({ ok: true });
@@ -538,7 +563,7 @@ function typedGuard(base: ProjectSnapshot | null, operations: EditOperation[]): 
  */
 async function writeTyped(
   guard: { base: ProjectSnapshot; before: unknown[] },
-  typed: { text: string | null; seq: number; shown?: string; review: boolean },
+  typed: { text: string | null; seq: number; shown?: string; review: boolean; rename: PendingRename | null },
   operations: EditOperation[],
   label: string,
   coalesceKey: string | undefined,
@@ -548,7 +573,7 @@ async function writeTyped(
 ): Promise<{ held: true; outcome: ApplyOutcome } | { held: false; result: ApplyResult }> {
   const { base, before } = guard;
   const hold = (opts: Parameters<typeof holdEdit>[3]): { held: true; outcome: ApplyOutcome } => {
-    const held = holdEdit(base, operations, label, { text: typed.text, seq: typed.seq, cause: 'elsewhere', ...opts });
+    const held = holdEdit(base, operations, label, { text: typed.text, seq: typed.seq, cause: 'elsewhere', rename: typed.rename, ...opts });
     // Nothing to hold: the author has committed the same field again since.
     return { held: true, outcome: held && held.id === null ? { ok: true } : { ok: false, message: HELD_MESSAGE } };
   };
@@ -598,8 +623,8 @@ async function writeTyped(
 
 /** A typed field edit is held for the author to apply once the AI stops; anything else is refused. Returns
  *  what became of it, for a save or a leave that is waiting on it. */
-function refuseWhileAiBusy(typed: { base: ProjectSnapshot | null; text: string | null; seq: number } | null, operations: EditOperation[], label: string): string {
-  if (typed?.base && holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq })) return HELD_MESSAGE;
+function refuseWhileAiBusy(typed: { base: ProjectSnapshot | null; text: string | null; seq: number; rename: PendingRename | null } | null, operations: EditOperation[], label: string): string {
+  if (typed?.base && holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq, rename: typed.rename })) return HELD_MESSAGE;
   const message = 'The AI is making changes. Stop it to edit manually.';
   toast(message, 'error', { label: 'Stop AI', run: () => void api.ai.stop() });
   return message;
@@ -607,6 +632,8 @@ function refuseWhileAiBusy(typed: { base: ProjectSnapshot | null; text: string |
 
 let heldSeq = 0;
 let attemptSeq = 0;
+/** The rename renamePage is committing, during its call to commitOps, which hands it to the typed edit it makes. */
+let renaming: PendingRename | null = null;
 
 /**
  * Hold a typed edit made against `base`. Returns null when it is not a field edit that can be checked
@@ -618,7 +645,7 @@ export function holdEdit(
   base: ProjectSnapshot,
   operations: EditOperation[],
   label: string,
-  opts: { text?: string | null; seq?: number; cause?: HeldEdit['cause']; phase?: 'changed' | 'gone' | 'failed'; current?: unknown[]; note?: string } = {}
+  opts: { text?: string | null; seq?: number; cause?: HeldEdit['cause']; phase?: 'changed' | 'gone' | 'failed'; current?: unknown[]; note?: string; rename?: PendingRename | null } = {}
 ): { id: number | null } | null {
   // A reply that arrives after its project closed has nothing to be held in.
   if (getState().snapshot?.workspaceKey !== base.workspaceKey) return { id: null };
@@ -641,12 +668,19 @@ export function holdEdit(
     phase: opts.phase ?? 'waiting',
     ...(opts.cause ? { cause: opts.cause } : {}),
     ...(opts.current ? { current: opts.current, currentText: shownField(operations[0], opts.current[0]) } : {}),
-    ...(opts.note !== undefined ? { note: opts.note } : {})
+    ...(opts.note !== undefined ? { note: opts.note } : {}),
+    ...(isRenameOf(operations, opts.rename) ? { rename: opts.rename } : {})
   };
   // A newer edit of the same fields replaces the older one (and any handoff still running for it).
   // One already being written cannot be called back: it stays until its save answers.
   setState({ heldEdits: [...held.filter((h) => h.key !== key || h.workspace !== base.workspaceKey || h.writing), edit] });
   return { id: edit.id };
+}
+
+/** Whether the edit is exactly that page's rename, so a held edit carries the rename's offer only when it is one. */
+function isRenameOf(operations: EditOperation[], rename: PendingRename | null | undefined): rename is PendingRename {
+  const op = operations.length === 1 ? operations[0] : null;
+  return !!rename && op?.type === 'page.update' && op.pageId === rename.pageId && op.title === rename.to && Object.keys(op).length === 3;
 }
 
 const heldById = (id: number) => getState().heldEdits.find((h) => h.id === id);
@@ -737,7 +771,7 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
     // The project closed while the save was on its way.
     if (!live()) return setState({ pendingSave });
     // In one update, so the toolbar goes straight from the AI to "your edit was saved".
-    if (r.ok) return setState({ pendingSave, heldEdits: removeHeld(id), ...outcome('saved') });
+    if (r.ok) return setState({ pendingSave, heldEdits: removeHeld(id), ...outcome('saved'), ...landedRename(id, r.revision) });
     setState({ pendingSave });
     // Something else changed the project between the check and the write: check again.
     if (r.error?.code === 'STALE_REVISION' && tries < 2) {
@@ -750,6 +784,37 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
         : settle({ phase: 'failed', note: 'The project is still locked by an AI request that did not end cleanly. Reopen the project, then try again.' }, outcome('held'));
     return settle({ phase: 'failed', note: r.error?.message ?? 'That change could not be applied.' }, outcome('held'));
   }
+}
+
+/** A rename held while the AI worked is saved now: its offer shows. */
+function landedRename(heldId: number, revision: number): Partial<State> {
+  const rename = heldById(heldId)?.rename;
+  return rename ? { renameOffer: { ...rename, revision } } : {};
+}
+
+/**
+ * Rename a page as the author typed it (from Pages or the inspector; called inside the typed edit's commitDraft), then
+ * offer to bring along the labels that still say its old name. `from` is the title the author renamed: when the page
+ * was renamed from it moments ago and that offer is still open, the labels still say the name before that one.
+ */
+export function renamePage(pageId: string, from: string, title: string): Promise<unknown> {
+  const opening = getState().snapshot?.workspaceKey ?? '';
+  const prev = getState().renameOffer;
+  const original = prev && prev.opening === opening && prev.pageId === pageId && prev.to === from ? prev.from : from;
+  const offer: PendingRename = { opening, pageId, from: original, to: title };
+  const operations: EditOperation[] = [{ type: 'page.update', pageId, title }];
+  // commitOps takes the rename with its typed edit before it awaits anything: an edit held while the AI works carries
+  // the offer, shown once it is saved and dropped with it. A rename the project refused is not held, and offers nothing.
+  renaming = original === title ? null : offer;
+  let saved: ReturnType<typeof commitOps>;
+  try {
+    saved = commitOps(operations, 'Rename page');
+  } finally {
+    renaming = null;
+  }
+  return saved.then((r) => {
+    if (r?.ok && original !== title && r.workspaceKey === opening && getState().snapshot?.workspaceKey === opening) setState({ renameOffer: { ...offer, revision: r.revision } });
+  });
 }
 
 /**
