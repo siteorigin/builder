@@ -18,6 +18,7 @@ import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } fr
 import { codeNeeds } from './definitions';
 import { showsPart } from '@shared/page-shell';
 import { effectiveTokens, isDraftPage } from '@generator/index';
+import { componentReusabilityDiagnostics } from './reusability';
 import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
@@ -82,9 +83,9 @@ const sortedJson = (v: unknown): string =>
   JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 
 /**
- * Schema and reference validation: IDs, references, nesting and routes, links to sections that do not exist, and
- * each page's heading outline. Save gates pass `sectionLinks: false`: section links and headings never block a save,
- * so they need not be worked out.
+ * Schema and reference validation: IDs, references, nesting and routes, links to sections that do not exist, each
+ * page's heading outline, and how reusable each project component is. Save gates pass `sectionLinks: false`: section
+ * links, headings and reusability never block a save, so they need not be worked out.
  */
 export function validateState(state: ProjectState, opts: { sectionLinks?: boolean } = {}): Diagnostic[] {
   const out: Diagnostic[] = [];
@@ -383,7 +384,20 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   picture(state.site.favicon, 'The site icon', 'favicon');
   picture(state.site.socialImage, 'The site’s sharing image', 'socialImage');
   for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
-  if (opts.sectionLinks !== false) out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state));
+  if (opts.sectionLinks !== false) {
+    out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state));
+    // Theme components are fixed theme data; only a project's own components are its author's to make reusable.
+    const tokens = effectiveTokens(state);
+    for (const def of Object.values(state.components)) {
+      if (def.kind !== 'managed' || def.owner !== 'project') continue;
+      // Advice on a definition edited by hand into a shape it cannot have is skipped, never a reason it cannot open.
+      try {
+        out.push(...componentReusabilityDiagnostics(def, tokens));
+      } catch {
+        /* the structural checks above say what is wrong with it */
+      }
+    }
+  }
   out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {
     // A download is the size it is; only what pages load and show is worth making smaller.

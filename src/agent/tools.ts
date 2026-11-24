@@ -18,6 +18,8 @@ import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTI
 import { examplesFor, exampleSection } from './examples';
 import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
+import { changedComponents, componentWarnings, introducedReusability } from './reusability';
+import { isReusabilityWarning } from '@engine/reusability';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component']), id: z.string() });
 
@@ -453,6 +455,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       if (ops.some((o) => o.type === 'asset.replace' && o.keepAlt !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take keepAlt: uses with the old image’s suggested alt text take the new one’s, and its result lists the uses whose alt text to check.' } };
       // Choosing some uses is the author's, from the places Assets lists; the AI replaces an image everywhere.
       if (ops.some((o) => o.type === 'asset.replace' && o.uses !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take uses: it replaces the image wherever it is used. To change one place, set that image value instead.' } };
+      const before = host.diagnostics();
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId);
       if (!res.ok) {
         // A batch that creates a page and refers to it in the same call cannot work: the page has no ID yet.
@@ -462,7 +465,10 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
           : undefined;
         return { ok: false, content: { ok: false, revision: res.revision, error: res.error, ...(hint ? { hint } : {}) } };
       }
-      return { ok: true, mutated: true, ops, results: res.results, content: { ok: true, revision: res.revision, results: res.results } };
+      // A component this batch made or changed that every placement would show the same way is said now, while the
+      // model still has its node IDs to hand.
+      const reuse = componentWarnings(introducedReusability(before, host.diagnostics(), () => changedComponents(state, host.state())));
+      return { ok: true, mutated: true, ops, results: res.results, content: { ok: true, revision: res.revision, results: res.results, ...reuse } };
     }
     case 'read_source': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_source']>;
@@ -510,7 +516,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'validate_project': {
       const a = args as z.infer<(typeof TOOL_ARGS)['validate_project']>;
       const diags = [...host.diagnostics(), ...(a.profile === 'component' ? await host.compileAll() : [])];
-      return { ok: true, content: { revision: host.revision(), errors: diags.filter((d) => d.severity === 'error').map((d) => d.message), warnings: diags.filter((d) => d.severity === 'warning').slice(0, 20).map((d) => d.message) } };
+      // Component reusability findings are listed apart, with their nodes, so other warnings cannot crowd them out.
+      return { ok: true, content: { revision: host.revision(), errors: diags.filter((d) => d.severity === 'error').map((d) => d.message), warnings: diags.filter((d) => d.severity === 'warning' && !isReusabilityWarning(d)).slice(0, 20).map((d) => d.message), ...componentWarnings(diags) } };
     }
     case 'locate_field': {
       const a = args as z.infer<(typeof TOOL_ARGS)['locate_field']>;
