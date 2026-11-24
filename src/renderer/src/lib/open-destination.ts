@@ -4,7 +4,7 @@ import { getState, inspectorFocusRequest, setState, toast } from '../store';
 import { openSection } from '../components/ui';
 import { pageShowing } from '@shared/page-shell';
 import { siteEntries } from '@generator/index';
-import { openComponentStudio, openLayout, openSiteStyles, selectPage, setMode } from './actions';
+import { openComponentStudio, openLayout, openPost, openSiteStyles, selectPage, setMode } from './actions';
 import { formDestinationField } from './destinations';
 
 /** The control each Site details field is reached by (see SiteStyles): a site image's card, by its first button. */
@@ -51,7 +51,10 @@ export function openEditorDestination(dest: EditorDestination) {
     else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
   }
   if (field.entryBound) {
-    // A layout's setting read from each entry is chosen in Entry content: that choice is focused once it shows.
+    // A setting read from each entry is fixed on the entry that cannot send: its own field, in the post writer, when
+    // the writer edits that field. Otherwise the layout shows that entry, with the choice of what it reads focused.
+    const writer = field.entryId && field.entryField && Object.hasOwn(POST_FIELDS, field.entryField) ? POST_FIELDS[field.entryField] : undefined;
+    if (owner.kind === 'template' && writer) return void openPost(owner.id, field.entryId!).then(() => revealInWriter(writer));
     setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true });
     return revealWhenShown('entry-fields', `#${CSS.escape(`entry-field-${nodeId}-${field.prop}`)}`);
   }
@@ -60,8 +63,29 @@ export function openEditorDestination(dest: EditorDestination) {
   setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, inspectorFocus: inspectorFocusRequest({ opening: snap.workspaceKey, owner, nodeId, prop: field.prop, ...at, label: field.label }) });
 }
 
-/** Frames to wait for the Inspector of a new selection to show a control, before giving up quietly. */
+/** Frames to wait for the Inspector of a new selection (or the post writer) to show a control, before giving up quietly. */
 const REVEAL_FRAMES = 60;
+
+/** An entry's fields the post writer edits, by the control that edits each (see PostWriter). */
+const POST_FIELDS: Record<string, string> = {
+  title: '.post-title-input',
+  author: '[data-entry-field="author"] input',
+  excerpt: '[data-entry-field="excerpt"] textarea'
+};
+
+/** Focus a field of the open post once the writer shows it, its details opened first when it is one of them. */
+function revealInWriter(control: string) {
+  let frames = 0;
+  const step = () => {
+    const el = document.querySelector<HTMLElement>(`.post-writer-holder:not([hidden]) ${control}`);
+    if (!el) return void (++frames < REVEAL_FRAMES && requestAnimationFrame(step));
+    const details = el.closest('details');
+    if (details && !details.open) details.open = true;
+    el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    el.focus({ preventScroll: true });
+  };
+  requestAnimationFrame(step);
+}
 
 /**
  * Open a section of the Inspector once the new selection's Inspector shows it, then scroll to and focus one control

@@ -12,6 +12,7 @@ import { FORM_SERVICES } from '@catalogue/foundation/form';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { formNameDiagnostics, validateState, websiteFormNotes, websiteFormProblems } from '@engine/validate';
+import { siteEntries } from '@generator/index';
 import { publicUrlNote, publicUrlWarning } from '../../src/main/export';
 import { destinationForDiagnostic, destinationLabel, formDestinationField, noteState } from '../../src/renderer/src/lib/destinations';
 
@@ -36,6 +37,7 @@ function place(s: ProjectState, tree: NodeTree, props: Record<string, unknown> =
   return node;
 }
 
+const siteEntryIds = (s: ProjectState) => siteEntries(s).map((e) => e.entry.id);
 const healthForms = (s: ProjectState) => validateState(s).filter((d) => d.code === 'FORM_UNCONNECTED');
 const at = (d: Pick<Diagnostic, 'owner' | 'nodeId'>) => `${d.owner?.kind}:${d.owner?.id}:${d.nodeId}`;
 
@@ -114,7 +116,17 @@ describe('the website’s contact forms visitors cannot send', () => {
     expect(healthForms(drafted).filter((d) => d.owner?.kind === 'template').map((d) => d.message)).toEqual([message]);
     // Go to form shows the layout on that entry, at the entry content its endpoint reads.
     const dest = { kind: 'form' as const, owner: { kind: 'template' as const, id: 'posts' }, nodeId: node.id, setting: 'connection' as const };
-    expect(formDestinationField(blank, dest)).toEqual({ prop: 'endpoint', label: 'Form endpoint URL', entryId: 'en_blank', entryBound: true });
+    expect(formDestinationField(blank, dest)).toEqual({ prop: 'endpoint', label: 'Form endpoint URL', entryId: 'en_blank', entryBound: true, entryField: 'excerpt' });
+    // A draft that cannot send either, listed first: the published entry is still the one shown, as the export named it.
+    const withDraft = apply(blank, [
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_later', title: 'Later' },
+      { type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_later', 'en_open', 'en_blank'] }
+    ]);
+    expect(siteEntryIds(withDraft)[0]).toBe('en_later');
+    expect(formDestinationField(withDraft, dest)?.entryId).toBe('en_blank');
+    // With only the draft failing, Project health's finding leads to the draft.
+    const onlyDraft = apply(withDraft, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_blank', excerpt: 'https://formspree.io/f/abcd1234' }]);
+    expect(formDestinationField(onlyDraft, dest)?.entryId).toBe('en_later');
     // A page's form has no entry to read from: the binding is exported empty, and the default decides.
     const { s: page, node: pageForm } = lookbook({ endpoint: { $entry: 'excerpt' } });
     expect(healthForms(page).map(at)).toContain(`page:pg_lookbook:${pageForm.id}`);

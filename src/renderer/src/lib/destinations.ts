@@ -4,7 +4,7 @@ import { isEntryBinding } from '@shared/types';
 import { publicUrl } from '@shared/public-url';
 import { formConnectionProblem, formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable } from '@catalogue/foundation/form';
 import { websiteTrees } from '@engine/validate';
-import { publishedState, siteEntries } from '@generator/index';
+import { isDraftEntry, publishedState, siteEntries } from '@generator/index';
 import { entryInstanceProps } from '@generator/entry-template';
 import { treeFor } from './model';
 
@@ -49,6 +49,8 @@ export interface FormLanding {
   entryId?: string;
   /** The property reads each entry's field: chosen in Entry content, not typed in Content. */
   entryBound?: boolean;
+  /** The entry field it reads, whose value on `entryId` is what to change. */
+  entryField?: string;
 }
 
 /**
@@ -65,12 +67,15 @@ export function formDestinationField(state: ProjectState, dest: FormDestination)
   if (dest.setting === 'connection') {
     // A layout's form reading its service or setting from each entry: judged, and shown, as the entry that cannot send.
     const collection = dest.owner.kind === 'template' && Object.hasOwn(state.collections ?? {}, dest.owner.id) ? state.collections[dest.owner.id] : undefined;
-    const failing = collection && Object.values(node.props).some(isEntryBinding) ? siteEntries(state).find((e) => e.collection === collection && sendsNot(def, () => entryInstanceProps(state, collection, e.entry, node))) : undefined;
+    // A published entry first: it is the one the website export named. A draft only Project health names.
+    const entries = collection && Object.values(node.props).some(isEntryBinding) ? siteEntries(state).filter((e) => e.collection === collection) : [];
+    const failing = [...entries.filter((e) => !isDraftEntry(e.entry)), ...entries.filter((e) => isDraftEntry(e.entry))].find((e) => sendsNot(def, () => entryInstanceProps(state, collection!, e.entry, node)));
     const props = failing ? entryInstanceProps(state, collection!, failing.entry, node) : node.props;
     const prop = formServiceSetup(def, props)?.prop ?? 'provider';
     const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
     if (!schema) return null;
-    return { prop, label: schema.label, ...(failing ? { entryId: failing.entry.id } : {}), ...(isEntryBinding(node.props[prop]) ? { entryBound: true } : {}) };
+    const bound = node.props[prop];
+    return { prop, label: schema.label, ...(failing ? { entryId: failing.entry.id } : {}), ...(isEntryBinding(bound) ? { entryBound: true, entryField: bound.$entry } : {}) };
   }
   const prop = dest.setting === 'formName' ? 'formName' : 'fields';
   const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
