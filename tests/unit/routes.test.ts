@@ -57,7 +57,7 @@ describe('normalizeRoute', () => {
 });
 
 /** Titles in Latin script, whose addresses must stay exactly what they were before addresses took other scripts. */
-const LATIN_TITLES = ['OʼNeil & Sons', 'Rock ʼn Roll', 'About Us', '  Café & Bar!  ', 'Oﬃce Hours', 'Crème Brûlée', 'Straße 12', 'Đà Nẵng', 'Liên hệ', 'Ｆｕｌｌ Ｗｉｄｔｈ', 'Q&A — 2026', 'İstanbul', 'Ærø', '---', `${'a'.repeat(59)} b`, 'b'.repeat(70)];
+const LATIN_TITLES = ['OʼNeil & Sons', 'Rock ʼn Roll', 'AˇB', 'Hawaiʻi', 'About Us', '  Café & Bar!  ', 'Oﬃce Hours', 'Crème Brûlée', 'Straße 12', 'Đà Nẵng', 'Liên hệ', 'Ｆｕｌｌ Ｗｉｄｔｈ', 'Q&A — 2026', 'İstanbul', 'Ærø', '---', `${'a'.repeat(59)} b`, 'b'.repeat(70)];
 
 describe('addresses in any script (#36)', () => {
   it('gives a page titled in Japanese, or other scripts, its natural address', () => {
@@ -116,6 +116,23 @@ describe('addresses in any script (#36)', () => {
     expect(numberedSlug(addressSlug(greek), 2)).toBe(`${'a'.repeat(57)}ς-2`);
     expect(validateRoute(`/${numberedSlug(addressSlug(greek), 2)}/`)).toBeNull();
     expect(validateRoute(`/${numberedSlug('a'.repeat(60), 2)}/`)).toBeNull();
+  });
+
+  it('always makes a valid address, whatever the title mixes', () => {
+    // Punctuation turned into a hyphen ends the word before it, so a sigma there is then spelled as final, or not.
+    expect(addressSlug('Α.Σ.')).toBe('α-σ');
+    expect(addressSlug('ΟΔΟΣ.')).toBe('οδος');
+    const pool = Array.from('aZé ß-.&/_ʼˇ0１お問ガｶﾞ𠮷ΣσςΑάᾳПйъ\u0301\u0345\u3099ー・한ि्ภ่');
+    let seed = 36;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    for (let i = 0; i < 4000; i++) {
+      const title = Array.from({ length: 1 + Math.floor(next() * 90) }, () => pool[Math.floor(next() * pool.length)]).join('');
+      const slug = addressSlug(title);
+      if (!slug) continue;
+      expect(validateRoute(`/${slug}/`), JSON.stringify(title)).toBeNull();
+      expect(validateRoute(`/${numberedSlug(slug, 2 + (i % 120))}/`), JSON.stringify(title)).toBeNull();
+      expect(normalizeRoute(slug), JSON.stringify(title)).toBe(`/${slug}/`);
+    }
   });
 
   it('accepts a typed or pasted address in another script, spelled as addresses are', () => {

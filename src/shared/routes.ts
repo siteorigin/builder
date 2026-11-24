@@ -66,8 +66,11 @@ function dropLatinAccents(text: string): string {
 /** A Greek sigma ending a word, as Unicode's lowercasing finds one (its Final_Sigma condition). */
 const FINAL_SIGMA = /(?<=\p{Cased}\p{Case_Ignorable}*)σ(?!\p{Case_Ignorable}*\p{Cased})/gu;
 
-/** Greek sigma spelled by its place: "ς" ending a word, "σ" anywhere else. */
-const spellSigma = (text: string) => text.replace(FINAL_SIGMA, 'ς');
+/**
+ * Greek sigma spelled by its place in `text` as it now stands: "ς" ending a word, "σ" anywhere else. Spelled afresh,
+ * since turning punctuation into hyphens or cutting a word short moves where words end.
+ */
+const spellSigma = (text: string) => text.replace(/ς/g, 'σ').replace(FINAL_SIGMA, 'ς');
 
 /**
  * Each letter of a script other than Latin in the one lowercase form a case-insensitive file system also reads as it
