@@ -23,6 +23,7 @@ import { listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@ag
 import { compileProject } from './compile';
 import { checkSvelteSource, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
+import { stopPostReads } from './posts-import/process';
 import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
@@ -369,6 +370,9 @@ function registerIpc() {
   // The file is always one the author chose in the app's own chooser.
   handle('project:exportComponent', (id: unknown) => (typeof id === 'string' ? controller.exportComponent(id) : { ok: false, message: 'That component is no longer in this project.' }));
   handle('project:importComponent', () => controller.importComponent());
+  handle('project:reviewPostImport', (kind: unknown, opening: unknown) => controller.reviewPostImport(kind === 'markdown' ? 'markdown' : 'wordpress', String(opening ?? '')));
+  handle('project:commitPostImport', (id: unknown, opening: unknown) => controller.commitPostImport(String(id ?? ''), String(opening ?? '')));
+  handle('project:cancelPostImport', (id: unknown) => controller.cancelPostImport(String(id ?? '')));
   handle('project:fontFile', (assetId: unknown, opening: unknown) => (typeof assetId === 'string' && typeof opening === 'string' ? controller.fontFile(assetId, opening) : null));
   handle('project:webCopyPlan', (assetId: unknown) => (typeof assetId === 'string' ? controller.webCopyPlan(assetId) : null));
   handle('project:makeWebCopy', (assetId: unknown, opts: unknown) => {
@@ -876,6 +880,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   stopMediaWorker();
   stopPhotoDecoders();
+  stopPostReads();
 });
 
 // Quitting saves what is being typed, then closes the project (writing its unsaved workspace state), then

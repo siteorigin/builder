@@ -34,6 +34,8 @@ const MIME: Record<string, string> = {
 const MAX_BYTES = 25 * 1024 * 1024;
 /** File extensions of the images the library stores (for file pickers that need one as it is). */
 export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg'];
+/** The type of a picture the library takes, by its extension (".jpg"), or undefined for anything else. */
+export const pictureMime = (ext: string): string | undefined => (IMAGE_EXTENSIONS.includes(ext.slice(1).toLowerCase()) ? MIME[ext.toLowerCase()] : undefined);
 export const FONT_EXTENSIONS = ['woff2', 'woff'];
 /** Phone photos browsers can't show: the importer stores a web-sized copy of each instead. */
 const PHOTO_EXTENSIONS = ['heic', 'heif'];

@@ -20,7 +20,8 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           'runtime-worker': resolve('src/runtime/worker.ts'),
-          'media-worker': resolve('src/main/project/media-worker.ts')
+          'media-worker': resolve('src/main/project/media-worker.ts'),
+          'posts-import-worker': resolve('src/main/posts-import/worker.ts')
         }
       }
     }

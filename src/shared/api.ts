@@ -609,6 +609,71 @@ export interface ComponentImportResult {
   message?: string;
 }
 
+/** Where posts are imported from (#399): a WordPress export (.xml) or a folder of Markdown posts. */
+export type PostImportKind = 'wordpress' | 'markdown';
+
+/** One post as the import's review shows it, before anything is imported. */
+export interface PostImportPreviewPost {
+  title: string;
+  /** Where it came from: its file, or its title in the export. */
+  from: string;
+  date: string;
+  draft: boolean;
+  /** Why a post published at the source arrives as a draft. */
+  draftReason?: string;
+  route: string;
+  /** The slug it had, when it takes a numbered one because its address is taken. */
+  wantedSlug?: string;
+  /** The old address kept working for it. */
+  redirectFrom?: string;
+  pictures: number;
+  categories: string[];
+  tags: string[];
+  /** What reading it left out or changed, in plain words. */
+  notes: string[];
+}
+
+/** What importing the chosen posts would do: shown to the author, who imports them or not (see commitPostImport). */
+export interface PostImportPreview {
+  /** Names this review: only it can be imported, and only once. */
+  id: string;
+  kind: PostImportKind;
+  /** The chosen file or folder's name. */
+  source: string;
+  /** The old site's address, when the export says. */
+  site?: string;
+  collection: { name: string; route: string; create: boolean };
+  posts: PostImportPreviewPost[];
+  /** Pictures found, to be added to the library. */
+  pictures: number;
+  /** Pictures the posts show that are not in the chosen folder, with why. */
+  missing: Array<{ post: string; ref: string; problem: string }>;
+  newTerms: { categories: string[]; tags: string[] };
+  /** Old addresses kept working. */
+  redirects: number;
+  /** What is not imported at all. */
+  skipped: string[];
+  /** What stops the import: nothing can be imported while there is one. */
+  problems: string[];
+}
+
+/** A review of posts to import, or why there is none. Neither: the chooser was closed. */
+export type PostImportReviewResult = { ok: true; preview: PostImportPreview } | { ok: false; message?: string };
+
+/** Posts imported (see commitPostImport), with the history entry that undoes them. */
+export interface PostImportResult {
+  ok: boolean;
+  imported?: number;
+  /** The history entry that undoes the import. */
+  entryId?: string;
+  revision?: number;
+  /** The first imported post's entry, to open it. */
+  firstEntryId?: string;
+  /** What did not come through (a picture the library refused), in plain words. */
+  notes?: string[];
+  message?: string;
+}
+
 export interface ImportChoices {
   /** The opening of the project the files were reviewed in (its snapshot's workspaceKey); any other refuses the import. */
   opening: string;
@@ -716,6 +781,15 @@ export interface BuilderApi {
     exportComponent(definitionId: string): Promise<ComponentExportResult>;
     /** Import a component package the author chooses, as one change: the component, what it needs, its styles and images. */
     importComponent(): Promise<ComponentImportResult>;
+    /**
+     * Choose a WordPress export or a folder of Markdown posts and read it, writing nothing: what importing it into the
+     * project open as `opening` would do. The review holds until it is imported, cancelled, or another takes its place.
+     */
+    reviewPostImport(kind: PostImportKind, opening: string): Promise<PostImportReviewResult>;
+    /** Import the posts of review `id`, as one change, while the project is still as it was reviewed. */
+    commitPostImport(id: string, opening: string): Promise<PostImportResult>;
+    /** Forget review `id`: nothing of it is imported. */
+    cancelPostImport(id: string): Promise<void>;
     /**
      * An imported font file's bytes and the alphabets it covers, for samples drawn in the file itself. Null once the
      * project (`opening`, its workspace key) has closed, or when the file can't be read.
