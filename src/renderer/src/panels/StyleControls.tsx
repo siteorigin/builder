@@ -7,7 +7,7 @@ import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { DraftInput } from '../components/ui';
 import { setState, useStore } from '../store';
-import { allSizesReach, styleEffective, styleUnder } from '../lib/style-source';
+import { allSizesReach, readStyleNumber, refinementShown, styleEffective, styleReached, styleUnder } from '../lib/style-source';
 
 type Size = Exclude<ResponsiveScope, 'base'>;
 const SIZES: Size[] = ['phone', 'tablet', 'desktop'];
@@ -48,7 +48,7 @@ export function describeStyleValue(def: StylePropDef, v: StyleValue | undefined,
   if (v === undefined) return '';
   if (isToken(v)) return tokenText(def, tokens, v.token);
   if (def.kind === 'boolean') return def.id === 'hidden' ? (v ? 'Hidden' : 'Visible') : v ? 'Yes' : 'No';
-  return def.options?.find((o) => o.value === String(v))?.label ?? String(v);
+  return def.options?.find((o) => o.value === String(v))?.label ?? (def.unit ? `${v} ${def.unit}` : String(v));
 }
 
 function colorOf(tokens: TokenDef[], id: string): string {
@@ -243,6 +243,9 @@ export function StyleControls({
   const effective = (id: string) => styleEffective({ prop: id, scope, styles, inherited, designSizesWin, wideColumns });
   const layout = effective('layout');
   const position = effective('position');
+  const offered = (id: string) => !allowed?.length || allowed.includes(id);
+  // Under All sizes every size counts, so a phone-only preset still offers the duration that would apply to it.
+  const reached = (id: string) => styleReached({ prop: id, scope, styles, inherited, designSizesWin, wideColumns });
   // Set at any size: such a row always shows, so "From All sizes" and "Phone uses …" are never hidden.
   const setAnywhere = (id: string) => own[id] !== undefined || Object.values(styles ?? {}).some((sc) => sc?.[id] !== undefined);
   const relevant = (id: string) => {
@@ -252,7 +255,8 @@ export function StyleControls({
     if (id === 'align' || id === 'justify' || id === 'gap' || id === 'wrap' || id === 'rowGap' || id === 'columnGap') return layout === 'stack' || layout === 'row' || layout === 'grid';
     // Offsets do nothing until the element is positioned.
     if (id === 'inset') return position !== undefined && position !== 'static';
-    return true;
+    // An origin, duration or easing shows once what it refines is in effect.
+    return refinementShown(id, reached, offered) ?? true;
   };
   // Long lists show the common controls of the first two groups plus anything already set; the rest sit behind
   // one disclosure.
@@ -553,7 +557,7 @@ function Control({
     );
   }
   if (def.kind === 'number') {
-    const range = def.min !== undefined && def.max !== undefined ? ` (${def.min} to ${def.max})` : '';
+    const range = def.min !== undefined && def.max !== undefined ? ` (${def.min} to ${def.max}${def.unit ? ` ${def.unit}` : ''})` : '';
     return (
       <DraftInput
         className={`input sm grow style-input${state}`}
@@ -562,9 +566,9 @@ function Control({
         ariaLabel={`${label}${range}`}
         aria-describedby={describedBy}
         onCommit={(t) => {
-          const n = Number(t.trim().replace(/%$/, ''));
+          const n = readStyleNumber(def, t);
           if (t.trim() === '') onSet(null);
-          else if (Number.isFinite(n)) onSet(/%$/.test(t.trim()) && def.max === 1 ? n / 100 : n);
+          else if (n !== null) onSet(n);
           else return false;
         }}
       />

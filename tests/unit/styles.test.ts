@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types';
-import { STYLE_PROPS, STYLE_PROP_MAP, parseCustomCss, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
+import { STYLE_PROPS, STYLE_PROP_MAP, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
+import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
 import { installComponent, makeInstance } from '@engine/install';
-import { STYLES_DIR, generateProject } from '@generator/index';
+import { STYLES_DIR, generateProject, generateStandaloneComponent } from '@generator/index';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -36,7 +37,8 @@ describe('style registry', () => {
       flexGrow: 1, flexShrink: 0, textStyle: 'text.h2', fontFamily: 'serif', fontWeight: '600', fontStyle: 'italic', textTransform: 'uppercase',
       textAlign: 'center', color: '#000', background: '#fff', shadow: '0 1px 2px #000', opacity: 0.5, marginInline: 'auto', aspectRatio: '16/9',
       objectFit: 'cover', objectPosition: 'top', overflow: 'clip', position: 'sticky', inset: '0', zIndex: 2, hidden: true, customCss: 'filter: blur(2px)',
-      width: 'fill', border: '1px solid #000', borderBlockStart: '1px solid #000', borderBlockEnd: '1px solid #000', borderInlineStart: '1px solid #000', borderInlineEnd: '1px solid #000'
+      width: 'fill', border: '1px solid #000', borderBlockStart: '1px solid #000', borderBlockEnd: '1px solid #000', borderInlineStart: '1px solid #000', borderInlineEnd: '1px solid #000',
+      translateX: '8px', translateY: '-4px', scale: 1.03, rotate: -2, transformOrigin: 'top left', transition: 'shadow', transitionDuration: 300, transitionEasing: 'ease-out'
     };
     for (const p of STYLE_PROPS) {
       const value = (sample[p.id] ?? '12px') as string;
@@ -399,5 +401,193 @@ describe('style precedence', () => {
     const phone = ruleOf(section(out, PHONE), `.${cls}.${cls}`);
     expect(phone).toContain('--so-btn-bg: #222');
     expect(phone).toContain('--so-btn-bg-hover: initial');
+  });
+});
+
+describe('transforms and transitions', () => {
+  const SHIFT = 'translate: var(--_so-translate-x, 0px) var(--_so-translate-y, 0px)';
+  const MOTION = ['translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'];
+
+  it('offers them on every kind of element, before visibility and custom CSS', () => {
+    for (const kind of ['text', 'image', 'link', 'icon', 'element']) {
+      const set = styleSetFor({ kind })!;
+      expect(set, kind).toEqual(expect.arrayContaining(MOTION));
+      expect(set.indexOf('transitionEasing'), kind).toBeLessThan(set.indexOf('hidden'));
+    }
+    for (const id of MOTION) expect(STYLE_PROP_MAP[id].advanced, id).toBe(true);
+    for (const kind of ['text', 'image', 'link', 'icon', 'element']) {
+      const set = styleSetFor({ kind })!;
+      for (const id of MOTION) expect(set.indexOf(id), `${kind}: ${id}`).toBeLessThan(Math.min(set.indexOf('hidden'), set.indexOf('customCss')));
+    }
+  });
+
+  it('accepts a shift up to its limit in each unit, and nothing past it', () => {
+    for (const ok of ['0', '-4px', '+4px', '0.5rem', '.5em', '500px', '-500px', '32rem', '-32em', '100%', '-100%', ' 8px '])
+      for (const id of ['translateX', 'translateY']) expect(validateStyleValue(id, ok), `${id}: ${ok}`).toBeNull();
+    expect(validateStyleValue('translateX', 0)).toBeNull();
+    for (const bad of ['500.5px', '-501px', '33rem', '-32.1em', '101%', '4', '-4', 'auto', '10vw', '1px 2px', 'calc(1px + 2px)', 'var(--x)', '4 px', 'px', '--4px', '1e2px'])
+      expect(validateStyleValue('translateY', bad), bad).toMatch(/not a valid shift/);
+    for (const bad of ['500.5px', '33rem', '101%', '4']) expect(validateStyleValue('translateX', bad), bad).toMatch(/not a valid shift/);
+    expect(validateStyleValue('translateX', 4)).toMatch(/not a valid shift/);
+    expect(validateStyleValue('translateX', { token: 'space.lg' })).toMatch(/cannot use a token/);
+  });
+
+  it('keeps scale, rotation and duration in range', () => {
+    for (const ok of [0, 1, 1.03, 3, '0.95']) expect(validateStyleValue('scale', ok), String(ok)).toBeNull();
+    expect(validateStyleValue('scale', 3.01)).toMatch(/at most 3/);
+    expect(validateStyleValue('scale', -0.5)).toMatch(/at least 0/);
+    for (const ok of [-360, -2.5, 0, 45, 360]) expect(validateStyleValue('rotate', ok), String(ok)).toBeNull();
+    expect(validateStyleValue('rotate', 361)).toMatch(/at most 360/);
+    expect(validateStyleValue('rotate', -360.5)).toMatch(/at least -360/);
+    for (const ok of [0, 175, 3000]) expect(validateStyleValue('transitionDuration', ok), String(ok)).toBeNull();
+    expect(validateStyleValue('transitionDuration', 3001)).toMatch(/at most 3000/);
+    expect(validateStyleValue('transitionDuration', 17.5)).toMatch(/whole number/);
+    expect(validateStyleValue('transitionDuration', -1)).toMatch(/at least 0/);
+    // A null in a hand-edited document is not 0: it would hide the element at scale 0.
+    for (const id of ['scale', 'rotate', 'transitionDuration']) expect(validateStyleValue(id, null as unknown as string), id).toMatch(/must be a number/);
+    // Spellings JavaScript reads as numbers but nobody types as a style.
+    for (const bad of ['0x10', '1e2', '', ' ', 'Infinity', true]) expect(validateStyleValue('rotate', bad as string), String(bad)).toMatch(/must be a number/);
+    // Older number properties still read what documents already hold.
+    expect(validateStyleValue('zIndex', '1e1')).toBeNull();
+    expect(styleToCss('zIndex', '1e1')).toEqual(['z-index: 10']);
+  });
+
+  it('takes origins, presets and easings from their lists', () => {
+    for (const ok of STYLE_PROP_MAP.transformOrigin.options!.map((o) => o.value)) expect(validateStyleValue('transformOrigin', ok), ok).toBeNull();
+    expect(STYLE_PROP_MAP.transformOrigin.options!.map((o) => o.value)).toEqual(['center', 'top', 'bottom', 'left', 'right', 'top left', 'top right', 'bottom left', 'bottom right']);
+    for (const bad of ['left top', '10% 20%', 'top  left']) expect(validateStyleValue('transformOrigin', bad), bad).toMatch(/must be one of/);
+    for (const ok of ['none', 'colors', 'shadow', 'transform', 'opacity', 'common']) expect(validateStyleValue('transition', ok), ok).toBeNull();
+    for (const bad of ['all', 'color 200ms', 'width']) expect(validateStyleValue('transition', bad), bad).toMatch(/must be one of/);
+    for (const ok of ['ease', 'ease-in', 'ease-out', 'ease-in-out', 'linear', 'smooth', 'overshoot']) expect(validateStyleValue('transitionEasing', ok), ok).toBeNull();
+    for (const bad of ['cubic-bezier(0, 0, 1, 1)', 'steps(4)']) expect(validateStyleValue('transitionEasing', bad), bad).toMatch(/must be one of/);
+  });
+
+  it('writes each as its own CSS property, so rules for other sizes and layers refine it', () => {
+    expect(styleToCss('translateX', '-4px')).toEqual(['--_so-translate-x: -4px', SHIFT]);
+    expect(styleToCss('translateY', ' 10% ')).toEqual(['--_so-translate-y: 10%', SHIFT]);
+    expect(styleToCss('scale', 1.03)).toEqual(['scale: 1.03']);
+    expect(styleToCss('scale', '0.95')).toEqual(['scale: 0.95']);
+    expect(styleToCss('rotate', -2)).toEqual(['rotate: -2deg']);
+    expect(styleToCss('transformOrigin', 'top left')).toEqual(['transform-origin: top left']);
+    expect(styleToCss('transition', 'none')).toEqual(['transition-property: none']);
+    expect(styleToCss('transition', 'shadow')).toEqual(['transition-property: box-shadow']);
+    expect(styleToCss('transition', 'transform')).toEqual(['transition-property: translate, scale, rotate, transform']);
+    expect(styleToCss('transition', 'colors')).toEqual(['transition-property: color, background-color, border-color, text-decoration-color, fill, stroke']);
+    expect(styleToCss('transition', 'opacity')).toEqual(['transition-property: opacity']);
+    expect(styleToCss('transition', 'common')).toEqual(['transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, box-shadow, opacity, translate, scale, rotate, transform']);
+    expect(styleToCss('transitionDuration', 600)).toEqual(['transition-duration: 600ms']);
+    expect(styleToCss('transitionEasing', 'linear')).toEqual(['transition-timing-function: linear']);
+    expect(styleToCss('transitionEasing', 'smooth')).toEqual(['transition-timing-function: cubic-bezier(0.2, 0, 0, 1)']);
+    expect(styleToCss('transitionEasing', 'overshoot')).toEqual(['transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1)']);
+    expect(styleToCss('transitionEasing', 'ease-out')).toEqual(['transition-timing-function: ease-out']);
+  });
+
+  it('starts the element from zero shift and a working preset duration, beneath every rule that names it', () => {
+    expect(styleFallbackCss('translateX', '8px')).toEqual(['--_so-translate-x: 0px', '--_so-translate-y: 0px']);
+    expect(styleFallbackCss('translateY', '-4px')).toEqual(['--_so-translate-x: 0px', '--_so-translate-y: 0px']);
+    expect(styleFallbackCss('transition', 'colors')).toEqual(['transition-duration: 200ms']);
+    expect(styleFallbackCss('transition', 'none')).toEqual([]);
+    expect(styleFallbackCss('transition', ' none ')).toEqual([]);
+    expect(styleFallbackCss('scale', 1.1)).toEqual([]);
+    // A value that writes nothing brings nothing beneath it either.
+    expect(styleFallbackCss('translateX', '9999px')).toEqual([]);
+    expect(styleFallbackCss('transition', 'all')).toEqual([]);
+  });
+
+  it('writes nothing for a hand-edited value outside the grammar', () => {
+    for (const [id, bad] of [
+      ['translateX', '9999px'], ['translateY', 'calc(100vh)'], ['scale', 99], ['scale', '0x2'], ['rotate', 'banana'], ['rotate', 720],
+      ['transformOrigin', '50% 50%'], ['transition', 'all'], ['transitionDuration', -1], ['transitionDuration', 3001], ['transitionDuration', 12.5], ['transitionEasing', 'steps(2)'],
+      ['scale', null], ['rotate', null], ['transitionDuration', null], ['rotate', true], ['translateX', false]
+    ] as Array<[string, string | number]>)
+      expect(styleToCss(id, bad), `${id}: ${bad}`).toEqual([]);
+    expect(styleToCss('rotate', { token: 'space.lg' })).toEqual([]);
+  });
+
+  it('never outranks the reduced-motion rule in the theme', () => {
+    // The theme turns every transition off for visitors who ask for less motion, with !important.
+    expect(FOUNDATION_BASE_CSS).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\}\s*\*, \*::before, \*::after \{ transition-duration: 0\.01ms !important;/);
+    const s = fresh();
+    const inst = instanceOf(s, 'hero.split');
+    inst.overrides = { root: { base: { transition: 'common', transitionDuration: 3000, transitionEasing: 'overshoot', translateY: '-4px', scale: 1.05, rotate: 2 } } };
+    const site = css(s, 'site');
+    expect(site).toContain('transition-duration: 3000ms');
+    expect(site.replace(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/, '')).not.toMatch(/!important/);
+    expect(generateProject(s).get(`${STYLES_DIR}/theme.css`)).toContain('transition-duration: 0.01ms !important');
+    // The generated CSS also turns its own transitions off, for a theme without that rule.
+    const cls = `so-o-${inst.id}-root`;
+    const reduced = `:where(.${cls}.${cls}) {\n\t\ttransition-duration: 0.01ms !important;\n\t\ttransition-delay: 0s !important;\n\t}`;
+    expect(section(site, '(prefers-reduced-motion: reduce)')).toContain(reduced);
+    // A duration alone animates every property, so it is turned off too, once however many sizes set it.
+    inst.overrides = { root: { phone: { transitionDuration: 300 }, desktop: { transitionDuration: 500 } } };
+    expect(section(css(s, 'site'), '(prefers-reduced-motion: reduce)')).toBe(`\t${reduced}`);
+    // A preset of none animates nothing, so it needs no rule there.
+    inst.overrides = { root: { base: { transition: 'none', translateY: '-4px' } } };
+    expect(css(s, 'site')).not.toContain('prefers-reduced-motion');
+  });
+
+  it('sets and clears them through node.setStyle, refusing what is out of range', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const set = (property: string, value: string | number | null, scope: 'base' | 'phone' = 'base') => ({ type: 'node.setStyle' as const, owner, nodeId: hero.id, scope, property, value });
+    const out = applyOperations(s, [set('translateY', '-4px'), set('rotate', -2), set('transition', 'transform'), set('transitionDuration', 250)]);
+    const root = () => (out.state.pages[s.site.homePageId].nodes[hero.id] as InstanceNode).overrides?.root;
+    expect(root()?.base).toMatchObject({ translateY: '-4px', rotate: -2, transition: 'transform', transitionDuration: 250 });
+    expect(() => applyOperations(out.state, [set('scale', 4)])).toThrow(/at most 3/);
+    expect(() => applyOperations(out.state, [set('translateX', '600px')])).toThrow(/not a valid shift/);
+    const cleared = applyOperations(out.state, [set('rotate', null)]);
+    expect((cleared.state.pages[s.site.homePageId].nodes[hero.id] as InstanceNode).overrides?.root?.base?.rotate).toBeUndefined();
+  });
+
+  it('lets each axis come from a different size and layer, and starts each element from zero', () => {
+    const s = fresh();
+    const def = defOf(s, 'features.grid');
+    def.tree!.nodes.grid.styles = { base: { translateX: '12px', translateY: '2px', transition: 'colors', transitionDuration: 600, transitionEasing: 'linear' } };
+    const inst = instanceOf(s, 'features.grid');
+    inst.overrides = { grid: { phone: { translateY: '-4px', transition: 'shadow' } } };
+    const components = css(s, 'components');
+    const node = '.so-foundation-features-grid__grid';
+    expect(ruleOf(section(components, null), `:where(${node})`)).toBe(`:where(${node}) {\n\ttransition-duration: 200ms;\n\t--_so-translate-x: 0px;\n\t--_so-translate-y: 0px;\n`);
+    // Both axes write the same translate once, and nothing else is merged.
+    const own = ruleOf(section(components, null), node);
+    expect(own).toContain('--_so-translate-x: 12px');
+    expect(own).toContain('--_so-translate-y: 2px');
+    expect(own.split(SHIFT).length - 1).toBe(1);
+    expect(own).toContain('transition-duration: 600ms');
+    // The placement's phone rule sets only its own axis and preset: the definition's X and timing still apply.
+    const cls = `so-o-${inst.id}-grid`;
+    const phone = section(css(s, 'site'), PHONE);
+    const decls = (rule: string) => rule.split('\n').slice(1).map((d) => d.trim()).filter(Boolean);
+    expect(decls(ruleOf(phone, `.${cls}.${cls}`))).toEqual(['transition-property: box-shadow;', '--_so-translate-y: -4px;', `${SHIFT};`]);
+    expect(decls(ruleOf(phone, `:where(.${cls}.${cls})`))).toEqual(['transition-duration: 200ms;', '--_so-translate-x: 0px;', '--_so-translate-y: 0px;']);
+    expect(section(css(s, 'site'), null)).not.toContain(cls);
+  });
+
+  it('keeps the starting values at zero specificity in a component converted to code', () => {
+    const s = fresh();
+    const def = defOf(s, 'features.grid');
+    def.tree!.nodes.grid.styles = { base: { translateY: '-4px' }, phone: { transition: 'shadow' } };
+    const source = generateStandaloneComponent(s, def);
+    expect(source).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\n\t\t:global\(:where\(\.so-foundation-features-grid__grid\)\) \{\n\t\t\ttransition-duration: 0\.01ms !important;/);
+    expect(source).toContain(':global(:where(.so-foundation-features-grid__grid)) {\n\t\t--_so-translate-x: 0px;\n\t\t--_so-translate-y: 0px;\n\t}');
+    expect(source).toContain(`:global(.so-foundation-features-grid__grid) {\n\t\t--_so-translate-y: -4px;\n\t\t${SHIFT};\n\t}`);
+  });
+
+  it('leaves custom CSS as written, repeats and all', () => {
+    const s = fresh();
+    const inst = instanceOf(s, 'hero.split');
+    inst.overrides = { root: { base: { fontSize: '24px', opacity: 0.5, customCss: 'font-size: 24px' } } };
+    const cls = `so-o-${inst.id}-root`;
+    expect(ruleOf(css(s, 'site'), `.${cls}.${cls}`).split('font-size: 24px').length - 1).toBe(2);
+  });
+
+  it('writes no rule for a variant entry naming a node the design does not have', () => {
+    const s = fresh();
+    const def = defOf(s, 'features.grid');
+    def.variantAxes!.layout.options['two-columns'].styles = { 'grid,': { base: { transition: 'opacity' } } };
+    const out = css(s, 'components');
+    expect(out).not.toContain('__grid,');
+    expect(out).not.toContain('transition');
   });
 });

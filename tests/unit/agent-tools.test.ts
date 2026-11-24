@@ -864,6 +864,25 @@ describe('selection tools', () => {
     expect(nodeAt(session.state, 0).overrides?.root?.base).toBeUndefined();
   });
 
+  it('lifts and animates the selection with the typed motion properties (#351)', async () => {
+    const styles = [{ property: 'translateY', value: '-4px' }, { property: 'scale', value: 1.03 }, { property: 'transition', value: 'transform' }, { property: 'transitionDuration', value: 250 }];
+    const { session, adapter, run } = await setup([() => [call('m1', 'style_selected_element', { partId: 'root', scope: 'base', styles })], () => finish()], focused);
+    await run('Lift it a little', heroRef(session.state));
+    const tool = adapter.requests[0].tools.find((t) => t.name === 'style_selected_element');
+    expect(tool?.description).toContain('translateX and translateY take a length such as "-4px"');
+    const schema = JSON.stringify(tool?.parameters);
+    for (const id of ['translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing']) expect(schema, id).toContain(`"${id}"`);
+    expect(tool?.description).toContain('(none, colors, shadow, transform, opacity, common)');
+    expect(nodeAt(session.state, 0).overrides?.root?.base).toEqual({ translateY: '-4px', scale: 1.03, transition: 'transform', transitionDuration: 250 });
+  });
+
+  it('refuses a motion value out of range and changes nothing (#351)', async () => {
+    const { session, adapter, run } = await setup([() => [call('m2', 'style_selected_element', { partId: 'root', scope: 'base', styles: [{ property: 'transitionDuration', value: 9000 }] })], () => finish()], focused);
+    await run('Make it slow', heroRef(session.state));
+    expect(JSON.stringify(lastResult(adapter.requests[1]))).toContain('at most 3000');
+    expect(nodeAt(session.state, 0).overrides?.root?.base?.transitionDuration).toBeUndefined();
+  });
+
   it('sets a cropped image’s focal point for one screen size (#166)', async () => {
     const { session, adapter, run } = await setup(
       [() => [call('f1', 'style_selected_element', { partId: 'media', scope: 'phone', styles: [{ property: 'aspectRatio', value: '16/9' }, { property: 'objectPosition', value: '50% 20%' }] })], () => finish()],

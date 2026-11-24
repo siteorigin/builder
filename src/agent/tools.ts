@@ -3,7 +3,7 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, legacyShellError, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
-import { STYLE_PROPS } from '@shared/styles';
+import { STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { normalizeRoute, slugify } from '@shared/routes';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -252,6 +252,14 @@ export interface ToolOutcome {
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
 const MAX_RESULT_CHARS = 24000;
 
+/** What a transform or transition property takes, for the read_project list: its range and unit. */
+function motionHint(p: StylePropDef): string {
+  if (p.group !== 'motion') return '';
+  if (p.id === 'translateX' || p.id === 'translateY') return ` (0 or one length such as "-4px": at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or em, or ${TRANSLATE_LIMITS['%']}% either way)`;
+  if (p.kind === 'number') return ` (${p.integer ? 'whole number ' : ''}${p.min} to ${p.max}${p.unit ? ` ${p.unit}` : ''})`;
+  return '';
+}
+
 export function serializeResult(content: unknown): string {
   const s = JSON.stringify(content);
   if (s.length <= MAX_RESULT_CHARS) return s;
@@ -286,7 +294,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       }
       if (a.sections?.includes('components'))
         out.installedComponents = Object.values(state.components).map((d) => ({ definitionId: d.id, componentId: d.componentId, name: d.name, owner: d.owner, kind: d.kind }));
-      out.styleProperties = STYLE_PROPS.map((p) => `${p.id}${p.tokenGroup ? ` (token: ${p.tokenGroup})` : ''}${p.options ? ` [${p.options.map((o) => o.value).join('|')}]` : ''}${p.kind === 'focus' ? ' or "X% Y%": the focal point across and down a cropped image, each 0 to 100 with at most one decimal, such as "50% 20%"' : ''}`);
+      out.styleProperties = STYLE_PROPS.map((p) => `${p.id}${p.tokenGroup ? ` (token: ${p.tokenGroup})` : ''}${p.options ? ` [${p.options.map((o) => o.value).join('|')}]` : ''}${p.kind === 'focus' ? ' or "X% Y%": the focal point across and down a cropped image, each 0 to 100 with at most one decimal, such as "50% 20%"' : ''}${motionHint(p)}`);
       return { ok: true, content: out };
     }
     case 'read_page': {

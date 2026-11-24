@@ -11,7 +11,7 @@ export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' 
 export interface StylePropDef {
   id: string;
   label: string;
-  group: 'layout' | 'spacing' | 'size' | 'typography' | 'appearance' | 'position' | 'visibility' | 'custom';
+  group: 'layout' | 'spacing' | 'size' | 'typography' | 'appearance' | 'position' | 'motion' | 'visibility' | 'custom';
   kind: StyleValueKind;
   /** Token group whose tokens can be linked. */
   tokenGroup?: TokenGroup | TokenGroup[];
@@ -23,9 +23,17 @@ export interface StylePropDef {
   description?: string;
   /** Whole numbers only. */
   integer?: boolean;
+  /** The unit a number is written in (deg, ms), shown beside its range. */
+  unit?: string;
   /** Less common: kept behind "More style options" until it has a value. */
   advanced?: boolean;
 }
+
+/** How far a shift can move an element, by unit. */
+export const TRANSLATE_LIMITS = { px: 500, rem: 32, em: 32, '%': 100 } as const;
+/** Browsers only transform boxes: an inline run of text has none of its own. */
+const INLINE_NOTE = ' Plain inline text, such as a link inside a sentence, does not move.';
+const TRANSFORM_ORIGINS = ['center', 'top', 'bottom', 'left', 'right', 'top left', 'top right', 'bottom left', 'bottom right'];
 
 const edge = (id: string, label: string, group: StylePropDef['group'], kind: 'length' | 'border', tokenGroup: TokenGroup | TokenGroup[], placeholder: string): StylePropDef => ({ id, label, group, kind, tokenGroup, placeholder, advanced: true });
 
@@ -130,8 +138,22 @@ export const STYLE_PROPS: StylePropDef[] = [
   ] },
   { id: 'inset', label: 'Offset', group: 'position', kind: 'length', placeholder: '0', description: 'Distance from the edges: one value, or top, right, bottom and left.' },
   { id: 'zIndex', label: 'Layer', group: 'position', kind: 'number', min: -1, max: 100, step: 1, integer: true, description: 'Higher layers sit in front.' },
+  { id: 'translateX', label: 'Shift sideways', group: 'motion', kind: 'length', advanced: true, placeholder: '8px', description: `Moves it without moving anything around it: a length in px, rem or em, or a % of its own width. Negative moves it left. At most ${TRANSLATE_LIMITS.px}px.${INLINE_NOTE}` },
+  { id: 'translateY', label: 'Shift up or down', group: 'motion', kind: 'length', advanced: true, placeholder: '-4px', description: `Moves it without moving anything around it: a length in px, rem or em, or a % of its own height. Negative lifts it up. At most ${TRANSLATE_LIMITS.px}px.${INLINE_NOTE}` },
+  { id: 'scale', label: 'Scale', group: 'motion', kind: 'number', min: 0, max: 3, step: 0.01, advanced: true, description: `Its size as drawn, without moving anything around it: 1 is its own size, 1.05 is 5% larger.${INLINE_NOTE}` },
+  { id: 'rotate', label: 'Rotate', group: 'motion', kind: 'number', min: -360, max: 360, step: 1, unit: 'deg', advanced: true, description: `Degrees clockwise; negative turns it the other way.${INLINE_NOTE}` },
+  { id: 'transformOrigin', label: 'Turn and scale from', group: 'motion', kind: 'enum', advanced: true, description: 'The point it rotates and scales around.', options: TRANSFORM_ORIGINS.map((value) => ({ value, label: value.replace(/^./, (c) => c.toUpperCase()) })) },
+  { id: 'transition', label: 'Animate changes', group: 'motion', kind: 'enum', advanced: true, description: 'Which changes (on hover, say) ease in over the duration instead of jumping. Visitors who ask for reduced motion see them jump.', options: [
+    { value: 'none', label: 'None' }, { value: 'colors', label: 'Colors' }, { value: 'shadow', label: 'Shadow' }, { value: 'transform', label: 'Shift, scale and rotate' },
+    { value: 'opacity', label: 'Opacity' }, { value: 'common', label: 'Colors, shadow, movement and opacity' }
+  ] },
+  { id: 'transitionDuration', label: 'Duration', group: 'motion', kind: 'number', min: 0, max: 3000, step: 50, integer: true, unit: 'ms', advanced: true, description: 'How long a change takes, in milliseconds.' },
+  { id: 'transitionEasing', label: 'Easing', group: 'motion', kind: 'enum', advanced: true, description: 'How a change speeds up and slows down.', options: [
+    { value: 'ease', label: 'Ease' }, { value: 'ease-out', label: 'Ease out' }, { value: 'ease-in', label: 'Ease in' }, { value: 'ease-in-out', label: 'Ease in and out' },
+    { value: 'linear', label: 'Linear' }, { value: 'smooth', label: 'Smooth' }, { value: 'overshoot', label: 'Overshoot' }
+  ] },
   { id: 'hidden', label: 'Hidden', group: 'visibility', kind: 'boolean' },
-  { id: 'customCss', label: 'Custom CSS', group: 'custom', kind: 'css', advanced: true, placeholder: 'filter: saturate(1.2); transform: rotate(-2deg)', description: 'Extra property declarations for this element only. No selectors, at-rules, url() or comments.' }
+  { id: 'customCss', label: 'Custom CSS', group: 'custom', kind: 'css', advanced: true, placeholder: 'filter: saturate(1.2); mix-blend-mode: multiply', description: 'Extra property declarations for this element only. No selectors, at-rules, url() or comments.' }
 ];
 
 export const STYLE_PROP_MAP: Record<string, StylePropDef> = Object.fromEntries(STYLE_PROPS.map((p) => [p.id, p]));
@@ -145,7 +167,8 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
   // How an item sits inside a grid or stack parent.
   const child = ['columnSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
   const placed = ['position', 'inset', 'zIndex'];
-  const end = ['hidden', 'customCss'];
+  const motion = ['translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'];
+  const end = [...motion, 'hidden', 'customCss'];
   switch (node.kind) {
     case 'text':
       return ['textStyle', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'textTransform', 'lineHeight', 'letterSpacing', 'textAlign', 'maxWidth', ...spacing, ...appearance, ...child, ...placed, ...end];
@@ -205,6 +228,7 @@ export const STYLE_GROUP_LABELS: Record<StylePropDef['group'], string> = {
   typography: 'Typography',
   appearance: 'Appearance',
   position: 'Position',
+  motion: 'Transform and motion',
   visibility: 'Visibility',
   custom: 'Custom CSS'
 };
@@ -554,6 +578,37 @@ export function parseCustomCss(text: string): { decls: string[]; error: string |
   return { decls, error: null };
 }
 
+const TRANSLATE_RE = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+))(px|rem|em|%)?$/;
+
+/** A shift: 0, or one length in px, rem or em or a percentage of the element's own size, within TRANSLATE_LIMITS. */
+export function isTranslate(value: string): boolean {
+  const m = TRANSLATE_RE.exec(value.trim());
+  if (!m) return false;
+  const n = Math.abs(Number(m[1]));
+  if (!m[2]) return n === 0;
+  return n <= TRANSLATE_LIMITS[m[2] as keyof typeof TRANSLATE_LIMITS];
+}
+
+/** What each transition preset animates. Each lists properties these style controls can change. */
+const TRANSITION_PROPERTIES: Record<string, string> = {
+  none: 'none',
+  colors: 'color, background-color, border-color, text-decoration-color, fill, stroke',
+  shadow: 'box-shadow',
+  transform: 'translate, scale, rotate, transform',
+  opacity: 'opacity',
+  common: 'color, background-color, border-color, text-decoration-color, fill, stroke, box-shadow, opacity, translate, scale, rotate, transform'
+};
+/** How long a transition preset takes when no rule for the element sets a duration (CSS's own default is 0s). */
+const TRANSITION_DEFAULT_DURATION = '200ms';
+/**
+ * The variables the two shift axes write. A distinct prefix, so no site style's variable (always `--so-`) can be
+ * one of them.
+ */
+const TRANSLATE_VARS = { translateX: '--_so-translate-x', translateY: '--_so-translate-y' } as const;
+export const TRANSLATE_DECL = `translate: var(${TRANSLATE_VARS.translateX}, 0px) var(${TRANSLATE_VARS.translateY}, 0px)`;
+/** Named easing curves beyond the CSS keywords. */
+const EASING_CURVES: Record<string, string> = { smooth: 'cubic-bezier(0.2, 0, 0, 1)', overshoot: 'cubic-bezier(0.34, 1.56, 0.64, 1)' };
+
 /** Validate a literal style value. Returns an error message or null. */
 export function validateStyleValue(propId: string, value: StyleValue): string | null {
   const def = STYLE_PROP_MAP[propId];
@@ -573,7 +628,10 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       return typeof value === 'boolean' ? null : `${def.label} must be true or false.`;
     case 'number': {
       const n = Number(value);
-      if (typeof value === 'boolean' || s === '' || !Number.isFinite(n)) return `${def.label} must be a number.`;
+      // Transforms and timings take a number, or plain decimals as text: Number() also reads null as 0 and "0x10" or
+      // "1e3" as numbers, which no one writes as a style. Older properties keep reading what documents already hold.
+      const plain = def.group !== 'motion' || typeof value === 'number' || (typeof value === 'string' && /^[+-]?(\d+(\.\d+)?|\.\d+)$/.test(s));
+      if (typeof value === 'boolean' || s === '' || !Number.isFinite(n) || !plain) return `${def.label} must be a number.`;
       if (def.min !== undefined && n < def.min) return `${def.label} must be at least ${def.min}.`;
       if (def.max !== undefined && n > def.max) return `${def.label} must be at most ${def.max}.`;
       if (def.integer && !Number.isInteger(n)) return `${def.label} must be a whole number.`;
@@ -591,6 +649,8 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
     case 'length':
       if (def.options?.some((o) => o.value === s)) return null;
       if (propId === 'lineHeight' && /^\d*\.?\d+$/.test(s)) return null;
+      if (propId === 'translateX' || propId === 'translateY')
+        return isTranslate(s) ? null : `"${s.slice(0, 40)}" is not a valid shift. Use 0 or one length such as -4px, 0.5rem or 10%, at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or ${TRANSLATE_LIMITS['%']}% either way.`;
       if (propId === 'inset') {
         // One to four offsets; spaces inside calc() and friends do not separate values.
         const parts = splitTop(s, (ch) => /\s/.test(ch));
@@ -614,7 +674,10 @@ function cssValue(v: StyleValue): string {
 }
 
 /** Fixed-grammar properties: a hand-edited document that breaks the grammar writes nothing. */
-const CHECKED_AT_OUTPUT = new Set(['gridTemplate', 'columnSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform']);
+const CHECKED_AT_OUTPUT = new Set([
+  'gridTemplate', 'columnSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
+  'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'
+]);
 
 /** Convert one style property into CSS declarations. */
 export function styleToCss(propId: string, raw: StyleValue): string[] {
@@ -758,6 +821,24 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
       return [`inset: ${v}`];
     case 'zIndex':
       return [`z-index: ${Number(value)}`];
+    case 'translateX':
+    case 'translateY':
+      // CSS has one translate property, so each axis sets its own variable and both write the pair: an axis set
+      // by another rule (another size, a stronger layer) keeps its value.
+      return [`${TRANSLATE_VARS[propId]}: ${v}`, TRANSLATE_DECL];
+    case 'scale':
+      return [`scale: ${Number(value)}`];
+    case 'rotate':
+      return [`rotate: ${Number(value)}deg`];
+    case 'transformOrigin':
+      return [`transform-origin: ${v}`];
+    case 'transition':
+      // Its default duration is in styleFallbackCss, so a duration any rule sets for the element wins.
+      return [`transition-property: ${TRANSITION_PROPERTIES[String(value)]}`];
+    case 'transitionDuration':
+      return [`transition-duration: ${Number(value)}ms`];
+    case 'transitionEasing':
+      return [`transition-timing-function: ${EASING_CURVES[String(value)] ?? v}`];
     case 'hidden':
       return value ? ['display: none'] : [];
     case 'customCss':
@@ -765,6 +846,33 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
       return typeof value === 'string' ? parseCustomCss(value).decls : [];
   }
   return [];
+}
+
+/**
+ * Declarations one style property needs beneath its own, at zero specificity on the same element (in a `:where()`
+ * rule beside the property's rule): starting values any rule that names the element overrides. Each shift axis
+ * starts both axes at 0, so the element never takes an axis from its parent (custom properties inherit); a
+ * transition preset starts with a working duration. Nothing for a value styleToCss would not write.
+ */
+export function styleFallbackCss(propId: string, raw: StyleValue): string[] {
+  if (!styleToCss(propId, raw).length) return [];
+  if (propId === 'translateX' || propId === 'translateY') return [`${TRANSLATE_VARS.translateX}: 0px`, `${TRANSLATE_VARS.translateY}: 0px`];
+  if (propId === 'transition' && String(raw).trim() !== 'none') return [`transition-duration: ${TRANSITION_DEFAULT_DURATION}`];
+  return [];
+}
+
+/** Where the generated CSS turns its own transitions off, whatever the theme does. */
+export const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+/**
+ * Declarations one style property needs for visitors who ask for reduced motion, at zero specificity: a transition
+ * set here (a preset, or a duration that animates every property) finishes at once, as the Foundation theme's
+ * own rule does for everything, and starts at once despite any delay custom CSS adds. The generator writes them
+ * itself, so a theme without that rule still honours it.
+ */
+export function styleReducedMotionCss(propId: string, raw: StyleValue): string[] {
+  if ((propId !== 'transition' && propId !== 'transitionDuration') || !styleToCss(propId, raw).length) return [];
+  return propId === 'transition' && String(raw).trim() === 'none' ? [] : ['transition-duration: 0.01ms !important', 'transition-delay: 0s !important'];
 }
 
 export const MEDIA_QUERIES: Record<'phone' | 'tablet' | 'desktop', string> = {

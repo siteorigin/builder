@@ -29,7 +29,23 @@ import type {
   TokenValue
 } from '@shared/types';
 import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
-import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, linkOf, resolveVisibility, styleDeclOrder, styleToCss, textLinkLeadsToText, textStyleValue, tokenVar, wideOnlyStyle } from '@shared/styles';
+import {
+  MEDIA_QUERIES,
+  REDUCED_MOTION_QUERY,
+  TRANSLATE_DECL,
+  isSafeCssValue,
+  isValidGradient,
+  linkOf,
+  resolveVisibility,
+  styleDeclOrder,
+  styleFallbackCss,
+  styleReducedMotionCss,
+  styleToCss,
+  textLinkLeadsToText,
+  textStyleValue,
+  tokenVar,
+  wideOnlyStyle
+} from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
@@ -394,9 +410,12 @@ export function generateTokensCss(state: ProjectState): string {
 // Style rules
 // ---------------------------------------------------------------------------
 
-/** `wide` holds rules for tablet and desktop together (everything above phone width). */
-type RuleSet = { base: string[]; wide: string[]; phone: string[]; tablet: string[]; desktop: string[] };
-const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [] });
+/**
+ * `wide` holds rules for tablet and desktop together (everything above phone width); `reduced`, the rules for
+ * visitors who ask for reduced motion.
+ */
+type RuleSet = { base: string[]; wide: string[]; phone: string[]; tablet: string[]; desktop: string[]; reduced: string[] };
+const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [] });
 const WIDE_QUERY = '(min-width: 768px)';
 
 /** Declarations that could escape their rule or load remote content are never written. */
@@ -415,6 +434,8 @@ interface RuleOpts {
   wideColumns?: boolean;
   /** Variants and instance overrides: the display value that shows a part a weaker layer hides, for `hidden: false`. */
   unhide?: (scope: ResponsiveScope) => string | null;
+  /** Finishes each selector written (a component's own <style> block makes them `:global()`). */
+  wrap?: (sel: string) => string;
 }
 
 function nodeDisplay(layout: unknown): string | null {
@@ -446,8 +467,17 @@ function unhider(def: ComponentDefinition, nodeId: string, variants: InstanceNod
 const ORDER = styleDeclOrder;
 
 
-function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | undefined, opts: RuleOpts = {}) {
+/** Each declaration once, at its last place in the rule: for the generated declarations the builder writes itself. */
+const lastCopies = (decls: string[]) => decls.filter((d, i) => decls.lastIndexOf(d) === i);
+/** Both shift axes write the same translate: once is enough. Nothing else is touched, so no value can shift onto another. */
+const oneTranslate = (decls: string[]) => decls.filter((d, i) => d !== TRANSLATE_DECL || decls.lastIndexOf(d) === i);
+
+function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefined, opts: RuleOpts = {}) {
   if (!input) return;
+  const wrap = opts.wrap ?? ((sel: string) => sel);
+  const selector = wrap(raw);
+  // Starting values for the element itself at zero specificity, which every rule naming it overrides.
+  const quiet = wrap(`:where(${raw})`);
   const styles = resolveVisibility(input);
   for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
     // Showing a part a weaker layer hides needs an explicit display value, decided before visibility folding, and
@@ -457,6 +487,8 @@ function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | un
     if (!props) continue;
     const decls: string[] = shown ? [`display: ${shown}`] : [];
     const wide: string[] = [];
+    const fallback: string[] = [];
+    const reduced: string[] = [];
     // Composite text styles first so explicit typography wins; visibility last so it can override display.
     const keys = Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b));
     for (const k of keys) {
@@ -471,8 +503,13 @@ function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | un
       if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
       const target = scope === 'base' && wideOnlyStyle(k, props[k], opts.wideColumns) ? wide : decls;
       target.push(...out.filter(safeDecl));
+      fallback.push(...styleFallbackCss(k, props[k]).filter(safeDecl));
+      reduced.push(...styleReducedMotionCss(k, props[k]).filter(safeDecl));
     }
-    if (decls.length) rules[scope].push(`${selector} {\n${decls.map((d) => `\t${d};`).join('\n')}\n}`);
+    if (fallback.length) rules[scope].push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
+    if (decls.length) rules[scope].push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${d};`).join('\n')}\n}`);
+    // At every size: a transition set for one size is turned off wherever the element is.
+    if (reduced.length) rules.reduced.push(`${quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
     // Shown at all sizes: each range where it is hidden gets the display its own layout gives it.
     if (scope === 'base' && input.base?.hidden === false && opts.unhide)
       for (const r of ['phone', 'tablet', 'desktop'] as const) {
@@ -493,6 +530,8 @@ function emitRules(rules: RuleSet): string {
     if (!rules[scope].length) continue;
     out.push(block(MEDIA_QUERIES[scope], rules[scope]));
   }
+  // Last, and with !important as the theme's own rule has, so no duration set for any size outlasts it.
+  if (rules.reduced.length) out.push(block(REDUCED_MOTION_QUERY, [...new Set(rules.reduced)]));
   return out.join('\n');
 }
 
@@ -549,7 +588,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
   const wrap = (sel: string) => (standalone ? `:global(${sel})` : sel);
   for (const id of Object.keys(def.tree.nodes).sort()) {
     const n = def.tree.nodes[id];
-    addRules(rules, wrap(`.${nodeClass(def, id)}`), n.styles, { link: n.kind === 'link' });
+    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap });
     if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, n, `.${nodeClass(def, id)}`, wrap);
   }
   const axes = axesOf(def);
@@ -559,11 +598,13 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
       const v = a.options[vid];
       const vc = legacy ? `:is(.${variantClass(def, axis, vid)}, .so-${defKey(def.id)}--${vid})` : `.${variantClass(def, axis, vid)}`;
       for (const nid of Object.keys(v.styles ?? {}).sort()) {
+        // Styles for a node the tree no longer has match nothing, and a stray key must never reach a selector.
+        if (!Object.hasOwn(def.tree!.nodes, nid)) continue;
         const rootId = def.tree!.rootIds[0];
         const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
         // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
         const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
-        addRules(rules, wrap(sel), v.styles![nid], { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier) });
+        addRules(rules, sel, v.styles![nid], { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap });
       }
     }
   });
@@ -594,7 +635,7 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, inst: InstanceNod
     // Doubled root selector: nested overrides must beat the nested definition's variant rules.
     const isRoot = partId === 'root' || !part || part.nodeId === def.tree?.rootIds[0];
     const sel = isRoot ? `${rootSelector}${rootSelector}${rootSelector}` : `${rootSelector}${rootSelector} .${nodeClass(def, part.nodeId)}`;
-    addRules(rules, wrap(sel), inst.overrides![partId], overrideOpts(def, inst, partId));
+    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(def, inst, partId), wrap });
   }
 }
 
