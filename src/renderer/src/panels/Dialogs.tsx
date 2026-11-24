@@ -1435,7 +1435,13 @@ function ChangesModal() {
   // While the AI works History is its to change: a step chosen now could take back more than its row says.
   const locked = busy || !!snap?.aiBusy;
   const listRef = useRef<HTMLOListElement>(null);
-  const focused = useCallback((el: HTMLButtonElement | null) => el?.scrollIntoView({ block: 'nearest' }), []);
+  // Focus starts on the list's Tab stop, and stays there while the menu that opened History finishes closing.
+  const startRef = useRef<HTMLButtonElement | null>(null);
+  useHeldFocus(startRef);
+  const start = useCallback((el: HTMLButtonElement | null) => {
+    startRef.current = el;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, []);
   // The row that had focus went with its change (dropped by a newer one): focus goes on to the list's Tab stop, so
   // the keys still move through the list rather than out of the dialog.
   useEffect(() => {
@@ -1511,7 +1517,7 @@ function ChangesModal() {
             return (
               <li key={e.id} className={`${e.applied ? '' : 'undone'}${e.id === focusId ? ' focus' : ''}`}>
                 <button
-                  ref={e.id === focusId ? focused : undefined}
+                  ref={e.id === tabId ? start : undefined}
                   className="history-step"
                   tabIndex={e.id === tabId ? 0 : -1}
                   data-autofocus={e.id === tabId && !stop ? true : undefined}
