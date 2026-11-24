@@ -148,9 +148,11 @@ export function LocalModelSettings({
   // As for the address: whether the field holds the author's typing, and the size most recently sent to be saved.
   const windowEdited = useRef(false);
   const windowSubmitted = useRef(local.contextWindow);
+  // A saved size arriving (also one sent before this panel opened) is what a later change is compared with.
   useEffect(() => {
+    windowSubmitted.current = local.contextWindow;
     if (!windowEdited.current) setWindowDraft(shownWindow);
-  }, [shownWindow]);
+  }, [local.contextWindow, shownWindow]);
   const windowCheck = parseContextSize(windowDraft);
   const windowError = windowCheck.ok ? null : `Enter a whole number of tokens from ${LOCAL_CONTEXT_MIN.toLocaleString('en-US')} to ${LOCAL_CONTEXT_MAX.toLocaleString('en-US')}, or leave it empty.`;
   // Only a valid size is saved; an empty field goes back to reading the size from the server.

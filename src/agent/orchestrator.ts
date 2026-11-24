@@ -625,6 +625,11 @@ export class Orchestrator {
     };
 
     const ad = await this.deps.adapter(signal);
+    // Stopped while the adapter was prepared (a local server is asked about its model first): nothing is locked yet.
+    if (signal.aborted) {
+      await finish('cancelled', 'Stopped.');
+      return;
+    }
     if ('error' in ad) {
       await finish('failed', ad.error, { error: ad.error });
       return;

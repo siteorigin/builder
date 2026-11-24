@@ -923,6 +923,21 @@ describe('constrained JSON', () => {
     expect(posts()[0].body.response_format).toBeUndefined();
   });
 
+  it('offers clearing the size in Settings only when the server reports its own, not one learned from an error', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { code: 400, message: 'request (8200 tokens) exceeds the available context size (16384 tokens)', type: 'exceed_context_size_error', n_prompt_tokens: 8200, n_ctx: 16384 } }) });
+    const a = adapter({ contextWindow: 4096 });
+    await run(a);
+    expect(a.contextHelp(32768)).toMatch(/context size set in Settings, 4,096 tokens/);
+    expect(a.contextHelp(32768)).not.toMatch(/clear it/);
+  });
+
+  it('does not ask for a fix whose corrected copy cannot fit in one reply', async () => {
+    const source = `<script>\n  export let heading = "Hi";\n</script>\n\n<p>${'words '.repeat(7000)}</p>\n`;
+    const r = await fixComponentSource(adapter({ contextWindow: 200_000 }), 'test-model', source, async () => [{ severity: 'error', message: 'Use $props' }], new AbortController().signal);
+    expect(r).toMatchObject({ ok: false, message: expect.stringMatching(/write back in one reply.*limited to 8,192/) });
+    expect(posts()).toHaveLength(0);
+  });
+
   it('does not send a component a known window cannot hold twice, and fits the reply otherwise', async () => {
     const source = `<script>\n  export let heading = "Hi";\n</script>\n\n<h2>{heading}</h2>\n<p>${'words '.repeat(1500)}</p>\n`;
     const check = async (src: string) => (src.includes('export let') ? [{ severity: 'error', message: 'Use $props' }] : []);
@@ -977,6 +992,7 @@ describe('the loaded context window', () => {
     expect(contextOverflow(llama(8200, 4096))).toEqual({ windowTokens: 4096, promptTokens: 8200, server: 'llama.cpp' });
     expect(contextOverflow(JSON.stringify({ error: { message: 'request (5000 tokens) exceeds the available context size (4096 tokens), try increasing it' } }))).toEqual({ windowTokens: 4096, promptTokens: 5000, server: 'llama.cpp' });
     expect(contextOverflow(vllm(8192, 6000, 4000))).toEqual({ windowTokens: 8192, promptTokens: 6000, server: 'vllm' });
+    expect(contextOverflow(JSON.stringify({ object: 'error', message: "This model's maximum context length is 8192 tokens. However, your request has 6000 input tokens and asks for 4000 output tokens." }))).toEqual({ windowTokens: 8192, promptTokens: 6000, server: 'vllm' });
     expect(contextOverflow(JSON.stringify({ error: 'Maximum context size is 4096, but 7302 tokens were provided' }))).toEqual({ windowTokens: 4096, promptTokens: 7302, server: 'lm-studio' });
     // "The first N tokens" are only what the server tried to keep, not the whole prompt.
     const kept = contextOverflow(JSON.stringify({ error: 'Trying to keep the first 7302 tokens when context the overflows. However, the model is loaded with context length of only 4096 tokens, which is not enough.' }));
@@ -1032,6 +1048,22 @@ describe('the loaded context window', () => {
     const elsewhere = async () => [{ address: '203.0.113.7' }];
     const localhost = server.baseURL.replace('127.0.0.1', 'localhost');
     expect(await discoverLocalContext({ baseURL: localhost, model: 'test-model' }, { lookup: elsewhere })).toEqual({});
+    expect(server.requests).toEqual([]);
+  });
+
+  it("keeps the localhost check within the discovery deadline", async () => {
+    const stalled = () => new Promise<Array<{ address: string }>>(() => undefined);
+    const started = Date.now();
+    expect(await discoverLocalContext({ baseURL: server.baseURL.replace('127.0.0.1', 'localhost'), model: 'test-model' }, { lookup: stalled, timeoutMs: 50 })).toEqual({});
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(server.requests).toEqual([]);
+  });
+
+  it('lists nothing once the run is stopped', async () => {
+    const stopped = new AbortController();
+    stopped.abort();
+    expect(await openLocalAdapter({ baseURL: server.baseURL, model: '' }, { signal: stopped.signal })).toEqual({ error: 'Cancelled' });
+    expect(await listLocalModels({ baseURL: server.baseURL }, { signal: stopped.signal })).toMatchObject({ ok: false });
     expect(server.requests).toEqual([]);
   });
 
@@ -1151,6 +1183,7 @@ describe('the loaded context window', () => {
     const unreported = adapter({ contextWindow: 4096 }).contextHelp(32768);
     expect(unreported).toMatch(/raise it under Advanced server options to the size the model is loaded with/);
     expect(unreported).not.toMatch(/clear it/);
+    expect(capped).toMatch(/or clear it to use the size the server reports/);
     const roomy = adapter({ contextWindow: 65536 }, { context: { server: 'llama.cpp', windowTokens: 4096 } }).contextHelp(32768);
     expect(roomy).toMatch(/--ctx-size 32768/);
     expect(roomy).not.toMatch(/Settings/);

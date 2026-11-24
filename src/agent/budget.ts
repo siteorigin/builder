@@ -18,7 +18,15 @@ const TOMBSTONE = '[Superseded ';
 /** The smallest reply worth asking for: a request that leaves less room than this cannot be answered usefully. */
 export const MIN_OUTPUT_TOKENS = 1024;
 
-export const estimateTokens = (text: string) => Math.ceil(text.length / 4);
+/**
+ * About four characters of English or code to a token. A character outside ASCII (Chinese, Japanese, Korean, most
+ * symbols) is often a token of its own, so it counts as one: a quarter would let such text past a window it overflows.
+ */
+export const estimateTokens = (text: string) => {
+  let wide = 0;
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 0x7f) wide++;
+  return Math.ceil((text.length - wide) / 4) + wide;
+};
 
 function itemTokens(item: CanonicalItem): number {
   if (item.kind === 'user') return estimateTokens(item.text);

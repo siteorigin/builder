@@ -59,7 +59,7 @@ async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOp
     const msg = [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message;
     return { runId: r.runId!, result: msg?.result };
   };
-  return { session, run, header, events };
+  return { session, run, header, events, orch };
 }
 
 const setHeaderName = (header: string, name: string, revision = 0) => ({
@@ -340,6 +340,22 @@ describe('the loaded context window', () => {
     expect(chatPosts()).toHaveLength(0);
   });
 
+  it('ends a run stopped while the server is asked about its model, before anything is locked or sent', async () => {
+    server.routes['/api/ps'] = { body: { models: [] }, delayMs: 3000 };
+    const { session, run, orch } = await setup({ model: 'test-model' }, {}, true, 'local', 'business', true);
+    setTimeout(() => orch.stop(), 100);
+    const started = Date.now();
+    const { result } = await run('Hi');
+    expect(result?.status).toBe('cancelled');
+    expect(Date.now() - started).toBeLessThan(900);
+    expect(chatPosts()).toHaveLength(0);
+    // Nothing was locked, so the next request starts normally.
+    server.routes = {};
+    server.script(envelopeReply('finish', { message: 'Hello.' }));
+    expect((await run('Hi')).result?.status).toBe('no-changes');
+    expect(session.revision).toBe(0);
+  });
+
   it('refuses a blank-site "Hi" before sending it when the known window cannot hold it', async () => {
     const { session, run } = await setup({}, { context: { windowTokens: 4096, server: 'ollama' } }, true, 'local', 'blank');
     const { result } = await run('Hi');
@@ -491,6 +507,14 @@ describe('why a request does not fit', () => {
   const said = (chars: number): CanonicalItem => ({ kind: 'assistant', text: 'a'.repeat(chars), toolCalls: [] });
   const result = (chars: number): CanonicalItem => ({ kind: 'tool_result', callId: 'c', name: 'read_page', content: 'r'.repeat(chars) });
   const base = { system: 's'.repeat(4000), tools: [] as ToolDefinition[], maxOutputTokens: 8192 };
+
+  it('counts text outside ASCII as a token a character, so it cannot slip past a window it overflows', () => {
+    expect(estimateRequestTokens('', [], [user(4000)])).toBe(1000);
+    const han: CanonicalItem = { kind: 'user', text: '漢'.repeat(4000) };
+    expect(estimateRequestTokens('', [], [han])).toBe(4000);
+    const v = contextVerdict({ ...base, system: '', items: [han], current: han, windowTokens: 4096, maxOutputTokens: 8192, rejected: false });
+    expect(v.kind).toBe('setup');
+  });
 
   it('takes the minimum from the server count of the prompt, not from the window it refused', () => {
     const current = user(20_000);

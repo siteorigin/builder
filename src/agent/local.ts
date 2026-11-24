@@ -147,7 +147,7 @@ export function contextOverflow(body: string): ContextOverflow & { server?: Loca
   const fields = (v && typeof v.error === 'object' && v.error ? v.error : (v ?? {})) as Record<string, unknown>;
   const text = serverMessage(body);
   const windowTokens = count(fields.n_ctx) ?? first(text, [/available context size \((\d+) tokens?\)/i, /maximum context length is (\d+)/i, /context length of only (\d+)/i, /maximum context size is (\d+)/i]);
-  const promptTokens = count(fields.n_prompt_tokens) ?? first(text, [/request \((\d+) tokens?\)/i, /\((\d+) in the messages/i, /but (\d+) tokens were provided/i]);
+  const promptTokens = count(fields.n_prompt_tokens) ?? first(text, [/request \((\d+) tokens?\)/i, /\((\d+) in the messages/i, /but (\d+) tokens were provided/i, /(\d+) input tokens/i]);
   const server: LocalServerKind | undefined =
     fields.type === 'exceed_context_size_error' || /available context size/i.test(text) ? 'llama.cpp' : /maximum context length is \d+/i.test(text) ? 'vllm' : /context length of only|maximum context size is/i.test(text) ? 'lm-studio' : undefined;
   return { ...(windowTokens ? { windowTokens } : {}), ...(promptTokens ? { promptTokens } : {}), ...(server ? { server } : {}) };
@@ -394,6 +394,8 @@ export class LocalAdapter implements AgentModelAdapter {
   private configured: number | undefined;
   /** The context size the server reported, before the run or in a context error during it. */
   private reported: number | undefined;
+  /** The server answered `discoverLocalContext`, so the size in Settings can be cleared and read from it instead. */
+  private reportsSize: boolean;
   private server: LocalServerKind | undefined;
 
   constructor(private endpoint: LocalEndpoint, private opts: LocalAdapterOptions = {}) {
@@ -403,6 +405,7 @@ export class LocalAdapter implements AgentModelAdapter {
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.configured = localContextWindow(endpoint.contextWindow) ?? undefined;
     this.reported = count(opts.context?.windowTokens);
+    this.reportsSize = this.reported !== undefined;
     this.server = opts.context?.server;
   }
 
@@ -452,7 +455,7 @@ export class LocalAdapter implements AgentModelAdapter {
     } else steps.push(`The server already has the model loaded with ${n(this.reported)} tokens.`);
     // Clearing it helps only when the server reports its own size; otherwise the assistant falls back to a guess.
     if (this.configured !== undefined && this.configured < tokens)
-      steps.push(`The context size set in Settings, ${n(this.configured)} tokens, also limits the assistant: raise it under Advanced server options${this.reported !== undefined ? ', or clear it to use the size the server reports' : ' to the size the model is loaded with'}.`);
+      steps.push(`The context size set in Settings, ${n(this.configured)} tokens, also limits the assistant: raise it under Advanced server options${this.reportsSize ? ', or clear it to use the size the server reports' : ' to the size the model is loaded with'}.`);
     else if (this.configured === undefined && this.reported === undefined) steps.push('This server does not report its context size, so also enter the new size under Advanced server options in Settings.');
     return steps.join(' ');
   }
@@ -767,13 +770,15 @@ export class LocalAdapter implements AgentModelAdapter {
 }
 
 /** Models the server reports through `GET {baseURL}/models`. */
-export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
+export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
   const url = checkLocalBaseURL(endpoint.baseURL, endpoint.allowRemote);
   if (!url.ok) return { ok: false, models: [], message: url.message };
-  const keyProblem = localKeyProblem(endpoint.apiKey) ?? (await localhostProblem(url.url, opts.lookup));
+  const keyProblem = localKeyProblem(endpoint.apiKey) ?? (await localhostProblem(url.url, opts.lookup, opts.signal));
   if (keyProblem) return { ok: false, models: [], message: keyProblem };
+  if (opts.signal?.aborted) return { ok: false, models: [], message: 'Cancelled' };
   try {
-    const res = await (opts.fetch ?? globalThis.fetch)(`${url.url}/models`, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS) });
+    const timeout = AbortSignal.timeout(opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS);
+    const res = await (opts.fetch ?? globalThis.fetch)(`${url.url}/models`, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout });
     if (!res.ok) return { ok: false, models: [], message: httpError(res.status, await res.text().catch(() => ''), 'that model', undefined, endpoint.apiKey).message };
     const data = ((await res.json()) as { data?: Array<{ id?: unknown }> }).data;
     if (!Array.isArray(data)) return { ok: false, models: [], message: `The server at ${url.url} did not return a model list.` };
@@ -792,11 +797,10 @@ export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 
  */
 export async function discoverLocalContext(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote' | 'model'>, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<LocalContext> {
   const url = checkLocalBaseURL(endpoint.baseURL, endpoint.allowRemote);
-  if (!url.ok || !endpoint.model || opts.signal?.aborted) return {};
-  // The same checks as every other request to the server: no cloud key, and a `localhost` that is this computer.
-  if (localKeyProblem(endpoint.apiKey) || (await localhostProblem(url.url, opts.lookup, opts.signal)) || opts.signal?.aborted) return {};
+  if (!url.ok || !endpoint.model || opts.signal?.aborted || localKeyProblem(endpoint.apiKey)) return {};
   // The servers' own routes sit beside the OpenAI-compatible ones, not under them.
   const root = url.url.replace(/\/v1$/, '');
+  // One deadline for everything, the `localhost` check included.
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), opts.timeoutMs ?? CONTEXT_DISCOVERY_MS);
   // A Stop, or permission for a remote server withdrawn, ends the probes at once.
@@ -816,6 +820,8 @@ export async function discoverLocalContext(endpoint: Pick<LocalEndpoint, 'baseUR
     }
   };
   try {
+    // The same check as every other request to the server: a `localhost` that is this computer.
+    if ((await localhostProblem(url.url, opts.lookup, ctl.signal)) || ctl.signal.aborted) return {};
     const model = endpoint.model;
     let modelPath: string | null = null;
     try {
@@ -851,6 +857,7 @@ export async function discoverLocalContext(endpoint: Pick<LocalEndpoint, 'baseUR
  */
 export async function openLocalAdapter(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<{ adapter: LocalAdapter; model: string } | { error: string }> {
   const chosen = { ...endpoint };
+  if (opts.signal?.aborted) return { error: 'Cancelled' };
   // A server that runs a single model needs no choice in Settings.
   if (!chosen.model) {
     const found = await listLocalModels(chosen, opts);
