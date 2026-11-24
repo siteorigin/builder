@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { desktopInMain, findMenuNode, invokeMenuInMain, menuTreeInMain } from '../driver/desktop.ts';
 import { launchApp } from '../driver/session.ts';
 
 /** The primary shortcut modifier: Cmd on macOS, Ctrl on Windows and Linux. */
@@ -112,4 +113,55 @@ export async function knownFailure(issue, check) {
   } catch (e) {
     console.log(`\n!! KNOWN FAILURE (${issue}): ${String(e.message).split('\n')[0]}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// The desktop around the editor (#494): an automated app answers every native chooser from the answers a script set
+// (src/main/headless-desktop.ts) and records links, reveals and menu choices instead of acting on the desktop.
+// ---------------------------------------------------------------------------
+
+/**
+ * Answer the next native choosers, in order, replacing any answers still waiting ([] clears them). Each answer is
+ * { dialog: 'open' | 'save' | 'message', title?, message?, selection?, ... } with one of { cancel: true }, { paths }
+ * (open), { path, overwrite? } (save) or { button } (message), paths absolute. A chooser with no answer meant for it is
+ * closed without a choice and recorded. Returns the answers' ids.
+ */
+export const answerChoosers = (app, answers) => app.evaluate(desktopInMain, { op: 'setAnswers', answers, request: null });
+
+/** What happened at the desktop after the cursor `after`: { entries, next, dropped, pending }. */
+export const desktopEvents = (app, after = 0) => app.evaluate(desktopInMain, { op: 'events', after, limit: 1000 });
+
+/** The choosers shown after the cursor `after`, oldest first. */
+export const choosersShown = async (app, after = 0) => (await desktopEvents(app, after)).entries.filter((e) => e.type === 'chooser');
+
+/** The links, reveals and opened paths the app handed to the desktop after the cursor `after`. */
+export const desktopIntents = async (app, after = 0) => (await desktopEvents(app, after)).entries.filter((e) => e.type === 'intent');
+
+/** The current end of the desktop record: a cursor to read what happens next from. */
+export const desktopCursor = (app) => app.evaluate(desktopInMain, { op: 'cursor' });
+
+/** The native application menu, as a tree of { label, path, enabled, visible, accelerator, invokable, items }. */
+export const menuTree = (app) => app.evaluate(menuTreeInMain);
+
+/** One menu item by its labels from the menu bar down, or null. */
+export const menuItem = async (app, ...path) => findMenuNode(await menuTree(app), path);
+
+/**
+ * Choose application menu items through their own handlers, one after the other in the same turn of the main process,
+ * for the editor window (or, with none open, for none). Each path is the item's labels from the menu bar down; a
+ * missing, hidden or disabled item is refused, choosing nothing more.
+ */
+export async function chooseMenu(app, ...paths) {
+  const window = await app.evaluate(({ BrowserWindow }) => {
+    const editor = BrowserWindow.getAllWindows().find((w) => {
+      try {
+        const u = new URL(w.webContents.getURL());
+        return !w.isDestroyed() && u.protocol === 'app:' && u.host === 'editor';
+      } catch {
+        return false;
+      }
+    });
+    return editor ? editor.id : null;
+  });
+  return app.evaluate(invokeMenuInMain, { paths, window, request: null });
 }

@@ -476,7 +476,8 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
     },
     events(after = 0, max = 200) {
       const entries = log.filter((e) => e.seq > after).slice(0, Math.max(1, max));
-      return { entries: structuredClone(entries), next: entries.length ? entries[entries.length - 1].seq : after, dropped, pending: structuredClone(queue) };
+      // With nothing after it, the cursor stays (but never runs ahead of what has happened).
+      return { entries: structuredClone(entries), next: entries.length ? entries[entries.length - 1].seq : Math.min(after, seq), dropped, pending: structuredClone(queue) };
     },
     noteMenu(path, window, request = null) {
       return record<MenuEvent>({ type: 'menu', path: [...path], window, request }).seq;

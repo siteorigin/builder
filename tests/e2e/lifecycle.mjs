@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { cpSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MOD, eventually, launch, scratch, step } from './harness.mjs';
+import { MOD, answerChoosers, chooseMenu, eventually, launch, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('lifecycle');
 const dirA = join(WORK, 'sites', 'quayside-studio');
@@ -15,20 +15,8 @@ const dirB = join(WORK, 'sites', 'quayside-studio-b');
 
 let { app, win, errors } = await launch(WORK);
 
-/** Click a native menu item by its label, as choosing it in the menu bar (or its shortcut) does. */
-const menu = (label) =>
-  app.evaluate(({ Menu }, l) => {
-    const find = (items) => {
-      for (const i of items) {
-        if (i.label === l) return i;
-        const f = i.submenu && find(i.submenu.items);
-        if (f) return f;
-      }
-    };
-    const item = find(Menu.getApplicationMenu().items);
-    if (!item) throw new Error(`No menu item ${l}`);
-    item.click();
-  }, label);
+/** Choose a File menu item by its label through its own handler, as the menu bar (or its shortcut) does. */
+const menu = (label) => chooseMenu(app, ['File', label]);
 
 const readJson = (dir, rel) => JSON.parse(readFileSync(join(dir, rel), 'utf8'));
 const homeId = (dir) => readJson(dir, 'siteorigin/site.json').homePageId;
@@ -144,8 +132,9 @@ assert.equal(homeDoc(dirB).title, homeTitle, 'the saved title is unchanged');
 
 /** The folder of the project open now, as the app names it. */
 const openDir = () => win.evaluate(() => window.builder.project.snapshot().then((s) => s?.dir ?? null));
-/** The native folder picker answers with `dir` (no dialog is shown). */
-const pickFolder = (dir) => app.evaluate(({ dialog }, d) => void (dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [d] })), dir);
+/** The next Open Project picker answers with the project in `dir`: macOS's picker takes the folder, the others its
+ *  manifest. One picker each: every open that shows one answers it again. */
+const pickFolder = (dir) => answerChoosers(app, [{ dialog: 'open', title: 'Open a SiteOrigin Builder project', paths: [process.platform === 'darwin' ? dir : join(dir, 'siteorigin.project.json')] }]);
 /** The open project is still the one being edited: no Welcome, the same project, the hero still selected. */
 async function stillEditing(dir, text, what) {
   assert.equal(await win.locator('.welcome').count(), 0, `${what}: Welcome never appeared`);
@@ -189,6 +178,7 @@ const damaged = (dir) => win.locator('.toast.error', { hasText: `"${realpathSync
 await damaged(dirB).waitFor();
 await stillEditing(dirA, 'Kept through New Project', 'after a damaged project failed to open');
 writeFileSync(manifestB, goodManifest);
+await pickFolder(dirB);
 await menu('Open Project…');
 await eventually(async () => assert.equal(await openDir(), realpathSync(dirB), 'the repaired project opens'));
 await win.waitForSelector('.editor');
@@ -206,6 +196,7 @@ await openButton.click();
 await damaged(dirC).waitFor();
 assert.equal(await win.locator('.welcome').count(), 1, 'Welcome is still shown');
 writeFileSync(manifestC, goodC);
+await pickFolder(dirC);
 await openButton.click();
 await trustPrompt.waitFor();
 await trustPrompt.getByRole('button', { name: 'Trust and open' }).click();

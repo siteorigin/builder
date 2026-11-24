@@ -137,7 +137,7 @@ export function findMenuNode(tree: MenuNode[], path: string[]): MenuNode | null 
 // Chooser answers and the desktop record
 // ---------------------------------------------------------------------------
 
-export type DesktopCall = { op: 'setAnswers'; answers: unknown[]; request: string | null } | { op: 'events'; after?: number; limit?: number } | { op: 'installed' };
+export type DesktopCall = { op: 'setAnswers'; answers: unknown[]; request: string | null } | { op: 'events'; after?: number; limit?: number } | { op: 'cursor' } | { op: 'installed' };
 
 /** Talk to the app's chooser fixtures. Runs in the main process. */
 export function desktopInMain(_electron: unknown, call: DesktopCall): any {
@@ -145,6 +145,7 @@ export function desktopInMain(_electron: unknown, call: DesktopCall): any {
   if (call.op === 'installed') return !!fixtures;
   if (!fixtures) throw new Error('[not-installed] This build answers no choosers: it predates desktop fixtures, or was not launched by a test. Rebuild it (npm run build).');
   if (call.op === 'setAnswers') return fixtures.setAnswers(call.answers, { request: call.request });
+  if (call.op === 'cursor') return fixtures.seq;
   return fixtures.events(call.after ?? 0, call.limit ?? 200);
 }
 
