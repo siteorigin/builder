@@ -39,8 +39,8 @@ export const TOOL_ARGS = {
   read_component: z.object({
     componentId: z.string().optional(),
     definitionId: z.string().optional(),
-    structure: z.boolean().optional().describe('Also its design: nodes, styles and tokens, bindings, parts, variant rules.'),
-    offset: z.number().int().min(0).optional().describe('With structure: the next a previous read returned.')
+    structure: z.boolean().optional().describe('Its design too.'),
+    offset: z.number().int().min(0).optional().describe('With structure: next, from the last read.')
   }),
   search_assets: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }),
   apply_operations: z.object({
@@ -84,18 +84,19 @@ export const TOOL_ARGS = {
 
 export type ToolName = keyof typeof TOOL_ARGS;
 
+const CONTRACT_READ = 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.';
+
 const DESCRIPTIONS: Record<ToolName, string> = {
   read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, or the theme catalogue: every component with its compact property signature, style parts and variants, plus the valid icon names.',
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
   inspect_element:
     'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree. With prop, read one content field whole instead (long rich text as Markdown), a part at a time: call again with the offset each part returns until next is null.',
-  search_components: 'Search the theme catalogue and the project\'s own components by keywords. Returns componentIds (theme) and definitionIds (project) you can insert with node.insert, or read with read_component.',
-  read_component:
-    'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component. With structure, also its design as stored (nodes in order, styles with tokens and phone/tablet/desktop rules, $prop and $item bindings, parts, variant rules by node, tokens used), a part at a time: call again with the offset it returns until next is null.',
+  search_components: 'Search the theme catalogue and project components by keywords. Returns componentIds or definitionIds you can insert with node.insert.',
+  read_component: `${CONTRACT_READ} structure adds how its design is built.`,
   search_assets: 'List imported images by name and description, with the assetId that identifies each one (two images can share a name). You cannot see image contents.',
   apply_operations:
     'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
-  read_source: 'Read the Svelte source of a code component; project code components can be patched. A managed component has no source to read: read_component with structure shows its design.',
+  read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout:
     'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). No screenshots.',
@@ -364,7 +365,7 @@ export function toolsForRun(opts: {
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
   // do (styling every card of a selected one, say).
   const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
-  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations') : general)], mode: 'site', focused };
+  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations').map(contractRead) : general)], mode: 'site', focused };
 }
 
 /**
@@ -385,6 +386,17 @@ export function searchProjectComponents(state: ProjectState, query: string, limi
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((x) => x.d);
+}
+
+/**
+ * read_component as a small model building pages has it: the contract alone. A design is read to build a component,
+ * which a small model does only when asked to (task "component"), so its window keeps the room.
+ */
+function contractRead(t: ToolDefinition): ToolDefinition {
+  if (t.name !== 'read_component') return t;
+  const schema = z.toJSONSchema(TOOL_ARGS.read_component.omit({ structure: true, offset: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { ...t, description: CONTRACT_READ, parameters: schema };
 }
 
 /** An image in the project's library, or null for an unknown ID or a font. */
