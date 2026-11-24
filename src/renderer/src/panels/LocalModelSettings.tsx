@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronRight, RefreshCw, TriangleAlert } from 'lucide-react';
 import type { AppSettings, SettingsPatch } from '@shared/api';
-import { checkLocalBaseURL, LOCAL_CONTEXT_MAX, LOCAL_CONTEXT_MIN, LOCAL_PRESETS, parseContextSize, type LocalToolMode } from '@shared/local';
-import { api, setState } from '../store';
+import { checkLocalBaseURL, LOCAL_CONTEXT_MAX, LOCAL_CONTEXT_MIN, LOCAL_PRESETS, localServerKey, parseContextSize, type LocalToolMode } from '@shared/local';
+import { api, refreshProviders } from '../store';
 import { SwitchRow } from '../components/ui';
 
 /**
@@ -144,6 +144,8 @@ export function LocalModelSettings({
   const model = settings.ai.models.local;
   const [draft, setDraft] = useState(local.baseURL);
   const [models, setModels] = useState<string[]>([]);
+  // The server the model list came from: a list is only ever shown, or chosen from, for that server.
+  const [listedFor, setListedFor] = useState<string | null>(null);
   const [reach, setReach] = useState<{ ok: boolean; message?: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -153,7 +155,6 @@ export function LocalModelSettings({
   // Whether any server has answered while this panel was open, or the user has asked for a check: after either,
   // a failure is a failure, never a first visit.
   const answered = useRef(false);
-  const statusRequest = useRef(0);
   // Whether the field holds something the user typed, as opposed to the saved address.
   const edited = useRef(false);
   // The address most recently sent to be saved, which can be ahead of the settings on screen.
@@ -177,24 +178,24 @@ export function LocalModelSettings({
     request.current = id;
     setLoading(true);
     // A failed request settles like any other answer, so the panel never stays on "Checking".
-    const r = await api.ai.localModels().catch((e: unknown) => ({ ok: false, models: [] as string[], message: e instanceof Error ? e.message : 'Could not reach the server.' }));
+    const r = await api.ai.localModels().catch((e: unknown) => ({ ok: false, models: [] as string[], message: e instanceof Error ? e.message : 'Could not reach the server.', server: undefined }));
     // A slower answer from the previous address must not replace this one.
     if (id !== request.current) return id;
     setLoading(false);
     setModels(r.models);
+    // The main process says which saved server it asked, which may be newer than the settings on screen.
+    setListedFor(r.server ? localServerKey(r.server) : null);
     setReach({ ok: r.ok, message: r.message ?? 'Could not reach the server.' });
     setReachedFor(forURL);
     if (r.ok) answered.current = true;
     setRevision(id);
+    // The provider status carries what the list showed, so Chat knows a server is down.
+    void refreshProviders();
     return id;
   }, []);
 
   useEffect(() => {
     void refresh();
-    const id = ++statusRequest.current;
-    void api.ai.providers().then((providers) => {
-      if (id === statusRequest.current) setState({ providers });
-    });
   }, [local.baseURL, local.allowRemote, keyRevision, refresh]);
 
   useEffect(() => {
@@ -235,7 +236,7 @@ export function LocalModelSettings({
       if (!next.ok || next.url === submitted.current || newRemoteHost(next, p.remoteHost)) return;
       submitted.current = next.url;
       // Chat shows the privacy note from the provider status, and this panel is gone once Settings closes.
-      void update({ ai: { local: { baseURL: next.url } } }).then(() => api.ai.providers().then((providers) => setState({ providers })));
+      void update({ ai: { local: { baseURL: next.url } } }).then(() => refreshProviders());
     },
     [update]
   );
@@ -258,6 +259,9 @@ export function LocalModelSettings({
     }
     void update({ ai: { local: { allowRemote: allow, ...(allow && next.ok ? { baseURL: next.url } : {}) } } });
   };
+  // A list from another server (the one before a switch, while this one is still being asked) is never offered:
+  // until the main process says it asked the saved server, the list is still being checked.
+  const current = !loading && !!listedFor && listedFor === localServerKey(local.baseURL);
   const missing = !!model && !models.includes(model);
   const shownWindow = local.contextWindow === null ? '' : String(local.contextWindow);
   const [windowDraft, setWindowDraft] = useState(shownWindow);
@@ -291,6 +295,10 @@ export function LocalModelSettings({
     [update]
   );
   const url = saved.ok ? saved.url : '';
+  // The choice is kept for the server whose models are listed, and each server keeps its own.
+  const chooseModel = (id: string) => {
+    if (current && listedFor) void update({ ai: { local: { modelsByServer: { [listedFor]: id } } } });
+  };
   // Results only ever describe the saved address, so a different one in the field holds them back.
   const revert = () => {
     edited.current = false;
@@ -314,7 +322,7 @@ export function LocalModelSettings({
     ? { ...base, phase: 'invalid' }
     : check.url !== local.baseURL
       ? { ...base, phase: 'pending' }
-      : loading || !reach || reachedFor !== local.baseURL
+      : loading || !reach || reachedFor !== local.baseURL || (reach.ok && !current)
         ? { ...base, phase: 'checking' }
         : !reach.ok
           ? { ...base, phase: 'unreachable', reason: failureReason(reach.message ?? ''), message: reach.message ?? 'Could not reach the server.', firstRun }
@@ -427,7 +435,7 @@ export function LocalModelSettings({
       )}
       <StackedRow controlId="settings-local-model" label="Model">
         <div className="row">
-          <select id="settings-local-model" className="select grow" disabled={!ready} value={ready || showSaved ? model : ''} onChange={(e) => void update({ ai: { models: { ...settings.ai.models, local: e.target.value } } })}>
+          <select id="settings-local-model" className="select grow" disabled={!ready} value={ready || showSaved ? model : ''} onChange={(e) => chooseModel(e.target.value)}>
             <option value="">{placeholder}</option>
             {showSaved && (
               <option value={model}>

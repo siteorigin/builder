@@ -3,7 +3,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatMessage } from '@shared/api';
 import type { InstanceNode, ListItem } from '@shared/types';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId } from '../../src/renderer/src/lib/result';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId } from '../../src/renderer/src/lib/result';
 
 describe('AI result card', () => {
   it('counts only passing checks as passed, keeping unchecked ones apart from site problems', () => {
@@ -123,6 +123,29 @@ describe('continuing an unfinished request (#88)', () => {
     // A font, or an ID the library never had, is not an image either.
     expect(continueContext(user('u', { ...ctx, assetIds: [nook.id, font.id] }), both, 1280)).toEqual({ error: 'An image attached to that request is no longer in Assets. Attach the images you want, then send "Continue".' });
     expect(continueContext(user('u', { ...ctx, assetIds: ['a_unknown'] }), both, 1280)).toEqual({ error: 'An image attached to that request is no longer in Assets. Attach the images you want, then send "Continue".' });
+  });
+});
+
+describe('trying a request again after the AI setup failed (#83)', () => {
+  const user = (id: string, context?: ChatMessage['context']): ChatMessage => ({ id, role: 'user', text: 'Rename the site', time: '', ...(context ? { context } : {}) });
+  const failed = (id: string, result: Partial<NonNullable<ChatMessage['result']>> = {}): ChatMessage => ({ id, role: 'assistant', text: '', time: '', result: { status: 'failed', summary: '', changes: [], validation: [], canUndo: false, ...result } });
+
+  it('offers Try again only on the latest result, and only when the setup failed rather than the request', () => {
+    expect(retryableId([user('u1'), failed('a1', { repair: 'settings' })])).toBe('a1');
+    expect(retryableId([user('u1'), failed('a1', { repair: 'key' })])).toBe('a1');
+    // A request that failed on its own (its changes had errors, say) is edited first, not sent again unchanged.
+    expect(retryableId([user('u1'), failed('a1')])).toBeUndefined();
+    expect(retryableId([user('u1'), failed('a1', { repair: 'settings', status: 'cancelled' })])).toBeUndefined();
+    expect(retryableId([user('u1'), failed('a1', { repair: 'settings' }), user('u2'), failed('a2', { status: 'completed' })])).toBeUndefined();
+    expect(retryableId([user('u1'), failed('a1', { repair: 'settings' }), user('u2')])).toBeUndefined();
+  });
+
+  it('sends it with the original target, and says to edit it when that target has gone', () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = state.site.homePageId;
+    const ctx = { pageId: home, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 390, mode: 'ask' as const };
+    expect(continueContext(user('u', ctx), state, 1280, 'use Edit and try again')).toEqual({ ctx });
+    expect(continueContext(user('u', { ...ctx, pageId: 'pg_gone', pageTitle: 'Old page' }), state, 1280, 'use Edit and try again')).toEqual({ error: 'Old page is no longer in the site. Choose what to change, then use Edit and try again.' });
   });
 });
 

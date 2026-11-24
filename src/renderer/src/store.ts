@@ -866,6 +866,30 @@ async function checkAndApply(c: CheckedCommit, operations: EditOperation[], labe
   }
 }
 
+let providersRequest = 0;
+
+/**
+ * Read the providers' status again (what is set up, and what the local server last showed). Only the latest
+ * request's answer is kept, whichever part of the app asked; a failure leaves the status as it was.
+ */
+/** Providers' status as an answer just gave it: kept, and any older read still under way is dropped. */
+export function setProviders(providers: ProviderStatus[]) {
+  providersRequest++;
+  setState({ providers });
+}
+
+export function refreshProviders(): Promise<void> {
+  const id = ++providersRequest;
+  return Promise.resolve()
+    .then(() => api.ai.providers())
+    .then(
+      (providers) => {
+        if (id === providersRequest) setState({ providers });
+      },
+      () => undefined
+    );
+}
+
 export function applyAiEvent(e: AiEvent) {
   const s = getState();
   if (e.kind === 'status') {
@@ -878,6 +902,8 @@ export function applyAiEvent(e: AiEvent) {
         ? { runStatus: null, activeRunId: null, runMode: null, ...(ask ? {} : { aiOutcome: { run: e.status!, runId: e.runId } }) }
         : { runStatus: e.status!, activeRunId: e.runId, runMode: ask ? 'ask' : 'edit' }
     );
+    // What the request learned about a local server (it answered, or it is down) is what Chat shows next.
+    if (terminal && getState().settings?.ai.provider === 'local') void refreshProviders();
     return;
   }
   const conv = s.conversation;

@@ -1,5 +1,6 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { newId } from '@shared/ids';
+import type { LocalCheck } from '@shared/api';
 import { checkLocalBaseURL, localContextWindow, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall, ToolDefinition } from './types';
 import type { JsonSchema } from './strict-schema';
@@ -15,6 +16,11 @@ export const IDLE_TIMEOUT_MS = 30_000;
 /** After the finish reason only a usage chunk can follow, and not every server closes the stream promptly. */
 const FINISH_GRACE_MS = 2_000;
 const DISCOVERY_TIMEOUT_MS = 5_000;
+/** A connection test waits this long for the model's first token: long enough for a small model to load. */
+export const TEST_FIRST_TOKEN_MS = 60_000;
+/** And ends within this however slowly the reply comes, including any request sent again. */
+export const TEST_DEADLINE_MS = 90_000;
+const TEST_STOPPED = 'The test was stopped.';
 /** Reading the loaded context size is optional, so a server that is slow to report it never holds up a request. */
 const CONTEXT_DISCOVERY_MS = 1_000;
 
@@ -56,6 +62,12 @@ export interface LocalAdapterOptions {
   lookup?: (host: string) => Promise<Array<{ address: string }>>;
   /** The loaded context size the server reported before the run, from `discoverLocalContext`. */
   context?: LocalContext;
+  /**
+   * Told whether a request showed the server and model can chat: a finished reply, or a failure that says the
+   * setup is wrong (nothing answered, the key or the request was refused). A busy server or a model's odd reply
+   * says nothing about the setup and is not reported.
+   */
+  onCheck?: (check: LocalCheck) => void;
 }
 
 const LOOKUP_TIMEOUT_MS = 2_000;
@@ -90,7 +102,8 @@ async function localhostProblem(url: string, lookup: LocalAdapterOptions['lookup
   }
 }
 
-type LocalError = { code: ModelErrorCode; message: string; retryAfterMs?: number; context?: ReturnType<typeof contextOverflow> };
+/** `setup`: the server or model is not usable as set up, rather than this request failing (see `setupStage`). */
+type LocalError = { code: ModelErrorCode; message: string; retryAfterMs?: number; context?: ReturnType<typeof contextOverflow>; setup?: 'server' | 'chat' };
 type TurnResult =
   | { kind: 'done'; event: Extract<ModelEvent, { type: 'done' }> }
   /** `streamed`: part of the reply had already arrived, so asking again would show it twice. */
@@ -167,6 +180,15 @@ function retriesFullSchema(text: string, param: string): boolean {
 const CONTEXT_FULL = /context (size|length|window)|exceeds? .*context|n_ctx|too many tokens|prompt is too long/i;
 
 const contextMessage = "The request is too long for this model's context window.";
+const LOADING = 'The local model is still loading.';
+
+/**
+ * Whether the server's refusal of a chat request is the setup's (the model, or the key it needs) or this request's: a
+ * busy or loading server will answer later, and a conversation or request too large for the model is the request's.
+ */
+function setupStage(status: number, error: LocalError): 'chat' | undefined {
+  return error.code === 'rate_limit' || error.message === LOADING || error.message === contextMessage || status === 413 ? undefined : 'chat';
+}
 
 const count = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined);
 const first = (text: string, patterns: RegExp[]) => {
@@ -200,7 +222,7 @@ function httpError(status: number, body: string, model: string, retryAfterMs?: n
   if (status === 404) return { code: 'invalid_request', message: message ? `The local server could not use ${model}: ${message}` : `The local server has no model called ${model}.` };
   if (status === 429) return { code: 'rate_limit', message: 'The local server is busy.', retryAfterMs };
   // llama-server answers 503 while the model is still loading.
-  if (status >= 500) return { code: 'overloaded', message: /loading/i.test(message) ? 'The local model is still loading.' : `The local server reported an error${message ? `: ${message}` : '.'}`, retryAfterMs };
+  if (status >= 500) return { code: 'overloaded', message: /loading/i.test(message) ? LOADING : `The local server reported an error${message ? `: ${message}` : '.'}`, retryAfterMs };
   return { code: 'invalid_request', message: message || `The local server answered with status ${status}.` };
 }
 
@@ -208,10 +230,10 @@ function httpError(status: number, body: string, model: string, retryAfterMs?: n
 function connectionError(e: unknown, url: string): LocalError {
   const err = e as { message?: string; cause?: { code?: string; message?: string } };
   const text = `${err?.cause?.code ?? ''} ${err?.cause?.message ?? ''} ${err?.message ?? ''}`;
-  if (/redirect/i.test(text)) return { code: 'invalid_request', message: `The server at ${url} tried to redirect the request, so nothing was sent on.` };
+  if (/redirect/i.test(text)) return { code: 'invalid_request', message: `The server at ${url} tried to redirect the request, so nothing was sent on.`, setup: 'server' };
   // A connection that was made and then lost can come back, unlike a server that is not there.
   if (/ECONNRESET|EPIPE|UND_ERR_SOCKET/.test(err?.cause?.code ?? '')) return { code: 'network', message: 'The local server closed the connection before the response finished.' };
-  if (/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|EADDRNOTAVAIL|ENETUNREACH|fetch failed/i.test(text)) return { code: 'unknown', message: `Could not connect to a model server at ${url}. Is your local server running?` };
+  if (/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|EADDRNOTAVAIL|ENETUNREACH|fetch failed/i.test(text)) return { code: 'unreachable', message: `Could not connect to a model server at ${url}. Is your local server running?`, setup: 'server' };
   return { code: 'network', message: 'The local server closed the connection before the response finished.' };
 }
 
@@ -595,8 +617,14 @@ export class LocalAdapter implements AgentModelAdapter {
   }
 
   async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+    /** The error a turn ends with. A failure of the setup rather than of this request is reported too. */
+    const fail = (error: LocalError, retried = false) => {
+      const event = this.errorEvent(error, retried);
+      if (event.setup) this.opts.onCheck?.({ ok: false, stage: event.setup, message: event.message });
+      return event;
+    };
     if (!this.url.ok) {
-      yield { type: 'error', code: 'invalid_request', message: this.url.message };
+      yield fail({ code: 'invalid_request', message: this.url.message, setup: 'server' });
       return;
     }
     // A key saved before cloud keys were refused is still never sent.
@@ -606,7 +634,7 @@ export class LocalAdapter implements AgentModelAdapter {
       return;
     }
     if (keyProblem) {
-      yield { type: 'error', code: 'invalid_request', message: keyProblem };
+      yield fail({ code: 'invalid_request', message: keyProblem, setup: 'server' });
       return;
     }
     // The code fixer sends no tools and expects a plain text answer.
@@ -620,6 +648,7 @@ export class LocalAdapter implements AgentModelAdapter {
       const result: TurnResult = yield* this.readTurn(`${this.url.url}/chat/completions`, body, req.model, signal, constrained, !shownStatus);
       if (constrained) shownStatus = true;
       if (result.kind === 'done') {
+        this.opts.onCheck?.({ ok: true });
         yield result.event;
         return;
       }
@@ -636,7 +665,7 @@ export class LocalAdapter implements AgentModelAdapter {
             continue;
           }
         }
-        yield this.errorEvent(result.error, corrections.length > 0);
+        yield fail(result.error, corrections.length > 0);
         return;
       }
       if (result.kind === 'http') {
@@ -653,7 +682,7 @@ export class LocalAdapter implements AgentModelAdapter {
             continue;
           }
         }
-        yield this.errorEvent(error, corrections.length > 0);
+        yield fail({ ...error, setup: setupStage(result.status, error) }, corrections.length > 0);
         return;
       }
       // The reply could not be read as an action: ask again, without involving the tool loop.
@@ -698,9 +727,16 @@ export class LocalAdapter implements AgentModelAdapter {
   private streamError(error: unknown, model: string): LocalError {
     const body = JSON.stringify({ error });
     const status = (error as { code?: unknown } | null)?.code;
-    if (typeof status === 'number' && status >= 400) return httpError(status, body, model, undefined, this.endpoint.apiKey);
+    if (typeof status === 'number' && status >= 400) {
+      const refused = httpError(status, body, model, undefined, this.endpoint.apiKey);
+      return { ...refused, setup: setupStage(status, refused) };
+    }
     const message = serverMessage(body, this.endpoint.apiKey);
-    return CONTEXT_FULL.test(message) ? { code: 'invalid_request', message: contextMessage, context: contextOverflow(body) } : { code: 'unknown', message: `The local server reported an error: ${message}` };
+    if (CONTEXT_FULL.test(message)) return { code: 'invalid_request', message: contextMessage, context: contextOverflow(body) };
+    // A refusal named in words ("model_not_found") is the setup's, as the same refusal by status would be.
+    const named = error && typeof error === 'object' ? [(error as { code?: unknown }).code, (error as { type?: unknown }).type].find((v) => typeof v === 'string') : undefined;
+    const setup = typeof named === 'string' && /not_?found|unsupported|unauthori[sz]ed|forbidden|permission/i.test(named) ? ('chat' as const) : undefined;
+    return { code: 'unknown', message: `The local server reported an error: ${message}`, ...(setup ? { setup } : {}) };
   }
 
   private async *readTurn(url: string, body: Record<string, unknown>, model: string, signal: AbortSignal, constrained: boolean, showStatus: boolean): AsyncGenerator<ModelEvent, TurnResult> {
@@ -932,30 +968,90 @@ export async function discoverLocalContext(endpoint: Pick<LocalEndpoint, 'baseUR
  * The adapter for a run against the saved local server: the model the author chose, or the server's only model,
  * and the context size the server reports for it.
  */
-export async function openLocalAdapter(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<{ adapter: LocalAdapter; model: string } | { error: string }> {
+export async function openLocalAdapter(
+  endpoint: LocalEndpoint,
+  opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup' | 'onCheck'> & { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<{ adapter: LocalAdapter; model: string } | { error: string; setup?: true }> {
   const chosen = { ...endpoint };
   if (opts.signal?.aborted) return { error: 'Cancelled' };
   // A server that runs a single model needs no choice in Settings.
   if (!chosen.model) {
     const found = await listLocalModels(chosen, opts);
-    if (!found.ok) return { error: found.message ?? 'Could not reach the local server.' };
-    if (!found.models.length) return { error: 'The local server has no models loaded.' };
+    if (opts.signal?.aborted) return { error: 'Cancelled' };
+    // Nothing answered, or nothing is loaded: the setup's to fix, and what the request showed about it.
+    const problem = listedProblem(found, '');
+    if (problem) {
+      opts.onCheck?.({ ok: false, stage: 'server', message: problem });
+      return { error: problem, setup: true };
+    }
     chosen.model = found.models[0];
   }
   // The loaded context size decides the tools and the reply budget, so it is read before the first request.
   const context = await discoverLocalContext(chosen, opts);
-  return { adapter: new LocalAdapter(chosen, { fetch: opts.fetch, lookup: opts.lookup, context }), model: chosen.model };
+  return { adapter: new LocalAdapter(chosen, { fetch: opts.fetch, lookup: opts.lookup, context, onCheck: opts.onCheck }), model: chosen.model };
 }
 
-/** Check that the server answers and offers the model. Nothing is generated, so this is quick. */
-export async function testLocal(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; message: string }> {
+/** Why a server's model list rules out using `model` ('' for its first model), or null when it does not. */
+export function listedProblem(r: { ok: boolean; models: string[]; message?: string }, model: string): string | null {
+  if (!r.ok) return r.message ?? 'Could not reach the local server.';
+  if (!r.models.length) return 'Connected, but the server has no models loaded.';
+  if (model && !r.models.includes(model)) return `Connected, but the server does not list ${model}. Choose one of its models.`;
+  return null;
+}
+
+/**
+ * Check that the server answers, lists the model, and that the model answers a short chat request. Being listed is
+ * not enough: a server can list a model it cannot chat with (an embedding model, or one it fails to load), so only
+ * a reply passes. `stage` says which step failed: reaching the server and finding the model, or the chat request.
+ * `model` is the one tested, the first listed when none is chosen. `signal` stops it, before anything more is sent.
+ */
+export async function testLocal(
+  endpoint: LocalEndpoint,
+  opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup' | 'firstTokenTimeoutMs'> & { timeoutMs?: number; deadlineMs?: number; signal?: AbortSignal } = {}
+): Promise<{ ok: boolean; message: string; stage?: 'server' | 'chat'; model?: string }> {
   const r = await listLocalModels(endpoint, opts);
-  if (!r.ok) return { ok: false, message: r.message ?? 'Could not reach the local server.' };
-  if (!r.models.length) return { ok: false, message: 'Connected, but the server has no models loaded.' };
-  if (endpoint.model && !r.models.includes(endpoint.model)) return { ok: false, message: `Connected, but the server does not list ${endpoint.model}. Choose one of its models.` };
+  if (opts.signal?.aborted) return { ok: false, stage: 'server', message: TEST_STOPPED };
+  const problem = listedProblem(r, endpoint.model);
+  if (problem) return { ok: false, stage: 'server', message: problem };
   const model = endpoint.model || r.models[0];
-  const { windowTokens } = await discoverLocalContext({ ...endpoint, model }, opts);
-  if (!windowTokens) return { ok: true, message: `Connected. ${model} is available.` };
+  const deadlineMs = opts.deadlineMs ?? TEST_DEADLINE_MS;
+  const ctl = new AbortController();
+  let late = false;
+  const timer = setTimeout(() => {
+    late = true;
+    ctl.abort();
+  }, deadlineMs);
+  const stop = () => ctl.abort();
+  opts.signal?.addEventListener('abort', stop, { once: true });
+  let reply: Extract<ModelEvent, { type: 'done' }> | null = null;
+  let failure = '';
+  try {
+    // Plain chat with no tools, the same request path a conversation takes, with a budget only for a word or two.
+    const adapter = new LocalAdapter({ ...endpoint, model }, { fetch: opts.fetch, lookup: opts.lookup, firstTokenTimeoutMs: Math.min(opts.firstTokenTimeoutMs ?? TEST_FIRST_TOKEN_MS, deadlineMs) });
+    for await (const ev of adapter.streamTurn({ model, system: 'This is a connection test.', items: [{ kind: 'user', text: 'Reply with OK.' }], tools: [], maxOutputTokens: 16 }, ctl.signal)) {
+      if (ev.type === 'done') reply = ev;
+      else if (ev.type === 'error') failure = ev.message;
+    }
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', stop);
+  }
+  if (opts.signal?.aborted) return { ok: false, stage: 'server', model, message: TEST_STOPPED };
+  const failed = (why: string) => ({ ok: false, stage: 'chat' as const, model, message: `The server lists ${model}, but a test chat request failed: ${why}` });
+  if (late) return failed(`the model did not finish a short reply within ${Math.round(deadlineMs / 1000)} seconds.`);
+  if (!reply) return failed(failure || 'the model did not answer.');
+  if (reply.stopReason === 'refusal') return failed('the model declined it.');
+  // A reply cut off at the small budget still came from the model: a reasoning model may spend all of it thinking.
+  const replied = `Connected. ${model} ${reply.text.trim() ? 'answered' : 'started answering'} a test chat request`;
+  const discovered = await discoverLocalContext({ ...endpoint, model }, { fetch: opts.fetch, lookup: opts.lookup, signal: opts.signal });
+  if (opts.signal?.aborted) return { ok: false, stage: 'server', model, message: TEST_STOPPED };
+  // The size a run will use: a size set in Settings below the loaded one holds the run to it.
+  const set = localContextWindow(endpoint.contextWindow ?? null);
+  const known = [set, discovered.windowTokens].filter((n): n is number => !!n);
+  const windowTokens = known.length ? Math.min(...known) : undefined;
+  if (!windowTokens) return { ok: true, model, message: `${replied}.` };
+  const size = windowTokens.toLocaleString('en-US');
+  const held = set === windowTokens && (!discovered.windowTokens || set < discovered.windowTokens);
   const short = windowTokens < WORKING_WINDOW_TOKENS ? ` The assistant works best with ${WORKING_WINDOW_TOKENS.toLocaleString('en-US')} tokens or more, so long requests may not fit.` : '';
-  return { ok: true, message: `Connected. ${model} is available, loaded with a ${windowTokens.toLocaleString('en-US')}-token context.${short}` };
+  return { ok: true, model, message: `${replied}, ${held ? `held to the ${size}-token context set in Settings` : `loaded with a ${size}-token context`}.${short}` };
 }

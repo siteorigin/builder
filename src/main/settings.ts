@@ -1,12 +1,12 @@
 import { app } from 'electron';
 import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import type { AppSettings, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
+import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
 import { atomicWrite } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
 import type { LocalEndpoint } from '@agent/local';
-import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS, localContextWindow, localKeyProblem } from '@shared/local';
+import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS, localContextWindow, localKeyProblem, localModelFor, localServerKey, type LocalProviderSettings } from '@shared/local';
 
 interface SettingsFile {
   settings: AppSettings;
@@ -32,16 +32,53 @@ const DEFAULTS: SettingsFile = {
 };
 
 let cache: SettingsFile | null = null;
+/**
+ * What this app session last learned about each local server and the model chosen on it ('' for its first model),
+ * with the model a request actually used (`resolved`). Kept in memory only: a server that was down yesterday may be
+ * running now. `checkEpoch` moves when the server key changes, so a request made with the old key records nothing.
+ */
+const localChecks = new Map<string, { check: LocalCheck; resolved: string }>();
+let checkEpoch = 0;
+const checkKey = (server: string, model: string) => `${server}\n${model}`;
+
 /** The settings file was there but could not be read at start: what is in memory may not be what is on disk. */
 let unread = false;
 const file = () => join(app.getPath('userData'), 'settings.json');
+
+/**
+ * Per-server choices as read from disk, each under its normalized address. Only models given as text are kept,
+ * and an empty one is the same as none: the server's first model.
+ */
+function modelMap(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+  for (const [server, id] of Object.entries(value)) {
+    const key = localServerKey(server);
+    if (key && typeof id === 'string' && id) out[key] = id;
+  }
+  return out;
+}
+
+/**
+ * The local model in `ai.models.local` is always the one chosen for the saved server, read from the per-server
+ * choices, so everything that reads it (chat, the connection test, the composer) follows a change of server.
+ */
+function withLocalModel(ai: AppSettings['ai']): AppSettings['ai'] {
+  return { ...ai, models: { ...ai.models, local: localModelFor(ai.local) } };
+}
 
 export async function loadSettings(): Promise<SettingsFile> {
   if (cache) return cache;
   try {
     const raw = JSON.parse(await fs.readFile(file(), 'utf8')) as Partial<SettingsFile>;
+    const rawLocal: Partial<LocalProviderSettings> | undefined = raw.settings?.ai?.local;
+    const local = { ...DEFAULTS.settings.ai.local, ...rawLocal, modelsByServer: modelMap(rawLocal?.modelsByServer) };
+    // Settings from before models were kept per server hold one local model, chosen for the server saved with it.
+    const legacy = raw.settings?.ai?.models?.local;
+    const legacyServer = localServerKey(local.baseURL);
+    if (rawLocal?.modelsByServer === undefined && typeof legacy === 'string' && legacy && legacyServer) local.modelsByServer = { [legacyServer]: legacy };
     cache = {
-      settings: { ...DEFAULTS.settings, ...raw.settings, ai: { ...DEFAULTS.settings.ai, ...raw.settings?.ai, models: { ...DEFAULTS.settings.ai.models, ...raw.settings?.ai?.models }, local: { ...DEFAULTS.settings.ai.local, ...raw.settings?.ai?.local } } },
+      settings: { ...DEFAULTS.settings, ...raw.settings, ai: withLocalModel({ ...DEFAULTS.settings.ai, ...raw.settings?.ai, models: { ...DEFAULTS.settings.ai.models, ...raw.settings?.ai?.models }, local }) },
       recents: raw.recents ?? [],
       trusted: raw.trusted ?? {}
     };
@@ -69,12 +106,26 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
   const s = await loadSettings();
   // Null clears the context size back to automatic; any other value that is not a usable size is refused, so a
   // bad value never erases the one in use.
-  const local = patch.ai?.local;
-  if (local && 'contextWindow' in local && local.contextWindow !== null && localContextWindow(local.contextWindow) === null) {
-    const { contextWindow: _refused, ...rest } = local;
+  const asked = patch.ai?.local;
+  if (asked && 'contextWindow' in asked && asked.contextWindow !== null && localContextWindow(asked.contextWindow) === null) {
+    const { contextWindow: _refused, ...rest } = asked;
     patch = { ...patch, ai: { ...patch.ai, local: rest } };
   }
-  s.settings = { ...s.settings, ...patch, ai: { ...s.settings.ai, ...(patch.ai ?? {}), models: { ...s.settings.ai.models, ...(patch.ai?.models ?? {}) }, local: { ...s.settings.ai.local, ...(patch.ai?.local ?? {}) } } };
+  const prev = s.settings.ai;
+  const local = { ...prev.local, ...(patch.ai?.local ?? {}), modelsByServer: { ...prev.local.modelsByServer } };
+  const choose = (server: string | null, id: unknown) => {
+    if (!server) return;
+    if (typeof id === 'string' && id) local.modelsByServer[server] = id;
+    else delete local.modelsByServer[server];
+  };
+  // A local model given on its own is chosen for the server this change leaves saved...
+  const chosen = patch.ai?.models?.local;
+  if (typeof chosen === 'string') choose(localServerKey(local.baseURL), chosen);
+  // ...unless the change names that server's choice itself, which wins. Choices for named servers are added to the
+  // ones kept; an empty one goes back to the server's first model.
+  for (const [server, id] of Object.entries(patch.ai?.local?.modelsByServer ?? {})) choose(localServerKey(server), id);
+  const models = { ...prev.models, ...(patch.ai?.models ?? {}) };
+  s.settings = { ...s.settings, ...patch, ai: withLocalModel({ ...prev, ...(patch.ai ?? {}), models, local }) };
   s.settings.ai.local.contextWindow = localContextWindow(s.settings.ai.local.contextWindow);
   await saveSettings();
   return s.settings;
@@ -155,6 +206,11 @@ export async function setKey(provider: ProviderId, key: string | null) {
   else delete keys[provider];
   // Created with 0600 before the rename, so the keys are never briefly readable by other accounts.
   await atomicWrite(credFile(), JSON.stringify(keys), { mode: 0o600 });
+  // What the server said with the old key says nothing about the new one.
+  if (provider === 'local') {
+    localChecks.clear();
+    checkEpoch++;
+  }
 }
 
 /** Development builds may use provider keys from the environment as a documented override. */
@@ -196,13 +252,40 @@ export async function providerStatuses(): Promise<ProviderStatus[]> {
     source: key?.source ?? null,
     storage: 'local-file',
     models: [],
-    ...(url.ok && url.remote ? { warning: `Project content is sent to ${new URL(url.url).host}, which is not this computer.` } : {})
+    ...(url.ok && url.remote ? { warning: `Project content is sent to ${new URL(url.url).host}, which is not this computer.` } : {}),
+    ...(url.ok && localChecks.has(checkKey(url.url, localModelFor(local))) ? { check: localChecks.get(checkKey(url.url, localModelFor(local)))!.check } : {})
   });
   return out;
 }
 
 /** The saved local server. A model server the app runs itself can supply the same shape without Settings. */
 export async function localEndpoint(): Promise<LocalEndpoint> {
-  const { local, models } = (await loadSettings()).settings.ai;
-  return { ...local, model: models.local, apiKey: (await getKey('local'))?.key ?? null };
+  const { local } = (await loadSettings()).settings.ai;
+  return { baseURL: local.baseURL, allowRemote: local.allowRemote, toolMode: local.toolMode, contextWindow: local.contextWindow, model: localModelFor(local), apiKey: (await getKey('local'))?.key ?? null };
+}
+
+/** Taken before the saved key is read, so a request made with a key replaced meanwhile records nothing. */
+export const localCheckEpoch = () => checkEpoch;
+
+/**
+ * A recorder for what requests to one server and chosen model show. Each server and model keeps its own last check,
+ * so a late answer about one never replaces what is known about another, and a recorder made before the server key
+ * changed records nothing. A model list that reads fine shows the server is there, not that the model can chat: it
+ * clears only a failure to reach the server or find the model on it, and, for the server's first model, a check of a
+ * model that is no longer first. A chat request or a connection test that worked clears any failure.
+ */
+export function localCheckRecorder(at: { baseURL: string; model: string }, epoch = checkEpoch) {
+  const server = localServerKey(at.baseURL);
+  return (check: LocalCheck | { listed: string[] }, resolved = at.model) => {
+    if (!server || epoch !== checkEpoch) return;
+    const key = checkKey(server, at.model);
+    if (!('listed' in check)) {
+      localChecks.set(key, { check, resolved });
+      return;
+    }
+    const known = localChecks.get(key);
+    if (!known) return;
+    const moved = !at.model && known.resolved !== check.listed[0];
+    if (moved || (!known.check.ok && known.check.stage === 'server')) localChecks.delete(key);
+  };
 }

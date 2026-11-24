@@ -6,7 +6,7 @@ import { listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { checkHeld, fieldKey, heldPrompt, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
 import { runPhase, settledState } from '../../src/renderer/src/lib/savestate';
-import { saveStatusAnnouncement as saveAnnouncement } from '../../src/renderer/src/lib/announce';
+import { saveStatusAnnouncement as saveAnnouncement, toolbarAnnouncement, unseenRunAnnouncement } from '../../src/renderer/src/lib/announce';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const about = (s: ProjectState) => Object.values(s.pages).find((p) => p.title === 'About')!.id;
@@ -309,6 +309,29 @@ describe('toolbar save state', () => {
     expect(saveAnnouncement('asking', 'saved', { run: 'cancelled' })).toBe('AI stopped');
     expect(saveAnnouncement('checking', 'saved', { run: 'completed' })).toBe('AI changes saved');
     expect(saveAnnouncement('asking', 'held', { run: 'cancelled', edit: 'held' })).toBe('AI stopped. Your edit was not applied. Review it below');
+  });
+
+  it('announces a request that ended before it began working, which moved no save state (#83)', () => {
+    // Its model could not be reached: the region must not go on saying how the request before it ended.
+    expect(unseenRunAnnouncement({ run: 'failed' })).toBe('AI request failed');
+    expect(unseenRunAnnouncement({ run: 'cancelled' })).toBe('AI stopped');
+    expect(unseenRunAnnouncement({ run: null, edit: 'saved' })).toBeNull();
+    expect(unseenRunAnnouncement(null)).toBeNull();
+
+    // Nothing moved but the request ended: said on its own, in place of how the request before it ended.
+    expect(toolbarAnnouncement('saved', 'saved', 'saved', true, { run: 'failed' })).toEqual({ say: 'AI request failed', before: 'saved' });
+    expect(toolbarAnnouncement('saved', 'saved', 'saved', false, { run: 'failed' }).say).toBeNull();
+    // It ended as a save of the author's own finished: both are said.
+    expect(toolbarAnnouncement('busy', 'saved', 'saved', true, { run: 'failed' }).say).toBe('AI request failed. All changes saved');
+    // A request the toolbar showed at work is said once, as it settles, not again as unseen.
+    expect(toolbarAnnouncement('working', 'saved', 'saved', true, { run: 'failed' }).say).toBe('AI request failed');
+    expect(toolbarAnnouncement('working', 'busy', 'saved', true, { run: 'failed' })).toEqual({ say: '', before: 'working' });
+    expect(toolbarAnnouncement('busy', 'saved', 'working', false, { run: 'failed' }).say).toBe('AI request failed');
+    // Ending while a held edit still stops it: said when the stop settles, and only then.
+    expect(toolbarAnnouncement('stopping', 'stopping', 'saved', true, { run: 'cancelled' }).say).toBeNull();
+    expect(toolbarAnnouncement('asking', 'asking', 'saved', true, { run: 'failed' }).say).toBeNull();
+    expect(toolbarAnnouncement('stopping', 'busy', 'saved', false, { run: 'cancelled' })).toEqual({ say: '', before: 'stopping' });
+    expect(toolbarAnnouncement('busy', 'saved', 'stopping', false, { run: 'cancelled', edit: 'saved' }).say).toBe('AI stopped. Your edit was saved');
   });
 
   it('announces how the request really ended, not "AI changes saved" for every ending', () => {

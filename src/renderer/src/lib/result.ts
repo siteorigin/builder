@@ -76,12 +76,21 @@ export function resumableId(messages: ChatMessage[]): string | undefined {
 }
 
 /**
- * The context a Continue is sent with: that of the request it continues, checked against the project as it is
- * now. When its page or selected element has gone, nothing is guessed (another page, or a selection dropped
- * so the request reaches the whole site): the user chooses where to carry on and sends "Continue" themselves.
+ * The result that offers Try again: the conversation's last message, when its request failed because of the AI
+ * setup (the server, the model or the key) rather than anything in the request, so it can be sent again unchanged.
  */
-export function continueContext(user: ChatMessage | undefined, state: ProjectState, viewport: number): { ctx: ChatContext } | { error: string } {
-  const choose = 'Choose what to change, then send "Continue".';
+export function retryableId(messages: ChatMessage[]): string | undefined {
+  const last = messages.at(-1);
+  return last?.role === 'assistant' && last.result?.status === 'failed' && !!last.result.repair ? last.id : undefined;
+}
+
+/**
+ * The context a Continue (or a Try again) is sent with: that of the request it continues, checked against the
+ * project as it is now. When its page or selected element has gone, nothing is guessed (another page, or a
+ * selection dropped so the request reaches the whole site): the user chooses where to carry on and does `next`.
+ */
+export function continueContext(user: ChatMessage | undefined, state: ProjectState, viewport: number, next = 'send "Continue"'): { ctx: ChatContext } | { error: string } {
+  const choose = `Choose what to change, then ${next}.`;
   if (user?.role !== 'user') return { error: choose };
   const ctx = user.context;
   // Requests saved before messages carried a context were about the whole site.
@@ -109,7 +118,7 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
   const gone = (Array.isArray(ctx.assetIds) ? ctx.assetIds : []).filter((id) => typeof id !== 'string' || state.assets.assets[id]?.kind !== 'image');
   if (gone.length) {
     const name = user.images?.find((i) => i.assetId === gone[0])?.name;
-    return { error: `${name ? `The image “${name}”` : 'An image attached to that request'} is no longer in Assets. Attach the images you want, then send "Continue".` };
+    return { error: `${name ? `The image “${name}”` : 'An image attached to that request'} is no longer in Assets. Attach the images you want, then ${next}.` };
   }
   return { ctx: { ...structuredClone(ctx), ...page } };
 }

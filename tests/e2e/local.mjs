@@ -1,11 +1,15 @@
 // Local model settings in the real app (issue #122): Local is chosen in Settings, a server preset is picked, the
-// server's models are discovered and one is chosen, the connection is tested, and a chat edit runs through that
-// model and lands in the project. The server is an OpenAI-compatible mock in this process, listening on the
-// preset's own port, so nothing is sent to a real model.
+// server's models are discovered and one is chosen, the connection is tested with a short chat request, and a chat
+// edit runs through that model and lands in the project. Then (issue #83) a second server: switching to it moves both
+// the model menu and the requests' `model` to its own model, and switching back restores the first server's choice.
+// With that server stopped, Chat says so instead of offering starters, and a request fails saying nothing changed,
+// with AI settings and Try again on its card. Restarted with a model it lists but cannot chat with, Test connection
+// fails it; once the model answers, Try again sends the same request and it lands. The servers are OpenAI-compatible
+// mocks in this process, the first on the preset's own port, so nothing is sent to a real model.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
-import { MockOpenAIServer, envelopeReply } from '../unit/mock-openai-server.ts';
+import { MockOpenAIServer, envelopeReply, textReply } from '../unit/mock-openai-server.ts';
 import { LOCAL_PRESETS } from '../../src/shared/local.ts';
 
 /**
@@ -34,6 +38,12 @@ assert.equal(server.baseURL, preset.baseURL);
 server.models = { object: 'list', data: [{ id: 'first-model', object: 'model' }, { id: 'second-model', object: 'model' }] };
 const gets = () => server.requests.filter((r) => r.method === 'GET' && r.url === '/v1/models');
 const posts = () => server.requests.filter((r) => r.method === 'POST');
+// The second server, on a port of its own, listing only its own model.
+let second = await new MockOpenAIServer().start();
+const secondPort = Number(new URL(second.baseURL).port);
+const secondURL = second.baseURL;
+const secondModels = { object: 'list', data: [{ id: 'studio-b', object: 'model' }] };
+second.models = secondModels;
 let app;
 let passed = false;
 
@@ -84,14 +94,19 @@ try {
   await modelSelect.selectOption('second-model');
   await eventually(async () => assert.equal((await settings()).ai.models.local, 'second-model'));
 
-  step('the connection is tested against the chosen model');
+  step('the connection is tested with a short chat request to the chosen model');
   await eventually(async () => assert.equal(await refreshButton.isEnabled(), true));
   const asked = gets().length;
   const connection = dialog.locator('#settings-connection');
+  // Being listed is not enough: the test only passes once the model answers a chat request.
+  await connection.filter({ hasText: 'A listed model may still fail to chat' }).waitFor();
+  server.script(textReply('OK'));
   await dialog.locator('.settings-status').getByRole('button', { name: 'Test connection' }).click();
-  await connection.filter({ hasText: 'Connection test passed' }).filter({ hasText: 'second-model is available.' }).waitFor({ timeout: 15000 });
+  await connection.filter({ hasText: 'Connection test passed' }).filter({ hasText: 'second-model answered a test chat request.' }).waitFor({ timeout: 15000 });
   assert.ok(gets().length > asked, 'the test asked the server for its models');
-  assert.equal(posts().length, 0, 'nothing is generated before a chat');
+  assert.equal(posts().length, 1, 'the test sent one chat request');
+  assert.equal(posts()[0].url, '/v1/chat/completions');
+  assert.equal(posts()[0].body.model, 'second-model');
 
   step('a cloud key pasted into the Local key field is refused, and never sent');
   await dialog.locator('.settings-advanced summary').click();
@@ -114,26 +129,157 @@ try {
   step('a chat edit through the local model');
   server.script(envelopeReply('update_site_brand', { siteName: 'Harbor Coffee' }, 'Renaming the site'), envelopeReply('finish', { message: 'Renamed the site to Harbor Coffee.' }));
   await win.locator('.dock-tab', { hasText: 'AI' }).click();
-  const cards = await win.locator('.result-card').count();
   const message = win.getByRole('textbox', { name: 'Message' });
-  await message.fill('Rename the site to Harbor Coffee');
-  await message.press('Enter');
-  await eventually(async () => assert.ok((await win.locator('.result-card').count()) > cards, 'the run ends with a result card'), 60000, 200);
-  const card = win.locator('.result-card').last();
+  /** Send a request and wait for its result card. */
+  const sendRequest = async (text) => {
+    const cards = await win.locator('.result-card').count();
+    await message.fill(text);
+    await message.press('Enter');
+    await eventually(async () => assert.ok((await win.locator('.result-card').count()) > cards, 'the run ends with a result card'), 60000, 200);
+    return win.locator('.result-card').last();
+  };
+  const tested = posts().length;
+  assert.equal(tested, 1, 'only the connection test has asked for a reply so far');
+  const card = await sendRequest('Rename the site to Harbor Coffee');
   assert.match((await card.getAttribute('class')) ?? '', /\bcompleted\b/);
   await win.locator('.msg-ai').last().getByText('Renamed the site to Harbor Coffee.').waitFor();
   assert.equal(await siteName(), 'Harbor Coffee', 'the edit landed in the project');
-  assert.equal(posts().length, 2);
-  for (const p of posts()) {
+  const edits = posts().slice(tested);
+  assert.equal(edits.length, 2);
+  for (const p of edits) {
     assert.equal(p.url, '/v1/chat/completions');
     assert.equal(p.body.model, 'second-model');
   }
-  assert.match(JSON.stringify(posts()[1].body.messages), /Result of update_site_brand/, 'the tool result went back to the model');
+  assert.match(JSON.stringify(edits[1].body.messages), /Result of update_site_brand/, 'the tool result went back to the model');
+
+  const openAi = async () => {
+    await win.locator('[aria-label="Settings"]').click();
+    await dialog.getByRole('tab', { name: 'AI assistant' }).click();
+  };
+  const closeSettings = async () => {
+    await dialog.locator('button.btn', { hasText: /^Close$/ }).click();
+    await dialog.waitFor({ state: 'detached' });
+  };
+  const useAddress = async (url) => {
+    const field = dialog.locator('#settings-local-url');
+    await field.fill(url);
+    await field.press('Enter');
+    await eventually(async () => assert.equal((await settings()).ai.local.baseURL, url));
+  };
+  const modelOptions = () => modelSelect.locator('option').allInnerTexts();
+
+  step('a second server: the model menu and the requests follow it');
+  await openAi();
+  await useAddress(secondURL);
+  await eventually(async () => assert.deepEqual(await modelOptions(), ["Use the server's model", 'studio-b']), 15000);
+  assert.equal(await modelSelect.inputValue(), '', "the first server's model is not carried over");
+  assert.equal((await settings()).ai.models.local, '');
+  await modelSelect.selectOption('studio-b');
+  await eventually(async () => assert.equal((await settings()).ai.models.local, 'studio-b'));
+  assert.deepEqual((await settings()).ai.local.modelsByServer, { [preset.baseURL]: 'second-model', [secondURL]: 'studio-b' });
+  second.script(textReply('OK'));
+  await dialog.locator('.settings-status').getByRole('button', { name: 'Test connection' }).click();
+  await connection.filter({ hasText: 'studio-b answered a test chat request.' }).waitFor({ timeout: 15000 });
+  await closeSettings();
+  const firstPosts = posts().length;
+  second.script(envelopeReply('update_site_brand', { siteName: 'Studio B Coffee' }, 'Renaming the site'), envelopeReply('finish', { message: 'Renamed the site to Studio B Coffee.' }));
+  assert.match((await (await sendRequest('Rename the site to Studio B Coffee')).getAttribute('class')) ?? '', /\bcompleted\b/);
+  assert.equal(await siteName(), 'Studio B Coffee');
+  const secondPosts = second.requests.filter((r) => r.method === 'POST');
+  assert.deepEqual(
+    secondPosts.map((p) => p.body.model),
+    ['studio-b', 'studio-b', 'studio-b'],
+    'the test and both turns of the edit asked for the second server\'s model'
+  );
+  assert.equal(posts().length, firstPosts, 'nothing more went to the first server');
+
+  step("back on the first server, its own choice is restored");
+  await openAi();
+  await presetButton.click();
+  await eventually(async () => assert.equal(await modelSelect.inputValue(), 'second-model'), 15000);
+  assert.equal((await settings()).ai.models.local, 'second-model');
+  await useAddress(secondURL);
+  await eventually(async () => assert.deepEqual(await modelOptions(), ["Use the server's model", 'studio-b']), 15000);
+  assert.equal(await modelSelect.inputValue(), 'studio-b', "the second server's own choice is restored too");
+  // Back to the server's own model, so the next request has to ask the server what it has.
+  await modelSelect.selectOption('');
+  await eventually(async () => assert.equal((await settings()).ai.models.local, ''));
+
+  step('no server: Chat says so instead of offering starters, and a request fails saying nothing changed');
+  await second.stop();
+  await dialog.locator('.settings-status').getByRole('button', { name: 'Test connection' }).click();
+  await connection.filter({ hasText: 'Connection failed' }).filter({ hasText: 'Is your local server running?' }).waitFor({ timeout: 15000 });
+  await closeSettings();
+  await win.getByRole('button', { name: 'New conversation' }).click();
+  const notReady = win.locator('.chat-not-ready');
+  await notReady.filter({ hasText: "Can't use your local model server." }).filter({ hasText: 'Is your local server running?' }).waitFor({ timeout: 15000 });
+  assert.equal(await win.locator('.suggestions').count(), 0, 'no starters are offered');
+  // Everything the toolbar's live region says from here on: the same words twice in a row read the same.
+  const listen = () =>
+    win.evaluate(() => {
+      window.__listening?.disconnect();
+      const region = document.querySelector('.toolbar .sr-only[role="status"]');
+      const heard = (window.__heard = []);
+      window.__listening = new MutationObserver(() => heard.push(region.textContent.trim()));
+      window.__listening.observe(region, { childList: true, characterData: true, subtree: true });
+    });
+  const heard = () => win.evaluate(() => window.__heard);
+  await listen();
+  const request = 'Rename the site to Harbor Tea';
+  const down = await sendRequest(request);
+  // The request as shown, with the page it was about.
+  const sent = await win.locator('.msg-user').last().innerText();
+  assert.ok(sent.startsWith(request));
+  assert.match((await down.getAttribute('class')) ?? '', /\bfailed\b/);
+  await down.getByText('Nothing in the site was changed.', { exact: false }).waitFor();
+  await down.getByText('Is your local server running?', { exact: false }).waitFor();
+  // It failed before it started working, and the toolbar says so rather than how the request before it ended.
+  await eventually(async () => assert.deepEqual(await heard(), ['AI request failed']));
+  assert.equal(await siteName(), 'Studio B Coffee', 'the site is unchanged');
+  await down.getByRole('button', { name: 'Open AI settings' }).waitFor();
+  await down.getByRole('button', { name: 'Try again', exact: true }).waitFor();
+
+  step('a model the server lists but that cannot chat: Test connection says so, and Try again sends the same request');
+  second = await new MockOpenAIServer().start(secondPort);
+  second.models = secondModels;
+  const rejection = () => ({ status: 400, body: JSON.stringify({ error: { message: 'studio-b cannot generate chat completions' } }) });
+  // Refused with the compact schema, then with the same schema written out in full.
+  second.script(rejection(), rejection());
+  await listen();
+  await down.getByRole('button', { name: 'Try again', exact: true }).click();
+  await eventually(async () => assert.equal(second.requests.filter((r) => r.method === 'POST').length, 2), 30000, 200);
+  assert.match(JSON.stringify(second.requests.find((r) => r.method === 'POST').body.messages), /Rename the site to Harbor Tea/, 'the same request was sent again');
+  const rejected = win.locator('.result-card').last();
+  await rejected.getByText('studio-b cannot generate chat completions', { exact: false }).waitFor({ timeout: 30000 });
+  assert.match((await rejected.getAttribute('class')) ?? '', /\bfailed\b/);
+  await rejected.getByText('Nothing in the site was changed.', { exact: false }).waitFor();
+  await eventually(async () => assert.deepEqual(await heard(), ['AI is working', 'AI request failed']));
+  await rejected.getByRole('button', { name: 'Open AI settings' }).click();
+  await dialog.waitFor();
+  second.script(rejection());
+  await dialog.locator('.settings-status').getByRole('button', { name: /Test connection|Try again/ }).click();
+  await connection.filter({ hasText: 'The model did not answer' }).filter({ hasText: 'The server lists studio-b, but a test chat request failed' }).waitFor({ timeout: 15000 });
+  await closeSettings();
+
+  step('once the model answers, Try again lands the same request');
+  second.script(envelopeReply('update_site_brand', { siteName: 'Harbor Tea' }, 'Renaming the site'), envelopeReply('finish', { message: 'Renamed the site to Harbor Tea.' }));
+  const userMessages = await win.locator('.msg-user').count();
+  // Something the author is writing meanwhile stays where it is.
+  await message.fill('A note for later');
+  await rejected.getByRole('button', { name: 'Try again', exact: true }).click();
+  await eventually(async () => assert.match((await win.locator('.result-card').last().getAttribute('class')) ?? '', /\bcompleted\b/), 60000, 200);
+  assert.equal(await siteName(), 'Harbor Tea', 'the retried request landed');
+  // With no model chosen on this server, each request asked for the one it lists.
+  assert.deepEqual(new Set(second.requests.filter((r) => r.method === 'POST').map((p) => p.body.model)), new Set(['studio-b']));
+  assert.equal(await win.locator('.msg-user').count(), userMessages + 1);
+  assert.equal(await win.locator('.msg-user').last().innerText(), sent, 'it was the original request, about the same page');
+  assert.equal(await message.inputValue(), 'A note for later', 'the draft was kept');
   assert.deepEqual(errors, []);
   passed = true;
   console.log('\nlocal: all checks passed');
 } finally {
   await app?.close().catch(() => undefined);
   await server.stop().catch(() => undefined);
+  await second.stop().catch(() => undefined);
   if (passed) cleanup();
 }

@@ -82,6 +82,33 @@ export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus, endin
 }
 
 /**
+ * What the toolbar says when an AI request ended without its save state ever moving: it failed (or was stopped)
+ * before it started working, say because its model could not be reached. Without this the region would go on
+ * saying how the request before it ended ("AI changes saved"). Null when there is nothing new to say.
+ */
+export function unseenRunAnnouncement(ending: AiEnding | null | undefined): string | null {
+  return ending?.run ? (RUN_ENDED[ending.run] ?? null) : null;
+}
+
+const aiPhase = (s: SaveStatus) => s === 'working' || s === 'asking' || s === 'checking' || s === 'stopping';
+
+/**
+ * The toolbar's announcement as its save state moves from `prev` to `next`, or as an AI request ends (`runEnded`).
+ * `before` is where a save in flight (`busy`) started, which is what it settles from; the result carries the new one.
+ * A request the toolbar showed at work is announced as that settles. One it never showed (it failed before it
+ * started) is announced on its own, unless the toolbar still shows the AI (a held edit stopping it), which says it
+ * once it settles.
+ */
+export function toolbarAnnouncement(prev: SaveStatus, next: SaveStatus, before: SaveStatus, runEnded: boolean, ending: AiEnding | null | undefined): { say: string | null; before: SaveStatus } {
+  const unseen = (from: SaveStatus) => (runEnded && !aiPhase(from) && !aiPhase(next) ? unseenRunAnnouncement(ending) : null);
+  if (prev === next) return { say: unseen(next), before };
+  const from = prev === 'busy' ? before : prev;
+  const said = saveStatusAnnouncement(from, next, ending ?? null);
+  const ended = unseen(from);
+  return { say: ended ? [ended, said].filter(Boolean).join('. ') : said, before: next === 'busy' ? from : next };
+}
+
+/**
  * What the Site styles status region says as the unreadable colour pairs change. `key` is the names of the unreadable
  * pairs joined by `|`, a newline, then `unknown` when some pair cannot be checked. Silent when only that last flag moved;
  * "readable again" only after there were problems, and never while some pair cannot be checked (the region clears instead).

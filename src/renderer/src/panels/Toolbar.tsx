@@ -6,7 +6,7 @@ import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../componen
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
 import { pageChoices } from '../lib/page-switch';
-import { saveStatusAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
+import { toolbarAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
 import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
 import { runPhase, settledState } from '../lib/savestate';
@@ -36,10 +36,14 @@ export function Toolbar() {
   // A save in flight when the AI finishes is a step on the way, not where it came from: what settles
   // after it is announced from the state before it, so the AI's real outcome is not lost.
   const beforeBusy = useRef<SaveStatus>(settled);
-  const announce = useTransitionAnnouncement(settled, (prev, next) => {
-    const from = prev === 'busy' ? beforeBusy.current : prev;
-    beforeBusy.current = next === 'busy' ? from : next;
-    return saveStatusAnnouncement(from, next, useStore.getState().aiOutcome);
+  // Which AI request ended last: one that ended before it began working moves no save state, but still ended.
+  const endedRun = useStore((s) => s.aiOutcome?.runId ?? '');
+  const announce = useTransitionAnnouncement(`${settled}\n${endedRun}`, (prevKey, nextKey) => {
+    const [prev, prevRun] = prevKey.split('\n') as [SaveStatus, string];
+    const [next, nextRun] = nextKey.split('\n') as [SaveStatus, string];
+    const r = toolbarAnnouncement(prev, next, beforeBusy.current, !!nextRun && nextRun !== prevRun, useStore.getState().aiOutcome);
+    beforeBusy.current = r.before;
+    return r.say;
   });
   // The width field keeps a draft while typing, so intermediate values like "3" on the way to "390" are allowed.
   const [widthDraft, setWidthDraft] = useState(String(viewport));

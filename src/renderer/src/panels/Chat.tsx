@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatImageRef, type ChatMessage, type FieldLocation } from '@shared/api';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
@@ -9,7 +9,7 @@ import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDra
 import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId } from '../lib/result';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId } from '../lib/result';
 import { composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
@@ -175,6 +175,8 @@ export function Chat() {
 
   const provider = providers.find((p) => p.id === settings?.ai.provider);
   const configured = !!provider?.configured;
+  // The local server or model failed the last time anything asked it: Chat says so instead of offering starters.
+  const notReady = configured && provider?.id === 'local' && provider.check && !provider.check.ok ? provider.check : null;
   const msgs = conversation?.messages ?? [];
   const running = !!runStatus;
   const waiting = runStatus === 'awaiting-input';
@@ -197,6 +199,7 @@ export function Chat() {
   // Turns whose changes project history now holds as undone (each step of the run undone, none redone).
   const appliedRuns = new Set((history?.entries ?? []).filter((e) => e.runId && e.applied).map((e) => e.runId));
   const revertedRuns = new Set((history?.entries ?? []).filter((e) => e.runId && !e.applied && !appliedRuns.has(e.runId)).map((e) => e.runId));
+  const retryable = running ? undefined : retryableId(msgs);
   const firstAsk = msgs.find((m) => m.role === 'user')?.text;
   const title = msgs.length ? (conversation?.title && conversation.title !== 'New conversation' ? conversation.title : firstAsk ?? 'New conversation') : 'New conversation';
 
@@ -296,7 +299,8 @@ export function Chat() {
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
   // edited everywhere offers none.
-  const fresh = !component && msgs.length === 0 && configured && !!conversation && !draft.trim();
+  // A local server or model that failed its last check is said instead, so no starters are offered.
+  const fresh = !component && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
   const suggestions: Array<{ text: string; kind: string }> = !fresh
     ? []
     : askMode
@@ -426,6 +430,13 @@ export function Chat() {
     void send('Continue', c.ctx);
   };
 
+  /** Send a request that failed on the AI setup again, as it was: same words, page, selection and images. */
+  const retryRequest = (user: ChatMessage | undefined) => {
+    const c = continueContext(user, st, viewport, 'use Edit and try again');
+    if ('error' in c) return toast(c.error, 'info');
+    void send(user!.text, c.ctx);
+  };
+
   // Switching conversations shows that conversation's own draft; a failed switch stays where it was. A reply that
   // arrives after the project changed is not this project's.
   const opening = snap.workspaceKey;
@@ -537,6 +548,18 @@ export function Chat() {
               <button className="btn btn-primary" onClick={openSettings}>
                 <KeyRound /> Connect an AI provider
               </button>
+            ) : notReady ? (
+              <div className="chat-not-ready" role="status">
+                <div className="scope-note danger">
+                  <CircleAlert />
+                  <span>
+                    <strong>{notReady.stage === 'chat' ? 'Your local model did not answer.' : "Can't use your local model server."}</strong> {notReady.message}
+                  </span>
+                </div>
+                <button className="btn btn-primary" onClick={openSettings}>
+                  <Settings2 /> Open AI settings
+                </button>
+              </div>
             ) : (
               // Starters prefill an empty composer; once you have written something they step aside rather than replace it.
               conversation &&
@@ -589,6 +612,7 @@ export function Chat() {
               onUndo={undoTurn}
               // Work that has been undone is not continued from: its card offers a fresh attempt instead.
               onContinue={m.id === resumable && !sending && configured && !(m.runId && revertedRuns.has(m.runId)) ? () => continueRequest(msgs[i - 1]) : undefined}
+              onRetry={m.id === retryable && !sending && configured ? () => retryRequest(msgs[i - 1]) : undefined}
             />
           )
         )}
@@ -987,7 +1011,8 @@ function AssistantMessage({
   canCompose,
   asking,
   onUndo,
-  onContinue
+  onContinue,
+  onRetry
 }: {
   m: ChatMessage;
   live: boolean;
@@ -999,6 +1024,7 @@ function AssistantMessage({
   asking: WaitingQuestion | null;
   onUndo: (runId: string) => void;
   onContinue?: () => void;
+  onRetry?: () => void;
 }) {
   const r = m.result;
   const activities = m.activities ?? [];
@@ -1042,7 +1068,7 @@ function AssistantMessage({
       {!r && answers}
       {/* A finished turn is one card that leads with its result; what was asked and answered on the way sits inside it. */}
       {r && (
-        <ResultCard m={m} undoable={undoable} reverted={reverted} latest={latest} canCompose={canCompose} onUndo={onUndo} onContinue={onContinue}>
+        <ResultCard m={m} undoable={undoable} reverted={reverted} latest={latest} canCompose={canCompose} onUndo={onUndo} onContinue={onContinue} onRetry={onRetry}>
           {answers.length > 0 ? answers : null}
         </ResultCard>
       )}
@@ -1103,6 +1129,7 @@ function ResultCard({
   canCompose,
   onUndo,
   onContinue,
+  onRetry,
   children
 }: {
   m: ChatMessage;
@@ -1112,6 +1139,7 @@ function ResultCard({
   canCompose: boolean;
   onUndo: (runId: string) => void;
   onContinue?: () => void;
+  onRetry?: () => void;
   children?: ReactNode;
 }) {
   const r = m.result!;
@@ -1124,7 +1152,9 @@ function ResultCard({
   const failedOrStopped = r.status === 'failed' || r.status === 'cancelled';
   // A turn undone from project history keeps its record, with its changes listed as undone.
   const undone = failedOrStopped || reverted;
-  const authProblem = !!r.error && /API key/i.test(r.summary);
+  // Results saved before `repair` existed name a rejected key only in their wording.
+  const repair = r.repair ?? (r.error && /API key/i.test(r.summary) ? 'key' : undefined);
+  const openAiSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const { issues, unverified, passes } = checksOf(r);
   const locations = storedLocations(r.locations);
   const [showPasses, setShowPasses] = useState(false);
@@ -1145,7 +1175,7 @@ function ResultCard({
   // passed checks move into its steps.
   const settled = !latest && !reverted && (r.status === 'completed' || r.status === 'no-changes') && !r.incomplete && !issues.length && !unverified.length && !undoable && !onContinue;
   // An older stopped or undone turn is history too: it keeps its retry, on the same quiet card.
-  const quiet = settled || (!latest && ((failedOrStopped && !authProblem) || reverted));
+  const quiet = settled || (!latest && ((failedOrStopped && !repair) || reverted));
   const foldPasses = settled && steps.length > 0;
   // A failed, stopped or undone turn can be tried again from its original request, while there is a composer to write in.
   const retryable = (failedOrStopped || reverted) && canCompose;
@@ -1380,16 +1410,27 @@ function ResultCard({
         {children && <div className="result-answers">{children}</div>}
       </div>
       {/* Retrying puts the request back in the composer, so it is offered only while there is one to write in. */}
-      {((r.canUndo && undoable) || retryable || authProblem || onContinue) && (
+      {((r.canUndo && undoable) || retryable || repair || onContinue || onRetry) && (
         <div className="result-foot">
           {onContinue && (
             <button className="btn btn-sm btn-primary" onClick={onContinue}>
               <Play /> Continue
             </button>
           )}
-          {authProblem && (
-            <button className="btn btn-sm btn-primary" onClick={() => setState({ modal: { kind: 'settings', tab: 'ai' } })}>
+          {repair === 'key' && (
+            <button className="btn btn-sm btn-primary" onClick={openAiSettings}>
               <KeyRound /> Update API key
+            </button>
+          )}
+          {repair === 'settings' && (
+            <button className="btn btn-sm btn-primary" onClick={openAiSettings}>
+              <Settings2 /> Open AI settings
+            </button>
+          )}
+          {/* The same request again, once the setup is fixed: nothing to retype. */}
+          {onRetry && (
+            <button className="btn btn-sm" onClick={onRetry}>
+              <RefreshCw /> Try again
             </button>
           )}
           {r.canUndo && undoable && (
