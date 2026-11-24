@@ -1,5 +1,6 @@
 import { isArticleDate, pageArticle } from '@shared/articles';
-import type { GraphNode, ImageValue, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import type { GraphNode, ImageValue, NodeTree, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import { STYLE_PROP_MAP } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { validateRoute } from '@shared/routes';
@@ -20,6 +21,11 @@ export interface Diagnostic {
   message: string;
   owner?: { kind: string; id: string };
   nodeId?: string;
+  /**
+   * Where in its owner the problem is, for telling it apart from others of its kind (see `introducedDiagnostics`):
+   * unlike the message, it stays the same when a page or component it names is renamed, or a repair changes the wording.
+   */
+  site?: string;
 }
 
 /**
@@ -30,6 +36,26 @@ const CONTENT_ERRORS = new Set(['LINK_SECTION_MISSING']);
 
 /** Whether a diagnostic leaves the project inconsistent enough that a change introducing it is refused. */
 export const blocksSaving = (d: Diagnostic) => d.severity === 'error' && !CONTENT_ERRORS.has(d.code);
+
+/**
+ * The problems in `after` that `before` does not have: what a change brings in. One that names its place (`site`) is
+ * told by its code, owner and place, and counted, so one more at the same place is new while a rename or a partial
+ * repair is not. Any other is told by its message, and with `byNode` also by its code, owner and element, so the same
+ * mistake made again on another element of a page counts as new (an external change, which is not an edit's step).
+ */
+export function introducedDiagnostics(before: readonly Diagnostic[], after: readonly Diagnostic[], { byNode = false } = {}): Diagnostic[] {
+  const placed = (d: Diagnostic) => `${d.code}|${d.owner?.kind ?? ''}:${d.owner?.id ?? ''}|${d.site}`;
+  const said = (d: Diagnostic) => (byNode ? `${d.code}|${d.owner?.kind ?? ''}:${d.owner?.id ?? ''}|${d.nodeId ?? ''}|${d.message}` : d.message);
+  const messages = new Set(before.filter((d) => d.site === undefined).map(said));
+  const left = new Map<string, number>();
+  for (const d of before) if (d.site !== undefined) left.set(placed(d), (left.get(placed(d)) ?? 0) + 1);
+  return after.filter((d) => {
+    if (d.site === undefined) return !messages.has(said(d));
+    const n = left.get(placed(d)) ?? 0;
+    left.set(placed(d), n - 1);
+    return n <= 0;
+  });
+}
 
 /** "Home", "Home and About", "Home, About and Contact". */
 const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? ''));
@@ -104,11 +130,20 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         out.push({ severity: 'error', code: 'FEED_INVALID', message: `${def.name}: "${p.label ?? k}" is filled from the site's pages in a way this version cannot read. Check its feed and its limit.`, owner: { kind: 'component', id: def.id } });
     }
   }
-  // Component definitions: bindings must resolve in scope, and declared parts must exist.
+  // Component definitions: one root to carry the component, bindings that resolve in scope, and declared parts.
   for (const def of Object.values(state.components)) {
-    if (def.kind !== 'managed' || !def.tree) continue;
-    const tree = def.tree;
+    if (def.kind !== 'managed') continue;
     const owner = { kind: 'component', id: def.id };
+    if (!def.tree) {
+      out.push({ severity: 'error', code: 'COMPONENT_ROOT', message: `${def.name}: the component has no design to show.`, owner, site: 'root:unrendered' });
+      continue;
+    }
+    const tree = def.tree;
+    const rootProblem = componentRootProblem(tree);
+    // Extra top-level elements beside one that renders are one problem however many there are, so putting them right
+    // step by step is never a new one; a design left with nothing to carry the component (no root, or a repeat or slot
+    // first) is another.
+    if (rootProblem) out.push({ severity: 'error', code: 'COMPONENT_ROOT', message: `${def.name}: ${rootProblem.message}`, owner, nodeId: tree.rootIds[1] ?? tree.rootIds[0], site: rootProblem.renders ? 'root' : 'root:unrendered' });
     for (const [pid, part] of Object.entries(def.parts)) {
       if (!tree.nodes[part.nodeId]) out.push({ severity: 'error', code: 'PART_MISSING', message: `${def.name}: part "${pid}" refers to an element that no longer exists.`, owner });
     }
@@ -187,6 +222,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         // A table changed by hand into a shape it cannot have shows only the rows it can, so it is reported.
         else
           for (const [k, schema] of Object.entries(def.properties)) {
+            // A computed list shows what the site's pages give it, whatever is stored.
+            if (schema.type === 'list' && !schema.feed && Object.hasOwn(n.props, k))
+              for (const id of duplicateItemIds(n.props[k]))
+                out.push({ severity: 'error', code: 'LIST_ITEM_DUPLICATE', message: `${label}: ${duplicateItemMessage(displayName(state, n), schema, id)}`, owner, nodeId: n.id, site: `${n.id}|${k}|${id}` });
             if (schema.type !== 'table' || !Object.hasOwn(n.props, k) || isBinding(n.props[k])) continue;
             // A pure check of a saved value: whatever it throws, the project still opens and says what is wrong.
             let problem: string | null = null;
@@ -201,21 +240,29 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       if (!seen.has(n.id)) out.push({ severity: 'warning', code: 'NODE_DETACHED', message: `${label}: ${displayName(state, n)} is not attached to the tree.`, owner, nodeId: n.id });
     }
     // References inside literal values
-    const walk = (v: unknown, nodeId: string) => {
-      if (Array.isArray(v)) return v.forEach((x) => walk(x, nodeId));
+    // A computed list's stored items are never shown (the site's pages fill it), so what they hold is not a picture.
+    let ignored = new Set<unknown>();
+    const walk = (v: unknown, nodeId: string, shown = true) => {
+      if (Array.isArray(v)) return v.forEach((x) => walk(x, nodeId, shown && !ignored.has(v)));
       if (!v || typeof v !== 'object' || isBinding(v)) return;
       const o = v as Record<string, unknown>;
       if (o.type === 'page' && typeof o.target === 'string' && !state.pages[o.target])
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a page that no longer exists.`, owner, nodeId });
-      if (typeof o.assetId === 'string' && !state.assets.assets[o.assetId])
-        out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: an image references a missing asset.`, owner, nodeId });
+      const asset = typeof o.assetId === 'string' && Object.hasOwn(state.assets.assets, o.assetId) ? state.assets.assets[o.assetId] : undefined;
+      if (typeof o.assetId === 'string' && !asset) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: an image references a missing asset.`, owner, nodeId });
+      else if (asset && asset.kind !== 'image' && shown)
+        out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${label}: an image shows “${asset.name}”, which is a ${asset.kind}, not a picture. Choose an image instead.`, owner, nodeId, site: `${nodeId}|${asset.id}` });
       if (o.type === 'document' && typeof o.target === 'string' && (Object.hasOwn(state.assets.assets, o.target) ? state.assets.assets[o.target] : undefined)?.kind !== 'document')
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to a document that is no longer in Assets. Choose another destination for it.`, owner, nodeId });
       if ('assetId' in o && o.assetId && !o.decorative && !String(o.alt ?? '').trim() && owner.kind !== 'component')
         out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: an image has no alternative text.`, owner, nodeId });
-      Object.values(o).forEach((x) => walk(x, nodeId));
+      Object.values(o).forEach((x) => walk(x, nodeId, shown));
     };
-    for (const n of Object.values(tree.nodes)) walk(n, n.id);
+    for (const n of Object.values(tree.nodes)) {
+      const props = n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
+      ignored = new Set(Object.entries(props ?? {}).flatMap(([k, sch]) => (sch.type === 'list' && sch.feed && n.kind === 'instance' && Array.isArray(n.props[k]) ? [n.props[k]] : [])));
+      walk(n, n.id);
+    }
     // A page list's card with no image of its own shows its page's sharing image, which needs a description too.
     if (owner.kind !== 'component')
       for (const n of Object.values(tree.nodes)) {
@@ -281,6 +328,27 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       : `${where}: ${what} goes to #${i.fragment}, but ${listed((i.pages ?? []).map((id) => state.pages[id].title))} ${(i.pages ?? []).length > 1 ? 'have' : 'has'} no section with that ID. ${fix}`;
     out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId });
   }
+  // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
+  // ones), and the pictures of a project component, which can only show images.
+  for (const def of Object.values(state.components)) {
+    const owner = { kind: 'component', id: def.id };
+    for (const [k, schema] of Object.entries(def.properties)) {
+      if (schema.type === 'list' && !schema.feed)
+        for (const id of duplicateItemIds(schema.default))
+          out.push({ severity: 'error', code: 'LIST_ITEM_DUPLICATE', message: `${def.name}: ${duplicateItemMessage('its default content', schema, id)}`, owner, site: `default|${k}|${id}` });
+      if (def.owner === 'theme') continue;
+      for (const a of nonImageAssets(state, schema.type === 'image' || (schema.type === 'list' && !schema.feed) ? schema.default : undefined))
+        out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${def.name}: the default of “${schema.label}” shows “${a.name}”, which is a ${a.kind}, not a picture. Choose an image instead.`, owner, site: `default|${k}|${a.id}` });
+    }
+  }
+  // The site's icon and sharing images are pictures too.
+  const picture = (id: unknown, what: string, site: string, owner?: Diagnostic['owner']) => {
+    const a = typeof id === 'string' && Object.hasOwn(state.assets.assets, id) ? state.assets.assets[id] : undefined;
+    if (a && a.kind !== 'image') out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${what} is “${a.name}”, which is a ${a.kind}, not a picture. Choose an image instead.`, owner, site });
+  };
+  picture(state.site.favicon, 'The site icon', 'favicon');
+  picture(state.site.socialImage, 'The site’s sharing image', 'socialImage');
+  for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
   if (opts.sectionLinks !== false) out.push(...headingDiagnostics(state));
   out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {
@@ -353,6 +421,49 @@ function conditionShapeValid(v: unknown): boolean {
   return keys.length === 2 && (typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)));
 }
 
+/**
+ * What is wrong with a managed definition's roots, or null. The generator gives `rootIds[0]` the component's classes,
+ * anchor and variant rules, so a design has exactly one root, and it renders an element of its own.
+ */
+function componentRootProblem(tree: NodeTree): { message: string; renders: boolean } | null {
+  if (!tree.rootIds.length) return { message: 'its design has no top-level element, so nothing of it shows.', renders: false };
+  const root = Object.hasOwn(tree.nodes, tree.rootIds[0]) ? tree.nodes[tree.rootIds[0]] : undefined;
+  const renders = !!root && root.kind !== 'repeat' && root.kind !== 'slot';
+  if (tree.rootIds.length > 1)
+    return { message: `its design has ${tree.rootIds.length} top-level elements, but only the first carries the component's styles, variants and anchor. Move the others inside it, or remove them.`, renders };
+  if (!renders && root) return { message: `its top-level element is a ${root.kind}, which shows no element of its own to carry the component's styles. Put it inside a container.`, renders };
+  return null;
+}
+
+/** Library records other than images that a value shows as pictures (`{ assetId }`, at any depth). */
+function nonImageAssets(state: ProjectState, v: unknown, out: ProjectState['assets']['assets'][string][] = []) {
+  if (Array.isArray(v)) v.forEach((x) => nonImageAssets(state, x, out));
+  else if (v && typeof v === 'object' && !isBinding(v)) {
+    const id = (v as { assetId?: unknown }).assetId;
+    const a = typeof id === 'string' && Object.hasOwn(state.assets.assets, id) ? state.assets.assets[id] : undefined;
+    if (a && a.kind !== 'image') out.push(a);
+    Object.values(v).forEach((x) => nonImageAssets(state, x, out));
+  }
+  return out;
+}
+
+/** The item IDs a list holds more than once: a keyed list cannot show two items with one ID. */
+function duplicateItemIds(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  const twice = new Set<string>();
+  for (const item of list) {
+    const id = item && typeof item === 'object' ? (item as { id?: unknown }).id : undefined;
+    if (typeof id !== 'string') continue;
+    if (seen.has(id)) twice.add(id);
+    seen.add(id);
+  }
+  return [...twice];
+}
+
+const duplicateItemMessage = (where: string, schema: { label: string; itemLabel?: string }, id: string) =>
+  `in ${where}, more than one ${(schema.itemLabel ?? 'item').toLowerCase()} in “${schema.label}” has the ID "${id}", so the list cannot be shown. Give each one an ID of its own.`;
+
 const nodeLabel = (n: GraphNode) => (n.name ? `“${n.name}”` : n.kind === 'link' ? 'a button' : n.kind === 'instance' ? 'a nested component' : `a ${n.kind} element`);
 
 /**
@@ -363,11 +474,31 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
   const out: Diagnostic[] = [];
   const tokenIds = new Set(declaredTokens(state).map((t) => t.id));
   const groupOf = new Map(declaredTokens(state).map((t) => [t.id, t.group]));
-  const checkStyles = (rs: ResponsiveStyles | undefined, label: string, owner: Diagnostic['owner'], nodeId?: string) => {
-    for (const scope of Object.values(rs ?? {})) {
-      for (const v of Object.values(scope ?? {})) {
-        if (v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' && !tokenIds.has((v as { token: string }).token))
-          out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${label}: a style uses the site style "${(v as { token: string }).token}", which does not exist.`, owner, nodeId });
+  const checkStyles = (rs: ResponsiveStyles | undefined, label: string, owner: Diagnostic['owner'], nodeId?: string, layer = 'own') => {
+    for (const [scopeId, scope] of Object.entries(rs ?? {})) {
+      for (const [prop, v] of Object.entries(scope ?? {})) {
+        const token = v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : undefined;
+        if (token === undefined) continue;
+        if (!tokenIds.has(token)) {
+          out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${label}: a style uses the site style "${token}", which does not exist.`, owner, nodeId });
+          continue;
+        }
+        // A site style of another kind writes a value the property cannot take (a color as a text style).
+        const style = Object.hasOwn(STYLE_PROP_MAP, prop) ? STYLE_PROP_MAP[prop] : undefined;
+        if (!style) continue;
+        const groups: readonly string[] = style.tokenGroup === undefined ? [] : Array.isArray(style.tokenGroup) ? style.tokenGroup : [style.tokenGroup];
+        const group = groupOf.get(token);
+        if (group !== undefined && !groups.includes(group))
+          out.push({
+            severity: 'error',
+            code: 'TOKEN_GROUP',
+            message: groups.length
+              ? `${label}: ${style.label} uses the site style "${token}", which is a ${group} style; it needs a ${groups.join(' or ')} style.`
+              : `${label}: ${style.label} uses the site style "${token}", but it cannot use a site style.`,
+            owner,
+            nodeId,
+            site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}`
+          });
       }
     }
   };
@@ -381,6 +512,10 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
       if (n.kind === 'text' && n.datetime !== undefined && (n.rich || (!isBinding(n.datetime) && (typeof n.datetime !== 'string' || (n.datetime.trim() !== '' && !isArticleDate(n.datetime.trim()))))))
         out.push({ severity: 'error', code: 'DATETIME_INVALID', message: `${label}: ${nodeLabel(n)} ${n.rich ? 'is rich text, which cannot state a date' : 'states a date that is not written YYYY-MM-DD'}.`, owner, nodeId: n.id });
       if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
+      // Properties and list items belong to a component: a page or the shared header and footer has none to show.
+      else if (n.kind === 'repeat' && !def) out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: a repeat shows a component's list, so it can only be placed inside a component definition.`, owner, nodeId: n.id, site: n.id });
+      else if (!def && bindingSlots(n).some((sl) => (sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : isBinding(sl.value))))
+        out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: ${nodeLabel(n)} shows a component property or list item field, which only an element inside a component definition can.`, owner, nodeId: n.id, site: n.id });
       else if (n.kind === 'slot' && !Object.hasOwn(def!.slots ?? {}, n.slot))
         out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });
       if (n.kind === 'instance') {
@@ -393,19 +528,19 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
           const a = target.variantAxes && Object.hasOwn(target.variantAxes, axis) ? target.variantAxes[axis] : undefined;
           if (!a || !Object.hasOwn(a.options, v)) out.push({ severity: 'warning', code: 'VARIANT_UNKNOWN', message: `${label}: ${target.name} has no ${axis} "${String(v)}", so it shows its default.`, owner, nodeId: n.id });
         }
-        for (const o of Object.values(n.overrides ?? {})) checkStyles(o, label, owner, n.id);
+        for (const [partId, o] of Object.entries(n.overrides ?? {})) checkStyles(o, label, owner, n.id, `part:${partId}`);
         for (const [partId, entry] of Object.entries(n.itemOverrides ?? {})) {
           const valid = !!entry && typeof entry === 'object' && typeof entry.list === 'string' && !!entry.items && typeof entry.items === 'object' && !Array.isArray(entry.items);
           if (!valid) out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on single items of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
           else if (Object.values(entry.items).some((rs) => !rs || typeof rs !== 'object' || Array.isArray(rs)))
             out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on a single item of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
-          else for (const rs of Object.values(entry.items)) checkStyles(rs, label, owner, n.id);
+          else for (const [itemId, rs] of Object.entries(entry.items)) checkStyles(rs, label, owner, n.id, `item:${partId}:${itemId}`);
         }
       }
       checkStyles(n.styles, label, owner, n.id);
     }
     if (def) {
-      for (const { option: v } of variantOptions(def)) for (const [nid, st] of Object.entries(v.styles ?? {})) checkStyles(st, label, owner, nid);
+      for (const { axis, id, option: v } of variantOptions(def)) for (const [nid, st] of Object.entries(v.styles ?? {})) checkStyles(st, label, owner, nid, `variant:${axis}:${id}`);
       if (!variantIdsValid(def)) out.push({ severity: 'warning', code: 'VARIANT_ID_INVALID', message: `${label}: a variant name uses characters that cannot be generated, so that variant is ignored.`, owner });
       for (const [axis, a] of Object.entries(def.variantAxes ?? {}))
         if (!Object.hasOwn(a.options ?? {}, a.default)) out.push({ severity: 'error', code: 'VARIANT_INVALID', message: `${label}: the default of the "${a.label ?? axis}" variant axis ("${a.default}") is not one of its options.`, owner });

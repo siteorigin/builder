@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { getTheme } from '@catalogue/index';
+import { getTheme, listThemes } from '@catalogue/index';
 import { applyOperations, planHomeChange, sourceHash } from '@engine/apply';
 import { propertiesHash } from '@shared/ops';
 import { uniqueCopyName } from '@engine/definitions';
 import { pageIds, shellPageLinks } from '@generator/checks';
 import { EngineError, instancesOf } from '@engine/tree';
-import { validateState } from '@engine/validate';
+import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { effectiveTokens, generateProject, resolveInstanceProps } from '@generator/index';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -424,8 +425,12 @@ describe('review regressions', () => {
     const fork = applyOperations(s, [{ type: 'component.fork', definitionId: grid.definitionId }]);
     s = fork.state;
     const defId = fork.results[0].definitionId as string;
-    const r = applyOperations(s, [{ type: 'node.move', owner: { kind: 'component', id: defId }, nodeId: 'card-title', parentId: 'inner', index: 0 }]);
-    expect(validateState(r.state).some((d) => d.code === 'BINDING_INVALID')).toBe(true);
+    // The move itself is refused (#205); a file that holds the same tree still reports it when loaded.
+    expect(() => applyOperations(s, [{ type: 'node.move', owner: { kind: 'component', id: defId }, nodeId: 'card-title', parentId: 'inner', index: 0 }])).toThrow(/stay inside a repeat/);
+    const tree = s.components[defId].tree!;
+    (tree.nodes.card as { children: string[] }).children = (tree.nodes.card as { children: string[] }).children.filter((c) => c !== 'card-title');
+    (tree.nodes.inner as { children: string[] }).children.unshift('card-title');
+    expect(validateState(s).some((d) => d.code === 'BINDING_INVALID' && d.nodeId === 'card-title')).toBe(true);
   });
 });
 
@@ -1735,5 +1740,316 @@ describe('older text links read the same in the editor, an edit and the export (
     expect(textMetrics(effectiveTokens(s), 'text.h1', theme)?.size).toBe(h1.size);
     s = set(s, 'text.h1', { weight: 600 });
     expect(s.tokens.overrides['text.h1']).toEqual({ ...h1, weight: 600 });
+  });
+});
+
+describe('a component keeps its one root (#205)', () => {
+  const setup = () => {
+    const f = fork(fresh(), 'features.grid');
+    return { s: f.state, own: { kind: 'component' as const, id: f.id }, id: f.id };
+  };
+
+  it('refuses removing, moving or duplicating the root, and putting anything beside it', () => {
+    const { s, own, id } = setup();
+    const before = JSON.stringify(s.components[id]);
+    const refused: Array<[EditOperation, RegExp]> = [
+      [{ type: 'node.remove', owner: own, nodeId: 'root' }, /component itself, so it cannot be removed/],
+      [{ type: 'node.duplicate', owner: own, nodeId: 'root' }, /component itself, so it cannot be duplicated/],
+      [{ type: 'node.move', owner: own, nodeId: 'root', parentId: null, index: 0 }, /component itself, so it cannot be moved/],
+      [{ type: 'node.move', owner: own, nodeId: 'inner', parentId: null, index: 0 }, /Move it inside the component, not beside its root/],
+      [{ type: 'node.move', owner: own, nodeId: 'heading', parentId: null, index: 1 }, /not beside its root/],
+      [{ type: 'node.insert', owner: own, parentId: null, index: 0, primitive: 'heading' }, /Insert inside the component, not beside its root/],
+      [{ type: 'node.insert', owner: own, primitive: 'container' }, /Insert inside the component/],
+      [{ type: 'node.insert', owner: own, parentId: null, componentId: 'cta.banner' }, /Insert inside the component/]
+    ];
+    for (const [op, message] of refused) expect(() => applyOperations(s, [op]), JSON.stringify(op)).toThrow(message);
+    expect(JSON.stringify(s.components[id])).toBe(before);
+  });
+
+  it('still edits inside the root, and on a page’s own top level', () => {
+    const { s, own, id } = setup();
+    const r = applyOperations(s, [
+      { type: 'node.insert', owner: own, parentId: 'root', index: 0, primitive: 'heading' },
+      { type: 'node.duplicate', owner: own, nodeId: 'inner' },
+      { type: 'node.move', owner: own, nodeId: 'heading', parentId: 'root', index: 0 },
+      { type: 'node.remove', owner: own, nodeId: 'lead' }
+    ]);
+    expect(r.state.components[id].tree!.rootIds).toEqual(['root']);
+    expect(validateState(r.state).filter((d) => d.severity === 'error')).toEqual([]);
+    const page = { kind: 'page' as const, id: s.site.homePageId };
+    const first = home(s).rootIds[0];
+    const p = applyOperations(s, [
+      { type: 'node.insert', owner: page, parentId: null, index: 0, componentId: 'cta.banner' },
+      { type: 'node.duplicate', owner: page, nodeId: first },
+      { type: 'node.move', owner: page, nodeId: first, parentId: null, index: 0 }
+    ]);
+    expect(home(p.state).rootIds.length).toBe(home(s).rootIds.length + 2);
+  });
+
+  it('lets a definition with an extra top-level element from an older version be put right', () => {
+    const { s, own, id } = setup();
+    const tree = s.components[id].tree!;
+    tree.nodes.extra = { id: 'extra', kind: 'text', tag: 'p', text: 'Loose' };
+    tree.rootIds.push('extra');
+    expect(validateState(s).filter((d) => d.code === 'COMPONENT_ROOT').map((d) => d.nodeId)).toEqual(['extra']);
+    expect(() => applyOperations(s, [{ type: 'node.duplicate', owner: own, nodeId: 'extra' }])).toThrow(/cannot be duplicated/);
+    const moved = applyOperations(s, [{ type: 'node.move', owner: own, nodeId: 'extra', parentId: 'inner', index: 0 }]).state;
+    expect(moved.components[id].tree!.rootIds).toEqual(['root']);
+    expect(validateState(moved).some((d) => d.code === 'COMPONENT_ROOT')).toBe(false);
+    const removed = applyOperations(s, [{ type: 'node.remove', owner: own, nodeId: 'extra' }]).state;
+    expect(removed.components[id].tree!.rootIds).toEqual(['root']);
+  });
+
+  it('keeps every element of an older design whose top level holds two paragraphs, or nothing', () => {
+    const { s, own, id } = setup();
+    const tree = s.components[id].tree!;
+    tree.nodes.p1 = { id: 'p1', kind: 'text', tag: 'p', text: 'One' };
+    tree.nodes.p2 = { id: 'p2', kind: 'text', tag: 'p', text: 'Two' };
+    tree.rootIds = ['p1', 'p2'];
+    s.components[id].parts.root.nodeId = 'p1';
+    // Until it has its one root, an element that holds others can go at the top level, and the top level reordered.
+    const r = applyOperations(s, [
+      { type: 'node.insert', owner: own, parentId: null, primitive: 'container', newNodeId: 'n_hold' },
+      { type: 'node.move', owner: own, nodeId: 'n_hold', parentId: null, index: 0 }
+    ]);
+    // The component's root part is its first top-level element, which carries the placement's styles.
+    expect(r.state.components[id].parts.root.nodeId).toBe('n_hold');
+    const fixed = applyOperations(r.state, [
+      { type: 'node.move', owner: own, nodeId: 'p1', parentId: 'n_hold', index: 0 },
+      { type: 'node.move', owner: own, nodeId: 'p2', parentId: 'n_hold', index: 1 }
+    ]).state;
+    expect(fixed.components[id].tree!.rootIds).toEqual(['n_hold']);
+    expect(fixed.components[id].tree!.nodes.n_hold).toMatchObject({ children: ['p1', 'p2'] });
+    expect(validateState(fixed).filter((d) => d.code === 'COMPONENT_ROOT' || d.code === 'PART_MISSING')).toEqual([]);
+    // Each step on the way is a repair, never a new problem.
+    const step = applyOperations(r.state, [{ type: 'node.move', owner: own, nodeId: 'p1', parentId: 'n_hold', index: 0 }]).state;
+    expect(introducedDiagnostics(validateState(s), validateState(r.state)).filter(blocksSaving)).toEqual([]);
+    expect(introducedDiagnostics(validateState(r.state), validateState(step)).filter(blocksSaving)).toEqual([]);
+    // Nothing else joins the top level meanwhile.
+    expect(() => applyOperations(s, [{ type: 'node.insert', owner: own, parentId: null, index: 0, primitive: 'paragraph' }])).toThrow(/no single top-level element yet/);
+    expect(() => applyOperations(r.state, [{ type: 'node.move', owner: own, nodeId: 'heading', parentId: null, index: 0 }])).toThrow(/no single top-level element yet/);
+    // Removing the first old root leaves the next one as the root, part and all.
+    const kept = applyOperations(s, [{ type: 'node.remove', owner: own, nodeId: 'p1' }]).state;
+    expect(kept.components[id].tree!.rootIds).toEqual(['p2']);
+    expect(kept.components[id].parts.root.nodeId).toBe('p2');
+    expect(introducedDiagnostics(validateState(s), validateState(kept)).filter(blocksSaving)).toEqual([]);
+    // Once settled, the top level is closed again.
+    expect(() => applyOperations(fixed, [{ type: 'node.insert', owner: own, parentId: null, primitive: 'container' }])).toThrow(/Insert inside the component/);
+    const empty = structuredClone(s);
+    empty.components[id].tree!.rootIds = [];
+    const first = applyOperations(empty, [{ type: 'node.insert', owner: own, primitive: 'container' }]).state;
+    expect(first.components[id].tree!.rootIds).toHaveLength(1);
+    expect(first.components[id].parts.root.nodeId).toBe(first.components[id].tree!.rootIds[0]);
+    expect(validateState(first).some((d) => d.code === 'COMPONENT_ROOT')).toBe(false);
+  });
+
+  it('counts a design left with nothing to carry the component as a new problem, and a repeat at the top as one to put right', () => {
+    const { s, own, id } = setup();
+    const tree = s.components[id].tree!;
+    tree.nodes.extra = { id: 'extra', kind: 'text', tag: 'p', text: 'Loose' };
+    tree.rootIds.push('extra');
+    const before = validateState(s).filter(blocksSaving);
+    const gate = (next: ProjectState) => introducedDiagnostics(before, validateState(next).filter(blocksSaving)).map((d) => d.code);
+    // No design at all, as an external edit could leave it.
+    const noTree = structuredClone(s);
+    delete noTree.components[id].tree;
+    expect(gate(noTree)).toContain('COMPONENT_ROOT');
+    // The element that renders moved into the repeat: only the repeat is left at the top.
+    const repeatFirst = structuredClone(s);
+    repeatFirst.components[id].tree!.rootIds = ['cards', 'root'];
+    (repeatFirst.components[id].tree!.nodes.grid as { children: string[] }).children = [];
+    const intoRepeat = applyOperations(repeatFirst, [{ type: 'node.move', owner: own, nodeId: 'root', parentId: 'cards', index: 0 }]);
+    expect(intoRepeat.state.components[id].tree!.rootIds).toEqual(['cards']);
+    expect(introducedDiagnostics(validateState(s).filter(blocksSaving), validateState(intoRepeat.state).filter(blocksSaving)).map((d) => d.code)).toContain('COMPONENT_ROOT');
+    // A repeat at the top is put right with a container that holds it, one step at a time.
+    const lone = structuredClone(repeatFirst);
+    lone.components[id].tree!.rootIds = ['cards'];
+    const held = applyOperations(lone, [{ type: 'node.insert', owner: own, parentId: null, primitive: 'container', newNodeId: 'n_hold' }]).state;
+    expect(introducedDiagnostics(validateState(lone).filter(blocksSaving), validateState(held).filter(blocksSaving))).toEqual([]);
+    const done = applyOperations(held, [{ type: 'node.move', owner: own, nodeId: 'cards', parentId: 'n_hold', index: 0 }]).state;
+    expect(done.components[id].tree!.rootIds).toEqual(['n_hold']);
+    expect(validateState(done).some((d) => d.code === 'COMPONENT_ROOT')).toBe(false);
+  });
+});
+
+describe('moving definition content across repeats (#205)', () => {
+  /** The Features grid with a second list ("names", whose items have a `title` and a `when`) repeated in its intro. */
+  const setup = (fields: Record<string, unknown> = { title: { type: 'string', label: 'Title' } }) => {
+    const f = fork(fresh(), 'features.grid');
+    const own = { kind: 'component' as const, id: f.id };
+    let s = applyOperations(f.state, [{ type: 'component.setPropSchema', definitionId: f.id, prop: 'names', schema: { type: 'list', label: 'Names', itemLabel: 'Name', fields } as never }]).state;
+    const r = applyOperations(s, [{ type: 'node.insert', owner: own, parentId: 'intro', primitive: 'repeat', bind: 'names' }]);
+    s = r.state;
+    return { s, own, id: f.id, names: r.results[0].nodeId as string };
+  };
+
+  it('moves an item field into a repeat over a list that has it, and between repeats over the same list', () => {
+    const { s, own, id, names } = setup();
+    const into = applyOperations(s, [{ type: 'node.move', owner: own, nodeId: 'card-title', parentId: names, index: 0 }]).state;
+    expect(validateState(into).filter((d) => d.severity === 'error')).toEqual([]);
+    // A second repeat over the cards' own list: the fields are the same, so nothing to check.
+    const again = applyOperations(s, [{ type: 'node.insert', owner: own, parentId: 'intro', primitive: 'repeat', bind: 'items' }]);
+    const twin = again.results[0].nodeId as string;
+    const moved = applyOperations(again.state, [{ type: 'node.move', owner: own, nodeId: 'card-icon-wrap', parentId: twin, index: 0 }]).state;
+    expect(moved.components[id].tree!.nodes[twin]).toMatchObject({ children: ['card-icon-wrap'] });
+  });
+
+  it('refuses a move that leaves an item field without its list, or with a list that lacks it', () => {
+    const { s, own, names } = setup();
+    expect(() => applyOperations(s, [{ type: 'node.move', owner: own, nodeId: 'card-title', parentId: 'intro', index: 0 }])).toThrow(/"title", so it has to stay inside a repeat over its list/);
+    // The card's link shows its label and is shown only when there is one: "names" items have no linkLabel.
+    expect(() => applyOperations(s, [{ type: 'node.move', owner: own, nodeId: 'card-link', parentId: names, index: 0 }])).toThrow(/"linkLabel", which "names" items do not have\./);
+    // A whole card moves with every field it shows.
+    expect(() => applyOperations(s, [{ type: 'node.move', owner: own, nodeId: 'card', parentId: names, index: 0 }])).toThrow(/which "names" items do not have/);
+  });
+
+  it('refuses an item field of a type that cannot show there', () => {
+    const { s, own, names } = setup({ title: { type: 'link', label: 'Title' } });
+    expect(() => applyOperations(s, [{ type: 'node.move', owner: own, nodeId: 'card-title', parentId: names, index: 0 }])).toThrow(/"title", which "names" items do not have in a fitting type/);
+  });
+
+  it('refuses a repeat moved inside a repeat over its own list', () => {
+    const { s, own } = setup();
+    const again = applyOperations(s, [{ type: 'node.insert', owner: own, parentId: 'intro', primitive: 'repeat', bind: 'items' }]);
+    const twin = again.results[0].nodeId as string;
+    expect(() => applyOperations(again.state, [{ type: 'node.move', owner: own, nodeId: twin, parentId: 'card', index: 0 }])).toThrow(/cannot repeat the list it is already inside/);
+  });
+});
+
+describe('load validation (#205)', () => {
+  const codes = (s: ProjectState, code: string) => validateState(s).filter((d) => d.code === code);
+
+  it('compares problems by place and count, and an external change’s others by element too', () => {
+    const d = (over: Partial<Diagnostic>): Diagnostic => ({ severity: 'error', code: 'X', message: 'M', owner: { kind: 'page', id: 'p' }, ...over });
+    // One more at the same place is new; the same place with other words is not.
+    expect(introducedDiagnostics([d({ site: 's' })], [d({ site: 's', message: 'Other words' }), d({ site: 's' })])).toHaveLength(1);
+    expect(introducedDiagnostics([d({ site: 's' })], [d({ site: 's', message: 'Other words' })])).toEqual([]);
+    // Without a place, an edit is told by its message; an external change by element too.
+    expect(introducedDiagnostics([d({ nodeId: 'a' })], [d({ nodeId: 'a' }), d({ nodeId: 'b' })])).toEqual([]);
+    expect(introducedDiagnostics([d({ nodeId: 'a' })], [d({ nodeId: 'a' }), d({ nodeId: 'b' })], { byNode: true })).toEqual([d({ nodeId: 'b' })]);
+  });
+
+  it('counts a problem by where it is: a rename or a second one at another place tells them apart', () => {
+    const s = fresh();
+    const page = home(s);
+    page.nodes.n_t = { id: 'n_t', kind: 'text', tag: 'p', text: 'x', styles: { base: { radius: { token: 'color.brand' } } }, when: { $prop: 'show' } };
+    page.rootIds.push('n_t');
+    const before = validateState(s).filter(blocksSaving);
+    // Renaming the page changes every message that names it, and brings in nothing.
+    const renamed = applyOperations(s, [{ type: 'page.update', pageId: page.id, title: 'Start here' }]).state;
+    expect(introducedDiagnostics(before, validateState(renamed).filter(blocksSaving))).toEqual([]);
+    // The same site style wrong again on another size of the same element is one more problem.
+    const again = structuredClone(s);
+    home(again).nodes.n_t.styles!.phone = { radius: { token: 'color.brand' } };
+    expect(introducedDiagnostics(before, validateState(again).filter(blocksSaving)).map((d) => d.code)).toEqual(['TOKEN_GROUP']);
+  });
+
+  it('reports a component design with no root, several roots, or a root that renders nothing of its own', () => {
+    const f = fork(fresh(), 'features.grid');
+    const def = f.state.components[f.id];
+    const empty = structuredClone(f.state);
+    empty.components[f.id].tree!.rootIds = [];
+    expect(codes(empty, 'COMPONENT_ROOT')[0].message).toMatch(/no top-level element/);
+    const repeatRoot = structuredClone(f.state);
+    repeatRoot.components[f.id].tree!.rootIds = ['cards'];
+    (repeatRoot.components[f.id].tree!.nodes.grid as { children: string[] }).children = [];
+    expect(codes(repeatRoot, 'COMPONENT_ROOT')[0].message).toMatch(/top-level element is a repeat/);
+    const noTree = structuredClone(f.state);
+    delete noTree.components[f.id].tree;
+    expect(codes(noTree, 'COMPONENT_ROOT')[0]).toMatchObject({ severity: 'error', owner: { kind: 'component', id: def.id } });
+    expect(codes(f.state, 'COMPONENT_ROOT')).toEqual([]);
+  });
+
+  it('reports repeats and bindings on a page or in the shared header and footer', () => {
+    const s = fresh();
+    const page = home(s);
+    page.nodes.n_rep = { id: 'n_rep', kind: 'repeat', list: { $prop: 'items' }, children: [] };
+    page.nodes.n_when = { id: 'n_when', kind: 'text', tag: 'p', text: 'Shown', when: { ref: { $prop: 'show' }, eq: true } };
+    page.rootIds.push('n_rep', 'n_when');
+    const header = s.site.shell.header;
+    const inst = header.nodes[header.rootIds[0]] as InstanceNode;
+    inst.props.links = { $prop: 'menu' };
+    expect(codes(s, 'BINDING_SCOPE').map((d) => d.nodeId).sort()).toEqual(['n_rep', 'n_when', inst.id].sort());
+    expect(codes(s, 'BINDING_SCOPE').every((d) => d.severity === 'error')).toBe(true);
+  });
+
+  it('reports a site style of the wrong kind for its property', () => {
+    const s = fresh();
+    const page = home(s);
+    page.nodes.n_t = { id: 'n_t', kind: 'text', tag: 'p', text: 'x', styles: { base: { textStyle: { token: 'color.brand' }, paddingBlock: { token: 'space.lg' } }, phone: { radius: { token: 'color.brand' } } } };
+    page.nodes.n_o = { id: 'n_o', kind: 'text', tag: 'p', text: 'y', styles: { base: { opacity: { token: 'space.md' } } } };
+    page.rootIds.push('n_t', 'n_o');
+    const found = codes(s, 'TOKEN_GROUP');
+    expect(found.map((d) => d.nodeId)).toEqual(['n_t', 'n_t', 'n_o']);
+    expect(found[0].message).toMatch(/Text style uses the site style "color\.brand", which is a color style; it needs a text style/);
+    expect(found[2].message).toMatch(/cannot use a site style/);
+    expect(codes(fresh(), 'TOKEN_GROUP')).toEqual([]);
+  });
+
+  it('reports list items that share an ID, list by list, in placements and in a component’s defaults', () => {
+    const s = fresh();
+    const grid = firstInstance(s, 'features.grid');
+    const items = (s.components[grid.definitionId].properties.items as { default: Array<Record<string, unknown>> }).default;
+    grid.props.items = [{ ...items[0], id: 'x' }, { ...items[1], id: 'x' }, { ...items[2], id: 'x-2' }];
+    expect(codes(s, 'LIST_ITEM_DUPLICATE').map((d) => [d.nodeId, d.message.match(/"([^"]+)"/)?.[1]])).toEqual([[grid.id, 'x']]);
+    const f = fork(fresh(), 'features.grid');
+    const schema = f.state.components[f.id].properties.items as { default: Array<{ id: string }> };
+    schema.default[1].id = schema.default[0].id;
+    expect(codes(f.state, 'LIST_ITEM_DUPLICATE')).toMatchObject([{ owner: { kind: 'component', id: f.id }, severity: 'error' }]);
+    expect(codes(fresh(), 'LIST_ITEM_DUPLICATE')).toEqual([]);
+    // A theme's own defaults too, which placements show until they set their own (a theme update can bring them).
+    const t = fresh();
+    const themeDef = t.components[firstInstance(t, 'features.grid').definitionId];
+    expect(themeDef.owner).toBe('theme');
+    (themeDef.properties.items as { default: Array<{ id: string }> }).default[2].id = 'same';
+    (themeDef.properties.items as { default: Array<{ id: string }> }).default[1].id = 'same';
+    expect(codes(t, 'LIST_ITEM_DUPLICATE')).toMatchObject([{ owner: { kind: 'component', id: themeDef.id } }]);
+    // No theme ships one.
+    for (const theme of listThemes())
+      for (const d of theme.components)
+        for (const [k, sch] of Object.entries(d.properties)) {
+          if (sch.type !== 'list' || !Array.isArray(sch.default)) continue;
+          const ids = (sch.default as Array<{ id: string }>).map((i) => i.id);
+          expect(new Set(ids).size, `${theme.id} ${d.id} ${k}`).toBe(ids.length);
+        }
+  });
+
+  it('reports a font or a document shown as a picture, the site icon and sharing images included', () => {
+    const s = fresh();
+    const record = (id: string, kind: 'font' | 'document') => ({ id, name: `${id}.file`, file: `static/${id}`, mime: 'application/octet-stream', bytes: 10, hash: id, kind, createdAt: '2026-01-01T00:00:00.000Z' });
+    s.assets.assets.a_font = record('a_font', 'font');
+    s.assets.assets.a_doc = record('a_doc', 'document');
+    const page = home(s);
+    page.nodes.n_img = { id: 'n_img', kind: 'image', image: { assetId: 'a_font', alt: 'x' } };
+    page.rootIds.push('n_img');
+    s.site.favicon = 'a_font';
+    s.site.socialImage = 'a_doc';
+    page.seo.socialImage = 'a_font';
+    // A project component's picture default is shown by every placement that sets none.
+    const f = fork(s, 'hero.split');
+    const pictureProp = Object.entries(f.state.components[f.id].properties).find(([, sch]) => sch.type === 'image')![0];
+    (f.state.components[f.id].properties[pictureProp] as { default: unknown }).default = { assetId: 'a_doc', alt: '' };
+    expect(codes(f.state, 'ASSET_NOT_IMAGE').filter((d) => d.owner?.id === f.id).map((d) => d.message)).toEqual([expect.stringMatching(/the default of “.+” shows “a_doc\.file”, which is a document/)]);
+    const found = codes(s, 'ASSET_NOT_IMAGE');
+    expect(found.map((d) => d.message)).toEqual([
+      expect.stringMatching(/an image shows “a_font\.file”, which is a font, not a picture/),
+      'The site icon is “a_font.file”, which is a font, not a picture. Choose an image instead.',
+      'The site’s sharing image is “a_doc.file”, which is a document, not a picture. Choose an image instead.',
+      `${page.title}: the page’s sharing image is “a_font.file”, which is a font, not a picture. Choose an image instead.`
+    ]);
+    expect(found.every((d) => d.severity === 'error')).toBe(true);
+  });
+
+  it('leaves the stored items of a computed list alone: the site’s pages fill it', () => {
+    const s = fresh();
+    s.assets.assets.a_doc = { id: 'a_doc', name: 'guide.pdf', file: 'static/a_doc', mime: 'application/pdf', bytes: 10, hash: 'a_doc', kind: 'document', createdAt: '2026-01-01T00:00:00.000Z' };
+    const grid = firstInstance(s, 'features.grid');
+    const def = s.components[grid.definitionId];
+    const items = def.properties.items as { type: 'list'; feed?: string; fields: Record<string, unknown> };
+    items.fields.image = { type: 'image', label: 'Image' };
+    grid.props.items = [{ id: 'x', image: { assetId: 'a_doc', alt: '' } }];
+    expect(codes(s, 'ASSET_NOT_IMAGE').map((d) => d.nodeId)).toEqual([grid.id]);
+    items.feed = 'articles';
+    expect(codes(s, 'ASSET_NOT_IMAGE')).toEqual([]);
   });
 });

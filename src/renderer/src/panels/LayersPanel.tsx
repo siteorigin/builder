@@ -513,7 +513,8 @@ function moveDestinations(st: ProjectState, tree: NodeTree, owner: OwnerRef, ids
     }
     return names;
   };
-  if (here.parentId !== null) out.push({ path: [owner.kind === 'component' ? 'Top level of this component' : 'Top level of the page'], parentId: null, index: tree.rootIds.length });
+  // A component has one top-level element, the component itself: nothing moves beside it.
+  if (here.parentId !== null && owner.kind !== 'component') out.push({ path: ['Top level of the page'], parentId: null, index: tree.rootIds.length });
   // Walk the tree in outline order, so numbered duplicates follow the order the user sees.
   const ordered: GraphNode[] = [];
   const walk = (id: string) => {
@@ -672,6 +673,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
     }
     const target = findParent(tree, id);
     if (!target) return null;
+    // A component has one top-level element, the component itself: nothing is dropped beside it.
+    if (!target.parentId && owner.kind === 'component') return null;
     // A repeated item's template is edited through its list, not by moving layers into or within it.
     if (target.parentId && tree.nodes[target.parentId]?.kind === 'repeat') return null;
     let index = target.index + (where === 'after' ? 1 : 0);

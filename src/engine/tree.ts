@@ -74,6 +74,16 @@ export function subtreeIds(tree: NodeTree, nodeId: string): string[] {
   return out;
 }
 
+/**
+ * Whether a component definition's tree has the one root it renders through: the generator gives `rootIds[0]` the
+ * component's classes, anchor and variant rules, so it is a single element of its own (not a repeat or a slot). A
+ * design from an older version may not have it yet.
+ */
+export function settledRoot(tree: NodeTree): boolean {
+  const root = tree.rootIds.length === 1 && Object.hasOwn(tree.nodes, tree.rootIds[0]) ? tree.nodes[tree.rootIds[0]] : undefined;
+  return !!root && root.kind !== 'repeat' && root.kind !== 'slot';
+}
+
 export function isDescendant(tree: NodeTree, ancestorId: string, nodeId: string): boolean {
   return subtreeIds(tree, ancestorId).includes(nodeId);
 }

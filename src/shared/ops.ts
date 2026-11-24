@@ -116,7 +116,7 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('node.insert'),
     newNodeId: z.string().regex(/^n_[a-z0-9]{4,32}$/).optional().describe('Internal: lets one batch insert a node and fill it. Not offered to the model.'),
     owner,
-    parentId: z.string().nullable().optional().describe('Parent element or instance node. Omit or null to insert a top-level section.'),
+    parentId: z.string().nullable().optional().describe('Parent element or instance node. Omit or null to insert a top-level section on a page; a component definition has one top-level element, so insert inside it.'),
     slot: z.string().optional().describe('Slot name when inserting into a component instance slot (e.g. "content").'),
     index: z.number().int().min(0).optional().describe('Position among siblings. Defaults to the end.'),
     componentId: z.string().optional().describe('Catalogue component ID such as "features.grid".'),
@@ -149,7 +149,7 @@ export const OPERATION_SCHEMAS = {
       owner,
       nodeId: z.string().describe('The node to copy, in `owner`.'),
       toOwner: owner.describe('Document the copy goes into: another page, or the same one.'),
-      parentId: z.string().nullable().optional().describe('Parent element or instance in `toOwner`. Omit or null for a top-level section.'),
+      parentId: z.string().nullable().optional().describe('Parent element or instance in `toOwner`. Omit or null for a top-level section of a page.'),
       slot: z.string().optional(),
       index: z.number().int().min(0).optional().describe('Position among siblings. Defaults to the end.')
     })

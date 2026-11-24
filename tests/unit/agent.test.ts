@@ -97,6 +97,28 @@ async function setup(turns: Turn[], opts: SetupOptions = {}) {
 }
 
 describe('agent orchestrator', () => {
+  it('keeps a rename of a page that already had a problem, which the run did not bring in (#205)', async () => {
+    let applied: { error?: unknown } = {};
+    const { session, run } = await setup([
+      (req) => {
+        const home = session.state.pages[session.state.site.homePageId];
+        return [call('r1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'page.update', pageId: home.id, title: 'Start here' }] })];
+      },
+      (req) => {
+        applied = JSON.parse((req.items.at(-1) as { content: string }).content);
+        return finish('Renamed the home page.');
+      }
+    ]);
+    // A page node showing a component property, as an older file can hold: its message names the page.
+    const home = session.state.pages[session.state.site.homePageId];
+    home.nodes.n_bound = { id: 'n_bound', kind: 'text', tag: 'p', text: { $prop: 'heading' } };
+    home.rootIds.push('n_bound');
+    const { result } = await run('Rename the home page to Start here');
+    expect(applied.error).toBeUndefined();
+    expect(result?.status).toBe('completed');
+    expect(session.state.pages[session.state.site.homePageId].title).toBe('Start here');
+  });
+
   it('completes a multi-tool run as one history group that can be undone (A02, A09)', async () => {
     const { session, run } = await setup([
       () => [call('c1', 'read_project', {})],
@@ -1463,8 +1485,8 @@ describe('Edit everywhere without Developer mode (#191)', () => {
               expectedRevision: 1,
               operations: [
                 { type: 'component.setPropSchema', definitionId: def.id, prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: 'Made by hand' } },
-                // A new top-level node: a design can have more than one.
-                { type: 'node.insert', owner: def.owner, primitive: 'paragraph', text: 'Made by hand' }
+                // Inside the component's root, its one top-level node (#205).
+                { type: 'node.insert', owner: def.owner, parentId: def.root, primitive: 'paragraph', text: 'Made by hand' }
               ]
             })
           ];
@@ -1495,8 +1517,10 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     expect(result?.status).toBe('completed');
     const after = env.session.state.components[def.id];
     expect(after.properties.tagline).toMatchObject({ type: 'string', label: 'Tagline' });
-    expect(after.tree!.rootIds).toHaveLength(2);
-    const tagline = after.tree!.nodes[after.tree!.rootIds[1]];
+    expect(after.tree!.rootIds).toEqual([def.root]);
+    const taglineId = inserted.results!.find((x) => x?.nodeId)!.nodeId!;
+    expect(after.tree!.nodes[def.root]).toMatchObject({ children: expect.arrayContaining([taglineId]) });
+    const tagline = after.tree!.nodes[taglineId];
     expect(JSON.stringify(tagline)).toContain('"$prop":"tagline"');
     // Nothing on the page behind the component changed.
     expect(env.session.state.pages[env.session.state.site.homePageId]).toEqual(page);
@@ -1564,8 +1588,11 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     const hero = base.pages[homeId].nodes[base.pages[homeId].rootIds[0]] as InstanceNode;
     const forked = applyOperations(base, [{ type: 'component.fork', definitionId: hero.definitionId }]);
     const id = (forked.results[0] as { definitionId: string }).definitionId;
-    // A second top-level node, as an insert without a parent makes.
-    const { state } = applyOperations(forked.state, [{ type: 'node.insert', owner: { kind: 'component', id }, primitive: 'paragraph', text: 'Second' }]);
+    // A second top-level node, as a design from an older version can have (an insert without a parent no longer makes
+    // one, #205); the request's reach still covers every top-level node.
+    const state = structuredClone(forked.state);
+    state.components[id].tree!.nodes.n_second = { id: 'n_second', kind: 'text', tag: 'p', text: 'Second' };
+    state.components[id].tree!.rootIds.push('n_second');
     const def = state.components[id];
     const [root, second] = def.tree!.rootIds;
     const owner = { kind: 'component' as const, id };
@@ -1588,6 +1615,11 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     keepsRoot({ type: 'node.move', owner, nodeId: root, parentId: 'content', index: 0 });
     keepsRoot({ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'paragraph' });
     keepsRoot({ type: 'node.remove', owner, nodeId: root });
+    // A design without its one root (as this one is) is put right with a container that goes first and holds the old
+    // first root: those two steps are allowed, and nothing else changes what comes first (#205).
+    allow({ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'container' });
+    allow({ type: 'node.move', owner, nodeId: root, parentId: second, index: 0 });
+    keepsRoot({ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'heading' });
     // A placement inside the design becoming a component of its own adds to the site's components.
     const nested = applyOperations(state, [{ type: 'node.insert', owner, parentId: 'content', componentId: 'cta.banner' }]);
     const placed = (nested.results[0] as { nodeId: string }).nodeId;
@@ -1622,10 +1654,10 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     // The component has gone (its copy was undone): nothing may change.
     expect(checkAuthority(base, [{ type: 'node.setStyle', owner, nodeId: 'heading', scope: 'base', style: 'color', value: '#000' } as unknown as EditOperation], authority)).toMatch(/no longer in the site/);
     // Removing a slot whose placeholder is the root would make the next node the root.
-    const slotFirst = applyOperations(state, [
-      { type: 'component.setSlot', definitionId: id, slot: 'lead', label: 'Lead' },
-      { type: 'node.insert', owner, parentId: null, index: 0, primitive: 'slot', bind: 'lead' }
-    ]).state;
+    // (A design from an older version: a slot can no longer be inserted at the top level, #205.)
+    const slotFirst = applyOperations(state, [{ type: 'component.setSlot', definitionId: id, slot: 'lead', label: 'Lead' }]).state;
+    slotFirst.components[id].tree!.nodes.n_lead = { id: 'n_lead', kind: 'slot', slot: 'lead' };
+    slotFirst.components[id].tree!.rootIds.unshift('n_lead');
     expect(checkAuthority(slotFirst, [{ type: 'component.removeSlot', definitionId: id, slot: 'lead' }], authority)).toMatch(/keep it first/);
     // A selection inside the design cannot make a placement in it a component of its own either.
     const inner: Authority = { kind: 'selection', owner, nodeId: placed, label: 'Banner' };

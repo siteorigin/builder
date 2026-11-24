@@ -15,7 +15,7 @@ import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
-import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
+import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
@@ -884,7 +884,7 @@ export class ProjectSession extends EventEmitter {
         } catch (e) {
           return { ok: false, message: `The external version of ${path} could not be read, so it was not kept: ${(e as Error).message}` };
         }
-        const errors = validateState(next, { sectionLinks: false }).filter(blocksSaving);
+        const errors = this.introducedProblems(next);
         if (errors.length) return { ok: false, message: `Keeping the external version of ${path} would leave the site inconsistent: ${errors.slice(0, 3).map((d) => d.message).join(' ')} Restore SiteOrigin Builder's version instead, or fix the file.` };
         for (const def of Object.values(next.components)) {
           if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
@@ -1607,8 +1607,7 @@ export class ProjectSession extends EventEmitter {
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }
-      const before = this.savingProblems(this.state).map((d) => d.message);
-      const introduced = this.savingProblems(next).filter((d) => !before.includes(d.message));
+      const introduced = introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
       if (introduced.length)
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
@@ -1664,6 +1663,14 @@ export class ProjectSession extends EventEmitter {
   /** Problems that stop a state from being saved. */
   private savingProblems(state: ProjectState): Diagnostic[] {
     return this.memo(state, 'saving', (st) => validateState(st, { sectionLinks: false }).filter(blocksSaving));
+  }
+
+  /**
+   * The problems stopping `next` from being saved that the open project does not already have: an external change is
+   * refused for what it brings in, as an edit is, not for an older problem it leaves as it was.
+   */
+  private introducedProblems(next: ProjectState): Diagnostic[] {
+    return introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next), { byNode: true });
   }
 
   /**
@@ -2936,7 +2943,7 @@ export class ProjectSession extends EventEmitter {
         if (settled) this.emit('history');
         return { ok: false, message: (e as Error).message };
       }
-      const errors = validateState(next, { sectionLinks: false }).filter(blocksSaving);
+      const errors = this.introducedProblems(next);
       if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
       const pin = themePinProblem(next);
       if (pin) return { ok: false, message: `The changed files were not loaded: ${pin}` };
