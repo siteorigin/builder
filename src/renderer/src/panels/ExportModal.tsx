@@ -2,6 +2,7 @@ import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalS
 import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
 import { describeDraftLink, publicationPlan, type DraftLink } from '@generator/checks';
 import type { PageDoc, ProjectState } from '@shared/types';
+import type { SiteEntry } from '@shared/collections';
 import type { ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
@@ -13,6 +14,7 @@ import { websiteFormNotes, websiteTrees } from '@engine/validate';
 import { publishedState } from '@generator/index';
 import { destinationLabel, noteState } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
+import { draftEntriesSentence, publishedEntriesSentence } from '../lib/export-summary';
 
 type ExportKind = 'static' | 'source';
 
@@ -129,26 +131,39 @@ function PageList({ title, pages }: { title: string; pages: PageDoc[] }) {
   );
 }
 
-/** What the website export publishes and leaves out: named when the list is short, counted when it is long. */
-function PagesSummary({ published, drafts }: { published: PageDoc[]; drafts: PageDoc[] }) {
+/**
+ * What the website export publishes and leaves out: pages named when the list is short, counted when it is long, and
+ * collection entries (blog posts, say) counted by their collection, so a published post is seen to go out and a draft
+ * post to stay behind.
+ */
+function PagesSummary({ published, drafts, publishedEntries, draftEntries }: { published: PageDoc[]; drafts: PageDoc[]; publishedEntries: SiteEntry[]; draftEntries: SiteEntry[] }) {
   const listId = useId();
   const [open, setOpen] = useState(false);
   const all = [...published, ...drafts];
   // Counted, not named, when there are many pages or their titles would run long.
   const long = all.length > LONG_PAGE_LIST || all.reduce((n, p) => n + p.title.length, 0) > LONG_TITLES;
+  const alsoPublished = publishedEntriesSentence(publishedEntries);
   return (
     <div className="export-pages" data-testid="export-pages">
       <p>
         <Globe size={14} aria-hidden /> <span>
-          <strong>The website publishes {published.length === 1 ? '1 page' : `${published.length} pages`}{long ? '.' : ':'}</strong>{!long && ` ${listTitles(published, all)}.`}
+          <strong>The website publishes {published.length === 1 ? '1 page' : `${published.length} pages`}{long ? '.' : ':'}</strong>{!long && ` ${listTitles(published, all)}.`}{alsoPublished && ` ${alsoPublished}`}
         </span>
       </p>
-      {drafts.length > 0 && (
+      {drafts.length > 0 ? (
         <p data-testid="export-drafts">
           <FilePen size={14} aria-hidden /> <span>
-            <strong>{drafts.length === 1 ? '1 draft is' : `${drafts.length} drafts are`} left out{long ? '.' : ':'}</strong>{!long && ` ${listTitles(drafts, all)}.`} Drafts stay in the editable project; hiding a page from search engines doesn’t leave it out.
+            <strong>{drafts.length === 1 ? '1 draft is' : `${drafts.length} drafts are`} left out{long ? '.' : ':'}</strong>{!long && ` ${listTitles(drafts, all)}.`}{draftEntries.length > 0 && ` ${draftEntriesSentence(draftEntries, true)}`} Drafts stay in the editable project; hiding a page from search engines doesn’t leave it out.
           </span>
         </p>
+      ) : (
+        draftEntries.length > 0 && (
+          <p data-testid="export-drafts">
+            <FilePen size={14} aria-hidden /> <span>
+              <strong>{draftEntriesSentence(draftEntries, false)}</strong> Drafts stay in the editable project.
+            </span>
+          </p>
+        )
       )}
       {long && (
         <>
@@ -748,7 +763,7 @@ export function ExportModal() {
             )}
             {state && <FormReview notes={formNotes} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
-            {plan && <PagesSummary published={plan.published} drafts={plan.drafts} />}
+            {plan && <PagesSummary published={plan.published} drafts={plan.drafts} publishedEntries={plan.publishedEntries} draftEntries={plan.draftEntries} />}
             <div className="export-choice" role="group" aria-labelledby="export-choice-title">
               <div className="export-choice-head">
                 <h3 id="export-choice-title">Choose an export</h3>

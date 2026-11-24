@@ -850,6 +850,14 @@ for (let open = 0; open < 2; open++) {
   const items = history.getByRole('listitem');
   await items.first().waitFor();
   assert.equal(await items.count(), recent.length, 'the dialog lists every export');
+  // #568: the summary counts the posts the website publishes and the draft posts it leaves out, as it does pages.
+  const posts = Object.values((await win.evaluate(() => window.builder.project.snapshot())).state.collections.posts.entries);
+  const live = posts.filter((p) => p.draft === false).length;
+  const held = posts.length - live;
+  assert.ok(live > 1 && held > 0, 'the blog has published posts and a draft');
+  assert.match(await modal.getByTestId('export-pages').first().innerText(), new RegExp(`It also publishes ${live} entries from Posts\\.`), 'the summary counts the published posts');
+  const heldPhrase = held === 1 ? '1 draft entry from Posts is' : `${held} draft entries from Posts are`;
+  assert.match(await modal.getByTestId('export-drafts').innerText(), new RegExp(`${heldPhrase}( also)? left out`), 'the summary says the draft posts are left out');
   for (const [i, e] of recent.entries()) {
     const item = items.nth(i);
     const text = await item.innerText();

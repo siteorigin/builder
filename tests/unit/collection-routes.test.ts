@@ -214,6 +214,34 @@ describe('draft entries and the website export', () => {
     expect(publishedState(s).site.redirects).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
   });
 
+  it('lists the entries the website publishes and the drafts it leaves out, beside the pages (#568)', () => {
+    const s = blog();
+    const plan = publicationPlan(s);
+    // Newest first, as the collection lists them; each with the address its page has.
+    expect(plan.publishedEntries.map((e) => [e.entry.id, e.collection.settings.id, e.route])).toEqual([
+      ['en_spring', 'posts', '/blog/spring-open-studio/'],
+      ['en_winter', 'posts', '/blog/winter-workshop/']
+    ]);
+    expect(plan.draftEntries.map((e) => e.entry.id)).toEqual(['en_secret']);
+    // The pages are reported as before.
+    expect(plan.drafts).toEqual([]);
+    expect(plan.published.length).toBeGreaterThan(0);
+    // Every entry published: the plan's short path (no drafts at all) reports them too.
+    const all = publicationPlan(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false }));
+    expect(all.draftEntries).toEqual([]);
+    expect(all.publishedEntries.map((e) => e.entry.id)).toEqual(['en_secret', 'en_spring', 'en_winter']);
+    // Only drafts: nothing of the collection is published.
+    const onlyDrafts = publicationPlan(run(s, ...['en_winter', 'en_spring'].map((entryId): EditOperation => ({ type: 'entry.update', collectionId: 'posts', entryId, draft: true }))));
+    expect(onlyDrafts.publishedEntries).toEqual([]);
+    expect(onlyDrafts.draftEntries.map((e) => e.entry.id).sort()).toEqual(['en_secret', 'en_spring', 'en_winter']);
+    // A site without collections has none.
+    expect(publicationPlan(createStarterState('business', 'Riverside Studio', false))).toMatchObject({ publishedEntries: [], draftEntries: [] });
+    // An entry at an address the site cannot have is no page of the website, so it is not counted.
+    const damaged = structuredClone(s);
+    damaged.collections.posts.entries.en_winter.slug = 'Not a slug';
+    expect(publicationPlan(damaged).publishedEntries.map((e) => e.entry.id)).toEqual(['en_spring']);
+  });
+
   it('stops the website export over a typed address of a draft entry, naming it', () => {
     const s = run(blog(), rename('en_secret', 'plans'));
     const home = s.site.homePageId;
