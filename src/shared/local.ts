@@ -20,10 +20,13 @@ export const LOCAL_PRESETS = [
 
 export const DEFAULT_LOCAL_SETTINGS: LocalProviderSettings = { baseURL: LOCAL_PRESETS[0].baseURL, allowRemote: false, toolMode: 'auto' };
 
-/** Hostnames as normalized by `URL`, which already rewrites forms such as 2130706433 to 127.0.0.1. */
+/**
+ * Loopback addresses as normalized by `URL`, which already rewrites forms such as 2130706433 to 127.0.0.1. Only
+ * literal addresses count: a name is whatever the resolver says, and `localhost` can be mapped anywhere.
+ */
 export function isLoopbackHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
-  return h === 'localhost' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h) || h === '[::1]' || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(h);
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h) || h === '[::1]' || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(h);
 }
 
 export type LocalURLCheck = { ok: true; url: string; remote: boolean } | { ok: false; message: string };
@@ -42,9 +45,23 @@ export function checkLocalBaseURL(raw: string, allowRemote = false): LocalURLChe
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, message: 'The server URL must start with http:// or https://.' };
   if (u.username || u.password) return { ok: false, message: 'Remove the username and password from the server URL. Use the API key field instead.' };
   if (u.search || u.hash) return { ok: false, message: 'The server URL cannot include a query string or fragment.' };
+  // `localhost` is used as the address it stands for, so the request never depends on how the name resolves.
+  if (u.hostname === 'localhost') u.hostname = '127.0.0.1';
   const remote = !isLoopbackHost(u.hostname);
   // Strictly true: a hand-edited settings file holding "false" must not count as permission.
   if (remote && allowRemote !== true) return { ok: false, message: `${u.hostname} is not on this computer. Turn on "Allow a server on another machine" to send project content there.` };
   const path = u.pathname.replace(/\/+$/, '') || '/v1';
   return { ok: true, url: `${u.protocol}//${u.host}${path}`, remote };
+}
+
+/**
+ * Why a key cannot be used for a local server, or null when it can. A recognizable OpenAI or Anthropic key is
+ * refused: it would be sent to the local server as typed, and that key belongs to a cloud account. Legacy OpenAI
+ * keys are long and purely alphanumeric after `sk-`, so short or hyphenated keys a local server was started with
+ * (`sk-no-key-required`) still work.
+ */
+export function localKeyProblem(key: string | null | undefined): string | null {
+  const k = String(key ?? '').trim();
+  const provider = /^sk-ant-\S/.test(k) ? 'Anthropic' : /^sk-(proj|svcacct|admin)-\S/.test(k) || /^sk-[A-Za-z0-9]{32,}$/.test(k) ? 'OpenAI' : null;
+  return provider ? `This looks like an ${provider} API key, which is never sent to a local server. Enter the key your local server was started with, or leave the field empty.` : null;
 }

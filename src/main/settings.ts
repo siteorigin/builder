@@ -6,7 +6,7 @@ import { atomicWrite } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
 import type { LocalEndpoint } from '@agent/local';
-import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS } from '@shared/local';
+import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS, localKeyProblem } from '@shared/local';
 
 interface SettingsFile {
   settings: AppSettings;
@@ -137,6 +137,9 @@ async function readStoredKeys(): Promise<Partial<Record<ProviderId, string>>> {
 }
 
 export async function setKey(provider: ProviderId, key: string | null) {
+  // Checked before anything is read or written, so a refused key leaves the saved one as it was.
+  const problem = provider === 'local' && key ? localKeyProblem(key) : null;
+  if (problem) throw new Error(problem);
   const keys = await readStoredKeys();
   if (key) keys[provider] = key.trim();
   else delete keys[provider];

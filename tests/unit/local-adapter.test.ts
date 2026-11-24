@@ -8,7 +8,7 @@ import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { DEFAULT_LOCAL_PROFILE, localModelProfile, modelInfo } from '@agent/models';
 import { toolDefinitions } from '@agent/tools';
 import { fixComponentSource } from '@agent/fixer';
-import { checkLocalBaseURL, LOCAL_PRESETS } from '@shared/local';
+import { checkLocalBaseURL, LOCAL_PRESETS, localKeyProblem } from '@shared/local';
 import type { CanonicalModelRequest, ModelEvent, ToolDefinition } from '@agent/types';
 import { closedPort, DONE, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
@@ -472,6 +472,44 @@ describe('where a request may go', () => {
 
   it.each(['not a url', 'ftp://127.0.0.1/v1', 'file:///etc/passwd', 'http://user:pass@127.0.0.1/v1', 'http://127.0.0.1/v1?x=1', 'http://127.0.0.1/v1#a'])('rejects %s', (url) => {
     expect(checkLocalBaseURL(url, true).ok).toBe(false);
+  });
+
+  it('uses localhost as the loopback address, so how the name resolves never decides where a request goes', async () => {
+    const port = new URL(server.baseURL).port;
+    expect(checkLocalBaseURL(`http://LOCALHOST:${port}/v1/`)).toEqual({ ok: true, url: server.baseURL, remote: false });
+    expect(checkLocalBaseURL(`http://localhost:${port}/v1`, true)).toEqual({ ok: true, url: server.baseURL, remote: false });
+    const targets: string[] = [];
+    const fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      targets.push(String(input));
+      return globalThis.fetch(input, init);
+    }) as typeof globalThis.fetch;
+    server.script(textReply('ok'));
+    const endpoint = { baseURL: `http://localhost:${port}/v1`, model: 'test-model', apiKey: 'local-secret', toolMode: 'native' as const };
+    expect((await listLocalModels(endpoint, { fetch })).ok).toBe(true);
+    expect(doneOf(await run(new LocalAdapter(endpoint, { fetch }), { tools: [] })).text).toBe('ok');
+    expect(targets).toEqual([`${server.baseURL}/models`, `${server.baseURL}/chat/completions`]);
+  });
+
+  it.each([
+    ['sk-proj-Abc123_def-456', 'OpenAI'],
+    ['sk-svcacct-Abc123', 'OpenAI'],
+    ['sk-admin-Abc123', 'OpenAI'],
+    [`sk-${'T3BlbkFJ'.repeat(6)}`, 'OpenAI'],
+    ['  sk-ant-api03-Abc123_def-456  ', 'Anthropic']
+  ])('recognizes the cloud key %s', (key, provider) => {
+    expect(localKeyProblem(key)).toContain(`an ${provider} API key`);
+  });
+
+  it.each(['', '   ', 'local-secret', 'sk-no-key-required', 'sk-local-dev', 'sk-1234567890abcdefghijkl', 'lm-studio'])('accepts the local key "%s"', (key) => {
+    expect(localKeyProblem(key)).toBeNull();
+  });
+
+  it('never sends a cloud key to a local server, even one on another machine', async () => {
+    const endpoint = { baseURL: server.baseURL, model: 'test-model', apiKey: 'sk-ant-api03-secret', allowRemote: true };
+    expect(errorOf(await run(new LocalAdapter(endpoint), { tools: [] }))).toMatchObject({ code: 'invalid_request', message: expect.stringMatching(/Anthropic API key/) });
+    expect(await listLocalModels(endpoint)).toMatchObject({ ok: false, message: expect.stringMatching(/Anthropic API key/) });
+    expect(await testLocal(endpoint)).toMatchObject({ ok: false, message: expect.stringMatching(/Anthropic API key/) });
+    expect(server.requests).toEqual([]);
   });
 
   it('counts only a real true as permission', () => {

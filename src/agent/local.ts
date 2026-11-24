@@ -1,5 +1,5 @@
 import { newId } from '@shared/ids';
-import { checkLocalBaseURL, type LocalToolMode, type LocalURLCheck } from '@shared/local';
+import { checkLocalBaseURL, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall } from './types';
 import { redact } from './types';
 import { envelopeInstructions, envelopeSchema, FINISH_ACTION, parseEnvelope, partialStatus, stripThinking } from './constrained';
@@ -396,6 +396,12 @@ export class LocalAdapter implements AgentModelAdapter {
       yield { type: 'error', code: 'invalid_request', message: this.url.message };
       return;
     }
+    // A key saved before cloud keys were refused is still never sent.
+    const keyProblem = localKeyProblem(this.endpoint.apiKey);
+    if (keyProblem) {
+      yield { type: 'error', code: 'invalid_request', message: keyProblem };
+      return;
+    }
     // The code fixer sends no tools and expects a plain text answer.
     const constrained = this.mode === 'constrained-json' && req.tools.length > 0;
     const corrections: ChatMessage[] = [];
@@ -586,6 +592,8 @@ export class LocalAdapter implements AgentModelAdapter {
 export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
   const url = checkLocalBaseURL(endpoint.baseURL, endpoint.allowRemote);
   if (!url.ok) return { ok: false, models: [], message: url.message };
+  const keyProblem = localKeyProblem(endpoint.apiKey);
+  if (keyProblem) return { ok: false, models: [], message: keyProblem };
   try {
     const res = await (opts.fetch ?? globalThis.fetch)(`${url.url}/models`, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS) });
     if (!res.ok) return { ok: false, models: [], message: httpError(res.status, await res.text().catch(() => ''), 'that model', undefined, endpoint.apiKey).message };

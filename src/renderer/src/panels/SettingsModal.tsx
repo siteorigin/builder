@@ -4,6 +4,7 @@ import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
 import { api, setState, useStore, confirmDialog } from '../store';
 import { Field, Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { LocalModelSettings, type LocalServerStatus } from './LocalModelSettings';
+import { localKeyProblem } from '@shared/local';
 
 /** A connection test's outcome, shown only while what it tested is still what is on screen. */
 type TestResult = { signature: string; provider: ProviderId; edits: number; ok: boolean; message: string; draft: boolean };
@@ -304,10 +305,13 @@ export function SettingsModal() {
 
   // A key that just failed its test can still be saved, but is no longer the suggested next step.
   const draftFailed = unsavedKey && !!test && !test.ok && test.draft && test.provider === provider && test.edits === keyEdits;
+  // A cloud provider's key typed for a local server is refused here and again by the main process, which never stores it.
+  const keyProblem = isLocal && enteringKey ? localKeyProblem(keys.local) : null;
   const keyField = status && (
     <Field
       controlId={enteringKey ? 'settings-api-key' : undefined}
       label={isLocal ? 'API key (optional)' : `${status.label} API key`}
+      error={keyProblem}
       hint={
         isLocal
           ? 'Only needed if your server asks for one.'
@@ -322,6 +326,7 @@ export function SettingsModal() {
             <input
               id="settings-api-key"
               aria-describedby="settings-api-key-note settings-connection"
+              aria-invalid={keyProblem ? true : undefined}
               className="input grow mono"
               type="password"
               autoComplete="off"
@@ -332,7 +337,7 @@ export function SettingsModal() {
                 setKeyEdits((n) => n + 1);
                 setKeyNotice(null);
               }}
-              onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && void saveKey()}
+              onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && !keyProblem && void saveKey()}
             />
             {replacing[provider] && (
               <button
@@ -346,7 +351,7 @@ export function SettingsModal() {
                 Cancel
               </button>
             )}
-            <button className={`btn${unsavedKey && !draftFailed ? ' btn-primary' : ''}`} disabled={!unsavedKey} aria-disabled={keyBusy || undefined} onClick={() => void saveKey()}>
+            <button className={`btn${unsavedKey && !draftFailed && !keyProblem ? ' btn-primary' : ''}`} disabled={!unsavedKey || !!keyProblem} aria-disabled={keyBusy || undefined} onClick={() => void saveKey()}>
               {keyBusy ? 'Saving key…' : 'Save key'}
             </button>
           </div>
