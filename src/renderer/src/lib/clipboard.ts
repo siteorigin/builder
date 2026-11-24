@@ -17,16 +17,18 @@ import { refLabel } from './model';
  *  it could not; `previous` is the copy before it in the same opening, which a paste falls back to while this one is
  *  failing (dropped once it succeeds). `primary` and `anchor`: which of several was the selection, and where its
  *  Shift range started, for the paste to select the copies the same way. */
-type Copied = { dir: string; opening: string; label: string; section: boolean; count: number; primary: number; anchor: number; clipboardId: Promise<string | null>; previous: Copied | null };
+type Copied = { dir: string; opening: string; label: string; section: boolean; count: number; primary: number; anchor: number; clipboardId: Promise<string | null>; previous: Copied | null; refused?: boolean };
 let copied: Copied | null = null;
 /** The latest copy, once its project has closed or another has opened: kept only to say why a Paste there does
  *  nothing. Its project folder tells another project from the same one opened again. */
 let left: { dir: string; label: string; count: number } | null = null;
 
 /** Each project holds its own copies, so they are forgotten when the project closes; a Paste in the next one says why
- *  nothing was pasted. */
+ *  nothing was pasted, naming the latest copy not refused in front of the author (one still being taken counts). */
 export function forgetCopy() {
-  if (copied) left = { dir: copied.dir, label: copied.label, count: copied.count };
+  let kept = copied;
+  while (kept?.refused) kept = kept.previous;
+  if (kept) left = { dir: kept.dir, label: kept.label, count: kept.count };
   copied = null;
 }
 
@@ -48,8 +50,13 @@ export function copySelection(plan: LayersPlan | null = planLayers()): boolean {
   if (!snap.workspaceKey || snap.workspaceKey !== openingNow()) return true;
   const label = plan.several ? groupName(snap.state, g) : refLabel(snap.state, layerRef(g.owner, g.ids[0]));
   const sameProject = () => openingNow() === snap.workspaceKey;
+  // A failure the author was shown is not a copy; one that came after they left the project went unseen, and to them
+  // it was copied there.
   const failed = (message?: string) => {
-    if (sameProject()) toast(message ?? `${label} could not be copied.`, 'error');
+    if (sameProject()) {
+      entry.refused = true;
+      toast(message ?? `${label} could not be copied.`, 'error');
+    }
     return null;
   };
   const at = (id: string | undefined) => Math.max(0, g.ids.indexOf(id ?? ''));
@@ -94,7 +101,7 @@ export function pasteCopy(): boolean {
   toast(
     left.dir === dir
       ? `Nothing was pasted. Closing the project cleared the copy of ${left.label}. Copy it again to paste it.`
-      : `Nothing was pasted. ${left.label} ${left.count > 1 ? 'were' : 'was'} copied in another project, and a copy can only be pasted in the project it came from.`,
+      : `Nothing was pasted. ${left.label} ${left.count > 1 ? 'were' : 'was'} copied in another project, and copies can only be pasted in the project they were copied in, while it stays open.`,
     'info'
   );
   return true;
