@@ -13,7 +13,8 @@ import { applyOps } from '../store';
 import { Field, Section } from '../components/ui';
 
 interface Place {
-  field: BindField;
+  /** A field node.setBinding sets: a filter's switch is set with the rest of its design. */
+  field: Exclude<BindField, 'filter'>;
   prop?: string;
   label: string;
   nested?: PropSchema;

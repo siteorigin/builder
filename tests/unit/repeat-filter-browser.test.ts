@@ -332,6 +332,8 @@ describe.skipIf(!browserInstalled)('generated category filters in a browser', ()
       await mode(opened, 'preview');
       await first.getByRole('button', { name: 'Commercial' }).click();
       await expect.poll(async () => (await state(site))[0].shown).toEqual(['Corner shop']);
+      await site.locator('.so-filter').nth(1).getByRole('button', { name: 'Restoration' }).click();
+      await expect.poll(async () => (await state(site))[1].shown).toEqual(['Old chapel']);
       await mode(opened, 'edit');
       // The filter's choice stays in Edit until the inspector opens a card it hides: then every card shows again.
       expect((await state(site))[0].shown).toEqual(['Corner shop']);
@@ -342,8 +344,8 @@ describe.skipIf(!browserInstalled)('generated category filters in a browser', ()
       await post(opened, 'reveal', { target: { ctx, list: 'items', items: id, nodes: ['card'], within: { card: 0, title: 0 } } });
       await expect.poll(async () => (await state(site))[0]).toMatchObject({ shown: ALL, status: '4 items showing' });
       expect(pressed((await state(site))[0].pills)).toEqual(['All']);
-      // The second placement, never filtered, is untouched, and the card asked for is on screen.
-      expect((await state(site))[1].shown).toEqual(ALL);
+      // The second placement keeps its own choice, and the card asked for is on screen.
+      expect((await state(site))[1].shown).toEqual(['Old chapel']);
       expect(await lake.isVisible()).toBe(true);
     } finally {
       await page.close();

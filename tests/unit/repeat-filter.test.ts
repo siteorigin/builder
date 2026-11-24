@@ -23,6 +23,7 @@ import { UTIL_JS } from '@generator/runtime-files';
 import { P, type ComponentSpec } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
 import { MIGRATIONS } from '@shared/migrations';
+import { partReach } from '@agent/scope';
 import { VISITOR_TEXT_GROUPS, visitorTextFor } from '@shared/visitor-text';
 
 const { managed } = FOUNDATION;
@@ -222,14 +223,24 @@ describe('generated category filters', () => {
     const css = generateComponentsCss(s);
     expect(css).toContain(`@media not print {\n\t.${FILTER_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`);
     expect(css).toContain(`@media print {\n\t.so-filter:not(#so-print) { display: none !important; }\n}`);
+    // The status is read out but not shown, whatever the theme's own CSS has.
+    expect(css).toContain('.so-filter__status { position: absolute; width: 1px; height: 1px;');
   });
 
-  it('keeps its hiding rules in a code copy of the design', () => {
-    const s = fresh();
-    const def = gridDef(s);
-    const code = generateStandaloneComponent(s, def);
-    expect(code).toContain(`.${FILTER_OFF_CLASS}:not(#so-print)`);
-    expect(compile(code, { filename: 'Copy.svelte', generate: 'client', runes: true }).warnings.map((w) => w.code)).toEqual([]);
+  it('keeps filtering, with its hiding rules, in a code copy of a placement', () => {
+    const s = blank();
+    const grid = foundation(s, 'features.grid');
+    const node = place(s, grid, { filterable: true });
+    const r = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id }]);
+    const copy = r.state.components[(r.results[0] as { definitionId: string }).definitionId];
+    expect(copy.kind).toBe('code');
+    const code = copy.source!;
+    expect(code).toContain('let so_filter_0 = $state(null);');
+    expect(code).toContain('<div class="so-filter" role="group"');
+    // The rules reach a card a helper renders, outside the copy's own markup.
+    expect(code).toContain(`:global(.${FILTER_OFF_CLASS}:not(#so-print))`);
+    expect(code).toContain(`:global(.so-filter:not(#so-print))`);
+    for (const generate of ['server', 'client'] as const) expect(compile(code, { filename: 'Copy.svelte', generate, runes: true }).warnings.map((w) => w.code)).toEqual([]);
   });
 
   it('names categories and pills them through the generated helpers', async () => {
@@ -298,9 +309,42 @@ describe('filters that cannot work', () => {
     ['a holder inside a list', (_: ComponentDefinition, n: Record<string, ElementNode | RepeatNode>) => ((n.wrap as ElementNode).tag = 'ul'), /held by an element inside a list, a paragraph or a summary/],
     ['a carousel', (_: ComponentDefinition, n: Record<string, ElementNode | RepeatNode>) => ((n.grid as ElementNode).carousel = true), /is a carousel’s slides/],
     ['a card that links somewhere around it', (_: ComponentDefinition, n: Record<string, ElementNode | RepeatNode>) => ((n.wrap as ElementNode).link = { type: 'url', target: 'https://example.com' }), /inside a card that links somewhere/],
-    ['items that are not one element each', (_: ComponentDefinition, n: Record<string, ElementNode | RepeatNode>) => (repeat(n).children = ['title']), /shows items that are not one element each/]
+    ['items that are not one element each', (_: ComponentDefinition, n: Record<string, ElementNode | RepeatNode>) => (repeat(n).children = ['title']), /shows items that are not one element each/],
+    ['items that are carousels', (_: ComponentDefinition, n: Record<string, ElementNode | RepeatNode>) => Object.assign(n.card as ElementNode, { tag: 'ul', carousel: true }), /shows items that are not one element each/],
+    ['items that open something', (_: ComponentDefinition, n: Record<string, ElementNode | RepeatNode>) => Object.assign(n.card as ElementNode, { tag: 'div', action: 'image' }), /shows items that are not one element each/],
+    ['a holder that opens something', (_: ComponentDefinition, n: Record<string, ElementNode | RepeatNode>) => Object.assign(n.grid as ElementNode, { tag: 'div', action: 'link', link: { type: 'url', target: 'https://example.com' } }), /held by an element that links somewhere or opens something/],
+    ['a choice whose options cannot be read', (d: ComponentDefinition) => ((d.properties.items as { fields: Record<string, unknown> }).fields.category = { type: 'enum', label: 'Kind', default: 'a', options: [null] }), /a choice whose options cannot be read/]
   ])('reports %s and renders a plain list', (_label, change, message) => {
     expect(broken(change)).toEqual([expect.stringMatching(message)]);
+  });
+
+  it('accepts wrappers whose action or link does nothing', () => {
+    const s = fresh();
+    const def = gridDef(s);
+    const n = def.tree!.nodes as Record<string, ElementNode>;
+    Object.assign(n.wrap, { action: 'none', link: { type: 'url', target: 'https://example.com' } });
+    Object.assign(n.card, { action: 'none' });
+    n.root.link = { type: 'none', target: '' };
+    place(s, def, { items: items('A', 'B') });
+    expect(filterProblems(s)).toEqual([]);
+    expect(generateProject(s).get(defFile(def))).toContain('so_filter_0');
+  });
+
+  it('reports a filtered list in content handed to a nested component’s slot', () => {
+    const s = fresh();
+    const box = addDef(s, { componentId: 'test.box', name: 'Box', properties: {}, parts: {}, slots: { content: { label: 'Content' } }, build: (b) => b.el('root', 'p', {}, [b.slot('content', 'content')]) });
+    const def = addDef(s, {
+      componentId: 'test.slotted',
+      name: 'Slotted',
+      properties: { items: P.list('Items', 'Item', { title: P.str('Title', ''), category: P.str('Category', '') }, [], {}) },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.el('grid', 'span', {}, [b.repeat('cards', 'items', [b.el('card', 'span', {}, [])], { filter: { field: 'category' } })])])
+    });
+    const inst = makeInstance(box, {});
+    inst.slots = { content: ['grid'] };
+    def.tree!.nodes[inst.id] = inst;
+    (def.tree!.nodes.root as ElementNode).children = [inst.id];
+    expect(repeatFilterProblem(def, def.tree!.nodes.cards)).toMatch(/in content placed in a nested component/);
   });
 
   it('reports a filter inside another list', () => {
@@ -336,7 +380,7 @@ describe('editing designs that filter', () => {
     const s = fresh();
     const def = gridDef(s);
     place(s, def);
-    expect(() => apply(s, [{ type: 'component.removePropSchema', definitionId: def.id, prop: 'filterable' }])).toThrow(/still shown by/);
+    expect(() => apply(s, [{ type: 'component.removePropSchema', definitionId: def.id, prop: 'filterable' }])).toThrow(/"filterable" turns on the category filter of .*\. Change the design without that filter first\./);
     expect(() => apply(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'filterable', schema: { type: 'string', label: 'Filter', default: '' } } as EditOperation])).toThrow(/needs a boolean/);
   });
 
@@ -374,6 +418,9 @@ describe('editing designs that filter', () => {
     const def = Object.values(after.components).find((d) => d.name === 'Directory')!;
     expect((def.tree!.nodes.each as RepeatNode).filter).toEqual({ field: 'team', when: { $prop: 'filterable' } });
     expect(validateOperation(op({ field: 'team', order: [] })).ok).toBe(false);
+    // Without a switch the pills always show.
+    const always = Object.values(applyOperations(s, [op({ field: 'team' })]).state.components).find((d) => d.name === 'Directory')!;
+    expect((always.tree!.nodes.each as RepeatNode).filter).toEqual({ field: 'team' });
     expect(() => applyOperations(s, [op({ field: 'team', when: { $prop: 'people' } })])).toThrow(/needs a boolean/);
     expect(() => applyOperations(s, [op({ field: 'nickname' })])).toThrow(/filters by "nickname"/);
     // A list held by the design's top element leaves the pills nowhere to go.
@@ -401,6 +448,22 @@ describe('editing designs that filter', () => {
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: on.id }])).toThrow(/filters its items by category here/);
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: off.id }])).not.toThrow();
+  });
+
+  it('refuses to detach a placement whose switch the site reads as its default, on', () => {
+    const s = fresh();
+    const def = gridDef(s);
+    const node = place(s, def, { filterable: null, items: items('A', 'B') });
+    expect(() => apply(s, [{ type: 'component.detachInstance', owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id }])).toThrow(/filters its items by category here/);
+  });
+
+  it('counts the filter’s field as used above the list, so a part inside one item never holds it alone', () => {
+    const s = fresh();
+    const def = gridDef(s);
+    (def.tree!.nodes.title as unknown as { text: unknown }).text = { $item: 'category' };
+    expect(partReach(def, 'title').itemFields.get('items')?.has('category') ?? false).toBe(false);
+    // A part holding the whole list, pills and all, holds the field.
+    expect(partReach(def, 'wrap').itemFields.get('items')?.has('category')).toBe(true);
   });
 
   it('marks the format with a version-only step', () => {

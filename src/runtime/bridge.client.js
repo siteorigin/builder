@@ -623,20 +623,20 @@ function reconcileReveal() {
  * would. The page re-renders after this, so the item is looked for again before the next frame is drawn.
  */
 function unfilter(roots) {
-  if (revealUnfiltered >= 3) return;
-  let asked = false;
+  const bars = new Set();
   for (const el of roots) {
     if (!el.classList.contains('so-filter-off')) continue;
     const bar = el.parentElement && el.parentElement.previousElementSibling;
-    if (!bar || !bar.hasAttribute('data-so-filter')) continue;
-    bar.dispatchEvent(new CustomEvent('sofilterreset'));
-    asked = true;
+    if (bar && bar.hasAttribute('data-so-filter')) bars.add(bar);
   }
-  if (!asked) {
+  // Nothing hidden: the next time a filter hides the item it is asked afresh.
+  if (!bars.size) {
     revealUnfiltered = 0;
     return;
   }
+  if (revealUnfiltered >= 3) return;
   revealUnfiltered++;
+  for (const bar of bars) bar.dispatchEvent(new CustomEvent('sofilterreset'));
   revealDirty = true;
   scheduleRects();
 }

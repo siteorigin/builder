@@ -843,8 +843,20 @@ export const STATE_OFF_CLASS = 'so-state-off';
 /** The class an item of a list takes while its category filter hides it (see FilterGen). */
 export const FILTER_OFF_CLASS = 'so-filter-off';
 
-/** The screen-only hiding and print rules of category filters (see FilterGen), as generated CSS. */
-const FILTER_CSS = `/* Items a list's category filter hides on screen, and its buttons, which print leaves out. */\n@media not print {\n\t.${FILTER_OFF_CLASS}:not(#so-print) { display: none !important; }\n}\n@media print {\n\t.so-filter:not(#so-print) { display: none !important; }\n}`;
+/**
+ * The screen-only hiding and print rules of category filters (see FilterGen), as generated CSS: the items a filter
+ * hides, its buttons, which print leaves out, and its status, read out but not shown, whatever the theme's own CSS has.
+ * `global` for a component's own <style> block, where an item a helper renders (a card's link) is outside its scope.
+ */
+function filterCss(global = false): string {
+  const g = (sel: string) => (global ? `:global(${sel})` : sel);
+  return [
+    `/* Items a list's category filter hides on screen, its buttons, which print leaves out, and its status, read out only. */`,
+    `@media not print {\n\t${g(`.${FILTER_OFF_CLASS}:not(#so-print)`)} { display: none !important; }\n}`,
+    `@media print {\n\t${g('.so-filter:not(#so-print)')} { display: none !important; }\n}`,
+    `${g('.so-filter__status')} { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }`
+  ].join('\n');
+}
 
 export function generateComponentsCss(state: ProjectState): string {
   const parts: string[] = ['/* Component definition styles. Generated from siteorigin/components. */'];
@@ -854,7 +866,7 @@ export function generateComponentsCss(state: ProjectState): string {
     parts.push(`/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`);
   // Items a list's category filter hides stay in the page, hidden on screen only, so printing shows them all; the
   // row of category buttons is left out of print.
-  if (sortedDefs(state).some((def) => repeatFilters(def).length)) parts.push(FILTER_CSS);
+  if (sortedDefs(state).some((def) => def.kind === 'managed' && repeatFilters(def).length)) parts.push(filterCss());
   for (const def of sortedDefs(state)) {
     if (def.kind !== 'managed' || !def.tree) continue;
     const css = emitRules(definitionRules(state, def));
@@ -1390,8 +1402,9 @@ interface FilterGen {
  * (repeatFilterProblem) is left out, so its items render as a plain list, every one showing.
  */
 function repeatFilters(def: ComponentDefinition): FilterGen[] {
+  // Any design with a tree: a copy being converted to code is generated from its design before it is stored.
   const tree = def.tree;
-  if (def.kind !== 'managed' || !tree) return [];
+  if (!tree) return [];
   const out: FilterGen[] = [];
   const parents = parentMap(tree);
   for (const id of Object.keys(tree.nodes).sort()) {
@@ -2862,7 +2875,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
 export function generateStandaloneComponent(state: ProjectState, def: ComponentDefinition, appear?: AppearPreset | 'none'): string {
   const body = generateManagedComponent(state, def, { instrument: false }, { appear });
   // A category filter's hiding and print rules come along, as the site's own stylesheet has them only for designs.
-  const css = [emitRules(definitionRules(state, def, true)), repeatFilters(def).length ? FILTER_CSS : ''].filter(Boolean).join('\n');
+  const css = [emitRules(definitionRules(state, def, true)), repeatFilters(def).length ? filterCss(true) : ''].filter(Boolean).join('\n');
   return css ? `${body}\n<style>\n${indentBlock(css)}\n</style>\n` : body;
 }
 

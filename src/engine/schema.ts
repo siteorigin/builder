@@ -659,6 +659,8 @@ export function repeatFilterProblem(def: ComponentDefinition, node: GraphNode): 
   const schema = Object.hasOwn(list.fields, field) ? list.fields[field] : undefined;
   if (!schema) return `filters by "${field}", which items of "${list.label}" do not have.`;
   if (schema.type !== 'string' && schema.type !== 'enum') return `filters by "${schema.label}", a ${schema.type} field; a category is a text or choice field.`;
+  if (schema.type === 'enum' && !(Array.isArray(schema.options) && schema.options.every((o) => !!o && typeof o === 'object' && typeof o.value === 'string' && typeof o.label === 'string')))
+    return `filters by "${schema.label}", a choice whose options cannot be read.`;
   if (when !== undefined) {
     const prop = when && typeof when === 'object' && !Array.isArray(when) && Object.keys(when).length === 1 && typeof when.$prop === 'string' ? when.$prop : undefined;
     if (prop === undefined) return 'has a category filter turned on by something other than a property.';
@@ -678,11 +680,15 @@ export function repeatFilterProblem(def: ComponentDefinition, node: GraphNode): 
   }
   const host = ancestors[0];
   if (ancestors.some((a) => a.kind === 'repeat')) return 'is inside another list, where every row would share its pills.';
+  // Content handed to a nested component's slot shows wherever that component puts it: inside a link, a paragraph, or
+  // once for each of its own items.
+  if (ancestors.some((a) => a.kind === 'instance')) return 'is in content placed in a nested component, which decides where (and how often) it shows; filter a list the design holds itself.';
   if (!host || host.kind !== 'element' || roots.has(host.id)) return 'needs an element of its own, inside the design’s top element, to hold it: its pills go just above that element.';
   if (host.children.length !== 1) return 'shares the element holding it with other content; its pills go just above that element, so it must hold the list alone.';
   if (host.carousel) return 'is a carousel’s slides, which scroll sideways rather than filter.';
   const inside = ancestors.slice(1);
-  if (inside.some((a) => a.kind === 'element' && (a.link !== undefined || a.action !== undefined))) return 'is inside a card that links somewhere, where its pills could not be buttons.';
+  if (mayLink(host)) return 'is held by an element that links somewhere or opens something, which its items could not be filtered inside.';
+  if (inside.some(mayLink)) return 'is inside a card that links somewhere, where its pills could not be buttons.';
   // The pills are a block of their own beside the holding element, which only an element that takes such blocks can hold.
   const tags = (n: GraphNode): string[] => {
     if (n.kind !== 'element') return [];
@@ -694,9 +700,19 @@ export function repeatFilterProblem(def: ComponentDefinition, node: GraphNode): 
   if (holder && tags(holder).some((t) => FILTER_BAR_REFUSES.has(t))) return 'is held by an element inside a list, a paragraph or a summary, where a row of buttons cannot go.';
   if (tags(host).some((t) => t === 'li' || t === 'dt' || t === 'dd' || t === 'summary')) return 'is held by a list item, term or summary, beside which a row of buttons cannot go.';
   const items = node.children.map((c) => tree.nodes[c]);
-  if (!items.length || items.some((c) => !c || c.kind !== 'element' || c.action !== undefined)) return 'shows items that are not one element each; the filter hides an item by its element, such as a list item or a card.';
+  const acts = (c: GraphNode) => c.kind === 'element' && c.action !== undefined && c.action !== null && c.action !== 'none';
+  if (!items.length || items.some((c) => !c || c.kind !== 'element' || acts(c) || c.carousel !== undefined))
+    return 'shows items that are not one element each; the filter hides an item by its element, such as a list item or a card.';
   return null;
 }
+/** A link value that goes somewhere, or may (a binding). */
+const linkSet = (l: unknown) => l !== undefined && l !== null && (isBinding(l) || (l as { type?: unknown }).type !== 'none');
+/**
+ * Whether an element may render as a link around its content (a card) or be wrapped in one (an action that opens its
+ * image or follows its link), as the generator decides (generator/card-links isCardLink); an action fixed at `none`,
+ * or a link to nowhere, makes none.
+ */
+const mayLink = (n: GraphNode) => n.kind === 'element' && (n.action === undefined || n.action === null ? linkSet(n.link) : n.action !== 'none' && (n.action !== 'link' || linkSet(n.link)));
 /** Elements whose children a row of filter buttons cannot sit among. */
 const FILTER_BAR_REFUSES = new Set(['ul', 'ol', 'dl', 'p', 'summary', 'span']);
 

@@ -72,7 +72,10 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const filtering = Object.values(def.tree.nodes).some((n) => {
     if (n?.kind !== 'repeat' || n.filter === undefined || repeatFilterProblem(def, n)) return false;
     const on = n.filter.when?.$prop;
-    return on === undefined || (Object.hasOwn(inst.props, on) ? inst.props[on] : def.properties[on]?.default) === true;
+    if (on === undefined) return true;
+    // As the site reads it: a stored value that is not true or false shows the property's default.
+    const v = Object.hasOwn(inst.props, on) ? inst.props[on] : undefined;
+    return (typeof v === 'boolean' ? v : def.properties[on]?.default) === true;
   });
   if (filtering) fail(`“${label}” filters its items by category here, which elements on a page would not keep. Turn its filter off first.`);
   const design = def.tree;
