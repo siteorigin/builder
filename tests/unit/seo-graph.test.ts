@@ -7,7 +7,7 @@ import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
 import { buildSeoGraph, graphIds, graphScriptText, type GraphContributor, type GraphNode, type SeoGraph } from '@generator/seo-graph';
-import { copy, run, seoSite } from './fixtures/seo-site';
+import { run, seoSite } from './fixtures/seo-site';
 
 const graphOf = (s: ProjectState, subject: SeoSubject, contributors: GraphContributor[] = []) => buildSeoGraph(s, createSeoResolver(s), subject, contributors);
 const node = (g: SeoGraph, id: string) => g['@graph'].find((n) => n['@id'] === id) as GraphNode;
@@ -39,6 +39,7 @@ describe('buildSeoGraph', () => {
       ['BreadcrumbList', 'https://example.com/studio/#breadcrumb']
     ]);
     expectLinked(g);
+    expect(node(g, 'https://example.com/studio/#organization')).toEqual({ '@type': 'Organization', '@id': 'https://example.com/studio/#organization', name: 'Riverside Studio', url: 'https://example.com/studio/' });
     expect(node(g, 'https://example.com/studio/#website')).toMatchObject({ url: 'https://example.com/studio/', name: 'Riverside Studio', inLanguage: 'en', publisher: { '@id': 'https://example.com/studio/#organization' } });
     expect(node(g, 'https://example.com/studio/#webpage')).toMatchObject({
       url: 'https://example.com/studio/',
@@ -79,10 +80,11 @@ describe('buildSeoGraph', () => {
     expect(graphOf(run(state, { type: 'page.update', pageId: services, noindex: true }), { kind: 'page', pageId: services })).toBeNull();
     expect(graphOf(run(state, { type: 'page.update', pageId: services, draft: true }), { kind: 'page', pageId: services })).toBeNull();
     expect(graphOf(run(state, { type: 'site.update', baseUrl: '' }), { kind: 'page', pageId: services })).toBeNull();
-    const elsewhere = copy(state);
-    elsewhere.pages[services].seo.canonical = 'https://partner.example/classes';
-    expect(graphOf(elsewhere, { kind: 'page', pageId: services })).toBeNull();
     expect(graphOf(state, { kind: 'page', pageId: 'pg_gone' })).toBeNull();
+    // Contributors are not asked about a document with no graph.
+    let asked = 0;
+    expect(graphOf(run(state, { type: 'page.update', pageId: services, noindex: true }), { kind: 'page', pageId: services }, [() => (asked++, null)])).toBeNull();
+    expect(asked).toBe(0);
   });
 
   it('takes linked entities and extensions from contributors, in the same order whichever contributes first', () => {
@@ -95,7 +97,7 @@ describe('buildSeoGraph', () => {
             extend: [{ id: ids.organization, add: { sameAs: ['https://social.example/riverside'] } }]
           };
     const person: GraphContributor = ({ ids }) => ({
-      nodes: [{ '@type': 'Person', '@id': ids.site('person'), name: 'Ana Ruiz' }],
+      nodes: [{ '@type': 'Person', '@id': ids.site('person'), name: 'Ana Ruiz', worksFor: { '@id': ids.organization } }],
       extend: [
         { id: ids.website, set: { potentialAction: { '@type': 'SearchAction', target: 'https://example.com/studio/search/?q={query}', 'query-input': 'required name=query' } } },
         { id: ids.organization, add: { sameAs: 'https://wiki.example/Riverside_Studio', '@type': 'LocalBusiness' } }
@@ -113,11 +115,31 @@ describe('buildSeoGraph', () => {
     ]);
     expect(node(g, 'https://example.com/studio/#organization')).toMatchObject({ '@type': ['Organization', 'LocalBusiness'], sameAs: ['https://social.example/riverside', 'https://wiki.example/Riverside_Studio'] });
     expect(node(g, 'https://example.com/studio/#website').potentialAction).toMatchObject({ '@type': 'SearchAction' });
+    expect(node(g, 'https://example.com/studio/blog/spring-pottery-classes/#blogposting')).toEqual({
+      '@type': 'BlogPosting',
+      '@id': 'https://example.com/studio/blog/spring-pottery-classes/#blogposting',
+      headline: 'Spring pottery classes',
+      publisher: { '@id': 'https://example.com/studio/#organization' },
+      mainEntityOfPage: { '@id': 'https://example.com/studio/blog/spring-pottery-classes/#webpage' },
+      author: { '@id': 'https://example.com/studio/#person' }
+    });
     expect(JSON.stringify(graphOf(state, SPRING, [person, posting]))).toBe(JSON.stringify(g));
     // A page the posting says nothing about has only what the person adds.
     expect(graphOf(state, { kind: 'page', pageId: state.site.homePageId }, [posting, person])!['@graph'].map((n) => n['@type'])).toEqual([['Organization', 'LocalBusiness'], 'WebSite', 'WebPage', 'BreadcrumbList', 'Person']);
-    // Setting a value a node already has is no conflict.
+    // Setting a value a node already has is no conflict, nor is the same value with its keys in another order.
     expect(() => graphOf(state, SPRING, [() => ({ extend: [{ id: 'https://example.com/studio/#website', set: { name: 'Riverside Studio' } }] })])).not.toThrow();
+    const action = (a: Record<string, string>): GraphContributor => ({ ids }) => ({ extend: [{ id: ids.website, set: { potentialAction: a } }] });
+    expect(() => graphOf(state, SPRING, [action({ '@type': 'SearchAction', target: 'x' }), action({ target: 'x', '@type': 'SearchAction' })])).not.toThrow();
+  });
+
+  it('writes the same bytes whichever contributor sets new properties on a node first', () => {
+    const { state } = seoSite();
+    const alternate: GraphContributor = ({ ids }) => ({ extend: [{ id: ids.organization, set: { alternateName: 'Riverside' } }] });
+    const logo: GraphContributor = ({ ids }) => ({ extend: [{ id: ids.organization, set: { logo: 'https://example.com/studio/assets/logo.png' }, add: { knowsAbout: ['Pottery', 'Glazing'] } }] });
+    const topics: GraphContributor = ({ ids }) => ({ extend: [{ id: ids.organization, add: { knowsAbout: 'Kilns', areaServed: 'Riverside' } }] });
+    const one = graphScriptText(graphOf(state, SPRING, [alternate, logo, topics])!);
+    expect(graphScriptText(graphOf(state, SPRING, [topics, logo, alternate])!)).toBe(one);
+    expect(JSON.parse(one)['@graph'][0]).toMatchObject({ alternateName: 'Riverside', logo: 'https://example.com/studio/assets/logo.png', knowsAbout: ['Glazing', 'Kilns', 'Pottery'], areaServed: 'Riverside' });
   });
 
   it('refuses contributions that would make the graph say two things', () => {
@@ -131,16 +153,33 @@ describe('buildSeoGraph', () => {
     expect(refused(({ ids }) => ({ extend: [{ id: ids.website, set: { '@id': 'https://elsewhere.example/#x' } }] }))).toThrow(/tried to change @id/);
     expect(refused(({ ids }) => ({ nodes: [{ '@type': 'BlogPosting', '@id': ids.page('blogposting'), author: { '@id': ids.site('person') } }] }))).toThrow(/refers to https:\/\/example\.com\/studio\/#person/);
     expect(refused(() => ({ nodes: [{ '@type': 'Thing' } as unknown as GraphNode] }))).toThrow(/without an @id/);
-    // A reference to an entity somewhere else on the web is not the graph's to have.
+    expect(refused(({ ids }) => ({ nodes: [{ '@id': ids.site('thing') } as unknown as GraphNode] }))).toThrow(/without an @id and an @type/);
+    // A node is one of this site's or document's, made by ids, and is linked to the rest of the graph.
+    expect(refused(() => ({ nodes: [{ '@type': 'Person', '@id': 'https://elsewhere.example/#ana', name: 'Ana' }] }))).toThrow(/not an ID of this site or document/);
+    expect(refused(() => ({ nodes: [{ '@type': 'WebPage', '@id': '#webpage' }] }))).toThrow(/not an ID of this site or document/);
+    expect(refused(person)).toThrow(/#person is linked to nothing else/);
+    expect(
+      refused(({ ids }) => ({
+        nodes: [
+          { '@type': 'Person', '@id': ids.site('ana'), knows: { '@id': ids.site('ben') } },
+          { '@type': 'Person', '@id': ids.site('ben'), knows: { '@id': ids.site('ana') } }
+        ]
+      }))
+    ).toThrow(/linked to nothing else/);
+    // References are absolute addresses.
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { author: { '@id': '#missing' } } }] }))).toThrow(/not an absolute address/);
+    // A reference to an entity somewhere else on the web is not the graph's to have, and one described in place is there.
     expect(refused(({ ids }) => ({ extend: [{ id: ids.organization, set: { parentOrganization: { '@id': 'https://group.example/#org' } } }] }))).not.toThrow();
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { author: { '@id': ids.page('author'), '@type': 'Person', name: 'Ana' } } }] }))).not.toThrow();
   });
 
   it('keeps what a contributor holds on to from changing the graph after it is built', () => {
     const { state } = seoSite();
-    const held: GraphNode = { '@type': 'Person', '@id': 'https://example.com/studio/#person', name: 'Ana' };
+    const held: GraphNode = { '@type': 'Person', '@id': 'https://example.com/studio/#person', name: 'Ana', worksFor: { '@id': 'https://example.com/studio/#organization' } };
     const g = graphOf(state, SPRING, [() => ({ nodes: [held] })])!;
     held.name = 'Changed';
-    expect(node(g, 'https://example.com/studio/#person').name).toBe('Ana');
+    (held.worksFor as { '@id': string })['@id'] = 'https://elsewhere.example/';
+    expect(node(g, 'https://example.com/studio/#person')).toMatchObject({ name: 'Ana', worksFor: { '@id': 'https://example.com/studio/#organization' } });
   });
 });
 
@@ -155,6 +194,7 @@ describe('graphIds and graphScriptText', () => {
       'https://example.com/#localbusiness',
       'https://example.com/about/#faq'
     ]);
+    expect(ids.site('local-business-2')).toBe('https://example.com/#local-business-2');
     expect(() => ids.site('Local Business')).toThrow(/not a graph ID fragment/);
     expect(() => ids.page('')).toThrow();
     const { state, home } = seoSite();

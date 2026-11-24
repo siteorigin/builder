@@ -106,13 +106,17 @@ function showElement(state: ProjectState, dest: Extract<EditorDestination, { kin
   else if (owner.kind === 'component') {
     if (!openComponentStudio(owner.id)) return toast('That element is in a component that can no longer be edited here.', 'info');
   } else {
+    // A page showing the shared part, else a post's page, else a collection's layout, whose index shows it too.
     const pageId = pageShowing(state, owner.id, s.definitionMode?.returnPageId ?? s.pageId);
     const entry = pageId ? undefined : siteEntries(state)[0];
+    const collectionId = pageId || entry ? undefined : Object.keys(state.collections ?? {}).sort()[0];
     if (pageId) selectPage(pageId, ref);
     else if (entry) openLayout(entry.collection.settings.id, entry.entry.id);
+    else if (collectionId) openLayout(collectionId);
     else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
   }
-  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true });
+  // Opened from the post writer, Layers takes its place, so the canvas shows the element where it is.
+  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, ...(getState().leftTab === 'posts' ? { leftTab: 'layers' as const } : {}) });
 }
 
 /** Frames to wait for the Inspector of a new selection (or the post writer) to show a control, before giving up quietly. */

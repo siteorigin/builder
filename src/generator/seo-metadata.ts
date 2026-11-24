@@ -1,16 +1,15 @@
 /**
  * What each page and collection entry says to search engines and link previews, with every fallback applied, and
- * which of the website's outputs include it (see shared/seo.ts). One answer for the generator, the editor's previews,
- * the SEO audit and the AI tools, so none of them works out drafts, noindex or a missing public URL on its own.
+ * which of the website's outputs it belongs in (see shared/seo.ts). One answer for the generator, the editor's
+ * previews, the SEO audit and the AI tools, so none of them works out drafts, noindex or a missing public URL on its own.
  *
  * A page reads its title, description and sharing image through `pageSharing`, as its `<head>` and the Inspector's
- * Search & sharing preview do; an entry reads them the way its generated page does. Whether a document is on the
- * website is judged on the website as it is exported (`publishedState`), so a draft that holds an address never hides
- * the published entry that gets it.
+ * Search & sharing preview do; an entry reads them as its generated page does (generateEntry). Whether a document is
+ * on the website is judged on the website as it is exported (`publishedState`), so a draft that holds an address never
+ * hides the published entry that gets it.
  */
 import type { AssetRecord, Collection, EntryDoc, EntrySeo, PageDoc, PageSeo, ProjectState } from '@shared/types';
 import type { EffectiveSeo, SeoImageSource, SeoSubject, SeoVisibility } from '@shared/seo';
-import { canonicalUrl } from '@shared/seo';
 import { pageSharing } from '@shared/sharing';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
@@ -30,8 +29,8 @@ export interface SeoResolver {
 const own = <T>(record: Record<string, T> | undefined, key: unknown): T | undefined => (record && typeof record === 'object' && typeof key === 'string' && Object.hasOwn(record, key) ? record[key] : undefined);
 const text = (v: unknown) => (typeof v === 'string' ? v : '');
 
-/** The public URL of a library file, as the generated pages write it. */
-const fileUrl = (base: string, asset: AssetRecord) => `${base}/${asset.file.replace(/^static\//, '')}`;
+/** The public URL of a library file, as the generated pages write it; none for a record without a file (hand-edited). */
+const fileUrl = (base: string, asset: AssetRecord) => (typeof asset.file === 'string' && asset.file ? `${base}/${asset.file.replace(/^static\//, '')}` : null);
 
 /** The pages and entries on the website, and their addresses there. */
 function website(state: ProjectState) {
@@ -54,28 +53,22 @@ export function createSeoResolver(state: ProjectState): SeoResolver {
   const cache = new Map<string, EffectiveSeo | null>();
 
   /** Where a document is published, and what that means for each output. */
-  const visibility = (on: boolean, flags: { noindex: boolean; searchHidden: boolean; listed: boolean; news: boolean }): SeoVisibility => {
+  const visibility = (on: boolean, flags: { noindex: boolean; searchHidden: boolean; news: boolean }): SeoVisibility => {
     const indexable = on && !flags.noindex;
-    const listed = indexable && flags.listed;
+    // Listed at its public URL, so only once the site has one.
+    const listed = indexable && !!base;
     return { website: on, indexable, sitemap: listed, siteSearch: on && !flags.searchHidden, jsonLd: listed, news: on && flags.news };
   };
 
-  /**
-   * A document's public URL, written as its generated page writes it, and its canonical address. It is listed (in the
-   * sitemap, with structured data) only at its own address: one that names another address leaves that to the other.
-   */
-  const addresses = (route: string, override: unknown) => {
-    const url = base ? base + routeUrl(route) : null;
-    const chosen = canonicalUrl(override);
-    return { url, canonical: chosen ?? url, listed: !!url && (!chosen || chosen === canonicalUrl(url)) };
-  };
+  /** A document's public URL, written as its generated page writes it (its canonical link and og:url). */
+  const urlOf = (route: string) => (base ? base + routeUrl(route) : null);
 
   const resolvePage = (pageId: string): EffectiveSeo | null => {
     const page: PageDoc | undefined = own(state.pages, pageId);
     if (!page || typeof page !== 'object' || typeof page.route !== 'string') return null;
     const seo: PageSeo = page.seo && typeof page.seo === 'object' ? page.seo : {};
     const sharing = pageSharing(state, page);
-    const { url, canonical, listed } = addresses(page.route, seo.canonical);
+    const url = urlOf(page.route);
     const noindex = !!seo.noindex;
     const searchHidden = !!seo.searchHidden;
     const article = pageArticle(page);
@@ -83,7 +76,7 @@ export function createSeoResolver(state: ProjectState): SeoResolver {
       subject: { kind: 'page', pageId },
       route: page.route,
       url,
-      canonical,
+      canonical: url,
       title: text(sharing.title),
       socialTitle: text(sharing.title),
       description: text(sharing.description),
@@ -95,7 +88,7 @@ export function createSeoResolver(state: ProjectState): SeoResolver {
       draft: isDraftPage(state, page),
       noindex,
       searchHidden,
-      visibility: visibility(onSite().pages.has(pageId), { noindex, searchHidden, listed, news: !!article && article.hidden !== true })
+      visibility: visibility(onSite().pages.has(pageId), { noindex, searchHidden, news: !!article && article.hidden !== true })
     };
   };
 
@@ -110,39 +103,30 @@ export function createSeoResolver(state: ProjectState): SeoResolver {
       const a = own(state.assets?.assets, id);
       return a?.kind === 'image' ? a : undefined;
     };
-    // An entry's own sharing image stands even when it has gone from the library, as a page's does; a featured image
-    // that is no picture leaves the choice to the site's, as the generated page does.
-    const chosen = text(seo.socialImage) || undefined;
+    // A featured image that is no picture leaves the choice to the site's, as the generated page does.
     const featured = picture(entry.featuredImage);
     const siteImage = text(site.socialImage) || null;
-    const [imageId, image, imageSource]: [string | null, AssetRecord | undefined, SeoImageSource] = chosen
-      ? [chosen, picture(chosen), 'own']
-      : featured
-        ? [featured.id, featured, 'featured']
-        : siteImage
-          ? [siteImage, picture(siteImage), 'site']
-          : [null, undefined, 'none'];
-    const { url, canonical, listed } = addresses(route, seo.canonical);
-    const noindex = !!seo.noindex;
+    const [imageId, image, imageSource]: [string | null, AssetRecord | undefined, SeoImageSource] = featured ? [featured.id, featured, 'featured'] : siteImage ? [siteImage, picture(siteImage), 'site'] : [null, undefined, 'none'];
+    const url = urlOf(route);
     const searchHidden = !!seo.searchHidden;
     const title = text(entry.title);
     return {
       subject: { kind: 'entry', collectionId, entryId },
       route,
       url,
-      canonical,
-      title: text(seo.title) || `${title} · ${text(site.name)}`,
-      socialTitle: text(seo.title) || title,
-      description: text(seo.description) || text(entry.excerpt) || text(site.description),
+      canonical: url,
+      title: `${title} · ${text(site.name)}`,
+      socialTitle: title,
+      description: text(entry.excerpt) || text(site.description),
       language: siteLanguage(site),
       imageId,
       image,
       imageSource,
       imageUrl: base && image ? fileUrl(base, image) : null,
       draft: isDraftEntry(entry),
-      noindex,
+      noindex: false,
       searchHidden,
-      visibility: visibility(onSite().entries.has(`${collectionId}\n${entryId}`), { noindex, searchHidden, listed, news: false })
+      visibility: visibility(onSite().entries.has(`${collectionId}\n${entryId}`), { noindex: false, searchHidden, news: false })
     };
   };
 

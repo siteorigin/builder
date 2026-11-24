@@ -5,11 +5,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
-import { canonicalUrl, seoLength, seoText } from '@shared/seo';
+import { seoLength, seoText } from '@shared/seo';
 import { pageSharing } from '@shared/sharing';
 import { createStarterState } from '@catalogue/starters';
 import { createSeoResolver } from '@generator/seo-metadata';
-import { entryFile, generateEntry, generatePage, generateSitemap } from '@generator/index';
+import { entryFile, generateEntry, generatePage, generateProject, generateSitemap, pageFile } from '@generator/index';
 import { buildSearchIndex } from '@generator/search';
 import { copy, run, seoSite } from './fixtures/seo-site';
 
@@ -48,9 +48,11 @@ describe('createSeoResolver', () => {
     expect(meta.title).toBe('Classes and commissions · Riverside Studio');
     expect(meta.visibility).toEqual({ website: false, indexable: false, sitemap: false, siteSearch: false, jsonLd: false, news: false });
     expect(createSeoResolver(s).published().map((d) => d.subject)).not.toContainEqual({ kind: 'page', pageId: services });
-    // The generated outputs agree.
+    // The generated outputs agree, and keep the pages that are published.
     expect(sitemapUrls(s)).not.toContain('https://example.com/studio/services/');
-    expect(buildSearchIndex(s).map((e) => e.route)).not.toContain('/services/');
+    expect(sitemapUrls(s)).toContain('https://example.com/studio/');
+    expect(buildSearchIndex(s).map((e) => e.route)).toEqual(['/']);
+    expect(page(s, home).visibility).toMatchObject({ website: true, sitemap: true, siteSearch: true });
     // A Home page marked as a draft by hand is published all the same, as the generator publishes it.
     const homeDraft = copy(state);
     homeDraft.pages[home].draft = true;
@@ -64,6 +66,8 @@ describe('createSeoResolver', () => {
     expect(page(s, services).visibility).toEqual({ website: true, indexable: false, sitemap: false, siteSearch: true, jsonLd: false, news: false });
     expect(sitemapUrls(s)).not.toContain('https://example.com/studio/services/');
     expect(buildSearchIndex(s).map((e) => e.route)).toContain('/services/');
+    // The page is published, asking search engines not to list it.
+    expect(generateProject(s).get(pageFile(s.pages[services]))).toContain('<meta name="robots" content="noindex" />');
     // And the other way round: hidden from site search, listed by search engines.
     const hidden = run(state, { type: 'page.update', pageId: services, searchHidden: true });
     expect(page(hidden, services).visibility).toMatchObject({ website: true, indexable: true, sitemap: true, siteSearch: false });
@@ -76,11 +80,16 @@ describe('createSeoResolver', () => {
     s.collections.posts.entries.en_spring.seo = { searchHidden: true };
     expect(post(s)).toMatchObject({ draft: false, searchHidden: true, noindex: false, route: '/blog/spring-pottery-classes/', url: 'https://example.com/studio/blog/spring-pottery-classes/' });
     expect(post(s).visibility).toEqual({ website: true, indexable: true, sitemap: true, siteSearch: false, jsonLd: true, news: false });
-    expect(sitemapUrls(s)).toContain('https://example.com/studio/blog/spring-pottery-classes/');
-    // A noindex entry is published and left for search engines to skip.
-    const noindex = copy(state);
-    noindex.collections.posts.entries.en_spring.seo = { noindex: true };
-    expect(post(noindex).visibility).toMatchObject({ website: true, indexable: false, sitemap: false, siteSearch: true, jsonLd: false });
+    // Without the switch it belongs in site search; with or without it, the website has its page and the sitemap lists it.
+    expect(post(state).visibility).toEqual({ website: true, indexable: true, sitemap: true, siteSearch: true, jsonLd: true, news: false });
+    for (const x of [state, s]) {
+      expect(sitemapUrls(x)).toContain('https://example.com/studio/blog/spring-pottery-classes/');
+      expect(generateProject(x).has('src/routes/blog/spring-pottery-classes/+page.svelte')).toBe(true);
+    }
+    // A hand-edited value the switch would show as on hides it too, as a page's does.
+    const truthy = copy(state);
+    (truthy.collections.posts.entries.en_spring as { seo: unknown }).seo = { searchHidden: 1 };
+    expect(post(truthy).visibility.siteSearch).toBe(false);
     // A draft entry is on no output; one with a damaged draft flag is a draft, as the website judges it.
     const draft = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true });
     expect(post(draft).visibility).toEqual({ website: false, indexable: false, sitemap: false, siteSearch: false, jsonLd: false, news: false });
@@ -89,7 +98,7 @@ describe('createSeoResolver', () => {
     expect(post(damaged).visibility.website).toBe(false);
   });
 
-  it('describes an entry as its generated page does, with its own overrides first', () => {
+  it('describes an entry as its generated page does', () => {
     const { state } = seoSite();
     const meta = post(state);
     expect(meta).toMatchObject({
@@ -114,18 +123,23 @@ describe('createSeoResolver', () => {
     // Without an excerpt the site's description stands in.
     const bare = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', excerpt: null });
     expect(post(bare).description).toBe(state.site.description);
-    // Its own SEO settings come first; its own sharing image stands even once the library has lost it.
-    const own = copy(state);
-    own.collections.posts.entries.en_spring.seo = { title: 'Wheel classes this spring', description: 'Six weeks at the wheel.', socialImage: 'img_gone' };
-    expect(post(own)).toMatchObject({ title: 'Wheel classes this spring', socialTitle: 'Wheel classes this spring', description: 'Six weeks at the wheel.', imageId: 'img_gone', image: undefined, imageSource: 'own', imageUrl: null });
+    expect(generateEntry(bare, 'posts', 'en_spring')).toContain(`<meta name="description" content={${JSON.stringify(state.site.description)}} />`);
+    // A library record without a file (written by hand) gives no image address, and nothing fails.
+    const fileless = copy(featured);
+    (fileless.assets.assets.img_bowls as { file: unknown }).file = null;
+    expect(post(fileless)).toMatchObject({ imageId: 'img_bowls', imageUrl: null });
   });
 
   it('gives a page the title, description and image its head carries, in its own language', () => {
     const { state, services } = seoSite();
     const meta = page(state, services);
     expect(meta).toMatchObject({ title: 'Classes and commissions · Riverside Studio', socialTitle: 'Classes and commissions · Riverside Studio', imageSource: 'site', imageId: 'img_share' });
-    expect(titleIn(generatePage(state, state.pages[services], {}))).toBe(meta.title);
-    expect(generatePage(state, state.pages[services], {})).toContain(`<link rel="canonical" href={${JSON.stringify(meta.canonical)}} />`);
+    const head = generatePage(state, state.pages[services], {});
+    expect(titleIn(head)).toBe(meta.title);
+    expect(meta.canonical).toBe('https://example.com/studio/services/');
+    expect(head).toContain(`<link rel="canonical" href={${JSON.stringify(meta.canonical)}} />`);
+    expect(head).toContain(`<meta name="description" content={${JSON.stringify(meta.description)}} />`);
+    expect(head).toContain(`<meta property="og:image" content={${JSON.stringify(meta.imageUrl)}} />`);
     const french = run(state, { type: 'page.update', pageId: services, language: 'fr' });
     expect(page(french, services).language).toBe('fr');
     // A page's own image, gone from the library, is no image: it is not quietly given the site's.
@@ -141,30 +155,10 @@ describe('createSeoResolver', () => {
     expect(page(run(s, { type: 'page.update', pageId: 'pg_opening', newsHidden: true }), 'pg_opening').visibility.news).toBe(false);
     expect(page(run(s, { type: 'page.update', pageId: 'pg_opening', draft: true }), 'pg_opening').visibility.news).toBe(false);
     expect(post(s).visibility.news).toBe(false);
-  });
-
-  it('takes a usable canonical address over the page’s own, and leaves the listing to that address', () => {
-    const { state, services } = seoSite();
-    const at = (value: unknown) => {
-      const s = copy(state);
-      (s.pages[services].seo as { canonical?: unknown }).canonical = value;
-      return page(s, services);
-    };
-    expect(at('https://partner.example/classes?ref=1')).toMatchObject({ url: 'https://example.com/studio/services/', canonical: 'https://partner.example/classes?ref=1', visibility: { indexable: true, sitemap: false, jsonLd: false } });
-    // Its own address, written another way, is its own.
-    expect(at('HTTPS://Example.com/studio/services/')).toMatchObject({ canonical: 'https://example.com/studio/services/', visibility: { sitemap: true, jsonLd: true } });
-    // Anything that is not an absolute http(s) address is no choice.
-    for (const bad of ['', '   ', '/services/', 'ftp://example.com/x', 'https://example.com/a#b', 'https://user:pw@example.com/', 'https://exa mple.com/', 42, null])
-      expect(at(bad), String(bad)).toMatchObject({ canonical: 'https://example.com/studio/services/', visibility: { sitemap: true } });
-    // An entry reads its own the same way.
-    const s = copy(state);
-    s.collections.posts.entries.en_spring.seo = { canonical: 'https://partner.example/spring' };
-    expect(post(s)).toMatchObject({ canonical: 'https://partner.example/spring', visibility: { sitemap: false } });
-    // A canonical address of its own stands without a public URL; the page then has no address of its own.
-    const noBase = copy(state);
-    noBase.site.baseUrl = '';
-    noBase.pages[services].seo.canonical = 'https://partner.example/classes';
-    expect(page(noBase, services)).toMatchObject({ url: null, canonical: 'https://partner.example/classes', visibility: { sitemap: false } });
+    // An article whose date is not one (written by hand) is left out of news lists.
+    const undated = copy(s);
+    undated.pages.pg_opening.article!.date = '10 January';
+    expect(page(undated, 'pg_opening').visibility.news).toBe(false);
   });
 
   it('gives the published entry an address a draft holds by hand, as the website does', () => {
@@ -201,19 +195,18 @@ describe('createSeoResolver', () => {
     const s = run(state, { type: 'page.create', pageId: 'pg_contact', title: 'お問い合わせ', route: '/お問い合わせ/' });
     const meta = page(s, 'pg_contact');
     expect(meta.url).toBe('https://example.com/studio/%E3%81%8A%E5%95%8F%E3%81%84%E5%90%88%E3%82%8F%E3%81%9B/');
+    expect(meta.canonical).toBe(meta.url);
     expect(sitemapUrls(s)).toContain(meta.url);
     expect(meta.visibility.sitemap).toBe(true);
   });
 });
 
 describe('seo text helpers', () => {
-  it('measures text as readers count it, and reads only usable canonical addresses', () => {
+  it('measures text as readers count it', () => {
     expect(seoText('  Pottery \n classes ')).toBe('Pottery classes');
     expect(seoText(7)).toBe('');
     expect(seoLength('Café 🏺')).toBe(6);
     // Composed and decomposed accents are the same text.
     expect(seoText('Café')).toBe(seoText('Café'));
-    expect(canonicalUrl(' https://example.com ')).toBe('https://example.com/');
-    expect(canonicalUrl('javascript:alert(1)')).toBeNull();
   });
 });

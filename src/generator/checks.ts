@@ -1100,6 +1100,8 @@ function renderedLinks(state: ProjectState, tree: NodeTree, everyState = false, 
       const from = out.length;
       codeLinks(def, props, reportId, placement, out, shippedCode(state, def));
       if (scope.keptHidden) for (const l of out.slice(from)) l.hidden = true;
+      // What the project's own code shows on a link is up to its markup: its settings are no proof of the words.
+      if (def.owner !== 'theme') for (const l of out.slice(from)) l.unnamed = true;
     }
   });
   return out;
@@ -1526,37 +1528,42 @@ export interface SiteLink {
  * choosing a tab or opening a disclosure counts as one shown at first. A link the walk reaches twice is listed once.
  */
 export function siteLinks(state: ProjectState): SiteLink[] {
+  // Read as the website has it: conditions on a draft, and links to one, are judged as the export judges them.
   const live = publishedState(state);
-  const published = live.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id) && typeof state.pages[id]?.route === 'string').map((id) => state.pages[id]);
+  const published = live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id) && typeof live.pages[id]?.route === 'string').map((id) => live.pages[id]);
   const entries = siteEntries(live);
-  const archived = archivePages(state).length > 0;
+  const archived = archivePages(live).length > 0;
   // Addresses the website answers at with a page: each page's own, and the old addresses kept for it.
   const addresses = new Map<string, { pageId: string }>(published.map((p) => [p.route.toLowerCase(), { pageId: p.id }]));
   for (const r of liveRedirects(live)) if (r.page) addresses.set(r.from.toLowerCase(), { pageId: r.page.id });
   const pageOf = (link: LinkValue): string | undefined => {
-    if (link.type === 'page') return Object.hasOwn(state.pages, link.target) ? link.target : undefined;
-    return link.type === 'url' && typeof link.target === 'string' ? targetAtAddress(state, link.target, addresses)?.pageId : undefined;
+    // A link to a draft leads to no page of the website.
+    if (link.type === 'page') return published.some((p) => p.id === link.target) ? link.target : undefined;
+    return link.type === 'url' ? targetAtAddress(live, link.target, addresses)?.pageId : undefined;
   };
+  // A link that goes nowhere renders as no link at all.
+  const leads = (link: LinkValue) => link.type !== 'none' && typeof link.target === 'string' && !!link.target.trim();
   const sources: Array<{ owner: SiteLink['owner']; tree: NodeTree; entryId?: string }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
-    ...SHELL_PARTS.filter((part) => entries.length > 0 || archived || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
-    ...entries.map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry), entryId: e.entry.id }))
+    ...SHELL_PARTS.filter((part) => entries.length > 0 || archived || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: live.site.shell[part] })),
+    ...entries.map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(live, e.collection, e.entry), entryId: e.entry.id }))
   ];
   const out: SiteLink[] = [];
   const seen = new Set<string>();
   for (const src of sources)
-    for (const { link, label, reportId, key, inText, unnamed } of renderedLinks(state, src.tree, true)) {
-      // A layout's link is listed once, unless it leads somewhere else on another entry's page.
-      const id = JSON.stringify([src.owner, reportId, key, link]);
+    for (const { link, label, reportId, key, inText, unnamed } of renderedLinks(live, src.tree, true)) {
+      if (!leads(link)) continue;
+      // A layout's link is listed once, unless another entry's page shows it with other words or another destination.
+      const id = JSON.stringify([src.owner, reportId, key, link, label, !!unnamed]);
       if (seen.has(id)) continue;
       seen.add(id);
       const pageId = pageOf(link);
       out.push({ owner: src.owner, nodeId: reportId, key, ...(src.entryId ? { entryId: src.entryId } : {}), link, label, ...(unnamed ? { unnamed } : {}), inText, ...(pageId ? { pageId } : {}) });
     }
   for (const { entry, collection } of entries) {
-    const links = entryTextLinks(entry.body);
+    const links = entryTextLinks(entry.body).filter(({ link }) => leads(link));
     // Text the entry's layout does not show links nowhere on the website.
-    if (!links.length || !showsEntryText(state, collection, entry)) continue;
+    if (!links.length || !showsEntryText(live, collection, entry)) continue;
     links.forEach(({ link, label }, i) => {
       const pageId = pageOf(link);
       out.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', key: `body:${i}`, entryId: entry.id, link, label, inText: true, ...(pageId ? { pageId } : {}) });

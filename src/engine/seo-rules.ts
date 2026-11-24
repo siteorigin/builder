@@ -26,8 +26,11 @@ export const SEO_TITLE_RANGE = { min: 15, max: 60 } as const;
 /** The description lengths, in characters, search results show whole and that say enough to choose the page by. */
 export const SEO_DESCRIPTION_RANGE = { min: 50, max: 160 } as const;
 
-/** Link words that say nothing of where the link goes, compared lowercased with the punctuation after them left off. */
-export const GENERIC_LINK_TEXT: ReadonlySet<string> = new Set(['click here', 'click', 'here', 'read more', 'learn more', 'more', 'more info', 'more information', 'find out more', 'see more', 'this link', 'link', 'this page', 'go']);
+/**
+ * Link words that say nothing of where the link goes, compared lowercased with the punctuation after them left off.
+ * Only phrases no destination is named by: a link to a guide called "Go" says where it goes.
+ */
+export const GENERIC_LINK_TEXT: ReadonlySet<string> = new Set(['click here', 'click', 'here', 'read more', 'learn more', 'more', 'more info', 'more information', 'find out more', 'see more', 'this link', 'this page']);
 
 /** Link words as GENERIC_LINK_TEXT holds them: lowercased, spaces collapsed, and arrows and full stops around them left off. */
 export function linkWords(label: string): string {
@@ -56,14 +59,9 @@ function named(state: ProjectState, meta: EffectiveSeo): string {
 
 const ownerOf = (meta: EffectiveSeo): Owner => (meta.subject.kind === 'page' ? { kind: 'page', id: meta.subject.pageId } : { kind: 'entry', id: meta.subject.entryId });
 
-/**
- * Where a document's title or description is changed, and whether the AI can change it: a page's own Search & sharing
- * field; an entry's title or excerpt, unless an SEO override the editor has no field for yet is what it shows.
- */
-function fieldFix(state: ProjectState, meta: EffectiveSeo, field: 'title' | 'description'): { destination?: EditorDestination; aiFixable: boolean } {
+/** Where a document's title or description is changed: a page's own Search & sharing field, an entry's title or excerpt. */
+function fieldFix(meta: EffectiveSeo, field: 'title' | 'description'): { destination: EditorDestination; aiFixable: boolean } {
   if (meta.subject.kind === 'page') return { destination: { kind: 'pageSeo', pageId: meta.subject.pageId, field }, aiFixable: true };
-  const { entry } = entryOf(state, meta)!;
-  if (seoText(entry.seo?.[field])) return { aiFixable: false };
   return { destination: { kind: 'entry', collectionId: meta.subject.collectionId, entryId: meta.subject.entryId, field: field === 'title' ? 'title' : 'excerpt' }, aiFixable: true };
 }
 
@@ -123,7 +121,7 @@ function textRule(id: string, field: 'title' | 'description'): SeoAuditRule {
       }
       for (const d of listed) {
         const value = seoText(d[field]);
-        const where = { owner: ownerOf(d), site: field, ...fieldFix(state, d, field) };
+        const where = { owner: ownerOf(d), site: field, ...fieldFix(d, field) };
         if (!value) {
           out.push(
             finding('content', {
@@ -269,7 +267,9 @@ function linkFix(state: ProjectState, l: SiteLink): { owner: Owner; nodeId?: str
     return { owner: l.owner, site: `link|${l.key}`, ...(at ? { destination: { kind: 'entry', collectionId: at.settings.id, entryId: l.owner.id, field: 'body' } } : {}) };
   }
   const owner = l.owner as OwnerRef;
-  return { owner, nodeId: l.nodeId, site: `link|${l.nodeId}|${l.key}`, destination: { kind: 'element', owner, nodeId: l.nodeId, ...(l.owner.kind === 'template' && l.entryId ? { entryId: l.entryId } : {}) } };
+  // A layout's link is told apart by the entry whose page shows it, when its words differ from entry to entry.
+  const entryId = l.owner.kind === 'template' ? l.entryId : undefined;
+  return { owner, nodeId: l.nodeId, site: `link|${l.nodeId}|${l.key}${entryId ? `|${entryId}` : ''}`, destination: { kind: 'element', owner, nodeId: l.nodeId, ...(entryId ? { entryId } : {}) } };
 }
 
 const genericLinkText: SeoAuditRule = {
@@ -326,20 +326,20 @@ const entryImages: SeoAuditRule = {
 const HEADING_LEVEL: Record<string, number> = { h2: 2, h3: 3, h4: 4 };
 
 /**
- * Headings in an entry's text that skip a level. The entry's title is its page's Heading 1, so its text's headings
- * start at Heading 2.
+ * Headings in an entry's text that skip a level below the one before them (a Heading 4 straight after a Heading 2).
+ * The first is not judged: what comes before it is the entry's layout, which may give it a heading of its own.
  */
 const entryHeadings: SeoAuditRule = {
   id: 'entry-headings',
   check({ state, documents }) {
     const out: SeoFinding[] = [];
     for (const { collection, entry, what } of shownEntries(state, documents)) {
-      let level = 1;
+      let level = 0;
       entry.body.forEach((b, i) => {
         if (isImageBlock(b) || !Object.hasOwn(HEADING_LEVEL, b.type)) return;
         const next = HEADING_LEVEL[b.type];
-        if (next > level + 1) {
-          const words = 'spans' in b && Array.isArray(b.spans) ? seoText(b.spans.map((s) => s.text).join('')) : '';
+        if (level && next > level + 1) {
+          const words = 'spans' in b && Array.isArray(b.spans) ? seoText(b.spans.map((sp) => (typeof sp?.text === 'string' ? sp.text : '')).join('')) : '';
           out.push(
             finding('agentic', {
               severity: 'warning',
@@ -362,4 +362,3 @@ const entryHeadings: SeoAuditRule = {
 
 /** Every baseline rule, in the order their findings are listed within a pillar. */
 export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings];
-

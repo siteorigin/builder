@@ -11,23 +11,27 @@ import type { Diagnostic, EditorDestination } from './api';
 /** A document of the website that has metadata of its own: a page, or a collection entry. */
 export type SeoSubject = { kind: 'page'; pageId: string } | { kind: 'entry'; collectionId: string; entryId: string };
 
-/** Which of the website's outputs include a document. */
+/**
+ * Which of the website's outputs a document belongs in: the rule each output follows, so features that add to an
+ * output read one answer. Two outputs carry less than this says until the features that fill them land: site search
+ * lists pages alone until it indexes entries (#398), and the connected graph is written into pages from #586.
+ */
 export interface SeoVisibility {
   /** The website has a page for it: not a draft, and its address is its own. */
   website: boolean;
   /** Search engines may list it: on the website and not `noindex`. */
   indexable: boolean;
-  /** The sitemap lists it: indexable, with a public URL to list it at, and that address is its canonical one. */
+  /** The sitemap lists it: indexable, with a public URL to list it at. */
   sitemap: boolean;
   /** The site's own search may find it: on the website and not hidden from site search. */
   siteSearch: boolean;
-  /** It carries structured data (a JSON-LD graph): the same conditions as the sitemap. */
+  /** It may carry the connected structured data graph: the same conditions as the sitemap. */
   jsonLd: boolean;
   /** News lists show it: a published page that is a dated article not hidden from them. Entries have feeds of their own. */
   news: boolean;
 }
 
-/** Where a document's sharing image comes from: its own choice, its featured image, the site's, or nowhere. */
+/** Where a document's sharing image comes from: a page's own choice, an entry's featured image, the site's, or nowhere. */
 export type SeoImageSource = 'own' | 'featured' | 'site' | 'none';
 
 /** What one document says about itself, with every fallback applied, and where it is published. */
@@ -37,7 +41,7 @@ export interface EffectiveSeo {
   route: string;
   /** The public URL it is reached at (the site's public URL and its route), when the site has one. */
   url: string | null;
-  /** The address search engines are told is its own: a usable override, else `url`. */
+  /** The address search engines are told is its own: its public URL, which its page's canonical link names. */
   canonical: string | null;
   /** The browser title. */
   title: string;
@@ -86,22 +90,4 @@ export function seoText(value: unknown): string {
 /** How many characters text is, as a reader counts them (an emoji or an accented letter is one). */
 export function seoLength(value: string): number {
   return [...value].length;
-}
-
-/**
- * A canonical address an author gave, when it can be used: an absolute http(s) address with a host, no user name or
- * password, and no fragment. The address is returned as browsers write it; anything else is null.
- */
-export function canonicalUrl(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const text = value.trim();
-  if (!text || /[\s\\]/.test(text) || text.includes('#')) return null;
-  let url: URL;
-  try {
-    url = new URL(text);
-  } catch {
-    return null;
-  }
-  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || !url.hostname || url.username || url.password) return null;
-  return url.href;
 }

@@ -67,8 +67,15 @@ export interface SeoGraph {
 }
 
 const FRAGMENT = /^[a-z][a-z0-9-]*$/;
-const ref = (id: string) => ({ '@id': id });
-const same = (a: JsonValue, b: JsonValue) => JSON.stringify(a) === JSON.stringify(b);
+const ref = (id: string): JsonObject => ({ '@id': id });
+/** JSON with object keys in order, so values that differ only in key order are the same value, written the same way. */
+const canonical = (v: JsonValue): string =>
+  JSON.stringify(v, (_k, x: unknown) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+const same = (a: JsonValue, b: JsonValue) => canonical(a) === canonical(b);
+const byJson = (a: JsonValue, b: JsonValue) => (canonical(a) < canonical(b) ? -1 : canonical(a) > canonical(b) ? 1 : 0);
+const copyOf = <T extends JsonValue>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+/** A property only when it has a value. */
+const opt = (key: string, value: JsonValue | undefined): JsonObject => (value === undefined || value === '' ? {} : { [key]: value });
 
 /** The IDs for a site whose public URL ends in `root` ("https://example.com/studio/") and a document at `url`. */
 export function graphIds(root: string, url: string): GraphIds {
@@ -122,28 +129,27 @@ function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, r
 function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, root: string, ids: GraphIds): GraphNode[] {
   const site = state.site;
   const name = seoText(site.name);
-  const named = (n: string) => (n ? { name: n } : {});
   const language = siteLanguage(site);
-  const organization: GraphNode = { '@type': 'Organization', '@id': ids.organization, ...named(name), url: root };
+  const organization: GraphNode = { '@type': 'Organization', '@id': ids.organization, ...opt('name', name), url: root };
   const website: GraphNode = {
     '@type': 'WebSite',
     '@id': ids.website,
     url: root,
-    ...named(name),
-    ...(seoText(site.description) ? { description: seoText(site.description) } : {}),
-    ...(isLanguageCode(language) ? { inLanguage: language } : {}),
+    ...opt('name', name),
+    ...opt('description', seoText(site.description)),
+    ...opt('inLanguage', isLanguageCode(language) ? language : undefined),
     publisher: ref(ids.organization)
   };
   const webpage: GraphNode = {
     '@type': 'WebPage',
     '@id': ids.webpage,
     url: meta.url!,
-    ...named(seoText(meta.title)),
-    ...(seoText(meta.description) ? { description: seoText(meta.description) } : {}),
-    ...(isLanguageCode(meta.language) ? { inLanguage: meta.language } : {}),
+    ...opt('name', seoText(meta.title)),
+    ...opt('description', seoText(meta.description)),
+    ...opt('inLanguage', isLanguageCode(meta.language) ? meta.language : undefined),
     isPartOf: ref(ids.website),
     breadcrumb: ref(ids.breadcrumb),
-    ...(meta.imageUrl ? { primaryImageOfPage: { '@type': 'ImageObject', url: meta.imageUrl } } : {})
+    ...opt('primaryImageOfPage', meta.imageUrl ? { '@type': 'ImageObject', url: meta.imageUrl } : undefined)
   };
   const breadcrumb: GraphNode = {
     '@type': 'BreadcrumbList',
@@ -153,22 +159,39 @@ function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSe
   return [organization, website, webpage, breadcrumb];
 }
 
-/** Every `@id` a value refers to, at any depth. */
-function references(value: JsonValue, out: string[] = []): string[] {
-  if (Array.isArray(value)) for (const v of value) references(v, out);
+/**
+ * What a value says of other entities, at any depth: the ones it refers to (an object with an `@id` and nothing else)
+ * and the ones it describes in place (an `@id` with properties of its own).
+ */
+function mentions(value: JsonValue, out: { refs: string[]; inline: string[] } = { refs: [], inline: [] }) {
+  if (Array.isArray(value)) for (const v of value) mentions(v, out);
   else if (value && typeof value === 'object') {
-    for (const [k, v] of Object.entries(value)) {
-      if (k === '@id' && typeof v === 'string') out.push(v);
-      else references(v, out);
-    }
+    const id = value['@id'];
+    if (typeof id === 'string') (Object.keys(value).length === 1 ? out.refs : out.inline).push(id);
+    for (const [k, v] of Object.entries(value)) if (k !== '@id') mentions(v, out);
   }
   return out;
 }
 
+const isAbsolute = (id: string) => {
+  try {
+    const url = new URL(id);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+};
+
 /**
  * The connected graph for one document, with what each contributor adds. Null when the document carries no
- * structured data: it is not on the website, search engines are asked not to list it, it names another address as its
- * own, or the site has no public URL to give its entities addresses.
+ * structured data: it is not on the website, search engines are asked not to list it, or the site has no public URL
+ * to give its entities addresses; contributors are not asked then.
+ *
+ * A contribution is refused, with an error naming the contributor, when it would make the graph say two things or
+ * say something about nothing: a node without an `@id` and an `@type`, or whose `@id` is not one `ids` makes; an ID
+ * the graph or another contributor already has; an extension of a node the graph does not have, of its `@id`, or
+ * setting a property to a second value; a reference that is not an absolute address, or to one of the graph's own IDs
+ * that no node has; and a node linked to nothing else in the graph.
  */
 export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subject: SeoSubject, contributors: readonly GraphContributor[] = []): SeoGraph | null {
   const meta = resolver.resolve(subject);
@@ -176,63 +199,83 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
   if (!meta?.visibility.jsonLd || !meta.url || !base) return null;
   const root = `${base}/`;
   const ids = graphIds(root, meta.url);
+  // One of the IDs `ids` makes: the site's own, or this document's.
+  const own = (id: string) => {
+    const at = id.lastIndexOf('#');
+    return at > 0 && (id.slice(0, at) === root || id.slice(0, at) === meta.url) && FRAGMENT.test(id.slice(at + 1));
+  };
   const core = coreNodes(state, resolver, meta, root, ids);
   const nodes = new Map<string, GraphNode>(core.map((n) => [n['@id'], n]));
-  const reserved = new Set(nodes.keys());
   const added: GraphNode[] = [];
   const extensions: Array<{ id: string; set?: JsonObject; add?: JsonObject; from: number }> = [];
   contributors.forEach((contribute, from) => {
+    const who = `Graph contributor ${from + 1}`;
     const c = contribute({ state, resolver, meta, ids });
     for (const node of c?.nodes ?? []) {
       const id = node?.['@id'];
-      if (typeof id !== 'string' || !id || node['@type'] === undefined) throw new Error(`Graph contributor ${from + 1} added a node without an @id and an @type.`);
-      if (reserved.has(id)) throw new Error(`Graph contributor ${from + 1} added ${id}, which the graph already has: extend it instead.`);
-      if (nodes.has(id)) throw new Error(`Graph contributor ${from + 1} added ${id}, which another contributor added too.`);
+      if (typeof id !== 'string' || !id || node['@type'] === undefined) throw new Error(`${who} added a node without an @id and an @type.`);
+      if (!own(id)) throw new Error(`${who} added ${id}, which is not an ID of this site or document: make it with ids.site or ids.page.`);
+      if (core.some((n) => n['@id'] === id)) throw new Error(`${who} added ${id}, which the graph already has: extend it instead.`);
+      if (nodes.has(id)) throw new Error(`${who} added ${id}, which another contributor added too.`);
       // A copy, so nothing a contributor keeps can change the graph after it is built.
-      const copy = JSON.parse(JSON.stringify(node)) as GraphNode;
+      const copy = copyOf(node);
       nodes.set(id, copy);
       added.push(copy);
     }
     for (const e of c?.extend ?? []) extensions.push({ ...e, from });
   });
-  // Extensions apply once every node is in, so a contributor may extend what another one added: every `set` first,
-  // then every `add`, whose values follow those already there in an order of their own, whoever added them.
-  const target = (id: string, from: number) => {
+  // Extensions apply once every node is in, so a contributor may extend what another one added. Each property is
+  // gathered from every contributor and then written in name order, so the graph is the same whoever came first:
+  // every `set`, then every `add`, whose values follow those the node already has, in an order of their own.
+  const sets = new Map<JsonObject, Map<string, JsonValue>>();
+  const adds = new Map<JsonObject, Map<string, JsonValue[]>>();
+  for (const { id, set, add, from } of extensions) {
     const node = nodes.get(id) as JsonObject | undefined;
     if (!node) throw new Error(`Graph contributor ${from + 1} extends ${id}, which the graph does not have.`);
-    return node;
-  };
-  for (const { id, set, add, from } of extensions)
     for (const k of [...Object.keys(set ?? {}), ...Object.keys(add ?? {})]) if (k === '@id' || k === '@context') throw new Error(`Graph contributor ${from + 1} tried to change ${k} of ${id}.`);
-  for (const { id, set, from } of extensions) {
-    const node = target(id, from);
     for (const [k, v] of Object.entries(set ?? {})) {
-      if (node[k] !== undefined && !same(node[k], v)) throw new Error(`Graph contributor ${from + 1} sets ${k} of ${id}, which already has another value.`);
-      node[k] = JSON.parse(JSON.stringify(v)) as JsonValue;
+      const pending = sets.get(node) ?? new Map<string, JsonValue>();
+      sets.set(node, pending);
+      const had = pending.has(k) ? pending.get(k)! : node[k];
+      if (had !== undefined && !same(had, v)) throw new Error(`Graph contributor ${from + 1} sets ${k} of ${id}, which already has another value.`);
+      pending.set(k, v);
     }
-  }
-  const additions = new Map<JsonObject, Map<string, JsonValue[]>>();
-  for (const { id, add, from } of extensions) {
-    const node = target(id, from);
     for (const [k, v] of Object.entries(add ?? {})) {
-      const byKey = additions.get(node) ?? new Map<string, JsonValue[]>();
-      additions.set(node, byKey);
-      byKey.set(k, [...(byKey.get(k) ?? []), ...(Array.isArray(v) ? v : [v])]);
+      const pending = adds.get(node) ?? new Map<string, JsonValue[]>();
+      adds.set(node, pending);
+      pending.set(k, [...(pending.get(k) ?? []), ...(Array.isArray(v) ? v : [v])]);
     }
   }
-  for (const [node, byKey] of additions)
-    for (const [k, values] of byKey) {
+  const inOrder = <V>(m: Map<string, V>) => [...m].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [node, pending] of sets) for (const [k, v] of inOrder(pending)) if (node[k] === undefined) node[k] = copyOf(v);
+  for (const [node, pending] of adds)
+    for (const [k, values] of inOrder(pending)) {
       const had = node[k] === undefined ? [] : Array.isArray(node[k]) ? (node[k] as JsonValue[]) : [node[k]];
       const more: JsonValue[] = [];
-      for (const x of values) if (![...had, ...more].some((y) => same(x, y))) more.push(JSON.parse(JSON.stringify(x)) as JsonValue);
-      const next = [...had, ...more.sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0))];
+      for (const x of values) if (![...had, ...more].some((y) => same(x, y))) more.push(copyOf(x));
+      const next = [...had, ...more.sort(byJson)];
       node[k] = next.length === 1 ? next[0] : next;
     }
   const graph = [...core, ...added.sort((a, b) => (a['@id'] < b['@id'] ? -1 : a['@id'] > b['@id'] ? 1 : 0))];
-  // A reference to one of the site's own entities must name one the graph has.
-  for (const node of graph)
-    for (const id of references(Object.fromEntries(Object.entries(node).filter(([k]) => k !== '@id'))))
-      if (id.startsWith(root) && id.includes('#') && !nodes.has(id)) throw new Error(`${node['@id']} refers to ${id}, which the graph does not have.`);
+  // References are absolute addresses, and one to an ID of this graph names a node it has (or one described in place).
+  const said = graph.map((node) => ({ id: node['@id'], ...mentions(Object.fromEntries(Object.entries(node).filter(([k]) => k !== '@id'))) }));
+  const described = new Set([...nodes.keys(), ...said.flatMap((m) => m.inline)]);
+  for (const { id, refs } of said)
+    for (const r of refs) {
+      if (!isAbsolute(r)) throw new Error(`${id} refers to ${r}, which is not an absolute address.`);
+      if (own(r) && !described.has(r)) throw new Error(`${id} refers to ${r}, which the graph does not have.`);
+    }
+  // Every node is linked, one way or the other, to the graph's own entities.
+  const links = new Map<string, Set<string>>([...nodes.keys()].map((id) => [id, new Set<string>()]));
+  for (const { id, refs } of said)
+    for (const r of refs)
+      if (links.has(r)) {
+        links.get(id)!.add(r);
+        links.get(r)!.add(id);
+      }
+  const reached = new Set(core.map((n) => n['@id']));
+  for (const queue = [...reached]; queue.length; ) for (const next of links.get(queue.pop()!)!) if (!reached.has(next) && reached.add(next)) queue.push(next);
+  for (const node of added) if (!reached.has(node['@id'])) throw new Error(`${node['@id']} is linked to nothing else in the graph: refer to it, or have it refer to one of the graph's entities.`);
   return { '@context': SCHEMA_CONTEXT, '@graph': graph };
 }
 

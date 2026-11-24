@@ -44,10 +44,12 @@ function expectValidDestination(s: ProjectState, f: SeoFinding) {
   expect(destinationLabel(d)).toBeTruthy();
 }
 
+/** The shared header's placement. */
+const headerOf = (s: ProjectState) => Object.values(s.site.shell.header.nodes).find((n): n is InstanceNode => n.kind === 'instance')!;
+
 /** A header menu item, added by hand as a project edited outside the app might have it. */
 function addMenuItem(s: ProjectState, label: string, link: unknown) {
-  const header = s.site.shell.header;
-  const inst = Object.values(header.nodes).find((n): n is InstanceNode => n.kind === 'instance')!;
+  const inst = headerOf(s);
   (inst.props.links as unknown[]).push({ id: `i${(inst.props.links as unknown[]).length + 1}`, label, link });
   return inst.id;
 }
@@ -64,6 +66,9 @@ describe('runSeoAudit on a well set-up site', () => {
       { type: 'entry.create', collectionId: 'posts', entryId: 'en_draft', title: 'Draft', body: [{ type: 'h4', spans: [{ text: 'Deep' }] }, { type: 'image', assetId: 'img_bowls', alt: '' }] }
     );
     expect(runSeoAudit(s)).toEqual([]);
+    // Published, the same documents are judged.
+    const live = run(s, { type: 'page.update', pageId: 'pg_secret', draft: false }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_draft', draft: false, body: [{ type: 'h2', spans: [{ text: 'Top' }] }, { type: 'h4', spans: [{ text: 'Deep' }] }, { type: 'image', assetId: 'img_bowls', alt: '' }] });
+    expect(new Set(codes(live))).toEqual(new Set(['SEO_PAGE_UNLINKED', 'SEO_DESCRIPTION_DUPLICATE', 'SEO_ENTRY_HEADING_SKIP', 'ALT_MISSING']));
   });
 });
 
@@ -76,6 +81,10 @@ describe('baseline rules', () => {
     const bad = copy(state);
     bad.site.baseUrl = 'ftp://example.com';
     expect(only(bad, 'SEO_BASE_URL_INVALID')).toEqual([expect.objectContaining({ message: expect.stringContaining('“ftp://example.com” can’t be used'), destination: { kind: 'site', field: 'baseUrl' } })]);
+    expect(codes(run(state, { type: 'site.update', baseUrl: '' }))).toContain('SEO_BASE_URL_MISSING');
+    const query = copy(state);
+    query.site.baseUrl = 'https://example.com/?ref=1';
+    expect(codes(query)).toContain('SEO_BASE_URL_INVALID');
     const numeric = copy(state);
     (numeric.site as { baseUrl: unknown }).baseUrl = 42;
     expect(codes(numeric)).toContain('SEO_BASE_URL_INVALID');
@@ -108,7 +117,11 @@ describe('baseline rules', () => {
     // A page search engines are not to list is not judged.
     expect(codes(run(dup, { type: 'page.update', pageId: services, noindex: true }))).toEqual([]);
     const lengths = (n: number) => only(run(state, { type: 'page.update', pageId: services, seoTitle: x(n) }), 'SEO_TITLE_LENGTH');
-    expect([SEO_TITLE_RANGE.min - 1, SEO_TITLE_RANGE.min, SEO_TITLE_RANGE.max, SEO_TITLE_RANGE.max + 1].map((n) => lengths(n).length)).toEqual([1, 0, 0, 1]);
+    expect(SEO_TITLE_RANGE).toEqual({ min: 15, max: 60 });
+    expect([14, 15, 60, 61].map((n) => lengths(n).length)).toEqual([1, 0, 0, 1]);
+    // An entry's is changed in its title.
+    const longPost = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', title: 'Spring pottery classes for complete beginners, every week' });
+    expect(only(longPost, 'SEO_TITLE_LENGTH')).toEqual([expect.objectContaining({ owner: { kind: 'entry', id: 'en_spring' }, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'title' } })]);
     expect(lengths(61)[0]).toMatchObject({ severity: 'info', pillar: 'content', message: expect.stringContaining('61 characters'), destination: { kind: 'pageSeo', pageId: services, field: 'title' } });
   });
 
@@ -120,15 +133,11 @@ describe('baseline rules', () => {
     const inherited = run(state, { type: 'page.update', pageId: home, description: '' }, { type: 'page.update', pageId: services, description: '' });
     expect(only(inherited, 'SEO_DESCRIPTION_DUPLICATE').map((f) => f.owner?.id)).toEqual([home, services]);
     const lengths = (n: number) => only(run(state, { type: 'page.update', pageId: services, description: x(n) }), 'SEO_DESCRIPTION_LENGTH').length;
-    expect([SEO_DESCRIPTION_RANGE.min - 1, SEO_DESCRIPTION_RANGE.min, SEO_DESCRIPTION_RANGE.max, SEO_DESCRIPTION_RANGE.max + 1].map(lengths)).toEqual([1, 0, 0, 1]);
-    // An entry's is changed in its excerpt, unless an SEO description of its own (with no field yet) is what it shows.
+    expect(SEO_DESCRIPTION_RANGE).toEqual({ min: 50, max: 160 });
+    expect([49, 50, 160, 161].map(lengths)).toEqual([1, 0, 0, 1]);
+    // An entry's is changed in its excerpt.
     const entryless = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', excerpt: 'Short.' });
     expect(only(entryless, 'SEO_DESCRIPTION_LENGTH')).toEqual([expect.objectContaining({ owner: { kind: 'entry', id: 'en_spring' }, aiFixable: true, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'excerpt' } })]);
-    const own = copy(state);
-    own.collections.posts.entries.en_spring.seo = { description: 'Short.' };
-    const [f] = only(own, 'SEO_DESCRIPTION_LENGTH');
-    expect(f).toMatchObject({ aiFixable: false });
-    expect(f.destination).toBeUndefined();
   });
 
   it('says once when pages are shared without a picture, and on its own for a page whose picture has gone', () => {
@@ -145,6 +154,10 @@ describe('baseline rules', () => {
       expect.objectContaining({ message: '2 of the site’s 3 pages have no sharing image.' })
     ]);
     expect(only(gone, 'SEO_SOCIAL_IMAGE_MISSING')[1].owner).toBeUndefined();
+    // A page search engines are not to list is still shared.
+    const hidden = copy(run(state, { type: 'page.update', pageId: services, noindex: true }));
+    hidden.pages[services].seo.socialImage = 'img_gone';
+    expect(only(hidden, 'SEO_SOCIAL_IMAGE_MISSING')).toEqual([expect.objectContaining({ owner: { kind: 'page', id: services }, destination: { kind: 'pageSeo', pageId: services, field: 'socialImage' } })]);
     const siteGone = copy(state);
     delete siteGone.assets.assets.img_share;
     expect(only(siteGone, 'SEO_SOCIAL_IMAGE_MISSING').map((f) => f.message)).toEqual(['The site’s sharing image is no longer in the library, so the site is shared without one.']);
@@ -158,6 +171,9 @@ describe('baseline rules', () => {
     const notPicture = copy(state);
     notPicture.assets.assets.img_icon.kind = 'document';
     expect(codes(notPicture)).toEqual(['SEO_FAVICON_MISSING']);
+    const gone = copy(state);
+    delete gone.assets.assets.img_icon;
+    expect(codes(gone)).toEqual(['SEO_FAVICON_MISSING']);
   });
 
   it('says when nothing on the rest of the site links to a page', () => {
@@ -173,8 +189,9 @@ describe('baseline rules', () => {
     const moved = run(s, { type: 'page.update', pageId: 'pg_kilns', route: '/kilns/' });
     expect(moved.site.redirects).toContainEqual({ from: '/kiln-hire/', pageId: 'pg_kilns' });
     expect(codes(run(moved, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/' }) }))).toEqual([]);
-    // An address elsewhere is no link to it.
+    // An address elsewhere, or outside the site's sub-path, is no link to it; nor is a link to it from a draft page.
     expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://other.example/studio/kiln-hire/' }) }))).toContain('SEO_PAGE_UNLINKED');
+    expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/kiln-hire/' }) }))).toContain('SEO_PAGE_UNLINKED');
     // The header shown on other pages counts; the Home page and pages search engines are not to list are not judged.
     expect(codes(run(s, { type: 'page.update', pageId: 'pg_kilns', noindex: true }))).toEqual([]);
     const menu = copy(s);
@@ -192,6 +209,16 @@ describe('baseline rules', () => {
     expect(only(s, 'SEO_PAGE_UNLINKED').map((f) => f.owner?.id)).toEqual([services]);
     s.pages[s.site.homePageId].showHeader = true;
     expect(only(s, 'SEO_PAGE_UNLINKED')).toEqual([]);
+    // A page's own link to itself leads nowhere new either.
+    const self = run(state, { type: 'page.create', pageId: 'pg_kilns', title: 'Kiln hire', route: '/kiln-hire/', starter: 'intro' });
+    const own = copy(self);
+    own.pages.pg_kilns.nodes.self_link = { id: 'self_link', kind: 'link', label: 'Kiln hire prices', link: { type: 'page', target: 'pg_kilns' }, appearance: 'primary' } as never;
+    own.pages.pg_kilns.rootIds.push('self_link');
+    expect(only(own, 'SEO_PAGE_UNLINKED').map((f) => f.owner?.id)).toEqual(['pg_kilns']);
+    // The same link on another page is one.
+    own.pages[state.site.homePageId].nodes.self_link = structuredClone(own.pages.pg_kilns.nodes.self_link);
+    own.pages[state.site.homePageId].rootIds.push('self_link');
+    expect(only(own, 'SEO_PAGE_UNLINKED')).toEqual([]);
   });
 
   it('says when a link’s words say nothing of where it goes, leading to where they are changed', () => {
@@ -216,6 +243,16 @@ describe('baseline rules', () => {
     const named = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [...POST_BODY, { type: 'p', spans: [{ text: 'Read more about our classes', link: { type: 'page', target: 'pg_services' } }] }] });
     expect(runSeoAudit(named)).toEqual([]);
     expect(['Read more →', ' LEARN  more. ', 'Here…'].map(linkWords)).toEqual(['read more', 'learn more', 'here']);
+    // Words on a link that goes nowhere show on no link.
+    const noLink = copy(state);
+    Object.assign(headerOf(noLink).props, { ctaLabel: 'Read more', ctaLink: { type: 'none', target: '' } });
+    expect(runSeoAudit(noLink)).toEqual([]);
+    Object.assign(headerOf(noLink).props, { ctaLink: { type: 'page', target: 'pg_services' } });
+    expect(codes(noLink)).toEqual(['SEO_LINK_TEXT_GENERIC']);
+    // A name that names the destination is no generic word.
+    const go = copy(state);
+    addMenuItem(go, 'Go', { type: 'page', target: 'pg_services' });
+    expect(runSeoAudit(go)).toEqual([]);
   });
 
   it('says when a picture in a published post has no description, as Project health does', () => {
@@ -228,6 +265,11 @@ describe('baseline rules', () => {
     expect(validateState(s).filter((d) => d.code === 'ALT_MISSING').map(diagnosticKey)).toEqual([diagnosticKey(f)]);
     // A decorative picture needs none.
     expect(runSeoAudit(run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: body.map((b) => (b.type === 'image' ? { ...b, decorative: true } : b)) }))).toEqual([]);
+    // Each picture is numbered as the writer shows it.
+    const second = POST_BODY.map((b) => (b.type === 'image' && b.assetId === 'img_texture' ? { ...b, decorative: false } : b)) as RichText;
+    expect(runSeoAudit(run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: second })).map((f) => [f.code, f.site, f.destination])).toEqual([
+      ['ALT_MISSING', 'body|alt|2', { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body', picture: 2 }]
+    ]);
   });
 
   it('says when a post’s headings skip a level below its title', () => {
@@ -236,9 +278,11 @@ describe('baseline rules', () => {
     expect(runSeoAudit(skipped)).toEqual([
       expect.objectContaining({ code: 'SEO_ENTRY_HEADING_SKIP', severity: 'warning', pillar: 'agentic', message: expect.stringContaining('“Fees” is a Heading 4 after a Heading 2'), site: 'body|heading|1', aiFixable: true, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' } })
     ]);
-    // The title is the page's Heading 1, so text that starts at Heading 3 skips Heading 2.
-    const deep = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h3', spans: [{ text: 'Fees' }] }, { type: 'p', spans: [{ text: 'Twenty a class.' }] }] });
-    expect(only(deep, 'SEO_ENTRY_HEADING_SKIP').map((f) => f.site)).toEqual(['body|heading|0']);
+    const deeper = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h2', spans: [{ text: 'Classes' }] }, { type: 'h3', spans: [{ text: 'Fees' }] }, { type: 'h2', spans: [{ text: 'Dates' }] }, { type: 'h4', spans: [{ text: 'Spring' }] }] });
+    expect(only(deeper, 'SEO_ENTRY_HEADING_SKIP').map((f) => f.site)).toEqual(['body|heading|3']);
+    // Its first heading follows whatever its layout shows above the text, so it is not judged.
+    const first = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h4', spans: [{ text: 'Fees' }] }, { type: 'p', spans: [{ text: 'Twenty a class.' }] }] });
+    expect(only(first, 'SEO_ENTRY_HEADING_SKIP')).toEqual([]);
   });
 
   it('leads every finding to something the project has, in a fixed order, the same on every run', () => {
@@ -249,7 +293,7 @@ describe('baseline rules', () => {
       { type: 'page.update', pageId: state.site.homePageId, noindex: true },
       { type: 'page.update', pageId: services, seoTitle: 'Short', description: '' },
       { type: 'page.create', pageId: 'pg_lost', title: 'Lost', route: '/lost/' },
-      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h3', spans: [{ text: 'Fees', link: { type: 'page', target: services } }] }, { type: 'image', assetId: 'img_bowls', alt: '' }, { type: 'p', spans: [{ text: 'here', link: { type: 'page', target: services } }] }] }
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h2', spans: [{ text: 'Fees', link: { type: 'page', target: services } }] }, { type: 'h4', spans: [{ text: 'Spring' }] }, { type: 'image', assetId: 'img_bowls', alt: '' }, { type: 'p', spans: [{ text: 'here', link: { type: 'page', target: services } }] }] }
     );
     s = copy(s);
     addMenuItem(s, 'More', { type: 'page', target: services });
@@ -265,6 +309,8 @@ describe('baseline rules', () => {
     );
     for (const f of found) expect(f.explanation.length, f.code).toBeGreaterThan(20);
     expect(JSON.stringify(runSeoAudit(structuredClone(s)))).toBe(JSON.stringify(found));
+    // Findings that say where they are fixed do.
+    for (const f of found) if (!['SEO_PAGE_UNLINKED'].includes(f.code)) expect(f.destination, f.code).toBeTruthy();
   });
 });
 
@@ -280,6 +326,8 @@ describe('the audit runner', () => {
     expect(runSeoAudit(run(state, { type: 'site.update', favicon: null, baseUrl: '' }), [entity]).map((f) => f.code)).toEqual(['SEO_BASE_URL_MISSING', 'SEO_ENTITY_MISSING', 'SEO_FAVICON_MISSING']);
     expect(() => runSeoAudit(state, [entity, entity])).toThrow(/both called entity-identity/);
     expect(() => runSeoAudit(state, [{ id: BASELINE_SEO_RULES[0].id, check: () => [] }])).toThrow(/both called/);
+    // The same finding from two rules is listed once.
+    expect(runSeoAudit(state, [entity, { ...entity, id: 'entity-again' }]).map((f) => f.code)).toEqual(['SEO_ENTITY_MISSING']);
   });
 
   it('reads damaged documents without failing', () => {
@@ -288,7 +336,11 @@ describe('the audit runner', () => {
     (s.collections.posts.entries.en_spring as { body: unknown }).body = [{ type: 'nonsense' }];
     (s.pages[s.site.homePageId].seo as { title: unknown }).title = 7;
     s.site.pageOrder.push('pg_missing');
-    expect(() => runSeoAudit(s)).not.toThrow();
+    (s.collections.posts.entries.en_spring as { featuredImage: unknown }).featuredImage = 'img_bowls';
+    (s.assets.assets.img_bowls as { file: unknown }).file = null;
+    s.site.favicon = null;
+    // The rest of the site is judged all the same.
+    expect(codes(s)).toContain('SEO_FAVICON_MISSING');
   });
 });
 
