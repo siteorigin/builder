@@ -72,6 +72,8 @@ async function shot(state, check, { themes = BOTH, area = 'window', text = null,
   for (const theme of themes) {
     await setTheme(theme);
     if (!keepPointer) await win.mouse.move(W - 300, 300);
+    // The status bar is captured at rest: closing a dialog with Escape leaves keyboard focus on its opener.
+    if (area === 'status') await win.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
     await pause(200);
     const target = text ? win.locator(check, { hasText: text }).first() : win.locator(check).first();
     if (!(await target.isVisible().catch(() => false))) throw new Error(`state "${state}" (${theme}) did not render "${check}"${text ? ` with "${text}"` : ''}; refusing to write`);
@@ -274,6 +276,32 @@ await pause(200);
 await shot('health-theme-update', '.modal .health-row', { area: 'modal', themes: BOTH, text: 'theme component' });
 await closeHealth();
 
+// ---- Only quiet things: a note, updates and the copies kept when conflicts were settled ----
+await seed((s) => {
+  const home = pageNamed(s, 'Home');
+  s.diagnostics = [{ severity: 'info', code: 'PAGE_NOTE', message: 'Home: the page has no description, so search engines will write their own from its text.', owner: { kind: 'page', id: home.id } }];
+  s.conflicts = [];
+  s.themeUpdates = THEME_UPDATES;
+  s.savedCopies = [
+    { id: 'copy-1', path: `siteorigin/pages/${pageNamed(s, 'About').id}.json`, kind: 'canonical', side: 'external', savedAt: Date.UTC(2026, 10, 23, 14, 5), file: '.siteorigin/recovery/copy-1.json' },
+    { id: 'copy-2', path: 'src/routes/about/+page.svelte', kind: 'generated', side: 'external', savedAt: Date.UTC(2026, 10, 23, 14, 6), file: '.siteorigin/recovery/copy-2.svelte' }
+  ];
+});
+await openHealth();
+await shot('health-quiet', '.modal .health-jumps', { area: 'modal', themes: BOTH, text: 'Saved copies' });
+await closeHealth();
+
+// ---- The preview is still starting ----
+await seed((s) => {
+  s.diagnostics = [];
+  s.conflicts = [];
+  s.savedCopies = [];
+  s.runtime = { state: 'preparing', message: 'Installing the website tools…' };
+});
+await openHealth();
+await shot('health-starting', '.modal .health-summary.busy', { area: 'modal', themes: LIGHT });
+await closeHealth();
+
 // ---- The website tools failed ----
 await seed((s) => {
   s.diagnostics = [];
@@ -339,7 +367,7 @@ await pause(2500);
   await apply(s.state.site.shell.footer.rootIds.map((nodeId) => ({ type: 'node.remove', owner: { kind: 'shell', id: 'footer' }, nodeId })), 'Remove the footer');
 }
 await outlineView();
-await shot('outline-empty', '.outline-view .layers-empty', { area: 'panel', themes: LIGHT });
+await shot('outline-empty', '.outline-view .outline-empty', { area: 'panel', themes: LIGHT });
 
 await app.close();
 rmSync(WORK, { recursive: true, force: true });
