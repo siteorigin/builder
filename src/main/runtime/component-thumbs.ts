@@ -25,7 +25,7 @@ export const THUMB_VIEW = { width: 1280, height: 800 };
 /** The size of a thumbnail's picture, in pixels: twice the larger tile it is shown in. */
 export const THUMB_SIZE = { width: 320, height: 200 };
 /** Part of every key, so a change to how thumbnails are drawn draws them all again. */
-const RECIPE = `component-thumb-v1 ${THUMB_VIEW.width}x${THUMB_VIEW.height} ${THUMB_SIZE.width}x${THUMB_SIZE.height} png`;
+const RECIPE = `component-thumb-v2 ${THUMB_VIEW.width}x${THUMB_VIEW.height} ${THUMB_SIZE.width}x${THUMB_SIZE.height} png`;
 /** A key: SHA-256, in hex. */
 const THUMB_KEY = /^[0-9a-f]{64}$/;
 /** The thumbnails a project's cache keeps: older ones beyond this are removed after each new one. */
@@ -93,25 +93,38 @@ export interface Box {
   height: number;
 }
 
+/** The narrowest frame photographed, in CSS pixels: a small component is shown at its own size, never blown up. */
+export const MIN_FRAME_WIDTH = 320;
+/** Room left around what a component paints. */
+const FRAME_PAD = 16;
+
+const finite = (b: Box | null | undefined): b is Box => !!b && [b.x, b.y, b.width, b.height].every(Number.isFinite) && b.width >= 1 && b.height >= 1;
+
 /**
- * What to photograph of a component whose box on the page is `bounds`: a 16:10 frame at its top, as wide as it is
- * (a short component is followed by the page's background, a tall one shows its top), inside the page's viewport.
- * Null when the component shows nothing there.
+ * What to photograph of a component: a 16:10 frame around what it paints (`ink`: its text, media and painted boxes;
+ * its whole box, `bounds`, when that is not known), with a little room around it and never narrower than
+ * MIN_FRAME_WIDTH. Something taller than the frame shows its top; something shorter is centred in it, with the page's
+ * background around it. Inside the page's viewport; null when the component shows nothing there.
  */
-export function thumbCrop(bounds: Box | null | undefined, view = THUMB_VIEW): Box | null {
-  if (!bounds || ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)) return null;
-  const x = Math.max(0, Math.floor(bounds.x));
-  const y = Math.max(0, Math.floor(bounds.y));
-  const right = Math.min(view.width, Math.ceil(bounds.x + bounds.width));
-  if (bounds.height < 1 || right - x < 1 || y >= view.height) return null;
-  let width = right - x;
-  let height = Math.round((width * 10) / 16);
-  // Too low on the page for the whole frame: a narrower one, still 16:10.
-  if (y + height > view.height) {
-    height = view.height - y;
-    width = Math.min(width, Math.round((height * 16) / 10));
+export function thumbCrop(bounds: Box | null | undefined, ink?: Box | null, view = THUMB_VIEW): Box | null {
+  const shown = finite(ink) ? ink : finite(bounds) ? bounds : null;
+  if (!shown) return null;
+  // What is on the page, with room around it.
+  const x0 = Math.max(0, shown.x - FRAME_PAD);
+  const y0 = Math.max(0, shown.y - FRAME_PAD);
+  const x1 = Math.min(view.width, shown.x + shown.width + FRAME_PAD);
+  const y1 = Math.min(view.height, shown.y + shown.height + FRAME_PAD);
+  if (x1 - x0 < 1 || y1 - y0 < 1 || shown.x >= view.width || shown.y >= view.height || shown.x + shown.width <= 0 || shown.y + shown.height <= 0) return null;
+  let width = Math.min(view.width, Math.max(MIN_FRAME_WIDTH, x1 - x0));
+  let height = (width * 10) / 16;
+  if (height > view.height) {
+    height = view.height;
+    width = (height * 16) / 10;
   }
-  return width >= 1 && height >= 1 ? { x, y, width, height } : null;
+  // Centred on what is shown across; down, its top, or its middle when it is shorter than the frame.
+  const x = Math.min(Math.max(0, (x0 + x1) / 2 - width / 2), view.width - width);
+  const y = Math.min(y1 - y0 > height ? y0 : Math.max(0, (y0 + y1) / 2 - height / 2), view.height - height);
+  return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
 }
 
 /**

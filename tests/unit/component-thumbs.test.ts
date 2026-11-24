@@ -101,17 +101,24 @@ describe('a thumbnail’s key', () => {
 });
 
 describe('the frame photographed', () => {
-  it('is 16:10 at the top of the component, as wide as it is', () => {
-    // A full-width section taller than the frame: its top.
-    expect(thumbCrop({ x: 0, y: 0, width: 1280, height: 1600 })).toEqual({ x: 0, y: 0, width: 1280, height: 800 });
-    // A short banner: the page's background below it.
-    expect(thumbCrop({ x: 0, y: 0, width: 1280, height: 120 })).toEqual({ x: 0, y: 0, width: 1280, height: 800 });
-    // A card narrower than the page.
-    expect(thumbCrop({ x: 20.4, y: 10.6, width: 320, height: 400 })).toEqual({ x: 20, y: 10, width: 321, height: 201 });
-    // Lower on the page than a full frame allows: a narrower 16:10 frame that still fits.
-    expect(thumbCrop({ x: 0, y: 400, width: 1280, height: 900 })).toEqual({ x: 0, y: 400, width: 640, height: 400 });
+  it('is 16:10 around what the component paints, showing the top of something taller', () => {
+    // A full-width section taller than the page's view: its top.
+    expect(thumbCrop({ x: 0, y: 0, width: 1280, height: 1600 }, { x: 0, y: 0, width: 1280, height: 1600 })).toEqual({ x: 0, y: 0, width: 1280, height: 800 });
+    // A full-width hero shorter than the frame: all of it, with the page's background below.
+    expect(thumbCrop({ x: 0, y: 0, width: 1280, height: 500 }, { x: 0, y: 0, width: 1280, height: 500 })).toEqual({ x: 0, y: 0, width: 1280, height: 800 });
+    // A heading in a full-width block: the heading, at its own size, not the empty width beside it.
+    expect(thumbCrop({ x: 0, y: 0, width: 1280, height: 38 }, { x: 0, y: 0, width: 150, height: 38 })).toEqual({ x: 0, y: 0, width: 320, height: 200 });
+    // Something small in the middle of the page: centred.
+    expect(thumbCrop({ x: 0, y: 0, width: 1280, height: 700 }, { x: 540, y: 300, width: 200, height: 50 })).toEqual({ x: 480, y: 225, width: 320, height: 200 });
+    // A tall card: its top, as wide as it is with room around it.
+    expect(thumbCrop({ x: 20, y: 10, width: 300, height: 600 }, { x: 20, y: 10, width: 300, height: 600 })).toEqual({ x: 4, y: 0, width: 332, height: 208 });
     // Wider than the page: only what is in it.
-    expect(thumbCrop({ x: -50, y: 0, width: 2000, height: 50 })).toEqual({ x: 0, y: 0, width: 1280, height: 800 });
+    expect(thumbCrop({ x: -50, y: 0, width: 2000, height: 50 }, null)).toEqual({ x: 0, y: 0, width: 1280, height: 800 });
+  });
+
+  it('frames the component’s box when what it paints is not known', () => {
+    expect(thumbCrop({ x: 0, y: 0, width: 300, height: 100 })).toEqual({ x: 0, y: 0, width: 320, height: 200 });
+    expect(thumbCrop({ x: 0, y: 0, width: 300, height: 100 }, { x: Number.NaN, y: 0, width: 1, height: 1 })).toEqual({ x: 0, y: 0, width: 320, height: 200 });
   });
 
   it('is nothing for a component with no box, or none on the page', () => {

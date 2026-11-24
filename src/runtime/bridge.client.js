@@ -1892,8 +1892,51 @@ if (parentWin === window && previewAtStart) {
   document.documentElement.toggleAttribute('data-so-editing', false);
   window.__siteoriginThumb = async () => {
     await settled(Date.now() + 4000);
-    return previewState();
+    return { ...previewState(), ink: inkBounds() };
   };
+}
+
+/**
+ * Where the component paints something to see, so its thumbnail frames that rather than the empty width of a block:
+ * its text, its media and controls, and every box with a background, a border or a shadow. Null when it paints
+ * nothing.
+ */
+function inkBounds() {
+  const main = document.getElementById('main');
+  if (!main) return null;
+  const MEDIA = new Set(['img', 'svg', 'video', 'canvas', 'iframe', 'picture', 'object', 'embed', 'input', 'select', 'textarea', 'button']);
+  const clear = (c) => !c || c === 'transparent' || /^rgba\(.*,\s*0\)$/.test(c);
+  const painted = (cs) =>
+    !clear(cs.backgroundColor) ||
+    cs.backgroundImage !== 'none' ||
+    cs.boxShadow !== 'none' ||
+    ['Top', 'Right', 'Bottom', 'Left'].some((s) => parseFloat(cs[`border${s}Width`]) > 0 && cs[`border${s}Style`] !== 'none' && !clear(cs[`border${s}Color`]));
+  let box = null;
+  let left = 5000;
+  const add = (r) => {
+    if (!r || r.width < 1 || r.height < 1) return;
+    if (!box) box = { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+    else Object.assign(box, { x: Math.min(box.x, r.left), y: Math.min(box.y, r.top), right: Math.max(box.right, r.right), bottom: Math.max(box.bottom, r.bottom) });
+  };
+  const visit = (el, shown) => {
+    for (const child of el.childNodes) {
+      if (--left < 0) return;
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (!shown || !child.textContent.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        add(range.getBoundingClientRect());
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const cs = getComputedStyle(child);
+        if (cs.display === 'none' || cs.opacity === '0') continue;
+        const visible = cs.visibility !== 'hidden';
+        if (visible && (MEDIA.has(child.localName) || painted(cs))) add(child.getBoundingClientRect());
+        if (!MEDIA.has(child.localName)) visit(child, visible);
+      }
+    }
+  };
+  visit(main, true);
+  return box && { x: box.x, y: box.y, width: box.right - box.x, height: box.bottom - box.y };
 }
 send('ready', { path: location.pathname, title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
 reportHistory();

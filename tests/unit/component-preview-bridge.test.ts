@@ -72,10 +72,10 @@ async function alone(body: string, preview: object) {
     });
     await page.goto(`${origin}/__siteorigin/component/abcdefabcdefabcdef/`);
     await page.waitForFunction('typeof window.__siteoriginThumb === "function"', null, { timeout: 8000 });
-    return await page.evaluate<{ measured: Preview; editing: boolean; unlinked: string }>(`(async () => ({
+    return await page.evaluate<{ measured: Preview; editing: boolean; unlinked: string | null }>(`(async () => ({
       measured: await window.__siteoriginThumb(),
       editing: document.documentElement.hasAttribute('data-so-editing'),
-      unlinked: getComputedStyle(document.querySelector('[data-so-unlinked]')).display
+      unlinked: (() => { const el = document.querySelector('[data-so-unlinked]'); return el ? getComputedStyle(el).display : null; })()
     }))()`);
   } finally {
     await browser.close();
@@ -92,9 +92,26 @@ describe('the bridge in an isolated component preview', () => {
     expect(measured).toMatchObject({ key: 'abcdefabcdefabcdef', mounted: true, bounds: { x: 30, y: 12, width: 300, height: 150 } });
   }, 20000);
 
+  it.skipIf(!browserInstalled)('opened on its own, says where the component paints, so its thumbnail frames that', async () => {
+    // A full-width block with a heading and an icon in it, and a hidden note: only the heading and icon are seen.
+    const body = `<main id="main"><div data-so-ctx="preview:c1" data-so-node="preview" style="padding:40px 0"><h2 style="margin:0 0 0 50px;font:20px/30px sans-serif;display:inline-block">Hi</h2><svg width="24" height="24" style="display:block;margin-left:300px"></svg><p style="visibility:hidden;margin:0">Hidden</p></div><div style="height:10px;background:transparent"></div></main>`;
+    const { measured } = await alone(body, { key: 'abcdefabcdefabcdef', mounted: true });
+    const m = measured as Preview & { ink: Box };
+    expect(m.bounds?.width).toBe(640);
+    expect(m.ink.x).toBe(50);
+    // The heading's text starts at its letters, a little below the top of its line.
+    expect(m.ink.y).toBeGreaterThanOrEqual(40);
+    expect(m.ink.y).toBeLessThan(47);
+    expect(Math.round(m.ink.x + m.ink.width)).toBe(324);
+    expect(Math.round(m.ink.y + m.ink.height)).toBe(94);
+    // A painted box counts whole.
+    const { measured: card } = await alone(`<main id="main"><div style="margin:0 0 0 100px;width:200px;height:80px;background:#f00"></div></main>`, { key: 'abcdefabcdefabcdef', mounted: true });
+    expect((card as Preview & { ink: Box }).ink).toEqual({ x: 100, y: 0, width: 200, height: 80 });
+  }, 20000);
+
   it.skipIf(!browserInstalled)('opened on its own, says why a component did not mount', async () => {
     const { measured } = await alone('<main id="main"><p data-so-unlinked>x</p></main>', { key: 'abcdefabcdefabcdef', mounted: false, error: 'boom' });
-    expect(measured).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '' });
+    expect(measured).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '', ink: null });
   }, 20000);
 
   it.skipIf(!browserInstalled)('reports the box a code component fills through its wrapper, and no page heading check', async () => {

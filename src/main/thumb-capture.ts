@@ -21,6 +21,8 @@ interface Measured {
   mounted?: unknown;
   error?: unknown;
   bounds?: Box | null;
+  /** Where it paints something to see. */
+  ink?: Box | null;
 }
 
 /**
@@ -147,7 +149,7 @@ export function createThumbCapturer(): ThumbCapturer {
         const why = typeof measured.error === 'string' ? measured.error.slice(0, 500) : '';
         return { ok: false, message: why ? `The component could not be shown: ${why}` : 'The component could not be shown.' };
       }
-      const crop = thumbCrop(measured.bounds ?? null);
+      const crop = thumbCrop(measured.bounds ?? null, measured.ink ?? null);
       if (!crop) return { ok: false, message: 'The component shows nothing to picture.' };
       const image = await w.webContents.capturePage(crop, { stayHidden: true });
       if (image.isEmpty()) return { ok: false, message: 'The component could not be pictured.' };
