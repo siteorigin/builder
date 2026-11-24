@@ -388,7 +388,15 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state));
     // Theme components are fixed theme data; only a project's own components are its author's to make reusable.
     const tokens = effectiveTokens(state);
-    for (const def of Object.values(state.components)) if (def.kind === 'managed' && def.owner === 'project') out.push(...componentReusabilityDiagnostics(def, tokens));
+    for (const def of Object.values(state.components)) {
+      if (def.kind !== 'managed' || def.owner !== 'project') continue;
+      // Advice on a definition edited by hand into a shape it cannot have is skipped, never a reason it cannot open.
+      try {
+        out.push(...componentReusabilityDiagnostics(def, tokens));
+      } catch {
+        /* the structural checks above say what is wrong with it */
+      }
+    }
   }
   out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {

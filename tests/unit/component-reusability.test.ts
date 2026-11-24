@@ -350,6 +350,77 @@ describe('hand-edited definitions', () => {
   });
 });
 
+describe('hand-edited values the checks read', () => {
+  it('read links, labels and styles of any shape without failing', () => {
+    const s = fresh();
+    const def = addDef(s, {
+      name: 'Odd links',
+      properties: { items: P.list('Items', 'Item', { title: P.str('Title', '') }, []) },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.link('weird', { type: 'url', target: 'x' }, 'Go', 'primary'),
+          b.el('box', 'div', { link: { type: 'url', target: 'x' } }, []),
+          b.text('styled', 'p', 'Garden Studio', { styles: { textStyle: 'text.h3' } }),
+          b.repeat('list', 'items', [b.el('a', 'div', {}, [b.el('b', 'div', {}, [])])])
+        ])
+    });
+    const nodes = def.tree!.nodes as unknown as Record<string, Record<string, unknown>>;
+    const unprintable = { toString: null, valueOf: null };
+    nodes.weird.link = { type: 'url', target: unprintable };
+    nodes.weird.label = unprintable;
+    nodes.weird.appearance = unprintable;
+    nodes.box.link = { type: 'url', target: unprintable };
+    // Two containers that hold each other inside a list item.
+    (nodes.b as { children: string[] }).children = ['a'];
+    const found = componentReusabilityDiagnostics(def, effectiveTokens(s));
+    // The heading style named by its ID alone still makes the short title a heading.
+    expect(where(found)).toEqual([
+      ['COMPONENT_UNBOUND_CONTENT', 'weird'],
+      ['COMPONENT_UNBOUND_CONTENT', 'styled']
+    ]);
+    expect(found[0].message).toContain('has no destination in the design');
+  });
+
+  it('read a card that wraps one element, and pictures sized differently by width or variant', () => {
+    const s = fresh();
+    const def = addDef(s, {
+      name: 'Grid',
+      properties: { items: P.list('Items', 'Item', { title: P.str('Title', ''), photo: P.image('Photo') }, []) },
+      parts: { root: { nodeId: 'root', label: 'Section' }, inner: { nodeId: 'inner', label: 'Inner' }, framed: { nodeId: 'frame-all', label: 'Frame', styleControls: [] }, fit: { nodeId: 'frame-fit', label: 'Frame', styleControls: ['objectFit'] } },
+      variantAxes: { size: { label: 'Size', default: 'small', options: { small: { label: 'Small' }, large: { label: 'Large', styles: { 'grows-variant': { base: { width: '320px' } } } } } } },
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          // An article holding one exposed element is still the card.
+          b.repeat('cards', 'items', [b.el('card', 'article', {}, [b.el('inner', 'div', {}, [b.text('t', 'p', item('title'))])])]),
+          b.repeat('pics', 'items', [
+            b.el('pic', 'div', { name: 'Pic', styles: { border: tok('border.default') } }, [
+              b.image('grows', item('photo'), { styles: { base: { width: '40px' }, desktop: { width: 'fill' } } }),
+              b.image('capped', item('photo'), { styles: { base: { maxWidth: '40px' }, desktop: { width: '320px' } } }),
+              b.image('grows-variant', item('photo'), { styles: { width: '40px' } }),
+              b.el('frame-all', 'div', {}, [b.image('in-all', item('photo'))]),
+              b.el('frame-fit', 'div', {}, [b.image('in-fit', item('photo'))])
+            ])
+          ])
+        ])
+    });
+    def.parts.pic = { nodeId: 'pic', label: 'Pic' };
+    expect(where(componentReusabilityDiagnostics(def, effectiveTokens(s)))).toEqual([
+      ['COMPONENT_PART_MISSING', 'card'],
+      ['COMPONENT_PART_MISSING', 'grows'],
+      ['COMPONENT_PART_MISSING', 'grows-variant'],
+      ['COMPONENT_PART_MISSING', 'in-fit']
+    ]);
+  });
+
+  it('leave a hairline alone even where a spacing style matches it exactly', () => {
+    const s = fresh();
+    s.tokens.custom.push({ id: 'space.hair', label: 'Hairline', group: 'space', value: '2px' });
+    const def = addDef(s, { name: 'Lines', properties: {}, parts: { root: { nodeId: 'root', label: 'Section' } }, build: (b) => b.el('root', 'section', { styles: { gap: '2px', rowGap: '0em' } }, []) });
+    expect(componentReusabilityDiagnostics(def, effectiveTokens(s))).toEqual([]);
+  });
+});
+
 describe('as diagnostics', () => {
   const promo = (s: ProjectState) =>
     addDef(s, {

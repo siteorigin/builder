@@ -868,6 +868,8 @@ export class Orchestrator {
     let nudged = false;
     /** Told once about components that are not reusable yet; apart from `nudged`, so neither nudge uses up the other. */
     let reuseNudged = false;
+    /** A change of this run found a file changed outside the app: the run's work is then the author's to review. */
+    let conflicted = false;
 
     const host: ToolHost = {
       macros,
@@ -915,7 +917,9 @@ export class Orchestrator {
             }
           };
         }
-        return session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}` });
+        const r = await session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}` });
+        if (!r.ok && r.error?.code === 'CONFLICT') conflicted = true;
+        return r;
       },
       compileAll: () => this.deps.compileAll(),
       inspectLayout: (pageId, width) => this.deps.inspectLayout(pageId, width),
@@ -1127,15 +1131,28 @@ export class Orchestrator {
       const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it.` : finalText || 'Done.';
       await finish('completed', summary, { changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
     };
-    /** A finish that passed every check, held while the model is sent back to make its components reusable. */
-    let reuseFallback: { revision: number; text: string; finished: Finished } | null = null;
-    /** Ends the run as it had finished, when nothing has changed since it was sent back for advice. */
+    /** The answer of a finish that passed every check, held while the model is sent back to make its components reusable. */
+    let reuseFallback: { text: string } | null = null;
+    /**
+     * Ends a run that is stopped after being sent back only for advice as it had finished: its work as it stands now is
+     * kept when it still passes every check, with anything that has come up since named, as at any other finish. Never
+     * after a file changed outside the app, which the author reviews, and never on Stop.
+     */
     const keepFinished = async () => {
       const held = reuseFallback;
-      if (!held || signal.aborted || session.revision !== held.revision) return false;
+      if (!held || signal.aborted || conflicted) return false;
       reuseFallback = null;
+      let finished: Finished;
+      try {
+        const links = await connectLinks();
+        const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
+        if (signal.aborted || conflicted || sortErrors(diags).fresh.length) return false;
+        finished = { diags, links, stubs: authority.kind === 'site' ? findStubPages(startState, session.state, requestText) : [], rejected: [...macros.drafts.keys()], absent: missing() };
+      } catch {
+        return false;
+      }
       finalText = held.text;
-      await completeChecked(held.finished);
+      await completeChecked(finished);
       return true;
     };
     /** Whether this request may make a component's element reusable: change that element and add to its contract. */
@@ -1361,7 +1378,7 @@ export class Orchestrator {
             const fixable = freshReusability(diags).filter(canFix);
             if (fixable.length && !reuseNudged) {
               reuseNudged = true;
-              reuseFallback = { revision: session.revision, text: finalText, finished: { diags, links, stubs, rejected, absent } };
+              reuseFallback = { text: finalText };
               finalText = '';
               msg.text = '';
               this.setStatus('running');

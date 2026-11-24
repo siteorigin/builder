@@ -2647,6 +2647,57 @@ describe('components that are not reusable yet (#363)', () => {
     expect(Object.values(env.session.state.components[def.id].tree!.nodes).some((n) => n.kind === 'text' && n.text === SAMPLE)).toBe(true);
   });
 
+  it('keeps what landed after being sent back when the model then fails, if it still passes every check', async () => {
+    let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
+    let nodeId = '';
+    const env = await setup(
+      [
+        () => [insertSample(def, 1)],
+        (req) => {
+          nodeId = nodeIdOf(lastTool(req));
+          return finish('Added a line about the studio.');
+        },
+        () => [call('b1', 'apply_operations', { expectedRevision: 2, operations: [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'studio', schema: { type: 'string', label: 'Studio line', default: SAMPLE } }, { type: 'node.setBinding', owner: def.owner, nodeId, field: 'text', binding: { $prop: 'studio' } }] })],
+        () => [{ type: 'error', code: 'invalid_request', message: 'The provider refused the request.' }]
+      ],
+      { codeEnabled: false }
+    );
+    def = await projectHero(env.session);
+    const { result } = await env.run('Add a line about the studio to this hero', everywhere(def));
+    expect(env.adapter.requests).toHaveLength(4);
+    expect(result?.status).toBe('completed');
+    expect(result?.summary).toBe('Added a line about the studio.');
+    // Both the line and its binding are kept.
+    expect(env.session.state.components[def.id].tree!.nodes[nodeId]).toMatchObject({ text: { $prop: 'studio' } });
+    expect(result?.checks?.filter((c) => c.status === 'issue')).toEqual([]);
+  });
+
+  it('never keeps a run whose change found a file changed outside the app', async () => {
+    let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
+    let conflict: { error?: { code?: string } } = {};
+    const env = await setup(
+      [
+        () => [insertSample(def, 1)],
+        () => finish('Added a line about the studio.'),
+        () => {
+          // Someone edits the component's file while the model is sent back.
+          const file = join(env.session.dir, 'siteorigin', 'components', def.id, 'component.json');
+          writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), name: 'Edited elsewhere' }, null, 2));
+          return [call('c1', 'apply_operations', { expectedRevision: 2, operations: [{ type: 'node.setStyle', owner: def.owner, nodeId: def.root, scope: 'base', property: 'background', value: { token: 'color.surface-alt' } }] })];
+        },
+        (req) => {
+          conflict = lastTool(req);
+          return [{ type: 'error', code: 'invalid_request', message: 'The provider refused the request.' }];
+        }
+      ],
+      { codeEnabled: false }
+    );
+    def = await projectHero(env.session);
+    const { result } = await env.run('Add a line about the studio to this hero', everywhere(def));
+    expect(conflict.error?.code).toBe('CONFLICT');
+    expect(result?.status).toBe('conflicted');
+  });
+
   it('leaves alone what the component already had, and what the request may not change', async () => {
     let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
     let restyled: { componentWarnings?: unknown } = {};
