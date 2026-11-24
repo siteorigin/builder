@@ -565,11 +565,11 @@ export function Canvas() {
   // taller than the page shows from its top.
   const shownFor = useRef(showSelection);
   useEffect(() => {
-    const desc = ready ? descFor(selection) : null;
-    if (!desc) return;
+    // A request is for the moment it is made: one the page could not take then never carries over to a later pick.
     const show = shownFor.current !== showSelection;
     shownFor.current = showSelection;
-    post('scrollTo', show ? { desc, show } : { desc });
+    const desc = ready ? descFor(selection) : null;
+    if (desc) post('scrollTo', show ? { desc, show } : { desc });
   }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**

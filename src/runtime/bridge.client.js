@@ -144,7 +144,7 @@ function sampleSelection(els, boxes) {
   const x = (Math.max(0, b.x) + Math.min(w, b.x + b.width)) / 2;
   const hit = innermost(document.elementFromPoint(x, y));
   const hb = hit && hit !== el && el.contains(hit) ? rectOf(hit) : null;
-  const landmark = hb && hb.height > 0 && hb.y <= y && y <= hb.y + hb.height ? { el: hit, desc: descOf(hit), depth: (y - hb.y) / hb.height } : null;
+  const landmark = hb && hb.height > 0 && hb.y <= y && y <= hb.y + hb.height && hb.x <= x && x <= hb.x + hb.width ? { el: hit, desc: descOf(hit), depth: (y - hb.y) / hb.height } : null;
   keepSample = { ...base, at: y / h, depth: (y - b.y) / b.height, landmark };
 }
 /** The page changed width (`widthChanged`, from `before`) or only height: hold the point the selection showed at the last width. */
@@ -156,8 +156,8 @@ function holdSelection(widthChanged, before) {
   const now = performance.now();
   // Still settling from the last width (a drag through many): the same point is kept. What the browser does to the
   // scroll position for the new width is not the author scrolling.
-  if (keepHold && now <= keepHold.until) Object.assign(keepHold, { until: now + KEEP_MS, scrollY: null });
-  else if (keepSample && keepSample.width === before && sameDesc(keepSample.desc, selected)) keepHold = { ...keepSample, until: now + KEEP_MS, scrollY: null };
+  if (keepHold && now <= keepHold.until) Object.assign(keepHold, { until: now + KEEP_MS, last: null });
+  else if (keepSample && keepSample.width === before && sameDesc(keepSample.desc, selected)) keepHold = { ...keepSample, until: now + KEEP_MS, last: null };
   else keepHold = null;
 }
 /** The selection's element the hold is about: the same one while it is on the page, else the one rendered in its place. */
@@ -180,27 +180,38 @@ function heldPoint(k, el) {
 function keepInView() {
   const k = keepHold;
   if (!k) return;
-  // The list item open in the inspector is brought into view by its own reveal. Anything else that scrolled the page
-  // since the last correction (a scrollbar dragged, the site's own code) has the last word.
-  if (performance.now() > k.until || mode !== 'edit' || editing || reveal || !sameDesc(k.desc, selected) || (k.scrollY !== null && Math.abs(scrollY - k.scrollY) > 1)) {
+  // The list item open in the inspector is brought into view by its own reveal.
+  if (performance.now() > k.until || mode !== 'edit' || editing || reveal || !sameDesc(k.desc, selected)) {
     keepHold = null;
     return;
   }
   const el = heldElement(k);
   const y = el && heldPoint(k, el);
   if (y === null || y === undefined) return;
+  // Since the last pass the page was scrolled and nothing else moved (a scrollbar dragged, the site's own code): that
+  // has the last word. A scroll that came with a change of layout (the browser keeping its place) is corrected.
+  const scrolled = k.last ? scrollY - k.last.scrollY : 0;
+  if (Math.abs(scrolled) > 1 && Math.abs(y - (k.last.y - scrolled)) <= 1) {
+    keepHold = null;
+    return;
+  }
   const delta = y - k.at * innerHeight;
+  let now = y;
   if (Math.abs(delta) > 1) {
+    const from = scrollY;
     // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
     window.scrollBy({ top: delta, behavior: 'instant' });
+    const moved = scrollY - from;
     const after = heldPoint(k, el);
-    // A point that does not move with the page (something sticky or fixed) cannot be put back: it is left alone.
-    if (after === null || Math.abs(after - (y - delta)) > Math.abs(delta) / 2) {
+    // A point that does not move with the page (something sticky or fixed) cannot be put back: it is left alone. One
+    // the page could not scroll far enough for (its end) is tried again as the page settles.
+    if (after === null || (Math.abs(moved) > 1 && Math.abs(after - (y - moved)) > Math.abs(moved) / 2)) {
       keepHold = null;
       return;
     }
+    now = after;
   }
-  k.scrollY = scrollY;
+  k.last = { scrollY, y: now };
 }
 /** Another page or a scroll the editor asked for: what showed before is no longer there to keep. */
 function stopKeeping() {

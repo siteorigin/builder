@@ -240,6 +240,27 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     expect(await scrollY()).toBe(100);
   });
 
+  it('leaves a scroll the site makes itself while the new width settles', async () => {
+    await send('track', { selected: sel('gallery'), hovered: null });
+    await placeAt('gallery', 250);
+    await afterNextResize(`win.scrollTo({ top: 100, behavior: 'instant' });`);
+    await resize(PHONE);
+    await settled();
+    expect(await scrollY()).toBe(100);
+  });
+
+  it('still puts it back when the browser scrolls to keep its own place as the layout moves', async () => {
+    await send('track', { selected: sel('gallery'), hovered: null });
+    await placeAt('gallery', 250);
+    const at = await share('gallery');
+    // The hero grows by 200px above the gallery and the page scrolls by only 100px with it, as scroll anchoring on an
+    // element other than the gallery can.
+    await afterNextResize(`doc.getElementById('hero').style.height = '900px'; win.scrollBy({ top: 100, behavior: 'instant' });`);
+    await resize(PHONE);
+    await settled();
+    expect(Math.abs((await share('gallery')) - at) * PHONE.height).toBeLessThan(2);
+  });
+
   it('leaves free scrolling alone when nothing is selected', async () => {
     await scrollTo(250);
     await resize(PHONE);

@@ -46,6 +46,16 @@ const scrollAway = async () => {
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(await showsAtAll(), false, 'and stays out of view until its row is used');
 };
+/** Waits until Gallery stops moving: a smooth scroll to it has finished. */
+const still = async () => {
+  let last = null;
+  await eventually(async () => {
+    const top = (await where()).top;
+    const same = last !== null && Math.abs(top - last) < 0.5;
+    last = top;
+    assert.ok(same, 'Gallery has stopped moving');
+  });
+};
 const row = win.locator('[role="tree"] [role="treeitem"][data-name="Gallery"]').first();
 
 step('Gallery picked in Layers shows at desktop width');
@@ -53,11 +63,14 @@ await win.getByRole('button', { name: 'Desktop', exact: true }).click();
 await win.locator('.rail [aria-label="Layers"]').click();
 await row.click();
 await eventually(async () => assert.equal(await topShows(), true, 'Gallery’s top is in view once it is picked'));
+await still();
 
 step('switching to Phone keeps Gallery in view, and so does switching back to Desktop');
 await win.getByRole('button', { name: 'Phone', exact: true }).click();
 await eventually(async () => assert.ok((await where()).width < 500, 'the preview is at phone width'));
 await eventually(async () => assert.equal(await topShows(), true, 'Gallery’s top is still in view at phone width'));
+await still();
+assert.equal(await topShows(), true, 'and stays in view once the page settles');
 
 step('clicking the selected Gallery row again brings it back once the page has scrolled away');
 await scrollAway();
@@ -67,10 +80,13 @@ await scrollAway();
 await row.focus();
 await win.keyboard.press('Enter');
 await eventually(async () => assert.equal(await topShows(), true, 'Enter on the selected row shows Gallery too'));
+await still();
 
 await win.getByRole('button', { name: 'Desktop', exact: true }).click();
 await eventually(async () => assert.ok((await where()).width > 1000, 'the preview is back at desktop width'));
 await eventually(async () => assert.equal(await topShows(), true, 'Gallery’s top is in view back at desktop width'));
+await still();
+assert.equal(await topShows(), true, 'and stays in view once the page settles');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
