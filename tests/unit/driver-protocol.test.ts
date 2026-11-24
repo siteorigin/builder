@@ -98,6 +98,8 @@ describe('replies', () => {
         'AMBIGUOUS_TARGET',
         'STALE_REF',
         'TARGET_NOT_FOUND',
+        'NOT_ACTIONABLE',
+        'STALE_OBSERVATION',
         'APP_EXITED',
         'BAD_REQUEST',
         'BUILD_MISSING',

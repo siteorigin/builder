@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
 import type { ElectronApplication, ElementHandle, Page } from 'playwright';
 import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
+import { parseAction, runAction } from './act.ts';
 import { desktopInMain, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, stageImport } from './desktop.ts';
 import type { Area } from './desktop.ts';
 import { SECRET_INPUTS, elementFor, frameSecrets, parseLocateArgs, parseSnapshotArgs, uiLocate, uiSnapshot } from './observe.ts';
@@ -33,6 +34,7 @@ import type { ProcessEntry } from './processes.ts';
 import { DriverError, PROTOCOL_VERSION, failure, frameIdentity, parseRequest, success } from './protocol.ts';
 import type { Capability, CloseArgs, CloseResult, FixtureName, KeepArtifacts, OpKind, Reply, ReplyContext, Request, SessionEvent, StartArgs, WindowRef } from './protocol.ts';
 import { RefRegistry, scrubDeep } from './snapshot.ts';
+import { ShotRegistry } from './shots.ts';
 
 export const REPO_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 
@@ -165,6 +167,64 @@ export const OPERATIONS: Record<string, OpSpec> = {
     needsApp: true,
     usesWindow: true,
     summary: 'One element, by role and name (in a region or within a ref) or by a ref seen before, as it is now: its ref, states, box, regions and page ids. Several matches answer AMBIGUOUS_TARGET with candidates; an outdated ref, STALE_REF.'
+  },
+  'ui.click': {
+    kind: 'act',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary:
+      'Click a target with the real pointer: { target: { ref, position? } or a screenshot point { observation, surface, x, y }, button?: left|right, count?: 1|2, modifiers?: [Shift, Alt, Control, Meta, ControlOrMeta] }. Waits up to waitMs (default 3000) for it to be visible, enabled, not under a dialog and not covered; else NOT_ACTIONABLE with nothing sent.'
+  },
+  'ui.hover': {
+    kind: 'act',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'Move the pointer onto a target (a ref, or a screenshot point), once it is visible and not covered.'
+  },
+  'ui.fill': {
+    kind: 'act',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'Replace the text of a field or of text being edited ({ target: { ref }, text }; empty text clears it): the focus goes to it, everything in it is selected and the text is inserted as typing would. Nothing is committed.'
+  },
+  'ui.type': {
+    kind: 'act',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'Type text key by key ({ text, target?: { ref } }): into the target, keeping its caret when it already has the focus, or into what has the focus, which must take text.'
+  },
+  'ui.select': {
+    kind: 'act',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'Choose one option of a single-choice <select> ({ target: { ref }, option: { label } or { value } }) after putting the focus on it, as a person would. Other lists are chosen in with ui.click.'
+  },
+  'ui.press': {
+    kind: 'act',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'Press one key chord ({ key: "Escape" | "Shift+Tab" | "ControlOrMeta+z" | ..., target?: { ref } }): on the target, after putting the focus on it, or on what has the focus now. The whole chord is checked before any key goes down.'
+  },
+  'ui.scroll': {
+    kind: 'act',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'Turn the mouse wheel over a target that is in view ({ target, deltaX?, deltaY? } in CSS pixels): what scrolls is what a person\'s wheel would scroll there.'
+  },
+  'ui.drag': {
+    kind: 'act',
+    defaultTimeoutMs: 20_000,
+    needsApp: true,
+    usesWindow: true,
+    summary:
+      'Press on `from`, move to `to` (a drop target) or `by` an offset in the editor window\'s CSS pixels (a resize handle), in `steps` moves, and release: { from, to? | by?: { x, y }, steps? }. Both ends are checked before the button goes down; a drag that stops part way is cancelled (Escape) where it started.'
   },
   'session.close': {
     kind: 'session',
@@ -657,6 +717,8 @@ export class Session {
   /** The refs observations gave out, and how many observations there have been. */
   private readonly refs = new RefRegistry();
   private observations = 0;
+  /** The latest screenshot actions may aim at. */
+  private readonly shots = new ShotRegistry();
   /** Operations that ran out of time and may still be running. */
   private readonly lingering = new Set<Promise<unknown>>();
   /** Every credential the session's observations have seen: kept out of everything else it reports. */
@@ -719,7 +781,7 @@ export class Session {
     let timer: ReturnType<typeof setTimeout> | undefined;
     // Work that outlives its deadline is told to stop, so a late observation publishes no refs and saves no files.
     const abort = new AbortController();
-    const work = this.run(request, abort.signal);
+    const work = this.run(request, abort.signal, Date.now() + timeoutMs);
     work.catch(() => undefined);
     const expired = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -743,7 +805,7 @@ export class Session {
     }
   }
 
-  private async run(request: Request, signal: AbortSignal): Promise<unknown> {
+  private async run(request: Request, signal: AbortSignal, deadline: number): Promise<unknown> {
     switch (request.op) {
       case 'session.describe':
         return this.describe();
@@ -776,6 +838,19 @@ export class Session {
         await this.settled();
         return uiLocate(this.observer(this.windowFor(request), signal), args);
       }
+      case 'ui.click':
+      case 'ui.hover':
+      case 'ui.fill':
+      case 'ui.type':
+      case 'ui.select':
+      case 'ui.press':
+      case 'ui.scroll':
+      case 'ui.drag': {
+        const action = parseAction(request.op, request.args);
+        await this.settled();
+        const page = this.windowFor(request);
+        return runAction({ observe: this.observer(page, signal), page, deadline, shots: this.shots }, action);
+      }
       default:
         throw new DriverError('UNKNOWN_OP', `There is no operation "${request.op}".`);
     }
@@ -792,7 +867,8 @@ export class Session {
       remember: (secrets) => {
         for (const x of secrets) if (x) this.secrets.add(x);
       },
-      remembered: () => [...this.secrets]
+      remembered: () => [...this.secrets],
+      shots: this.shots
     };
   }
 

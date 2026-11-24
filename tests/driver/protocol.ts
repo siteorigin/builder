@@ -21,12 +21,19 @@
  *
  * Every operation has a kind, so a record of a run tells what a person could have done from how the test got there:
  * `session` manages the run itself, `observe` only reads, `fixture` prepares state no person made through the UI, and
- * `act` does what a person could (none yet; later issues add them).
+ * `act` does what a person could: close the window, choose a menu item, and the `ui.*` inputs (click, hover, fill,
+ * type, select, press, scroll, drag) on observed targets.
  *
  * Observations (`ui.snapshot`, `ui.locate`) return refs: opaque strings that name one element in one document of one
  * window of this session. A ref stays the same while that element keeps its role and name in that document; anything
  * else (a reload, another page or project, a replaced window, a renamed element) makes it STALE_REF, never a
  * different element.
+ *
+ * Actions (`ui.click` ... `ui.drag`) take a ref, or a point on the latest screenshot an observation saved (its
+ * `observation` token), and send real input: the pointer and keyboard of the editor window, so the app's own handlers
+ * run. Before any input they check that a person could do it now (visible, enabled, not under a modal, not covered by
+ * something else at the point), waiting at most `waitMs`; a target that never becomes actionable is NOT_ACTIONABLE
+ * with `details.dispatched: 'none'`, and nothing was sent. An outdated screenshot point is STALE_OBSERVATION.
  */
 
 export const PROTOCOL_VERSION = 1;
@@ -105,7 +112,18 @@ export const ERROR_CODES = [
   /** More than one element fits the target. `details.candidates` lists them with refs and regions to choose by. */
   'AMBIGUOUS_TARGET',
   /** Nothing fits the target. */
-  'TARGET_NOT_FOUND'
+  'TARGET_NOT_FOUND',
+  /**
+   * The target is there but a person could not do this to it now: `details.reason` says why (hidden, disabled, inert
+   * under a dialog, obscured by `details.blocker`, offscreen, unstable, not editable, not focused, an option missing),
+   * `details.dispatched` whether any input was sent ('none', 'partial'), and `details.waitedMs` how long it waited.
+   */
+  'NOT_ACTIONABLE',
+  /**
+   * A screenshot point no longer stands for what the screenshot showed: another screenshot, an action since, the
+   * window, project, page, viewport, zoom or scroll changed, or it expired. `details.reason` says which.
+   */
+  'STALE_OBSERVATION'
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -301,4 +319,127 @@ export interface LocateArgs {
   within?: string;
   /** Default `all`. */
   scope?: UiScope;
+}
+
+// ---------------------------------------------------------------------------
+// Actions (issue #493)
+// ---------------------------------------------------------------------------
+
+/** A position in CSS pixels. */
+export interface XY {
+  x: number;
+  y: number;
+}
+
+/** An element an observation gave a ref for. */
+export interface RefTarget {
+  ref: string;
+}
+
+/**
+ * A point on the latest screenshot an observation saved: `observation` is its token (`screenshots.observation`),
+ * `surface` the image the point is on, and `x`, `y` are pixels from that image's top-left corner.
+ */
+export interface PointTarget {
+  observation: string;
+  surface: 'editor' | 'preview';
+  x: number;
+  y: number;
+}
+
+/** What a pointer acts on: an element (at `position` from its top-left, in its own document's CSS pixels; its middle
+ *  by default), or a screenshot point (for handles that have no role of their own). */
+export type PointerTarget = (RefTarget & { position?: XY }) | PointTarget;
+
+export type Modifier = 'Alt' | 'Control' | 'Meta' | 'Shift' | 'ControlOrMeta';
+
+/** Every action takes `waitMs`: how long to wait for its target to become actionable (default 3000, at most 10000). */
+interface Waits {
+  waitMs?: number;
+}
+
+export interface ClickArgs extends Waits {
+  target: PointerTarget;
+  /** Default left. */
+  button?: 'left' | 'right';
+  /** 2 is a double click (left only). Default 1. */
+  count?: 1 | 2;
+  /** Held while clicking. */
+  modifiers?: Modifier[];
+}
+
+export interface HoverArgs extends Waits {
+  target: PointerTarget;
+}
+
+/** Replace a text field's (or editable text's) contents; empty text clears it. Nothing is committed. */
+export interface FillArgs extends Waits {
+  target: RefTarget;
+  text: string;
+}
+
+/** Type key by key: into the target, or into what has the keyboard focus (which must be editable). */
+export interface TypeArgs extends Waits {
+  target?: RefTarget;
+  text: string;
+}
+
+/** Choose one option of a single-choice <select>, by its label or value. */
+export interface SelectArgs extends Waits {
+  target: RefTarget;
+  option: { label: string } | { value: string };
+}
+
+/** Press one key chord ("Escape", "Shift+Tab", "ControlOrMeta+Shift+z"): on the target, or on what has the focus. */
+export interface PressArgs extends Waits {
+  target?: RefTarget;
+  key: string;
+}
+
+/** Turn the mouse wheel over the target, by CSS pixels. */
+export interface ScrollArgs extends Waits {
+  target: PointerTarget;
+  deltaX?: number;
+  deltaY?: number;
+}
+
+/**
+ * Press on `from`, move to `to` (a drop target) or `by` (an offset in the editor window's CSS pixels, for a handle that
+ * holds the pointer, such as a resize edge) in `steps` moves (default 12), and release.
+ */
+export interface DragArgs extends Waits {
+  from: PointerTarget;
+  to?: PointerTarget;
+  by?: XY;
+  steps?: number;
+}
+
+/** What received the input. */
+export interface Hit {
+  surface: 'editor' | 'preview';
+  /** The target's ref, for a ref target. */
+  ref?: string;
+  role?: string;
+  name?: string;
+  /** The element under the pointer, for a screenshot point: its tag, and its role and name where it has them. */
+  tag?: string;
+  /** Where the pointer was, in the editor window's CSS pixels (pointer actions only). */
+  point?: XY;
+  /** The same point in the preview page's own CSS pixels, for a preview hit. */
+  at?: XY;
+}
+
+export interface ActionResult {
+  /** Every input the action meant to send was sent. What it changed is for observations to check. */
+  dispatched: 'complete';
+  /** The element acted on (for a drag, where it started; for keys, what had the focus). */
+  target: Hit;
+  /** Where a drag was released. */
+  destination?: Hit;
+  /** The target was scrolled into view first. */
+  scrolled?: true;
+  /** The option chosen, for ui.select. */
+  selected?: { label: string; value: string };
+  /** How long it waited for the target to become actionable. */
+  waitedMs: number;
 }
