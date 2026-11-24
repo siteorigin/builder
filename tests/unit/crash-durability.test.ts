@@ -216,6 +216,44 @@ describe('crash durability', { timeout: 300_000 }, () => {
     });
   });
 
+  it('deletes a whole collection or none of it, whatever point a crash interrupts it (#392)', async () => {
+    const setup = {
+      build: async (s: ProjectSession) => {
+        const r = await s.apply(
+          {
+            operations: [
+              { type: 'collection.create', collectionId: 'posts' },
+              { type: 'entry.create', collectionId: 'posts', entryId: 'en_first', title: 'One' },
+              { type: 'entry.create', collectionId: 'posts', entryId: 'en_second', title: 'Two', body: ['See [one](entry:en_first).'] }
+            ]
+          },
+          { label: 'Blog' }
+        );
+        expect(r.error?.message).toBeUndefined();
+        expect(r.ok).toBe(true);
+      }
+    };
+    const outcomes = new Set<string>();
+    await eachCrashPoint(setup, (s) => s.apply({ operations: [{ type: 'collection.remove', collectionId: 'posts' }] }, { label: 'Delete Posts' }), async (s) => {
+      expect(s.conflicts).toEqual([]);
+      const posts = join(s.dir, 'siteorigin/collections/posts');
+      if (s.state.collections.posts) {
+        outcomes.add('kept');
+        expect(Object.keys(s.state.collections.posts.entries).sort()).toEqual(['en_first', 'en_second']);
+        expect(readdirSync(join(posts, 'entries')).sort()).toEqual(['en_first.json', 'en_second.json']);
+        expect(s.historyInfo().undoLabel).toBe('Blog');
+      } else {
+        outcomes.add('deleted');
+        expect(existsSync(join(posts, 'collection.json'))).toBe(false);
+        expect(existsSync(join(posts, 'entries'))).toBe(false);
+        expect(s.historyInfo().undoLabel).toBe('Delete Posts');
+        expect((await s.undo()).ok).toBe(true);
+        expect(Object.keys(s.state.collections.posts.entries).sort()).toEqual(['en_first', 'en_second']);
+      }
+    });
+    expect(outcomes).toEqual(new Set(['kept', 'deleted']));
+  });
+
   it('records an edit and its undo step together, whatever point a crash interrupts it', async () => {
     const setup = {
       build: async (s: ProjectSession) => {

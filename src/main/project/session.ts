@@ -1218,7 +1218,11 @@ export class ProjectSession extends EventEmitter {
         continue;
       }
       const disk = await this.diskContent(d.path);
-      if (disk === null) continue;
+      if (disk === null) {
+        // Removed before the interruption: the folders that leaves empty go too, as they do after a whole delete.
+        await removeEmptyDirs(dirname(safeJoin(this.dir, d.path)), join(this.dir, d.path.startsWith('src/') ? 'src' : 'siteorigin'));
+        continue;
+      }
       if (sha(disk) !== d.before) {
         conflicts++;
         this.holdConflict(d.path, null, 'Changed outside SiteOrigin Builder while a save was interrupted.');
