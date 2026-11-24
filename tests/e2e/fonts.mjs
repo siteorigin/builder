@@ -122,6 +122,7 @@ assert.ok(chrome.every((f) => !f.isCustomFont), `the editor's labels keep the sy
 
 step('Assets names each file by style, weight, alphabet and file, and shows it in its own face');
 await win.getByRole('button', { name: 'Assets', exact: true }).click();
+await win.locator('aside.side-panel').getByRole('tab', { name: /^Fonts/ }).click();
 const row = (id) => win.locator(`.font-face[data-font-file="${assets[id].file.split('/').pop()}"]`);
 await eventually(async () => assert.match(await row(ids.loraLatin).locator('.font-face-meta').innerText(), /Variable \(400–700\) · Latin · .* · Family in use/));
 await eventually(async () => assert.match(await row(ids.loraCyrillic).locator('.font-face-meta').innerText(), /Variable \(400–700\) · Cyrillic · /));

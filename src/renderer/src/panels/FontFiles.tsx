@@ -63,11 +63,20 @@ export function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record
       fonts.filter((x) => sameFontFamily(x, a)).map((x) => ({ type: 'asset.update' as const, assetId: x.id, font: { ...faceOf(x), family } })),
       `Rename font family to ${family}`
     );
+  /** After a file goes, focus moves to the next font's Remove (when it can be used), else to Add fonts, never to the page. */
+  const focusAfter = (a: AssetRecord) => {
+    const i = fonts.findIndex((x) => x.id === a.id);
+    const next = i < 0 ? undefined : (fonts[i + 1] ?? fonts[i - 1]);
+    requestAnimationFrame(() => ((next && document.querySelector<HTMLElement>(`[data-font="${next.id}"] .font-remove:not(:disabled)`)) || document.querySelector<HTMLElement>('.asset-add'))?.focus());
+  };
   /** A file of a family the site uses changes how some text is drawn: the author sees what first. */
   const remove = async (a: AssetRecord) => {
     if (usage[a.id]) return setRemoving(a.id);
     const r = await commitOps([{ type: 'asset.remove', assetId: a.id }], `Remove ${a.name}`);
-    if (r) toast(`Removed ${a.name}.`, 'info', undoAction(r));
+    if (r) {
+      toast(`Removed ${a.name}.`, 'info', undoAction(r));
+      focusAfter(a);
+    }
   };
   const asking = fonts.find((a) => a.id === removing);
   // A file removed elsewhere closes its question for good: an Undo that brings it back doesn't ask again.
@@ -75,8 +84,7 @@ export function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record
     if (removing && !asking) setRemoving(null);
   }, [removing, asking]);
   return (
-    <section className="font-list" aria-labelledby="font-list-title">
-      <h4 id="font-list-title">Fonts</h4>
+    <section className="font-list" aria-label="Fonts">
       <p className="font-list-note">
         Imported fonts are part of your site. Choose one for headings or body text in{' '}
         <button className="link-btn" onClick={() => openSiteStyles()}>
@@ -89,7 +97,7 @@ export function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record
           <FontRow key={a.id} a={a} used={!!usage[a.id]} onRename={(family) => renameFamily(a, family)} onUpdate={(patch, label) => update(a, patch, label)} onRemove={() => void remove(a)} />
         ))}
       </ul>
-      {asking && <RemoveFontDialog a={asking} onClose={() => setRemoving(null)} />}
+      {asking && <RemoveFontDialog a={asking} onClose={() => setRemoving(null)} onRemoved={() => focusAfter(asking)} />}
     </section>
   );
 }
@@ -101,7 +109,7 @@ function FontRow({ a, used, onRename, onUpdate, onRemove }: { a: AssetRecord; us
   // Each file is named whole, since files of one family can share every other detail.
   const named = `${a.name}, ${importedName(a)}`;
   return (
-    <li className="font-face" aria-label={named} data-font-file={file}>
+    <li className="font-face" aria-label={named} data-font={a.id} data-font-file={file}>
       <div className="font-face-head">
         <b title={a.name}>{a.font?.family ?? a.name}</b>
         <span className="font-face-meta">
@@ -113,6 +121,9 @@ function FontRow({ a, used, onRename, onUpdate, onRemove }: { a: AssetRecord; us
       </div>
       <FontSample a={a} />
       <div className="font-face-edit">
+        <span className="font-face-label" aria-hidden="true">
+          Family name, shared by its files
+        </span>
         <DraftInput
           className="input sm"
           value={a.font?.family ?? ''}
@@ -135,7 +146,7 @@ function FontRow({ a, used, onRename, onUpdate, onRemove }: { a: AssetRecord; us
           <option value="normal">Upright</option>
           <option value="italic">Italic</option>
         </select>
-        <button className="btn btn-sm btn-ghost" title={used ? `Remove ${a.name}: see what changes first` : `Remove ${a.name}`} aria-label={`Remove ${named}`} onClick={onRemove}>
+        <button className="btn btn-sm btn-ghost font-remove" title={used ? `Remove ${a.name}: see what changes first` : `Remove ${a.name}`} aria-label={`Remove ${named}`} onClick={onRemove}>
           <Trash2 />
         </button>
       </div>
@@ -205,7 +216,7 @@ type Choice = 'keep' | 'fallback' | 'replace';
  * choice for those uses: keep the family on its other files, let it fall back, or put another font in its place.
  * Everything is worked out from the project as it is now, and the removal applies only to that project.
  */
-function RemoveFontDialog({ a, onClose }: { a: AssetRecord; onClose: () => void }) {
+function RemoveFontDialog({ a, onClose, onRemoved }: { a: AssetRecord; onClose: () => void; onRemoved: () => void }) {
   const snap = useStore((s) => s.snapshot);
   const [choice, setChoice] = useState<Choice | null>(null);
   const [replacement, setReplacement] = useState('');
@@ -240,6 +251,7 @@ function RemoveFontDialog({ a, onClose }: { a: AssetRecord; onClose: () => void 
     if (!r) return;
     toast(`Removed ${a.name}.`, 'info', undoAction(r));
     onClose();
+    onRemoved();
   };
   const option = (value: Choice, label: string, hint: string) => (
     <label className="font-remove-choice">
