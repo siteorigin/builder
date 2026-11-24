@@ -27,8 +27,9 @@ export interface ListSpec {
   depth: number;
 }
 
-/** A node as the canvas measured it: its box, its CSS order among its siblings, and whether more than one copy shows. */
-export type Measured = Box & { order: number; many?: boolean };
+/** A node as the canvas measured it: its box, its CSS order among its siblings (`ordered`: its container lays its items
+ *  out by order, a flex or grid one), and whether more than one copy shows. */
+export type Measured = Box & { order: number; ordered?: boolean; many?: boolean };
 
 /** A list as measured: its own box (none for the page's top level), and each child's measure (null: not shown here). */
 export interface DropList extends ListSpec {
@@ -156,14 +157,16 @@ export function insertIndex(shown: number[], to: number, order: (i: number) => n
 }
 
 /**
- * Whether (x, y) is inside `b`, `edge` pixels clear of its top and bottom (and of its left and right, `sideways`). A
- * container too thin for that (an empty row is a line) takes the pointer within `edge` of its middle.
+ * Whether (x, y) is inside `b`, clear of its top and bottom by `edge` pixels or a quarter of its height (and of its
+ * left and right, `sideways`). An empty container thinner than `edge` (a new row is a line) takes the pointer within
+ * half an `edge` of its middle.
  */
-const within = (b: Box, x: number, y: number, edge: number, sideways = false) => {
+const within = (b: Box, x: number, y: number, edge: number, sideways = false, empty = false) => {
   const ex = sideways ? Math.min(edge, b.width / 4) : 0;
   if (x < b.x + ex || x > b.x + b.width - ex) return false;
-  if (b.height < edge * 3) return Math.abs(y - (b.y + b.height / 2)) <= edge;
-  return y >= b.y + edge && y <= b.y + b.height - edge;
+  if (empty && b.height < edge) return Math.abs(y - (b.y + b.height / 2)) <= edge / 2;
+  const e = Math.min(edge, b.height / 4);
+  return y >= b.y + e && y <= b.y + b.height - e;
 };
 
 /**
@@ -174,7 +177,7 @@ const within = (b: Box, x: number, y: number, edge: number, sideways = false) =>
 export function dropTarget(lists: DropList[], role: InsertRole, x: number, y: number, edge: number, own: number | null): DropTarget | null {
   const top = lists.find((l) => l.parentId === null);
   if (!top) return null;
-  const nested = role === 'element' ? lists.filter((l) => l.box && within(l.box, x, y, edge, l.sideways)) : [];
+  const nested = role === 'element' ? lists.filter((l) => l.box && within(l.box, x, y, edge, l.sideways, !l.children.some(Boolean))) : [];
   const area = (b: Box) => b.width * b.height;
   // The innermost: the smallest box, and of two the same size (a grid filling its section), the deeper one.
   const list = nested.sort((a, b) => area(a.box!) - area(b.box!) || b.depth - a.depth)[0] ?? top;
@@ -182,6 +185,8 @@ export function dropTarget(lists: DropList[], role: InsertRole, x: number, y: nu
   // An element at the page's top level goes in a new Section of its own, which has no Order style.
   if (role === 'element' && list.parentId === null) own = 0;
   const visible = list.children.flatMap((c, i) => (c ? [i] : []));
+  // A container that lays its items out as they come (not flex or grid) ignores Order: the new node's too.
+  if (visible.length && !visible.some((i) => list.children[i]?.ordered)) own = 0;
   const order = (i: number) => list.children[i]?.order ?? 0;
   const shown = shownOrder(visible, order);
   const length = list.childIds.length;
@@ -216,10 +221,12 @@ export function incomingOrder(state: ProjectState, spec: InsertSpec): number | n
   }
   const values = sources.flatMap((styles) => Object.entries(styles).flatMap(([scope, props]) => (props && Object.hasOwn(props, 'order') ? [[scope, props.order] as const] : [])));
   if (!values.length) return 0;
-  if (values.some(([scope]) => scope !== 'base')) return null;
+  const numbers = values.map(([, v]) => Number(v));
+  if (!numbers.every(Number.isSafeInteger)) return null;
+  // The same at every size it is set for counts as that; one that differs by size (or only at some sizes) is not known.
+  if (values.some(([scope]) => scope !== 'base') && !(values.some(([scope]) => scope === 'base') && numbers.every((n) => n === numbers[0]))) return null;
   // The last one that sets it wins, as the page's rules do: a variant's over the design's own.
-  const n = Number(values[values.length - 1][1]);
-  return Number.isSafeInteger(n) ? n : null;
+  return numbers[numbers.length - 1];
 }
 
 /**

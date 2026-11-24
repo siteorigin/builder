@@ -164,6 +164,14 @@ describe('where an element drops (#52)', () => {
     const thin = measuredLists(dropListSpecs(p.state, p.owner), flat);
     expect(dropTarget(thin, 'element', 500, 284, 10, 0)).toMatchObject({ index: 0, list: { parentId: p.row } });
     expect(dropTarget(thin, 'element', 500, 300, 10, 0)!.list.parentId).toBe(p.first);
+    // A short container that holds something keeps its edges: just inside its top is beside it, its middle inside it.
+    const short = new Map(p.measured);
+    short.set(p.grid, box(100, 50, 800, 24));
+    short.set(p.a, box(100, 50, 390, 24));
+    short.set(p.b, box(510, 50, 390, 24));
+    const held = measuredLists(dropListSpecs(p.state, p.owner), short);
+    expect(dropTarget(held, 'element', 500, 53, 10, 0)!.list.parentId).toBe(p.first);
+    expect(dropTarget(held, 'element', 300, 62, 10, 0)!.list.parentId).toBe(p.grid);
   });
 
   it('between two containers side by side, near the edge they share', () => {
@@ -215,6 +223,18 @@ describe('a new node among siblings with an Order style (#52)', () => {
     expect(insertIndex([], 0, () => 0, null, 2)).toBeNull();
   });
 
+  it('counts the new node’s order only where its container lays items out by order', () => {
+    const p = page();
+    const ordered = new Map(p.measured);
+    ordered.set(p.a, { ...box(100, 50, 390, 200), ordered: true });
+    ordered.set(p.b, { ...box(510, 50, 390, 200), ordered: true });
+    // A card ordered 2 shows after both cells of a flex or grid container: the gap between them is not reachable.
+    expect(dropTarget(measuredLists(dropListSpecs(p.state, p.owner), ordered), 'element', 600, 150, 10, 2)).toMatchObject({ index: null });
+    // Laid out as they come, Order does nothing: the gap is.
+    expect(dropTarget(measuredLists(dropListSpecs(p.state, p.owner), p.measured), 'element', 600, 150, 10, 2)).toMatchObject({ index: 1 });
+    expect(dropTarget(measuredLists(dropListSpecs(p.state, p.owner), p.measured), 'element', 600, 150, 10, null)).toMatchObject({ index: 1 });
+  });
+
   it('puts an element dropped between sections in a Section of its own, whatever its own order', () => {
     const p = page();
     const lists = measuredLists(dropListSpecs(p.state, p.owner), p.measured);
@@ -235,6 +255,8 @@ describe('a new node among siblings with an Order style (#52)', () => {
     expect(incomingOrder(out.state, { definitionId: defId })).toBeNull();
     root.styles = { phone: { order: 2 } };
     expect(incomingOrder(out.state, { definitionId: defId })).toBeNull();
+    root.styles = { base: { order: 2 }, phone: { order: 2 } };
+    expect(incomingOrder(out.state, { definitionId: defId })).toBe(2);
     expect(incomingOrder(out.state, { primitive: 'paragraph' })).toBe(0);
     // A variant option it is inserted with can order its root too.
     root.styles = {};

@@ -1197,7 +1197,8 @@ export function Canvas() {
           const at: InsertAt = { owner, parentId: t.list.parentId, ...(t.list.slot ? { slot: t.list.slot } : {}), ...(t.index !== null ? { index: t.index } : {}) };
           const refused = t.refused ?? (t.index === null ? null : refusal(at));
           aim = { at: refused || t.index === null ? null : at, refused, over };
-          outline = t.list.box && t.list.box.height < 4 ? { ...t.list.box, y: t.list.box.y - 2, height: 4 } : t.list.box;
+          // An empty row measures as a line: its outline is drawn at least 4 screen pixels tall.
+          outline = t.list.box && t.list.box.height * z < 4 ? { ...t.list.box, y: t.list.box.y - 2 / z, height: 4 / z } : t.list.box;
           line = refused ? null : t.line;
           const w = refused ? null : whereFor(st, at, role);
           label = refused ? `Can’t place ${drag.name} here` : w ? `${drag.name} ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : label;
@@ -1218,7 +1219,9 @@ export function Canvas() {
     };
     const requests: string[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let generation = 0;
+    // One measure on its way at a time; asked for again meanwhile (a burst of wheel steps), one more follows it.
+    let measuring = false;
+    let again = false;
     const listen = (on: boolean) => {
       if (on) {
         window.addEventListener('pointermove', move, true);
@@ -1248,10 +1251,15 @@ export function Canvas() {
       if (aim.at) void drop(aim.at);
     };
     /** Measure the page's lists, in batches the page answers (it reads at most 200 at a time); a node it can't show
-     *  measures as nothing. A newer measure replaces one still on its way. */
+     *  measures as nothing. What was measured before no longer counts until it lands. */
     const measure = () => {
-      const gen = ++generation;
       lists = null;
+      if (measuring) {
+        again = true;
+        return;
+      }
+      measuring = true;
+      again = false;
       clearTimeout(timer);
       timer = setTimeout(() => {
         if (lists || done) return;
@@ -1278,7 +1286,9 @@ export function Canvas() {
             })
         )
       ).then(() => {
-        if (done || gen !== generation) return;
+        measuring = false;
+        if (done) return;
+        if (again) return measure();
         clearTimeout(timer);
         lists = measuredLists(specs, measured);
         show();
@@ -1313,7 +1323,7 @@ export function Canvas() {
     // The page scrolls inside its frame, which takes no pointer while a drag runs: the wheel over the canvas scrolls it
     // there, and what was measured is measured again where it now shows.
     const wheel = (ev: WheelEvent) => {
-      if (released || !aim.over) return;
+      if (released || !aim.over || !ev.deltaY) return;
       ev.preventDefault();
       post('scrollBy', { y: ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY });
       measure();
