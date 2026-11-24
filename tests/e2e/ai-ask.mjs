@@ -42,9 +42,10 @@ try {
   step('the composer asks a read-only question');
   await win.locator('.dock-tab', { hasText: 'AI' }).click();
   await message().waitFor();
-  assert.equal(await message().getAttribute('placeholder'), 'Describe a change…', 'a new message is an edit unless the author chooses Ask');
-  await win.getByRole('button', { name: /^Ask: a read-only question/ }).click();
-  assert.equal(await message().getAttribute('placeholder'), 'Ask how this site works…');
+  assert.equal(await message().getAttribute('placeholder'), 'What would you like to change?', 'a new message is an edit unless the author chooses Ask');
+  await win.getByRole('button', { name: /^What your next message does: Edit/ }).click();
+  await win.getByRole('menuitemradio', { name: /^Ask/ }).click();
+  assert.equal(await message().getAttribute('placeholder'), 'What would you like to know?');
   assert.match(await log().innerText(), /Ask how your site works/);
 
   step('while the AI reads, the editor says so and the author keeps editing');

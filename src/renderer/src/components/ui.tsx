@@ -160,7 +160,14 @@ export interface MenuItem {
   icon?: ReactNode;
   shortcut?: string;
   hint?: string;
+  /** A second, quieter line under the label that says what the item means. */
+  description?: string;
+  /** The item's full accessible name, when its visible words are shorter. */
+  ariaLabel?: string;
+  /** A radio choice: the run of neighbouring items with `checked` set is one group, and one of them is chosen. */
   checked?: boolean;
+  /** With `checked`, an independent on/off item (menuitemcheckbox) instead: any number of them can be on. */
+  toggle?: boolean;
   onSelect?: () => void;
   disabled?: boolean;
   danger?: boolean;
@@ -202,8 +209,9 @@ const boxOf = (el: HTMLElement): Box => {
  * modal, so the first press outside (in the page preview too) only closes it. Focus returns to the trigger (else whatever had focus when it opened) unless an action
  * moved it somewhere, such as into a dialog.
  */
-export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger, focusLast }: { x: number; y: number; items: MenuItem[]; onClose: () => void; label?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; trigger?: HTMLElement; focusLast?: boolean }) {
+export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger, focusLast, above }: { x: number; y: number; items: MenuItem[]; onClose: () => void; label?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; trigger?: HTMLElement; focusLast?: boolean; above?: boolean }) {
   const contentRef = useRef<HTMLDivElement>(null);
+  const idBase = useId();
   // Who gets focus back when the menu closes: the trigger, else whatever had focus when it opened.
   const opener = useRef<HTMLElement | null>(returnTo ?? (document.activeElement as HTMLElement | null));
   // If an action removes the opener (Delete removes the chip), focus stays in the same region instead.
@@ -213,7 +221,7 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
   const [anchor, setAnchor] = useState<Box>(() => (trigger ? boxOf(trigger) : { left: x, top: y, width: 0, height: 0 }));
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
-  const checked = items.findIndex((it) => it.checked);
+  const checked = items.findIndex((it) => it.checked && !it.toggle);
   const radios = items.some((it) => it.checked !== undefined);
   // One leading slot holds an item's icon or its check, so every label starts in the same column.
   const lead = radios || items.some((it) => it.icon);
@@ -258,7 +266,8 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
       </DropdownMenu.Label>
     ) : (
       (() => {
-        const radio = it.checked !== undefined;
+        const toggle = it.checked !== undefined && !!it.toggle;
+        const radio = it.checked !== undefined && !toggle;
         const indicator = (
           <DropdownMenu.ItemIndicator className="check">
             <Check />
@@ -266,17 +275,30 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
         );
         // An unavailable item stays in the arrow-key order (APG menu: disabled items are focusable, so the
         // author can find what exists), but choosing it does nothing and leaves the menu open.
-        const props = { className: `menu-item${it.danger ? ' danger' : ''}`, 'aria-disabled': it.disabled || undefined, textValue: it.label, onSelect: (e: Event) => (it.disabled ? e.preventDefault() : choose(it)) };
+        const props = { className: `menu-item${it.danger ? ' danger' : ''}${it.description ? ' described' : ''}`, 'aria-disabled': it.disabled || undefined, 'aria-label': it.ariaLabel, 'aria-describedby': it.ariaLabel && it.description ? `${idBase}-d${i}` : undefined, textValue: it.label, onSelect: (e: Event) => (it.disabled ? e.preventDefault() : choose(it)) };
         const inner = (
           <>
-            {lead && <span className="menu-lead">{it.icon ?? (radio ? indicator : null)}</span>}
-            <span className="grow">{it.label}</span>
+            {lead && <span className="menu-lead">{it.icon ?? (radio || toggle ? indicator : null)}</span>}
+            {it.description ? (
+              <span className="grow menu-text">
+                <span>{it.label}</span>
+                <span className="menu-desc" id={`${idBase}-d${i}`}>
+                  {it.description}
+                </span>
+              </span>
+            ) : (
+              <span className="grow">{it.label}</span>
+            )}
             {it.hint && <span className="hint">{it.hint}</span>}
             {it.shortcut && <span className="kbd">{it.shortcut}</span>}
-            {radio && it.icon && <span className="menu-trail">{indicator}</span>}
+            {(radio || toggle) && it.icon && <span className="menu-trail">{indicator}</span>}
           </>
         );
-        return radio ? (
+        return toggle ? (
+          <DropdownMenu.CheckboxItem key={i} checked={!!it.checked} {...props}>
+            {inner}
+          </DropdownMenu.CheckboxItem>
+        ) : radio ? (
           <DropdownMenu.RadioItem key={i} value={String(i)} {...props}>
             {inner}
           </DropdownMenu.RadioItem>
@@ -303,7 +325,7 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
           // Named by its label, not by the hidden anchor Radix would otherwise point at.
           aria-label={label}
           aria-labelledby={undefined}
-          side="bottom"
+          side={above ? 'top' : 'bottom'}
           align={alignEnd ? 'end' : 'start'}
           sideOffset={trigger ? 4 : 0}
           collisionPadding={8}
@@ -332,7 +354,7 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
 function radioRuns(items: MenuItem[], body: ReactNode[], checked: number): ReactNode[] {
   const out: ReactNode[] = [];
   for (let i = 0; i < items.length; ) {
-    if (items[i].checked === undefined) {
+    if (items[i].checked === undefined || items[i].toggle) {
       out.push(body[i]);
       i++;
       continue;
@@ -374,7 +396,7 @@ export const useWindowWidth = () => useSyncExternalStore(onWindowResize, () => w
 
 /** Hook that shows a menu at a position, or below its trigger (which gets aria-expanded while open). */
 export function useMenu() {
-  const [menu, setMenu] = useState<{ key: number; x: number; y: number; items: MenuItem[]; label?: string; trigger?: HTMLElement; alignEnd?: boolean; returnTo?: HTMLElement | null; focusLast?: boolean } | null>(null);
+  const [menu, setMenu] = useState<{ key: number; x: number; y: number; items: MenuItem[]; label?: string; trigger?: HTMLElement; alignEnd?: boolean; returnTo?: HTMLElement | null; focusLast?: boolean; above?: boolean } | null>(null);
   useEffect(() => {
     if (!menu?.trigger) return;
     const t = menu.trigger;
@@ -396,12 +418,13 @@ export function useMenu() {
     /** Open at a point (right-click); focus returns to `returnTo` (the row) on close. */
     open: (x: number, y: number, items: MenuItem[], label?: string, returnTo?: HTMLElement | null) => setMenu({ key: ++menuKey, x, y, items, label, returnTo }),
     /** Open below a trigger button; small icon triggers align the menu's right edge with theirs. With
-     *  `focusLast` (Up arrow on the trigger), a keyboard-opened menu starts on its last item. */
-    openAt: (el: HTMLElement, items: MenuItem[], label?: string, opts?: { focusLast?: boolean }) => {
+     *  `focusLast` (Up arrow on the trigger), a keyboard-opened menu starts on its last item. With `above`, it opens
+     *  over the trigger instead (a control at the foot of a panel, so the menu does not cover what sits under it). */
+    openAt: (el: HTMLElement, items: MenuItem[], label?: string, opts?: { focusLast?: boolean; above?: boolean }) => {
       if (menu?.trigger === el) return setMenu(null);
       const r = el.getBoundingClientRect();
       const narrow = r.width < 48;
-      setMenu({ key: ++menuKey, x: narrow ? r.right : r.left, y: r.bottom + 4, items, label, trigger: el, alignEnd: narrow, focusLast: opts?.focusLast });
+      setMenu({ key: ++menuKey, x: narrow ? r.right : r.left, y: r.bottom + 4, items, label, trigger: el, alignEnd: narrow, focusLast: opts?.focusLast, above: opts?.above });
     }
   };
 }

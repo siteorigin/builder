@@ -15,7 +15,7 @@ import { canOpen, changeTarget, changeText, checksOf, continueContext, locationT
 import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
-import { Segmented, Spinner, useMenu } from '../components/ui';
+import { Spinner, useMenu } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
@@ -123,7 +123,9 @@ function sizeToFit(ta: HTMLTextAreaElement | null) {
   // A hidden panel measures nothing; it is sized again when it is shown.
   if (!ta || !ta.offsetParent) return;
   ta.style.height = 'auto';
-  ta.style.height = `${Math.min(200, ta.scrollHeight)}px`;
+  // The stylesheet's max-height is the cap, so the box and the text agree on where scrolling starts.
+  const cap = parseFloat(getComputedStyle(ta).maxHeight) || 240;
+  ta.style.height = `${Math.min(cap, ta.scrollHeight)}px`;
 }
 
 export function Chat() {
@@ -154,6 +156,8 @@ export function Chat() {
   const frozenScope = useRef<{ run: string | null; text: string }>({ run: null, text: '' });
   const menu = useMenu();
   const attachMenu = useMenu();
+  const scopeMenu = useMenu();
+  const modeMenu = useMenu();
   const [sending, setSending] = useState(false);
   const [announce, setAnnounce] = useState('');
   // Every announcement is keyed by its run (and question), so each is said once and none replaces a later one.
@@ -295,6 +299,20 @@ export function Chat() {
   // A restored draft (after a restart, a retry, or returning to its conversation, or once a question is answered)
   // gets its full height back.
   useLayoutEffect(() => sizeToFit(taRef.current), [configured, rightTab, conversation?.id, askingKey]);
+  // A draft is measured again when the box changes width (the dock resized), so it neither scrolls early nor keeps
+  // the height of a narrower box.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta || typeof ResizeObserver === 'undefined') return;
+    let width = ta.clientWidth;
+    const watch = new ResizeObserver(() => {
+      if (ta.clientWidth === width) return;
+      width = ta.clientWidth;
+      sizeToFit(ta);
+    });
+    watch.observe(ta);
+    return () => watch.disconnect();
+  }, [configured, askingKey]);
 
   // One polite status message per phase change, kept outside the (sometimes hidden) dock panel so it is
   // announced wherever focus is. Streamed text is never read out piece by piece. The outcome is announced
@@ -375,7 +393,7 @@ export function Chat() {
     setState({ chatImages: withImages(getState().chatImages, conversation.id, now.includes(id) ? now.filter((x) => x !== id) : [...now, id]) });
     focusComposer();
   };
-  const addImages = (el: HTMLElement) => {
+  const addImages = (el: HTMLElement, focusLast = false) => {
     const library = Object.values(st.assets.assets)
       .flatMap((a) => (a?.kind === 'image' && typeof a.name === 'string' ? [{ assetId: a.id, name: a.name }] : []))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -384,15 +402,75 @@ export function Chat() {
       [
         { heading: 'Add to your message' },
         // Two images with the same name are told apart by their IDs, as the message names them.
-        ...imageLabels(library).map((i) => ({ label: i.label, checked: images.includes(i.assetId), onSelect: () => toggleImage(i.assetId) })),
+        ...imageLabels(library).map((i) => ({ label: i.label, checked: images.includes(i.assetId), toggle: true, onSelect: () => toggleImage(i.assetId) })),
         { separator: true },
         { label: 'Browse in Assets…', onSelect: () => setState({ leftTab: 'assets' }) }
       ],
-      'Images'
+      'Images',
+      { focusLast, above: true }
     );
   };
   // The element a message is limited to, named as the agent limits it: an element inside a placed component, by that component.
   const boundary = boundaryOf(st, scope.selection);
+  /** What the next message may change (Edit) or is about (Ask), shown as one chip whose menu holds the other choices.
+   *  An element inside a placed component is limited by that component (agent/scope.ts), so it is named by it. A
+   *  question changes nothing, so it is about the selection or the page, never "the whole site". */
+  type ScopeChoice = { value: ChatEditScope; label: string; description: string; icon: ReactNode; title: string; chip: string; where?: string };
+  // An edit is limited by the containing placement; a question is about the element itself.
+  const selName = askMode ? selLabel : (boundary ?? selLabel);
+  const scopeOptions: ScopeChoice[] = component
+    ? [
+        ...(selLabel ? [{ value: 'selection' as const, label: selLabel, description: 'Only this element', icon: <MousePointerClick />, title: askMode ? `${selLabel}, in ${component.name}` : `Only ${selLabel}, in ${component.name} everywhere it is used`, chip: selLabel, where: `${component.name} everywhere` }] : []),
+        { value: 'site' as const, label: `All of ${component.name}`, description: 'Everywhere it is used', icon: <Component />, title: askMode ? `${component.name}, the component you are editing everywhere` : `All of ${component.name}, everywhere it is used`, chip: component.name, where: 'everywhere' }
+      ]
+    : page
+      ? [
+          ...(selLabel && selName
+            ? [{ value: 'selection' as const, label: selName, description: askMode ? 'The selected element' : boundary ? `The component that holds ${selLabel}` : 'Only this element', icon: <MousePointerClick />, title: askMode ? `${selLabel} on ${page.title}` : scope.selection?.instancePath.length ? `Only ${boundary ?? 'the component'}, the component containing ${selLabel}` : `Only ${selLabel}`, chip: selName, where: page.title }]
+            : []),
+          { value: 'page' as const, label: 'This page', description: askMode ? `${page.title}, as a whole` : `${page.title}: its sections and settings`, icon: <FileText />, title: `This page · ${page.title}`, chip: page.title },
+          ...(askMode ? [] : [{ value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, and styles', icon: <Globe />, title: `Whole site · from ${page.title}`, chip: 'Whole site', where: `from ${page.title}` }])
+        ]
+      : [];
+  const scopeValue: ChatEditScope = component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
+  const found = scopeOptions.find((o) => o.value === scopeValue) ?? scopeOptions[0] ?? null;
+  // A selection in the shared header or footer reaches every page, so the chip says so in words, not only in green.
+  const shell = !component && found?.value === 'selection' && scope.selection?.owner.kind === 'shell' ? (scope.selection.owner.id === 'footer' ? 'shared footer' : 'shared header') : null;
+  const scopeNow = found && shell ? { ...found, where: shell, title: askMode ? `${found.title}, in the ${shell}` : `${found.title}, in the ${shell} on every page` } : found;
+  // A question changes nothing, so what it is about is shown, not chosen: the element or page the next edit would
+  // start from (switch to Edit to change it). Ask never rewrites the Edit choice.
+  const scopeChoices = askMode ? (scopeNow ? [scopeNow] : []) : scopeOptions;
+  // The chip says how far an edit reaches in the house hues: plum for a component edited everywhere, amber for the
+  // whole site, green for the shared header or footer. A question changes nothing, so it stays neutral.
+  const scopeTone = component ? ' def' : askMode || !scopeNow ? '' : scopeNow.value === 'site' ? ' site' : shell ? ' shared' : '';
+  /** The chip's name: its visible words first, then the full sentence of what it allows. */
+  const scopeName = scopeNow ? `${askMode ? 'Your question is about' : 'What the AI may change'}: ${scopeNow.chip}${scopeNow.where ? ` · ${scopeNow.where}` : ''}` : '';
+  const openScopeMenu = (el: HTMLElement, focusLast = false) =>
+    scopeMenu.openAt(
+      el,
+      [
+        { heading: askMode ? 'Your question is about' : 'What the AI may change' },
+        ...scopeOptions.map((o) => ({ label: o.label, description: o.description, ariaLabel: o.title, icon: o.icon, checked: o.value === scopeNow?.value, onSelect: () => (setState({ chatContextEnabled: { ...ctxOn, scope: o.value } }), focusComposer()) }))
+      ],
+      askMode ? 'Your question is about' : 'What the AI may change',
+      { focusLast, above: true }
+    );
+  const openModeMenu = (el: HTMLElement, focusLast = false) => {
+    const pick = (v: 'edit' | 'ask') => {
+      setState({ chatMode: v });
+      saveLocal({ chatMode: v });
+      focusComposer();
+    };
+    modeMenu.openAt(
+      el,
+      [
+        { label: 'Edit', description: 'Makes the changes you describe', icon: <Pencil />, checked: !askMode, onSelect: () => pick('edit') },
+        { label: 'Ask', description: 'Answers without changing anything', icon: <MessageCircleQuestionMark />, checked: askMode, onSelect: () => pick('ask') }
+      ],
+      'What your next message does',
+      { focusLast, above: true }
+    );
+  };
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
 
@@ -840,118 +918,21 @@ export function Chat() {
         </div>
       )}
       {configured || asking ? (
-        // Answering, it is one row: the reply and its Send.
-        <div className={`composer${asking ? ' answering' : ''}`}>
-          {/* While a question waits, the composer only answers it: the next message's scope comes back afterwards. */}
-          {!asking && (page || component || selLabel || hasLibraryImages) && (
-            <div className="chips-bar">
-            {(page || component || selLabel) && (
-            <div className="chips" role="group" aria-label={askMode ? 'Your question is about' : 'Your next message applies to'}>
-              {component ? (
-                // Editing a component everywhere: the request is about its design, never the page behind it.
-                <span className="chip def" title={askMode ? `The AI starts from ${component.name}, the component you are editing everywhere.` : `The AI changes ${component.name} everywhere it is used, and nothing else unless you allow it.`}>
-                  <Component /> <span className="ellipsis">{component.name}</span>
-                </span>
-              ) : (
-                page && (
-                  <span className="chip" title="The AI starts from the page you are viewing.">
-                    <FileText /> <span className="ellipsis">{page.title}</span>
-                  </span>
-                )
-              )}
-              {selLabel && askMode && toSelection && (
-                // A question changes nothing, so the selection only says what it is about.
-                <span className="chip" title="The AI starts from the selected element">
-                  <MousePointerClick /> <span className="ellipsis">{selLabel}</span>
-                </span>
-              )}
-              {!askMode && (component ? selLabel : page) && (
-                // What the next message may change: the selected element only, its page, or anything on the site (the
-                // element or the whole component, while a component is edited everywhere).
-                <Segmented<ChatEditScope>
-                  label="What the AI may change"
-                  value={component ? (toSelection ? 'selection' : 'site') : chosen}
-                  onChange={(v) => setState({ chatContextEnabled: { ...ctxOn, scope: v } })}
-                  options={[
-                    ...(selLabel
-                      ? [
-                          {
-                            value: 'selection' as const,
-                            // A part of a component is scoped to the whole component placement (see agent/scope.ts), so
-                            // the option names that boundary rather than only the part.
-                            title: scope.selection?.instancePath.length ? `Only ${boundary ?? 'the component'}, the component containing ${selLabel}` : `Only ${selLabel}`,
-                            label: (
-                              <>
-                                <MousePointerClick /> <span className="ellipsis">{boundary ?? selLabel}</span>
-                              </>
-                            )
-                          }
-                        ]
-                      : []),
-                    ...(component
-                      ? [
-                          {
-                            value: 'site' as const,
-                            title: `All of ${component.name}, everywhere it is used`,
-                            label: (
-                              <>
-                                <Component /> Whole component
-                              </>
-                            )
-                          }
-                        ]
-                      : page
-                        ? [
-                            {
-                              // The page's sections and its own settings; anything else is asked about first.
-                              value: 'page' as const,
-                              title: `This page · ${page.title}`,
-                              label: (
-                                <>
-                                  <FileText /> This page
-                                </>
-                              )
-                            },
-                            {
-                              // Any page, the shared header and footer, and the site's styles.
-                              value: 'site' as const,
-                              title: `Whole site · from ${page.title}`,
-                              label: (
-                                <>
-                                  <Globe /> Whole site
-                                </>
-                              )
-                            }
-                          ]
-                        : [])
-                  ]}
-                />
-              )}
-            </div>
-            )}
-            {hasLibraryImages && (
-              // Library images join the message in one click, by name and ID; Assets is a click further for browsing.
-              <button type="button" className="icon-btn sm chips-attach" title="Add images from Assets" aria-label="Add images from Assets" aria-haspopup="menu" aria-expanded={attachMenu.isOpen} onClick={(e) => addImages(e.currentTarget)}>
-                <ImagePlus />
-              </button>
-            )}
-            </div>
-          )}
-          {/* The message's images wait with it while a question is answered. */}
-          {!asking && (
-            <ImageChips
-              images={images.map((id) => {
-                const a = st.assets.assets[id];
-                return { assetId: id, name: (a?.kind === 'image' && typeof a.name === 'string' && a.name.trim()) || id };
-              })}
-              label="Images in your next message"
-              onRemove={(id) => {
-                if (!conversation) return;
-                setState({ chatImages: withImages(getState().chatImages, conversation.id, imagesFor(getState().chatImages, conversation.id).filter((x) => x !== id)) });
-                focusComposer();
-              }}
-            />
-          )}
+        // One box, written in first: the text, then one row of what goes with it. Answering, it is one row: the reply
+        // and its Send. Anywhere in the box that is not a control puts the caret in the text.
+        <div
+          className={`composer${asking ? ' answering' : ''}`}
+          onMouseDown={(e) => {
+            const t = e.target as HTMLElement;
+            if (t === taRef.current || t.closest('button, a, input, textarea, [role="menu"]')) return;
+            e.preventDefault();
+            const ta = taRef.current;
+            if (!ta) return;
+            ta.focus();
+            // A press beside or below the text lands at its end, where the next words go.
+            if (document.activeElement === ta) ta.setSelectionRange(ta.value.length, ta.value.length);
+          }}
+        >
           <textarea
             ref={taRef}
             value={composerText}
@@ -962,15 +943,10 @@ export function Chat() {
                   ? 'Waiting for the question…'
                   : running
                     ? 'Draft your next message…'
-                    : askMode
-                      ? selLabel && toSelection
-                        ? `Ask about the ${sel}…`
-                        : 'Ask how this site works…'
-                      : selLabel && toSelection
-                        ? boundary
-                          ? `Describe a change to ${boundary}…`
-                          : `Describe a change to the ${sel}…`
-                        : 'Describe a change…'
+                    : // What it applies to is named on the chip under the text, so the prompt can simply ask.
+                      askMode
+                      ? 'What would you like to know?'
+                      : 'What would you like to change?'
             }
             aria-label={asking ? 'Your answer' : 'Message'}
             aria-describedby={asking ? `ai-question-text${asking.question.widen ? ' ai-question-scope' : ''} ai-question-hint` : undefined}
@@ -1001,36 +977,77 @@ export function Chat() {
               }
             }}
           />
+          {/* What goes with the message, under it: what it applies to, then its images. While a question waits, the
+              composer only answers it, and both come back afterwards. */}
+          {!asking && (scopeNow || images.length > 0) && (
+            <div className="composer-context">
+              {scopeNow && (
+                <>
+                {scopeChoices.length > 1 ? (
+                  <button
+                    type="button"
+                    className={`chip scope-chip${scopeTone}`}
+                    title={`${scopeNow.title}. Change what ${askMode ? 'your question is about' : 'the AI may change'}`}
+                    aria-label={scopeName}
+                    aria-haspopup="menu"
+                    aria-expanded={scopeMenu.isOpen}
+                    onClick={(e) => openScopeMenu(e.currentTarget)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                      e.preventDefault();
+                      openScopeMenu(e.currentTarget, e.key === 'ArrowUp');
+                    }}
+                  >
+                    {scopeNow.icon}
+                    <span className="ellipsis">{scopeNow.chip}</span>
+                    {scopeNow.where && <span className="scope-where ellipsis">{scopeNow.where}</span>}
+                    <ChevronDown className="caret" aria-hidden="true" />
+                  </button>
+                ) : (
+                  <span className={`chip scope-chip${scopeTone}`} title={scopeNow.title}>
+                    <span className="sr-only">{askMode ? 'Your question is about: ' : 'What the AI may change: '}</span>
+                    {scopeNow.icon}
+                    <span className="ellipsis">{scopeNow.chip}</span>
+                    {scopeNow.where && <span className="scope-where ellipsis">{scopeNow.where}</span>}
+                  </span>
+                )}
+                </>
+              )}
+              <ImageChips
+                images={images.map((id) => {
+                  const a = st.assets.assets[id];
+                  return { assetId: id, name: (a?.kind === 'image' && typeof a.name === 'string' && a.name.trim()) || id };
+                })}
+                label="Images in your next message"
+                onRemove={(id) => {
+                  if (!conversation) return;
+                  setState({ chatImages: withImages(getState().chatImages, conversation.id, imagesFor(getState().chatImages, conversation.id).filter((x) => x !== id)) });
+                  focusComposer();
+                }}
+              />
+            </div>
+          )}
           <div className="composer-foot">
             {!asking && (
-              <Segmented<'edit' | 'ask'>
-                label="What your next message does"
-                value={chatMode}
-                onChange={(v) => {
-                  setState({ chatMode: v });
-                  saveLocal({ chatMode: v });
+              // Edit or Ask, as one quiet menu button: the current mode is on it, the other one a click away.
+              <button
+                type="button"
+                className={`btn btn-sm btn-ghost composer-mode${askMode ? ' ask' : ''}`}
+                title={askMode ? 'Ask: a read-only question. The AI reads the site and changes nothing.' : 'Edit: the AI makes the changes you describe.'}
+                aria-label={`What your next message does: ${askMode ? 'Ask, a read-only question' : 'Edit'}`}
+                aria-haspopup="menu"
+                aria-expanded={modeMenu.isOpen}
+                onClick={(e) => openModeMenu(e.currentTarget)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                  e.preventDefault();
+                  openModeMenu(e.currentTarget, e.key === 'ArrowUp');
                 }}
-                options={[
-                  {
-                    value: 'edit',
-                    title: 'Edit: the AI makes the changes you describe',
-                    label: (
-                      <>
-                        <Pencil /> Edit
-                      </>
-                    )
-                  },
-                  {
-                    value: 'ask',
-                    title: 'Ask: a read-only question. The AI reads the site and changes nothing, and you can keep editing.',
-                    label: (
-                      <>
-                        <MessageCircleQuestionMark /> Ask
-                      </>
-                    )
-                  }
-                ]}
-              />
+              >
+                {askMode ? <MessageCircleQuestionMark /> : <Pencil />}
+                {askMode ? 'Ask' : 'Edit'}
+                <ChevronDown className="caret" aria-hidden="true" />
+              </button>
             )}
             {next && !asking && (
               // The model for the next message, which may differ from the one a running turn went to. The model is the
@@ -1051,6 +1068,19 @@ export function Chat() {
               </button>
             )}
             <span className="grow" />
+            {!asking && hasLibraryImages && (
+              // Library images join the message in one click, by name and ID; Assets is a click further for browsing.
+              <button type="button" className="icon-btn sm composer-attach" title="Add images from Assets" aria-label="Add images from Assets" aria-haspopup="menu" aria-expanded={attachMenu.isOpen}
+                onClick={(e) => addImages(e.currentTarget)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                  e.preventDefault();
+                  addImages(e.currentTarget, e.key === 'ArrowUp');
+                }}
+              >
+                <ImagePlus />
+              </button>
+            )}
             {asking ? (
               <button
                 className="send-btn"
@@ -1085,6 +1115,8 @@ export function Chat() {
       )}
       {menu.node}
       {attachMenu.node}
+      {scopeMenu.node}
+      {modeMenu.node}
       {createPortal(
         <div className="sr-only" role="status" aria-live="polite">
           {announce}

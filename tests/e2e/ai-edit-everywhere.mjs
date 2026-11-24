@@ -23,7 +23,7 @@ try {
   assert.equal((await win.evaluate(() => window.builder.app.getSettings())).developerMode, false, 'Developer mode is off');
 
   const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
-  const chips = () => win.locator('.composer .chips');
+  const chips = () => win.locator('.composer .composer-context');
   const log = () => win.locator('.chat-log');
   const message = () => win.getByRole('textbox', { name: 'Message' });
   /** The editor context a request was sent with, read from the user's message the way the model reads it. */
@@ -66,7 +66,7 @@ try {
   step('the composer is about the component, not the page behind it');
   await win.locator('.dock-tab', { hasText: 'AI' }).click();
   await message().waitFor();
-  await eventually(async () => assert.equal(await chips().locator('.chip.def').innerText(), 'Split hero'));
+  await eventually(async () => assert.match(await chips().locator('.chip.def').innerText(), /\bSplit hero\b/));
   assert.doesNotMatch(await chips().innerText(), /Home|Whole site/, 'no page chip and no whole-site choice');
   assert.equal(await win.locator('.chat .suggestions').count(), 0, 'no page starters while a component is edited');
   const [chipColor, plum] = await chips()
@@ -136,8 +136,11 @@ try {
   // A click in the page picks the design's own node under the pointer.
   await frame.locator(`[data-so-ctx$="|${home.rootIds[0]}"] h1`).first().click();
   await eventually(async () => assert.equal(await win.locator('[role="tree"] [data-node="heading"]').getAttribute('aria-selected'), 'true', 'the heading of the design is selected'));
-  await eventually(async () => assert.match(await chips().innerText(), /Heading[\s\S]*Whole component/));
-  assert.doesNotMatch(await chips().innerText(), /Whole site/);
+  await eventually(async () => assert.match(await chips().innerText(), /^Heading\b/));
+  // Its menu offers the element or the whole component, and never the whole site.
+  await chips().locator('.scope-chip').click();
+  assert.deepEqual(await win.getByRole('menuitemradio').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label'))), ['Only Heading, in Split hero everywhere it is used', 'All of Split hero, everywhere it is used']);
+  await win.keyboard.press('Escape');
   const ask = async (text) => {
     let req;
     server.script(
@@ -155,9 +158,9 @@ try {
   assert.deepEqual(narrowed.selection && { owner: narrowed.selection.owner, nodeId: narrowed.selection.nodeId, label: narrowed.selection.label }, { owner, nodeId: 'heading', label: 'Heading' });
   assert.match(narrowed.allowedScope, /^only Heading/);
   assert.match(await log().locator('.msg-user .ctx').last().innerText(), /Split hero everywhere → Heading/);
-  const wholeComponent = chips().getByRole('button', { name: 'All of Split hero, everywhere it is used' });
-  await wholeComponent.click();
-  await eventually(async () => assert.equal(await wholeComponent.getAttribute('aria-pressed'), 'true'));
+  await chips().locator('.scope-chip').click();
+  await win.getByRole('menuitemradio', { name: 'All of Split hero, everywhere it is used' }).click();
+  await eventually(async () => assert.match(await chips().locator('.scope-chip').getAttribute('aria-label'), /: Split hero · everywhere$/));
   const whole = await ask('Tighten the spacing');
   assert.equal(whole.selection, null);
   assert.equal(whole.editingComponent?.id, def.id);
