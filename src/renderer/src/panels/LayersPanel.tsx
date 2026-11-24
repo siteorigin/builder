@@ -15,7 +15,7 @@ import { copyPasteItems, PasteHere } from './CopyPaste';
 import { styleCopyItems } from './StylePaste';
 import { clip, contentText, everySizeEdits, eyeAction, hiddenAncestor, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
-import { createComponentTarget, treeFor } from '../lib/model';
+import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { describeConditions } from '../lib/conditions';
 import { OutlinePanel } from './OutlinePanel';
 
@@ -610,7 +610,8 @@ export function LayersPanel() {
     // since (a Duplicate that finished, another menu), it would land beside that, so it says so instead.
     const pasteAfter = () => {
       const now = getState();
-      if (!sameRef(now.selection, ref) || now.layerSet) return toast('The selection changed while the menu was open. Choose Paste again.', 'error');
+      // The row may be gone (an Undo took it away) with its reference still selected.
+      if (!sameRef(now.selection, ref) || now.layerSet || !now.snapshot || !resolveRef(now.snapshot.state, ref).node) return toast('The selection changed while the menu was open. Choose Paste again.', 'error');
       pasteFromMenu(true);
     };
     // Elements and basic elements, and a section together with its content: the same as the canvas and the inspector.

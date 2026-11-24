@@ -75,6 +75,19 @@ export function codeNeeds(state: ProjectState, d: ComponentDefinition, defId: st
   return (d.dependencies ?? []).includes(defId) || (d.provenance?.forkedFrom === defId && !!d.source?.includes(legacyClass)) || (!!file && !!d.source?.includes(file));
 }
 
+/**
+ * Whether a code component imports `defId`'s file (an import of it, not a comment or string that mentions it) or declares
+ * it as a dependency: it then renders it, which `codeNeeds` (a looser reading, for what removal must not break) cannot say.
+ */
+export function codeImports(state: ProjectState, d: ComponentDefinition, defId: string): boolean {
+  if (d.id === defId || d.kind !== 'code') return false;
+  if ((d.dependencies ?? []).includes(defId)) return true;
+  const target = own(state.components, defId);
+  if (!target || !d.source) return false;
+  const file = defFile(target).split('/').pop()!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:\\bfrom\\s*|\\bimport\\s*\\(?\\s*)['"][^'"\\n]*/${file}['"]`).test(d.source);
+}
+
 /** Overrides of a part that no longer exists style nothing; drop them, shared and per item, from every placement. */
 export function dropPartOverrides(state: ProjectState, defId: string, partId: string) {
   for (const { node } of instancesOf(state, defId)) {

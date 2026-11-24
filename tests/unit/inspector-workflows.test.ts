@@ -180,7 +180,7 @@ describe('paste what was copied (#62)', () => {
   const items = (n: InstanceNode) => n.props.items as Array<{ id: string; title: string }>;
   const paste = (s: ProjectState, clip: ReturnType<typeof captureClipboard>, toOwner: OwnerRef = to(s), extra: { parentId?: string | null; index?: number } = {}) =>
     applyOperations(s, [{ type: 'node.paste', clipboardId: clip.id, toOwner, ...extra }], { clipboards: [clip] });
-  const pasted = (r: ReturnType<typeof paste>, pageId: string) => r.state.pages[pageId].nodes[r.results[0].nodeId as string] as InstanceNode;
+  const pasted = (r: ReturnType<typeof paste>, pageId: string, definitionId?: string) => (definitionId ? r.state.components[definitionId].tree!.nodes : r.state.pages[pageId].nodes)[r.results[0].nodeId as string] as InstanceNode;
   /** A section holding a button and an image, to copy. */
   const sectionWith = (s: ProjectState, content: { link?: unknown; image?: unknown }) => {
     const r = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, index: 0, componentId: 'layout.section' }]);
@@ -337,6 +337,7 @@ describe('paste what was copied (#62)', () => {
     rejects(() => paste(s, clip, { kind: 'shell', id: 'header' } as never), /shared header and footer take no pasted content/);
     // The footer too, and a theme's own component, which is forked before it is edited.
     rejects(() => paste(s, clip, { kind: 'shell', id: 'footer' } as never), /shared header and footer take no pasted content/);
+    rejects(() => paste(s, clip, { kind: 'shell', id: 'header' } as never, { parentId: s.site.shell.header.rootIds[0] }), /shared header and footer take no pasted content/);
     const theme = Object.values(s.components).find((d) => d.owner === 'theme' && d.tree)!;
     rejects(() => paste(s, clip, { kind: 'component', id: theme.id }, { parentId: theme.tree!.rootIds[0] }), /theme component/);
     expect(JSON.stringify(s)).toBe(before);
@@ -366,36 +367,60 @@ describe('paste what was copied (#62)', () => {
     const kids = (ok.state.components[inHero.id].tree!.nodes[heroRoot] as { children: string[] }).children;
     expect(kids.slice(-2)).toEqual(ids);
     expect(ids.map((id) => (ok.state.components[inHero.id].tree!.nodes[id] as InstanceNode).definitionId)).toEqual([firstInstance(hero.state, 'features.grid').definitionId, firstInstance(hero.state, 'stats.row').definitionId]);
+    // From a position, they go in one after the other from there, not all at it.
+    const at = paste(hero.state, captureClipboard(hero.state, hero.state.site.homePageId, [firstInstance(hero.state, 'features.grid').id, firstInstance(hero.state, 'stats.row').id]), inHero, { parentId: heroRoot, index: 0 });
+    expect((at.state.components[inHero.id].tree!.nodes[heroRoot] as { children: string[] }).children.slice(0, 2)).toEqual(at.results[0].nodeIds);
   });
 
   it('keeps no page anchor inside a component, where every placement would repeat it (#200)', () => {
     let s = fresh();
-    const stats = firstInstance(s, 'stats.row');
-    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: stats.id, field: 'anchor', value: 'figures' }]).state;
-    const clip = captureClipboard(s, s.site.homePageId, stats.id);
-    // On another page the anchor comes along, while nothing there uses it.
-    const onPage = pasted(paste(s, clip), otherPage(s));
-    expect(onPage.anchor).toBe('figures');
+    // A section with an anchor of its own, and a heading in it with another.
+    const made = applyOperations(s, [
+      { type: 'node.insert', newNodeId: 'n_anchored', owner: owner(s), parentId: null, index: 0, componentId: 'layout.section' },
+      { type: 'node.insert', newNodeId: 'n_title', owner: owner(s), parentId: 'n_anchored', slot: 'content', primitive: 'heading', text: 'Numbers' },
+      { type: 'node.setContent', owner: owner(s), nodeId: 'n_anchored', field: 'anchor', value: 'figures' },
+      { type: 'node.setContent', owner: owner(s), nodeId: 'n_title', field: 'anchor', value: 'numbers-title' }
+    ]);
+    s = made.state;
+    const clip = captureClipboard(s, s.site.homePageId, 'n_anchored');
+    // On another page the anchors come along, while nothing there uses them.
+    const onPage = paste(s, clip);
+    const copy = pasted(onPage, otherPage(s));
+    expect(copy.anchor).toBe('figures');
+    expect(onPage.state.pages[otherPage(s)].nodes[copy.slots!.content[0]].anchor).toBe('numbers-title');
     const f = applyOperations(s, [{ type: 'component.fork', definitionId: firstInstance(s, 'hero.split').definitionId }]);
     const inHero = { kind: 'component' as const, id: f.results[0].definitionId as string };
     const heroRoot = f.state.components[inHero.id].tree!.rootIds[0];
+    // Pasted inside the component, none of the copy keeps one.
     const r = paste(f.state, clip, inHero, { parentId: heroRoot });
-    expect((r.state.components[inHero.id].tree!.nodes[r.results[0].nodeId as string] as InstanceNode).anchor).toBeUndefined();
+    const tree = r.state.components[inHero.id].tree!;
+    const section = tree.nodes[r.results[0].nodeId as string] as InstanceNode;
+    expect(section.anchor).toBeUndefined();
+    expect(section.slots!.content).toHaveLength(1);
+    expect(tree.nodes[section.slots!.content[0]].anchor).toBeUndefined();
+    // The AI's node.copy into a component is as it was: a unique anchor stays with its copy.
+    const aiCopy = applyOperations(f.state, [{ type: 'node.copy', owner: owner(s), nodeId: 'n_anchored', toOwner: inHero, parentId: heroRoot }]);
+    expect((aiCopy.state.components[inHero.id].tree!.nodes[aiCopy.results[0].nodeId as string] as InstanceNode).anchor).toBe('figures');
   });
 
-  it('refuses a paste into a component that a pasted code component imports (#200)', () => {
+  it('refuses a paste into a component that a pasted code component imports, but not one that only names its file (#200)', () => {
     // A code component that imports the hero's file renders it, though it declares no dependency on it.
     const f = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'hero.split').definitionId }]);
     let s = f.state;
     const heroDef = f.results[0].definitionId as string;
     const file = defFile(s.components[heroDef]).split('/').pop()!;
-    const wrapper = applyOperations(s, [{ type: 'component.createCode', name: 'Wrapper', source: `<script>\n  import Hero from './${file}';\n</script>\n<Hero />`, properties: {} }]);
-    s = wrapper.state;
-    const wrapperId = wrapper.results[0].definitionId as string;
-    const placed = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, definitionId: wrapperId }]);
-    s = placed.state;
-    const clip = captureClipboard(s, s.site.homePageId, placed.results[0].nodeId as string);
-    rejects(() => paste(s, clip, { kind: 'component', id: heroDef }, { parentId: s.components[heroDef].tree!.rootIds[0] }), /contain itself/);
+    const place = (name: string, source: string) => {
+      const made = applyOperations(s, [{ type: 'component.createCode', name, source, properties: {} }]);
+      const placed = applyOperations(made.state, [{ type: 'node.insert', owner: owner(made.state), parentId: null, definitionId: made.results[0].definitionId as string }]);
+      s = placed.state;
+      return captureClipboard(s, s.site.homePageId, placed.results[0].nodeId as string);
+    };
+    const into = { kind: 'component' as const, id: heroDef };
+    const imports = place('Wrapper', `<script>\n  import Hero from '../generated/${file}';\n</script>\n<Hero />`);
+    const mentions = place('Plain', `<!-- Not ../generated/${file}, which this does not use. -->\n<p>Plain</p>`);
+    const root = s.components[heroDef].tree!.rootIds[0];
+    rejects(() => paste(s, imports, into, { parentId: root }), /contain itself/);
+    expect(pasted(paste(s, mentions, into, { parentId: root }), s.site.homePageId, heroDef)).toBeDefined();
   });
 
   it('names what the copy needs that was removed after copying, and pastes nothing', () => {
