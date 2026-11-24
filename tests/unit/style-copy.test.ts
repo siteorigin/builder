@@ -56,7 +56,7 @@ describe('copy style', () => {
     const root = hero.targets.find((t) => t.part === 'root')!;
     expect(root.offered).toEqual(['paddingBlock', 'background', 'color', 'minHeight', 'hidden']);
     // An image part that can be cropped also offers its focal point.
-    expect(hero.targets.find((t) => t.part === 'media')!.offered).toContain('objectPosition');
+    expect(hero.targets.find((t) => t.part === 'media')!.offered).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
     const heading = styleSelection(s, part(s, 'content.media', 'heading'))!;
     expect(heading).toMatchObject({ kind: 'single', label: 'Heading in Content with image' });
     expect(heading.targets).toHaveLength(1);
@@ -74,6 +74,33 @@ describe('copy style', () => {
     const header = s.components[(s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode).definitionId];
     expect(placementStyleControls(header, 'root', false)).toBeNull();
     expect(placementStyleControls(header, 'root', true)).toContain('hidden');
+    // A code component's parts: their own list with Hidden, or the fixed list when they name none.
+    const code = { kind: 'code' as const, parts: { root: { nodeId: 'r', label: 'Badge' }, label: { nodeId: 'l', label: 'Label', styleControls: ['color'] } } };
+    expect(placementStyleControls(code, 'label', true)).toEqual(['color', 'hidden']);
+    expect(placementStyleControls(code, 'root', true)).toEqual(['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'hidden']);
+    // A managed root with no list offers everything, as the inspector does.
+    expect(placementStyleControls({ kind: 'managed', parts: { root: { nodeId: 'r', label: 'Section' } } }, 'root', false)).toBeUndefined();
+  });
+
+  it('keeps a part picked by name on its component’s root element as that part, and drops a part that moved', () => {
+    let s = createStarterState('blank', 'Blank', false);
+    const page = s.pages[homeId(s)];
+    const holder = page.nodes[page.rootIds[0]] as InstanceNode;
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: holder.id, slot: 'content', primitive: 'heading', text: 'Hello' }]);
+    s = ins.state;
+    const made = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: ins.results[0].nodeId as string, name: 'Title' }]);
+    s = made.state;
+    const inst = Object.values(s.pages[homeId(s)].nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.name === 'Title') as InstanceNode;
+    const def = s.components[inst.definitionId];
+    const [named] = Object.entries(def.parts).filter(([id, p]) => id !== 'root' && p.nodeId === def.parts.root.nodeId);
+    expect(named).toBeDefined();
+    const pick = styleSelection(s, { owner: owner(s), instancePath: [inst.id], nodeId: named[1].nodeId, partId: named[0] })!;
+    expect(pick.kind).toBe('single');
+    expect(pick.targets[0]).toMatchObject({ partId: named[0], nodeId: inst.id });
+    // The name now belongs to another element than the one picked.
+    const media = fresh();
+    expect(styleSelection(media, part(media, 'content.media', 'heading'))).not.toBeNull();
+    expect(styleSelection(media, { ...part(media, 'content.media', 'heading'), nodeId: 'body' })).toBeNull();
   });
 
   it('takes nothing from a component’s design or from a part of a component nested inside a section', () => {
@@ -81,13 +108,15 @@ describe('copy style', () => {
     const def = placed(s, 'hero.split').definitionId;
     expect(styleSelection(s, { owner: { kind: 'component', id: def }, instancePath: [], nodeId: 'heading' })).toBeNull();
     const hero = placed(s, 'hero.split');
-    expect(styleSelection(s, { owner: owner(s), instancePath: [hero.id, 'nested'], nodeId: 'x', partId: 'x' })).toBeNull();
+    // The hero has a heading part too, so only the depth tells this one apart.
+    expect(styleSelection(s, { owner: owner(s), instancePath: [hero.id, 'nested'], nodeId: 'heading', partId: 'heading' })).toBeNull();
   });
 
   it('keeps the copy as it was when copied', () => {
     let s = heroPadded();
     const copy = captureStyle(s, section(s, 'hero.split'))!;
-    s = style(s, section(s, 'hero.split'), 'phone', 'paddingBlock', '40px');
+    // Even an edit made in place, to the very objects copied from.
+    (s.pages[homeId(s)].nodes[placed(s, 'hero.split').id] as InstanceNode).overrides!.root.phone!.paddingBlock = '40px';
     expect(copy.sets).toEqual([{ part: 'root', label: 'Section', styles: { base: { paddingBlock: '72px' }, phone: { paddingBlock: '16px' } } }]);
     // A selection with no style changes of its own has nothing to paste.
     expect(captureStyle(s, section(s, 'content.media'))!.sets).toEqual([]);
@@ -100,6 +129,7 @@ describe('paste style', () => {
     const dest = section(s, 'content.media');
     // The destination has a Desktop padding of its own, which would otherwise win at desktop, and a background.
     s = style(s, dest, 'desktop', 'paddingBlock', '96px');
+    s = style(s, dest, 'tablet', 'paddingBlock', '48px');
     s = style(s, dest, 'base', 'background', { token: 'color.surface-alt' });
     const copy = captureStyle(s, section(s, 'hero.split'))!;
     const plan = planStylePaste(s, copy, dest, 'every');
@@ -107,10 +137,12 @@ describe('paste style', () => {
     expect(plan.operations).toEqual([
       { type: 'node.setStyle', owner: owner(s), nodeId: id, partId: 'root', scope: 'base', property: 'paddingBlock', value: '72px' },
       { type: 'node.setStyle', owner: owner(s), nodeId: id, partId: 'root', scope: 'phone', property: 'paddingBlock', value: '16px' },
+      { type: 'node.setStyle', owner: owner(s), nodeId: id, partId: 'root', scope: 'tablet', property: 'paddingBlock', value: null },
       { type: 'node.setStyle', owner: owner(s), nodeId: id, partId: 'root', scope: 'desktop', property: 'paddingBlock', value: null }
     ]);
     expect(plan.rows).toEqual([
       {
+        part: 'root',
         target: 'Section',
         property: 'paddingBlock',
         label: 'Vertical padding',
@@ -118,6 +150,7 @@ describe('paste style', () => {
         changes: [
           { scope: 'base', from: undefined, to: '72px' },
           { scope: 'phone', from: undefined, to: '16px' },
+          { scope: 'tablet', from: '48px' },
           { scope: 'desktop', from: '96px' }
         ]
       }
@@ -138,6 +171,7 @@ describe('paste style', () => {
     expect(declsAt(css, 'base', sel)).toContain('padding-block: 72px');
     expect(declsAt(css, 'phone', sel)).toEqual(['padding-block: 16px']);
     expect(declsAt(css, 'desktop', sel)).toEqual([]);
+    expect(declsAt(css, 'tablet', sel)).toEqual([]);
     expect(declsAt(generateSiteCss(s), 'desktop', sel)).toEqual(['padding-block: 96px']);
 
     // Pasting again changes nothing.
@@ -165,6 +199,11 @@ describe('paste style', () => {
     const dest = section(s, 'content.media');
     s = style(s, dest, 'desktop', 'paddingBlock', '96px');
     const copy = captureStyle(s, section(s, 'hero.split'))!;
+    s = style(s, section(s, 'hero.split'), 'tablet', 'background', { token: 'color.brand' });
+    const tabletCopy = captureStyle(s, section(s, 'hero.split'))!;
+    expect(planStylePaste(s, tabletCopy, dest, 'tablet').operations).toEqual([
+      { type: 'node.setStyle', owner: owner(s), nodeId: dest.nodeId, partId: 'root', scope: 'tablet', property: 'background', value: { token: 'color.brand' } }
+    ]);
     const ops = (scope: 'base' | 'phone' | 'desktop') => planStylePaste(s, copy, dest, scope).operations.map((o) => (o.type === 'node.setStyle' ? [o.scope, o.value] : null));
     expect(ops('phone')).toEqual([['phone', '16px']]);
     expect(ops('base')).toEqual([['base', '72px']]);
@@ -172,6 +211,7 @@ describe('paste style', () => {
     const desktop = planStylePaste(s, copy, dest, 'desktop');
     expect(desktop.operations).toEqual([]);
     expect(desktop.rows).toEqual([expect.objectContaining({ property: 'paddingBlock', status: 'skip', reason: 'The copy sets it for All sizes, Phone, not Desktop.' })]);
+    expect(planStylePaste(s, copy, dest, 'phone').operations).toHaveLength(1);
   });
 
   it('shows what can’t be applied between different section types, and why', () => {
@@ -190,6 +230,8 @@ describe('paste style', () => {
     // The same part on both keeps its site style link; a part the destination doesn't have is named.
     expect(row('textStyle', 'Heading')).toMatchObject({ status: 'change', changes: [{ scope: 'base', to: { token: 'text.h2' } }] });
     expect(row('color', 'Supporting text')).toMatchObject({ status: 'skip', reason: 'Content with image has no supporting text part to take it.' });
+    // What is shown as not pasted is not pasted.
+    expect(plan.operations.map((o) => (o.type === 'node.setStyle' ? `${o.partId}.${o.scope}.${o.property}` : ''))).toEqual(['root.base.paddingBlock', 'root.phone.paddingBlock', 'heading.base.textStyle']);
     const heading = s.pages[homeId(s)].nodes[placed(s, 'content.media').id] as InstanceNode;
     const after = applyOperations(s, plan.operations).state;
     expect((after.pages[homeId(s)].nodes[heading.id] as InstanceNode).overrides?.heading).toEqual({ base: { textStyle: { token: 'text.h2' } } });
@@ -202,9 +244,10 @@ describe('paste style', () => {
     const copy = captureStyle(s, part(s, 'hero.split', 'heading'))!;
     expect(copy.kind).toBe('single');
     const onBody = planStylePaste(s, copy, part(s, 'content.media', 'body'), 'every');
+    const media = placed(s, 'content.media').id;
     expect(onBody.operations).toEqual([
-      expect.objectContaining({ partId: 'body', scope: 'base', property: 'textStyle', value: { token: 'text.h3' } }),
-      expect.objectContaining({ partId: 'body', scope: 'phone', property: 'color', value: { token: 'color.brand' } })
+      { type: 'node.setStyle', owner: owner(s), nodeId: media, partId: 'body', scope: 'base', property: 'textStyle', value: { token: 'text.h3' } },
+      { type: 'node.setStyle', owner: owner(s), nodeId: media, partId: 'body', scope: 'phone', property: 'color', value: { token: 'color.brand' } }
     ]);
     // A section's own style offers neither, so nothing lands, and each says so.
     const onSection = planStylePaste(s, copy, section(s, 'content.media'), 'every');
@@ -212,6 +255,12 @@ describe('paste style', () => {
     expect(onSection.rows.map((r) => [r.target, r.status])).toEqual([
       ['Section', 'skip'],
       ['Section', 'skip']
+    ]);
+    // A card's padding is a section's too: it lands on the section's own style.
+    s = style(s, part(s, 'features.grid', 'card'), 'phone', 'paddingBlock', { token: 'space.md' });
+    const card = captureStyle(s, part(s, 'features.grid', 'card'))!;
+    expect(planStylePaste(s, card, section(s, 'content.media'), 'every').operations).toEqual([
+      { type: 'node.setStyle', owner: owner(s), nodeId: media, partId: 'root', scope: 'phone', property: 'paddingBlock', value: { token: 'space.md' } }
     ]);
   });
 
@@ -221,6 +270,12 @@ describe('paste style', () => {
     const copy = captureStyle(s, section(s, 'hero.split'))!;
     const plan = planStylePaste(s, copy, part(s, 'content.media', 'heading'), 'every');
     expect(plan.operations).toEqual([]);
+    // A card takes vertical padding, so there the section's own style lands, and only that.
+    const onCard = planStylePaste(s, copy, part(s, 'features.grid', 'card'), 'every');
+    expect(onCard.operations).toEqual([
+      { type: 'node.setStyle', owner: owner(s), nodeId: placed(s, 'features.grid').id, partId: 'card', scope: 'base', property: 'paddingBlock', value: '72px' },
+      { type: 'node.setStyle', owner: owner(s), nodeId: placed(s, 'features.grid').id, partId: 'card', scope: 'phone', property: 'paddingBlock', value: '16px' }
+    ]);
     expect(plan.rows).toEqual([
       expect.objectContaining({ target: 'Heading', property: 'paddingBlock', status: 'skip', reason: 'Heading in Content with image doesn’t offer vertical padding.' }),
       expect.objectContaining({ target: 'Heading', property: 'color', status: 'skip', reason: 'Only the section’s own style can go onto Heading in Content with image.' })
@@ -239,9 +294,23 @@ describe('paste style', () => {
     const [stack, heading] = ins.results.map((r) => ({ owner: owner(s), instancePath: [], nodeId: r.nodeId as string }));
     s = style(s, stack, 'base', 'gap', { token: 'space.lg' });
     s = style(s, stack, 'tablet', 'marginBlockEnd', '24px');
+    s = style(s, stack, 'base', 'customCss', 'filter: saturate(1.2)');
+    s = style(s, heading, 'base', 'opacity', 0.5);
+    // A hand-edited document can hold a value no edit would write; it must never read as "remove".
+    const stackNode = s.pages[homeId(s)].nodes[stack.nodeId];
+    (stackNode.styles!.base as Record<string, unknown>).opacity = null;
+    (stackNode.styles!.base as Record<string, unknown>).fontFamily = 'Plus Jakarta Sans';
     const plan = planStylePaste(s, captureStyle(s, stack)!, heading, 'every');
     expect(plan.rows.find((r) => r.property === 'gap')).toMatchObject({ status: 'skip' });
-    expect(plan.operations).toEqual([{ type: 'node.setStyle', owner: owner(s), nodeId: heading.nodeId, scope: 'tablet', property: 'marginBlockEnd', value: '24px' }]);
+    // The heading offers Custom CSS, but it is never pasted.
+    expect(plan.rows.find((r) => r.property === 'customCss')).toMatchObject({ status: 'skip', reason: expect.stringContaining('Custom CSS') });
+    expect(plan.rows.find((r) => r.property === 'opacity')).toMatchObject({ status: 'skip', reason: 'The copied value isn’t one the builder can paste.' });
+    const font = plan.operations.find((o) => o.type === 'node.setStyle' && o.property === 'fontFamily');
+    expect(plan.operations.filter((o) => o !== font)).toEqual([{ type: 'node.setStyle', owner: owner(s), nodeId: heading.nodeId, scope: 'tablet', property: 'marginBlockEnd', value: '24px' }]);
+    // A font named on its own is written as the stack the edit stores, so pasting again finds nothing to change.
+    expect(font).toMatchObject({ scope: 'base', value: expect.stringContaining('Plus Jakarta Sans Variable') });
+    const after = applyOperations(s, plan.operations).state;
+    expect(planStylePaste(after, captureStyle(s, stack)!, heading, 'every').operations).toEqual([]);
   });
 
   it('holds back a property whose site style was removed since copying, and only that property', () => {
@@ -255,10 +324,29 @@ describe('paste style', () => {
     s = applyOperations(s, [{ type: 'token.remove', tokenId: token, detach: true }]).state;
     const plan = planStylePaste(s, copy, section(s, 'content.media'), 'every');
     expect(plan.rows.find((r) => r.property === 'paddingBlock')).toMatchObject({ status: 'skip', reason: expect.stringContaining('has been removed') });
-    expect(plan.operations.map((o) => (o.type === 'node.setStyle' ? o.property : ''))).toEqual(['background']);
+    const media = placed(s, 'content.media').id;
+    expect(plan.operations).toEqual([{ type: 'node.setStyle', owner: owner(s), nodeId: media, partId: 'root', scope: 'base', property: 'background', value: { token: 'color.surface-alt' } }]);
     // Phone alone does not reach the removed style, so it still pastes.
-    expect(planStylePaste(s, copy, section(s, 'content.media'), 'phone').operations).toHaveLength(1);
+    expect(planStylePaste(s, copy, section(s, 'content.media'), 'phone').operations).toEqual([
+      { type: 'node.setStyle', owner: owner(s), nodeId: media, partId: 'root', scope: 'phone', property: 'paddingBlock', value: '16px' }
+    ]);
     expect(() => applyOperations(s, plan.operations)).not.toThrow();
+  });
+
+  it('holds back a value that names a removed site style in its CSS text', () => {
+    let s = heroPadded();
+    s = applyOperations(s, [{ type: 'token.create', group: 'color', label: 'Sea', value: '#2a7f9e' }]).state;
+    const token = s.tokens.custom[0].id;
+    const hero = section(s, 'hero.split');
+    s = style(s, hero, 'base', 'background', `linear-gradient(var(--so-${token.replace('.', '-')}), #ffffff)`);
+    const copy = captureStyle(s, hero)!;
+    expect(planStylePaste(s, copy, section(s, 'content.media'), 'every').rows.find((r) => r.property === 'background')).toMatchObject({ status: 'change' });
+    // Its own use is cleared (the style can't be removed while CSS names it), then the style is removed.
+    s = style(s, hero, 'base', 'background', null);
+    s = applyOperations(s, [{ type: 'token.remove', tokenId: token }]).state;
+    const plan = planStylePaste(s, copy, section(s, 'content.media'), 'every');
+    expect(plan.rows.find((r) => r.property === 'background')).toMatchObject({ status: 'skip', reason: expect.stringContaining('has been removed') });
+    expect(plan.operations.map((o) => (o.type === 'node.setStyle' ? o.property : ''))).toEqual(['paddingBlock', 'paddingBlock']);
   });
 });
 

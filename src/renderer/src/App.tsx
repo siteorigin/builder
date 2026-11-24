@@ -49,7 +49,7 @@ export function App() {
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
-        setState({ screen: 'welcome', snapshot: null, selection: null, conversation: null, chatDrafts: {}, chatImages: {}, definitionMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null });
+        setState({ screen: 'welcome', snapshot: null, selection: null, conversation: null, chatDrafts: {}, chatImages: {}, definitionMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, ...pasteStyleClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -142,9 +142,15 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     heldEdits: [],
     aiOutcome: null,
     inspectorFocus: null,
-    styleCopy: null
+    styleCopy: null,
+    ...pasteStyleClosed()
   });
   void restoreConversation(++opened, local.chatConversation);
+}
+
+/** Paste style reviews what was copied in one opening, onto it: another opening never shows it. */
+function pasteStyleClosed(): { modal?: null } {
+  return getState().modal?.kind === 'paste-style' ? { modal: null } : {};
 }
 
 /** Counts project openings and closings, so a reply that arrives after the project changed is ignored. */

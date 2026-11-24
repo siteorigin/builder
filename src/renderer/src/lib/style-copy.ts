@@ -6,7 +6,7 @@
  */
 import type { EditOperation } from '@shared/ops';
 import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleValue } from '@shared/types';
-import { STYLE_PROP_MAP, offeredStyleProps, placementStyleControls, styleSetFor, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, offeredStyleProps, placementStyleControls, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { effectiveTokens } from '@generator/index';
 import { resolveFontStack } from '@catalogue/fonts';
@@ -56,6 +56,8 @@ export interface PasteChange {
 }
 
 export interface PasteRow {
+  /** The part it lands on (or, with nowhere to go, the copied part it came from); null for a single part or element. */
+  part: string | null;
   /** Where it lands: the destination part or element, or the copied part that has nowhere to go. */
   target: string;
   property: string;
@@ -113,7 +115,10 @@ function partTarget(def: ComponentDefinition, inst: InstanceNode, owner: OwnerRe
  */
 export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelection | null {
   if (ref.owner.kind === 'component') return null;
-  const b = boundaryOf(state, ref);
+  // A part picked by name stays that part, as in the inspector, even on its component's root element: a component
+  // made from one heading names both.
+  const named = ref.instancePath.length > 0 && !!ref.partId && ref.partId !== 'root';
+  const b = named ? ref : boundaryOf(state, ref);
   const tree = treeFor(state, b.owner);
   if (!tree) return null;
   const where = whereOf(state, b.owner);
@@ -136,7 +141,8 @@ export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelec
   if (b.instancePath.length !== 1 || !b.partId || b.partId === 'root') return null;
   const inst = own(tree.nodes, b.instancePath[0]);
   const def = inst?.kind === 'instance' ? own(state.components, inst.definitionId) : undefined;
-  if (inst?.kind !== 'instance' || !def) return null;
+  // The part must still be the element that was picked: a change to the design can give its name to another.
+  if (inst?.kind !== 'instance' || !def || own(def.parts, b.partId)?.nodeId !== b.nodeId) return null;
   const list = placementStyleControls(def, b.partId, def.kind === 'code' && codeTakesOverrides(def));
   if (list === null) return null;
   const t = partTarget(def, inst, b.owner, b.partId, list);
@@ -161,17 +167,35 @@ function tokenRef(property: string, v: StyleValue): string | null {
   return property === 'textStyle' && typeof v === 'string' && TEXT_TOKEN_RE.test(v.trim()) ? v.trim() : null;
 }
 
-/** Why a copied value can't be written into this project now, or null. The same checks `node.setStyle` makes. */
-function problem(state: ProjectState, tokens: Set<string>, property: string, v: StyleValue): string | null {
+/** A value an edit can carry: a literal, or exactly `{ token }`. Anything else came from a hand-edited document. */
+function isStyleValue(v: unknown): v is StyleValue {
+  if (typeof v === 'string' || typeof v === 'boolean') return true;
+  if (typeof v === 'number') return Number.isFinite(v);
+  return !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && typeof (v as { token?: unknown }).token === 'string';
+}
+
+/** Site style variables named in CSS text, such as a gradient's `var(--so-color-brand)`. */
+const TOKEN_VAR_RE = /var\(\s*(--so-(?:color|font|text|space|container|radius|shadow|border)-[A-Za-z0-9-]+)/g;
+const removed = (token: string) => `It uses the site style “${token}”, which has been removed since it was copied.`;
+
+/**
+ * The value a paste writes for a copied one, as `node.setStyle` would store it (a font named on its own becomes its
+ * full stack), or why it can't be written into this project now: the same checks the edit makes, so one value
+ * never fails the whole paste.
+ */
+function prepare(state: ProjectState, vars: string[], property: string, v: unknown): { value: StyleValue } | { error: string } {
+  if (!isStyleValue(v)) return { error: 'The copied value isn’t one the builder can paste.' };
   const err = validateStyleValue(property, v);
-  if (err) return err;
+  if (err) return { error: err };
   const token = tokenRef(property, v);
-  if (token && !tokens.has(token)) return `It uses the site style “${token}”, which has been removed since it was copied.`;
+  if (token && !vars.includes(tokenVar(token))) return { error: removed(token) };
+  if (typeof v === 'string')
+    for (const [, name] of v.matchAll(TOKEN_VAR_RE)) if (!vars.some((t) => name === t || name.startsWith(`${t}-`))) return { error: removed(name.slice(5)) };
   if (property === 'fontFamily' && typeof v === 'string' && !FONT_KEYWORD_RE.test(v.trim())) {
     const font = resolveFontStack(state, v);
-    if ('error' in font) return font.error;
+    return 'error' in font ? { error: font.error } : { value: font.stack };
   }
-  return null;
+  return { value: v };
 }
 
 const scopeList = (s: ResponsiveStyles, property: string) => STYLE_SCOPES.filter((sc) => s[sc]?.[property] !== undefined).map((sc) => SCOPE_LABELS[sc]);
@@ -187,7 +211,7 @@ const scopeList = (s: ResponsiveStyles, property: string) => STYLE_SCOPES.filter
 export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: ElementRef, scope: PasteScope): PastePlan {
   const destination = styleSelection(state, ref);
   if (!destination) return { destination, rows: [], operations: [] };
-  const tokens = new Set(effectiveTokens(state).map((t) => t.id));
+  const vars = effectiveTokens(state).map((t) => tokenVar(t.id));
   const scopes = scope === 'every' ? STYLE_SCOPES : [scope];
   const rows: PasteRow[] = [];
   const operations: EditOperation[] = [];
@@ -207,25 +231,38 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
       const def = own(STYLE_PROP_MAP, property);
       const label = def?.label ?? property;
       const at = target?.label ?? set.label;
-      const skip = (reason: string) => rows.push({ target: at, property, label, status: 'skip', reason, changes: [] });
+      const part = target ? target.part : set.part;
+      const skip = (reason: string) => rows.push({ part, target: at, property, label, status: 'skip', reason, changes: [] });
       if (!target) skip(missing);
       else if (!def) skip('This version of the builder doesn’t know this style.');
       else if (property === 'customCss') skip('Custom CSS can set several properties at once, so it isn’t pasted. Copy it by hand.');
       else if (!target.offered.includes(property)) skip(`${destination.kind === 'section' ? `${destination.label}’s ${target.label.toLowerCase()}` : destination.label} doesn’t offer ${label.toLowerCase()}.`);
       else if (!scopes.some((sc) => set.styles[sc]?.[property] !== undefined)) skip(`The copy sets it for ${scopeList(set.styles, property).join(', ')}, not ${SCOPE_LABELS[scope as ResponsiveScope]}.`);
       else {
-        const why = scopes.map((sc) => set.styles[sc]?.[property]).map((v) => (v === undefined ? null : problem(state, tokens, property, v))).find(Boolean);
+        // Every size the paste writes is checked first: a property with one value that can't be written changes nowhere.
+        const wants = new Map<ResponsiveScope, StyleValue>();
+        let why = '';
+        for (const sc of scopes) {
+          const raw: unknown = set.styles[sc]?.[property];
+          if (raw === undefined) continue;
+          const ready = prepare(state, vars, property, raw);
+          if ('error' in ready) {
+            why = ready.error;
+            break;
+          }
+          wants.set(sc, ready.value);
+        }
         if (why) {
           skip(why);
           continue;
         }
         const changes: PasteChange[] = [];
         for (const sc of scopes) {
-          const want = set.styles[sc]?.[property];
+          const want = wants.get(sc);
           const have = target.styles?.[sc]?.[property];
           if (want === undefined ? have !== undefined : !sameValue(want, have)) changes.push(want === undefined ? { scope: sc, from: have } : { scope: sc, from: have, to: want });
         }
-        rows.push({ target: at, property, label, status: changes.length ? 'change' : 'same', changes });
+        rows.push({ part, target: at, property, label, status: changes.length ? 'change' : 'same', changes });
         for (const c of changes)
           operations.push({ type: 'node.setStyle', owner: target.owner, nodeId: target.nodeId, ...(target.partId ? { partId: target.partId } : {}), scope: c.scope, property, value: c.to ?? null });
       }

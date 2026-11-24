@@ -81,7 +81,8 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   const close = () => !busy && setState({ modal: null });
   const show = (r: PasteRow, v: StyleValue) => (Object.hasOwn(STYLE_PROP_MAP, r.property) ? describeStyleValue(STYLE_PROP_MAP[r.property], v, tokens) : String(v));
   const paste = async () => {
-    if (!plan || !copy || !destination || !canPaste) return;
+    // A click handled after another opening took over would otherwise send this review's edits to that project.
+    if (!plan || !copy || !destination || !canPaste || getState().snapshot?.workspaceKey !== opening) return;
     setBusy(true);
     let done: Awaited<ReturnType<typeof commitOps>> = null;
     try {
@@ -132,7 +133,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
               <span className="faint">Only style changes are pasted: text, links, images and design options stay as they are.</span>
             </p>
             <Field label="Sizes" hint={scopeHint}>
-              <select className="select" value={scope} onChange={(e) => setScope(e.target.value as PasteScope)}>
+              <select className="select" value={scope} disabled={busy} onChange={(e) => setScope(e.target.value as PasteScope)}>
                 {SCOPE_CHOICES.map((c) => (
                   <option key={c.value} value={c.value}>
                     {c.label}
@@ -146,7 +147,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
               {changing.length ? (
                 <ul>
                   {changing.map((r) => (
-                    <li key={`${r.target}:${r.property}`} className="find-change">
+                    <li key={`${r.part}:${r.property}`} className="find-change">
                       <span>
                         <strong>{r.label}</strong> <span className="faint">· {r.target}</span>
                       </span>
@@ -171,7 +172,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                 <h3>Not pasted here</h3>
                 <ul>
                   {skipped.map((r) => (
-                    <li key={`${r.target}:${r.property}`} className="find-change">
+                    <li key={`${r.part}:${r.property}`} className="find-change">
                       <span>
                         <strong>{r.label}</strong> <span className="faint">· {r.target}</span>
                       </span>
