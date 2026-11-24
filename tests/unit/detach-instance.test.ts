@@ -578,6 +578,61 @@ describe('component.detachInstance (#373)', () => {
     expect(codedShown.overrides?.root).toEqual({ phone: { customCss: 'display: revert' }, tablet: { hidden: true }, desktop: { hidden: true } });
   });
 
+  it('refuses a component with UI state, and leaves a page button no state to change', () => {
+    const { s } = project();
+    const def = s.components[DEF];
+    def.state = { open: { type: 'boolean', label: 'Open', initial: true } };
+    expect(() => detach(s)).toThrow(/UI state/);
+    // A button still naming state its design no longer declares changes nothing once it is on the page.
+    delete def.state;
+    (def.tree!.nodes.cta as GraphNode & { kind: 'link' }).stateAction = { state: 'open', op: 'toggle' };
+    const r = detach(s);
+    const cta = descendants(r.state, r.results[0].nodeId as string).find((n) => n.kind === 'link')!;
+    expect(cta).toMatchObject({ label: 'Talk to us' });
+    expect(Object.hasOwn(cta, 'stateAction')).toBe(false);
+  });
+
+  it('chooses an option bound to a deeper design’s UI state at the value it starts at', () => {
+    const { s } = project();
+    const base = showcase();
+    s.components['proj.c-cc1cc'] = { ...base, id: 'proj.c-cc1cc', name: 'C', properties: { label: { type: 'string', label: 'Label', default: 'C' } }, parts: { root: { nodeId: 'c', label: 'C' } }, slots: undefined, variantAxes: { size: { label: 'Size', default: 'small', options: { small: { label: 'Small', styles: { c: { base: { fontSize: '12px' } } } }, large: { label: 'Large' } } } }, tree: { rootIds: ['c'], nodes: { c: { id: 'c', kind: 'text', tag: 'span', text: { $prop: 'label' } } as GraphNode } } } as ComponentDefinition;
+    // B places C at its root, sized by B's own UI state, which starts large.
+    s.components['proj.b-bb1bb'] = { ...base, id: 'proj.b-bb1bb', name: 'B', properties: {}, state: { sz: { type: 'enum', label: 'Size', options: [{ value: 'small', label: 'Small' }, { value: 'large', label: 'Large' }], initial: 'large' } }, parts: { root: { nodeId: 'b', label: 'B' } }, slots: undefined, variantAxes: undefined, tree: { rootIds: ['b'], nodes: { b: { id: 'b', kind: 'instance', definitionId: 'proj.c-cc1cc', props: {}, variants: { size: { $state: 'sz' } } } as unknown as GraphNode } } } as ComponentDefinition;
+    const def = s.components[DEF];
+    (def.tree!.nodes.root as GraphNode & { kind: 'element' }).children = ['pill', 'extra'];
+    def.tree!.nodes.pill = { id: 'pill', kind: 'instance', definitionId: 'proj.b-bb1bb', props: {}, styles: { base: { fontSize: '14px' } } } as unknown as GraphNode;
+    const r = detach(s);
+    const pill = descendants(r.state, r.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
+    // Large sets no size, so the design's own 14px was what showed.
+    expect(pill.overrides?.root).toEqual({ base: { fontSize: '14px' } });
+  });
+
+  it('gives the placement’s entrance to what replaces it, and turns the design’s own off where it chose none', () => {
+    const { s } = project();
+    const rootOf = (r: ReturnType<typeof detach>) => home(r.state).nodes[r.results[0].nodeId as string];
+    const target = home(s).nodes.n_target as InstanceNode;
+    target.appear = 'lift';
+    expect(rootOf(detach(s))).toMatchObject({ kind: 'element', appear: 'lift' });
+    // The design's own entrance shows where the placement chose none of its own, and `none` turns it off.
+    (s.components[DEF].tree!.nodes.root as GraphNode & { kind: 'element' }).appear = 'fade';
+    delete target.appear;
+    expect(rootOf(detach(s))).toMatchObject({ appear: 'fade' });
+    target.appear = 'none';
+    expect(Object.hasOwn(rootOf(detach(s)), 'appear')).toBe(false);
+    // A design whose root places another design: that placement takes the choice, `none` included.
+    const inner = { ...showcase(), id: 'proj.inner-ee1ee', name: 'Inner', properties: {}, parts: { root: { nodeId: 'in', label: 'Root' } }, slots: undefined, variantAxes: undefined, tree: { rootIds: ['in'], nodes: { in: { id: 'in', kind: 'element', tag: 'div', children: [], appear: 'fade' } } } } as unknown as ComponentDefinition;
+    s.components[inner.id] = inner;
+    s.components[DEF].tree = { rootIds: ['wrap'], nodes: { wrap: { id: 'wrap', kind: 'instance', definitionId: inner.id, props: {} } as unknown as GraphNode } };
+    s.components[DEF].parts = { root: { nodeId: 'wrap', label: 'Root' } };
+    s.components[DEF].slots = undefined;
+    s.components[DEF].variantAxes = undefined;
+    target.slots = undefined;
+    target.overrides = undefined;
+    target.itemOverrides = undefined;
+    target.variants = undefined;
+    expect(rootOf(detach(s))).toMatchObject({ kind: 'instance', definitionId: inner.id, appear: 'none' });
+  });
+
   it('is offered to the AI for the placement it may change', async () => {
     const { checkAuthority } = await import('../../src/agent/scope');
     const { s } = project();

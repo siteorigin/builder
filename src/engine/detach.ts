@@ -6,7 +6,7 @@
  * design stay placements, given the values and styles they were shown with.
  */
 import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, ProjectState, PropSchema } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, slotChildren } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, stateInitial } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
@@ -17,7 +17,7 @@ import { designLayers, selectedVariants } from '@shared/variants';
 import { liveItemStyles } from '@shared/item-styles';
 import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/index';
 import { effectiveProps, evaluate, rendersIn, type Scope } from '@generator/checks';
-import { anchorsInUse, fail, findParent, getNode, getTree, settledRoot } from './tree';
+import { anchorCapable, anchorsInUse, fail, findParent, getNode, getTree, settledRoot } from './tree';
 import { slotLandingProblem } from './slots';
 import { clone } from './install';
 
@@ -62,6 +62,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const def = own(state.components, inst.definitionId) ?? fail(`Missing definition "${inst.definitionId}".`);
   const label = inst.name ?? def.name;
   if (def.kind !== 'managed' || !def.tree) fail(`“${label}” is a code component: its markup is in its source, so it cannot be detached into elements.`);
+  // Elements on a page have no UI state: they would only ever show where it starts, and its buttons would change nothing.
+  if (Object.keys(def.state ?? {}).length) fail(`“${label}” has UI state its buttons change, which elements on a page would not keep. Remove its UI state first.`);
   const design = def.tree;
   if (!settledRoot(design)) fail(`“${label}” has no single element at the top of its design, so it cannot be detached. Fix its design first.`);
   const parent = findParent(tree, op.nodeId) ?? fail('This placement is not on the page.');
@@ -224,6 +226,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
           else delete n.iconPosition;
         }
         if (n.ariaLabel !== undefined) setOptional(n, 'ariaLabel', text(value(n.ariaLabel, at)));
+        // Only a design's buttons change UI state; on a page there is none to change.
+        delete n.stateAction;
         break;
       }
       case 'icon':
@@ -279,13 +283,14 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         code = true;
         break;
       }
-      const chosen = Object.fromEntries(Object.entries(placed.variants ?? {}).map(([axis, v]) => [axis, isBinding(v) ? String(evaluate(v, scope) ?? '') : v]));
+      const chosen = Object.fromEntries(Object.entries(placed.variants ?? {}).map(([axis, v]) => [axis, isBindingRef(v) ? String(evaluate(v, scope) ?? '') : v]));
       const r: string = d.tree.rootIds[0];
       const next: GraphNode | undefined = own(d.tree.nodes, r);
       const level: StyleLayer[] = designLayers(d, r, chosen).map((l) => ({ ...l, strength: l.strength + tie(d.id) }));
       levels.push(level);
       if (next?.kind === 'instance' && next.overrides?.root) level.push({ styles: next.overrides.root, strength: 3 + tie(d.id), wideColumns: true, unhides: [] });
-      scope = { props: withObjectFields(d, effectiveProps(state, d, placed, scope, op.owner.id)) };
+      // An option bound to the design's UI state shows the one it starts at, as the generated site does.
+      scope = { props: withObjectFields(d, effectiveProps(state, d, placed, scope, op.owner.id)), ...(d.state ? { ui: Object.fromEntries(Object.keys(d.state).map((k) => [k, stateInitial(d, k)])) } : {}) };
       node = next;
     }
     // The deepest design first: its layers are what each design above it shows again.
@@ -395,6 +400,12 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   }
   const top = added.find((n) => n.id === roots[0])!;
   if (rootAnchor) top.anchor = rootAnchor;
+  // The placement's entrance lands on what replaces it, as it did on the design's root: `none` turned the root's own off.
+  const appear = inst.appear === 'none' || isAppearPreset(inst.appear) ? inst.appear : undefined;
+  if (appear && top.kind === 'element') {
+    if (appear === 'none') delete top.appear;
+    else top.appear = appear;
+  } else if (appear && top.kind === 'instance' && anchorCapable(state, own(state.components, top.definitionId))) top.appear = appear;
   // Named as the placement was in Layers: its own name, or the component's.
   top.name = inst.name ?? def.name;
   for (const n of added) tree.nodes[n.id] = n;
