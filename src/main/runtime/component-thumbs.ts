@@ -25,8 +25,11 @@ export const THUMBS_DIR = 'thumbs';
 export const THUMB_VIEW = { width: 1280, height: 800 };
 /** The size of a thumbnail's picture, in pixels: twice the larger tile it is shown in. */
 export const THUMB_SIZE = { width: 320, height: 200 };
-/** Part of every key, so a change to how thumbnails are drawn draws them all again. */
-const RECIPE = `component-thumb-v3 ${THUMB_VIEW.width}x${THUMB_VIEW.height} ${THUMB_SIZE.width}x${THUMB_SIZE.height} png`;
+/**
+ * Part of every key, so a change to how thumbnails are drawn draws them all again. v4: buttons that change a
+ * component's UI state show, as real buttons, with its tabs and disclosures.
+ */
+const RECIPE = `component-thumb-v4 ${THUMB_VIEW.width}x${THUMB_VIEW.height} ${THUMB_SIZE.width}x${THUMB_SIZE.height} png`;
 /** A key: SHA-256, in hex. */
 const THUMB_KEY = /^[0-9a-f]{64}$/;
 /** The thumbnails a project's cache keeps: older ones beyond this are removed after each new one. */

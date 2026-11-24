@@ -718,6 +718,18 @@ describe('generated buttons, tabs and disclosures', () => {
     expect(compileWarnings(s, [def])).toEqual([]);
   });
 
+  it('still generates a design whose declaration a hand edit damaged: its buttons do nothing, its reads stay put', () => {
+    const s = fresh();
+    const { def } = billingDef(s);
+    (s.components[def.id].state!.billing as { initial: string }).initial = 'weekly';
+    place(s, def);
+    const source = generateProject(s).get(defFile(def))!;
+    expect(source).not.toContain('so_state_billing');
+    expect(source).not.toContain('so_state_billing = "monthly"');
+    expect(source).toContain('let so_state_open = $state(false);');
+    expect(compileErrors(s)).toEqual([]);
+  });
+
   it('renders a tab list whose tabs and panels name each other in every placement, every panel in the page', async () => {
     const s = fresh();
     const def = tabsDef(s);

@@ -70,6 +70,7 @@ import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
 import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, isArticleDate, pageArticle } from '@shared/articles';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
+import { declaredState } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
@@ -940,21 +941,16 @@ interface UiStateLocal {
 }
 
 /**
- * A definition's UI state the generated component can hold, by name: each well-formed declaration, in a `$state` local
- * of its own (`so_state_<name>`, a prefix no property's local takes). A declaration a hand edit damaged is left out,
- * and reads of it show the value it starts at, as validation reports it.
+ * A definition's UI state the generated component can hold, by name: each well-formed declaration (as validation
+ * judges it), in a `$state` local of its own (`so_state_<name>`, a prefix no property's local takes). A declaration a
+ * hand edit damaged is left out, and reads of it show the value it starts at, as validation reports it.
  */
 function stateLocals(def: ComponentDefinition): Map<string, UiStateLocal> {
   const out = new Map<string, UiStateLocal>();
-  const declared = def.kind === 'managed' && def.state && typeof def.state === 'object' && !Array.isArray(def.state) ? def.state : {};
-  for (const name of Object.keys(declared).sort()) {
-    const schema = declared[name] as UiStateSchema | undefined;
-    if (!/^[a-z][a-zA-Z0-9]{0,39}$/.test(name) || !schema || typeof schema !== 'object') continue;
-    if (schema.type === 'boolean' && typeof schema.initial === 'boolean') out.set(name, { local: `so_state_${name}`, schema, values: [] });
-    else if (schema.type === 'enum' && Array.isArray(schema.options)) {
-      const values = schema.options.map((o) => (o && typeof o === 'object' ? o.value : undefined));
-      if (values.length >= 2 && values.every((v) => typeof v === 'string') && values.includes(schema.initial)) out.set(name, { local: `so_state_${name}`, schema, values: values as string[] });
-    }
+  if (def.kind !== 'managed' || !def.state || typeof def.state !== 'object' || Array.isArray(def.state)) return out;
+  for (const name of Object.keys(def.state).sort()) {
+    const schema = declaredState(def, name);
+    if (schema) out.set(name, { local: `so_state_${name}`, schema, values: schema.type === 'enum' ? schema.options.map((o) => o.value) : [] });
   }
   return out;
 }
