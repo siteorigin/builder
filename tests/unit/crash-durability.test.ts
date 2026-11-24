@@ -234,12 +234,13 @@ describe('crash durability', { timeout: 300_000 }, () => {
       }
     };
     const outcomes = new Set<string>();
+    const entriesOf = (s: ProjectSession) => Object.keys(s.state.collections.posts?.entries ?? {}).sort();
     await eachCrashPoint(setup, (s) => s.apply({ operations: [{ type: 'collection.remove', collectionId: 'posts' }] }, { label: 'Delete Posts' }), async (s) => {
       expect(s.conflicts).toEqual([]);
       const posts = join(s.dir, 'siteorigin/collections/posts');
       if (s.state.collections.posts) {
         outcomes.add('kept');
-        expect(Object.keys(s.state.collections.posts.entries).sort()).toEqual(['en_first', 'en_second']);
+        expect(entriesOf(s)).toEqual(['en_first', 'en_second']);
         expect(readdirSync(join(posts, 'entries')).sort()).toEqual(['en_first.json', 'en_second.json']);
         expect(s.historyInfo().undoLabel).toBe('Blog');
       } else {
@@ -248,7 +249,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
         expect(existsSync(join(posts, 'entries'))).toBe(false);
         expect(s.historyInfo().undoLabel).toBe('Delete Posts');
         expect((await s.undo()).ok).toBe(true);
-        expect(Object.keys(s.state.collections.posts.entries).sort()).toEqual(['en_first', 'en_second']);
+        expect(entriesOf(s)).toEqual(['en_first', 'en_second']);
       }
     });
     expect(outcomes).toEqual(new Set(['kept', 'deleted']));
