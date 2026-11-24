@@ -153,7 +153,7 @@ const isEmptyText = (v: unknown) => (typeof v === 'string' ? !v.trim() : Array.i
 
 /** Text a visitor never reads: an address, a key or a name forms send answers under. Long text there breaks the component instead of testing it. */
 const MACHINE_LABEL = /\b(url|web address|video address|endpoint|access key|api key|id|slug|anchor|embed|field name|form name)\b/i;
-const MACHINE_VALUE = /^((https?:\/\/|mailto:|tel:)\S+|\/\S*|#[\w-]+)$/i;
+const MACHINE_VALUE = /^((https?:\/\/|mailto:|tel:)\S+|\/\S*|#\S+)$/i;
 const isMachineText = (schema: ScalarPropSchema, value: unknown) => MACHINE_LABEL.test(schema.label ?? '') || (typeof value === 'string' && MACHINE_VALUE.test(value.trim()));
 
 /** Where a field is, as optionalContent names it: "name", "name.field", or "list[]field" for a list item's field. */

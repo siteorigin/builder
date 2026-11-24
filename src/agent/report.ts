@@ -566,6 +566,9 @@ export class InspectionLog {
     let e = this.components.get(key);
     if (!e) this.components.set(key, (e = { windows: new Map(), ...(owner?.kind === 'page' && typeof owner.id === 'string' ? { pageId: owner.id } : {}) }));
     e.windows.set(offset, { ok, content, stale: false });
+    // A sweep that now has fewer cases (a variant removed) leaves no window past its end.
+    const total = ok ? sweepTotal(offset, content) : undefined;
+    if (total !== undefined) for (const at of [...e.windows.keys()]) if (at > offset && at >= total) e.windows.delete(at);
   }
 
   /** An edit landed on these pages (or on what every page shares) after their checks ran. */
@@ -595,7 +598,14 @@ export class InspectionLog {
   }
 }
 
-type ComponentContent = { name?: unknown; findings?: unknown[]; omittedFindings?: unknown; runtimeErrors?: unknown[]; omittedRuntimeErrors?: unknown; incomplete?: unknown; next?: unknown; unverifiedContrast?: unknown };
+/** Where a component check's window of cases ends, and how many cases its sweep has, from what it reported. */
+const sweepEnd = (offset: number, c: ComponentContent) => (c.next ? Number(c.next.offset) || 0 : offset + (Array.isArray(c.cases) ? c.cases.length : 0));
+const sweepTotal = (offset: number, content: unknown) => {
+  const c = (content ?? {}) as ComponentContent;
+  return c.incomplete ? undefined : sweepEnd(offset, c) + (Number(c.next?.remaining) || 0);
+};
+
+type ComponentContent = { offset?: unknown; cases?: unknown[]; next?: { offset?: unknown; remaining?: unknown }; name?: unknown; findings?: unknown[]; omittedFindings?: unknown; runtimeErrors?: unknown[]; omittedRuntimeErrors?: unknown; incomplete?: unknown; unverifiedContrast?: unknown };
 
 /**
  * One component's checks as the result card lists them, over every window of its cases (in order): problems found
@@ -608,7 +618,10 @@ export function componentCheck(windows: Array<{ ok: boolean; content: unknown }>
   const problems = contents.reduce((n, c, i) => n + (windows[i].ok ? (c.findings?.length ?? 0) + (Number(c.omittedFindings) || 0) + (c.runtimeErrors?.length ?? 0) + (Number(c.omittedRuntimeErrors) || 0) : 0), 0);
   if (problems) return { status: 'issue', text: `${name} has ${plural(problems, 'problem')} in its variants or with long or empty content.` };
   if (!windows.some((w) => w.ok)) return { status: 'unverified', text: `Couldn't check ${named ?? 'a component'} in its variants and with long and empty content.` };
-  if (windows.some((w) => !w.ok) || contents.some((c) => c.incomplete) || contents.at(-1)?.next) return { status: 'unverified', text: `Only part of ${name} could be checked in its variants and with long and empty content.` };
+  // Every case from the first to the last measured: no window failed or stopped short, none missing between them.
+  let covered = 0;
+  for (const [i, c] of contents.entries()) covered = windows[i].ok && (Number(c.offset) || 0) <= covered ? Math.max(covered, sweepEnd(Number(c.offset) || 0, c)) : -1;
+  if (covered < 0 || windows.some((w) => !w.ok) || contents.some((c) => c.incomplete) || contents.at(-1)?.next) return { status: 'unverified', text: `Only part of ${name} could be checked in its variants and with long and empty content.` };
   const unverified = contents.reduce((n, c) => n + (Number(c.unverifiedContrast) || 0), 0);
   if (unverified) return { status: 'unverified', text: `${name} has no layout problems in its variants or with long and empty content, but the contrast of ${plural(unverified, 'text')} over pictures or effects could not be measured.` };
   return { status: 'pass', text: `${name} has no layout or readability problems in its variants or with long and empty content.` };

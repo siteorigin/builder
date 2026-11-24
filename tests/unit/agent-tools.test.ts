@@ -2659,8 +2659,15 @@ describe('inspect_component (#362)', () => {
     log.recordComponent('card', 0, true, { name: 'Card', findings: [{}, {}], omittedFindings: 1, next: { offset: 8, remaining: 1 } });
     log.recordComponent('card', 8, true, { name: 'Card' });
     log.recordComponent('hero', 0, true, { name: 'Hero', incomplete: true });
-    log.recordComponent('quote', 0, true, { name: 'Quote', next: { offset: 8, remaining: 1 } });
-    log.recordComponent('quote', 8, true, { name: 'Quote' });
+    log.recordComponent('quote', 0, true, { name: 'Quote', cases: Array(8).fill('c'), next: { offset: 8, remaining: 1 } });
+    log.recordComponent('quote', 8, true, { name: 'Quote', offset: 8, cases: ['c'] });
+    // A window missing between two clean ones: not a pass.
+    log.recordComponent('gap', 0, true, { name: 'Gap', cases: Array(8).fill('c'), next: { offset: 8, remaining: 9 } });
+    log.recordComponent('gap', 16, true, { name: 'Gap', offset: 16, cases: ['c'] });
+    // Rechecked whole after a variant was removed: the old last window goes.
+    log.recordComponent('slim', 0, true, { name: 'Slim', cases: Array(8).fill('c'), next: { offset: 8, remaining: 1 } });
+    log.recordComponent('slim', 8, true, { name: 'Slim', offset: 8, cases: ['c'], findings: [{}] });
+    log.recordComponent('slim', 0, true, { name: 'Slim', cases: Array(8).fill('c') });
     log.recordComponent('steps', 0, true, { name: 'Steps', next: { offset: 8, remaining: 2 } });
     log.recordComponent('photo', 0, true, { name: 'Photo', unverifiedContrast: 2 });
     log.recordComponent('?x', 0, false, { error: 'VALIDATION_FAILED' });
@@ -2671,6 +2678,8 @@ describe('inspect_component (#362)', () => {
       { status: 'issue', text: 'Card has 3 problems in its variants or with long or empty content.' },
       { status: 'unverified', text: 'Only part of Hero could be checked in its variants and with long and empty content.' },
       { status: 'pass', text: 'Quote has no layout or readability problems in its variants or with long and empty content.' },
+      { status: 'unverified', text: 'Only part of Gap could be checked in its variants and with long and empty content.' },
+      { status: 'pass', text: 'Slim has no layout or readability problems in its variants or with long and empty content.' },
       // Cases left to measure: not a pass yet.
       { status: 'unverified', text: 'Only part of Steps could be checked in its variants and with long and empty content.' },
       { status: 'unverified', text: 'Photo has no layout problems in its variants or with long and empty content, but the contrast of 2 texts over pictures or effects could not be measured.' },
@@ -2679,11 +2688,12 @@ describe('inspect_component (#362)', () => {
     ]);
     // An edit of one page leaves them, unless the sample was a placement on it; one that reaches every page (a
     // component's design) does not.
-    log.recordComponent('banner', 4, true, { name: 'Banner', offset: 4, placement: { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' } });
+    log.recordComponent('banner', 0, true, { name: 'Banner', cases: ['c'], placement: { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' } });
     log.invalidate(new Set(['pg_b']));
     expect(log.checks(state).at(-1)).toEqual({ status: 'pass', text: 'Banner has no layout or readability problems in its variants or with long and empty content.' });
     log.invalidate(new Set(['pg_a']));
     expect(log.checks(state)[2].status).toBe('pass');
+    expect(log.checks(state)[4].status).toBe('pass');
     expect(log.checks(state).at(-1)?.text).toMatch(/, before later changes\.$/);
     log.invalidate('all');
     expect(log.checks(state)[2]).toEqual({ status: 'unverified', text: 'Quote has no layout or readability problems in its variants or with long and empty content, before later changes.' });

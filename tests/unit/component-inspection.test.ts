@@ -141,7 +141,7 @@ describe('planning the cases (#362)', () => {
     const ranked = planComponentInspection(target(only, { values: { heading: '#1 in the region' } }));
     expect(String(byLabel(ranked, 'long text').props.heading)).toMatch(/^[A-Za-z]{60}/);
     only.properties.anchor = { type: 'string', label: 'Jump to', default: '#contact' } as never;
-    expect(byLabel(planComponentInspection(target(only, { values: { heading: 'Hi', anchor: '#contact' } })), 'long text').props.anchor).toBe('#contact');
+    expect(byLabel(planComponentInspection(target(only, { values: { heading: 'Hi', anchor: '#café' } })), 'long text').props.anchor).toBe('#café');
   });
 
   it('tries one and five items within each list’s limits, with content enough to show, never in a list that fills itself', () => {
