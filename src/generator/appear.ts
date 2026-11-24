@@ -18,18 +18,20 @@ const STEP_MS = 90;
 /**
  * The rules, appended to site.css. Each one applies only to an element the observer has armed, and only on a screen
  * whose visitor has not asked for reduced motion, so in print and with reduced motion nothing here matches at all.
- * Waiting holds the fade at its start (an animation, so no rule of the design can show it early) without moving the
- * box the observer watches. Lift and scale animate `transform`, which the editor's own shift, scale and turn styles
- * (`translate`, `scale`, `rotate`) never use, so a moved card lands where it was placed. Keyboard focus inside shows
- * an element at once.
+ * Waiting holds the element transparent with a paused animation of its own (an animation, so no rule of the design
+ * can show it early), without moving the box the observer watches; coming in starts the entrance afresh, after its
+ * stagger delay. (Delaying the waiting animation itself would send it back to before its start, which ends it.) Lift
+ * and scale animate `transform`, which the editor's own shift, scale and turn styles (`translate`, `scale`, `rotate`)
+ * never use, so a moved card lands where it was placed. Keyboard focus inside shows an element at once.
  */
 export const APPEAR_CSS = `/* Entrances (runtime/${APPEAR_FILE}): only what that script arms, only on screens and without reduced motion. */
+@keyframes so-appear-wait { from, to { opacity: 0; } }
 @keyframes so-appear-fade { from { opacity: 0; } }
 @keyframes so-appear-lift { from { transform: translateY(1.25rem); } }
 @keyframes so-appear-scale { from { transform: scale(0.96); } }
 @media screen and (prefers-reduced-motion: no-preference) {
-  [data-appear][data-appear-state]:not(:focus-within) { animation: so-appear-fade 0.6s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
-  [data-appear][data-appear-state="waiting"]:not(:focus-within) { animation-play-state: paused; }
+  [data-appear][data-appear-state="waiting"]:not(:focus-within) { animation: so-appear-wait 1s paused both; }
+  [data-appear][data-appear-state="running"]:not(:focus-within) { animation: so-appear-fade 0.6s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
   [data-appear="lift"][data-appear-state="running"]:not(:focus-within) { animation-name: so-appear-fade, so-appear-lift; }
   [data-appear="scale-subtle"][data-appear-state="running"]:not(:focus-within) { animation-name: so-appear-fade, so-appear-scale; }
 ${Array.from({ length: MAX_STEP }, (_, i) => `  [data-appear][data-appear-state="running"][data-appear-step="${i + 1}"] { animation-delay: ${(i + 1) * STEP_MS}ms; }`).join('\n')}
@@ -113,6 +115,7 @@ export function observeAppear() {
 		for (const el of armed) if (!el.isConnected) (io.unobserve(el), clear(el));
 		arm(found);
 	});
+	// An entrance is over when it ends, or when it stops early (focus moved in, the element was hidden).
 	const done = (e) => {
 		if (e.animationName === 'so-appear-fade' && e.target.getAttribute?.('data-appear-state') === 'running') clear(e.target);
 	};

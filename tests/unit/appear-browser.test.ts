@@ -191,6 +191,11 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
       expect(now.slice(1).every((c) => parseFloat(c.opacity) < 0.1)).toBe(true);
       // The lift moves `transform`; the card's own shift stays as designed throughout.
       expect(now.every((c) => c.translate === '0px 6px')).toBe(true);
+      // Past every delay, each card is still on its way in, none cut short.
+      await page.waitForTimeout(600);
+      const later = await Promise.all(cards.map((c) => read(page, c)));
+      expect(later.map((c) => c.state)).toEqual(cards.map(() => 'running'));
+      expect(later.every((c) => c.transform !== 'none' && parseFloat(c.opacity) < 1)).toBe(true);
     } finally {
       await close();
     }
