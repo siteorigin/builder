@@ -46,6 +46,7 @@ import { applyOps, applyWith, commitOps, getState, setState, toast, useStore, ty
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
+import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, definitionView, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
@@ -467,6 +468,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   // Which declared part of a code component the Style section edits.
   const [codePart, setCodePart] = useState('root');
   const reveal = useFieldReveal(selection);
+  const styleItems = useStyleCopyItems(selection);
   const def = state.components[node.definitionId];
   if (!def) return null;
   const title = node.name ?? def.name;
@@ -509,6 +511,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique }] : []),
     ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
     ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
+    ...(styleItems.length ? [...(def.kind === 'managed' || canMakeUnique ? [{ separator: true }] : []), ...styleItems] : []),
     ...(partIds.length ? [{ separator: true }, { heading: 'Select a part' }, ...partIds.map((p) => ({ label: def.parts[p].label, onSelect: () => selectPart(p) }))] : []),
     ...(!shell
       ? [
@@ -735,6 +738,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
  */
 function PartInspector({ state, selection, tokens, everywhere }: { state: ProjectState; selection: ElementRef; tokens: Tokens; everywhere?: ComponentDefinition }) {
   const scope = useStore((s) => s.styleScope);
+  const styleItems = useStyleCopyItems(selection);
   const devUrl = useDevUrl();
   const r = resolveRef(state, selection);
   const def = r.def!;
@@ -834,7 +838,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
         kind={parentLink}
         tone={everywhere ? 'definition' : owner.kind === 'shell' ? 'shared' : 'local'}
         icon={kind.icon}
-        actions={everywhere ? <DoneButton /> : <SelectionActions title={title} selection={selection} items={[{ label: `Select ${parentName}`, icon: <Component />, shortcut: 'Esc', onSelect: () => selectAndFocus(parent) }]} />}
+        actions={everywhere ? <DoneButton /> : <SelectionActions title={title} selection={selection} items={[{ label: `Select ${parentName}`, icon: <Component />, shortcut: 'Esc', onSelect: () => selectAndFocus(parent) }, ...(styleItems.length ? [{ separator: true }, ...styleItems] : [])]} />}
       >
         {everywhere ? <EverywhereScope state={state} def={everywhere} /> : <OwnerScope owner={owner} state={state} />}
         {listSchema && !nested && (
@@ -950,14 +954,19 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
   const unlinked = node.kind === 'link' && unlinkedAt(state, owner, node.id).some((b) => !b.defNodeId);
   // A button with an anchor may be where another link goes: removing it would take that target away.
   const removable = !!t && owner.kind !== 'shell' && !node.anchor;
-  const items: MenuItem[] =
-    t && owner.kind !== 'shell'
+  const styleItems = useStyleCopyItems(selection);
+  const structural = !!t && owner.kind !== 'shell';
+  const items: MenuItem[] = [
+    ...(t && structural && node.kind === 'element' ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: t } }) }, { separator: true }] : []),
+    ...styleItems,
+    ...(structural
       ? [
-          ...(node.kind === 'element' ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: t } }) }, { separator: true }] : []),
+          ...(styleItems.length ? [{ separator: true }] : []),
           { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
           { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
         ]
-      : [];
+      : [])
+  ];
   return (
     <>
       <Header title={title} kind={title.toLowerCase().startsWith(kind.name.toLowerCase()) ? 'Basic element' : `${kind.name} · basic element`} tone={owner.kind === 'shell' ? 'shared' : owner.kind === 'component' ? 'definition' : 'local'} icon={kind.icon} actions={<SelectionActions title={title} selection={selection} items={items} />}>

@@ -8,12 +8,13 @@ import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText, whereOf } from './lib/held';
 import type { RevealedItem } from './lib/reveal';
+import type { StyleCopy } from './lib/style-copy';
 
 export const api = window.builder;
 
 export type LeftTab = 'pages' | 'layers' | 'insert' | 'assets';
 export type RightTab = 'inspect' | 'chat' | 'styles';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] };
+export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'paste-style'; ref: ElementRef; opening: string };
 
 export interface Rect {
   x: number;
@@ -89,7 +90,7 @@ export interface UndoTarget {
   revision: number;
 }
 
-interface State {
+export interface State {
   screen: 'welcome' | 'editor';
   /** Theme packs found at startup but refused, and where a person installs packs. */
   packs: { refused: PackRefusal[]; userDir: string };
@@ -149,6 +150,8 @@ interface State {
   aiOutcome: AiOutcome | null;
   /** How library images are listed, in Assets and in every image picker (see setAssetSort). */
   assetSort: AssetSort;
+  /** What Copy style took, for Paste style in the same opening of the project (`opening`). Never saved. */
+  styleCopy: (StyleCopy & { opening: string }) | null;
   setState: (p: Partial<State>) => void;
 }
 
@@ -205,6 +208,7 @@ export const useStore = create<State>((set) => ({
   heldEdits: [],
   aiOutcome: null,
   assetSort: savedAssetSort(),
+  styleCopy: null,
   setState: (p) => set(p)
 }));
 
