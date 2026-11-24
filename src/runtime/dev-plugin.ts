@@ -107,7 +107,7 @@ type PreviewServer = {
  * Read as Vite reads the address (decoded, with repeated slashes and dot segments resolved), so no other spelling of
  * it gets past.
  */
-export function previewModuleKey(url: string | undefined): string | null {
+export function previewModuleKey(url: string | undefined, dirs: string[] = []): string | null {
   let path = (url ?? '').split(/[?#]/)[0];
   try {
     path = decodeURIComponent(path);
@@ -115,8 +115,11 @@ export function previewModuleKey(url: string | undefined): string | null {
     // Vite cannot read it either.
   }
   path = posix.normalize(path.replace(/\\/g, '/'));
-  // A file of a preview's folder however it is reached (from the root, or wrapped as /@id/ or /@fs/ with its whole path).
-  const m = /\/\.siteorigin\/cache\/dev\/isolated\/([^/]+)\//i.exec(path) ?? /^\/+@id\/(?:__x00__|\0)?virtual:siteorigin-component-preview\/([^/]+)\.js$/.exec(path);
+  // A file of a preview's folder however it is reached: from the root, or by its whole path wrapped as /@id/ or /@fs/.
+  const inner = path.replace(/^\/@(?:id|fs)\/(?:__x00__)?/, '/').replace(/^\/([A-Za-z]:\/)/, '$1');
+  const wrapped = inner !== path ? isolatedPreviewPath(dirs, inner, ISOLATED_DIR, PREVIEW_KEY) : null;
+  if (wrapped) return wrapped.key;
+  const m = /^\/\.siteorigin\/cache\/dev\/isolated\/([^/]+)\//i.exec(path) ?? /^\/@id\/(?:__x00__|\0)?virtual:siteorigin-component-preview\/([^/]+)\.js$/.exec(path);
   return m && PREVIEW_KEY.test(m[1]) ? m[1] : null;
 }
 
@@ -201,7 +204,7 @@ export function devPlugin(dir: string) {
       server.middlewares.use((req, res, next) => {
         if (req.method !== 'GET' && req.method !== 'HEAD') return next();
         // A module of a released preview is gone, even where Vite still holds what it made of it.
-        const moduleKey = previewModuleKey(req.url);
+        const moduleKey = previewModuleKey(req.url, names);
         if (moduleKey) {
           if (previewFolder(moduleKey)) return next();
           res.statusCode = 404;
@@ -246,13 +249,16 @@ export function devPlugin(dir: string) {
         return own && statSync(own).isFile() ? viteId(own) : null;
       };
       const path = q < 0 ? id : id.slice(0, q);
-      const exact = ownCopy(path.startsWith('./') || path.startsWith('../') ? posix.normalize(posix.join(posix.dirname(from.rel), path)) : projectSrcPath(names, path));
+      // A file read as text, an address or a worker is checked against what the server may read before any plugin
+      // serves it, which the editor's cache never is: those come from the project.
+      const fromCopy = !/[?&](?:raw|url|inline|worker|sharedworker)\b/.test(query);
+      const exact = fromCopy ? ownCopy(path.startsWith('./') || path.startsWith('../') ? posix.normalize(posix.join(posix.dirname(from.rel), path)) : projectSrcPath(names, path)) : null;
       if (exact) return exact + query;
       const resolve = (this as { resolve?: Resolve } | undefined)?.resolve;
       if (typeof resolve !== 'function') return null;
       // As Vite finds it from where it is imported (a path without its extension, a folder's index): kept when that
       // is a file of this preview, or of the project that the preview has its own copy of.
-      const here = await resolve.call(this, id, importer, { ...options, skipSelf: true });
+      const here = fromCopy ? await resolve.call(this, id, importer, { ...options, skipSelf: true }) : null;
       if (here) {
         const found = here.id.split('?')[0];
         const inside = isolatedPreviewPath(names, found, ISOLATED_DIR, PREVIEW_KEY);

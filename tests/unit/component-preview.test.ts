@@ -369,6 +369,9 @@ describe('serving an isolated preview', () => {
     expect(await ask(`/.siteorigin/cache/dev/isolated/${key}/${PREVIEW_MODULE}?t=1`)).toBe(404);
     expect(await ask(`/@id/virtual:siteorigin-component-preview/${key}.js`)).toBe(404);
     expect(await ask(`/@id/__x00__virtual:siteorigin-component-preview/${key}.js`)).toBe(404);
+    // A path that only looks like a preview's, outside this project, is not one.
+    expect(await ask(`/@fs/elsewhere/.siteorigin/cache/dev/isolated/${key}/x.js`)).toBe('next');
+    expect(await ask(`/docs/.siteorigin/cache/dev/isolated/${key}/x`)).toBe('next');
     // However the address is spelled.
     for (const spelling of [`/.siteorigin/cache/dev/isolated/%${key.charCodeAt(0).toString(16)}${key.slice(1)}/x.js`, `//.siteorigin//cache/dev/isolated/${key}/x.js`, `/.siteorigin/cache/dev/./isolated/${key}/x.js`, `/src/../.siteorigin/cache/dev/isolated/${key}/x.js`, `/@id/${at(key, PREVIEW_MODULE)}`, `/@fs${at(key, PREVIEW_MODULE)}?import`])
       expect(await ask(spelling), spelling).toBe(404);
@@ -388,9 +391,10 @@ describe('serving an isolated preview', () => {
     const vite = {
       resolve: async (id: string, from?: string) => {
         asked.push([id, from]);
-        const base = id.startsWith('.') ? posix.join(posix.dirname(from!), id) : id;
+        const [bare, query = ''] = id.split('?');
+        const base = bare.startsWith('.') ? posix.join(posix.dirname(from!), bare) : bare;
         if (!base.startsWith('/')) return { id: `/node_modules/${id}/index.js` };
-        for (const ext of ['', '.js', '.svelte']) if (existsSync(base + ext) && statSync(base + ext).isFile()) return { id: base + ext };
+        for (const ext of ['', '.js', '.svelte']) if (existsSync(base + ext) && statSync(base + ext).isFile()) return { id: base + ext + (query && `?${query}`) };
         return null;
       }
     };
@@ -410,6 +414,8 @@ describe('serving an isolated preview', () => {
     writeFileSync(join(dir, 'src/lib/siteorigin/custom/helper.js'), 'export const x = 1;');
     expect(await resolve('./helper', note)).toEqual({ id: `${dir}/src/lib/siteorigin/custom/helper.js` });
     expect(asked.at(-1)).toEqual(['./helper', `${dir}/src/lib/siteorigin/custom/Note.svelte`]);
+    // Read as text or as an address, it comes from the project: the server may never read the editor's cache that way.
+    expect(await resolve('../runtime/icons.js?raw', note)).toEqual({ id: `${dir}/src/lib/siteorigin/runtime/icons.js?raw` });
     // A package is the same from anywhere.
     expect(await resolve('svelte', importer)).toEqual({ id: '/node_modules/svelte/index.js' });
     // Nothing escapes into the rest of the editor's cache: an import that would is resolved from the project instead.
