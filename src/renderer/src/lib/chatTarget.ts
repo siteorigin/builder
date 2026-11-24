@@ -6,7 +6,7 @@
  */
 import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { inDefinition, placementsOn, refExists, refLabel } from './model';
+import { inDefinition, placementsOn, refExists, refLabel, studioRef } from './model';
 import { NEW_STUDIO, type DefinitionMode } from './studio';
 
 export interface ComposerScope {
@@ -137,7 +137,8 @@ export function retryView(
     return {
       pageId,
       definitionMode: { definitionId: def.id, returnPageId: now.definitionMode?.returnPageId ?? now.pageId ?? pageId, ...(studio ? { studio } : {}) },
-      selection: selOk ? ctx.selection : null,
+      // The studio shows the design's own items only: one of a placement's is the design's node, in every item.
+      selection: selOk ? (studio ? studioRef(state, def.id, ctx.selection!) : ctx.selection) : null,
       scope,
       missing: ctx.selection && !selOk ? (ctx.selectionLabel ?? 'The selected element') : null
     };

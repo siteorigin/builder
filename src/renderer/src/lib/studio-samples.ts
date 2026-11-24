@@ -4,7 +4,9 @@
  * long copy or empty fields without touching its starting content or any placement.
  */
 import type { ComponentDefinition, ListItem, ListProp, ObjectProp, PropSchema, ScalarPropSchema } from '@shared/types';
-import { toRichText, type RichBlock, type RichSpan, type RichText } from '@shared/richtext';
+import { isListBlock, toRichText, type RichBlock, type RichSpan, type RichText } from '@shared/richtext';
+import { MAX_RICH_BLOCKS, MAX_RICH_CHARS } from '@engine/values';
+import { namesFormFields } from '@catalogue/foundation/form';
 
 /** What the studio fills the component with: its starting content, long copy, or nothing in the fields that can be empty. */
 export type StudioSample = 'defaults' | 'long' | 'empty';
@@ -33,13 +35,18 @@ function longerSpans(spans: RichSpan[]): RichSpan[] {
   return [...spans.map((s) => ({ ...s })), { text: ` ${FILLER}` }];
 }
 
-function longerRich(value: unknown): RichText {
+/** The characters rich text holds, counted as the normalizer counts them against its limit. */
+const richChars = (blocks: RichText) => blocks.reduce((n, b) => n + (isListBlock(b) ? b.items.flat() : b.spans).reduce((m, sp) => m + sp.text.length, 0), 0);
+
+/** Rich text made longer, or undefined (its starting value kept) when the longer form would pass rich text's limits. */
+function longerRich(value: unknown): RichText | undefined {
   // Stored as the canonical blocks, or as a hand-edited document may still hold it (plain strings).
   const blocks = toRichText(value);
   if (!blocks.length) return [{ type: 'p', spans: [{ text: FILLER }] }];
   const out = blocks.map((b): RichBlock => ('spans' in b ? { ...b, spans: longerSpans(b.spans) } : { ...b, items: b.items.map(longerSpans) }));
   // One more paragraph after the last text block, so a design sized for one paragraph shows how it grows.
-  return [...out, { type: 'p', spans: [{ text: FILLER }] }];
+  const longer: RichText = [...out, { type: 'p', spans: [{ text: FILLER }] }];
+  return longer.length > MAX_RICH_BLOCKS || richChars(longer) > MAX_RICH_CHARS ? undefined : longer;
 }
 
 /** A scalar's long sample, or undefined to keep its starting value (numbers, choices, links, images and icons). */
@@ -59,16 +66,21 @@ function emptyScalar(schema: ScalarPropSchema): unknown {
   return undefined;
 }
 
-function fieldsOf(fields: Record<string, ScalarPropSchema>, values: Record<string, unknown>, make: (schema: ScalarPropSchema, value: unknown) => unknown): Record<string, unknown> {
+function fieldsOf(fields: Record<string, ScalarPropSchema>, values: Record<string, unknown>, make: (schema: ScalarPropSchema, value: unknown) => unknown, keep?: string): Record<string, unknown> {
   const out: Record<string, unknown> = { ...values };
   for (const [name, schema] of Object.entries(fields)) {
+    if (name === keep) continue;
     const v = make(schema, Object.hasOwn(values, name) ? values[name] : schema.default);
     if (v !== undefined) out[name] = v;
   }
   return out;
 }
 
-function longList(schema: ListProp): ListItem[] {
+/**
+ * A list made fuller, its items' text longer. `key` names a field that identifies an item (a form field's name): the
+ * starting items keep theirs, and the added ones are left without, for the preview to give them names of their own.
+ */
+function longList(schema: ListProp, key?: string): ListItem[] {
   const base = Array.isArray(schema.default) ? schema.default : [];
   const max = Math.min(schema.max ?? LONG_ITEMS, LONG_ITEMS);
   const count = Math.max(base.length, Math.min(max, Math.max(base.length * 2, 3)));
@@ -77,7 +89,9 @@ function longList(schema: ListProp): ListItem[] {
     const from = base.length ? base[i % base.length] : ({ id: '' } as ListItem);
     // Items repeated past the starting ones get IDs of their own, so each is its own item on the page.
     const id = i < base.length ? from.id : `${from.id || 'item'}-sample-${i}`;
-    items.push({ ...fieldsOf(schema.fields, from, longScalar), id } as ListItem);
+    const item = { ...fieldsOf(schema.fields, from, longScalar, key), id } as ListItem;
+    if (key && i >= base.length) item[key] = '';
+    items.push(item);
   }
   return items;
 }
@@ -91,12 +105,15 @@ function longList(schema: ListProp): ListItem[] {
 export function studioSampleProps(def: ComponentDefinition, sample: StudioSample): Record<string, unknown> | undefined {
   if (sample === 'defaults') return undefined;
   const out: Record<string, unknown> = {};
+  // A form's fields are sent under their names: those stay, so no two fields share one.
+  const formKey = namesFormFields(def) ? 'name' : undefined;
   for (const [name, schema] of Object.entries(def.properties) as Array<[string, PropSchema]>) {
     let v: unknown;
     if (schema.type === 'list') {
       if (schema.feed) continue;
+      const key = name === 'fields' ? formKey : undefined;
       // Empty keeps the fewest items the list allows, each with its fields cleared.
-      v = sample === 'long' ? longList(schema) : (Array.isArray(schema.default) ? schema.default : []).slice(0, schema.min ?? 0).map((it) => ({ ...fieldsOf(schema.fields, it, (s) => emptyScalar(s)), id: it.id }));
+      v = sample === 'long' ? longList(schema, key) : (Array.isArray(schema.default) ? schema.default : []).slice(0, schema.min ?? 0).map((it) => ({ ...fieldsOf(schema.fields, it, (s) => emptyScalar(s), key), id: it.id }));
     } else if (schema.type === 'object') {
       const values = (schema as ObjectProp).default ?? {};
       v = fieldsOf(schema.fields, values, sample === 'long' ? longScalar : (s) => emptyScalar(s));

@@ -18,6 +18,27 @@ import { iconsJs } from './runtime-files';
 
 export { PREVIEW_NODE_ID, previewCtx };
 
+/**
+ * The design's starting values, its lists' items under their own IDs (see generateComponentPreview). An item a
+ * hand-edited document left without an ID, or with one another item has, gets one of the preview's own, the same in
+ * every preview of it, so each still renders as its own item.
+ */
+function startingProps(def: ComponentDefinition): Record<string, unknown> {
+  const props = defaultProps(def);
+  for (const [name, schema] of Object.entries(def.properties)) {
+    if (schema.type !== 'list' || !Array.isArray(props[name])) continue;
+    const seen = new Set<string>();
+    props[name] = (props[name] as unknown[]).map((it, i) => {
+      const item = (it && typeof it === 'object' ? it : {}) as ListItem;
+      let id = typeof item.id === 'string' && item.id && !seen.has(item.id) ? item.id : '';
+      for (let n = i; !id || seen.has(id); n++) id = `preview-item-${n}`;
+      seen.add(id);
+      return id === item.id ? item : { ...item, id };
+    });
+  }
+  return props;
+}
+
 export type ComponentPreview = { files: FileMap; definitionId: string; name: string } | { error: string };
 
 /**
@@ -61,7 +82,7 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
   // Made as inserting it on a page makes a placement, but with the design's own list items, under their own IDs: the
   // same in every preview of it, so an item picked in Component Studio is still there after the next edit. Then the
   // sample values checked and stored as an edit stores them, and the fields of a new form given keys of their own.
-  const node: InstanceNode = { id: PREVIEW_NODE_ID, kind: 'instance', definitionId: def.id, props: defaultProps(def), ...(Object.keys(variants).length ? { variants } : {}) };
+  const node: InstanceNode = { id: PREVIEW_NODE_ID, kind: 'instance', definitionId: def.id, props: startingProps(def), ...(Object.keys(variants).length ? { variants } : {}) };
   for (const [name, value] of Object.entries(spec.props ?? {})) {
     const schema = Object.hasOwn(def.properties, name) ? def.properties[name] : undefined;
     if (!schema) return { error: `"${def.name}" has no property "${name}".` };

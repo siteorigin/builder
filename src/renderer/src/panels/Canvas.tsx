@@ -242,7 +242,11 @@ export function Canvas() {
    * frame was given, and on which server; `studioLoads` numbers the requests, so only the latest is shown, and releases
    * every other preview's files.
    */
-  const studioAt = useRef<{ url: string; path: string; revision: number | undefined } | null>(null);
+  const studioAt = useRef<{ url: string; path: string; revision: number | undefined; definitionId: string } | null>(null);
+  /** What the preview in the frame (or on its way there) was made from, so the same request is never made twice. */
+  const studioFrom = useRef<string | null>(null);
+  /** The studio has stopped the frame taking picks until its first preview of the component arrives. */
+  const studioPending = useRef(false);
   const studioLoads = useRef<StudioLoads | null>(null);
   studioLoads.current ??= new StudioLoads((key) => void api.project.releaseComponentPreview(key).catch(() => undefined));
   const [studioRetry, setStudioRetry] = useState(0);
@@ -480,13 +484,20 @@ export function Canvas() {
   useEffect(() => {
     const loads = studioLoads.current!;
     if (!studioRequest || !url || editing) return void loads.supersede();
-    const request = loads.begin();
-    const first = !showsStudio();
-    // Until the first preview is there, the page still showing is not what is being edited: it takes no picks.
-    if (first) setState({ frameReady: false });
-    const server = url;
     const revision = getState().snapshot?.revision;
-    const spec: unknown = JSON.parse(studioRequest);
+    // The preview shown already (an inline edit cancelled, say, changes nothing) is kept, with what the author opened in it.
+    const from = JSON.stringify([studioRequest, revision, url, workspaceKey, studioRetry]);
+    if (from === studioFrom.current && showsStudio()) return;
+    const request = loads.begin();
+    const spec = JSON.parse(studioRequest) as { definitionId: string };
+    // Until the first preview of this component is there, what the frame shows (the page, or another component) is
+    // not what is being edited: it takes no picks.
+    const first = !showsStudio() || studioAt.current!.definitionId !== spec.definitionId;
+    if (first) {
+      studioPending.current = true;
+      setState({ frameReady: false });
+    }
+    const server = url;
     const failed = (message: string) => {
       if (!loads.latest(request)) return;
       setFrameError(message);
@@ -498,7 +509,8 @@ export function Canvas() {
           (prepared) => {
             if (!prepared.ok) return failed(prepared.message);
             if (!loads.prepared(request, prepared.key)) return;
-            studioAt.current = { url: server, path: prepared.path, revision };
+            studioAt.current = { url: server, path: prepared.path, revision, definitionId: prepared.definitionId };
+            studioFrom.current = from;
             setSession(newSessionId());
           },
           (e: unknown) => failed(`The component preview could not be prepared: ${e instanceof Error ? e.message : String(e)}`)
@@ -514,7 +526,11 @@ export function Canvas() {
   useEffect(() => {
     if (inStudio) return;
     studioLoads.current!.end();
-    if (!studioAt.current) return;
+    studioFrom.current = null;
+    // Left before the first preview arrived: the page it stopped taking picks is opened again.
+    const pending = studioPending.current;
+    studioPending.current = false;
+    if (!studioAt.current) return void (pending && setSession(newSessionId()));
     if (editing) {
       post('commitTextEdit');
       const t = setTimeout(() => endInlineEdit(), 3000);
@@ -548,6 +564,7 @@ export function Canvas() {
               markTimedOut(false);
               break;
             }
+            studioPending.current = false;
           }
           // A page loaded in full inside the same frame while previewing (a visitor's Back across documents) is
           // followed, so the editor and the frame agree on the page.
@@ -1188,8 +1205,10 @@ export function Canvas() {
   // the page on: back in Edit, it is shown there.
   useEffect(() => {
     const s = getState();
-    if (state && s.mode === 'edit' && needsStudio(state, s.definitionMode, s.pageId)) setState({ definitionMode: { ...s.definitionMode!, studio: NEW_STUDIO } });
-  }, [definitionMode, state, pageId, mode]);
+    // A request the AI is still working on can take a placement away and put it back (stopped, it is rolled back): the
+    // view follows the project once it settles.
+    if (state && s.mode === 'edit' && !s.snapshot?.aiBusy && needsStudio(state, s.definitionMode, s.pageId)) setState({ definitionMode: { ...s.definitionMode!, studio: NEW_STUDIO } });
+  }, [definitionMode, state, pageId, mode, snapshot?.aiBusy]);
   // A new component being edited starts without a remembered placement (declared first: it runs before the
   // effect below, which may set one).
   useEffect(() => {

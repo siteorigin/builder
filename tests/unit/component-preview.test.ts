@@ -71,7 +71,21 @@ describe('isolated component preview files', () => {
     const second = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
     // Component Studio keeps an item picked across edits only while the next preview names it the same way.
     expect(second).toBe(first);
-    for (const itemId of ids) expect(first).toContain(JSON.stringify(itemId).slice(1, -1));
+    for (const itemId of ids) expect(first).toContain(`{"id":${JSON.stringify(itemId)},`);
+  });
+
+  it('gives starting items a hand-edited document left without an ID, or sharing one, IDs of the preview’s own', () => {
+    const state = starter();
+    const id = installComponent(state, 'features.grid');
+    const def = state.components[id];
+    const [name, schema] = Object.entries(def.properties).find(([, s]) => s.type === 'list' && !s.feed && s.default.length >= 2)!;
+    const [a, b] = schema.default as Array<{ id: string }>;
+    // Two rows without IDs, then one that repeats the first's.
+    def.properties[name] = { ...schema, default: [{ ...a, id: undefined }, { ...b, id: undefined }, { ...a }, { ...b }] } as typeof schema;
+    const first = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
+    expect(preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)).toBe(first);
+    const shown = [...first.matchAll(/\{"id":"([^"]+)",/g)].map((m) => m[1]);
+    expect(shown).toEqual(['preview-item-0', 'preview-item-1', a.id, b.id]);
   });
 
   it('renders each variant choice, and an axis left out keeps its default', () => {

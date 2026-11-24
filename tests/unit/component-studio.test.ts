@@ -4,7 +4,7 @@ import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { generateComponentPreview } from '@generator/preview';
 import { PREVIEW_MODULE } from '@shared/component-preview';
-import { descOf, listPropFor, needsStudio, refExists, studioCtx, studioDescOf, studioDesignCtx, studioPick, designCtx, type BridgeDesc } from '../../src/renderer/src/lib/model';
+import { descOf, listPropFor, needsStudio, refExists, studioRef, studioCtx, studioDescOf, studioDesignCtx, studioPick, designCtx, type BridgeDesc } from '../../src/renderer/src/lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec, studioVariants } from '../../src/renderer/src/lib/studio';
 
 const starter = () => createStarterState('blank', 'Studio Test', false);
@@ -38,7 +38,8 @@ describe('Component Studio: the design in the isolated preview', () => {
     const out = generateComponentPreview(state, { definitionId: id });
     if ('error' in out) throw new Error(out.error);
     // The preview passes the design's context to its one instance; the design's own nodes carry it.
-    expect(out.files.get(PREVIEW_MODULE)).toContain(`__so={${JSON.stringify(studioCtx(id))}}`);
+    expect(studioCtx(id)).toBe(`preview:${id}|preview`);
+    expect(out.files.get(PREVIEW_MODULE)).toContain(`__so={${JSON.stringify(`preview:${id}|preview`)}}`);
     expect(studioDescOf(state, id, { owner: own(id), instancePath: [], nodeId: def.tree!.rootIds[0] })).toEqual({ ctx: studioCtx(id), node: def.tree!.rootIds[0], items: '' });
   });
 
@@ -47,7 +48,8 @@ describe('Component Studio: the design in the isolated preview', () => {
     for (const n of nodes) {
       const ref: ElementRef = { owner: own(id), instancePath: [], nodeId: n.id };
       const desc = studioDescOf(state, id, ref)!;
-      const picked = studioPick(state, id, [desc]);
+      // The bridge reports the chain innermost first: what is not the design's (a page's markup) is passed over.
+      const picked = studioPick(state, id, [{ ctx: `page:${state.site.homePageId}`, node: n.id, items: '' }, desc]);
       // A component placed in the design is picked whole, by its own root: the same node of the design.
       expect(picked?.nodeId).toBe(n.id);
       expect(picked?.owner).toEqual(own(id));
@@ -71,6 +73,16 @@ describe('Component Studio: the design in the isolated preview', () => {
     const sample = studioPick(state, id, [{ ...desc, items: `${itemId}-sample-3` }])!;
     expect(sample.itemPath).toBeUndefined();
     expect(sample.nodeId).toBe(repeated!.id);
+    // One a placement names is the placement's: the preview never shows it, even though the project has it.
+    const placed = makeInstance(def);
+    const placedId = ((placed.props[listPropFor(def, repeated!.id)!] as Array<{ id: string }>)[0]).id;
+    state.pages[state.site.homePageId].nodes[placed.id] = placed;
+    state.pages[state.site.homePageId].rootIds.push(placed.id);
+    const elsewhere: ElementRef = { owner: own(id), instancePath: [], nodeId: repeated!.id, itemPath: [placedId] };
+    expect(refExists(state, elsewhere)).toBe(true);
+    expect(studioPick(state, id, [studioDescOf(state, id, elsewhere)!])!.itemPath).toBeUndefined();
+    expect(studioRef(state, id, elsewhere).itemPath).toBeUndefined();
+    expect(studioRef(state, id, kept)).toBe(kept);
   });
 
   it('picks a component inside the design whole, from anything inside it, and outlines its parts through it', () => {
@@ -112,6 +124,10 @@ describe('Component Studio: when editing everywhere needs it', () => {
     page.nodes[placed.id] = placed;
     page.rootIds.push(placed.id);
     expect(needsStudio(state, { definitionId: id, returnPageId: home }, home)).toBe(false);
+    // Another page, which does not place it, while Home still does.
+    const other = { ...page, id: 'other', route: '/other/', title: 'Other', nodes: {}, rootIds: [] };
+    state.pages.other = other;
+    expect(needsStudio(state, { definitionId: id, returnPageId: home }, 'other')).toBe(true);
     // Already in the studio, not editing, no page, or a theme's original: nothing to do.
     expect(needsStudio(state, { definitionId: id, returnPageId: home, studio: NEW_STUDIO }, home)).toBe(false);
     expect(needsStudio(state, null, home)).toBe(false);
@@ -166,5 +182,18 @@ describe('Component Studio: the previews its frame is given', () => {
     expect(loads.prepared(d, 'keyd')).toBe(false);
     expect(release.mock.calls.at(-1)).toEqual(['keyd']);
     expect(loads.shows('keyc')).toBe(false);
+  });
+
+  it('lets go of a request made out of date with no new one, and keeps what the frame shows', () => {
+    const release = vi.fn();
+    const loads = new StudioLoads(release);
+    expect(loads.prepared(loads.begin(), 'shown')).toBe(true);
+    const pending = loads.begin();
+    // An inline edit opens: the request on its way is out of date, and the frame keeps its preview.
+    loads.supersede();
+    expect(loads.latest(pending)).toBe(false);
+    expect(loads.prepared(pending, 'late')).toBe(false);
+    expect(release.mock.calls).toEqual([['late']]);
+    expect(loads.shows('shown')).toBe(true);
   });
 });

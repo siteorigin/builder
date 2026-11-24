@@ -81,6 +81,7 @@ await sample.selectOption('empty');
 await eventually(async () => {
   const text = await frame.locator('body').innerText();
   assert.doesNotMatch(text, /longer sample line/, 'long copy is gone');
+  assert.ok(!text.includes(def.properties.heading.default), 'the starting heading is gone');
   assert.equal(await inStudio(`[data-so-node="${root}"]`).count(), 1, 'the component is still shown');
 }, 30000);
 await sample.selectOption('defaults');
@@ -122,7 +123,7 @@ if ((await styleHead.getAttribute('aria-expanded')) === 'false') await styleHead
 await win.locator('#dock-panel-inspect .style-row[data-prop="textAlign"]').first().locator('select').selectOption('center');
 const headingStyles = async () => JSON.stringify((await snapshot()).state.components[defId].tree.nodes[headingNode].styles ?? {});
 await eventually(async () => assert.match(await headingStyles(), /"textAlign":"center"/, 'the style is the design’s own'), 15000);
-await eventually(async () => assert.notEqual(await alignOf(), before, 'the preview shows the new style'), 30000);
+await eventually(async () => assert.equal(await alignOf(), 'center', 'the preview shows the new style'), 30000);
 // The part stays selected in the new preview, and nothing but the design changed.
 await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'the part is still outlined'), 15000);
 assert.equal(await selectedHeading.count(), 1, 'and still selected');
@@ -136,7 +137,7 @@ await eventually(async () => assert.equal(await alignOf(), before, 'and the prev
 await win.locator('.canvas').focus();
 await win.keyboard.press(`${MOD}+Shift+z`);
 await eventually(async () => assert.match(await headingStyles(), /"textAlign":"center"/, 'Redo brings it back'), 15000);
-await eventually(async () => assert.notEqual(await alignOf(), before, 'and the preview follows'), 30000);
+await eventually(async () => assert.equal(await alignOf(), 'center', 'and the preview follows'), 30000);
 
 step('Done editing goes back to the page');
 await win.locator('.mode-band-done').click();

@@ -115,8 +115,8 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string, s
   return out;
 }
 
-const MAX_RICH_CHARS = 20000;
-const MAX_RICH_BLOCKS = 500;
+export const MAX_RICH_CHARS = 20000;
+export const MAX_RICH_BLOCKS = 500;
 /** A collection entry's text is a whole article, so it has room for one: a long read with its pictures. */
 export const MAX_ENTRY_CHARS = 100000;
 export const MAX_ENTRY_BLOCKS = 2000;

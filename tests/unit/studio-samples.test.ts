@@ -73,6 +73,32 @@ describe('Component Studio sample content', () => {
     expect(studioSampleProps(def, 'long')).toBeUndefined();
   });
 
+  it('keeps rich text at its starting value when a longer one would pass the limit', () => {
+    const long = 'x'.repeat(19990);
+    const def: ComponentDefinition = {
+      ...catalogueComponent(starter().site.themeId, 'content.media')!,
+      properties: { body: { type: 'richtext', label: 'Body', default: [{ type: 'p', spans: [{ text: long }] }] }, title: { type: 'string', label: 'Title', default: 'T' } }
+    };
+    const props = studioSampleProps(def, 'long')!;
+    expect(props).not.toHaveProperty('body');
+    expect(props.title).toMatch(/^T /);
+  });
+
+  it('keeps a form’s field names, and leaves the fields it adds without, so no two share one', () => {
+    const state = starter();
+    const def = catalogueComponent(state.site.themeId, 'contact.form')!;
+    const starting = def.properties.fields.default as Array<{ id: string; name: string }>;
+    const fields = studioSampleProps(def, 'long')!.fields as Array<{ id: string; name: string; label: string }>;
+    expect(fields.length).toBeGreaterThan(starting.length);
+    expect(fields.slice(0, starting.length).map((f) => f.name)).toEqual(starting.map((f) => f.name));
+    expect(fields.slice(starting.length).every((f) => f.name === '')).toBe(true);
+    // The preview names the added fields after their labels, each its own.
+    const out = generateComponentPreview(state, { componentId: 'contact.form', props: { fields } });
+    if ('error' in out) throw new Error(out.error);
+    const empty = studioSampleProps(def, 'empty')!.fields as Array<{ name: string }> | undefined;
+    for (const f of empty ?? []) expect(starting.map((s) => s.name)).toContain(f.name);
+  });
+
   // Every component the theme offers can be studied with each sample: the preview accepts what the studio sends.
   for (const sample of ['long', 'empty'] as const) {
     it(`previews every theme component with ${sample} samples`, () => {

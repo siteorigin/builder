@@ -696,10 +696,28 @@ export function studioDesignCtx(state: ProjectState, definitionId: string, ref: 
 }
 
 /**
+ * One of the edited component's references as the studio's preview can show it: an item of a list is kept only when
+ * it is one of the design's own starting items, the only ones every preview shows under the same ID (sample content
+ * adds its own, and a placement's items are that placement's).
+ */
+export function studioRef(state: ProjectState, definitionId: string, ref: ElementRef): ElementRef {
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  if (itemId === undefined) return ref;
+  const def = own(state.components, definitionId);
+  const list = def ? listPropFor(def, ref.nodeId) : undefined;
+  const schema = def && list ? own(def.properties, list) : undefined;
+  const shown = schema?.type === 'list' && !schema.feed && (idsOf(schema.default) ?? []).includes(itemId) && refExists(state, ref);
+  if (shown) return ref;
+  const out = { ...ref };
+  delete out.itemPath;
+  return out;
+}
+
+/**
  * What a pick in the studio's preview selects, as definitionPick does on a page: the innermost of the component's own
  * nodes under the pointer, a component placed in the design picked whole, or null outside it (the code component's
- * own wrapper among it: a code component has no nodes to pick). An item of a list is kept only while the design
- * names it (sample content adds items of its own), so a pick never names something the project does not have.
+ * own wrapper among it: a code component has no nodes to pick). An item of a list is kept only when it is one of the
+ * design's own (see studioRef), so a pick never names an item the next preview may not show.
  */
 export function studioPick(state: ProjectState, definitionId: string, chain: BridgeDesc[]): ElementRef | null {
   const def = own(state.components, definitionId);
@@ -734,8 +752,7 @@ export function studioPick(state: ProjectState, definitionId: string, chain: Bri
     }
     const partId = partIdFor(def, hit.nodeId);
     if (partId) hit = { ...hit, partId };
-    if (hit.itemPath && !refExists(state, hit)) delete hit.itemPath;
-    return hit;
+    return studioRef(state, definitionId, hit);
   }
   return null;
 }
