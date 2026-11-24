@@ -332,7 +332,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       wideColumns: true,
       link: !!innerRoot && inner?.tree?.nodes[innerRoot]?.kind === 'link',
       tooMuch,
-      shownDisplay: () => (innerRoot && inner ? naturalDisplay(inner.tree!.nodes[innerRoot]) : null)
+      // What the stylesheet shows a placed component's root with: its own kind in this design (an instance: the browser's).
+      shownDisplay: () => naturalDisplay(src)
     });
     const overrides = { ...(src.overrides ?? {}) };
     delete overrides.root;

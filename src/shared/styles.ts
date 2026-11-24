@@ -1252,7 +1252,7 @@ function cssNames(prop: string, value: StyleValue): string[] {
 }
 
 /** Display values a browser takes. */
-const DISPLAY_VALUE = /^(none|contents|block|inline|inline-block|flow-root|flex|inline-flex|grid|inline-grid|list-item|table|inline-table|table-[a-z-]+|ruby|ruby-[a-z]+|revert|revert-layer|initial|inherit|unset)$/i;
+const DISPLAY_VALUE = /^(none|contents|inline-block|inline-flex|inline-grid|inline-table|table-[a-z-]+|ruby-[a-z]+|revert|revert-layer|initial|inherit|unset|(block|inline|run-in|flow|flow-root|flex|grid|table|ruby|list-item)(\s+(block|inline|run-in|flow|flow-root|flex|grid|table|ruby|list-item))*)$/i;
 
 /** Shorthands whose longhands are not named after them. */
 const SHORTHAND_SETS: Record<string, string[]> = {

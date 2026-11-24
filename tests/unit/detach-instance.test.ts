@@ -571,6 +571,11 @@ describe('component.detachInstance (#373)', () => {
     const page = detach(s);
     const codedPage = descendants(page.state, page.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
     expect(codedPage.overrides?.root?.phone?.hidden).toBeUndefined();
+    // Over the design's own hide of that part, the placement's show wrote the browser's display there: it still does.
+    (s.components[DEF].tree!.nodes.coded as InstanceNode).styles = { base: { hidden: true } };
+    const shown = detach(s);
+    const codedShown = descendants(shown.state, shown.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
+    expect(codedShown.overrides?.root).toEqual({ phone: { customCss: 'display: revert' }, tablet: { hidden: true }, desktop: { hidden: true } });
   });
 
   it('is offered to the AI for the placement it may change', async () => {
@@ -646,6 +651,8 @@ describe('flattenStyles', () => {
     // A display value the browser does not take leaves the one before it in force.
     const bogus = flattenStyles([{ styles: { base: { customCss: 'display: none; display: bogus' } }, strength: 1 }]);
     for (const sz of SIZES) expect(perSize(bogus)[sz].hidden, sz).toBe(true);
+    // Two keywords are one display value.
+    expect(flattenStyles([{ styles: { base: { customCss: 'display: none; display: inline flex' } }, strength: 1 }])).toEqual({ base: { customCss: 'display: inline flex' } });
   });
 
   it('refuses custom CSS that one element cannot hold, rather than dropping some of it', () => {
