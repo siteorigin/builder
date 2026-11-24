@@ -11,6 +11,7 @@
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { REFUSED_CODES } from './protocol.ts';
 import type { Reply } from './protocol.ts';
 import { Session } from './session.ts';
 
@@ -39,9 +40,6 @@ export interface Server {
 /** How long replies still being written may hold up the end of a session. */
 const DRAIN_MS = 5000;
 
-/** Failures that mean a request never ran. */
-const REFUSED = new Set(['BAD_REQUEST', 'UNSUPPORTED_VERSION', 'UNKNOWN_OP']);
-
 export function serve({ session, input, write, onEnd }: ServeOptions): Server {
   let ending: Promise<void> | null = null;
   let disconnected = false;
@@ -68,19 +66,22 @@ export function serve({ session, input, write, onEnd }: ServeOptions): Server {
       const sent = send(reply);
       // A close that ran ends the host, however it went; one refused before it ran leaves the session as it was. The
       // end waits (bounded) for this reply to be written.
-      if (reply.op === 'session.close' && (reply.ok || !REFUSED.has(reply.error.code))) void end('closed');
+      if (reply.op === 'session.close' && (reply.ok || !REFUSED_CODES.has(reply.error.code))) void end('closed');
       return sent;
     });
     inFlight.add(handled);
     void handled.finally(() => inFlight.delete(handled));
   });
   lines.on('close', () => void end('disconnected'));
+  // readline passes an input error on to its own listeners, and one with none throws.
+  lines.on('error', () => void end('disconnected'));
   input.on('error', () => void end('disconnected'));
   return { end };
 }
 
 function main() {
-  const session = new Session();
+  // `--contained`: the window stays hidden and the artifacts inside the session, whatever a request asks (mcp.ts).
+  const session = new Session({ contained: process.argv.slice(2).includes('--contained') });
   const stdout = process.stdout;
   // Only replies go to stdout: anything a library logs goes to stderr instead.
   console.log = console.info = console.debug = (...args: unknown[]) => console.error(...args);
@@ -103,6 +104,8 @@ function main() {
     }
   });
   stdout.on('error', () => void server.end('disconnected'));
+  // A client that stopped reading stderr does not end the session: what would have been logged is lost.
+  process.stderr.on('error', () => undefined);
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, () => void server.end('signal'));
   process.on('disconnect', () => void server.end('disconnected'));
   process.on('exit', () => session.disposeSync());

@@ -12,7 +12,7 @@ import type { ChildProcess } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { PROTOCOL_VERSION } from './protocol.ts';
+import { MAX_TIMEOUT_MS, PROTOCOL_VERSION } from './protocol.ts';
 import type { Reply, Request } from './protocol.ts';
 
 export const HOST_PATH = fileURLToPath(new URL('./host.ts', import.meta.url));
@@ -24,7 +24,13 @@ export interface ConnectOptions {
   stderr?: 'inherit' | 'ignore' | { file: string };
   /** How long past a request's own deadline the client waits for its reply before giving up on the host. */
   graceMs?: number;
+  /** Start the host contained: the window stays hidden and the artifacts inside the session (host.ts `--contained`). */
+  contained?: boolean;
 }
+
+/** The deadline a request asks for, when it is one the host accepts; the host answers any other at once (BAD_REQUEST). */
+const DEFAULT_WAIT_MS = 180_000;
+export const askedDeadline = (t: unknown): number => (Number.isInteger(t) && (t as number) > 0 && (t as number) <= MAX_TIMEOUT_MS ? (t as number) : DEFAULT_WAIT_MS);
 
 export interface RequestOptions {
   timeoutMs?: number;
@@ -63,6 +69,8 @@ export class DriverClient {
     host.stdin!.on('error', () => undefined);
     const lines = createInterface({ input: host.stdout!, crlfDelay: Infinity });
     lines.on('line', (line) => this.receive(line));
+    // readline passes an input error on to its own listeners, and one with none throws.
+    lines.on('error', (e) => this.fail(new TransportError(`The session host's output failed: ${e.message}`)));
     // Requests still waiting fail once every reply the host wrote has been read, not when it exits: its exit can be
     // seen before its last lines are.
     lines.on('close', () => {
@@ -104,7 +112,7 @@ export class DriverClient {
     }
     return new Promise<Reply>((resolve, reject) => {
       // The host's own deadline answers first; this one only catches a host that stopped answering at all.
-      const wait = (request.timeoutMs ?? 180_000) + this.graceMs;
+      const wait = askedDeadline(request.timeoutMs) + this.graceMs;
       const timer = setTimeout(() => {
         this.pending.delete(request.id);
         reject(new TransportError(`No reply to ${request.op} (${request.id}) within ${wait / 1000}s; disconnecting.`));
@@ -170,7 +178,7 @@ export class DriverClient {
 export async function connect(opts: ConnectOptions = {}): Promise<DriverClient> {
   let fd: number | null = null;
   const stderr = opts.stderr === 'ignore' ? 'ignore' : typeof opts.stderr === 'object' ? (fd = openSync(opts.stderr.file, 'a')) : 'inherit';
-  const host = spawn(process.execPath, ['--no-warnings', HOST_PATH], { stdio: ['pipe', 'pipe', stderr], env: { ...process.env, ...opts.env }, windowsHide: true });
+  const host = spawn(process.execPath, ['--no-warnings', HOST_PATH, ...(opts.contained ? ['--contained'] : [])], { stdio: ['pipe', 'pipe', stderr], env: { ...process.env, ...opts.env }, windowsHide: true });
   if (fd !== null) closeSync(fd);
   await new Promise<void>((resolve, reject) => {
     host.once('spawn', () => resolve());

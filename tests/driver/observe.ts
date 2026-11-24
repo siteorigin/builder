@@ -14,7 +14,8 @@
  * knows (scrubDeep), on top of the raw tree's own redaction. Screenshots are taken only while no credential is known
  * at all: pixels cannot be scrubbed, and a credential can be painted where no text check sees it.
  */
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ElementHandle, Frame, Locator, Page } from 'playwright';
 import { DriverError } from './protocol.ts';
@@ -58,6 +59,8 @@ export interface ObserveEnv {
   registry: RefRegistry;
   /** Where screenshots are saved, or null when the session has no artifacts folder. */
   artifacts: string | null;
+  /** Begins every screenshot's evidence id, so an id from another session never names one of this session's. */
+  evidenceTag?: string;
   signal: AbortSignal;
   /** The provider keys the app has saved in this session's own profile: never returned either. Strict: a key file
    *  that exists but cannot be read throws. */
@@ -222,9 +225,15 @@ async function framePlain(page: Page): Promise<Set<string>> {
 }
 
 /** The credential values in every frame of the window: the editor's, the preview's and any other (failures skipped). */
-export async function frameSecrets(page: Page, { strict = false }: { strict?: boolean } = {}): Promise<string[]> {
+export async function frameSecrets(page: Page, { strict = false, found }: { strict?: boolean; found?: (values: string[]) => void } = {}): Promise<string[]> {
   // Strict: a frame that cannot be read fails the whole read, for a caller that must not take "unknown" as "none".
-  const read = await Promise.all(page.frames().map((f) => (strict ? f.evaluate(secretsIn, SECRET_INPUTS) : f.evaluate(secretsIn, SECRET_INPUTS).catch((): string[] => []))));
+  // Each frame's values go to `found` as they are read, so one frame failing cannot take another's credentials with it.
+  const read = await Promise.all(
+    page.frames().map((f) => {
+      const values = f.evaluate(secretsIn, SECRET_INPUTS).then((v) => (found?.(v), v));
+      return strict ? values : values.catch((): string[] => []);
+    })
+  );
   return read.flat();
 }
 
@@ -393,8 +402,8 @@ async function observeInto(env: ObserveEnv, seen: string[], before?: (docs: Docs
 // Refs
 // ---------------------------------------------------------------------------
 
-function stale(reason: StaleReason, ref: string, message: string): DriverError {
-  return new DriverError('STALE_REF', message, { details: { ref, reason, hint: REFRESH_HINT } });
+function stale(reason: StaleReason, ref: string, message: string, extra: Record<string, unknown> = {}): DriverError {
+  return new DriverError('STALE_REF', message, { details: { ref, reason, hint: REFRESH_HINT, ...extra } });
 }
 
 class Minter {
@@ -465,7 +474,7 @@ async function checkRef(env: ObserveEnv, ref: string, obs: Observation, minter: 
   if (b.opening !== obs.docs.editor.opening) throw stale('project', ref, `"${ref}" was seen in another project, or another opening of this one.`);
   if (b.scope === 'preview') {
     if (obs.previewState !== 'ready' || !obs.docs.preview || !obs.preview)
-      throw stale('loading', ref, `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}; "${ref}" cannot be checked until it is ready.`);
+      throw stale('loading', ref, `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}; "${ref}" cannot be checked until it is ready.`, { preview: obs.previewState });
     if (obs.docs.preview.token !== b.doc) throw stale('document', ref, `"${ref}" was seen on a page the preview has since reloaded or left.`);
   } else if (obs.docs.editor.token !== b.doc) throw stale('document', ref, `"${ref}" was seen before the editor reloaded.`);
   // Names are left out of these messages: a page can come to show a credential where a name was.
@@ -580,7 +589,12 @@ export interface Shots {
 }
 
 export interface Shot {
+  /** Names the image for `evidence.read` until the session closes. */
+  id: string;
   path: string;
+  /** The PNG's size and SHA-256 as it was captured: `evidence.read` returns those bytes or none. */
+  bytes: number;
+  sha256: string;
   /** In CSS pixels, as the image's own pixels are (one image pixel is one CSS pixel of the window). */
   width: number;
   height: number;
@@ -760,12 +774,12 @@ async function snapshotOf(env: ObserveEnv, args: SnapshotArgs, id: number, seen:
     else result.preview = { ...tree, state: obs.previewState, refs: obs.previewState === 'ready' };
   }
 
-  if (args.screenshot) result.screenshots = await screenshots(env, obs, id);
+  if (args.screenshot) result.screenshots = await screenshots(env, obs, id, seen);
   aborted(env.signal);
   return result;
 }
 
-async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promise<Shots> {
+async function screenshots(env: ObserveEnv, obs: Observation, id: number, seen: string[]): Promise<Shots> {
   const { page, signal } = env;
   if (!env.artifacts) throw new DriverError('OP_FAILED', 'This session has no artifacts folder to save screenshots in.');
   // Any screenshot replaces the last one's points, whether or not this one gives any.
@@ -775,7 +789,13 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   const withheld = { editor: null, preview: null, withheld: 'A credential is known in this session, and screenshots could show it.' };
   // Anything that cannot be read counts as a credential.
   const clear = async () => {
-    const known = await Promise.all([frameSecrets(page, { strict: true }), env.storedSecrets?.(true) ?? Promise.resolve([])]).catch(() => null);
+    // What the check finds is a credential like any other: remembered, and scrubbed from this very reply.
+    const found = (v: string[]) => {
+      env.remember?.(v);
+      seen.push(...v.filter(Boolean));
+    };
+    const stored = (env.storedSecrets?.(true) ?? Promise.resolve([])).then((v) => (found(v), v));
+    const known = await Promise.all([frameSecrets(page, { strict: true, found }), stored]).catch(() => null);
     return !!known && !known.flat().length && !env.remembered?.().length;
   };
   if (obs.secrets.length || obs.echoes || !(await clear())) return withheld;
@@ -806,17 +826,32 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   if (!(await clear())) return withheld;
   // A capture that outlived its request leaves nothing behind.
   aborted(signal);
-  await mkdir(dir, { recursive: true });
-  const stem = join(dir, String(id).padStart(4, '0'));
+  // Only inside the artifacts folder the session made: a folder its close has removed is never made again.
+  await mkdir(dir).catch((e: NodeJS.ErrnoException) => {
+    if (e.code !== 'EEXIST') throw e;
+  });
+  const base = String(id).padStart(4, '0');
+  const stem = join(dir, base);
+  const tag = env.evidenceTag ? `${env.evidenceTag}-` : '';
+  const digest = (png: Buffer) => ({ bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') });
   const written: string[] = [];
+  // Each image is a new file ('wx'): never through a link, nor over a file, already at its name. Only what this capture
+  // made is taken back if it fails.
+  const create = async (path: string, png: Buffer) => {
+    const file = await open(path, 'wx');
+    written.push(path);
+    try {
+      await file.writeFile(png);
+    } finally {
+      await file.close();
+    }
+  };
   try {
     aborted(signal);
-    written.push(`${stem}-editor.png`);
-    await writeFile(`${stem}-editor.png`, editorPng);
+    await create(`${stem}-editor.png`, editorPng);
     if (previewPng) {
       aborted(signal);
-      written.push(`${stem}-preview.png`);
-      await writeFile(`${stem}-preview.png`, previewPng);
+      await create(`${stem}-preview.png`, previewPng);
     }
     aborted(signal);
   } catch (e) {
@@ -827,8 +862,11 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   const still = !!before && !!after && !sceneChange(before, after);
   const f = still ? after!.frame : null;
   const out: Shots = {
-    editor: { path: `${stem}-editor.png`, width: vp.width, height: vp.height },
-    preview: previewPng && clip ? { path: `${stem}-preview.png`, width: clip.width, height: clip.height, clip, ...(f ? { origin: f.origin, scale: f.scale.x } : {}) } : null
+    editor: { id: `${tag}${base}-editor`, path: `${stem}-editor.png`, ...digest(editorPng), width: vp.width, height: vp.height },
+    preview:
+      previewPng && clip
+        ? { id: `${tag}${base}-preview`, path: `${stem}-preview.png`, ...digest(previewPng), width: clip.width, height: clip.height, clip, ...(f ? { origin: f.origin, scale: f.scale.x } : {}) }
+        : null
   };
   // Points on the images stand for what they show only if nothing moved while they were taken.
   if (token && env.shots && still && after!.editor.viewport.width === vp.width && after!.editor.viewport.height === vp.height) {
@@ -842,13 +880,13 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
 // ui.locate
 // ---------------------------------------------------------------------------
 
-export function parseLocateArgs(a: Record<string, unknown> = {}): LocateArgs {
-  known(a, 'ui.locate', ['ref', 'role', 'name', 'exact', 'region', 'within', 'scope']);
+export function parseLocateArgs(a: Record<string, unknown> = {}, op = 'ui.locate'): LocateArgs {
+  known(a, op, ['ref', 'role', 'name', 'exact', 'region', 'within', 'scope']);
   if (a.ref !== undefined) {
-    if (Object.keys(a).length > 1) throw new DriverError('BAD_REQUEST', 'ui.locate takes a "ref" alone, or a "role" to find.');
+    if (Object.keys(a).length > 1) throw new DriverError('BAD_REQUEST', `${op} takes a "ref" alone, or a "role" to find.`);
     return { ref: argRef(a.ref, 'ref') };
   }
-  if (typeof a.role !== 'string' || !/^[a-z]+$/.test(a.role)) throw new DriverError('BAD_REQUEST', 'ui.locate needs a "ref", or an ARIA "role" (such as "button") to find.');
+  if (typeof a.role !== 'string' || !/^[a-z]+$/.test(a.role)) throw new DriverError('BAD_REQUEST', `${op} needs a "ref", or an ARIA "role" (such as "button") to find.`);
   const out: LocateArgs = { role: a.role, scope: argScope(a.scope) };
   if (a.name !== undefined) {
     if (typeof a.name !== 'string' || !a.name.trim()) throw new DriverError('BAD_REQUEST', '"name" is a non-empty string.');
@@ -884,6 +922,107 @@ export function uiLocate(env: ObserveEnv, args: LocateArgs): Promise<Located> {
   return sealed((seen) => locateIn(env, args, seen));
 }
 
+// ---------------------------------------------------------------------------
+// ui.waitFor
+// ---------------------------------------------------------------------------
+
+/** What `ui.waitFor` accepts: a search as `ui.locate` takes it, and whether to wait for a match or for none. */
+export interface WaitArgs {
+  search: LocateArgs;
+  state: 'present' | 'absent';
+}
+
+export function parseWaitArgs(a: Record<string, unknown> = {}): WaitArgs {
+  const { state = 'present', ...rest } = a;
+  if (state !== 'present' && state !== 'absent') throw new DriverError('BAD_REQUEST', '"state" is "present" or "absent".');
+  const search = parseLocateArgs(rest, 'ui.waitFor');
+  // A ref names an element already seen: it can only go (a stale ref never comes back), so there is nothing to wait for.
+  if (search.ref && state === 'present') throw new DriverError('BAD_REQUEST', 'A ref waits only for "state": "absent"; to wait for an element to appear, search for it by "role" (and "name").');
+  return { search, state };
+}
+
+export interface WaitResult {
+  state: 'present' | 'absent';
+  /** For `present`: the element, as `ui.locate` answers it. */
+  scope?: Scope;
+  region?: string[];
+  node?: UiNode;
+  /** For an awaited ref that went: why it no longer names an element (STALE_REF's reason). */
+  reason?: string;
+  waitedMs: number;
+  /** How many times it looked. */
+  checks: number;
+}
+
+export const WAIT_LIMITS = {
+  /** Between looks. */
+  intervalMs: 250,
+  /** Kept back from the request's deadline, so a wait that runs out answers with what it last saw. */
+  marginMs: 300
+};
+
+/** STALE_REF reasons that mean the element a ref named is no longer there. */
+const GONE = new Set(['gone', 'changed', 'document', 'project', 'window']);
+
+/**
+ * Look again and again until the search matches (`present`) or matches nothing (`absent`), with `locate` as
+ * `ui.locate` runs it. Only "not there yet" (or a preview still loading) is waited out: anything else, such as an
+ * ambiguous search, a ref that is no longer good to search within, or a replaced window, is answered at once. One that
+ * runs out of time is TIMEOUT, and since it only reads, the session goes on.
+ */
+export async function waitFor(locate: (args: LocateArgs) => Promise<Located>, args: WaitArgs, o: { deadline: number; signal: AbortSignal; now?: () => number; intervalMs?: number }): Promise<WaitResult> {
+  const now = o.now ?? Date.now;
+  const interval = o.intervalMs ?? WAIT_LIMITS.intervalMs;
+  const began = now();
+  const until = o.deadline - WAIT_LIMITS.marginMs;
+  let checks = 0;
+  let last: DriverError | null = null;
+  // A preview still loading cannot be searched yet; one that is not shown at all has nothing in it.
+  const loading = (e: DriverError) => e.code === 'STALE_REF' && e.details?.reason === 'loading' && e.details?.preview !== 'absent';
+  // "Not found" settles absence only when the whole search was done: not while a preview it covers is on its way.
+  const settled = (e: DriverError) => e.code === 'TARGET_NOT_FOUND' && e.details?.incomplete !== true;
+  for (;;) {
+    aborted(o.signal);
+    checks++;
+    try {
+      const found = await locate(args.search);
+      if (args.state === 'present') return { state: 'present', ...found, waitedMs: now() - began, checks };
+      last = null;
+    } catch (e) {
+      if (!(e instanceof DriverError)) throw e;
+      if (args.state === 'present') {
+        if (e.code !== 'TARGET_NOT_FOUND' && !loading(e)) throw e;
+      } else {
+        if (settled(e)) return { state: 'absent', waitedMs: now() - began, checks };
+        const reason = e.details?.reason;
+        if (args.search.ref && e.code === 'STALE_REF' && typeof reason === 'string' && (GONE.has(reason) || (reason === 'loading' && !loading(e))))
+          return { state: 'absent', reason: reason === 'loading' ? 'gone' : reason, waitedMs: now() - began, checks };
+        // Several matches are still there, or the preview they may be in is still loading.
+        if (e.code !== 'AMBIGUOUS_TARGET' && e.code !== 'TARGET_NOT_FOUND' && !loading(e)) throw e;
+      }
+      last = e;
+    }
+    const left = until - now();
+    if (left <= 0) {
+      // Not the search itself: a name searched for can be a credential the page shows, which observations scrub.
+      throw new DriverError('TIMEOUT', args.state === 'present' ? `Nothing fitting the search appeared in time (${checks} looks).` : `What the search found was still there when the wait ran out (${checks} looks).`, {
+        // The last look's code, not its message, which can quote the search.
+        details: { phase: 'ui.waitFor', sessionState: 'ready', state: args.state, waitedMs: now() - began, checks, ...(last ? { last: { code: last.code } } : {}) }
+      });
+    }
+    // The last look comes at the end of the budget, however little of an interval is left.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, Math.min(interval, left));
+      function done() {
+        clearTimeout(timer);
+        o.signal.removeEventListener('abort', done);
+        resolve();
+      }
+      o.signal.addEventListener('abort', done, { once: true });
+    });
+  }
+}
+
 async function locateIn(env: ObserveEnv, args: LocateArgs, seen: string[]): Promise<Located> {
   const obs = await observeInto(env, seen);
   const minter = new Minter(env, obs);
@@ -903,23 +1042,25 @@ async function locateIn(env: ObserveEnv, args: LocateArgs, seen: string[]): Prom
     inside = new Set(walk(node.children));
   }
   const query = { role: args.role, ...(args.name !== undefined ? { name: args.name } : {}), ...(args.exact === false ? { exact: false } : {}), ...(args.region ? { region: args.region } : {}), ...(args.within ? { within: args.within } : {}), scope: args.scope ?? 'all' };
+  // Part of the search could not be done: a preview it covers is on its way (one not shown has nothing in it).
+  const incomplete = scopes.includes('preview') && !(obs.previewState === 'ready' && obs.docs.preview && obs.preview) && obs.previewState !== 'absent';
   const searchable = scopes.filter((scope) => {
     if (scope === 'editor') return true;
     if (obs.previewState === 'ready' && obs.docs.preview && obs.preview) return true;
     if (args.scope === 'preview' || args.within)
       throw new DriverError('TARGET_NOT_FOUND', `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}: nothing in it can be found yet.`, {
-        details: { query, preview: obs.previewState, hint: 'Wait for context.preview.state to be "ready" (ui.snapshot), then locate again.' }
+        details: { query, preview: obs.previewState, incomplete, hint: 'Wait for context.preview.state to be "ready" (ui.snapshot), then locate again.' }
       });
     return false;
   });
   if (args.region && !searchable.some((scope) => regionNodes(scope === 'editor' ? obs.editor : obs.preview!, args.region!).length))
-    throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see the regions there are.' } });
+    throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, preview: obs.previewState, incomplete, hint: 'Take a ui.snapshot to see the regions there are.' } });
   const all = await matchesIn(env, obs, searchable, args);
   aborted(env.signal);
   if (all === 'too-many') throw new DriverError('OP_FAILED', `More than ${MATCH_LIMIT} elements in one scope are ${args.role}s: too many to place.`, { details: { query, hint: 'Take a ui.snapshot and drill in with "within" instead.' } });
   if (all === 'incomplete') throw new DriverError('OP_FAILED', 'Not every match could be placed in the observation (the page changed, or a match is outside the accessibility tree); locate again.', { retryable: true, details: { query, hint: REFRESH_HINT } });
   const found = all.filter((n) => (!args.region || regionMatches(n.regions, args.region)) && (!inside || inside.has(n)));
-  if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}${args.within ? ' within that ref' : ''}.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see what there is.' } });
+  if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}${args.within ? ' within that ref' : ''}.`, { details: { query, preview: obs.previewState, incomplete, hint: 'Take a ui.snapshot to see what there is.' } });
   if (found.length > 1) {
     const shown = found.slice(0, LIMITS.candidates);
     await minter.read(shown);

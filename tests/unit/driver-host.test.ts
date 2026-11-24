@@ -6,9 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterAll, describe, expect, it } from 'vitest';
-import { connect } from '../driver/client.ts';
+import { askedDeadline, connect } from '../driver/client.ts';
 import { serve } from '../driver/host.ts';
 import type { HostedSession } from '../driver/host.ts';
+import { MAX_TIMEOUT_MS } from '../driver/protocol.ts';
 import type { Failure, Reply, Success } from '../driver/protocol.ts';
 import { OPERATIONS, Session, buildIdentity, isInside, sessionEnv } from '../driver/session.ts';
 import type { StartPhase } from '../driver/session.ts';
@@ -65,6 +66,8 @@ describe('a session before it starts', () => {
       ['files.list', 'observe'],
       ['ui.snapshot', 'observe'],
       ['ui.locate', 'observe'],
+      ['ui.waitFor', 'observe'],
+      ['evidence.read', 'observe'],
       ['ui.click', 'act'],
       ['ui.hover', 'act'],
       ['ui.fill', 'act'],
@@ -93,6 +96,8 @@ describe('a session before it starts', () => {
       'files.list': 10000,
       'ui.snapshot': 15000,
       'ui.locate': 15000,
+      'ui.waitFor': 15000,
+      'evidence.read': 15000,
       'ui.click': 15000,
       'ui.hover': 15000,
       'ui.fill': 15000,
@@ -108,6 +113,13 @@ describe('a session before it starts', () => {
       'evidence.save': 30000,
       'session.close': 60000
     });
+  });
+
+  it('runs its wait and its evidence read like the other observations', async () => {
+    const d = ok<any>(await new Session({ appRoot }).call(req('session.describe'))).result;
+    const flags = (op: string) => d.capabilities.find((c: any) => c.op === op);
+    expect(flags('ui.waitFor')).toMatchObject({ kind: 'observe', needsApp: true, usesWindow: true });
+    expect(flags('evidence.read')).toMatchObject({ kind: 'observe', needsApp: true, usesWindow: false });
   });
 
   it('fingerprints the build by the bytes of its files', async () => {
@@ -132,11 +144,30 @@ describe('a session before it starts', () => {
     const broken = err(await s.call('{"v":1,'));
     expect([broken.id, broken.error.code]).toEqual([null, 'BAD_REQUEST']);
     expect(err(await s.call(req('session.start', { args: { fixture: 'unknown' } }))).error.code).toBe('BAD_REQUEST');
+    expect(err(await s.call(req('session.start', { args: { fixture: 'constructor' } }))).error.code, 'not a fixture, though every object has one').toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { artifactsDir: 'relative/path' } }))).error.code).toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { colour: 'red' } }))).error.code).toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { provider: 'openai' } }))).error.code).toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { keepArtifacts: 'sometimes' } }))).error.code).toBe('BAD_REQUEST');
+    expect(err(await s.call(req('ui.waitFor', { args: { role: 'dialog' } }))).error.code).toBe('NOT_STARTED');
+    expect(err(await s.call(req('evidence.read', { args: { id: '0001-editor' } }))).error.code).toBe('NOT_STARTED');
+    // An operation that takes no arguments refuses one, as the others refuse one they do not know.
+    expect(err(await s.call(req('session.describe', { args: { verbose: true } }))).error).toMatchObject({ code: 'BAD_REQUEST', message: 'session.describe does not take "verbose".' });
+    expect(ok(await s.call(req('session.describe', { args: {} }))).ok).toBe(true);
     expect(s.state).toBe('new');
+  });
+
+  it('a contained session refuses to show its window or to put its artifacts elsewhere, before making anything', async () => {
+    const parentDir = mkdtempSync(join(scratch, 'parent-'));
+    const s = new Session({ appRoot, parentDir, contained: true });
+    for (const args of [{ headed: true }, { headed: false }, { artifactsDir: parentDir }]) {
+      const e = err(await s.call(req('session.start', { args }))).error;
+      expect([e.code, e.message]).toEqual(['BAD_REQUEST', `session.start does not take "${Object.keys(args)[0]}" here: this session keeps its window hidden and its artifacts inside the session.`]);
+    }
+    expect([s.state, readdirSync(parentDir)]).toEqual(['new', []]);
+    // However it is started: in process too, not only through call().
+    await expect(s.start({ headed: true })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect([s.state, readdirSync(parentDir)]).toEqual(['new', []]);
   });
 
   it('refuses to start without a built app, leaving nothing behind', async () => {
@@ -370,6 +401,15 @@ describe('the stdio host', () => {
     expect([ended, s.state]).toEqual(['closed', 'closed']);
   });
 
+  it('closes the session when its input fails, rather than throwing', async () => {
+    const fake = fakeSession((frame) => reply(frame));
+    const input = new PassThrough();
+    const ended = new Promise<string>((resolve) => serve({ session: fake.session, input, write: (_line, done) => done(), onEnd: (reason) => resolve(reason) }));
+    input.destroy(new Error('EIO: i/o error, read'));
+    expect(await ended).toBe('disconnected');
+    expect(fake.closes()).toBe(1);
+  });
+
   it('a client disconnecting mid-start closes a real session and removes its folders', async () => {
     const { session, parentDir, atPhase } = heldSession('root');
     const input = new PassThrough();
@@ -392,5 +432,25 @@ describe('the stdio host', () => {
     expect(client.unmatched.map((r) => [r.id, !r.ok && r.error.code])).toEqual([[null, 'BAD_REQUEST']]);
     expect(await client.disconnect()).toEqual({ code: 0, signal: null });
     await expect(client.request('session.describe')).rejects.toThrow(/exited/);
+  }, 30000);
+
+  it('a deadline the host cannot accept is its BAD_REQUEST to answer, not a reason for the client to give up on it', async () => {
+    const client = await connect({ stderr: 'ignore' });
+    for (const timeoutMs of ['soon', 1e12, 2 ** 31, -5, 1.5])
+      expect(err(await client.request('session.describe', undefined, { timeoutMs: timeoutMs as number })).error.code, String(timeoutMs)).toBe('BAD_REQUEST');
+    expect(ok(await client.request('session.describe')).ok).toBe(true);
+    expect(await client.disconnect()).toEqual({ code: 0, signal: null });
+  }, 30000);
+
+  it('times a reply by the deadline asked for, when it is one the host accepts', () => {
+    for (const t of [1, 5000, MAX_TIMEOUT_MS]) expect(askedDeadline(t)).toBe(t);
+    for (const t of [undefined, 0, -5, 1.5, MAX_TIMEOUT_MS + 1, 1e12, 'soon', NaN, Infinity]) expect(askedDeadline(t), String(t)).toBe(180_000);
+  });
+
+  it('a contained host refuses a visible window', async () => {
+    const client = await connect({ stderr: 'ignore', contained: true });
+    expect(err(await client.request('session.start', { headed: true })).error.code).toBe('BAD_REQUEST');
+    expect(ok<any>(await client.request('session.describe')).result.session.state).toBe('new');
+    expect(await client.disconnect()).toEqual({ code: 0, signal: null });
   }, 30000);
 });

@@ -128,6 +128,9 @@ export const ERROR_CODES = [
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
+/** Failures that mean a request never ran (a session.close refused with one of these leaves the session as it was). */
+export const REFUSED_CODES: ReadonlySet<ErrorCode> = new Set(['BAD_REQUEST', 'UNSUPPORTED_VERSION', 'UNKNOWN_OP']);
+
 export interface ErrorInfo {
   code: ErrorCode;
   message: string;

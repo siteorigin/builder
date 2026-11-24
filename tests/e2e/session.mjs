@@ -94,6 +94,8 @@ try {
       'files.list:observe',
       'ui.snapshot:observe',
       'ui.locate:observe',
+      'ui.waitFor:observe',
+      'evidence.read:observe',
       'ui.click:act',
       'ui.hover:act',
       'ui.fill:act',
