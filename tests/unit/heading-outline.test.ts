@@ -5,7 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState, TextNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { P, managed } from '@catalogue/dsl';
+import { P } from '@catalogue/dsl';
+import { FOUNDATION } from '@catalogue/foundation/pack';
 import { applyOperations } from '@engine/apply';
 import { makeInstance } from '@engine/install';
 import { blocksSaving, validateState } from '@engine/validate';
@@ -14,6 +15,8 @@ import { definitionHash } from '@shared/migrations';
 import { headingOutline, pageHeadings } from '@generator/checks';
 import { generateProject } from '@generator/index';
 import { headingLevelOps, headingTarget, pageOutline } from '../../src/renderer/src/lib/outline';
+
+const { managed } = FOUNDATION;
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const pageAt = (s: ProjectState, route: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === route)!;
