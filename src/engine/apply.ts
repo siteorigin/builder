@@ -27,7 +27,7 @@ import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
 import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
-import { VISITOR_TEXT_KEYS, ownVisitorText, visitorTextLanguage, type VisitorTextKey } from '@shared/visitor-text';
+import { VISITOR_TEXT_KEYS, isVisitorTextKey, ownVisitorText, visitorTextLanguage } from '@shared/visitor-text';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
 import { checkPublicUrl } from '@shared/public-url';
@@ -2161,8 +2161,10 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
  * Sets the author's wording for pieces of visitor text in one language. Empty wording restores the built-in one, and
  * a language left with none of its own is dropped, as is the whole map once it is empty.
  */
-function setVisitorText(site: ProjectState['site'], language: string, text: Partial<Record<VisitorTextKey, string>>): void {
+function setVisitorText(site: ProjectState['site'], language: string, text: Record<string, string>): void {
   if (!isLanguageCode(language)) fail(LANGUAGE_CODE_ERROR);
+  const unknown = Object.keys(text).find((key) => !isVisitorTextKey(key));
+  if (unknown) fail(`“${unknown}” is not a piece of visitor text. Use one of: ${VISITOR_TEXT_KEYS.join(', ')}.`);
   const code = visitorTextLanguage(language);
   const all = site.visitorText && typeof site.visitorText === 'object' && !Array.isArray(site.visitorText) ? { ...site.visitorText } : {};
   const before = Object.hasOwn(all, code) ? all[code] : undefined;

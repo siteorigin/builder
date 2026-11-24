@@ -57,7 +57,7 @@ import { routeDir, validateRoute } from '@shared/routes';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
-import { visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
+import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { asParagraphList, isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
@@ -2522,10 +2522,8 @@ export function generateRedirect(state: ProjectState, from: string, page: PageDo
 	// ${from} is an old address of a page, kept working for old links and bookmarks.
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { visitorText } from ${js(relImport(redirectFile(from), `${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`))};
 
 	const to = resolve(${js(page.route)});
-	const text = visitorText();
 	// Runs while the HTML is read, before anything renders.
 	const go = '<' + 'script>location.replace(' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash);</' + 'script>';
 	// Reached by a link inside the running site instead, the script above never runs: go from here.
@@ -2538,7 +2536,7 @@ export function generateRedirect(state: ProjectState, from: string, page: PageDo
 	<meta name="robots" content="noindex" />${canonical}
 </svelte:head>
 
-<p><a href={to}>{text().redirect}</a></p>
+<p><a href={to}>{${js(siteVisitorText(state.site).redirect)}}</a></p>
 `
   );
 }
@@ -2664,7 +2662,7 @@ export const SERVER_HOOK_FILE = 'src/hooks.server.js';
  *
  * On a site in more than one language it also gives each page, prerendered or previewed, the language it is written
  * in: app.html names the site's, and the opening <html> tag of a page in another language gets that page's lang
- * instead. The hook carries its own list of languages, so it never depends on another generated file for them. A
+ * instead, and its dir when that language runs the other way from the site's. The hook carries its own list of languages, so it never depends on another generated file for them. A
  * site in one language has the not-found part alone.
  */
 export function generateServerHook(state: ProjectState): string {

@@ -88,7 +88,8 @@ describe('visitor text', () => {
     s = apply(s, { type: 'site.update', visitorText: { language: 'he', text: { menuOpen: ' ' } } });
     expect(s.site.visitorText).toBeUndefined();
     expect(() => apply(s, { type: 'site.update', visitorText: { language: '__proto__', text: { menuOpen: 'x' } } })).toThrow(/Language must be a code/);
-    expect(applyOperations(s, [{ type: 'site.update', visitorText: { language: 'ar', text: { nonsense: 'x' } as never } }]).state.site.visitorText).toBeUndefined();
+    // A piece that does not exist is turned down, naming the ones that do.
+    expect(() => apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { nonsense: 'x' } } })).toThrow(/“nonsense” is not a piece of visitor text\. Use one of: skipLink, menuOpen/);
   });
 
   it('gives the not-found page its default wording in the site’s language', () => {

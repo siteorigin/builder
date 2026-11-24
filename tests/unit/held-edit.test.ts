@@ -220,6 +220,28 @@ describe('held edit field check', () => {
   });
 });
 
+describe('held visitor text (issue #71)', () => {
+  const set = (language: string, text: Record<string, string>): EditOperation => ({ type: 'site.update', visitorText: { language, text } });
+
+  it('reads and checks only the piece typed, in its language', () => {
+    const base = apply(fresh(), [set('ar', { menuOpen: 'اعرض القائمة' })]);
+    const op = set('AR', { menuOpen: 'افتح القائمة' });
+    expect(readFields(base, [op])).toEqual([{ found: true, value: { visitorText: 'اعرض القائمة' } }]);
+    expect(typedText(op)).toBe('افتح القائمة');
+    expect(shownField(op, { visitorText: 'اعرض القائمة' })).toBe('اعرض القائمة');
+    // Another piece, or the same piece in another language, changing meanwhile is no conflict.
+    expect(check(base, apply(base, [set('ar', { skipLink: 'إلى المحتوى' }), set('he', { menuOpen: 'תפריט' })]), [op])).toEqual({ kind: 'apply' });
+    // The piece itself changing is.
+    expect(check(base, apply(base, [set('ar', { menuOpen: '' })]), [op])).toEqual({ kind: 'changed', current: [{ visitorText: undefined }] });
+  });
+
+  it('keeps edits of different pieces apart, and lets a newer edit of the same piece replace an older one', () => {
+    expect(fieldKey([set('ar', { menuOpen: 'a' })])).not.toBe(fieldKey([set('ar', { skipLink: 'a' })]));
+    expect(fieldKey([set('ar', { menuOpen: 'a' })])).not.toBe(fieldKey([set('he', { menuOpen: 'a' })]));
+    expect(fieldKey([set('ar', { menuOpen: 'a' })])).toBe(fieldKey([set('AR', { menuOpen: 'b' })]));
+  });
+});
+
 describe('held edit row', () => {
   it('offers to stop the AI while it works, and to apply once it has finished', () => {
     expect(heldPrompt({ phase: 'waiting', text: 'x' }, true).actions).toEqual(['stop-apply', 'discard']);

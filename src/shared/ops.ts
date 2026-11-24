@@ -4,7 +4,7 @@ import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
 import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from './types';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
-import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT, type VisitorTextKey } from './visitor-text';
+import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -332,15 +332,11 @@ export const OPERATION_SCHEMAS = {
     notFoundLinkLabel: z.string().max(60).optional().describe('Text of that page\'s link to the Home page. "" restores the default.'),
     visitorText: z
       .object({
-        language: z.string().max(20).describe('The language this wording is for, as a code such as "ar" or "he-IL": pages in that language use it.'),
-        text: z
-          .object(Object.fromEntries(VISITOR_TEXT_KEYS.map((key) => [key, z.string().max(VISITOR_TEXT_LIMIT).optional()])) as Record<VisitorTextKey, z.ZodOptional<z.ZodString>>)
-          .describe('Wording by piece. "" restores the built-in wording for the language. Pieces left out keep theirs.')
+        language: z.string().max(20).describe('Language code, e.g. "ar": pages in it use this wording.'),
+        text: z.record(z.string(), z.string().max(VISITOR_TEXT_LIMIT)).describe(`Wording by key (${VISITOR_TEXT_KEYS.join(', ')}). "" restores the built-in wording. {braced} names are filled in.`)
       })
       .optional()
-      .describe(
-        'What the site says on its own in one language: the skip link, the phone menu button, landmark names, a contact form\'s progress, search results, the image viewer, the video player. Built-in wording exists for English, Arabic and Hebrew; set it for any other language the site uses. Words in braces, such as {count}, are filled in when shown.'
-      )
+      .describe('What the site says on its own (skip link, menu button, form progress, search, image viewer) in one language. Built in for en, ar, he.')
   }),
 
   'component.createFromNode': z.object({ type: z.literal('component.createFromNode'), owner, nodeId: z.string(), name: z.string().min(1).max(60) }),

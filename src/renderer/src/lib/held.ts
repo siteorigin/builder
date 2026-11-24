@@ -304,6 +304,8 @@ export function fieldKey(operations: EditOperation[]): string {
           if (TARGET_KEYS.has(k)) return [k, v];
           // A text style is set part by part (size, line height, tracking): each part is its own field.
           if (op.type === 'token.set' && k === 'value' && v && typeof v === 'object' && !Array.isArray(v) && !('token' in v)) return [k, Object.keys(v).sort()];
+          // Visitor text is set piece by piece, in one language at a time: each piece in each language is its own field.
+          if (op.type === 'site.update' && k === 'visitorText' && op.visitorText) return [k, op.visitorText.language.toLowerCase(), Object.keys(op.visitorText.text).sort()];
           return [k];
         })
         .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
