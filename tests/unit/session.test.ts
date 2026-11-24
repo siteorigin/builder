@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { InstanceNode } from '@shared/types';
+import type { InstanceNode, TextNode } from '@shared/types';
+import { listPropFor, shownValue } from '../../src/renderer/src/lib/model';
 import { createStarterState } from '@catalogue/starters';
 import { ProjectSession } from '../../src/main/project/session';
 import { sha } from '../../src/main/project/fsutil';
@@ -17,6 +18,39 @@ async function make() {
 }
 
 describe('project session', () => {
+  it('saves an edit of a repeated item a placement shows from its design’s defaults, and keeps it on reopen (#138)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-session-'));
+    dirs.push(dir);
+    const start = createStarterState('business', 'Persist', false);
+    const homeId = start.site.homePageId;
+    const home = start.pages[homeId];
+    const grid = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => start.components[n.definitionId]?.componentId === 'features.grid')!;
+    const def = start.components[grid.definitionId];
+    const list = listPropFor(def, 'card-title')!;
+    // The placement has no list of its own: the page shows the design's default items.
+    delete grid.props[list];
+    const s = await ProjectSession.create(dir, start);
+    expect(Object.hasOwn((s.state.pages[homeId].nodes[grid.id] as InstanceNode).props, list)).toBe(false);
+    const items = (def.properties[list] as { default: Array<{ id: string } & Record<string, unknown>> }).default;
+    const owner = { kind: 'page' as const, id: homeId };
+    const ref = { owner, instancePath: [grid.id], nodeId: 'card-title', itemPath: [items[1].id] };
+    const bound = (def.tree!.nodes['card-title'] as TextNode).text as { $item: string };
+    expect(shownValue(s.state, ref, bound)).toBe(items[1][bound.$item]);
+    // What committing the text typed on the canvas applies.
+    const r = await s.apply({ operations: [{ type: 'instance.setProp', owner, nodeId: grid.id, prop: list, itemId: items[1].id, field: bound.$item, value: 'Changed on the page' }] }, { label: 'Edit text' });
+    expect(r.ok).toBe(true);
+    await s.close();
+    const again = await ProjectSession.open(dir, 'test');
+    const placed = again.state.pages[homeId].nodes[grid.id] as InstanceNode;
+    // The placement now holds its own copy of the items, with their IDs, and the edited one changed.
+    expect((placed.props[list] as Array<{ id: string }>).map((i) => i.id)).toEqual(items.map((i) => i.id));
+    expect(shownValue(again.state, ref, bound)).toBe('Changed on the page');
+    expect(shownValue(again.state, { ...ref, itemPath: [items[0].id] }, bound)).toBe(items[0][bound.$item]);
+    // The design's own items are untouched.
+    expect((again.state.components[def.id].properties[list] as { default: unknown }).default).toEqual(items);
+    await again.close();
+  });
+
   it('persists edits and history across reopen (P02)', async () => {
     const { dir, s } = await make();
     await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });

@@ -265,6 +265,17 @@ function selectable(state: ProjectState, ref: ElementRef): boolean {
   return false;
 }
 
+/** Whether a reference is a part of a placed component's design that only lays out other parts: an element
+ *  that is neither the design's root nor one repeated item of a list. Containers on the page itself are the
+ *  author's own structure and never count. */
+function layoutPart(state: ProjectState, ref: ElementRef): boolean {
+  if (!ref.instancePath.length || !ref.partId) return false;
+  const { tree, node } = resolveRef(state, ref);
+  if (!tree || node?.kind !== 'element' || tree.rootIds[0] === node.id) return false;
+  const parentId = findParent(tree, node.id)?.parentId;
+  return !parentId || own(tree.nodes, parentId)?.kind !== 'repeat';
+}
+
 /** Everything a reference sits inside: the components on its instance path and the containers and sections
  *  above it in its owner's tree, as reference keys (the reference's own key included). */
 function ancestry(state: ProjectState, ref: ElementRef): Set<string> {
@@ -312,6 +323,10 @@ export function selectionFromChain(state: ProjectState, chain: BridgeDesc[], cur
   // A component's part that wraps content placed in its slot (a Section's inner container around a Card) is
   // not a step of its own: the click goes from the Section to what was placed in it.
   levels = levels.filter((l, i) => !levels.slice(i + 1).some((m) => m.owner.kind === l.owner.kind && m.owner.id === l.owner.id && m.instancePath.length < l.instancePath.length));
+  // Nor is a component's layout part (a hero's Container, a Grid, a row of Actions) around what was clicked: the
+  // click goes on to the content in it. A click on the part's own space, with nothing inside it under the
+  // pointer, still selects it, and each repeated item (a Card) stays a step of its own.
+  levels = levels.filter((l, i) => i === levels.length - 1 || !layoutPart(state, l));
   if (!levels.length) return boundaryOf(state, refs[0]);
   if (deep) return levels[levels.length - 1];
   if (current) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { blocksFromDom, richDom, type RichDomNode } from '../../src/renderer/src/lib/richtext';
-import { dropAt, moveIndex, rowsOf } from '../../src/renderer/src/lib/reorder';
+import { dropAt, dropReaches, moveIndex, rowsOf, shownOrder } from '../../src/renderer/src/lib/reorder';
 
 const el = (tag: string, ...children: RichDomNode[]): RichDomNode => ({ tag, children });
 
@@ -171,5 +171,60 @@ describe('drag to reorder', () => {
     expect(moveIndex([0, 2, 3], 3, 0)).toBe(0); // C first
     expect(moveIndex([0, 2, 3], 3, 1)).toBe(2); // C before B: [A, H, C, B]
     expect(moveIndex([0, 2, 3], 1, 0)).toBeNull(); // a hidden item is never the one dragged
+  });
+
+  describe('with an Order style showing siblings in another order than the document', () => {
+    /** The document's list after node.move puts item `from` at `index`. */
+    const moved = <T,>(list: T[], from: number, index: number) => {
+      const out = list.filter((_, i) => i !== from);
+      out.splice(index, 0, list[from]);
+      return out;
+    };
+    /** What the page shows for a list of [name, order] items. */
+    const shownNames = (list: Array<[string, number]>) => shownOrder(list.map((_, i) => i), (i) => list[i][1]).map((i) => list[i][0]);
+    /** Drag item `name` to the point (x, y) in a column of 50px boxes laid out in shown order, as the canvas does. */
+    function drag(list: Array<[string, number]>, name: string, y: number) {
+      const order = (i: number) => list[i][1];
+      const shown = shownOrder(list.map((_, i) => i), order);
+      // Measured in document order, each where the page shows it.
+      const rects = list.map((_, i) => box(0, shown.indexOf(i) * 60));
+      const from = list.findIndex(([n]) => n === name);
+      const drop = dropAt(shown.map((i) => rects[i]), 50, y);
+      const index = moveIndex(shown, from, drop.to, order);
+      return { drop, reaches: dropReaches(shown, from, drop.to, order), after: index === null ? null : shownNames(moved(list, from, index)) };
+    }
+    // A is shown last: the page shows B, C, D, A.
+    const list: Array<[string, number]> = [['A', 1], ['B', 0], ['C', 0], ['D', 0]];
+
+    it('lays the siblings out by their order', () => {
+      expect(shownNames(list)).toEqual(['B', 'C', 'D', 'A']);
+    });
+
+    it('puts an item dropped between two shown rows between them', () => {
+      const between = drag(list, 'D', 55);
+      expect(between.drop.line).toEqual({ x: 0, y: 59, width: 100, height: 3 });
+      expect(between.after).toEqual(['B', 'D', 'C', 'A']);
+      expect(drag(list, 'D', 5).after).toEqual(['D', 'B', 'C', 'A']);
+      expect(drag(list, 'B', 175).after).toEqual(['C', 'D', 'B', 'A']);
+      expect(drag(list, 'C', 5).after).toEqual(['C', 'B', 'D', 'A']);
+    });
+
+    it('moves nothing where the order keeps the item out, and shows no line there', () => {
+      // After A, which its order keeps last, and A anywhere among the others.
+      expect(drag(list, 'D', 300)).toMatchObject({ reaches: false, after: null });
+      expect(drag(list, 'A', 55)).toMatchObject({ reaches: false, after: null });
+      // Dropped where it already is: nothing to do, and nothing wrong.
+      expect(drag(list, 'A', 300)).toMatchObject({ reaches: true, after: null });
+      expect(drag(list, 'C', 80)).toMatchObject({ reaches: true, after: null });
+    });
+
+    it('places an item among the siblings of its own order when orders surround it', () => {
+      // B first, D last: the page shows B, A, C, E, D. E goes between B and A, then between C and D.
+      const mixed: Array<[string, number]> = [['A', 0], ['B', -1], ['C', 0], ['D', 1], ['E', 0]];
+      expect(shownNames(mixed)).toEqual(['B', 'A', 'C', 'E', 'D']);
+      expect(drag(mixed, 'E', 55).after).toEqual(['B', 'E', 'A', 'C', 'D']);
+      expect(drag(mixed, 'A', 175).after).toEqual(['B', 'C', 'A', 'E', 'D']);
+      expect(drag(mixed, 'C', 5)).toMatchObject({ reaches: false, after: null });
+    });
   });
 });

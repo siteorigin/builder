@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { blocksFromDom, richDom } from '../../src/renderer/src/lib/richtext';
+import { inlineLinkProblem } from '../../src/renderer/src/lib/link-problems';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
@@ -85,7 +86,15 @@ describe.skipIf(!browserInstalled)('the formatting toolbar while rich text is ed
       if (url.origin === HOST) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>host</title><body style="margin:0"><iframe name="so-test" src="${SITE}/frame" style="border:0;width:700px;height:500px"></iframe></body>` });
       return route.abort();
     });
-    await page.addInitScript(`if (location.origin === '${HOST}') { window.seen = []; window.addEventListener('message', (e) => { if (e.data && e.data.sessionId === 'so-test') window.seen.push({ type: e.data.type, payload: e.data.payload }); }); }`);
+    // The host stands in for the editor: it answers the link field's check of each destination, as Canvas does.
+    await page.exposeFunction('soLinkProblem', (href: string) => inlineLinkProblem(href, pages));
+    await page.addInitScript(`if (location.origin === '${HOST}') { window.seen = []; window.addEventListener('message', async (e) => {
+      if (!e.data || e.data.sessionId !== 'so-test') return;
+      window.seen.push({ type: e.data.type, payload: e.data.payload });
+      if (e.data.type !== 'checkLink') return;
+      const problem = await window.soLinkProblem(e.data.payload.href);
+      e.source.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'linkChecked', payload: { check: e.data.payload.check, ...(problem ? { problem } : {}) } }, '*');
+    }); }`);
     await page.goto(`${HOST}/`);
     frame = page.frames().find((f) => f.name() === 'so-test')!;
     await frame.waitForSelector('html[data-so-editing]', { state: 'attached' });

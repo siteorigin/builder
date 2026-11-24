@@ -61,14 +61,36 @@ function lineFor(boxes: Box[], row: number[], to: number): Box {
 }
 
 /**
- * Map a drop among the visible siblings to a move in the full list (hidden siblings take no space on the
- * canvas but keep their place in the document). `visible` holds each visible sibling's index in the full
- * list, in order; `from` is the dragged item's full index. Returns the node.move index, or null when the
- * visible order would not change.
+ * The visible siblings (their indexes in the full list) in the order the page lays them out: by CSS order (an
+ * Order style moves an element among its siblings), then as the document has them.
  */
-export function moveIndex(visible: number[], from: number, to: number): number | null {
-  const fromVisible = visible.indexOf(from);
-  if (fromVisible < 0 || to === fromVisible || to === fromVisible + 1) return null;
-  const target = to < visible.length ? visible[to] : visible[visible.length - 1] + 1;
+export function shownOrder(visible: number[], order: (i: number) => number = () => 0): number[] {
+  return [...visible].sort((a, b) => order(a) - order(b) || a - b);
+}
+
+/**
+ * Map a drop among the visible siblings to a move in the full list (hidden siblings take no space on the
+ * canvas but keep their place in the document). `shown` holds each visible sibling's index in the full list,
+ * in the order the page shows them (see shownOrder); `to` is the gap in that order the item was dropped in;
+ * `from` is the dragged item's full index. The item lands in front of the sibling after the gap, or just
+ * after the one before it, whichever shares its CSS order: no move in the document takes an item out of its
+ * order's place. Returns the node.move index; null when the shown order would not change, or (see dropReaches)
+ * when the gap is outside the item's order.
+ */
+export function moveIndex(shown: number[], from: number, to: number, order: (i: number) => number = () => 0): number | null {
+  const at = shown.indexOf(from);
+  if (at < 0 || to === at || to === at + 1 || !dropReaches(shown, from, to, order)) return null;
+  const next = shown[to];
+  const target = next !== undefined && order(next) === order(from) ? next : shown[to - 1] + 1;
   return target > from ? target - 1 : target;
+}
+
+/** Whether a move in the document can put the dragged item in gap `to` of the shown order: a sibling either
+ *  side of the gap has the item's CSS order, or the gap is where the item already is. */
+export function dropReaches(shown: number[], from: number, to: number, order: (i: number) => number = () => 0): boolean {
+  const at = shown.indexOf(from);
+  if (at < 0) return false;
+  if (to === at || to === at + 1) return true;
+  const own = order(from);
+  return (to < shown.length && order(shown[to]) === own) || (to > 0 && order(shown[to - 1]) === own);
 }

@@ -64,6 +64,32 @@ await label.press('Enter');
 await notice.getByRole('combobox', { name: 'Notice link type', exact: true }).selectOption('page');
 await notice.getByRole('combobox', { name: 'Notice page', exact: true }).selectOption(contact);
 await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'page', target: contact }, 'the notice links to Contact'));
+
+step('a web address the project cannot store is explained beside the field, which keeps it');
+const linkType = notice.getByRole('combobox', { name: 'Notice link type', exact: true });
+await linkType.selectOption('url');
+const address = notice.getByRole('textbox', { name: 'Notice web address', exact: true });
+// A saved web address first, then one typed over it that the project cannot store.
+await address.fill('https://example.com/visit');
+await address.press('Enter');
+await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'url', target: 'https://example.com/visit' }, 'the web address is stored'));
+await address.fill('example.com');
+await address.press('Enter');
+const problem = notice.locator('.field-error[role="alert"]');
+await eventually(async () => assert.equal(await problem.innerText(), 'A web address starts with https://, such as https://example.com.', 'the field says what is wrong'));
+// Past the moment a refused field would put the saved value back: the typed text stays, marked invalid.
+await win.waitForTimeout(1000);
+assert.equal(await address.inputValue(), 'example.com', 'the field keeps what was typed');
+assert.equal(await address.getAttribute('aria-invalid'), 'true', 'the field is marked invalid');
+assert.ok((await address.getAttribute('aria-describedby')).split(' ').includes(await problem.getAttribute('id')), 'the message describes the field');
+assert.deepEqual((await headerProps()).noticeLink, { type: 'url', target: 'https://example.com/visit' }, 'nothing is stored');
+await address.fill('https://example.com');
+await address.press('Enter');
+await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'url', target: 'https://example.com' }, 'the corrected address is stored'));
+assert.equal(await problem.count(), 0, 'the message goes once the address is good');
+await linkType.selectOption('page');
+await notice.getByRole('combobox', { name: 'Notice page', exact: true }).selectOption(contact);
+await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'page', target: contact }, 'the notice links to Contact again'));
 const headerId = s0.site.shell.header.rootIds[0];
 const bar = frame.locator('header.so-header .so-header__notice');
 await eventually(async () => assert.equal((await bar.innerText()).replace(/\s+/g, ' ').trim(), `${NOTICE} Get directions`, 'the canvas shows the notice and its link'), 30000);

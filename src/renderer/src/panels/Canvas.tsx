@@ -10,7 +10,9 @@ import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveL
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
-import { dropAt, moveIndex } from '../lib/reorder';
+import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
+import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
+import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
@@ -39,7 +41,6 @@ const isMac = api.platform === 'darwin';
 const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
 const ariaKeys = (k: string) => (isMac ? k : k.replace('Meta', 'Control'));
 
-const samePath = (a: string, b: string | null) => !!b && (a === b || a === b + '/' || a + '/' === b);
 /** The site's page addresses as they are now (see siteAddresses). */
 const siteNow = () => siteAddresses(Object.values(getState().snapshot?.state.pages ?? {}).map((pg) => pg.route));
 
@@ -138,8 +139,8 @@ export function Canvas() {
   /** The inline edit the editor started; the preview cannot commit text on its own. */
   /** Inline text edits in progress, with the project and the AI's activity when each began. */
   const pendingEdits = useRef(new Map<string, { ref: ElementRef; desc: string; base: ReturnType<typeof getState>['snapshot']; ai: number }>());
-  /** The route the editor last asked the page to show; its acknowledgement is the one that counts. */
-  const pendingNav = useRef<string | null>(null);
+  /** The pages the editor asked the frame for, and which of its reports it follows (see lib/frame-nav). */
+  const nav = useRef(newFrameNav());
   /** The list item the page was last asked to reveal (see syncReveal). */
   const sentReveal = useRef<RevealTarget | null>(null);
   /** The route the page last said it is showing, or null while a navigation the editor asked for is on its way. */
@@ -309,7 +310,7 @@ export function Canvas() {
     let live = true;
     measureWaiters.current.set(requestId, (raw) => {
       if (!live) return;
-      const found = (measuredRects(raw, descs.length) ?? []).filter((r): r is Rect => !!r);
+      const found = (measuredRects(raw, descs.length) ?? []).filter((r): r is Rect & { order: number } => !!r);
       setEmptyTop(found.length ? Math.max(...found.map((r) => r.y + r.height)) : 0);
     });
     post('measure', { requestId, descs });
@@ -376,6 +377,7 @@ export function Canvas() {
   // A new page load (another server, Try again) or closing the editor ends any edit the old page had open.
   useEffect(() => {
     frameAt.current = null;
+    nav.current = newFrameNav();
     frameTextFocus.active = false;
     endInlineEdit();
   }, [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -396,7 +398,8 @@ export function Canvas() {
           const path = String(p.path);
           // A page loaded in full inside the same frame while previewing (a visitor's Back across documents) is
           // followed, so the editor and the frame agree on the page.
-          const reloaded = readySession.current === session && s.mode === 'preview';
+          const sameFrame = readySession.current === session;
+          const reloaded = sameFrame && s.mode === 'preview';
           readySession.current = session;
           // The visitor left the page they were on.
           if (reloaded && s.previewReturn) setState({ previewReturn: null });
@@ -425,8 +428,31 @@ export function Canvas() {
           // A new page starts with nothing revealed.
           sentReveal.current = null;
           syncReveal();
-          // A page chosen while the preview was starting wins: the navigate effect opens it next.
-          if (!s.pageId || reloaded) syncPage(path);
+          const request = nav.current.request;
+          if (!sameFrame) {
+            // A new frame (another server, Try again) opened the page shown when it was made, and a request sent
+            // while it loaded never reached it: it is asked for the page shown now. Try again keeps the preview
+            // ready, so the navigate effect does not run for it.
+            nav.current.request = null;
+            if (s.pageId) openShownPage();
+            else {
+              syncPage(path);
+              followed(nav.current, getState().pageId);
+            }
+          } else if (request) {
+            // A new document loaded while the editor's request was on its way (the request's own fallback, or a
+            // visitor's link): the request still stands, and goes to the new document if it is not there already.
+            if (samePath(path, request.path)) nav.current.request = null;
+            else {
+              frameAt.current = null;
+              post('navigate', { path: request.path, navId: request.id });
+            }
+          }
+          // A page chosen in the editor that the frame has not been asked for yet wins: the navigate effect opens it.
+          else if (reloaded && s.pageId === nav.current.asked) {
+            syncPage(path);
+            followed(nav.current, getState().pageId);
+          }
           break;
         }
         case 'history': {
@@ -436,12 +462,12 @@ export function Canvas() {
           break;
         }
         case 'navigated': {
-          // While editing, only the reply for the page the editor last asked for counts: a late reply for an
-          // earlier request must not undo the page the user has since chosen. In Preview, a visitor's own
-          // link clicks move the editor along with them.
+          // Only the report for the page the editor last asked for counts while that request is on its way: a late
+          // report for an earlier one must not switch back to a page the author has since left. In Preview, a
+          // visitor's own link clicks then move the editor along with them; while editing, the page goes
+          // nowhere the editor did not send it.
           const path = String(p.path);
-          if (getState().mode !== 'preview' && pendingNav.current && !samePath(path, pendingNav.current)) break;
-          pendingNav.current = path;
+          if (!followReport(nav.current, path, typeof p.navId === 'number' ? p.navId : null, getState().pageId, getState().mode === 'preview')) break;
           // The page the frame is showing, so following it below does not send the frame back there (which would
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
@@ -458,6 +484,7 @@ export function Canvas() {
             setRetrying(false);
           }
           syncPage(path);
+          followed(nav.current, getState().pageId);
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
           // What the panel said about the last page's sends is not about this one, and nor is a live test's answer.
@@ -531,7 +558,12 @@ export function Canvas() {
           // or went away while it was typed (the page was updated from somewhere else) is still committed, against
           // the element as it was: it is checked before it is applied and kept for the author if it cannot be.
           if (!d || JSON.stringify([d.ctx, d.node, d.items]) !== edit.desc) break;
-          if (!edit.base && !canInlineEdit(edit.ref)) break;
+          // Text the editor keeps nothing of goes back to what the page showed, so it never looks saved.
+          const putBack = () => post('restoreText', { editId });
+          if (!edit.base && !canInlineEdit(edit.ref)) {
+            putBack();
+            break;
+          }
           // Rich text arrives as a copy of its structure (marks, lists and links included), plain text as a string.
           const dom = p.rich !== undefined ? richDom(p.rich) : null;
           const rich = dom ? blocksFromDom(dom, getState().snapshot?.state.pages ?? {}) : null;
@@ -543,6 +575,7 @@ export function Canvas() {
           if (value === null || (Array.isArray(value) && value.length > 500)) {
             toast('That text change could not be saved. Try editing it in the Inspector.', 'error');
             reportRefused('That text change could not be saved. Try editing it in the Inspector.');
+            putBack();
             break;
           }
           // Typed on the page, like any typed edit: if the AI ran meanwhile, it is the edit of the text as it was
@@ -550,7 +583,7 @@ export function Canvas() {
           const snap = getState().snapshot;
           const typedText = typeof value === 'string' ? value : richTextToMarkdown(value, snap?.state.pages ?? {});
           // An edit that leaves the field as it was rebuilds nothing: the page puts back the text it showed.
-          const restore = (r: 'restore' | void) => void (r === 'restore' && post('restoreText', { editId }));
+          const restore = (r: 'restore' | void) => void (r === 'restore' && putBack());
           if (snap?.aiBusy || aiActivity() !== edit.ai) commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base).then(restore), typedText, { check: true });
           else {
             // Built from the field editing began on, and written only while it still holds what it held then (see
@@ -561,6 +594,14 @@ export function Canvas() {
             const review = !!edit.base && p.detached === true && (shown === null ? Array.isArray(value) : !showsInlineText(edit.base, edit.ref, shown));
             commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base ?? undefined).then(restore), typedText, review ? { review, ...(shown !== null ? { shown } : {}) } : {});
           }
+          break;
+        }
+        case 'checkLink': {
+          // A destination typed in the page's link field, checked against the site's pages before the words are
+          // linked: the field keeps it, and says what is wrong, until it names somewhere the site can link to.
+          if (!pendingEdits.current.has(String(p.editId)) || typeof p.href !== 'string') break;
+          const problem = inlineLinkProblem(p.href.slice(0, 2000), getState().snapshot?.state.pages ?? {});
+          post('linkChecked', { check: p.check, ...(problem ? { problem } : {}) });
           break;
         }
         case 'linkDropped':
@@ -822,16 +863,20 @@ export function Canvas() {
     };
   });
 
-  // Navigate when the current page changes.
-  useEffect(() => {
-    if (!ready || !page) return;
+  /** Ask the frame for the page the editor shows, unless it is there already or already asked for. */
+  function openShownPage() {
+    const s = getState();
+    const shown = s.pageId ? s.snapshot?.state.pages[s.pageId] : undefined;
+    if (!shown) return;
+    const request = nav.current.request;
+    if (request && nav.current.asked === shown.id && samePath(shown.route, request.path)) return;
     // The page already went there itself (a link clicked while previewing): leave it where it is.
-    if (samePath(page.route, frameAt.current)) return;
+    if (samePath(shown.route, frameAt.current)) return void askFrame(nav.current, shown.id, null);
     // A page the editor opens while previewing (a new address, a page picked) is where the visitor starts again; Edit
     // no longer returns to a selection on another page.
     if (getState().mode === 'preview') {
       previewFrom.current = null;
-      if (getState().previewReturn && getState().previewReturn?.pageId !== pageId) setState({ previewReturn: null });
+      if (getState().previewReturn && getState().previewReturn?.pageId !== shown.id) setState({ previewReturn: null });
     }
     // Until the page confirms the navigation, it is "opening", not ready. Focus in the leaving page moves to the
     // canvas, which stays.
@@ -841,9 +886,13 @@ export function Canvas() {
     setFrameError(null);
     setRetrying(false);
     if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
-    pendingNav.current = page.route;
+    const navId = askFrame(nav.current, shown.id, shown.route);
     frameAt.current = null;
-    post('navigate', { path: page.route });
+    post('navigate', { path: shown.route, navId });
+  }
+  // Navigate when the current page changes.
+  useEffect(() => {
+    if (ready && page) openShownPage();
   }, [pageId, page?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
@@ -987,7 +1036,7 @@ export function Canvas() {
     window.addEventListener('pointercancel', early, { once: true });
     window.addEventListener('blur', early, { once: true });
     const requestId = Math.random().toString(36).slice(2);
-    const rects = await new Promise<Array<Rect | null> | null>((resolve) => {
+    const rects = await new Promise<Array<(Rect & { order: number }) | null> | null>((resolve) => {
       measureWaiters.current.set(requestId, (raw) => resolve(measuredRects(raw, info.list.length)));
       // A sibling the page cannot show (no placement) is asked for by a descriptor that matches nothing.
       // Siblings share the selection's repeated item, so every box comes from the same copy of the list.
@@ -999,10 +1048,13 @@ export function Canvas() {
     window.removeEventListener('pointercancel', early);
     window.removeEventListener('blur', early);
     const from = info.index;
-    // Siblings hidden at this width take no space on the page: the drag moves among the visible ones.
+    // Siblings hidden at this width take no space on the page: the drag moves among the visible ones, in the
+    // order the page shows them (an Order style can show one before siblings the document puts first).
     const visible = rects ? rects.flatMap((r, i) => (r ? [i] : [])) : [];
     if (released || !rects?.[from] || visible.length < 2) return;
-    const boxes = visible.map((i) => rects[i]!);
+    const order = (i: number) => rects[i]?.order ?? 0;
+    const shown = shownOrder(visible, order);
+    const boxes = shown.map((i) => rects[i]!);
     const name = chromeLabel(st, t);
     let to: number | null = null;
     setDragging(true);
@@ -1016,9 +1068,10 @@ export function Canvas() {
       const z = currentZoom();
       const inside = ev.clientX >= box.left && ev.clientX <= box.right && ev.clientY >= box.top && ev.clientY <= box.bottom;
       const drop = dropAt(boxes, (ev.clientX - box.left) / z, (ev.clientY - box.top) / z);
-      // Outside the page, or over the element's own place, a release moves nothing.
-      to = inside && moveIndex(visible, from, drop.to) !== null ? drop.to : null;
-      setReorder({ line: to === null ? null : drop.line, name });
+      // Outside the page, or over the element's own place, a release moves nothing. A gap among siblings of
+      // another order is one no move reaches: no line shows there either.
+      to = inside ? drop.to : null;
+      setReorder({ line: to !== null && moveIndex(shown, from, to, order) !== null ? drop.line : null, name });
     };
     const end = (commit: boolean) => {
       window.removeEventListener('pointermove', move);
@@ -1028,7 +1081,11 @@ export function Canvas() {
       window.removeEventListener('keydown', key, true);
       setDragging(false);
       setReorder(null);
-      const index = commit && to !== null ? moveIndex(visible, from, to) : null;
+      if (commit && to !== null && !dropReaches(shown, from, to, order)) {
+        toast('Its Order style keeps it out of that spot at this size, so it stays where it was. Change Order in its styles to move it there.', 'info');
+        return;
+      }
+      const index = commit && to !== null ? moveIndex(shown, from, to, order) : null;
       if (index !== null) void announcedMove(() => applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], 'Move'));
     };
     const up = () => end(true);

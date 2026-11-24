@@ -9,6 +9,7 @@ const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 const dir = join(WORK, 'sites', 'harbour-lane-studio');
 const read = (rel) => readFileSync(join(dir, rel), 'utf8');
+const projectSnapshot = () => win.evaluate(() => window.builder.project.snapshot());
 await win.waitForTimeout(1500);
 await win.screenshot({ path: join(OUT, '10-images.png') });
 
@@ -51,7 +52,14 @@ await win.keyboard.press(`${MOD}+b`);
 await win.keyboard.press(`${MOD}+i`);
 await win.keyboard.press(`${MOD}+k`);
 await eventually(async () => assert.equal(await win.locator('[role="dialog"]').count(), 0, 'the command menu stays closed while editing text'));
-await win.keyboard.type('/about/');
+// An address no page has keeps the field open, says so, and links nothing.
+const linkField = frame.locator('input[aria-label="Link destination"]');
+await win.keyboard.type('/abot/');
+await win.keyboard.press('Enter');
+await eventually(async () => assert.match(await frame.locator('#so-link-error').innerText(), /No page has the address \/abot\//, 'the link field says the page does not exist'));
+assert.equal(await linkField.inputValue(), '/abot/', 'the link field keeps what was typed');
+assert.equal(await rich.locator('a').count(), 0, 'nothing is linked');
+await linkField.fill('/about/');
 await win.keyboard.press('Enter');
 await eventually(async () => assert.equal(await rich.locator('a[href="/about/"]').count(), 1, 'the words are linked'));
 await win.keyboard.press(`${MOD}+Enter`);
@@ -159,6 +167,27 @@ await eventually(async () => assert.equal(await rich.getAttribute('contenteditab
 await win.waitForTimeout(500);
 assert.equal((await mediaBody()).revision, settled, 'reopening and leaving the text is no change');
 assert.equal(await second.locator('br').count(), 2, 'the lines stay');
+
+step('rich text the project refuses goes back to what was saved');
+const savedRich = await rich.innerHTML();
+// One run of words over the 20,000 characters text may hold, and the same length split across two runs.
+for (const long of ['<p>' + 'x'.repeat(20001) + '</p>', '<p>' + 'x'.repeat(10001) + '<strong>' + 'y'.repeat(10000) + '</strong></p>']) {
+  const before = await win.evaluate(async () => (await window.builder.project.snapshot()).revision);
+  await rich.click();
+  await rich.dblclick();
+  await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited'));
+  await rich.evaluate((el, html) => {
+    el.innerHTML = html;
+    el.dispatchEvent(new Event('input'));
+  }, long);
+  await win.keyboard.press(`${MOD}+Enter`);
+  await eventually(async () => assert.equal(await rich.innerHTML(), savedRich, 'the page shows the saved text again'));
+  assert.equal(await rich.getAttribute('contenteditable'), null, 'the edit has ended');
+  assert.equal(await win.evaluate(async () => (await window.builder.project.snapshot()).revision), before, 'nothing was stored');
+  await eventually(async () => assert.ok((await win.locator('.toast').allInnerTexts()).some((t) => /could not be saved|too long/i.test(t)), 'the author is told why'));
+}
+// Those messages go in their own time, before the steps that check no error is shown.
+await eventually(async () => assert.equal(await win.locator('.toast.error').count(), 0, 'the refusals are no longer shown'), 20000);
 
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
@@ -449,23 +478,33 @@ await win.getByRole('button', { name: /Make a copy and edit/ }).click();
 await win.locator('.mode-band').waitFor();
 await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'entering outlines the design on the canvas'));
 // A click in the page picks the design's own node under the pointer: Layers and the inspector follow it.
-const gridId = await win.evaluate(async () => {
-  const s = await window.builder.project.snapshot();
-  return s.state.pages[s.state.site.homePageId].rootIds[2];
+// The services grid now places the project's own copy of its design: its heading is that copy's part.
+const fork = await eventually(async () => {
+  const s = await projectSnapshot();
+  const page = s.state.pages[s.state.site.homePageId];
+  const grid = page.nodes[page.rootIds[2]];
+  const def = s.state.components[grid.definitionId];
+  assert.equal(def.owner, 'project', 'the grid places the copy being edited');
+  return { gridId: grid.id, defId: def.id, headingNode: def.parts.heading.nodeId };
 });
-const gridHeading = frame.locator(`[data-so-ctx$="|${gridId}"] h2`).first();
-const headingNode = await gridHeading.getAttribute('data-so-node');
-// The preview can still be settling after entering the mode: click again until the pick lands, as for the plans.
+const { gridId, headingNode } = fork;
+const headingRow = win.locator(`[role="treeitem"][data-owner="component:${fork.defId}"][data-node="${headingNode}"]`);
+// The copy's heading as the preview shows it once the copy is built (its class names the copy), not the
+// original's, which a click while the preview catches up would miss.
+const gridHeading = frame.locator(`[data-so-ctx$="|${gridId}"] h2[class*="so-${fork.defId.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()}__"]`).first();
+await gridHeading.waitFor({ timeout: 30000 });
+// The preview can still be settling after entering the mode: a click the canvas missed is clicked again, and
+// picking in the design selects the same node each time.
 await eventually(async () => {
-  await gridHeading.click({ timeout: 3000 });
-  assert.equal(await win.locator(`[role="tree"] [data-node="${headingNode}"]`).getAttribute('aria-selected', { timeout: 1500 }), 'true', 'Layers selects the picked node of the design');
-});
+  if ((await headingRow.count()) !== 1 || (await headingRow.getAttribute('aria-selected')) !== 'true') await gridHeading.click({ timeout: 3000 });
+  await eventually(async () => assert.equal(await headingRow.getAttribute('aria-selected'), 'true', 'Layers selects the picked node of the design'), 3000);
+}, 20000);
 await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'the picked node is outlined'));
 await win.locator('.insp-scope.definition').first().waitFor();
 // And back: Escape shows the overview, then the Layers row outlines that node on the canvas again.
 await win.keyboard.press('Escape');
 await eventually(async () => assert.equal(await win.locator('.ov-selected').count(), 0, 'Escape clears the selection'));
-await win.locator(`[role="tree"] [data-node="${headingNode}"]`).click();
+await headingRow.click();
 await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'a Layers pick in the design is outlined on the canvas'));
 await win.locator('.insp-scope.definition').first().waitFor();
 await win.locator('.mode-band-done').click();
