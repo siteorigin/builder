@@ -1119,7 +1119,19 @@ const LINK_EDITOR_CSS = `
 function linkRun(anchor) {
   // Which marks an anchor's words carry: one link over words with the same marks is a single anchor, so two
   // neighbouring anchors with the same marks are two links.
-  const marks = (a) => [...new Set([...a.querySelectorAll('strong, b, em, i')].map((e) => (e.tagName === 'B' ? 'STRONG' : e.tagName === 'I' ? 'EM' : e.tagName)))].sort().join();
+  const marks = (a) => {
+    const kinds = new Set();
+    const walker = document.createTreeWalker(a, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      if (!t.nodeValue.trim()) continue;
+      const inside = (sel) => {
+        const m = t.parentElement.closest(sel);
+        return !!m && a.contains(m);
+      };
+      kinds.add(`${inside('strong, b') ? 'S' : ''}${inside('em, i') ? 'E' : ''}`);
+    }
+    return [...kinds].sort().join();
+  };
   const same = (n, beside) => n && n.nodeType === 1 && n.tagName === 'A' && n.getAttribute('href') === anchor.getAttribute('href') && n.getAttribute('target') === anchor.getAttribute('target') && marks(n) !== marks(beside);
   const next = (n, dir) => {
     let m = dir < 0 ? n.previousSibling : n.nextSibling;

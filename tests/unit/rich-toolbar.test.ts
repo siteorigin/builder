@@ -309,6 +309,15 @@ describe.skipIf(!browserInstalled)('the formatting toolbar while rich text is ed
     await expect.poll(rich).toBe('<p><a href="/about/">First<br>line</a> second</p>');
   });
 
+  it('takes every part of a link whose first part mixes bold and plain words', async () => {
+    await setRich('<p><a href="/about/"><b>First</b><br>line</a> <a href="/about/"><strong>second</strong></a> end</p>');
+    await beginEdit('r');
+    await select('second', 2);
+    await button('Edit link').click();
+    await frame.getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect.poll(rich).not.toContain('<a');
+  });
+
   it('keeps the caret on its side of a line break when the list changes kind', async () => {
     await setRich('<ul class="so-rich--bullet"><li>First<br>Second</li><li>Other</li></ul>');
     await beginEdit('r');
