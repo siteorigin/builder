@@ -89,21 +89,19 @@ describe.runIf(BROWSER)('a button in a browser', () => {
     const tab = await browser!.newPage({ viewport: { width: viewport, height: 800 } });
     try {
       await tab.setContent(`<!doctype html><html><head><style>${sheets(s).all}</style></head><body>${html}</body></html>`);
-      return await tab.evaluate(
-        ([names]) => {
-          const box = (el: Element | null, within: Element | null): Box => {
-            const r = el!.getBoundingClientRect();
-            return { width: Math.round(r.width), left: Math.round(r.left - (within ? within.getBoundingClientRect().left : 0)) };
-          };
-          const inner = document.getElementById('inner');
-          const out: Record<string, Box> = { inner: box(inner, null) };
-          const stack = document.getElementById('stack');
-          if (stack) out.stack = box(stack, inner);
-          for (const id of names) out[id] = box(document.getElementById(id), document.getElementById(id)!.parentElement);
-          return out;
-        },
-        [ids]
-      ) as Record<string, Box> & { inner: Box; stack: Box };
+      // As a string: the Node projects have no DOM types, and the other browser tests read the page the same way.
+      return (await tab.evaluate(`(() => {
+        const box = (el, within) => {
+          const r = el.getBoundingClientRect();
+          return { width: Math.round(r.width), left: Math.round(r.left - (within ? within.getBoundingClientRect().left : 0)) };
+        };
+        const inner = document.getElementById('inner');
+        const out = { inner: box(inner, null) };
+        const stack = document.getElementById('stack');
+        if (stack) out.stack = box(stack, inner);
+        for (const id of ${JSON.stringify(ids)}) out[id] = box(document.getElementById(id), document.getElementById(id).parentElement);
+        return out;
+      })()`)) as Record<string, Box> & { inner: Box; stack: Box };
     } finally {
       await tab.close();
     }
