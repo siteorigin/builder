@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, Conversation } from '@shared/api';
-import { composerAction, imageLabels, isPaused, isStarting, offeredImages, questionHint, shownQuestions, waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
+import { chatBusy, composerAction, imageLabels, isPaused, isStarting, offeredImages, questionHint, shownQuestions, waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
 
 const t = '2026-11-20T09:00:00.000Z';
 const audience = { id: 'q_1', text: 'Who is the page for?', choices: ['New clients', 'Both equally'], answered: 'Both equally' };
@@ -82,6 +82,28 @@ describe('a turn paused for the author', () => {
     expect(isPaused(null, 'm_a', true, false)).toBe(false);
     // An earlier turn of a waiting run is finished, not paused.
     expect(isPaused(asking, 'm_old', false, true)).toBe(false);
+  });
+});
+
+describe('busy for assistive technology (#490)', () => {
+  it('is busy while the AI works, and ready for input while a question waits on the author', () => {
+    const asking = waitingQuestion(conv(turn()), 'run_1', 'awaiting-input');
+    // The live turn holding the question, and the log around it, are not busy: the author is the one to act.
+    expect(chatBusy(true, isPaused(asking, 'm_a', true, true))).toBeUndefined();
+    expect(chatBusy(true, true)).toBeUndefined();
+    // Working, before a question and once the run resumes, is busy; an idle chat or a finished turn never is.
+    expect(chatBusy(true, isPaused(null, 'm_a', true, false))).toBe(true);
+    expect(chatBusy(true, false)).toBe(true);
+    expect(chatBusy(false, false)).toBeUndefined();
+  });
+
+  it('stays ready until the run resumes, even once the answer is recorded', () => {
+    // The answered turn arrives before the status leaves awaiting-input: no question waits, but the run has not resumed.
+    const answered = turn({ questions: [audience, { ...tone, answered: 'Calm' }] });
+    const asking = waitingQuestion(conv(answered), 'run_1', 'awaiting-input');
+    expect(asking).toBeNull();
+    expect(chatBusy(true, isPaused(asking, answered.id, true, true))).toBeUndefined();
+    expect(chatBusy(true, isPaused(null, answered.id, true, false))).toBe(true);
   });
 });
 
