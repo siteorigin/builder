@@ -39,13 +39,14 @@ try {
   const showcase = placed(await snapshot(), 'tabs.showcase')[0];
   await apply([{ type: 'instance.setProp', owner, nodeId: showcase.id, prop: 'tab4', value: { label: 'Support', heading: 'Help when you need it', copy: 'Call us any weekday.' } }], 'A fourth tab');
 
-  step('in Edit a click on a tab selects it and leaves the first tab showing');
+  step('the canvas shows the four tabs, the first one chosen and only its panel showing');
   const canvasList = frame.locator(`[data-so-ctx="page:${home}|${showcase.id}"][role="tablist"]`);
   await canvasList.waitFor({ timeout: 30000 });
-  await eventually(async () => assert.equal(await canvasList.getByRole('tab').count(), 4, 'the canvas shows four tabs'));
-  await canvasList.getByRole('tab', { name: 'Care' }).click();
-  await eventually(async () => assert.equal(await win.locator('#dock-panel-inspect').getByText('Tab 3', { exact: true }).first().isVisible(), true, 'the inspector shows the clicked tab'), 15000);
-  assert.equal(await canvasList.getByRole('tab', { name: 'Design' }).getAttribute('aria-selected'), 'true', 'the first tab is still chosen on the canvas');
+  await eventually(async () => assert.deepEqual(await canvasList.getByRole('tab').allInnerTexts(), ['Design', 'Build', 'Care', 'Support'], 'the canvas shows four tabs'));
+  assert.equal(await canvasList.getByRole('tab', { name: 'Design' }).getAttribute('aria-selected'), 'true', 'the first tab is chosen on the canvas');
+  const canvasPanels = frame.locator(`[data-so-ctx="page:${home}|${showcase.id}"][role="tabpanel"]`);
+  assert.equal(await canvasPanels.count(), 4, 'every tab’s panel is in the canvas page');
+  assert.deepEqual(await canvasPanels.evaluateAll((ps) => ps.map((p) => p.checkVisibility())), [true, false, false, false], 'only the first panel shows');
 
   step('export the website');
   const exportsDir = join(WORK, 'exports');
