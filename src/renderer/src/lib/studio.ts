@@ -63,6 +63,11 @@ export class StudioLoads {
     return ++this.request;
   }
 
+  /** Requests still being prepared are out of date, with no new one yet (the frame keeps what it shows). */
+  supersede(): void {
+    this.request++;
+  }
+
   /** Whether `request` is still the latest. */
   latest(request: number): boolean {
     return request === this.request;

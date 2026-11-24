@@ -16,7 +16,8 @@ import { showAsset } from './place';
 import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
 import { elementWhere, insertAt, insertOps, insertRole, nodeBefore, nodeLabel, type InsertAt, type InsertRole, type Where } from './insert-at';
-import { boundaryOf, computedAt, followsPageAt, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
+import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
+import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
@@ -642,6 +643,10 @@ export function askAiAbout(ref: ElementRef | null) {
  * visitor may have scrolled the page, and the page stays as they left it.
  */
 export function setMode(mode: 'edit' | 'preview') {
+  // Previewing is a visitor's view of the site: Component Studio, which shows a component on its own, ends first, on
+  // the page it was entered from.
+  const dm = getState().definitionMode;
+  if (mode === 'preview' && dm?.studio) setState({ definitionMode: null, pageId: dm.returnPageId, selection: null });
   const s = getState();
   const editing = s.definitionMode?.definitionId ?? null;
   if (mode === 'preview') {
@@ -671,6 +676,46 @@ export function setMode(mode: 'edit' | 'preview') {
   setState({ mode, previewReturn: null, ...(ref ? { selection: ref } : {}) });
   // The page Edit returns on (one a visitor's link opened, say) is the page being worked on, and reopens.
   if (s.pageId) saveLocal({ pageId: s.pageId });
+}
+
+/**
+ * Open one of the project's components in Component Studio (see lib/studio): edited everywhere, shown on its own
+ * rather than through a placement, so one placed nowhere, or used only inside other designs, can be designed too.
+ * Finishing goes back to the page open now (or the one Edit everywhere was entered from). The component as a whole
+ * is selected; a node of its own already selected while editing it on a page stays selected, without the item of that
+ * placement's list it was picked in. False when there is no such component of the project's own.
+ */
+export function openComponentStudio(definitionId: string): boolean {
+  const s = getState();
+  const st = s.snapshot?.state;
+  const def = st && Object.hasOwn(st.components, definitionId) ? st.components[definitionId] : undefined;
+  if (!st || !def || def.owner !== 'project') return false;
+  if (s.mode !== 'edit') setMode('edit');
+  const now = getState();
+  const same = now.definitionMode?.definitionId === definitionId;
+  const returnPageId = keepPagesValid(st, now.definitionMode?.returnPageId ?? now.pageId, null).pageId;
+  const kept = same && now.selection && inDefinition(now.selection, definitionId) ? { ...now.selection } : null;
+  if (kept) delete kept.itemPath;
+  const root = def.kind === 'managed' ? def.tree?.rootIds[0] : undefined;
+  const studio: StudioView = (same && now.definitionMode?.studio) || NEW_STUDIO;
+  setState({
+    modal: null,
+    pageId: returnPageId,
+    definitionMode: { definitionId, returnPageId, studio },
+    selection: kept ?? (root ? { owner: { kind: 'component', id: definitionId }, instancePath: [], nodeId: root } : null),
+    rightTab: 'inspect',
+    dockOpen: true,
+    // The post writer covers the canvas the studio shows on: the component's layers show instead.
+    ...(now.leftTab === 'posts' ? { leftTab: 'layers' as const } : {})
+  });
+  return true;
+}
+
+/** Change what Component Studio shows (a variant option, the sample content): the author's view only, never saved. */
+export function setStudioView(patch: Partial<StudioView>) {
+  const dm = getState().definitionMode;
+  if (!dm?.studio) return;
+  setState({ definitionMode: { ...dm, studio: { ...dm.studio, ...patch } } });
 }
 
 /** A selection made again without being scrolled to (see setMode). */

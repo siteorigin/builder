@@ -816,6 +816,14 @@ export function LayersPanel() {
             <SectionLabel id="layers-sec-component" icon={<Component />} label="Component layers" />
             <TreeList state={st} owner={defOwner} tree={defTree} ids={defTree.rootIds} depth={0} onMenu={openMenu} path={[]} labelledBy="layers-sec-component" />
           </>
+        ) : defOwner ? (
+          // A code component (in Component Studio) has no layers of its own: its markup is its code.
+          <>
+            <SectionLabel id="layers-sec-component" icon={<Component />} label="Component layers" />
+            <div className="layers-empty" role="none">
+              <p>{st.components[defOwner.id]?.name ?? 'This component'} is a code component: its layout is in its code.</p>
+            </div>
+          </>
         ) : layout ? (
           <>
             <SectionLabel id="layers-sec-header" icon={<PanelTop />} label="Shared header" />

@@ -1723,6 +1723,7 @@ const DoneButton = () => (
 
 /** Component editing with nothing selected: what is being edited, where it is used, and how to start. */
 function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: ComponentDefinition; nested?: boolean }) {
+  const studio = useStore((s) => !!s.definitionMode?.studio);
   return (
     <>
       <Header title={def.name} kind="Component design" tone="definition" icon={<Component />} actions={<DoneButton />}>
@@ -1730,7 +1731,13 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
       </Header>
       <div className="insp-empty">
         <MousePointerClick aria-hidden="true" />
-        <p>{nested ? `That belongs to a component inside ${def.name}, so it can’t be changed here. ` : ''}Click a part of {def.name} on the page, or choose one:</p>
+        {def.kind === 'code' ? (
+          <p>{def.name} is a code component: its layout and styles are in its code. Choose a variant and sample content above to see how it looks.</p>
+        ) : (
+          <p>
+            {nested ? `That belongs to a component inside ${def.name}, so it can’t be changed here. ` : ''}Click a part of {def.name} {studio ? 'in the preview' : 'on the page'}, or choose one:
+          </p>
+        )}
         <div className="insp-part-list" role="group" aria-label={`Parts of ${def.name}`}>
           {def.tree?.rootIds[0] && (
             <button className="btn btn-sm" onClick={() => selectAndFocus({ owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: def.tree!.rootIds[0] })}>
@@ -1738,7 +1745,7 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
             </button>
           )}
           {Object.entries(def.parts)
-            .filter(([id]) => id !== 'root')
+            .filter(([id]) => id !== 'root' && def.kind === 'managed')
             .map(([id, p]) => (
               <button key={id} className="btn btn-sm" onClick={() => selectAndFocus({ owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: p.nodeId, partId: id })}>
                 {p.label}
@@ -1979,7 +1986,9 @@ const listJoin = (items: string[]) => (items.length < 2 ? items.join('') : `${it
 function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectState; def: ComponentDefinition; node: GraphNode; tokens: Tokens }) {
   const scope = useStore((s) => s.styleScope);
   const devUrl = useDevUrl();
-  const pageId = useStore((s) => s.pageId);
+  // In Component Studio the canvas shows the component on its own, never through a placement on the page.
+  const pageId = useStore((s) => (s.definitionMode?.studio ? null : s.pageId));
+  const studio = useStore((s) => !!s.definitionMode?.studio);
   const selection = useStore((s) => s.selection);
   const owner: OwnerRef = { kind: 'component', id: def.id };
   const uses = instancesOf(state, def.id).length;
@@ -2159,7 +2168,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         <StyleTargetField def={def} target={look} disabledReason={lookable ? undefined : 'A look styles the elements inside this, not this itself.'} />
         {look ? (
           <>
-            {inspecting && (
+            {inspecting && !studio && (
               <div className="contract-preview" aria-label={`${def.name} with ${lookOption!.label}`}>
                 <LivePreview spec={{ definitionId: def.id, variants: { [look.axis]: look.variant } }} label={lookOption!.label} maxH={180} fallback={<span className="faint insp-note">{def.name}</span>} />
               </div>
