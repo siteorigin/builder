@@ -3,7 +3,10 @@
  * graph every page and entry of the website carries, whose publisher, website, page, breadcrumb, FAQ, contact sections
  * and search action refer to each other by stable IDs.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { applyOperations, assetUsages } from '@engine/apply';
@@ -16,6 +19,7 @@ import { buildSeoGraph, type GraphContributor, type GraphNode, type SeoGraph } f
 import { documentGraph, searchPageUrl } from '@generator/structured-data';
 import { checkCoordinates, checkOpeningHours, checkProfileUrl, checkTwitterHandle, sitePublisher } from '@shared/site-identity';
 import { fieldKey, readField, shownField, typedText } from '../../src/renderer/src/lib/held';
+import { ProjectSession } from '../../src/main/project/session';
 import { copy, image, run, seoSite } from './fixtures/seo-site';
 
 const ROOT = 'https://example.com/studio/';
@@ -200,6 +204,37 @@ describe('the site identity site.update saves', () => {
     expect(shownField(profiles, readField(s, profiles)!.found ? { identity: PROFILES } : null)).toBe(PROFILES.join('\n'));
     // Clearing it all writes every field.
     expect(readField(s, { type: 'site.update', identity: null })).toEqual({ found: true, value: { identity: s.site.identity } });
+  });
+});
+
+describe('the site identity in a project session', () => {
+  const dirs: string[] = [];
+  afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  it('saves it to site.json, undoes and redoes it, and writes it into the website’s pages each time', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-identity-'));
+    dirs.push(dir);
+    const session = await ProjectSession.create(dir, site().state);
+    const home = () => readFileSync(join(dir, 'src/routes/+page.svelte'), 'utf8');
+    const stored = () => (JSON.parse(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')) as { identity?: unknown }).identity;
+    expect(existsSync(join(dir, 'src/routes/+page.svelte'))).toBe(true);
+    expect(home()).toContain('#organization');
+    const identity = { kind: 'Person', name: 'Ana Ruiz', sameAs: ['https://github.com/anaruiz'] } as const;
+    expect((await session.apply({ operations: [{ type: 'site.update', identity: { ...identity, sameAs: [...identity.sameAs] } }] }, { label: 'Published by', source: 'user' })).ok).toBe(true);
+    expect(stored()).toEqual(identity);
+    expect(home()).toContain('\\"@id\\":\\"https://example.com/studio/#person\\",\\"name\\":\\"Ana Ruiz\\"');
+    expect(home()).not.toContain('#organization');
+    expect((await session.undo()).ok).toBe(true);
+    expect(stored()).toBeUndefined();
+    expect(home()).toContain('#organization');
+    expect((await session.redo()).ok).toBe(true);
+    expect(stored()).toEqual(identity);
+    expect(home()).toContain('#person');
+    await session.close();
+    // Opened again, it is still there.
+    const again = await ProjectSession.open(dir, 'test');
+    expect(again.state.site.identity).toEqual(identity);
+    await again.close();
   });
 });
 

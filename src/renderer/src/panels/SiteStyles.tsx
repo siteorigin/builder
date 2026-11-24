@@ -1,7 +1,7 @@
 import { variantOptions } from '@shared/variants';
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Globe, Link2, RotateCcw } from 'lucide-react';
-import type { ProjectState, TextStyleValue, TokenDef } from '@shared/types';
+import type { EntityKind, ProjectState, SiteIdentity, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
@@ -26,6 +26,7 @@ import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
 import { LANGUAGE_CODE_ERROR, languageDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
 import { siteNameNote } from '@shared/site-name';
+import { ENTITY_KIND_LABELS, ENTITY_KINDS, IDENTITY_LIMITS, checkCoordinates, checkEmail, checkHoursList, checkProfileUrl, checkProfiles, checkTelephone, checkTwitterHandle, coordinatesText, isEntityKind, type Checked, type IdentityPatch } from '@shared/site-identity';
 
 /**
  * What the Foundation theme uses each colour for, checked against its base CSS and component styles, so an
@@ -435,7 +436,7 @@ function publicUrlProblem(text: string): DraftProblem | null {
  * reason, the value still saved, and a correction when there is one, until it is corrected or discarded (Escape).
  * A saved value that can't be used (saved by hand or by an earlier version) is pointed out the same way.
  */
-function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder, id }: { id?: string; label: string; hint: string; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string }) {
+function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder, id, multiline, rows }: { id?: string; label: string; hint: string; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string; multiline?: boolean; rows?: number }) {
   // A value of another kind (written by hand into the project's files) is shown as text, to be corrected.
   const value = typeof saved === 'string' ? saved : saved == null ? '' : JSON.stringify(saved);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
@@ -465,8 +466,114 @@ function CheckedField({ label, hint, value: saved, check, onCommit, unusable, cl
   );
   return (
     <Field label={label} hint={hint} error={error}>
-      <DraftInput id={id} className={className} value={value} placeholder={placeholder} check={check} onProblem={setProblem} onDirty={setDirty} reveal={revealSiteDetails} handle={handle} onCommit={onCommit} />
+      <DraftInput id={id} className={className} value={value} placeholder={placeholder} multiline={multiline} rows={rows} check={check} onProblem={setProblem} onDirty={setDirty} reveal={revealSiteDetails} handle={handle} onCommit={onCommit} />
     </Field>
+  );
+}
+
+/** A check's refusal as a field shows it. */
+const refusalOf = <T,>(c: Checked<T>): DraftProblem | null => (c.ok ? null : { message: c.message });
+/** A checked value, or nothing for a refusal (the field never commits one). */
+const valueOf = <T,>(c: Checked<T>): T | null => (c.ok ? c.value : null);
+const textOf = (v: unknown) => (typeof v === 'string' ? v : '');
+const linesOf = (v: unknown) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string').join('\n') : textOf(v));
+
+/**
+ * Who publishes the site (shared/site-identity.ts), as its pages tell search engines and AI answer engines: its kind,
+ * name, home page, logo, profiles elsewhere and contact details, and a local business's hours, prices and place on the
+ * map. Each field saves on its own, and text it can't take stays in it with the reason, as the Public URL does.
+ */
+function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState; workspaceKey?: string; onPatch: (patch: IdentityPatch) => unknown }) {
+  const uid = useId();
+  const raw: unknown = state.site.identity;
+  const identity = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Partial<Record<keyof SiteIdentity, unknown>>;
+  const kind: EntityKind | '' = isEntityKind(identity.kind) ? identity.kind : '';
+  const unusable = 'The website leaves it out until it is corrected.';
+  // Keyed by the project's opening: text one project refused never shows in the next.
+  const key = (field: string) => `identity-${field}-${workspaceKey}`;
+  return (
+    <div className="ss-group" role="group" aria-labelledby={`${uid}-identity`}>
+      <div className="ss-group-label" id={`${uid}-identity`}>
+        Entity &amp; identity
+      </div>
+      <Field label="Published by" hint="Who search engines and AI answer engines are told the site belongs to.">
+        <select id="site-identity-kind" className="select" value={kind} onChange={(e) => onPatch({ kind: isEntityKind(e.target.value) ? e.target.value : null })}>
+          <option value="">Not set</option>
+          {ENTITY_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {ENTITY_KIND_LABELS[k]}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Name" hint={kind === 'Person' ? 'Your name, when it is not the site’s.' : 'The legal or brand name, when it is not the site’s.'}>
+        <DraftInput id="site-identity-name" value={textOf(identity.name)} placeholder={state.site.name} limit={IDENTITY_LIMITS.name} onCommit={(v) => onPatch({ name: v.trim() || null })} />
+      </Field>
+      <CheckedField
+        key={key('url')}
+        id="site-identity-url"
+        label="Home page"
+        hint="Its own website, when it is not this one."
+        value={identity.url}
+        placeholder="https://"
+        check={(v) => refusalOf(checkProfileUrl(v, 'The home page address'))}
+        unusable={unusable}
+        onCommit={(v) => onPatch({ url: valueOf(checkProfileUrl(v)) || null })}
+      />
+      <Field hint={kind === 'Person' ? 'A photo search engines can show beside your name.' : 'The logo search engines can show beside the name. A square image works best.'}>
+        <div id="site-identity-logo" style={{ display: 'contents' }}>
+          <SiteImageField title={kind === 'Person' ? 'Photo' : 'Logo'} plain="logo" state={state} value={textOf(identity.logo) || null} onChange={(id) => onPatch({ logo: id })} />
+        </div>
+      </Field>
+      <CheckedField
+        key={key('profiles')}
+        id="site-identity-profiles"
+        label="Profiles"
+        hint="Pages elsewhere that say who it is, one address per line: Wikidata, LinkedIn, GitHub, X, YouTube."
+        value={linesOf(identity.sameAs)}
+        placeholder="https://www.wikidata.org/wiki/…"
+        multiline
+        rows={3}
+        check={(v) => refusalOf(checkProfiles(v))}
+        unusable={unusable}
+        onCommit={(v) => onPatch({ sameAs: valueOf(checkProfiles(v)) ?? [] })}
+      />
+      <CheckedField key={key('x')} id="site-identity-x" label="X handle" hint="Named on link previews shared on X." value={identity.twitterSite} placeholder="@" check={(v) => refusalOf(checkTwitterHandle(v))} unusable={unusable} onCommit={(v) => onPatch({ twitterSite: valueOf(checkTwitterHandle(v)) || null })} />
+      <Field label="Address" hint="On one line, as people would write it on a letter.">
+        <DraftInput id="site-identity-address" value={textOf(identity.address)} limit={IDENTITY_LIMITS.address} onCommit={(v) => onPatch({ address: v.trim() || null })} />
+      </Field>
+      <CheckedField key={key('telephone')} id="site-identity-telephone" label="Telephone" hint="With the country code, such as +27 21 555 0134." value={identity.telephone} check={(v) => refusalOf(checkTelephone(v))} unusable={unusable} onCommit={(v) => onPatch({ telephone: valueOf(checkTelephone(v)) || null })} />
+      <CheckedField key={key('email')} id="site-identity-email" label="Email" hint="An address people can write to." value={identity.email} check={(v) => refusalOf(checkEmail(v))} unusable={unusable} onCommit={(v) => onPatch({ email: valueOf(checkEmail(v)) || null })} />
+      {kind === 'LocalBusiness' && (
+        <>
+          <CheckedField
+            key={key('hours')}
+            id="site-identity-hours"
+            label="Opening hours"
+            hint="One period per line, days then hours on a 24-hour clock: Mo-Fr 09:00-17:00, Sa 10:00-14:00."
+            value={linesOf(identity.openingHours)}
+            multiline
+            rows={3}
+            check={(v) => refusalOf(checkHoursList(v))}
+            unusable={unusable}
+            onCommit={(v) => onPatch({ openingHours: valueOf(checkHoursList(v)) ?? [] })}
+          />
+          <Field label="Price range" hint="How much things cost, such as $$ or R100–R400.">
+            <DraftInput id="site-identity-price" value={textOf(identity.priceRange)} limit={IDENTITY_LIMITS.priceRange} onCommit={(v) => onPatch({ priceRange: v.trim() || null })} />
+          </Field>
+          <CheckedField
+            key={key('geo')}
+            id="site-identity-geo"
+            label="Map position"
+            hint="Latitude and longitude, such as -33.92, 18.42."
+            value={coordinatesText(identity.geo as SiteIdentity['geo'])}
+            check={(v) => refusalOf(checkCoordinates(v))}
+            unusable={unusable}
+            onCommit={(v) => onPatch({ geo: valueOf(checkCoordinates(v)) ?? null })}
+          />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1397,6 +1504,7 @@ export function SiteStyles() {
             <SiteImageField title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} />
           </div>
         </Field>
+        <IdentityFields state={st} workspaceKey={snap?.workspaceKey} onPatch={(identity) => updSite({ identity })} />
       </Section>
 
       <Section title="Visitor text" id="site-visitor-text" defaultOpen={false}>
