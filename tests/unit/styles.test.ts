@@ -140,6 +140,7 @@ describe('grid tracks and row spans (#352)', () => {
     // Math is floored at zero, so a minifier folding it never writes a negative size the browser would drop.
     expect(tracks('clamp(12rem, 20vw, 16rem) 1fr')).toEqual(['grid-template-columns: max(0px, clamp(12rem, 20vw, 16rem)) minmax(0, 1fr)']);
     expect(tracks('calc(1px - 2px) minmax(calc(10rem - 1px), 1fr)')).toEqual(['grid-template-columns: max(0px, calc(1px - 2px)) minmax(max(0px, calc(10rem - 1px)), 1fr)']);
+    expect(tracks('min(20rem, 30%) max(8rem, 10vw)')).toEqual(['grid-template-columns: max(0px, min(20rem, 30%)) max(0px, max(8rem, 10vw))']);
     // Case and spacing as typed change nothing but the spaces between columns.
     expect(tracks('  1FR\t 16REM  AUTO ')).toEqual(['grid-template-columns: minmax(0, 1fr) 16REM auto']);
     expect(tracks('minmax( 10rem ,1fr )')).toEqual(['grid-template-columns: minmax(10rem, 1fr)']);
@@ -157,10 +158,8 @@ describe('grid tracks and row spans (#352)', () => {
     expect(gridTemplateShares('2fr repeat(2, 1fr)')).toEqual([2, 1, 1]);
     expect(gridTemplateShares('minmax(0, 3fr) 1fr')).toEqual([3, 1]);
     expect(gridTemplateShares('1fr 2fr')).toEqual([1, 2]);
-    // As many as fit, or nothing the stylesheet writes, never makes a column wider than the grid.
-    for (const v of ['auto-fit-sm', 'repeat(auto-fill, 12rem)', 'repeat(99, 1fr)', 5]) expect(gridTemplateShares(v), String(v)).toBe('whole');
-    // A fixed or content-sized column can.
-    for (const v of ['16rem 1fr', 'minmax(10rem, 1fr) 1fr', 'auto 1fr', '25% 1fr']) expect(gridTemplateShares(v), v).toBeNull();
+    // As many as fit, a fixed or content-sized column, or nothing the stylesheet writes: no known shares.
+    for (const v of ['auto-fit-sm', 'repeat(auto-fill, 12rem)', 'repeat(99, 1fr)', 5, '16rem 1fr', 'minmax(10rem, 1fr) 1fr', 'auto 1fr', '25% 1fr']) expect(gridTemplateShares(v), String(v)).toBeNull();
   });
 
   it('counts at most 12 columns, repeats included', () => {

@@ -539,14 +539,14 @@ export function parseGridTemplate(raw: string): GridTemplate | string {
 }
 
 /**
- * How a column-size value divides a grid, for sizing images: each column's fr share when it is only fr shares;
- * 'whole' when no column can be wider than the grid (as many as fit, its minimum capped at the grid's width, or a
- * value the stylesheet does not write); null when a fixed or content-sized column can push the columns past it.
+ * Each column's fr share when a column-size value is only fr shares, for sizing images; null for anything else (as
+ * many as fit, a fixed or content-sized column, a value the stylesheet does not write), where an item's column can
+ * take up to the grid's whole width.
  */
-export function gridTemplateShares(value: unknown): number[] | 'whole' | null {
+export function gridTemplateShares(value: unknown): number[] | null {
   const parsed = typeof value === 'string' ? parseGridTemplate(value) : null;
-  if (!parsed || typeof parsed === 'string' || !parsed.fr.length) return 'whole';
-  return parsed.fr.every((f) => f !== null) ? (parsed.fr as number[]) : null;
+  if (!parsed || typeof parsed === 'string' || !parsed.fr.length || parsed.fr.some((f) => f === null)) return null;
+  return parsed.fr as number[];
 }
 
 /**

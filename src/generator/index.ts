@@ -1329,12 +1329,12 @@ function sizingBoxes(walk: SizingWalk, tree: NodeTree, nodeId: string, placement
 
 /**
  * The fraction of a grid's content width one of its items takes in a range: an equal share for each column it
- * spans, or for uneven columns the widest run it could sit in. Columns that fit as many as they can stay whole,
- * since how many fit is unknown here; null when a column of fixed or content width could be wider than the grid.
- * With both columns and column sizes set, the wider reading wins: a stronger rule this walk cannot see (a
+ * spans, or for uneven columns the widest run it could sit in. Columns that fit as many as they can, or that mix fr
+ * shares with fixed or content widths, stay whole, since how wide each one is is unknown here (columns wider than
+ * the grid overflow the page, which no estimate covers). With both columns and column sizes set, the wider reading wins: a stronger rule this walk cannot see (a
  * placement's, an item's) may decide which one applies.
  */
-function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRange): number | null {
+function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRange): number {
   const raw = item ? boxStyle(item, 'columnSpan', range) : undefined;
   const spanValue = typeof raw === 'string' ? raw.trim() : raw;
   const span = (tracks: number[]): number => {
@@ -1342,7 +1342,9 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
     const total = Math.max(1, tracks.reduce((a, b) => a + b, 0));
     if (spanValue === 'full') return 1;
     const count = typeof spanValue === 'number' || typeof spanValue === 'string' ? Number(spanValue) : NaN;
-    const k = Math.min(tracks.length, Math.max(1, Math.floor(count) || 1));
+    const k = Math.max(1, Math.floor(count) || 1);
+    // Spanning past the last column adds implicit ones, which can stretch into whatever the shares leave.
+    if (k >= tracks.length) return 1;
     let widest = 0;
     for (let i = 0; i + k <= tracks.length; i++) widest = Math.max(widest, tracks.slice(i, i + k).reduce((a, b) => a + b, 0));
     return widest / total;
@@ -1353,10 +1355,9 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
   if (typeof columns === 'number' && columns >= 1) shares.push(Number.isInteger(columns) ? span(Array.from({ length: columns }, () => 1)) : 1);
   const template = boxStyle(grid, 'gridTemplate', range);
   if (typeof template === 'string') {
-    // A column of fixed or content width can be wider than the grid itself: how wide is unknown.
+    // Only fr shares divide the grid in known parts; with a column of fixed or content width, any may be the widest.
     const fr = gridTemplateShares(template);
-    if (fr === null) return null;
-    shares.push(fr === 'whole' ? 1 : span(fr));
+    shares.push(fr ? span(fr) : 1);
   }
   return shares.length ? Math.max(...shares) : 1;
 }
@@ -1425,7 +1426,6 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
       if (frozen) continue;
       if (i > 0 && get('layout') === 'grid') {
         const t = trackShare(box, boxes[i - 1], range);
-        if (t === null) return null;
         if (t < 1) gridded = true;
         share *= t;
       }

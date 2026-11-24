@@ -298,7 +298,7 @@ describe('where Image focus is offered', () => {
     const inst = instanceOf(s, 'Home', 'hero.split');
     const tools = selectionTools(s, selectionTarget({ owner: ownerOf(s, 'Home'), instancePath: [inst.id], nodeId: 'media', partId: 'media' }));
     const style = tools?.find((t) => t.name === 'style_selected_element');
-    for (const part of ['repeat(auto-fit, minmax(18rem, 1fr))', 'rowSpan (1 to 6)', 'apply from tablet up, so phones keep one column unless scope "phone" sets them']) expect(style?.description).toContain(part);
+    for (const part of ['repeat(auto-fit, minmax(18rem, 1fr))', 'rowSpan (1 to 6)', 'apply from tablet up, so phones keep their own columns unless scope "phone" sets them']) expect(style?.description).toContain(part);
     expect(JSON.stringify(style?.parameters)).toContain('"rowSpan"');
   });
 });
