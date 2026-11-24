@@ -80,7 +80,8 @@ export const UPSERT_ARGS = z.object({
   addToHeaderNav: z.boolean().optional(),
   addToFooterNav: z.boolean().optional(),
   removeOtherSections: z.boolean().optional(),
-  sections: z.array(SECTION_ARGS).min(1).max(MAX_SECTIONS).optional(),
+  // Empty only to clear an existing page, with removeOtherSections: a new page needs a section.
+  sections: z.array(SECTION_ARGS).max(MAX_SECTIONS).optional(),
   repair: z.boolean().optional().describe('After an error: sections holds only the failed sections, each with its index.')
 });
 export type UpsertArgs = z.infer<typeof UPSERT_ARGS>;
@@ -419,12 +420,15 @@ const stillWaiting = (state: ProjectState, p: PendingLink) => {
   return !!slot && (slot.value as LinkValue | undefined)?.type === 'none';
 };
 
-/** `skip` names links this call replaces with a value of its own: they are neither filled nor kept. */
-function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string, pageId: string, skip?: (p: PendingLink) => boolean): { ops: EditOperation[]; filled: PendingLink[] } {
+/**
+ * `skip` names links this call replaces with a value of its own: they are neither filled nor kept. A run limited to one
+ * page (`limit`) fills only links on that page: one waiting on another page keeps waiting.
+ */
+function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string, pageId: string, skip?: (p: PendingLink) => boolean, limit?: string | null): { ops: EditOperation[]; filled: PendingLink[] } {
   const ops: EditOperation[] = [];
   const filled: PendingLink[] = [];
   for (const p of memory.pendingLinks) {
-    if (p.route !== route || skip?.(p)) continue;
+    if (p.route !== route || skip?.(p) || (limit && p.pageId !== limit)) continue;
     filled.push(p);
     if (!stillWaiting(state, p)) continue;
     ops.push({
@@ -445,10 +449,11 @@ export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, k
   memory.pendingLinks = memory.pendingLinks.filter((p) => stillWaiting(state, p));
   const ops: EditOperation[] = [];
   const filled: PendingLink[] = [];
+  const limit = host.pageLimit?.()?.pageId ?? null;
   for (const route of new Set(memory.pendingLinks.map((p) => p.route))) {
     const page = pageAtRoute(state, route);
     if (!page) continue;
-    const r = pendingLinkOps(state, memory, route, page.id);
+    const r = pendingLinkOps(state, memory, route, page.id, undefined, limit);
     ops.push(...r.ops);
     filled.push(...r.filled);
   }
@@ -659,6 +664,15 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   const found = findPage(state, rawArgs.slug);
   if (found.error) return fieldError([{ field: 'slug', message: found.error }], 'Nothing was applied.');
   const { route, page } = found;
+  // A run limited to one page builds only that page: never another one, nor a new one.
+  const limit = host.pageLimit?.() ?? null;
+  if (limit && page?.id !== limit.pageId) {
+    const own = Object.hasOwn(state.pages, limit.pageId) ? state.pages[limit.pageId].route : null;
+    const message = own
+      ? `This request is limited to ${limit.label} (${own}), so upsert_page_with_sections can only build that page, not ${route}. Nothing was applied. Use slug "${own}", or ask the user with request_clarification (widenScope: true) before changing other pages.`
+      : `${limit.label} is no longer in the site. Nothing was applied.`;
+    return { ok: false, content: { ok: false, revision: host.revision(), error: { code: 'SCOPE_MISMATCH', message } } };
+  }
 
   // Repairing: the rejected page is still held, so only the named sections come back.
   let args: UpsertArgs = rawArgs;
@@ -682,7 +696,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     const { pageId: _p, ...held } = draft;
     args = { ...held, ...Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined)), sections: merged };
   }
-  if (!args.sections && !page) return fieldError([{ field: 'sections', message: 'a new page needs at least one section' }], 'Nothing was applied.');
+  if (!args.sections?.length && !page) return fieldError([{ field: 'sections', message: 'a new page needs at least one section' }], 'Nothing was applied.');
   if (args.language?.trim() && !isLanguageCode(args.language.trim())) return fieldError([{ field: 'language', message: 'use a language code such as "fr" or "en-GB"' }], 'Nothing was applied.');
   let linkTranslationTo: string | null | undefined;
   if (args.translationOf !== undefined) {
@@ -841,6 +855,8 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   }
   const label = args.navLabel || page?.navLabel || title;
   const nav: Record<string, string> = {};
+  /** The menu links this call asked for: a run limited to the page may add these to the shared menus, and no more. */
+  const navigation: EditOperation[] = [];
   for (const [shell, wanted] of [['header', args.addToHeaderNav], ['footer', args.addToFooterNav]] as const) {
     if (!wanted) continue;
     const r = navOps(scratch, shell, pageId, label);
@@ -853,14 +869,15 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
         return fieldError([{ field: shell === 'header' ? 'addToHeaderNav' : 'addToFooterNav', message: (e as Error).message }], 'Nothing was applied. Use a shorter navLabel, or leave this page out of that menu.');
       }
       push(op);
+      navigation.push(op);
     }
   }
-  const pending = pendingLinkOps(scratch, memory, route, pageId, superseded);
+  const pending = pendingLinkOps(scratch, memory, route, pageId, superseded, limit?.pageId);
   for (const op of pending.ops) push(op);
 
   if (!ops.length) return { ok: true, content: { ok: true, pageId, route, created: false, revision: host.revision(), note: 'Nothing needed to change.' } };
 
-  const res = await host.apply(ops, host.revision(), createOp ? `Add page ${title}` : `Update ${title}`, callId);
+  const res = await host.apply(ops, host.revision(), createOp ? `Add page ${title}` : `Update ${title}`, callId, { navigation });
   if (!res.ok) {
     keepDraft();
     return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
@@ -910,7 +927,8 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
 }
 
 /** Tool schema for one project: each section is typed by its component, with closed props. */
-export function upsertToolSchema(state: ProjectState): JsonSchema {
+/** `only`: the route of the one page a run may build; the call then cannot link the page to a translation either. */
+export function upsertToolSchema(state: ProjectState, only?: string): JsonSchema {
   const defs: ComponentDefinition[] = [
     // A theme component already in the project is typed as installed, as the section check reads it: a newer
     // theme's properties (a heading level, say) are not there until Project health updates it.
@@ -942,23 +960,22 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
     type: 'object',
     $defs: { image: IMAGE_SCHEMA },
     properties: {
-      slug: { type: 'string', maxLength: 120, description: 'Page path such as "services". "home" is the home page.' },
+      slug: { type: 'string', maxLength: 120, description: only ? `This request may build only the page at ${only}: use "${only}".` : 'Page path such as "services". "home" is the home page.' },
       title: { type: 'string', maxLength: 80 },
       navLabel: { type: 'string', maxLength: 40 },
       description: { type: 'string', maxLength: 320, description: 'Search engine description.' },
       draft: { type: 'boolean', description: DRAFT_DESCRIPTION },
       language: { type: 'string', maxLength: 20, description: LANGUAGE_DESCRIPTION },
-      translationOf: { type: 'string', maxLength: 120, description: TRANSLATION_DESCRIPTION },
+      ...(only ? {} : { translationOf: { type: 'string', maxLength: 120, description: TRANSLATION_DESCRIPTION } }),
       articleDate: { type: 'string', description: ARTICLE_DATE_DESCRIPTION },
       byline: { type: 'string', maxLength: 80 },
       excerpt: { type: 'string', maxLength: 320 },
       newsHidden: { type: 'boolean' },
       addToHeaderNav: { type: 'boolean', description: 'true adds a header link if missing (a child page\'s goes under its parent\'s). false or omitted leaves navigation as it is.' },
       addToFooterNav: { type: 'boolean', description: 'true adds a footer link if missing. false or omitted leaves navigation as it is.' },
-      removeOtherSections: { type: 'boolean', description: 'Remove existing sections (theme or project components) that are not in this list. Hand-built layout stays.' },
+      removeOtherSections: { type: 'boolean', description: 'Remove existing sections (theme or project components) that are not in this list; with an empty list, all of them. Hand-built layout stays.' },
       sections: {
         type: 'array',
-        minItems: 1,
         maxItems: MAX_SECTIONS,
         items: section,
         description:

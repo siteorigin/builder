@@ -697,7 +697,7 @@ export function askAiAbout(ref: ElementRef | null) {
   // scope the user chose.
   // Only a specific element is selected for it: the chat opened generically leaves the selection (and the layers
   // selected with it) as they are.
-  setState({ rightTab: 'chat', dockOpen: true, ...(ref ? { selection: ref, chatContextEnabled: { page: true, selection: true } } : {}) });
+  setState({ rightTab: 'chat', dockOpen: true, ...(ref ? { selection: ref, chatContextEnabled: { page: true, scope: 'selection' } } : {}) });
   setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 50);
 }
 

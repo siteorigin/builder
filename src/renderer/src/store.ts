@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AiEvent, AppSettings, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ResponsiveScope } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
@@ -188,7 +188,8 @@ export interface State {
   chatDrafts: ChatDrafts;
   /** Library images attached to those unsent messages, by asset ID (see lib/chatDrafts). */
   chatImages: ChatImages;
-  chatContextEnabled: { page: boolean; selection: boolean };
+  /** What the next message is about: the open page (or Home), and how far an edit may reach (see chatTarget.editScope). */
+  chatContextEnabled: { page: boolean; scope: ChatEditScope };
   /** What the next message is: a change for the AI to make, or a read-only question. */
   chatMode: ChatMode;
   /** Sample contact details the author chose to publish as they are, so the export stops reviewing them. */
@@ -268,7 +269,7 @@ export const useStore = create<State>((set) => ({
   runMode: null,
   chatDrafts: {},
   chatImages: {},
-  chatContextEnabled: { page: true, selection: true },
+  chatContextEnabled: { page: true, scope: 'selection' },
   chatMode: 'edit',
   keptSamples: [],
   inspectorFocus: null,

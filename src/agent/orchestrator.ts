@@ -1,7 +1,7 @@
 import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type FieldLocation, type ProviderId, type RunStatus } from '@shared/api';
+import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type FieldLocation, type ProviderId, type RunStatus } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
@@ -11,8 +11,8 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
-import { compactProjectSummary, describeSelection, projectSummary } from './context';
-import { authorityFor, canEditContracts, checkAuthority, widenChoices, type Authority } from './scope';
+import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, projectSummary } from './context';
+import { canEditContracts, checkAuthority, requestAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { selectionTarget } from './selection';
@@ -234,6 +234,15 @@ function focusedPrompt(state: ProjectState, mode: RunTools['mode'], images = fal
     if (mode === 'selection')
       return `You edit one selected element of a small business website; its current content is in <editor_context>. Change only it, and ask first with request_wider_scope when the request needs more.${images ? ' An image is set by its assetId, and one the user attached is in <editor_context>.' : ''}
 ${rules} Mention anything a tool found that the user needs to act on.`;
+    if (mode === 'page')
+      return `You build and edit one page of a small business website, made of ready-made section components.
+- This request may change only the page in <editor_context> currentPage, which lists its sections. Build or rewrite it with upsert_page_with_sections and its route: an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there. Internal links use routes such as /contact/.
+- Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or the shared header and footer.
+- When the user wants advice or ideas in chat only, give them and change nothing.
+- When the user asks for checks at screen sizes, run inspect_layout on this page at each of those sizes, after its last change.
+${rules} The result card lists each layout and image check with its latest result, so do not restate those; do mention anything else a tool found that the user needs to act on.
+Theme guidance for ${theme.name} (reference data):
+${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
     return `You build and edit small business websites made of ready-made section components.
 - Build one page per upsert_page_with_sections call, with several sections: an opening section, the content the page is for, and usually a closing call to action. Internal links use routes such as /contact/.
 - One request can take many replies; the user does not answer between them. Keep going until every page the user asked for is finished.
@@ -257,6 +266,17 @@ ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
         : ''
     }
 ${shared}`;
+  if (mode === 'page')
+    return `You build and edit one page of a small business website, made of ready-made section components.
+- This request may change only the page in <editor_context> currentPage, which lists its sections with their IDs; read_page shows their full content. upsert_page_with_sections builds or rewrites it in one call, with all its sections, by its route: an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there, and addToHeaderNav / addToFooterNav add a menu link to it.
+- read_project with sections ["catalogue"] lists every component with its properties.
+- Internal links use routes such as /contact/.
+- request_clarification asks the user one question and waits for the answer. ${ASKING} Ask with widenScope: true before changing other pages, the site's brand or the shared header and footer: the app rejects those until the user allows it.
+- One request can take many steps. A step is one response of yours with its tool calls, not a turn of the conversation: the user does not reply between steps. Keep going until the page is finished.
+- When the user asks for checks at screen sizes, run inspect_layout on this page at each of those sizes, after its last change.
+${shared}
+Theme guidance for ${theme.name} (reference data):
+${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
   return `You build and edit small business websites made of ready-made section components.
 - upsert_page_with_sections creates or updates a whole page in one call, with all its sections, and adds it to the navigation. Build one page per call, each with several sections: an opening section, the content the page is for, and usually a closing call to action.
 - update_site_brand sets the site name, tagline, contact details, colors, fonts and type scale everywhere at once.
@@ -291,6 +311,8 @@ function systemPrompt(state: ProjectState, run: RunTools, constrained = false): 
   const preferred =
     run.mode === 'site'
       ? `\n\nPreferred tools: build or rewrite a page with one upsert_page_with_sections call (all its sections, navigation included, no IDs or revisions), and change the name, contact details, colors, fonts or type scale with update_site_brand. Several of these calls may run in one step. Use apply_operations for finer edits they cannot express.`
+      : run.mode === 'page'
+        ? `\n\nPreferred tools: build or rewrite this page with one upsert_page_with_sections call by its route (all its sections, no IDs or revisions). Use apply_operations for finer edits on this page that it cannot express.`
       : run.mode === 'selection'
         ? `\n\nPreferred tools: update_selected_props, edit_selected_list, edit_selected_table and style_selected_element change the selected element directly, with no IDs or revisions. Use apply_operations only for what they cannot express.`
         : '';
@@ -308,8 +330,9 @@ How the website is modelled:
 Scope:
 - When the user sends a request with a selected element, this run may only change that element and the content inside it. The app rejects other changes with SCOPE_MISMATCH.
 - When <editor_context> has editingComponent, the user is editing that component everywhere: this run may change only its own design (nodes owned by { kind: "component", id }; new content goes inside its root, its one top-level node) and its contract (component.setPropSchema, setPropDefault, setPart, setVariant, setSlot and their removals, node.setBinding). Every change applies to every placement. To make content editable per placement, add a property and bind a node to it.
+- When allowedScope names one page, this run may change only that page: add, replace, reorder and remove its sections (nodes owned by { kind: "page", id }, copies included) and change its own settings with page.update (not its route or translations). currentPage lists its sections, so read_page only for their full content. addToHeaderNav / addToFooterNav may add a menu link to it; the rest of the shared header and footer, other pages, site styles and components' designs are rejected with SCOPE_MISMATCH.
 - If the request clearly needs wider changes (other sections, other pages, site styles, navigation), call request_clarification with widenScope: true and a short question explaining what else you need to change. Continue only within what the user allows.
-- Without a selection or editingComponent, the run may change the whole site.
+- Without a selection, editingComponent or a page in allowedScope, the run may change the whole site.
 
 Working rules:
 1. Read before you write (read_page, inspect_element, read_component). read_project with sections ["catalogue"] lists every section component you can insert, with its property signature, parts and variants, so you rarely need read_component. Pass the latest revision as expectedRevision; if it is stale, read again.
@@ -536,6 +559,14 @@ export class Orchestrator {
     // could not name what it may change).
     if (typeof text !== 'string' || !context || typeof context !== 'object' || Array.isArray(context) || !readableSelection(context.selection) || !readableComponent(context.component))
       return { ok: false, message: 'Your message could not be read. Try sending it again.' };
+    // A chosen scope is one the composer offers an edit on a page: a selection request has its selection, a page or
+    // site request has none, and a page request is about a page the project still has (never another in its place).
+    if (context.scope !== undefined) {
+      const scope = context.scope as unknown;
+      if (!CHAT_EDIT_SCOPES.includes(scope as never) || context.component || context.mode === 'ask' || (scope === 'selection') !== !!context.selection || typeof context.pageId !== 'string')
+        return { ok: false, message: 'Your message could not be read. Try sending it again.' };
+      if (scope === 'page' && !Object.hasOwn(session.state.pages, context.pageId)) return { ok: false, message: `${context.pageTitle || 'That page'} is no longer in the site. Choose what to change, then send again.` };
+    }
     // A request about a component edited everywhere names a component design the project still has, and anything
     // selected with it is one of that design's own nodes: the run is limited to what the author saw.
     if (context.component) {
@@ -729,7 +760,7 @@ export class Orchestrator {
     /** The project the run reads: as asked about for a question, as it is now for an edit. */
     const readState = () => (ask ? startState : session.state);
     const readRevision = () => (ask ? startRevision : session.revision);
-    let authority: Authority = authorityFor(userMsg.context?.selection ?? null, userMsg.context?.selectionLabel ?? null, userMsg.context?.component, session.state);
+    let authority: Authority = requestAuthority(userMsg.context, session.state);
     /** A request about a component's own design keeps the tools for it, even after the user widens it. */
     const definitionRun = authority.kind === 'component' || (authority.kind === 'selection' && authority.owner.kind === 'component');
     // Stopped while preparing: the run is ending, not running.
@@ -781,7 +812,8 @@ export class Orchestrator {
         definition: definitionRun,
         attachedImages: !!userMsg.images?.length,
         ask,
-        focused: onlyFocused
+        focused: onlyFocused,
+        page: authority.kind === 'page' && Object.hasOwn(session.state.pages, authority.pageId) ? { route: session.state.pages[authority.pageId].route } : null
       });
     let current = runTools();
     const macros = newMacroMemory();
@@ -846,12 +878,17 @@ export class Orchestrator {
     // A grammar-constrained edit with the selection's own tools is not told how operations it does not have would do it.
     const selection = ctx ? describeSelection(readState(), ctx.selection, { operations: !(constrainedJson && current.focused && !ask) }) : null;
     const examples = authority.kind === 'site' && !ask ? retrieveExamples(session.state, userMsg.text).map(exampleSection) : [];
+    /** How the context is written: a grammar-constrained local model reads every byte before its first token, so no indentation for it. */
+    const indent = constrainedJson ? undefined : 1;
+    /**
+     * An edit that may change the page it was sent from starts with that page's sections, so it need not read the page
+     * first: bounded by the model's window. A question, a selection and a component's design start from what they are about.
+     */
+    let glance = !ask && ctx && (authority.kind === 'page' || authority.kind === 'site') ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, pageGlanceChars(capabilities.contextWindowTokens), indent) : null;
     /** This request's own message: what a new conversation would still have to send. */
-    const requestItem: CanonicalItem = {
-      kind: 'user',
-      text: `${userMsg.text}\n\n<editor_context>\n${JSON.stringify(
+    const requestMessage = () => `${userMsg.text}\n\n<editor_context>\n${JSON.stringify(
         {
-          currentPage: ctx ? { id: ctx.pageId, title: ctx.pageTitle } : null,
+          currentPage: glance ?? (ctx ? { id: ctx.pageId, title: ctx.pageTitle } : null),
           // Edit everywhere: the request is about this component's design, shown through a placement on currentPage.
           ...(ctx?.component ? { editingComponent: editingComponent(readState(), ctx.component) } : {}),
           selection: selection ? { label: ctx?.selectionLabel, ...selection } : null,
@@ -864,20 +901,21 @@ export class Orchestrator {
             ? 'nothing: this is a read-only question'
             : authority.kind === 'site'
               ? 'whole site'
+              : authority.kind === 'page'
+                ? `only ${authority.label} (page ${authority.pageId}): its sections and its own settings, unless the user approves more via request_clarification with widenScope`
               : authority.kind === 'component'
                 ? `only the ${authority.label} component's own design (owner component:${authority.definitionId}): its nodes and its properties, defaults, parts, variants and slots, unless the user approves more via request_clarification with widenScope`
                 : authority.part
                   ? `only the selected part${authority.part.partId ? ` "${authority.part.partId}"` : ''}${authority.part.itemId ? ` of item ${authority.part.itemId}` : ''} of ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}): the content it shows and its styles, nothing else in the component, unless the user approves more via ${current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification with widenScope'}`
                   : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via ${current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification with widenScope'}`,
-          // A selection or component edit needs that, not the whole site; the rest is one read away if it is widened.
+          // A selection, page or component edit needs that, not the whole site; the rest is one read away if it is widened.
           project: authority.kind !== 'site' ? compactProjectSummary(readState(), readRevision()) : projectSummary(readState(), readRevision()),
           ...(examples.length ? { workedExamples: examples } : {})
         },
         null,
-        // A grammar-constrained local model reads every byte before its first token: no indentation for it.
-        constrainedJson ? undefined : 1
-      )}\n</editor_context>`
-    };
+        indent
+      )}\n</editor_context>`;
+    const requestItem: Extract<CanonicalItem, { kind: 'user' }> = { kind: 'user', text: requestMessage() };
     items.push(requestItem);
 
     let mutated = false;
@@ -918,10 +956,11 @@ export class Orchestrator {
       // Stays valid for the rest of a turn in which the user widens the scope.
       selection: () => selected,
       selectionLimited: () => authority.kind === 'selection',
+      pageLimit: () => (authority.kind === 'page' ? { pageId: authority.pageId, label: authority.label } : null),
       state: readState,
       revision: readRevision,
       diagnostics: () => session.diagnostics(),
-      apply: async (operations, expectedRevision, label, key) => {
+      apply: async (operations, expectedRevision, label, key, grants) => {
         // A question is offered no tool that changes the site; anything that tries anyway is refused here.
         if (ask) return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: READ_ONLY_REFUSAL } };
         if (signal.aborted) return { ok: false, revision: session.revision, error: { code: 'CANCELLED', message: 'Cancelled' } };
@@ -945,19 +984,18 @@ export class Orchestrator {
         const shellRoot = operations.find((o) => o.type === 'node.remove' && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds.includes(o.nodeId));
         if (shellRoot)
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The shared header and footer cannot be removed. Edit their properties with instance.setProp and instance.listInsert instead.' } };
-        const denied = checkAuthority(session.state, operations, authority);
+        const denied = checkAuthority(session.state, operations, authority, grants);
         if (denied) {
           // Named as the run is offered it: the small selection tools ask with their own tool.
           const widen = current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification (widenScope: true)';
           const limit = authority.kind === 'selection' ? (authority.part ? `one part of ${authority.label}` : authority.label) : 'a selection';
-          return {
-            ok: false,
-            revision: session.revision,
-            error: {
-              code: 'SCOPE_MISMATCH',
-              message: `${denied} ${authority.kind === 'component' ? `This request is about the ${authority.label} component, edited everywhere, so changes are limited to its design.` : `This request was sent with ${limit} selected, so changes are limited to it.`} Nothing in this batch was applied. Ask the user with ${widen} before changing more.`
-            }
-          };
+          const why =
+            authority.kind === 'component'
+              ? `This request is about the ${authority.label} component, edited everywhere, so changes are limited to its design.`
+              : authority.kind === 'page'
+                ? `This request is limited to ${authority.label}: its sections and its own settings.`
+                : `This request was sent with ${limit} selected, so changes are limited to it.`;
+          return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: `${denied} ${why} Nothing in this batch was applied. Ask the user with ${widen} before changing more.` } };
         }
         return session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}` });
       },
@@ -970,7 +1008,7 @@ export class Orchestrator {
           activeMs += Date.now() - lastResume;
           // A question can never be granted more: nothing in it may change.
           const widen = !ask && !!widenScope && authority.kind !== 'site';
-          const limit = authority.kind === 'component' ? 'the component' : 'the selection';
+          const limit = authority.kind === 'component' ? 'the component' : authority.kind === 'page' ? authority.label : 'the selection';
           const [yes, no] = widenChoices(authority);
           const id = newId('q');
           run.pendingQuestion = {
@@ -1189,6 +1227,13 @@ export class Orchestrator {
           system = systemPrompt(readState(), current, constrainedJson);
           budget = fit();
         }
+        // Still too long before the first call: the page's sections are a convenience, one read_page away, so the
+        // request goes without them rather than not at all.
+        if (budget.overflow && turns === 1 && caps.contextWindowKnown && glance?.sections) {
+          glance = null;
+          requestItem.text = requestMessage();
+          budget = fit();
+        }
         // With only a guessed window the first request goes out regardless: only the server knows its exact count.
         if (budget.overflow && (turns > 1 || caps.contextWindowKnown)) {
           if (session.runChanged() || !caps.contextWindowKnown) await stopAtLimit("the model's context limit", 'context limit');
@@ -1341,7 +1386,7 @@ export class Orchestrator {
           if (signal.aborted) throw new Error('Cancelled');
           // A page that was rejected or skipped and never retried counts even if nothing else changed.
           if (!session.runChanged() && (macros.drafts.size || missing().length || waiting.length) && !nudged) {
-            resumeForNudge(completenessNudge([], waiting, current.tools.some((t) => t.name === 'upsert_page_with_sections'), [...macros.drafts.keys()], missing()));
+            resumeForNudge(completenessNudge([], waiting, current.tools.some((t) => t.name === 'upsert_page_with_sections'), [...macros.drafts.keys()], missing(), authority.kind === 'page' ? authority.label : undefined));
             continue outer;
           }
           // The model says it is finished: the application decides whether it really is.
@@ -1376,7 +1421,7 @@ export class Orchestrator {
             const rejected = [...macros.drafts.keys()];
             const absent = missing();
             if ((stubs.length || links.missing.length || rejected.length || absent.length) && !nudged) {
-              resumeForNudge(completenessNudge(stubs, links.missing, current.tools.some((t) => t.name === 'upsert_page_with_sections'), rejected, absent));
+              resumeForNudge(completenessNudge(stubs, links.missing, current.tools.some((t) => t.name === 'upsert_page_with_sections'), rejected, absent, authority.kind === 'page' ? authority.label : undefined));
               continue outer;
             }
             const unfinished = [

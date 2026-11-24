@@ -151,6 +151,8 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     chatDrafts: cleanDrafts(local.chatDrafts),
     chatImages: cleanImages(local.chatImages),
     chatMode: local.chatMode === 'ask' ? 'ask' : 'edit',
+    // A choice to change the whole site was made for the last project, never for this one.
+    chatContextEnabled: { page: true, scope: 'selection' },
     keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
     conversation: null,
     pagePlaces,

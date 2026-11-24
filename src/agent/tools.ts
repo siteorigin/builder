@@ -20,6 +20,7 @@ import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 import { changedComponents, componentWarnings, introducedReusability } from './reusability';
 import { isReusabilityWarning } from '@engine/reusability';
+import { OP_REACH, type AuthorityGrants } from './scope';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component']), id: z.string() });
 
@@ -170,10 +171,19 @@ const DEFINITION_OPERATIONS = new Set<OperationType>([
   'component.removeSlot'
 ]);
 
-/** The operation union the model is shown for a run; the app still checks every operation it receives. */
-function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
+/**
+ * What a run limited to one page can do with operations: change its sections and their content (a copy may come from
+ * anywhere), its own settings, and detach a placement on it. scope.ts decides what each one may reach.
+ */
+export const PAGE_OPERATIONS = new Set<OperationType>([
+  ...(Object.keys(OP_REACH) as OperationType[]).filter((t) => ['node', 'insert', 'copy'].includes(OP_REACH[t]) && t !== 'component.makeUnique' && t !== 'component.convertToCode'),
+  'page.update'
+]);
+
+/** The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it. */
+function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: Set<OperationType>) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
-    .filter((t) => !NEVER_OFFERED.has(t) && !NOT_YET_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)))
+    .filter((t) => !NEVER_OFFERED.has(t) && !NOT_YET_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)) && (!only || only.has(t)))
     .map((t) =>
       t === 'page.create'
         ? OPERATION_SCHEMAS[t].omit({ pageId: true })
@@ -194,13 +204,13 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
  * Tool definitions for one run. Without Developer mode, code tools and code operations are left out. Component
  * contract operations are offered when `definitionOps` says the run may change a component's design.
  */
-export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: boolean } = {}): ToolDefinition[] {
+export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: boolean; operations?: Set<OperationType> } = {}): ToolDefinition[] {
   const codeEnabled = opts.codeEnabled ?? true;
   const definitionOps = opts.definitionOps ?? codeEnabled;
   return (Object.keys(TOOL_ARGS) as ToolName[])
     .filter((name) => !TASK_TOOLS.has(name) && (codeEnabled || !CODE_TOOLS.has(name)))
     .map((name) => {
-      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps)).min(1).max(30) }) : TOOL_ARGS[name];
+      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps, opts.operations)).min(1).max(30) }) : TOOL_ARGS[name];
       const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
       delete schema.$schema;
       return { name, ...describe(name), parameters: schema };
@@ -223,11 +233,11 @@ export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MAC
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export const FOCUSED_WINDOW_TOKENS = 64_000;
 
-export type ToolMode = 'selection' | 'site' | 'general' | 'ask';
+export type ToolMode = 'selection' | 'page' | 'site' | 'general' | 'ask';
 
 export interface RunTools {
   tools: ToolDefinition[];
-  /** selection: the selected element's tools. site: page and brand tools. general: a selection they cannot cover. ask: reading only. */
+  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. general: a selection they cannot cover. ask: reading only. */
   mode: ToolMode;
   /** Only the small tool set is offered. */
   focused: boolean;
@@ -268,6 +278,8 @@ export function toolsForRun(opts: {
   focused?: boolean;
   /** The selection a run started from, once the user has let it change more. */
   widened?: SelectionTarget | null;
+  /** The page a run is limited to: its page tool builds only that page, and nothing site-wide is offered. */
+  page?: { route: string } | null;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
@@ -284,6 +296,12 @@ export function toolsForRun(opts: {
     return { tools: focused ? [...micro, ...reads, ...assets] : [...micro, ...general], mode: 'selection', focused };
   }
   if (opts.definition) return { tools: general, mode: 'general', focused: false };
+  if (opts.page) {
+    // Operations only for the page's own sections and settings, and no code: a component's source shows on every page.
+    const own = toolDefinitions({ codeEnabled, definitionOps: false, operations: PAGE_OPERATIONS }).filter((t) => t.name !== 'apply_source_patch');
+    const upsert: ToolDefinition = { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, opts.page.route) };
+    return { tools: [upsert, ...(focused ? own.filter((t) => t.name !== 'apply_operations') : own)], mode: 'page', focused };
+  }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state) },
     { name: 'update_site_brand', ...describe('update_site_brand'), parameters: brandToolSchema(state) }
@@ -320,7 +338,8 @@ export interface ToolHost {
   state(): ProjectState;
   revision(): number;
   diagnostics(): Diagnostic[];
-  apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
+  /** `grants`: what the calling tool may also change for a run limited to one page (see scope.ts), never set by the model. */
+  apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
   /** `images`: library images offered as choices, already checked to be in the project. */
@@ -331,6 +350,8 @@ export interface ToolHost {
   selection?(): SelectionTarget | null;
   /** Whether the run is still limited to its selection: the user has not let it change more. */
   selectionLimited?(): boolean;
+  /** The page the run is still limited to, and how it is named, or null once it may change more. */
+  pageLimit?(): { pageId: string; label: string } | null;
 }
 
 export interface ToolOutcome {
