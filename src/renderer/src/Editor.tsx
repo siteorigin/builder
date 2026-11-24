@@ -22,8 +22,8 @@ import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModa
 import { ImportReviewModal } from './panels/ImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
-import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
-import { refLabel } from './lib/model';
+import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openSiteStyles, planLayers } from './lib/actions';
+import { copySelection, pasteCopy } from './lib/clipboard';
 import { focusedSurface } from './lib/history';
 import { visitorStepKey } from '@shared/preview-keys';
 import { useTransitionAnnouncement } from './lib/announce';
@@ -53,75 +53,10 @@ function isTyping(e: KeyboardEvent) {
   return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
 }
 
-/** What Cmd+C last copied: a section or element on a page. The open project holds the content itself, taken
- *  when it was copied, so editing or deleting the original afterwards does not change what is pasted.
- *  `clipboardId` settles once the project has taken the copy, or to null when it could not; `previous` is the
- *  copy before it, which a paste falls back to while this one is failing (dropped once it succeeds). */
-type Copied = { dir: string; label: string; section: boolean; clipboardId: Promise<string | null>; previous: Copied | null };
-let copied: Copied | null = null;
-
-/** Each project holds its own copies, so they are forgotten when the project closes. */
-export function forgetCopy() {
-  copied = null;
-}
-
 const textSelected = () => {
   const sel = window.getSelection();
   return !!sel && !sel.isCollapsed;
 };
-
-/** Copy the selected section or element (the whole section when a part of one is selected). */
-function copySelection(): boolean {
-  const s = getState();
-  const t = structuralTarget(s.selection);
-  if (!t || !s.snapshot) return false;
-  if (t.owner.kind !== 'page') {
-    toast(t.owner.kind === 'shell' ? 'The shared header and footer are shared by the pages that show them, so they aren’t copied.' : 'Copy sections from a page. Inside a component, use Duplicate.', 'error');
-    return true;
-  }
-  const snap = s.snapshot;
-  const label = refLabel(snap.state, t);
-  const sameProject = () => getState().snapshot?.dir === snap.dir;
-  const failed = (message?: string) => {
-    if (sameProject()) toast(message ?? `${label} could not be copied.`, 'error');
-    return null;
-  };
-  const entry: Copied = {
-    dir: snap.dir,
-    label,
-    section: snap.state.pages[t.owner.id]?.rootIds.includes(t.nodeId) ?? false,
-    previous: copied,
-    clipboardId: api.project.copy(t.owner.id, t.nodeId, snap.revision).then(
-      (r) => {
-        if (!r.ok || !r.clipboardId) return failed(r.message);
-        entry.previous = null;
-        if (copied === entry && sameProject()) toast(`Copied ${label}. Paste it on any page with ⌘V.`, 'info');
-        return r.clipboardId;
-      },
-      () => failed()
-    )
-  };
-  copied = entry;
-  return true;
-}
-
-/** Paste the latest copy that worked, as it was when copied, after the selection (or at the end of the page),
- *  with new IDs, and select it. The place is taken when ⌘V is pressed, even if the copy is still being taken. */
-async function pasteCopied(latest: Copied) {
-  const places = { section: insertionPoint('section'), element: insertionPoint('element') };
-  let entry: Copied | null = latest;
-  let clipboardId: string | null = null;
-  while (entry && !(clipboardId = await entry.clipboardId)) entry = entry.previous;
-  // A copy that failed has said so; a project closed in the meantime took its copies with it.
-  if (!entry || !clipboardId || getState().snapshot?.dir !== entry.dir) return;
-  const at = places[entry.section ? 'section' : 'element'];
-  if (!at) return;
-  const r = await applyOps([{ type: 'node.paste', clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${entry.label}`);
-  const id = r?.[0]?.nodeId as string | undefined;
-  const here = getState();
-  if (id && here.snapshot?.dir === entry.dir && here.pageId === at.owner.id && !here.definitionMode)
-    setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
-}
 
 /** Undo or redo the project, from a shortcut or the Edit menu. */
 export function projectHistory(action: 'undo' | 'redo') {
@@ -156,8 +91,9 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     void saveNow();
     return true;
   }
+  // Duplicate, delete and move act on every layer selected together in Layers, or on the selection alone.
   if (mod && key.toLowerCase() === 'd') {
-    void duplicateSelection();
+    void duplicateLayers();
     return true;
   }
   // Copy and paste sections and elements, also between pages. Selected text keeps the ordinary copy.
@@ -165,10 +101,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   // editor's own focus checks, and Preview mode keeps the site's own copy and paste.
   if (mod && !shift && (key.toLowerCase() === 'c' || key.toLowerCase() === 'v') && !textSelected() && s.mode === 'edit' && !s.definitionMode && !s.modal && !openDialogs.length && !openMenus.count) {
     if (key.toLowerCase() === 'c') return copySelection();
-    if (copied && copied.dir !== s.snapshot?.dir) copied = null;
-    if (!copied) return false;
-    void pasteCopied(copied);
-    return true;
+    return pasteCopy();
   }
   if (mod && key.toLowerCase() === 'j') {
     askAiAbout(s.selection);
@@ -185,13 +118,15 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (!mod && (key === 'Delete' || key === 'Backspace') && s.selection) {
-    void deleteSelection();
+    void deleteLayers();
     return true;
   }
   if (!mod && key === 'Escape') {
     const dm = s.definitionMode;
     const inDef = !!dm && !!s.selection;
     if (s.modal) setState({ modal: null });
+    // Several layers selected together: the first Escape keeps only the one everything follows.
+    else if (planLayers(s)?.several) setState({ layerSet: null });
     // While editing a component everywhere, Escape steps to the component overview, then leaves the mode;
     // it never drops back to the placement's page-level editor.
     else if (inDef) setState({ selection: null });
@@ -203,7 +138,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (mod && shift && (key === 'ArrowUp' || key === 'ArrowDown')) {
-    void moveSelection(key === 'ArrowUp' ? -1 : 1);
+    void moveLayers(key === 'ArrowUp' ? -1 : 1);
     return true;
   }
   return false;

@@ -1506,7 +1506,7 @@ export class ProjectSession extends EventEmitter {
    * original. `expectedRevision` is the revision the editor showed when Copy was pressed: a change that landed
    * since (another window, a file edited outside the app) could make the copy differ from what was on screen.
    */
-  copy(pageId: string, nodeId: string, expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }> {
+  copy(pageId: string, nodeId: string | readonly string[], expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }> {
     // Reads the project and keeps the copy in memory: nothing is written, so no lock claim is needed.
     return this.serialize(async () => {
       if (expectedRevision !== this.revision) return { ok: false, message: 'The project changed while copying. Copy it again.' };

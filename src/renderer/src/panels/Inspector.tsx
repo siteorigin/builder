@@ -51,7 +51,7 @@ import { StyleControls } from './StyleControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, definitionView, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
-import { askAiAbout, deleteSelection, duplicateSelection, selectPage, structuralTarget } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, structuralTarget } from '../lib/actions';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -505,6 +505,13 @@ function SelectionActions({ title, selection, items }: { title: string; selectio
 }
 
 function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: Tokens; selection: ElementRef }) {
+  // Layers selected together with this one (the menu's Duplicate and Delete act on them all): followed so the menu
+  // is rebuilt when they change, and planned with it, so what the menu says is what it does.
+  useStore((s) => {
+    const g = s.layerSet ? liveGroup(s) : null;
+    return g ? g.ids.join(' ') : null;
+  });
+  const plan = planLayers();
   const scope = useStore((s) => s.styleScope);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const devUrl = useDevUrl();
@@ -559,8 +566,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     ...(!shell
       ? [
           { separator: true },
-          { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
-          { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
+          // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
+          { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
+          { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: asPlanned(plan, deleteLayers) }
         ]
       : [])
   ];
@@ -1093,6 +1101,13 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
 }
 
 function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: GraphNode; tokens: Tokens; selection: ElementRef }) {
+  // Layers selected together with this one (the menu's Duplicate and Delete act on them all): followed so the menu
+  // is rebuilt when they change, and planned with it, so what the menu says is what it does.
+  useStore((s) => {
+    const g = s.layerSet ? liveGroup(s) : null;
+    return g ? g.ids.join(' ') : null;
+  });
+  const plan = planLayers();
   const scope = useStore((s) => s.styleScope);
   const devUrl = useDevUrl();
   const content = (field: Extract<EditOperation, { type: 'node.setContent' }>['field'], value: unknown, edit?: PendingEdit) => void applyWith(edit, [{ type: 'node.setContent', owner, nodeId: node.id, field, value }], `Edit ${field}`, `${node.id}:${field}`);
@@ -1112,8 +1127,9 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
     ...(structural
       ? [
           ...(styleItems.length ? [{ separator: true }] : []),
-          { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
-          { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
+          // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
+          { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
+          { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: asPlanned(plan, deleteLayers) }
         ]
       : [])
   ];

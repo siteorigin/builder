@@ -535,8 +535,8 @@ export interface BuilderApi {
     snapshot(): Promise<ProjectSnapshot | null>;
     /** `opening` is the snapshot's workspaceKey of the project the change was made in: any other refuses it. */
     apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string; opening?: string }): Promise<ApplyResult>;
-    /** Copy page content as it is now, for a later `node.paste` with the returned clipboard ID. */
-    copy(pageId: string, nodeId: string, expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }>;
+    /** Copy page content as it is now, for a later `node.paste` with the returned clipboard ID: one node, or several siblings together. */
+    copy(pageId: string, nodeId: string | string[], expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }>;
     undo(): Promise<ApplyResult>;
     /**
      * Undo one history entry (`ApplyResult.entryId`) of the opening `workspaceKey`, for an Undo offered beside that

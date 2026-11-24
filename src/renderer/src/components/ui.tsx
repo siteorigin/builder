@@ -915,7 +915,8 @@ export function useRovingTabStop(ref: React.RefObject<HTMLElement | null>, role:
     if (!el) return;
     const rows = [...el.querySelectorAll<HTMLElement>(`[role="${role}"]`)];
     if (!rows.length) return;
-    const keep = rows.find((r) => r.getAttribute('aria-selected') === 'true') ?? rows.find((r) => r.contains(document.activeElement)) ?? rows[0];
+    // Of several selected rows, the one marked as the selection itself (data-primary) keeps the tab stop.
+    const keep = rows.find((r) => r.dataset.primary === 'true') ?? rows.find((r) => r.getAttribute('aria-selected') === 'true') ?? rows.find((r) => r.contains(document.activeElement)) ?? rows[0];
     for (const r of rows) r.tabIndex = r === keep ? 0 : -1;
   });
 }

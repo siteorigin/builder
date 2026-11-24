@@ -9,6 +9,7 @@ import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from 
 import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText, whereOf } from './lib/held';
 import type { RevealedItem } from './lib/reveal';
 import type { StyleCopy } from './lib/style-copy';
+import type { LayerSet } from './lib/layer-set';
 
 export const api = window.builder;
 
@@ -100,6 +101,8 @@ export interface State {
   providers: ProviderStatus[];
   pageId: string | null;
   selection: ElementRef | null;
+  /** Sibling layers selected in Layers together with `selection`, which is always one of them (lib/layer-set). */
+  layerSet: LayerSet | null;
   hover: ElementRef | null;
   viewport: number;
   zoom: number | 'fit';
@@ -166,6 +169,12 @@ function savedAssetSort(): AssetSort {
   }
 }
 
+/**
+ * A selection made anywhere but Layers' own Shift and Cmd/Ctrl picks (a canvas click, a crumb, a plain row click,
+ * even of the same layer) selects that one layer, so the layers picked with it are let go.
+ */
+const oneSelection = (p: Partial<State>): Partial<State> => ('selection' in p && !('layerSet' in p) ? { ...p, layerSet: null } : p);
+
 export const useStore = create<State>((set) => ({
   screen: 'welcome',
   packs: { refused: [], userDir: '' },
@@ -175,6 +184,7 @@ export const useStore = create<State>((set) => ({
   providers: [],
   pageId: null,
   selection: null,
+  layerSet: null,
   hover: null,
   viewport: 1280,
   zoom: 'fit',
@@ -209,7 +219,7 @@ export const useStore = create<State>((set) => ({
   aiOutcome: null,
   assetSort: savedAssetSort(),
   styleCopy: null,
-  setState: (p) => set(p)
+  setState: (p) => set(oneSelection(p))
 }));
 
 /** Lists images in this order everywhere at once, and remembers it where storage allows. */
@@ -243,7 +253,7 @@ export interface InspectorFocus {
 export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
 
 export const getState = () => useStore.getState();
-export const setState = (p: Partial<State>) => useStore.setState(p);
+export const setState = (p: Partial<State>) => useStore.setState(oneSelection(p));
 
 /** Save workspace state (open page, viewport, tabs) to the project that is open now. */
 export function saveLocal(state: LocalWorkspaceState) {
