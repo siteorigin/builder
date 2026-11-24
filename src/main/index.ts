@@ -364,9 +364,9 @@ function registerIpc() {
   );
   handle('project:redo', () => controller.session?.redo());
   // What History showed: the revision it stood at and how many changes the step takes.
-  const shown = (v: unknown): v is { revision?: number; count?: number } => {
+  const shown = (v: unknown): v is { revision: number; count: number } => {
     const o = v as Record<string, unknown> | null;
-    return !!o && typeof o === 'object' && (o.revision === undefined || typeof o.revision === 'number') && (o.count === undefined || typeof o.count === 'number');
+    return !!o && typeof o === 'object' && Number.isInteger(o.revision) && Number.isInteger(o.count);
   };
   handle('project:stepHistory', (entryId: unknown, direction: unknown, expected: unknown, key: unknown) =>
     typeof entryId === 'string' && (direction === 'undo' || direction === 'redo') && shown(expected) && typeof key === 'string'

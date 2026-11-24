@@ -98,8 +98,10 @@ describe('stepping History to a chosen entry', () => {
     await s.stepTo(ids[0], 'undo');
     await s.stepTo(ids[0], 'redo');
     await s.stepTo(ids[3], 'redo');
+    await s.stepTo(ids[0], 'undo');
+    await s.stepTo(ids[3], 'redo');
     // One change event for each step, however many entries it takes.
-    expect(labels).toEqual(['Undo Title Contact', 'Undo 3 changes', 'Redo Rename site', 'Redo 3 changes']);
+    expect(labels).toEqual(['Undo Title Contact', 'Undo 3 changes', 'Redo Rename site', 'Redo 3 changes', 'Undo 4 changes', 'Redo 4 changes']);
     await s.close();
   });
 

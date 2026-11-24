@@ -57,16 +57,25 @@ assert.equal(made.length, 4, `four changes: ${made.join(' | ')}`);
 assert.match(made[0], /^Edit .+ on Home$/, 'the text edit names the element and the page');
 assert.deepEqual(made.slice(1), ['Duplicate Gallery on Home', 'Move Gallery down on Home', 'Delete Gallery on Home']);
 
-step('History lists them, newest first, and opens where History stands now');
+step('History opens from the keyboard where History stands now, and a held Enter steps nothing');
 await win.locator('.project-title').click();
 await win.locator('[role="menu"]').waitFor();
-await win.locator('[role="menu"] [role^="menuitem"]', { hasText: 'History…' }).click();
+await win.locator('[role="menu"] [role^="menuitem"]', { hasText: 'History…' }).focus();
+const opened = (await snapshot()).revision;
+// Enter chooses the menu item and is held down: its repeats reach the row focus starts on.
+await win.keyboard.down('Enter');
 await history.waitFor();
+await eventually(async () => assert.equal(await focusedLabel(), 'Delete Gallery on Home', 'focus starts on the current change'));
+await win.keyboard.down('Enter');
+await win.keyboard.down('Enter');
+await win.keyboard.up('Enter');
+await settle();
+assert.equal((await snapshot()).revision, opened, 'the held key undoes nothing');
+assert.deepEqual((await snapshot()).history.entries.slice(start).map((e) => e.applied), [true, true, true, true]);
 const shown = await history.locator('.history-step .grow').allInnerTexts();
 assert.deepEqual(shown.slice(0, 4), [...made].reverse(), 'the newest change comes first');
 const newest = rowFor('Delete Gallery on Home');
 assert.equal(await newest.getAttribute('aria-current'), 'step', 'the newest change is where History stands');
-await eventually(async () => assert.equal(await focusedLabel(), 'Delete Gallery on Home', 'focus starts on it'));
 assert.equal(await newest.getAttribute('tabindex'), '0', 'and it is the list’s one Tab stop');
 assert.equal(await history.locator('.history-step[tabindex="0"]').count(), 1);
 assert.equal(await rowFor('Duplicate Gallery on Home').getAttribute('aria-label'), 'Undo “Duplicate Gallery on Home” and 2 changes after it');
@@ -104,6 +113,7 @@ const forward = await snapshot();
 assert.equal(forward.revision, before + 2, 'two changes redone in one step');
 assert.deepEqual(forward.history.entries.slice(start).map((e) => e.applied), [true, true, true, true]);
 assert.deepEqual(await roots(), rootsAtStart, 'the copy is deleted again');
+assert.equal(forward.history.entries.at(-2).label, 'Move Gallery down on Home', 'the entries between keep their labels');
 
 step('a click steps further back, and what is undone can be redone until a new change is made');
 await rowFor('Duplicate Gallery on Home').click();

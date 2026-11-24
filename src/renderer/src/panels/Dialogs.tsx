@@ -1468,6 +1468,9 @@ function ChangesModal() {
   };
   // Up and Down move between the rows (Home and End to the newest and oldest); Enter or Space steps to one.
   const onKeyDown = (e: React.KeyboardEvent<HTMLOListElement>) => {
+    // A key held down from whatever opened History (Enter on its menu item) repeats onto the row focus starts on:
+    // only a fresh press steps.
+    if (e.repeat && (e.key === 'Enter' || e.key === ' ')) return e.preventDefault();
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key) || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
     const rows = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('.history-step')];
     const at = rows.indexOf(document.activeElement as HTMLButtonElement);

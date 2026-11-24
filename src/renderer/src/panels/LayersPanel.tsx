@@ -1407,7 +1407,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
             aria-pressed={eye.pressed}
             aria-description={eye.pressed ? `${sentence(vis.note)} ${eye.action}.${alsoNote}` : `${eye.action}.`}
             title={eye.pressed ? `${sentence(vis.note)} Click to ${eye.action.toLowerCase()}.${alsoNote}` : eye.action}
-            onClick={(e) => (e.stopPropagation(), applyVisibility(owner, n.id, eye.edits, `${eye.action.replace(/^(Show|Hide)/, `$1 ${name} ${placeWords(state, owner)}`)}`))}
+            onClick={(e) => (e.stopPropagation(), applyVisibility(owner, n.id, eye.edits, eye.action.replace(/^(Show|Hide)/, (verb) => `${verb} ${name} ${placeWords(state, owner)}`)))}
             onDoubleClick={(e) => e.stopPropagation()}
           >
             {eyeTag ? <SizesTag text={sizesTag} sizes={vis.own.hiddenAt} /> : eye.pressed ? <EyeOff /> : <Eye />}
