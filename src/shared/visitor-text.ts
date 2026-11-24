@@ -40,6 +40,7 @@ export const VISITOR_TEXT_KEYS = [
   'searchSearching',
   'searchFailed',
   'searchNone',
+  'searchAdvice',
   'searchOne',
   'searchMany',
   'searchLimited',
@@ -97,7 +98,8 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'searchEmpty', label: 'Empty search', hint: 'Shown when the visitor searches for nothing, on a search box without a message of its own.' },
       { key: 'searchSearching', label: 'Searching', hint: 'Announced while the search runs.' },
       { key: 'searchFailed', label: 'Search failed', hint: 'Shown when the search cannot load.' },
-      { key: 'searchNone', label: 'No results', hint: 'Shown before the search box’s own advice when nothing matches.', fills: ['query'] },
+      { key: 'searchNone', label: 'No results', hint: 'Shown when nothing matches, before the advice.', fills: ['query'] },
+      { key: 'searchAdvice', label: 'No-results advice', hint: 'Shown after it, on a search box without advice of its own.' },
       { key: 'searchOne', label: 'One result', hint: 'Shown when one page matches.', fills: ['query'] },
       { key: 'searchMany', label: 'Several results', hint: 'Shown when several pages match.', fills: ['count', 'query'] },
       { key: 'searchLimited', label: 'Too many results', hint: 'Shown when more pages match than the list shows.', fills: ['count', 'query', 'shown'] },
@@ -148,6 +150,7 @@ const EN: VisitorText = {
   searchSearching: 'Searching…',
   searchFailed: 'The search could not load. Reload the page and try again.',
   searchNone: 'No pages match “{query}”.',
+  searchAdvice: 'Try fewer or different words.',
   searchOne: '1 page matches “{query}”.',
   searchMany: '{count} pages match “{query}”.',
   searchLimited: '{count} pages match “{query}”. The first {shown} are shown; add words to narrow the search.',
@@ -186,6 +189,7 @@ const AR: VisitorText = {
   searchSearching: 'جارٍ البحث…',
   searchFailed: 'تعذّر تحميل البحث. أعد تحميل الصفحة وحاول مرة أخرى.',
   searchNone: 'لا توجد صفحات تطابق «{query}».',
+  searchAdvice: 'جرّب كلمات أقل أو مختلفة.',
   searchOne: 'صفحة واحدة تطابق «{query}».',
   searchMany: 'عدد الصفحات التي تطابق «{query}»: {count}.',
   searchLimited: 'عدد الصفحات التي تطابق «{query}»: {count}. تظهر أول {shown} منها؛ أضف كلمات لتضييق البحث.',
@@ -224,6 +228,7 @@ const HE: VisitorText = {
   searchSearching: 'החיפוש מתבצע…',
   searchFailed: 'לא ניתן היה לטעון את החיפוש. יש לטעון מחדש את הדף ולנסות שוב.',
   searchNone: 'אין דפים שתואמים ל"{query}".',
+  searchAdvice: 'כדאי לנסות פחות מילים או מילים אחרות.',
   searchOne: 'דף אחד תואם ל"{query}".',
   searchMany: 'דפים שתואמים ל"{query}": {count}.',
   searchLimited: 'דפים שתואמים ל"{query}": {count}. מוצגים {shown} הראשונים; אפשר להוסיף מילים כדי לצמצם את החיפוש.',
@@ -269,10 +274,18 @@ export function builtInVisitorText(language: string): VisitorText {
 function ownFor(site: Pick<SiteDoc, 'visitorText'>, language: string): Partial<Record<VisitorTextKey, unknown>> {
   const all = site.visitorText;
   if (!all || typeof all !== 'object' || Array.isArray(all)) return {};
-  // Kept under the lower-case code; a key written by hand in another case still counts.
-  const key = Object.hasOwn(all, language) ? language : Object.keys(all).find((k) => visitorTextLanguage(k) === language);
-  const own = key === undefined ? undefined : all[key];
-  return own && typeof own === 'object' && !Array.isArray(own) ? own : {};
+  // Kept under the lower-case code. Keys written by hand in other cases count too, after it and in a fixed order:
+  // each piece comes from the first of them that says something.
+  const keys = Object.keys(all)
+    .filter((k) => visitorTextLanguage(k) === language)
+    .sort((a, b) => (a === language ? -1 : b === language ? 1 : a < b ? -1 : a > b ? 1 : 0));
+  const out: Partial<Record<VisitorTextKey, unknown>> = {};
+  for (const k of keys) {
+    const own = all[k];
+    if (!own || typeof own !== 'object' || Array.isArray(own)) continue;
+    for (const piece of VISITOR_TEXT_KEYS) if (Object.hasOwn(own, piece) && !ownVisitorText(out[piece]) && ownVisitorText(own[piece])) out[piece] = own[piece];
+  }
+  return out;
 }
 
 /** The author's wording for one language as the site uses it: each piece that says something, within the limit. */

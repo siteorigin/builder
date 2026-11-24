@@ -510,9 +510,10 @@ export const contactForm: ComponentDefinition = {
       ],
       { titleField: 'label', max: 12 }
     ),
-    // Empty, these use the site's visitor text for the page's language (Site styles > Visitor text).
+    // Empty, these use the site's visitor text for the page's language (Site styles > Visitor text). The button shows
+    // on the page, so it starts with words of its own, as the fields do; the messages only show once a message is sent.
     ...P.group('Messages', {
-      submitLabel: { ...P.str('Button label', ''), description: 'Empty: the send button of the site’s visitor text, in the page’s language.' },
+      submitLabel: { ...P.str('Button label', 'Send message'), description: 'Empty: the send button of the site’s visitor text, in the page’s language.' },
       successMessage: { ...P.text('Sent message', ''), description: 'Empty: the sent message of the site’s visitor text, in the page’s language.' },
       errorMessage: { ...P.text('Error message', ''), description: 'Empty: the not-sent message of the site’s visitor text, in the page’s language.' }
     })

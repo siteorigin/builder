@@ -30,7 +30,7 @@ describe('the way a language is written', () => {
     for (const code of ['ar', 'AR', 'ar-EG', 'he', 'iw', 'he-IL', 'fa', 'fa-IR', 'ur', 'ps', 'dv', 'yi', 'ckb', 'syr', 'az-Arab', 'ku-Arab', 'pa-Arab', 'zh-Hebr']) expect(languageDirection(code), code).toBe('rtl');
     for (const code of ['en', 'en-GB', 'fr-CA', 'de', 'zh-Hant-TW', 'ja', 'ar-Latn', 'az-Latn', 'az', 'ku', 'sr-Cyrl']) expect(languageDirection(code), code).toBe('ltr');
     // A language written in another script in one region goes that script's way there (Unicode's likely subtags).
-    for (const code of ['pa-PK', 'az-IR', 'ku-IQ', 'uz-AF']) expect(languageDirection(code), code).toBe('rtl');
+    for (const code of ['pa-PK', 'az-IR', 'ku-IQ', 'ku-IR', 'uz-AF', 'tg-PK', 'kk-CN', 'ky-CN']) expect(languageDirection(code), code).toBe('rtl');
     for (const code of ['pa', 'pa-IN', 'az-AZ', 'sd-IN', 'pa-Guru-PK']) expect(languageDirection(code), code).toBe('ltr');
     expect(languageDirection('sd')).toBe('rtl');
   });
@@ -97,9 +97,13 @@ describe('visitor text', () => {
     expect(() => apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { '': 'x', menuOpen: 'y' } } })).toThrow(/“” is not a piece of visitor text/);
     // Wording kept by hand under another case is read, and folded under the lower-case code by the next edit.
     const hand = structuredClone(s);
-    hand.site.visitorText = { 'AR-EG': { menuOpen: 'اعرض', skipLink: '\u200b', menuClose: 7 } } as never;
+    hand.site.visitorText = { 'Ar-Eg': { menuOpen: 'اعرض', skipLink: '\u200b', menuClose: 7 } } as never;
     expect(visitorTextFor(hand.site, 'ar-EG')).toMatchObject({ menuOpen: 'اعرض', skipLink: 'انتقل إلى المحتوى', menuClose: 'إغلاق القائمة' });
     expect(apply(hand, { type: 'site.update', visitorText: { language: 'ar-EG', text: { menuClose: 'أغلق' } } }).site.visitorText).toEqual({ 'ar-eg': { menuOpen: 'اعرض', menuClose: 'أغلق' } });
+    // Kept under two spellings, each piece comes from the lower-case one first, then the others; an edit keeps them all.
+    hand.site.visitorText = { 'AR-EG': { skipLink: 'تخطَّ', menuOpen: 'قديم' }, 'ar-eg': { menuOpen: 'اعرض' } };
+    expect(visitorTextFor(hand.site, 'ar-eg')).toMatchObject({ menuOpen: 'اعرض', skipLink: 'تخطَّ' });
+    expect(apply(hand, { type: 'site.update', visitorText: { language: 'ar-eg', text: { menuClose: 'أغلق' } } }).site.visitorText).toEqual({ 'ar-eg': { menuOpen: 'اعرض', skipLink: 'تخطَّ', menuClose: 'أغلق' } });
   });
 
   it('gives the not-found page its default wording in the site’s language', () => {
@@ -135,6 +139,7 @@ describe('the generated wording', () => {
     // What goes in is never read for names: a search for "{shown}" says just that.
     expect(fill('{count} pages match “{query}”. The first {shown} are shown.', { count: 3, query: '{shown}', shown: 2 })).toBe('3 pages match “{shown}”. The first 2 are shown.');
     expect(fill('{index} of {count} {other}', { index: 1, count: 2 })).toBe('1 of 2 {other}');
+    expect(fillParts('{count} pages match “{query}”, {other}', { count: 3, query: 'x' })).toEqual([{ text: '3', name: 'count' }, { text: ' pages match “' }, { text: 'x', name: 'query' }, { text: '”, {other}' }]);
     expect(fillParts('لا توجد صفحات تطابق «{query}».', { query: 'Studio 5' })).toEqual([{ text: 'لا توجد صفحات تطابق «' }, { text: 'Studio 5', name: 'query' }, { text: '».' }]);
     // A site in one language carries that language alone, and its layout names no other.
     const one = generateProject(fresh());
@@ -162,7 +167,8 @@ function trilingualSite() {
   s = apply(s, { type: 'page.update', pageId: byTitle(s, 'About').id, language: 'he' });
   s = apply(s, { type: 'page.update', pageId: byTitle(s, 'Contact').id, language: 'en' });
   const home = s.pages[s.site.homePageId];
-  const form = makeInstance(s.components[installComponent(s, 'contact.form')], { provider: 'endpoint', endpoint: SERVICE });
+  // The author cleared the button's own label: it says the visitor text's.
+  const form = makeInstance(s.components[installComponent(s, 'contact.form')], { provider: 'endpoint', endpoint: SERVICE, submitLabel: '' });
   home.nodes[form.id] = form;
   home.rootIds.push(form.id);
   const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
@@ -320,9 +326,10 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
     const ar = builtInVisitorText('ar');
     let answer!: () => void;
     const answered = new Promise<void>((done) => (answer = done));
+    let status = 200;
     await page.route(`${SERVICE}**`, async (route) => {
       await answered;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}', headers: { 'access-control-allow-origin': '*' } });
+      await route.fulfill({ status, contentType: 'application/json', body: '{}', headers: { 'access-control-allow-origin': '*' } });
     });
     try {
       const form = page.locator('form.so-form__form');
@@ -334,6 +341,11 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
       answer();
       await expect.poll(() => page.locator('.so-form__status').first().innerText()).toBe(ar.formSent);
       await expect(page.getByRole('button', { name: ar.formSubmit, exact: true }).count()).resolves.toBe(1);
+      // A message the service turns down says so in Arabic too.
+      status = 500;
+      for (const [name, value] of [['name', 'ليلى'], ['email', 'layla@example.com'], ['message', 'مرة أخرى']]) await form.locator(`[name="${name}"]`).fill(value);
+      await page.getByRole('button', { name: ar.formSubmit, exact: true }).click();
+      await expect.poll(() => page.locator('.so-form__status--error').innerText()).toBe(ar.formFailed);
       // An email address is typed left to right, whichever way the page runs.
       await expect(form.locator('[name="email"]').evaluate((el) => (globalThis as unknown as { getComputedStyle: (e: unknown) => { direction: string } }).getComputedStyle(el).direction)).resolves.toBe('ltr');
     } finally {

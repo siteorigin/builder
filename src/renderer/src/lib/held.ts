@@ -9,6 +9,7 @@ import { followsPage, inheritedValue } from '@shared/page-teasers';
 import { pagesWithin } from '@shared/page-tree';
 import { normalizeRoute } from '@shared/routes';
 import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-styles';
+import { ownVisitorTextFor } from '@shared/visitor-text';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -52,9 +53,9 @@ const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 
 
 /** The author's wording for these pieces of visitor text in a language: the one piece's text, or each piece's. */
 function visitorTextRead(state: ProjectState, language: string, keys: string[]): unknown {
-  const all = state.site.visitorText;
-  const own = all && typeof all === 'object' ? has(all, language.toLowerCase()) : undefined;
-  const value = (key: string) => (own && typeof own === 'object' ? has(own, key) : undefined);
+  // As the editor shows it and the site uses it, whatever case the language was kept under.
+  const own: Record<string, string> = ownVisitorTextFor(state.site, language);
+  const value = (key: string) => has(own, key);
   return keys.length === 1 ? value(keys[0]) : Object.fromEntries(keys.map((k) => [k, value(k)]));
 }
 

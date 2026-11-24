@@ -237,6 +237,11 @@ describe('held visitor text (issue #71)', () => {
     const both = set('ar', { menuOpen: 'x', skipLink: 'y' });
     expect(readFields(base, [both])).toEqual([{ found: true, value: { visitorText: { menuOpen: 'اعرض القائمة', skipLink: undefined } } }]);
     expect(check(base, apply(base, [set('ar', { skipLink: 'إلى المحتوى' })]), [both]).kind).toBe('changed');
+    // Wording kept by hand under another case is read as the editor shows it.
+    const hand = structuredClone(base);
+    hand.site.visitorText = { AR: { menuOpen: 'يدوي' } };
+    expect(readFields(hand, [op])).toEqual([{ found: true, value: { visitorText: 'يدوي' } }]);
+    expect(check(base, hand, [op]).kind).toBe('changed');
     // The direction is a field of its own.
     expect(readFields(base, [{ type: 'site.update', direction: 'rtl' }])).toEqual([{ found: true, value: { direction: undefined } }]);
     expect(check(base, apply(base, [{ type: 'site.update', direction: 'ltr' }]), [{ type: 'site.update', direction: 'rtl' }]).kind).toBe('changed');

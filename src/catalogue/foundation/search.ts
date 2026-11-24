@@ -28,7 +28,7 @@ const SEARCH_SOURCE = `<script>
 		placeholder = '',
 		buttonLabel = 'Search',
 		emptyMessage = '',
-		noResultsMessage = 'Try fewer or different words.',
+		noResultsMessage = '',
 		variant = 'default',
 		class: className = ''
 	} = $props();
@@ -139,7 +139,7 @@ const SEARCH_SOURCE = `<script>
 				</div>
 			</form>
 			<p class="so-search__status" id={uid + '-status'} role="status">
-				{#if status === 'empty'}{emptyMessage || text().searchEmpty}{:else if status === 'searching'}{text().searchSearching}{:else if status === 'failed'}{text().searchFailed}{:else if status === 'done' && found}{#each outcome as part}{#if part.name === 'query'}<bdi>{part.text}</bdi>{:else}{part.text}{/if}{/each}{#if found.total === 0}{' '}{noResultsMessage}{/if}{/if}
+				{#if status === 'empty'}{emptyMessage || text().searchEmpty}{:else if status === 'searching'}{text().searchSearching}{:else if status === 'failed'}{text().searchFailed}{:else if status === 'done' && found}{#each outcome as part}{#if part.name === 'query'}<bdi>{part.text}</bdi>{:else}{part.text}{/if}{/each}{#if found.total === 0}{' '}{noResultsMessage || text().searchAdvice}{/if}{/if}
 			</p>
 			{#if status === 'done' && found && shown}
 				<ol class="so-search__results" aria-label={fill(text().searchResults, { query: found.words })}>
@@ -336,7 +336,7 @@ export const siteSearch: ComponentDefinition = {
     }),
     ...P.group('Messages', {
       emptyMessage: { ...P.text('Message for an empty search', ''), description: 'Empty: the empty-search message of the site’s visitor text, in the page’s language.' },
-      noResultsMessage: P.text('Advice when nothing matches', 'Try fewer or different words.')
+      noResultsMessage: { ...P.text('Advice when nothing matches', ''), description: 'Empty: the no-results advice of the site’s visitor text, in the page’s language.' }
     })
   },
   parts: { root: { nodeId: 'root', label: 'Search section' } },
