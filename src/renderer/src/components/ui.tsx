@@ -1104,8 +1104,15 @@ function DraftField({
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       edit.current++;
       startedAt.current ??= { base: useStore.getState().snapshot, value: draft, commit: onCommit, ai: aiActivity() };
-      // Text that arrived with line breaks (dropped, or put in by an input method) is one line before anything reads it.
-      const text = wrap ? oneLine(e.target.value) : e.target.value;
+      // Text that arrived with line breaks (dropped, or put in by an input method) is one line before anything reads
+      // it, and the caret stays where the author was rather than going to the end.
+      const raw = e.target.value;
+      const text = wrap ? oneLine(raw) : raw;
+      if (text !== raw) {
+        const at = Math.min(oneLine(raw.slice(0, e.target.selectionStart ?? raw.length)).length, text.length);
+        e.target.value = text;
+        e.target.setSelectionRange(at, at);
+      }
       setDraft(text);
       mark(text !== value);
       if (tooLongRef.current) stash(text, startedAt.current);
