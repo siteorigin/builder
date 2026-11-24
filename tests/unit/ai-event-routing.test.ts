@@ -3,7 +3,7 @@
  * conversation, and the chat panel ignores message and text events tagged with any other one, so a request filed in
  * another thread can never appear in the thread on screen. Run status stays app-wide: only one request runs at a time.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -79,12 +79,19 @@ async function setup() {
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
   /** Show a conversation in the chat panel, as the renderer receives it. */
   const show = (c: Conversation) => store.setState({ conversation: structuredClone(c) });
+  const streaming = () => until(() => store.getState().runStatus === 'running', 'the request to stream');
   const finish = async () => {
-    await until(() => store.getState().runStatus === 'running', 'the request to stream');
+    await streaming();
     adapter.release();
     await until(() => !orch.busy && store.getState().runStatus === null, 'the request to finish');
   };
-  return { orch, ctx, show, finish };
+  /** Wait until a conversation's file holds `count` messages. */
+  const saved = (id: string, count: number) =>
+    until(() => {
+      const file = join(dir, '.siteorigin', 'sessions', 'chat', `${id}.json`);
+      return existsSync(file) && (JSON.parse(readFileSync(file, 'utf8')) as Conversation).messages.length === count;
+    }, 'the transcript to be saved');
+  return { orch, ctx, show, finish, streaming, saved };
 }
 
 const said = (messages: ChatMessage[] | undefined) => (messages ?? []).map((m) => `${m.role}: ${m.text}`);
@@ -114,6 +121,32 @@ describe('AI events reach only their own conversation', () => {
     expect(store.getState().activeRunId).toBeNull();
     // And it went to the earlier thread, which shows it when opened.
     expect(said((await orch.openConversation(first.id)).messages)).toEqual(['user: First request', 'assistant: Working on it.', 'user: Second request', 'assistant: Working on it.']);
+  });
+
+  it('a request still ending when its project closed shows nothing in the project opened next, even the same thread', async () => {
+    const { orch, ctx, show, finish, streaming, saved } = await setup();
+    const first = (await orch.loadConversations()).active;
+    show(first);
+    expect((await orch.send('First request', ctx, first.id)).ok).toBe(true);
+    await finish();
+    await saved(first.id, 2);
+    expect((await orch.send('Second request', ctx, first.id)).ok).toBe(true);
+    await streaming();
+
+    // Closing gives up waiting for the request and lets the project go; the same project opens again, on the same
+    // conversation as its file has it.
+    orch.reset();
+    store.setState({ conversation: null });
+    const reopened = (await orch.loadConversations()).active;
+    expect(reopened.id).toBe(first.id);
+    show(reopened);
+    const before = store.getState().conversation;
+    expect(said(before?.messages)).toEqual(['user: First request', 'assistant: Working on it.']);
+
+    // The old request ends now: its status still frees the composer, but its messages are not this opening's.
+    await finish();
+    expect(store.getState().conversation).toBe(before);
+    expect(store.getState().activeRunId).toBeNull();
   });
 
   it('ignores message and text events tagged with another conversation, or with none', () => {
