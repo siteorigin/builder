@@ -195,9 +195,113 @@ const colourConversation = {
     })
   })
 };
+n = 30;
+// A request that kept its valid work but did not finish: Continue, a problem check and a check that could not run.
+const partialChecks = [
+  { status: 'issue', text: 'Content is wider than the screen at phone width on Pricing.' },
+  { status: 'unverified', text: 'Could not check the contact form at tablet width.' },
+  { status: 'pass', text: 'Project structure, links and references are valid.' },
+  { status: 'pass', text: 'All components build without errors.' }
+];
+const partialConversation = {
+  id: 'c_seedpartial',
+  title: 'Build out a Pricing page and link it everywhere',
+  createdAt: t(16),
+  messages: turn('Build out a Pricing page with three plans and link it from the header and footer', home, null, {
+    activities: [done('p1', 'Reading the project'), done('p2', 'Adding Pricing page'), done('p3', 'Adding sections'), done('p4', 'Updating shared navigation'), { id: 'p5', label: 'Checking Pricing at phone width', status: 'error', detail: 'Content is wider than the screen.' }, done('p6', 'Checking the result')],
+    ...result('completed', 'I added the **Pricing** page with three plans and linked it from the header. I ran out of steps before linking it from the footer.', {
+      changes: [
+        { label: 'Added page “Pricing” (/pricing)', pageId: about.id },
+        { label: 'Added Plan cards to Pricing', pageId: about.id },
+        { label: 'Updated the shared header navigation' }
+      ],
+      validation: partialChecks.map((c) => c.text),
+      checks: partialChecks,
+      incomplete: true,
+      canUndo: true
+    })
+  })
+};
+n = 40;
+// A read-only question, answered with the field to open.
+const askConversation = {
+  id: 'c_seedask',
+  title: 'Where do I change the phone number in the footer?',
+  createdAt: t(12),
+  messages: turn('Where do I change the phone number in the footer?', home, null, {
+    activities: [done('q1', 'Reading the shared footer')],
+    ...result('no-changes', 'The phone number is in the shared **footer**, so changing it once updates every page.', {
+      ask: true,
+      locations: [{ owner: { kind: 'shell', id: 'footer' }, nodeId: 'n_footer_contact', prop: 'phone', path: ['Footer', 'Contact details', 'Phone number'] }]
+    })
+  }).map((m) => (m.role === 'user' ? { ...m, context: { ...m.context, mode: 'ask' } } : m))
+};
+n = 50;
+// A long working session, for scrolling back through many finished turns.
+const longTurns = [
+  ['Tighten the intro on the home page', 'Edited Intro content'],
+  ['Swap the second feature icon for something calmer', 'Edited Feature icon'],
+  ['Make the testimonials section two columns', 'Updated Testimonials layout'],
+  ['Shorten every testimonial to two sentences', 'Edited Testimonial content'],
+  ['Add a call to action under the testimonials', 'Added Call to action'],
+  ['Make that call to action link to Contact', 'Edited Button link'],
+  ['Give the footer a darker background', 'Updated Footer background'],
+  ['Check the home page at phone width', null],
+  ['Reduce the hero heading size on phones', 'Updated Heading size at phone width'],
+  ['Add alt text to the gallery images', 'Edited Gallery image descriptions']
+];
+const longConversation = {
+  id: 'c_seedlong',
+  title: 'Tidy the home page before launch',
+  createdAt: t(8),
+  messages: longTurns.flatMap(([ask, change], i) =>
+    turn(ask, home, i % 3 === 0 ? 'Section' : null, {
+      activities: [done(`z${i}a`, `Reading ${home.title}`), ...(change ? [done(`z${i}b`, 'Updating content')] : []), done(`z${i}c`, 'Checking the result')],
+      ...(change
+        ? result('completed', `Done. ${change} on ${home.title}, and everything else is as it was.`, { changes: [{ label: `${change} on ${home.title}`, pageId: home.id }], validation: ['Project structure, links and references are valid.', 'All components build without errors.'], canUndo: true })
+        : result('no-changes', 'It fits at phone width. The only tight spot is the hero heading, which wraps to three lines.'))
+    })
+  )
+};
 const chatDir = join(projectDir, '.siteorigin', 'sessions', 'chat');
 mkdirSync(chatDir, { recursive: true });
-for (const c of [heroConversation, troubleConversation, colourConversation]) writeFileSync(join(chatDir, `${c.id}.json`), JSON.stringify(c));
+for (const c of [heroConversation, troubleConversation, colourConversation, partialConversation, askConversation, longConversation]) writeFileSync(join(chatDir, `${c.id}.json`), JSON.stringify(c));
+const libraryImages = Object.values(snap.state.assets.assets).filter((a) => a.kind === 'image').slice(0, 3);
+if (libraryImages.length < 3) throw new Error('the sample project has fewer than three images to attach and offer');
+
+/** Open a seeded conversation from the history menu. */
+async function openConversation(title) {
+  await win.getByRole('button', { name: 'Earlier conversations' }).click();
+  await pause(300);
+  await win.locator('.menu [role^="menuitem"]', { hasText: title }).click();
+  await pause(500);
+}
+
+/** Tell the renderer this run is the newest step in undo history, through the channel the project reports on. */
+async function markUndoable(undoRunId) {
+  const s = await win.evaluate(() => window.builder.project.snapshot());
+  const history = { ...s.history, canUndo: true, entries: [...s.history.entries, { id: 'h_seedundo', label: 'AI edit', source: 'ai', time: t(59), applied: true, runId: undoRunId }] };
+  await app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', next), { ...s, history });
+  await pause(250);
+}
+
+/** Drag the dock's edge to a width, and confirm it took. */
+async function setDockWidth(width) {
+  const box = await win.locator('.dock').boundingBox();
+  const handle = await win.locator('.dock .resizer').boundingBox();
+  const y = handle.y + handle.height / 2;
+  await win.mouse.move(handle.x + handle.width / 2, y);
+  await win.mouse.down();
+  await win.mouse.move(handle.x + handle.width / 2 + (box.width - width), y, { steps: 6 });
+  await win.mouse.up();
+  // The drag leaves the handle focused and hovered (a pointer that then moves into the canvas frame never un-hovers
+  // it), so blur it and park the pointer on the toolbar: later captures show the panel, not the handle.
+  await win.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  await win.mouse.move(10, 10);
+  await pause(250);
+  const now = (await win.locator('.dock').boundingBox()).width;
+  if (Math.abs(now - width) > 2) throw new Error(`dock is ${now}px wide, expected ${width}`);
+}
 
 // Connect a provider (a placeholder key; nothing is ever sent), then reload so the renderer reads providers
 // through the same channel it uses on start, and reopen the project with its seeded history.
@@ -226,10 +330,29 @@ await win.locator('.menu [role^="menuitem"]', { hasText: 'Add an FAQ section' })
 await pause(500);
 await shot('conversation-problems', '.chat-log >> text=Add the FAQ as plain headings');
 
-// A new conversation: the ready empty state, then with an element selected, then a draft typed.
+// What a finished turn can leave behind: unfinished work, a located answer, an Undo, and a long thread.
+await openConversation('Build out a Pricing page');
+await shot('partial', '.result-foot >> text=Continue');
+await openConversation('Where do I change the phone number');
+await shot('answer', '.chat-log >> text=Open in inspector');
+await openConversation('Make the brand colour');
+await markUndoable('r_seed21');
+await shot('undo-available', '.result-foot >> text=Undo turn');
+await openConversation('Tidy the home page');
+await shot('long-latest', '.chat-log >> text=Add alt text to the gallery images');
+await win.locator('.chat-log').evaluate((el) => (el.scrollTop = el.scrollHeight * 0.4));
+await pause(250);
+await shot('long-scrolled', '.chat-log >> text=Add a call to action');
+
+// A new conversation: the ready empty state, in Edit and Ask, then with an element selected, then a draft typed.
 await win.getByRole('button', { name: 'New conversation', exact: true }).click();
 await pause(400);
 await shot('ready-empty', '.chat-empty');
+await win.locator('.composer-foot .segmented button').nth(1).click();
+await pause(200);
+await shot('ready-ask', '.chat-empty >> text=Ask how your site works');
+await win.locator('.composer-foot .segmented button').nth(0).click();
+await pause(200);
 await frame.locator('h1').first().click();
 await pause(500);
 await frame.locator('h1').first().click();
@@ -244,6 +367,29 @@ await shot('draft', '.chat textarea:focus');
 await ta.fill('');
 await win.keyboard.press('Escape');
 await pause(200);
+
+// Library images attached to the message, through the Assets panel's own action.
+await win.getByRole('button', { name: 'Assets', exact: true }).click();
+await pause(300);
+for (const image of libraryImages.slice(0, 2)) {
+  await win.locator(`[data-asset="${image.id}"]`).click();
+  await pause(200);
+  await win.getByRole('button', { name: 'Use in AI chat' }).click();
+  await pause(300);
+  await win.locator('.asset-back').click();
+  await pause(200);
+}
+await ta.fill('Use these two photos in the gallery, with the wider one first');
+await pause(300);
+await shot('composer-images', '.composer .image-chip');
+await ta.fill('');
+while (await win.locator('.composer .image-chip button').count()) {
+  await win.locator('.composer .image-chip button').first().click();
+  await pause(120);
+}
+await win.getByRole('button', { name: 'Assets', exact: true }).click();
+await pause(200);
+await openAiTab();
 
 // A run in progress, pushed through the agent's own event channel. The conversation is the fresh one.
 const convId = 'live';
@@ -260,7 +406,17 @@ await emit({ runId, conversationId: convId, kind: 'status', status: 'running' })
 await emit({ runId, conversationId: convId, kind: 'message', message: { ...liveAi, activities: [done('l1', `Reading ${home.title}`), done('l2', 'Inspecting the selected element'), { id: 'l3', label: 'Updating content', status: 'running' }] } });
 await emit({ runId, conversationId: convId, kind: 'text', text: 'The current heading runs to two lines on phones. I will tighten it to one clear promise' });
 await pause(300);
-await shot('working', '.chat-log >> text=Updating content');
+// The step under way is named in the run strip; the log keeps the steps already taken.
+await shot('working', '.run-strip >> text=Updating content');
+
+// Later phases of the same run, with enough steps to fold the earlier ones.
+await emit({ runId, conversationId: convId, kind: 'status', status: 'validating' });
+await emit({ runId, conversationId: convId, kind: 'message', message: { ...liveAi, activities: [done('l1', `Reading ${home.title}`), done('l2', 'Inspecting the selected element'), done('l3', 'Updating content'), done('l5', 'Checking Home at phone width'), done('l6', 'Checking Home at tablet width'), { id: 'l7', label: 'Checking the result', status: 'running' }] } });
+await pause(300);
+await shot('checking', '.run-strip >> text=Checking the result');
+await emit({ runId, conversationId: convId, kind: 'status', status: 'stopping' });
+await pause(200);
+await shot('stopping', '.run-strip >> text=Stopping');
 
 await emit({ runId, conversationId: convId, kind: 'status', status: 'awaiting-input' });
 await emit({
@@ -277,6 +433,25 @@ await emit({
 await pause(300);
 // The waiting question sits above the composer, which answers it.
 await shot('question', '.question-card >> text=Can I change things outside the heading');
+// The same question at the dock's narrowest.
+await setDockWidth(300);
+await shot('question-narrow', '.question-card >> text=Can I change things outside the heading');
+await setDockWidth(340);
+
+// A question that offers pictures from the library.
+await emit({
+  runId,
+  conversationId: convId,
+  kind: 'message',
+  message: {
+    ...liveAi,
+    text: '',
+    activities: [done('l1', `Reading ${home.title}`), done('l2', 'Inspecting the selected element'), { id: 'l4', label: 'Waiting for your answer', status: 'running' }],
+    questions: [{ id: 'q_seedimage', text: 'Which photo should lead the hero?', choices: ['Keep the current photo'], images: libraryImages.map((a) => ({ assetId: a.id, name: a.name })) }]
+  }
+});
+await pause(400);
+await shot('question-images', '.question-card .image-choice');
 
 await emit({
   runId,
@@ -294,7 +469,20 @@ await emit({ runId, conversationId: convId, kind: 'status', status: 'failed' });
 await pause(300);
 await shot('failed', '.chat-log >> text=rejected the API key');
 
+// History kept, provider gone: the conversation stays readable and says how to carry on.
+await win.evaluate(() => window.builder.projects.close());
+await win.waitForSelector('.welcome');
 await win.evaluate(() => window.builder.ai.setKey('openai', null));
+await win.reload();
+await win.waitForSelector('.recent-card');
+await win.locator('.recent-card', { hasText: 'Harbour Lane Studio' }).click();
+await win.waitForSelector('.editor');
+await frame.locator('h1').first().waitFor({ timeout: 90000 });
+await pause(1200);
+await openAiTab();
+await pause(400);
+await shot('disconnected', '.chat-connect');
+
 await app.close();
 rmSync(WORK, { recursive: true, force: true });
 

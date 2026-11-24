@@ -1,15 +1,16 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, FileText, Globe, History, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChatActivity, ChatChange, ChatContext, ChatImageRef, ChatMessage, FieldLocation } from '@shared/api';
-import { refKey } from '@shared/types';
+import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatImageRef, type ChatMessage, type FieldLocation } from '@shared/api';
+import { refKey, type ElementRef, type ProjectState } from '@shared/types';
+import { refLabel } from '../lib/model';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId } from '../lib/result';
-import { composerAction, isPaused, isStarting, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
@@ -26,7 +27,7 @@ function Md({ text }: { text: string }) {
 
 /** What the run strip says for each phase of a run. */
 const PHASE: Record<string, string> = {
-  preparing: 'Working',
+  preparing: 'Getting started',
   running: 'Working',
   'awaiting-input': 'Needs your answer',
   validating: 'Checking the result',
@@ -60,8 +61,59 @@ function outcome(r: NonNullable<ChatMessage['result']>) {
 function summaryOf(r: NonNullable<ChatMessage['result']>) {
   if (r.ask && r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return 'You stopped this question. It could not change anything.';
   if (r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return r.changes.length ? 'You stopped this request. Its changes were undone.' : 'You stopped this request before it changed anything.';
+  // A failed edit that changed nothing says so, unless its own words already do.
+  if (r.status === 'failed' && !r.ask && !r.changes.length && !/restored|unchanged|not changed|no changes|nothing (was|has been) changed/i.test(r.summary)) return `${r.summary.trim()} Nothing on your site was changed.`;
   return r.summary;
 }
+
+/**
+ * What a sent request was allowed to change, as its caption and the run strip name it. An edit with no element
+ * chosen can reach the whole site, so it says so rather than naming only the page it started on.
+ */
+function scopeOf(ctx?: ChatContext | null, state?: ProjectState): string {
+  if (!ctx) return '';
+  const inComponent = typeof ctx.component?.name === 'string';
+  if (ctx.mode !== 'ask' && !ctx.selectionLabel && !inComponent && ctx.pageTitle) return `Whole site · from ${ctx.pageTitle}`;
+  // A part of a placed component can change the whole placement (agent/scope.ts), which is the real boundary.
+  if (ctx.mode !== 'ask' && ctx.selection && !inComponent) {
+    const boundary = boundaryOf(state, ctx.selection);
+    if (boundary) return `${ctx.pageTitle} → ${boundary}`;
+    if (ctx.selection.instancePath?.length) return `${targetOf(ctx)}’s component`;
+  }
+  return targetOf(ctx);
+}
+
+/**
+ * The placed component an element inside it is limited to, by name: the outermost placement on the page, as the agent
+ * scopes it. Null for an element that is not inside a placement, or one that can no longer be found.
+ */
+function boundaryOf(state: ProjectState | undefined, selection: ElementRef | null | undefined): string | null {
+  if (!state || !selection || !Array.isArray(selection.instancePath) || !selection.instancePath.length) return null;
+  try {
+    return refLabel(state, { owner: selection.owner, instancePath: [], nodeId: selection.instancePath[0] });
+  } catch {
+    return null;
+  }
+}
+
+/** What a finished turn's final checks found, as its header and its announcement both say it. */
+function checkCounts(r: NonNullable<ChatMessage['result']>): string[] {
+  const { issues, unverified } = checksOf(r);
+  return [issues.length ? `${issues.length} ${issues.length === 1 ? 'issue' : 'issues'}` : '', unverified.length ? `${unverified.length} not checked` : ''].filter(Boolean);
+}
+
+/** Plain affirmative answers that grant a scope-widening question when typed, as the agent reads them (orchestrator.ts). */
+const TYPED_YES = /^\s*(y|yes|yeah|yep|ok|okay|sure|allow( it)?|go ahead|please do)[\s.!]*$/i;
+
+/** The step a live run is on, which the run strip names; the transcript keeps the steps already taken. */
+function currentStep(activities: ChatActivity[] | undefined): string | undefined {
+  return [...(activities ?? [])].reverse().find((a) => a.status === 'running')?.label;
+}
+
+/** How close to the end of the log counts as being at the end. */
+const FOLLOW_PX = 48;
+
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function sizeToFit(ta: HTMLTextAreaElement | null) {
   // A hidden panel measures nothing; it is sized again when it is shown.
@@ -92,10 +144,21 @@ export function Chat() {
   const logRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const nearBottom = useRef(true);
+  // Scrolled back far enough that the latest turn is out of sight: offer the way back.
+  const [away, setAway] = useState(false);
+  const jumping = useRef(false);
+  const frozenScope = useRef<{ run: string | null; text: string }>({ run: null, text: '' });
   const menu = useMenu();
+  const attachMenu = useMenu();
   const [sending, setSending] = useState(false);
   const [announce, setAnnounce] = useState('');
-  const announcedRun = useRef<string | null>(null);
+  // Every announcement is keyed by its run (and question), so each is said once and none replaces a later one.
+  const announced = useRef(new Set<string>());
+  const sayOnce = (key: string, text: string) => {
+    if (announced.current.has(key)) return;
+    announced.current.add(key);
+    setAnnounce(text);
+  };
   const trackedRun = useRef<string | null>(null);
   const shownConversation = useRef<string | null>(null);
   const history = useStore((s) => s.snapshot?.history);
@@ -131,6 +194,9 @@ export function Chat() {
   const topRun = history?.canUndo ? [...history.entries].reverse().find((e) => e.applied)?.runId : undefined;
   const undoableId = topRun ? msgs.find((m) => m.role === 'assistant' && m.runId === topRun && m.result?.canUndo)?.id : undefined;
   const resumable = running ? undefined : resumableId(msgs);
+  // Turns whose changes project history now holds as undone (each step of the run undone, none redone).
+  const appliedRuns = new Set((history?.entries ?? []).filter((e) => e.runId && e.applied).map((e) => e.runId));
+  const revertedRuns = new Set((history?.entries ?? []).filter((e) => e.runId && !e.applied && !appliedRuns.has(e.runId)).map((e) => e.runId));
   const firstAsk = msgs.find((m) => m.role === 'user')?.text;
   const title = msgs.length ? (conversation?.title && conversation.title !== 'New conversation' ? conversation.title : firstAsk ?? 'New conversation') : 'New conversation';
 
@@ -140,9 +206,54 @@ export function Chat() {
     if (conversation?.id !== shownConversation.current) {
       shownConversation.current = conversation?.id ?? null;
       nearBottom.current = true;
+      setAway(false);
     }
-    if (el && nearBottom.current) el.scrollTop = el.scrollHeight;
+    // An empty conversation reads from its top; one with turns opens on its latest.
+    if (el && msgs.length === 0) el.scrollTop = 0;
+    else if (el && nearBottom.current) el.scrollTop = el.scrollHeight;
+    // Output that arrives while the reader is scrolled back fires no scroll event, so the way back is checked here too.
+    else if (el) setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= FOLLOW_PX);
   }, [conversation]);
+
+  // The log also changes size without scrolling: the composer grows, a question card arrives, a disclosure opens. A
+  // reader at the end stays at the end; one scrolled back keeps their place and the way back stays accurate.
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const below = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // The log itself resizing (the composer grows, a question arrives) keeps a reader at the end there. A turn growing
+      // because the reader opened its details is left where they put it.
+      if (nearBottom.current && entries.some((e) => e.target === el)) {
+        if (below > 1) el.scrollTop = el.scrollHeight;
+      } else if (!jumping.current) setAway(below >= FOLLOW_PX);
+    });
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!snap, conversation?.id, msgs.length]);
+
+  const jumpToLatest = () => {
+    const el = logRef.current;
+    if (!el) return;
+    nearBottom.current = true;
+    jumping.current = !reducedMotion();
+    setAway(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: reducedMotion() ? 'auto' : 'smooth' });
+    // The button goes once used, so focus moves on to where the conversation continues: the composer, or the log
+    // itself when there is no composer to write in.
+    if (taRef.current) focusComposer();
+    else el.focus({ preventScroll: true });
+  };
+
+  /** Undo a turn, then say so: the card shows it as undone once project history reports it. */
+  const undoTurn = async (runId: string) => {
+    const res = await api.ai.undoTurn(runId);
+    if (!res.ok) return toast(res.message ?? 'This turn cannot be undone.', 'error');
+    setAnnounce('Turn undone. Its changes were reverted.');
+    focusComposer();
+  };
 
   // A restored draft (after a restart, a retry, or returning to its conversation, or once a question is answered)
   // gets its full height back.
@@ -154,25 +265,22 @@ export function Chat() {
   useEffect(() => {
     if (runStatus && activeRunId) {
       trackedRun.current = activeRunId;
-      const target = targetOf(workingUser?.context);
       if (runStatus === 'awaiting-input') {
         // Announced once per question, when it arrives; the composer is already where it is answered.
-        if (asking && announcedRun.current !== askingKey) {
-          announcedRun.current = askingKey;
-          setAnnounce(`The AI needs your answer to continue: ${asking.question.text}`);
-        }
-      } else if (runStatus === 'preparing' && announcedRun.current !== `${activeRunId}:start`) {
-        announcedRun.current = `${activeRunId}:start`;
-        setAnnounce(`AI started working${target ? ` on ${target}` : ''}.`);
-      } else if (runStatus === 'stopping') setAnnounce(runMode === 'ask' ? 'Stopping the question.' : 'Stopping the AI. Its changes are being undone.');
-      else if (runStatus === 'running') setAnnounce('');
+        if (asking && askingKey) sayOnce(`${askingKey}:asked`, `The AI needs your answer to continue: ${asking.question.text}${asking.question.widen ? ' Allowing it lets this request change the whole site.' : ''}`);
+      } else if ((runStatus === 'preparing' || runStatus === 'running') && workingUser?.context) {
+        // Said once the request has arrived, so it names what the AI may change, in the words the strip uses. A
+        // question reads the site and cannot change it, so it is never said to be working on anything.
+        sayOnce(`${activeRunId}:start`, runMode === 'ask' ? 'AI started reading the site.' : `AI started working on ${scopeOf(workingUser.context, getState().snapshot?.state)}.`);
+      } else if (runStatus === 'stopping') sayOnce(`${activeRunId}:stopping`, runMode === 'ask' ? 'Stopping the question.' : 'Stopping the AI. Its changes are being undone.');
+      // Checking and repairing are phases the author may be waiting on, so each is said when it first starts.
+      else if (runStatus === 'validating' || runStatus === 'repairing') sayOnce(`${activeRunId}:${runStatus}`, `${PHASE[runStatus]}.`);
+      // Each announcement stays until the next one replaces it: clearing it on the next update could cut it off.
     }
     const run = trackedRun.current;
-    const done = run && announcedRun.current !== `${run}:done` ? msgs.find((m) => m.role === 'assistant' && m.runId === run && m.result) : undefined;
-    if (done?.result) {
-      announcedRun.current = `${run}:done`;
-      setAnnounce(`${outcome(done.result).label}. ${summaryOf(done.result)}`);
-    }
+    const done = run && !announced.current.has(`${run}:done`) ? msgs.find((m) => m.role === 'assistant' && m.runId === run && m.result) : undefined;
+    // The outcome, with the same check counts the card shows beside it.
+    if (done?.result) sayOnce(`${run}:done`, `${[outcome(done.result).label, ...checkCounts(done.result)].join(', ')}. ${summaryOf(done.result)}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runStatus, activeRunId, conversation]);
 
@@ -188,7 +296,64 @@ export function Chat() {
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
   // edited everywhere offers none.
-  const suggestions = !askMode && !component && msgs.length === 0 && configured && conversation && !draft.trim() ? chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: ctxOn }) : [];
+  const fresh = !component && msgs.length === 0 && configured && !!conversation && !draft.trim();
+  const suggestions: Array<{ text: string; kind: string }> = !fresh
+    ? []
+    : askMode
+      ? // A question's strongest use is finding where something is edited, so its starters ask that about what is here.
+        page
+        ? [
+            selLabel && ctxOn.selection ? `Where do I change the ${sel} in the Inspector?` : `What can I change on the “${page.title}” page, and where?`,
+            `Which parts of the “${page.title}” page are shared with other pages?`
+          ].map((text) => ({ text, kind: 'ask' }))
+        : []
+      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: ctxOn });
+  const stepNow = currentStep(working?.activities);
+  // The run strip is the one place that says what a run is doing now: an edit's current step, or its phase. A question
+  // is always "Reading the site", as the dock tab and the canvas say it, followed by its current step.
+  const askRun = runMode === 'ask';
+  const phase =
+    runStatus === 'stopping'
+      ? askRun
+        ? 'Stopping'
+        : 'Stopping · undoing changes'
+      : runStatus === 'awaiting-input'
+        ? PHASE['awaiting-input']
+        : askRun
+          ? `Reading the site${stepNow ? ` · ${stepNow}` : ''}`
+          : (stepNow ?? PHASE[runStatus ?? ''] ?? 'Working');
+  // What the run may change, as it stands: once the author allows a wider change, that is the whole site.
+  const widened = !!working && turnQuestions(working).some((q) => q?.widen && typeof q.answered === 'string' && (q.answered === q.choices?.[0] || TYPED_YES.test(q.answered)));
+  // The run's scope is named as it stood when it was sent, so a rename or a removal meanwhile cannot rewrite it.
+  if (activeRunId && workingUser?.context && frozenScope.current.run !== activeRunId) frozenScope.current = { run: activeRunId, text: scopeOf(workingUser.context, st) };
+  const sentScope = activeRunId && frozenScope.current.run === activeRunId ? frozenScope.current.text : '';
+  const stripDetail = workingUser?.context ? (widened && workingUser.context.pageTitle ? `Whole site · from ${workingUser.context.pageTitle}` : sentScope || scopeOf(workingUser.context, st)) : '';
+  const hasLibraryImages = Object.values(st.assets.assets).some((a) => a?.kind === 'image');
+  /** Add a library image to the message, or take it out again; the draft stays as it is. */
+  const toggleImage = (id: string) => {
+    if (!conversation) return;
+    const now = imagesFor(getState().chatImages, conversation.id);
+    setState({ chatImages: withImages(getState().chatImages, conversation.id, now.includes(id) ? now.filter((x) => x !== id) : [...now, id]) });
+    focusComposer();
+  };
+  const addImages = (el: HTMLElement) => {
+    const library = Object.values(st.assets.assets)
+      .flatMap((a) => (a?.kind === 'image' && typeof a.name === 'string' ? [{ assetId: a.id, name: a.name }] : []))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    attachMenu.openAt(
+      el,
+      [
+        { heading: 'Add to your message' },
+        // Two images with the same name are told apart by their IDs, as the message names them.
+        ...imageLabels(library).map((i) => ({ label: i.label, checked: images.includes(i.assetId), onSelect: () => toggleImage(i.assetId) })),
+        { separator: true },
+        { label: 'Browse in Assets…', onSelect: () => setState({ leftTab: 'assets' }) }
+      ],
+      'Images'
+    );
+  };
+  // The element a message is limited to, named as the agent limits it: an element inside a placed component, by that component.
+  const boundary = boundaryOf(st, scope.selection);
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
 
@@ -211,6 +376,9 @@ export function Chat() {
     }
     // The typed answer is sent: clear it, unless more was typed meanwhile (that question is answered either way).
     if (typed) setAnswerBox((b) => (b.key === key ? { key, text: '' } : b));
+    // Acknowledged only while the run is still going, so it never replaces the outcome if that arrived first.
+    const after = getState();
+    if (!after.conversation?.messages.some((x) => x.runId === q.runId && x.result) && !announced.current.has(`${q.runId}:done`)) sayOnce(`${key}:answered`, 'Answer sent. The AI is continuing.');
   };
 
   /** `context` replaces the editor's own (and its images), for a message that continues an earlier request. */
@@ -308,7 +476,8 @@ export function Chat() {
 
   return (
     <div className="chat">
-      {(configured || msgs.length > 0) && (
+      {/* Shown with or without a provider, so earlier conversations stay reachable after one is removed. */}
+      {conversation && (
         <div className="chat-head">
           <span className="chat-title" title={title}>
             {title}
@@ -322,15 +491,28 @@ export function Chat() {
           </button>
         </div>
       )}
+      <div className="chat-body">
       <div
         className="chat-log"
         ref={logRef}
         role="log"
         aria-label="AI conversation"
-        aria-busy={(running && !waiting) || undefined}
+        tabIndex={-1}
+        // Scrolling by hand during a jump ends it, so the way back can show again.
+        onWheel={() => (jumping.current = false)}
+        onPointerDown={() => (jumping.current = false)}
+        // Busy for the whole run, through a pause for a question too: the question is outside the log and is announced on
+        // its own, and the log's updates are read once the run settles rather than alongside it.
+        aria-busy={running || undefined}
         onScroll={(e) => {
           const el = e.currentTarget;
-          nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          const below = el.scrollHeight - el.scrollTop - el.clientHeight;
+          // One line decides both: at the end, new output follows; scrolled back past it, the reader stays put and
+          // Jump to latest appears.
+          nearBottom.current = below < FOLLOW_PX;
+          // A smooth jump passes through positions above the end; the button stays gone until it lands.
+          if (jumping.current && below < FOLLOW_PX) jumping.current = false;
+          if (!jumping.current) setAway(below >= FOLLOW_PX);
         }}
       >
         {msgs.length === 0 && (
@@ -339,7 +521,7 @@ export function Chat() {
               <Sparkles size={20} />
             </div>
             <div className="col" style={{ gap: 4 }}>
-              {askMode ? (
+              {askMode && configured ? (
                 <>
                   <h3>Ask how your site works</h3>
                   <p>The AI reads the site and answers without changing anything. It can point you to the field to change, and you can keep editing meanwhile.</p>
@@ -359,7 +541,11 @@ export function Chat() {
               // Starters prefill an empty composer; once you have written something they step aside rather than replace it.
               conversation &&
               suggestions.length > 0 && (
-                <div className="suggestions" role="group" aria-label="Suggestions">
+                <div className="suggestions" role="group" aria-labelledby="chat-starters-label">
+                  {/* Says what a starter does, since many chats send one at a click: here it only fills the box. */}
+                  <p className="suggestions-label" id="chat-starters-label">
+                    Each fills the box below, ready to edit.
+                  </p>
                   {suggestions.map((s) => (
                     <button
                       key={s.text}
@@ -382,7 +568,7 @@ export function Chat() {
             <p className="chat-privacy">
               {provider?.id === 'local' && configured
                 ? (provider.warning ?? 'Page text and structure stay on this computer.')
-                : `Page text and structure are sent to ${configured && provider ? provider.label : 'the provider you choose'}. Images are never sent.`}
+                : `Page text and structure are sent to ${configured && provider ? provider.label : 'the provider you choose'}. Images you attach from Assets go by name and ID; the pictures stay here.`}
             </p>
           </div>
         )}
@@ -390,31 +576,64 @@ export function Chat() {
           m.role === 'user' ? (
             <UserMessage key={m.id} m={m} />
           ) : (
-            <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} awaiting={waiting} undoable={m.id === undoableId} asking={asking} onContinue={m.id === resumable && !sending ? () => continueRequest(msgs[i - 1]) : undefined} />
+            <AssistantMessage
+              key={m.id}
+              m={m}
+              live={m.runId === activeRunId && running}
+              awaiting={waiting}
+              undoable={m.id === undoableId}
+              reverted={!!m.runId && revertedRuns.has(m.runId)}
+              latest={i === msgs.length - 1}
+              canCompose={configured}
+              asking={asking}
+              onUndo={undoTurn}
+              // Work that has been undone is not continued from: its card offers a fresh attempt instead.
+              onContinue={m.id === resumable && !sending && configured && !(m.runId && revertedRuns.has(m.runId)) ? () => continueRequest(msgs[i - 1]) : undefined}
+            />
           )
         )}
       </div>
+      {/* Its own row under the log rather than over it, so it never covers the turn being read. */}
+      {away && msgs.length > 0 && (
+        <div className="chat-jump-row">
+          <button className="chat-jump" onClick={jumpToLatest}>
+            <ArrowDown aria-hidden="true" /> Jump to latest
+          </button>
+        </div>
+      )}
+      </div>
       {running && (
         <div className={`run-strip${waiting ? ' waiting' : ''}`}>
+          {/* The one live indicator: it turns while the AI works and stops when it waits on you. */}
           <span className="run-icon" aria-hidden="true">
-            {waiting ? <CircleHelp /> : <Sparkles />}
+            {waiting ? <CircleHelp /> : <Spinner decorative />}
           </span>
           <span className="run-text">
-            <span className="run-phase">{runMode === 'ask' && runStatus !== 'awaiting-input' && runStatus !== 'stopping' ? 'Reading the site' : (PHASE[runStatus!] ?? 'Working')}</span>
-            {workingUser?.context && <span className="run-target">{targetOf(workingUser.context)}</span>}
+            <span className="run-phase" title={phase}>
+              {phase}
+            </span>
+            {stripDetail && (
+              <span className="run-target" title={stripDetail}>
+                {stripDetail}
+              </span>
+            )}
           </span>
-          <span className="run-actions">
-            <button
-              className="btn btn-sm run-stop"
-              disabled={runStatus === 'stopping'}
-              onClick={() => {
-                void api.ai.stop();
-                focusComposer();
-              }}
-            >
-              <Square size={10} fill="currentColor" /> Stop
-            </button>
-          </span>
+          {/* Stopping an edit puts the site back as it was before the request, so the button says so. Once it is
+              stopping there is nothing left to press. */}
+          {runStatus !== 'stopping' && (
+            <span className="run-actions">
+              <button
+                className="btn btn-sm run-stop"
+                title={runMode === 'ask' ? 'Stop this question' : 'Stop this request and undo its changes'}
+                onClick={() => {
+                  void api.ai.stop();
+                  focusComposer();
+                }}
+              >
+                <Square size={10} fill="currentColor" /> {runMode === 'ask' ? 'Stop' : 'Stop and undo'}
+              </button>
+            </span>
+          )}
         </div>
       )}
       {configured && provider?.warning && (
@@ -430,41 +649,60 @@ export function Chat() {
           <div className="question-text" id="ai-question-text">
             {asking.question.text}
           </div>
-          {offeredImages(asking.question).length > 0 && (
-            <ImageChoices
-              key={askingKey}
-              images={offeredImages(asking.question)}
-              onChoose={(img) => {
-                void answer(asking, img, false);
-                focusComposer();
-              }}
-            />
+          {/* What yes allows is said before it is given, not only once the run has widened. */}
+          {asking.question.widen && (
+            <p className="question-scope" id="ai-question-scope">
+              <Globe aria-hidden="true" /> Allowing it lets this request change the whole site.
+            </p>
           )}
-          {asking.question.choices.length > 0 && (
-            <div className="choices">
-              {asking.question.choices.map((c, i) => (
-                <button
-                  key={`${i}:${c}`}
-                  className="btn btn-sm choice"
-                  onClick={() => {
-                    void answer(asking, c, false);
-                    focusComposer();
-                  }}
-                >
-                  {c}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* How to answer sits with the question, ahead of the options, so it is never scrolled out of sight. */}
           <p className="question-hint" id="ai-question-hint">
-            {questionHint(asking.question)}
+            {/* A photo opens larger and a labelled Choose answers, which this run's own wording says. */}
+            {offeredImages(asking.question).length && !asking.question.widen
+              ? `Choose a picture${asking.question.choices.length ? ' or an option' : ''}, or type your own answer below. Select a photo to see it larger first.`
+              : questionHint(asking.question)}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
+          {/* Only the options scroll, so a long list never scrolls the question and its instructions out of sight. */}
+          {(offeredImages(asking.question).length > 0 || asking.question.choices.length > 0) && (
+            <div className="question-options">
+              {offeredImages(asking.question).length > 0 && (
+                <ImageChoices
+                  key={askingKey}
+                  images={offeredImages(asking.question)}
+                  onChoose={(img) => {
+                    void answer(asking, img, false);
+                    focusComposer();
+                  }}
+                />
+              )}
+              {asking.question.choices.length > 0 && (
+                <div className="choices">
+                  {asking.question.choices.map((c, i) => (
+                    <button
+                      key={`${i}:${c}`}
+                      className="btn btn-sm choice"
+                      onClick={() => {
+                        void answer(asking, c, false);
+                        focusComposer();
+                      }}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
       {configured || asking ? (
-        <div className="composer">
-          {(page || component || selLabel) && (
+        // Answering, it is one row: the reply and its Send.
+        <div className={`composer${asking ? ' answering' : ''}`}>
+          {/* While a question waits, the composer only answers it: the next message's scope comes back afterwards. */}
+          {!asking && (page || component || selLabel || hasLibraryImages) && (
+            <div className="chips-bar">
+            {(page || component || selLabel) && (
             <div className="chips" role="group" aria-label={askMode ? 'Your question is about' : 'Your next message applies to'}>
               {component ? (
                 // Editing a component everywhere: the request is about its design, never the page behind it.
@@ -472,11 +710,17 @@ export function Chat() {
                   <Component /> <span className="ellipsis">{component.name}</span>
                 </span>
               ) : (
-                page && (
-                  <span className="chip" title={askMode ? 'The AI starts from the page you are viewing.' : 'The AI starts from the page you are viewing. Without a selection, it can also change other pages.'}>
+                page &&
+                (!askMode && !selLabel ? (
+                  // With nothing selected an edit can reach any page, so the chip says that first.
+                  <span className="chip" title={`The AI starts from ${page.title} and can change any page, including the shared header and footer.`}>
+                    <Globe /> <span className="ellipsis">Whole site · from {page.title}</span>
+                  </span>
+                ) : (
+                  <span className="chip" title="The AI starts from the page you are viewing.">
                     <FileText /> <span className="ellipsis">{page.title}</span>
                   </span>
-                )
+                ))
               )}
               {selLabel && askMode && ctxOn.selection && (
                 // A question changes nothing, so the selection only says what it is about.
@@ -494,11 +738,12 @@ export function Chat() {
                   options={[
                     {
                       value: 'selection',
-                      // A part of a component is scoped to the whole component placement (see agent/scope.ts).
-                      title: scope.selection?.instancePath.length ? `Only the component containing ${selLabel}` : `Only ${selLabel}`,
+                      // A part of a component is scoped to the whole component placement (see agent/scope.ts), so
+                      // the option names that boundary rather than only the part.
+                      title: scope.selection?.instancePath.length ? `Only ${boundary ?? 'the component'}, the component containing ${selLabel}` : `Only ${selLabel}`,
                       label: (
                         <>
-                          <MousePointerClick /> <span className="ellipsis">{selLabel}</span>
+                          <MousePointerClick /> <span className="ellipsis">{boundary ?? selLabel}</span>
                         </>
                       )
                     },
@@ -525,6 +770,14 @@ export function Chat() {
                 />
               )}
             </div>
+            )}
+            {hasLibraryImages && (
+              // Library images join the message in one click, by name and ID; Assets is a click further for browsing.
+              <button type="button" className="icon-btn sm chips-attach" title="Add images from Assets" aria-label="Add images from Assets" aria-haspopup="menu" aria-expanded={attachMenu.isOpen} onClick={(e) => addImages(e.currentTarget)}>
+                <ImagePlus />
+              </button>
+            )}
+            </div>
           )}
           {/* The message's images wait with it while a question is answered. */}
           {!asking && (
@@ -544,9 +797,25 @@ export function Chat() {
           <textarea
             ref={taRef}
             value={composerText}
-            placeholder={asking ? 'Type your answer…' : waiting ? 'Waiting for the question…' : running ? 'Draft your next message…' : askMode ? 'Ask how this site works…' : selLabel && ctxOn.selection ? `Ask about the ${sel}…` : 'Describe a change…'}
+            placeholder={
+              asking
+                ? 'Type your answer…'
+                : waiting
+                  ? 'Waiting for the question…'
+                  : running
+                    ? 'Draft your next message…'
+                    : askMode
+                      ? selLabel && ctxOn.selection
+                        ? `Ask about the ${sel}…`
+                        : 'Ask how this site works…'
+                      : selLabel && ctxOn.selection
+                        ? boundary
+                          ? `Describe a change to ${boundary}…`
+                          : `Describe a change to the ${sel}…`
+                        : 'Describe a change…'
+            }
             aria-label={asking ? 'Your answer' : 'Message'}
-            aria-describedby={asking ? 'ai-question-text ai-question-hint' : undefined}
+            aria-describedby={asking ? `ai-question-text${asking.question.widen ? ' ai-question-scope' : ''} ai-question-hint` : undefined}
             rows={1}
             // Until the project's conversation has loaded, there is no thread to write in.
             readOnly={!conversation}
@@ -605,12 +874,10 @@ export function Chat() {
                 ]}
               />
             )}
-            {provider && (
-              <button className="btn btn-sm btn-ghost composer-model" title="Change AI provider or model" aria-haspopup="dialog" onClick={openSettings}>
-                <span className="label">
-                  {provider.label}
-                  {modelLabel ? ` · ${modelLabel}` : ''}
-                </span>
+            {provider && !asking && (
+              // The model is the part that changes between requests, so it gets the room; the provider is in the title.
+              <button className="btn btn-sm btn-ghost composer-model" title={`${provider.label}${modelLabel ? ` · ${modelLabel}` : ''}. Change AI provider or model`} aria-label={`AI model: ${provider.label}${modelLabel ? ` ${modelLabel}` : ''}. Change provider or model`} aria-haspopup="dialog" onClick={openSettings}>
+                <span className="label">{modelLabel ?? provider.label}</span>
                 <Settings2 size={12} />
               </button>
             )}
@@ -648,6 +915,7 @@ export function Chat() {
         )
       )}
       {menu.node}
+      {attachMenu.node}
       {createPortal(
         <div className="sr-only" role="status" aria-live="polite">
           {announce}
@@ -659,7 +927,8 @@ export function Chat() {
 }
 
 function UserMessage({ m }: { m: ChatMessage }) {
-  const target = targetOf(m.context);
+  const state = useStore((s) => s.snapshot?.state);
+  const target = scopeOf(m.context, state);
   const images = Array.isArray(m.images) ? m.images.filter((i) => typeof i?.assetId === 'string' && typeof i.name === 'string') : [];
   const ask = m.context?.mode === 'ask';
   return (
@@ -673,14 +942,16 @@ function UserMessage({ m }: { m: ChatMessage }) {
 
 function Steps({ items, waiting, stopped, recent }: { items: ChatActivity[]; waiting?: boolean; stopped?: boolean; recent?: number }) {
   const [all, setAll] = useState(false);
-  const extra = recent ? Math.max(0, items.length - recent) : 0;
+  // Folding a single step saves nothing, so at least two fold or none do.
+  const extra = recent && items.length > recent + 1 ? items.length - recent : 0;
   const hidden = all ? 0 : extra;
   return (
     <ul className="activity-list" aria-label="Steps">
       {extra > 0 && (
         <li className="activity earlier">
           <button className="steps-earlier" aria-expanded={all} onClick={() => setAll(!all)}>
-            {all ? 'Hide earlier steps' : `${extra} earlier ${extra === 1 ? 'step' : 'steps'}`}
+            {all ? 'Hide earlier steps' : `Show ${extra} earlier ${extra === 1 ? 'step' : 'steps'}`}
+            <ChevronDown aria-hidden="true" />
           </button>
         </li>
       )}
@@ -706,7 +977,29 @@ function Steps({ items, waiting, stopped, recent }: { items: ChatActivity[]; wai
   );
 }
 
-function AssistantMessage({ m, live, awaiting, undoable, asking, onContinue }: { m: ChatMessage; live: boolean; awaiting: boolean; undoable: boolean; asking: WaitingQuestion | null; onContinue?: () => void }) {
+function AssistantMessage({
+  m,
+  live,
+  awaiting,
+  undoable,
+  reverted,
+  latest,
+  canCompose,
+  asking,
+  onUndo,
+  onContinue
+}: {
+  m: ChatMessage;
+  live: boolean;
+  awaiting: boolean;
+  undoable: boolean;
+  reverted: boolean;
+  latest: boolean;
+  canCompose: boolean;
+  asking: WaitingQuestion | null;
+  onUndo: (runId: string) => void;
+  onContinue?: () => void;
+}) {
   const r = m.result;
   const activities = m.activities ?? [];
   // A live turn of a run that waits for the author is paused: nothing in it spins, whichever message holds the
@@ -714,46 +1007,45 @@ function AssistantMessage({ m, live, awaiting, undoable, asking, onContinue }: {
   const waitingHere = isPaused(asking, m.id, live, awaiting);
   // Every question of the turn stays with it, in order, with its answer.
   const questions = shownQuestions(m, asking);
+  // A live turn lists the steps already taken; the step under way is named once, in the run strip.
+  const taken = live ? activities.filter((a) => a.status !== 'running') : activities;
+  const answers = questions.map((q) => {
+    // A picture chosen from the offer is shown with its name, told apart from any other offered with the same one.
+    const offered = offeredImages(q);
+    const picked = q.answeredAssetId ? offered.find((i) => i.assetId === q.answeredAssetId) : undefined;
+    return (
+      <div key={q.key} className={`answered${q.answered === undefined ? ' unanswered' : ''}`}>
+        <span className="answered-q">{q.text}</span>
+        {picked ? (
+          <span className="answered-image">
+            You chose: <ImageChips images={[picked]} among={offered} label="The image you chose" />
+          </span>
+        ) : q.answered !== undefined ? (
+          <span>
+            You answered: <strong>{q.answered}</strong>
+          </span>
+        ) : (
+          <span>Not answered</span>
+        )}
+      </div>
+    );
+  });
   return (
-    <div className="msg-ai" aria-busy={(live && !waitingHere) || undefined}>
-      {!r && activities.length > 0 && <Steps items={activities} waiting={waitingHere} recent={4} />}
+    <div className="msg-ai" aria-busy={live || undefined}>
+      {!r && taken.length > 0 && <Steps items={taken} waiting={waitingHere} recent={4} />}
       {!r && m.text && (
         <div className="text">
           <Md text={m.text} />
         </div>
       )}
-      {isStarting(m, live, waitingHere) && (
-        <div className="activity-list chat-starting">
-          <span className="activity running">
-            <span className="activity-icon">
-              <Spinner decorative />
-            </span>
-            Getting started…
-          </span>
-        </div>
+      {/* Getting started is said in the run strip, the one place a run's progress is shown. */}
+      {!r && answers}
+      {/* A finished turn is one card that leads with its result; what was asked and answered on the way sits inside it. */}
+      {r && (
+        <ResultCard m={m} undoable={undoable} reverted={reverted} latest={latest} canCompose={canCompose} onUndo={onUndo} onContinue={onContinue}>
+          {answers.length > 0 ? answers : null}
+        </ResultCard>
       )}
-      {questions.map((q) => {
-        // A picture chosen from the offer is shown with its name, told apart from any other offered with the same one.
-        const offered = offeredImages(q);
-        const picked = q.answeredAssetId ? offered.find((i) => i.assetId === q.answeredAssetId) : undefined;
-        return (
-          <div key={q.key} className={`answered${q.answered === undefined ? ' unanswered' : ''}`}>
-            <span className="answered-q">{q.text}</span>
-            {picked ? (
-              <span className="answered-image">
-                You chose: <ImageChips images={[picked]} among={offered} label="The image you chose" />
-              </span>
-            ) : q.answered !== undefined ? (
-              <span>
-                You answered: <strong>{q.answered}</strong>
-              </span>
-            ) : (
-              <span>Not answered</span>
-            )}
-          </div>
-        );
-      })}
-      {r && <ResultCard m={m} undoable={undoable} onContinue={onContinue} />}
     </div>
   );
 }
@@ -805,7 +1097,25 @@ function openChange(c: ChatChange) {
   if (target.note) toast(target.note, 'info');
 }
 
-function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boolean; onContinue?: () => void }) {
+function ResultCard({
+  m,
+  undoable,
+  reverted,
+  latest,
+  canCompose,
+  onUndo,
+  onContinue,
+  children
+}: {
+  m: ChatMessage;
+  undoable: boolean;
+  reverted: boolean;
+  latest: boolean;
+  canCompose: boolean;
+  onUndo: (runId: string) => void;
+  onContinue?: () => void;
+  children?: ReactNode;
+}) {
   const r = m.result!;
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const [open, setOpen] = useState(false);
@@ -813,12 +1123,34 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
   const head = outcome(r);
   const steps = m.activities ?? [];
   const stopped = r.status === 'cancelled';
-  const problems = steps.filter((a) => a.status === 'error' && !(stopped && !a.detail)).length;
-  const undone = r.status === 'failed' || r.status === 'cancelled';
+  const failedOrStopped = r.status === 'failed' || r.status === 'cancelled';
+  // A turn undone from project history keeps its record, with its changes listed as undone.
+  const undone = failedOrStopped || reverted;
   const authProblem = !!r.error && /API key/i.test(r.summary);
   const { issues, unverified, passes } = checksOf(r);
   const locations = storedLocations(r.locations);
   const [showPasses, setShowPasses] = useState(false);
+  const [showReport, setShowReport] = useState(false);
+  // What the final checks found, said beside the outcome so a finished turn never reads cleaner than it was.
+  // Once project history holds a turn as undone, that is its outcome; what it reported stays below as its record. Its
+  // check counts are left off the header, since they describe changes that are no longer there.
+  const shown = reverted ? { icon: <RotateCcw />, label: 'Undone · its changes were reverted' } : head;
+  const qualifiers = (
+    reverted
+      ? []
+      : [
+          issues.length ? { key: 'issue', text: `${issues.length} ${issues.length === 1 ? 'issue' : 'issues'}` } : null,
+          unverified.length ? { key: 'unverified', text: `${unverified.length} not checked` } : null
+        ]
+  ).filter((q): q is { key: string; text: string } => !!q);
+  // An older turn that went cleanly and offers nothing to do steps back, so a long thread scans faster: its routine
+  // passed checks move into its steps.
+  const settled = !latest && !reverted && (r.status === 'completed' || r.status === 'no-changes') && !r.incomplete && !issues.length && !unverified.length && !undoable && !onContinue;
+  // An older stopped or undone turn is history too: it keeps its retry, on the same quiet card.
+  const quiet = settled || (!latest && ((failedOrStopped && !authProblem) || reverted));
+  const foldPasses = settled && steps.length > 0;
+  // A failed, stopped or undone turn can be tried again from its original request, while there is a composer to write in.
+  const retryable = (failedOrStopped || reverted) && canCompose;
   const retry = async () => {
     const conv = getState().conversation;
     if (!conv) return;
@@ -876,18 +1208,29 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
     });
   };
   return (
-    <div className={`result-card ${r.status}`}>
+    <div className={`result-card ${r.status}${quiet ? ' settled' : ''}${reverted ? ' reverted' : ''}`}>
       <div className="result-head">
         <span className="result-icon" aria-hidden="true">
-          {head.icon}
+          {shown.icon}
         </span>
-        <span className="result-title">{head.label}</span>
-        <span className="spacer" />
+        <span className="result-heading">
+          <span className="result-title">{shown.label}</span>
+          {qualifiers.length > 0 && (
+            <span className="result-qualifiers">
+              {qualifiers.map((q, i) => (
+                <span key={q.key} className={`result-qualifier ${q.key}`}>
+                  {i > 0 && <span aria-hidden="true"> · </span>}
+                  <span className="sr-only">, </span>
+                  {q.text}
+                </span>
+              ))}
+            </span>
+          )}
+        </span>
         {r.usage && devMode && <span className="result-usage">{(r.usage.inputTokens + r.usage.outputTokens).toLocaleString()} tokens</span>}
         {steps.length > 0 && (
           <button className="steps-toggle" aria-expanded={open} aria-controls={stepsId} onClick={() => setOpen(!open)}>
             {steps.length} {steps.length === 1 ? 'step' : 'steps'}
-            {problems > 0 && <span className="steps-problems"> · {problems} {problems === 1 ? 'problem' : 'problems'}</span>}
             <ChevronDown />
           </button>
         )}
@@ -895,9 +1238,43 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
       {open && (
         <div id={stepsId} className="result-steps">
           <Steps items={steps} stopped={stopped} />
+          {foldPasses && passes.length > 0 && (
+            <ul className="checks" aria-label="Checks passed">
+              {passes.map((v, i) => (
+                <li key={i}>
+                  <Check aria-hidden="true" />
+                  <span>{v}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       <div className="result-body">
+        {/* Undone: what was reverted leads, and what the turn reported at the time is kept one click away, so an old
+            success or warning is never read as describing the site now. */}
+        {reverted && (
+          <>
+            {r.changes.length > 0 && (
+              <div className="result-section">
+                <span className="result-label">Reverted</span>
+                <ul aria-label="Changes that were reverted">
+                  {r.changes.map((c, i) => (
+                    <li key={i} className="faint">
+                      {changeText(c).label}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <button className="checks-toggle report-toggle" aria-expanded={showReport} onClick={() => setShowReport(!showReport)}>
+              Before the undo
+              <ChevronDown aria-hidden="true" />
+            </button>
+          </>
+        )}
+        {(!reverted || showReport) && (
+        <>
         <div className="result-summary">
           <Md text={summaryOf(r)} />
         </div>
@@ -913,7 +1290,32 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
             ))}
           </ul>
         )}
+        {issues.length + unverified.length > 0 && (
+          <ul className="checks" aria-label="Checks that need attention">
+            {/* Anything that needs attention comes before the list of changes. */}
+            {issues.map((v, i) => (
+              <li key={`i${i}`} className="issue">
+                <TriangleAlert aria-hidden="true" />
+                <span>
+                  <span className="sr-only">Issue: </span>
+                  {v}
+                </span>
+              </li>
+            ))}
+            {/* A check that could not run says nothing about the site, so it is not counted as a problem or a pass. */}
+            {unverified.map((v, i) => (
+              <li key={`u${i}`} className="unverified">
+                <CircleHelp aria-hidden="true" />
+                <span>
+                  <span className="sr-only">Not checked: </span>
+                  {v}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
         {r.changes.length > 0 &&
+          !reverted &&
           (undone ? (
             <div className="result-section">
               <span className="result-label">Undone</span>
@@ -926,7 +1328,10 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
               </ul>
             </div>
           ) : (
-            <ul className="changes" aria-label="Changes">
+            <div className="result-section">
+            {/* A conflicted turn kept its changes for the author: they are what to review, so they are labelled that way. */}
+            {r.status === 'conflicted' && <span className="result-label">Kept for your review</span>}
+            <ul className="changes" aria-label={r.status === 'conflicted' ? 'Changes kept for your review' : 'Changes'}>
               {r.changes.map((c, i) => {
                 const { label, operations } = changeText(c);
                 return (
@@ -949,29 +1354,11 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
                 );
               })}
             </ul>
+            </div>
           ))}
-        {r.validation.length > 0 && (
-          <ul className="checks" aria-label="Checks">
-            {/* Anything that needs attention comes first; routine passes fold into one line. */}
-            {issues.map((v, i) => (
-              <li key={`i${i}`} className="issue">
-                <TriangleAlert aria-hidden="true" />
-                <span>
-                  <span className="sr-only">Issue: </span>
-                  {v}
-                </span>
-              </li>
-            ))}
-            {/* A check that could not run says nothing about the site, so it is not counted as a problem or a pass. */}
-            {unverified.map((v, i) => (
-              <li key={`u${i}`} className="unverified">
-                <CircleHelp aria-hidden="true" />
-                <span>
-                  <span className="sr-only">Not checked: </span>
-                  {v}
-                </span>
-              </li>
-            ))}
+        {passes.length > 0 && !foldPasses && (
+          <ul className="checks" aria-label="Checks passed">
+            {/* Routine passes fold into one line. */}
             {passes.length > 1 && (
               <li>
                 <button className="checks-toggle" aria-expanded={showPasses} onClick={() => setShowPasses(!showPasses)}>
@@ -990,8 +1377,12 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
               ))}
           </ul>
         )}
+        </>
+        )}
+        {children && <div className="result-answers">{children}</div>}
       </div>
-      {((r.canUndo && undoable) || undone || authProblem || onContinue) && (
+      {/* Retrying puts the request back in the composer, so it is offered only while there is one to write in. */}
+      {((r.canUndo && undoable) || retryable || authProblem || onContinue) && (
         <div className="result-foot">
           {onContinue && (
             <button className="btn btn-sm btn-primary" onClick={onContinue}>
@@ -1004,17 +1395,11 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
             </button>
           )}
           {r.canUndo && undoable && (
-            <button
-              className="btn btn-sm"
-              onClick={async () => {
-                const res = await api.ai.undoTurn(m.runId!);
-                if (!res.ok) toast(res.message ?? 'This turn cannot be undone.', 'error');
-              }}
-            >
+            <button className="btn btn-sm" onClick={() => onUndo(m.runId!)}>
               <RotateCcw /> Undo turn
             </button>
           )}
-          {undone && (
+          {retryable && (
             <button className="btn btn-sm" onClick={() => void retry()}>
               Edit and try again
             </button>
