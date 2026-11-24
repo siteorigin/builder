@@ -333,9 +333,13 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
   }
   for (const d of Object.values(state.components)) {
     const c = count(d.properties);
-    // One property's starting value opens where that is changed; several, the component's Properties.
+    // One property's starting value opens where that is changed (for an object property, the one field holding it);
+    // several, the component's Properties.
     const props = Object.keys(d.properties).filter((k) => count(d.properties[k]));
-    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: document ? 'Starting link for new copies' : 'Starting image for new copies', count: c, ...(editable(state, d.id) ? { go: openComponentDefaults(d.id, props.length === 1 ? props[0] : undefined, 'link') } : {}) });
+    const one = props.length === 1 ? d.properties[props[0]] : undefined;
+    const parts = one?.type === 'object' ? Object.keys(one.fields).filter((f) => count(one.default?.[f]) + count(one.fields[f])) : [];
+    const go = openComponentDefaults(d.id, one ? props[0] : undefined, 'link', parts.length === 1 ? parts[0] : undefined);
+    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: document ? 'Starting link for new copies' : 'Starting image for new copies', count: c, ...(editable(state, d.id) ? { go } : {}) });
   }
   for (const p of Object.values(state.pages)) {
     const c = count(p.seo) + (p.seo.socialImage === assetId ? 1 : 0);
