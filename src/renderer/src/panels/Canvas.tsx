@@ -152,11 +152,55 @@ export function Canvas() {
   const zoom = zoomSetting === 'fit' ? Math.min(1, (size.w - 56) / viewport) : zoomSetting;
   // Forms in Preview: the panel sits above the other bottom bars (the preview pill, the AI run and a page problem).
   const formsShown = mode === 'preview' && forms.length > 0;
-  const practiceBottom = 18 + 46 + (runStatus ? 46 : 0) + (frameError && runtime.state === 'ready' ? 46 : 0);
+  // A page problem can wrap, so the panel stands on its measured height rather than a fixed step.
+  const issueShown = !!frameError && runtime.state === 'ready';
+  const issueBottom = 18 + (mode === 'preview' ? 46 : 0) + (runStatus ? 46 : 0);
+  const issueRef = useRef<HTMLDivElement>(null);
+  const exitRef = useRef<HTMLButtonElement>(null);
+  const [issueH, setIssueH] = useState(0);
+  useLayoutEffect(() => {
+    const el = issueRef.current;
+    if (!el) return;
+    setIssueH(el.offsetHeight);
+    const ro = new ResizeObserver(() => setIssueH(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [issueShown]);
+  // When the bar closes with focus in it, focus moves to a control that stays. Read while rendering, because the
+  // bar has already left the page by the time an effect runs.
+  const focusInIssue = useRef(false);
+  focusInIssue.current = !!issueRef.current?.contains(document.activeElement);
+  useLayoutEffect(() => {
+    if (!issueShown && focusInIssue.current) (getState().mode === 'preview' ? exitRef.current : canvasRef.current)?.focus({ preventScroll: true });
+  }, [issueShown]);
+  const practiceBottom = issueShown ? issueBottom + (issueH || 40) + 10 : 18 + 46 + (runStatus ? 46 : 0);
+  // The panel and the page share the height above the bars: past this the panel scrolls, so it never covers the page.
+  const practiceMax = Math.max(120, size.h - practiceBottom - 50 - 160 * zoom);
+  // While a restarted page loads, the pill keeps naming the page it is on.
+  const address = journey.at?.address ?? page?.route ?? '';
+  // How many characters the address slot holds. An address that does not fit keeps both of its ends in view.
+  const addressRef = useRef<HTMLOutputElement>(null);
+  const [addressFit, setAddressFit] = useState(Infinity);
+  useLayoutEffect(() => {
+    const el = addressRef.current;
+    const ctx = document.createElement('canvas').getContext('2d');
+    if (!el || !ctx) return;
+    const measure = () => {
+      const css = getComputedStyle(el);
+      ctx.font = css.font;
+      const room = el.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+      setAddressFit(Math.max(3, Math.floor(room / ctx.measureText('0').width)));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [mode]);
+  const elided = elideAddress(address, addressFit);
   // The page ends above the panel, so it never covers what it describes (a form's Send button at the foot of a page).
   const practiceRoom = formsShown && practiceH ? Math.max(0, practiceBottom + practiceH + 8 - 28) : 0;
   // The frame's whole footprint (20px top padding + 14px label margin + 28px bottom padding) fits at Fit, so the pasteboard never needs its own scrollbar.
-  const frameH = Math.max(300, (size.h - 70 - practiceRoom) / zoom);
+  const frameH = Math.max(formsShown ? 160 : 300, (size.h - 70 - practiceRoom) / zoom);
 
   const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload);
   // Saving or leaving the project asks the preview to hand back an inline edit that is still open.
@@ -829,23 +873,72 @@ export function Canvas() {
           <span className="pill-note" title="Links and menus work as they will for visitors">
             <Eye aria-hidden="true" /> Previewing
           </span>
-          <button className="pill-step" aria-label="Back" title={isMac ? 'Back (⌘[)' : 'Back (Alt+Left)'} aria-keyshortcuts={isMac ? 'Meta+[' : 'Alt+ArrowLeft'} disabled={!stepTarget(journey, 'back')} onClick={() => step('back')}>
+          {/* Not natively disabled: a step that reaches the end of the journey keeps keyboard focus. */}
+          <button className="pill-step" aria-label="Back" title={isMac ? 'Back (⌘[)' : 'Back (Alt+Left)'} aria-keyshortcuts={isMac ? 'Meta+[' : 'Alt+ArrowLeft'} aria-disabled={!stepTarget(journey, 'back') || undefined} onClick={() => step('back')}>
             <ArrowLeft />
           </button>
-          <button className="pill-step" aria-label="Forward" title={isMac ? 'Forward (⌘])' : 'Forward (Alt+Right)'} aria-keyshortcuts={isMac ? 'Meta+]' : 'Alt+ArrowRight'} disabled={!stepTarget(journey, 'forward')} onClick={() => step('forward')}>
+          <button className="pill-step" aria-label="Forward" title={isMac ? 'Forward (⌘])' : 'Forward (Alt+Right)'} aria-keyshortcuts={isMac ? 'Meta+]' : 'Alt+ArrowRight'} aria-disabled={!stepTarget(journey, 'forward') || undefined} onClick={() => step('forward')}>
             <ArrowRight />
           </button>
-          {journey.at && (
-            // The address the visitor is at, #section included. Announced as it changes.
-            <output className="pill-address" aria-label="Page address" title={journey.at.address}>
-              {journey.at.address}
-            </output>
+          {/* The address the visitor is at, #section included. Stays mounted, so it is announced as it changes. One
+              that does not fit takes focus, which shows it in full for anyone not using a pointer. */}
+          <output ref={addressRef} className="pill-address" aria-label="Page address" title={address || undefined} tabIndex={elided ? 0 : undefined}>
+            {elided ? (
+              <>
+                <span className="sr-only">{address}</span>
+                <span aria-hidden="true">{elided}</span>
+              </>
+            ) : (
+              address
+            )}
+          </output>
+          {elided && (
+            <span className="pill-address-full" aria-hidden="true">
+              {address}
+            </span>
           )}
-          <button onClick={() => setState({ mode: 'edit' })}>
+          <button ref={exitRef} onClick={() => setState({ mode: 'edit' })}>
             <Pencil size={13} /> Back to editing
           </button>
         </div>
       )}
+      {/* Mounted before they have anything to say, so both are announced. The problem clears during a restart, so a
+          restart that fails is announced again. */}
+      <p className="sr-only" role="alert">
+        {issueShown && !retrying ? 'This page couldn’t be previewed. Your work is safe.' : ''}
+      </p>
+      <p className="sr-only" role="status">
+        {issueShown && retrying ? 'Restarting preview…' : ''}
+      </p>
+      {issueShown && (
+        // Bottom bars stack: preview pill, then the AI run, then a page problem, each one step up. It comes right after
+        // the pill in the tab order, ahead of the form panel and the page, so recovery is close at hand.
+        <div ref={issueRef} className={`ai-veil issue${retrying ? ' retrying' : ''}`} style={{ bottom: issueBottom }} role="group" aria-label="Page problem">
+          {retrying ? <Spinner decorative /> : <TriangleAlert size={15} aria-hidden="true" />}
+          <span>
+            <strong>{retrying ? 'Restarting preview…' : 'This page couldn’t be previewed.'}</strong> Your work is safe.
+          </span>
+          {/* Not natively disabled, so focus stays here while the page restarts. */}
+          <button
+            className="btn btn-sm"
+            aria-disabled={retrying || undefined}
+            onClick={() => {
+              if (retrying) return;
+              setRetrying(true);
+              setSession(newSessionId());
+            }}
+          >
+            Try again
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'health' } })}>
+            Details
+          </button>
+        </div>
+      )}
+      {/* Said once when a page with forms opens, for an author whose focus stays in the page and never meets the panel. */}
+      <p className="sr-only" role="status">
+        {formsShown ? `Form sends are simulated in Preview. ${forms.some((f) => f.live) ? 'Nothing is sent unless you test live delivery.' : 'Nothing is sent.'}` : ''}
+      </p>
       {formsShown && (
         <FormPractice
           key={formsView}
@@ -856,6 +949,7 @@ export function Canvas() {
           liveBusy={!!liveRequest}
           onLiveTest={liveTest}
           bottom={practiceBottom}
+          maxHeight={practiceMax}
           onHeight={setPracticeH}
         />
       )}
@@ -951,25 +1045,16 @@ export function Canvas() {
           </div>
         )}
       </div>
-      {frameError && runtime.state === 'ready' && (
-        // Bottom bars stack: preview pill, then the AI run, then a page problem, each one step up.
-        <div className="ai-veil issue" style={{ bottom: 18 + (mode === 'preview' ? 46 : 0) + (runStatus ? 46 : 0) }} role="alert">
-          <TriangleAlert size={15} />
-          <span>
-            <strong>This page couldn’t be previewed.</strong> Your work is safe.
-          </span>
-          <button className="btn btn-sm" disabled={retrying} onClick={() => (setRetrying(true), setSession(newSessionId()))}>
-            {retrying ? <Spinner decorative /> : null}
-            {retrying ? 'Restarting preview…' : 'Try again'}
-          </button>
-          <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'health' } })}>
-            Details
-          </button>
-        </div>
-      )}
       {menu.node}
     </main>
   );
+}
+
+/** An address too long for its slot with the middle taken out, keeping more of the end, which tells pages apart. */
+function elideAddress(address: string, fit: number): string | null {
+  if (address.length <= fit) return null;
+  const tail = Math.ceil((fit - 1) * 0.6);
+  return `${address.slice(0, fit - 1 - tail)}…${address.slice(-tail)}`;
 }
 
 /** Where a structural target sits among its siblings, for the move controls and the drag handle. */

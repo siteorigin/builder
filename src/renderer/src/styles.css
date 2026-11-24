@@ -621,7 +621,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .canvas-card p { margin: 0; color: var(--text-2); }
 .canvas-card pre { max-width: 100%; max-height: 140px; overflow: auto; margin: 0; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; text-align: left; white-space: pre-wrap; color: var(--text-2); user-select: text; }
-.preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: 99px; background: var(--ink); color: #fff; box-shadow: var(--shadow-lg); font-size: 13px; font-weight: 500; }
+.preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: 99px; background: var(--ink); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), var(--shadow-lg); font-size: 13px; font-weight: 500; }
 .preview-pill svg { width: 15px; height: 15px; }
 .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: 99px; background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
 .preview-pill button:hover { background: var(--sky-1); }
@@ -635,19 +635,49 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .form-practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .form-practice-label { color: var(--text); font-weight: 500; }
 .form-practice-live { margin-left: auto; }
-.form-practice-confirm { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, var(--raised)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
-.form-practice-confirm select { min-width: 0; max-width: 100%; }
-.form-practice-result:empty { margin-top: -6px; }
+/* A real send is the one consequential act here, so its confirmation is amber rather than the calm accent. */
+.form-practice-confirm { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 8px; background: color-mix(in srgb, var(--amber) 8%, var(--raised)); border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
+.form-practice-confirm .form-practice-row > .select { flex: 1 1 0; width: auto; min-width: 0; }
+.form-practice-confirm .btn[aria-disabled='true'] { opacity: 0.5; cursor: not-allowed; }
+.form-practice-dest { font-weight: 600; }
+.form-practice .segmented button[aria-pressed='true'] { box-shadow: inset 0 0 0 1.5px var(--text-2), var(--shadow-sm); }
+.form-practice .segmented button svg { width: 12px; height: 12px; }
+/* On a short canvas the panel scrolls inside itself rather than running off the top. */
+.form-practice { overflow-y: auto; }
+.form-practice-forms summary { width: fit-content; min-height: 24px; padding: 4px 6px 4px 0; border-radius: 4px; cursor: pointer; color: var(--accent-text); font-weight: 500; }
+.form-practice-forms summary:hover { color: var(--text); }
+.form-practice-forms ul { display: flex; flex-direction: column; gap: 3px; max-height: 120px; margin: 4px 0 0; padding: 0 0 0 16px; overflow-y: auto; overflow-wrap: anywhere; }
 .form-practice-live[aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
-.form-practice-result { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+.form-practice-outcome { display: flex; flex-direction: column; gap: 2px; padding-top: 7px; border-top: 1px solid var(--border); }
+.form-practice-outcome:has(.form-practice-result:empty) { margin-top: -6px; padding-top: 0; border-top: 0; }
+.form-practice-lead { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--text-2); }
+.form-practice-lead svg { width: 13px; height: 13px; flex: none; }
+.form-practice-lead .spinner { width: 12px; height: 12px; }
+.form-practice-outcome[data-tone='ok'] .form-practice-lead { color: var(--green); }
+.form-practice-outcome[data-tone='warn'] .form-practice-lead { color: var(--amber); }
+.form-practice-outcome[data-tone='bad'] .form-practice-lead { color: var(--red); }
+/* A real send's outcome sits in a tinted box, so it never reads as a practice run. */
+.form-practice-outcome[data-kind='live'] { --tone: var(--accent); padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--tone) 40%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--tone) 7%, var(--raised)); }
+.form-practice-outcome[data-kind='live'][data-tone='busy'] .form-practice-lead { color: var(--accent-text); }
+.form-practice-outcome[data-kind='live'][data-tone='ok'] { --tone: var(--green); }
+.form-practice-outcome[data-kind='live'][data-tone='warn'] { --tone: var(--amber); }
+.form-practice-outcome[data-kind='live'][data-tone='bad'] { --tone: var(--red); }
+.form-practice-result { color: var(--text); overflow-wrap: anywhere; }
 /* Back, Forward and the address of the visitor's journey: quiet controls on the pill itself. */
 .preview-pill .pill-note { flex: none; display: inline-flex; align-items: center; gap: 6px; }
 .preview-pill .pill-step { width: 26px; padding: 0; justify-content: center; background: transparent; color: #fff; }
 .preview-pill .pill-step + .pill-step { margin-left: -8px; }
-.preview-pill .pill-step:hover:not(:disabled) { background: rgb(255 255 255 / 0.16); }
-.preview-pill .pill-step:disabled { color: rgb(255 255 255 / 0.38); background: transparent; }
-.preview-pill .pill-step:focus-visible { outline-color: #fff; }
-.preview-pill .pill-address { flex: 0 1 auto; min-width: 0; max-width: 340px; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; color: var(--sky-1); user-select: text; }
+.preview-pill .pill-step:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.16); }
+.preview-pill .pill-step[aria-disabled='true'] { color: rgb(255 255 255 / 0.38); background: transparent; cursor: default; }
+.preview-pill .pill-step:focus-visible { outline-color: #fff; outline-offset: -2px; }
+/* The address has a slot of its own, so Back to editing stays put from page to page. */
+.preview-pill .pill-address { flex: 0 1 236px; width: 236px; min-width: 56px; padding: 3px 9px; border-radius: 99px; background: rgb(255 255 255 / 0.1); overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; color: var(--sky-1); user-select: text; }
+.preview-pill .pill-address:empty { background: transparent; }
+.preview-pill .pill-address:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.pill-address-full { display: none; position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px); padding: 6px 10px; border-radius: 8px; background: var(--ink); color: #fff; box-shadow: var(--shadow-md); font-family: var(--mono); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.pill-address:focus-visible + .pill-address-full { display: block; }
+/* Above the bars stacked over the pill while the full address is showing. */
+.preview-pill:has(.pill-address:focus-visible) { z-index: 7; }
 .ai-veil { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: 10px; padding: 6px 6px 6px 14px; border-radius: 99px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; }
 .ai-veil .spark { color: var(--accent-text); }
 
@@ -1441,8 +1471,14 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .trust-path { display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text-2); user-select: text; }
 .trust-path svg { flex: none; margin-top: 1px; color: var(--text-3); }
 .trust-path span { overflow-wrap: anywhere; }
-.ai-veil.issue { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
-.ai-veil.issue > svg { color: var(--red); }
+.ai-veil.issue { width: min(560px, calc(100% - 24px)); border-radius: 18px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.ai-veil.issue > span:not(.spinner) { flex: 1; min-width: 0; }
+.ai-veil.issue > .spinner { flex: none; }
+/* Restarting is progress, not a fresh failure. */
+.ai-veil.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
+.ai-veil.issue > svg { flex: none; color: var(--red); }
+.ai-veil.issue .btn { flex: none; }
+.ai-veil.issue .btn[aria-disabled='true'] { opacity: 0.5; cursor: not-allowed; background: var(--raised); }
 .status-bar > button.row { height: 24px; }
 
 /* ---------- Insert panel ---------- */
@@ -1596,7 +1632,8 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .canvas-state.soft { pointer-events: none; place-items: start center; padding-top: 80px; }
 .canvas-card.compact { flex-direction: row; gap: 10px; padding: 10px 16px; border-radius: 99px; font-size: 13px; color: var(--text-2); }
 /* Round 5 polish */
-.preview-pill button:focus-visible { outline-color: var(--ink); }
+/* Outside the filled exit button, in white, so the ring stands clear of both the fill and the pill. */
+.preview-pill button:focus-visible { outline-offset: 2px; }
 .composer:has(textarea:focus) { outline: 2px solid var(--focus); outline-offset: -1px; }
 .toolbar-group { min-width: 0; }
 .insp-jump button { background: transparent; color: var(--accent-text); padding: 0 6px; }
