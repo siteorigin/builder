@@ -388,8 +388,8 @@ describe.skipIf(!browserInstalled)('Foundation colours on dark and brand grounds
               at.append(box);
               box.querySelectorAll('.so-btn--primary').forEach((el) => label(el, where + ' primary', 'primary', spot.ink));
               box.querySelectorAll('.so-btn--text').forEach((el) => label(el, where + ' text button', 'text', spot.ink));
-              // A rich-text link takes the text colour around it; only its outline follows the ground.
-              box.querySelectorAll('.so-link').forEach((el) => label(el, where + ' link', spot.rich ? 'control' : 'link', spot.ink));
+              // A rich-text link takes the text colour around it, which on a dark ground is the ground's own.
+              box.querySelectorAll('.so-link').forEach((el) => label(el, where + ' link', 'link', spot.ink));
               box.querySelectorAll('li').forEach((el) => label(el, where + ' check', 'check', spot.ink));
             }
           }

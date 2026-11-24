@@ -9,11 +9,12 @@ const ctaPanel = (tone: string) => `${ends(`-cta-banner--tone-${tone}`)} ${ends(
  * check marks and the primary button's fill) switch to the ground's own text colour, which the theme keeps readable
  * there. Sections and the light cards inside them start afresh, so a white card in a dark section keeps the theme's
  * colours. The cards are known by their list-item part names (features and testimonials cards, pricing plans,
- * contact methods), which a copy of the section keeps; the sections' transparent listing cards are not list items.
+ * contact methods), which a copy of the section keeps, in the part class the generator writes first; the sections'
+ * transparent listing cards are not list items, and a code component's own list items keep the ground's colours.
  * All three lists match with no specificity, in this order: light, dark, brand.
  */
 const SURFACES = `:where(
-  [class*='--tone-'], li:is(${ends('__card')}, ${ends('__plan')}, ${ends('__method')}),
+  [class*='--tone-'], li[class^='so-']:is(${ends('__card')}, ${ends('__plan')}, ${ends('__method')}),
   .so-header, .so-form, .so-search, .so-table, .so-video-section
 ) { --so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; }
 :where(
