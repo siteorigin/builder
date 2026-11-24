@@ -41,7 +41,7 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
-import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
+import { codeImportantProps, codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { applyOps, applyWith, commitOps, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
@@ -517,6 +517,10 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const rootPart = def.parts.root;
   // A code component takes style changes only when it places the classes it is given.
   const codeStyled = def.kind === 'code' && codeTakesOverrides(def);
+  // Styles set here beat any selector of the component's own, but not a value its code marks important.
+  const codeImportant = codeStyled ? codeImportantProps(def) : [];
+  // A design whose root is a placed code component: its whole-section styles land on that code's root.
+  const rootCode = def.kind === 'managed' ? renderedCode(state, node) : undefined;
   const styledPart = def.kind === 'code' && def.parts[codePart] ? codePart : 'root';
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
@@ -671,6 +675,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       )}
       {def.kind === 'managed' && (
         <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={overrides ? `Whole section · ${changes(overrides)}` : 'Whole section'}>
+          {rootCode && <CodeImportantNote name={rootCode.name} props={codeImportantProps(rootCode)} />}
           {partIds.length > 0 && (
             <p className="insp-note insp-parts">
               <span className="faint">To style one part, select it:</span>{' '}
@@ -710,6 +715,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               </select>
             </Field>
           )}
+          <CodeImportantNote name={def.name} props={codeImportant} />
           <StyleControls
             key={styledPart}
             styles={node.overrides?.[styledPart]}
@@ -770,6 +776,27 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   );
 }
 
+/** Says which properties a code component's own code marks important, which styles set here cannot beat. */
+function CodeImportantNote({ name, props }: { name: string; props: string[] }) {
+  if (!props.length) return null;
+  return (
+    <p className="insp-note muted">
+      {name}’s own code marks {props.map((p) => `“${p}”`).join(', ')} as !important, so a style set here for {props.length === 1 ? 'it' : 'those'} may not show. Remove !important from the component’s source to let these styles win.
+    </p>
+  );
+}
+
+/** The code component a placement renders: its own, or the one at the root of the designs it places. */
+function renderedCode(state: ProjectState, node: GraphNode): ComponentDefinition | undefined {
+  for (let n: GraphNode | undefined = node, seen = new Set<string>(); n?.kind === 'instance' && !seen.has(n.definitionId); ) {
+    seen.add(n.definitionId);
+    const def: ComponentDefinition | undefined = state.components[n.definitionId];
+    if (def?.kind === 'code') return def;
+    n = def?.tree?.nodes[def.tree.rootIds[0]];
+  }
+  return undefined;
+}
+
 /**
  * A part of a placed component. `everywhere` is the component being edited everywhere when the part belongs to a
  * component placed in its design: changes then go to that design, for every placement of it.
@@ -805,6 +832,9 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   if (node.kind === 'link') (pushB(node.label, 'label'), pushB(node.link, 'link'), pushB(node.icon, 'icon'));
   if (node.kind === 'element') pushB(node.link, 'link');
   if (node.kind === 'icon') pushB(node.icon, 'icon');
+  // A component placed in the design (in one of its lists, say) shows what its values are bound to: the selected
+  // item's own fields, or the section's properties.
+  if (node.kind === 'instance') for (const v of Object.values(node.props)) pushB(v, 'value');
   const contentList = Object.entries(def.properties).find(([, p]) => p.type === 'list' && bindings.some((b) => b.item && b.item in (p as { fields: object }).fields))?.[0];
   // A structural part (a card itself) has no content binding, but it still repeats once per list item:
   // find the list from the repeat that encloses it, so its Style scope says "All 3 cards" too.
@@ -876,7 +906,9 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const flagged = (kind: string) => (kind === 'link' && unlinked?.link ? { error: unlinkedNote(unlinked), action: hideAction } : {});
   // Content reach comes from the binding: an item field is per item, a section property is shared by every item.
   const perItem = bindings.some((b) => b.item);
-  const contentReach = !hasContent || !listSchema ? '' : perItem ? (itemId ? `This ${itemLabel} only${itemIndex >= 0 ? ` (${itemIndex + 1} of ${n})` : ''}` : `Each ${itemLabel} has its own`) : `Same in every ${itemLabel}`;
+  // A placed component can read both an item's fields and the section's properties: no one reach covers them all.
+  const mixed = perItem && bindings.some((b) => b.prop);
+  const contentReach = !hasContent || !listSchema || mixed ? '' : perItem ? (itemId ? `This ${itemLabel} only${itemIndex >= 0 ? ` (${itemIndex + 1} of ${n})` : ''}` : `Each ${itemLabel} has its own`) : `Same in every ${itemLabel}`;
   // The item this part belongs to stays revealed on the page while it is selected: picking an answer inside a question
   // the inspector opened must not close that question under the pointer.
   const reveal = useRevealedItem(!nested && listProp && !feedRows && itemIndex >= 0 ? { ref: parent, list: listProp } : undefined, itemIndex >= 0 ? (listItems[itemIndex] as ListItem) : undefined, true);
@@ -915,7 +947,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
           <p className="muted insp-note">This belongs to a component inside {def.name}. Change it with Edit everywhere on that component, or make {def.name} unique.</p>
         </Section>
       ) : bindings.length ? (
-        <Section title="Content" id="part-content" level={LEVEL} scope={listSchema ? (perItem ? (itemId ? `This ${itemLabel} only` : `Each ${itemLabel}`) : `Every ${itemLabel}`) : everywhere ? 'Same in every placement' : undefined}>
+        <Section title="Content" id="part-content" level={LEVEL} scope={mixed ? undefined : listSchema ? (perItem ? (itemId ? `This ${itemLabel} only` : `Each ${itemLabel}`) : `Every ${itemLabel}`) : everywhere ? 'Same in every placement' : undefined}>
           {bindings.map((b, i) => {
             if (b.prop) {
               const schema = def.properties[b.prop];
@@ -1009,6 +1041,11 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
               ]}
             />
           )}
+          {(() => {
+            // A part that is a code component placed in the design: styles beat its selectors, not its important values.
+            const code = renderedCode(state, node);
+            return code && codeTakesOverrides(code) ? <CodeImportantNote name={code.name} props={codeImportantProps(code)} /> : null;
+          })()}
           {itemGone ? (
             <p className="muted insp-note">
               This {itemLabel} is no longer in the list. Select another {itemLabel}, or{' '}

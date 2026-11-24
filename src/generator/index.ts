@@ -66,7 +66,7 @@ import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, 
 import { derived, isTracked, type GenerationCache } from './cache';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
-import { notFoundSectionRoutes } from './checks';
+import { notFoundSectionRoutes, structuredContent } from './checks';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -120,9 +120,9 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'richList', 'thumbnail']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'richList', 'thumbnail']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
-const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', 'children']);
+const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', '__so_at', 'children']);
 
 /**
  * The key a managed component's property is passed under (instance attribute and `$props()` key). Names the
@@ -440,7 +440,15 @@ interface RuleOpts {
   wrap?: (sel: string) => string;
   /** Converted code's own stylesheet: the marker each hide is gated on (see `shownGate`). */
   gateHides?: string;
+  /**
+   * Overrides of what a code component renders: its own scoped styles can be more specific than any number of
+   * classes (an id, a long descendant chain), so every declaration is important. Only its own important ones win.
+   */
+  important?: boolean;
 }
+
+/** A declaration made important, unless it already is (custom CSS may say so itself). */
+const important = (decl: string) => (/!\s*important\s*$/i.test(decl) ? decl : `${decl} !important`);
 
 function nodeDisplay(layout: unknown): string | null {
   return layout === 'stack' || layout === 'row' ? 'flex' : layout === 'grid' ? 'grid' : layout === 'block' ? 'block' : null;
@@ -507,6 +515,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
   // Starting values for the element itself at zero specificity, which every rule naming it overrides.
   const quiet = wrap(`:where(${raw})`);
   const styles = resolveVisibility(withColumnSizes(input));
+  const rule = (decls: string[]) => `${selector} {\n${decls.map((d) => `\t${opts.important ? important(d) : d};`).join('\n')}\n}`;
   for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
     // Showing a part a weaker layer hides needs an explicit display value, decided before visibility folding, and
     // only in the ranges where it is hidden: anywhere else the weaker layer's own layout must keep applying.
@@ -537,7 +546,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       reduced.push(...styleReducedMotionCss(k, props[k]).filter(safeDecl));
     }
     if (fallback.length) rules[scope].push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
-    if (decls.length) rules[scope].push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${d};`).join('\n')}\n}`);
+    if (decls.length) rules[scope].push(rule(oneTranslate(decls)));
     // The hide right after the rule it came from, per size, so it keeps its place in the cascade.
     if (gated && scope === 'base') for (const size of ['phone', 'tablet', 'desktop'] as const) rules.base.push(`@media ${MEDIA_QUERIES[size]} {\n\t${wrap(shownGate(raw, size, opts.gateHides!))} {\n\t\tdisplay: none;\n\t}\n}`);
     else if (gated && scope !== 'base') rules[scope].push(`${wrap(shownGate(raw, scope, opts.gateHides!))} {\n\tdisplay: none;\n}`);
@@ -547,11 +556,11 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     if (scope === 'base' && input.base?.hidden === false && opts.unhide)
       for (const r of ['phone', 'tablet', 'desktop'] as const) {
         const d = input[r]?.hidden === undefined ? opts.unhide(r) : null;
-        if (d) rules[r].push(`${selector} {\n\tdisplay: ${d};\n}`);
+        if (d) rules[r].push(rule([`display: ${d}`]));
       }
     // Custom CSS has the last word in the wide range too, where these values land after the base rule.
     if (wide.length && props.customCss !== undefined) wide.push(...styleToCss('customCss', props.customCss).filter(safeDecl));
-    if (wide.length) rules.wide.push(`${selector} {\n${wide.map((d) => `\t${d};`).join('\n')}\n}`);
+    if (wide.length) rules.wide.push(rule(wide));
   }
 }
 
@@ -574,6 +583,16 @@ export function nodeClass(def: ComponentDefinition, nodeId: string): string {
 /** The class a definition's root carries for one option of a variant axis. */
 export function variantClass(def: ComponentDefinition, axis: string, option: string): string {
   return `so-${defKey(def.id)}--${axis}-${option}`;
+}
+/**
+ * The axes with an option that styles a node other than the root, in axis order. Such a node carries the root's
+ * class for that axis's selected option too, and variant rules match the two classes on the node itself, never through
+ * the root above it: a placement of the same component inside this one (in a slot) has roots of its own between, and
+ * must keep its own options.
+ */
+function nodeAxes(def: ComponentDefinition, nodeId: string): string[] {
+  if (nodeId === def.tree?.rootIds[0]) return [];
+  return axesOf(def).flatMap(([axis, a]) => (Object.values(a.options).some((o) => !!o.styles && Object.hasOwn(o.styles, nodeId)) ? [axis] : []));
 }
 /**
  * Code converted before conversions carried their own CSS still uses the definition's one-class-per-variant names.
@@ -605,6 +624,13 @@ const variantProp = (axis: string) => `variant_${safeIdent(axis)}`;
 export function overrideClass(instanceId: string, partId: string): string {
   return `so-o-${instanceId}-${partId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
+/**
+ * The class an inner part of a code component placed in a design takes (through `so_o`) for that design's override:
+ * node IDs recur across designs (a copy keeps them), so the design names it too.
+ */
+export function nestedOverrideClass(owner: ComponentDefinition, instanceId: string, partId: string): string {
+  return `so-o-${defKey(owner.id)}--${instanceId}-${partId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+}
 export function pageNodeClass(nodeId: string): string {
   return `so-n-${nodeId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
@@ -622,7 +648,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
   for (const id of Object.keys(def.tree.nodes).sort()) {
     const n = def.tree.nodes[id];
     addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap, gateHides: standalone ? shownMark(def) : undefined });
-    if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, n, `.${nodeClass(def, id)}`, wrap);
+    if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, def, n, `.${nodeClass(def, id)}`, wrap);
   }
   const axes = axesOf(def);
   const legacy = usesLegacyVariantClass(state, def);
@@ -634,10 +660,19 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
         // Styles for a node the tree no longer has match nothing, and a stray key must never reach a selector.
         if (!Object.hasOwn(def.tree!.nodes, nid)) continue;
         const rootId = def.tree!.rootIds[0];
-        const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
+        // The option's class and the node's, on the node itself: variant rules beat node rules and lose to overrides.
+        // First-format code's one-class names are only ever on a root.
+        const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `.${variantClass(def, axis, vid)}.${nodeClass(def, nid)}`;
         // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
         const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
-        addRules(rules, sel, v.styles![nid], { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined });
+        const opts = { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined };
+        addRules(rules, sel, v.styles![nid], opts);
+        // First-format converted code marks only its root with the option, so its nodes are still matched through
+        // the root, except a node that carries option classes of its own: one of a placement inside it.
+        if (legacy && nid !== rootId) {
+          const own = Object.keys(a.options).sort().map((o) => `.${variantClass(def, axis, o)}`).join(', ');
+          addRules(rules, `${vc} .${nodeClass(def, nid)}:not(:where(${own}))`, v.styles![nid], opts);
+        }
       }
     }
   });
@@ -654,30 +689,53 @@ export function generateComponentsCss(state: ProjectState): string {
   return parts.join('\n\n') + '\n';
 }
 
-/** Overrides set on an instance that sits inside a definition use descendant selectors from the nested instance root. */
-function addOverrideRules(rules: RuleSet, state: ProjectState, inst: InstanceNode, rootSelector: string, wrap = (sel: string) => sel) {
+/**
+ * Overrides set on an instance that sits inside a definition (`owner`) use descendant selectors from the nested
+ * instance root; a code component's inner parts take classes of the design's own instead.
+ */
+function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentDefinition, inst: InstanceNode, rootSelector: string, wrap = (sel: string) => sel) {
   const def = state.components[inst.definitionId];
   if (!def) return;
   for (const partId of Object.keys(inst.overrides ?? {}).sort()) {
     const part = def.parts[partId];
-    // Inside a definition only a code component's root is reachable (through its class); its inner parts
-    // take override classes only from a page.
-    if (def.kind === 'code' && partId !== 'root') continue;
     // An override for a part the definition no longer declares styles nothing.
     if (partId !== 'root' && !part) continue;
+    // A code component's own styles are scoped, so its inner parts are reached only by the classes it is given.
+    if (def.kind === 'code' && partId !== 'root') {
+      const cls = nestedOverrideClass(owner, inst.id, partId);
+      addRules(rules, `.${cls}.${cls}.${cls}`, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId), wrap });
+      continue;
+    }
     // Doubled root selector: nested overrides must beat the nested definition's variant rules.
     const isRoot = partId === 'root' || !part || part.nodeId === def.tree?.rootIds[0];
     const sel = isRoot ? `${rootSelector}${rootSelector}${rootSelector}` : `${rootSelector}${rootSelector} .${nodeClass(def, part.nodeId)}`;
-    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(def, inst, partId), wrap });
+    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId), wrap });
   }
 }
 
-function overrideOpts(def: ComponentDefinition, inst: InstanceNode, partId: string): RuleOpts {
+/**
+ * Whether a placement's part is something a code component renders: its own part, or a code component placed as it,
+ * directly or as the root of the designs placed there.
+ */
+function stylesCode(state: ProjectState, def: ComponentDefinition, partId: string): boolean {
+  if (def.kind === 'code') return true;
+  let target = def.tree?.nodes[def.parts[partId]?.nodeId ?? def.tree.rootIds[0]];
+  for (const seen = new Set<string>(); target?.kind === 'instance' && !seen.has(target.definitionId); ) {
+    seen.add(target.definitionId);
+    const inner = state.components[target.definitionId];
+    if (inner?.kind === 'code') return true;
+    target = inner?.tree?.nodes[inner.tree.rootIds[0]];
+  }
+  return false;
+}
+
+function overrideOpts(state: ProjectState, def: ComponentDefinition, inst: InstanceNode, partId: string): RuleOpts {
   const nodeId = def.parts[partId]?.nodeId ?? def.tree?.rootIds[0] ?? '';
   return {
     link: def.tree?.nodes[nodeId]?.kind === 'link',
     wideColumns: true,
-    unhide: unhider(def, nodeId, inst.variants, inst.overrides?.[partId] ?? {})
+    unhide: unhider(def, nodeId, inst.variants, inst.overrides?.[partId] ?? {}),
+    important: stylesCode(state, def, partId)
   };
 }
 
@@ -712,13 +770,17 @@ function keepWeakerHides(def: ComponentDefinition, inst: InstanceNode, partId: s
   return out;
 }
 
-/** Rule options for one item's styles: what it shows again undoes the definition, variants and shared override. */
-function itemOverrideOpts(def: ComponentDefinition, inst: InstanceNode, partId: string, own: ResponsiveStyles): RuleOpts {
+/**
+ * Rule options for one item's styles: what it shows again undoes the definition, variants and shared override. A part
+ * that is a code component placed in the design takes them as important, as its shared override does.
+ */
+function itemOverrideOpts(state: ProjectState, def: ComponentDefinition, inst: InstanceNode, partId: string, own: ResponsiveStyles): RuleOpts {
   const nodeId = def.parts[partId].nodeId;
   return {
     link: def.tree?.nodes[nodeId]?.kind === 'link',
     wideColumns: true,
-    unhide: unhider(def, nodeId, inst.variants, own, [], inst.overrides?.[partId] ? [inst.overrides[partId]] : [])
+    unhide: unhider(def, nodeId, inst.variants, own, [], inst.overrides?.[partId] ? [inst.overrides[partId]] : []),
+    important: stylesCode(state, def, partId)
   };
 }
 
@@ -746,7 +808,7 @@ export function generateSiteCss(state: ProjectState): string {
           // A part that is itself a nested instance also carries its definition's three-class override rule.
           const target = def.tree?.nodes[def.parts[partId]?.nodeId ?? def.tree.rootIds[0]];
           const sel = target?.kind === 'instance' ? `.${cls}.${cls}.${cls}.${cls}` : def.kind === 'code' ? `.${cls}.${cls}.${cls}` : `.${cls}.${cls}`;
-          addRules(rules, sel, n.overrides![partId], overrideOpts(def, n, partId));
+          addRules(rules, sel, n.overrides![partId], overrideOpts(state, def, n, partId));
         }
         for (const partId of Object.keys(n.itemOverrides ?? {}).sort()) {
           const entry = liveItemStyles(def, n, partId);
@@ -759,7 +821,7 @@ export function generateSiteCss(state: ProjectState): string {
             const own = entry.items[itemId];
             // A hand-edited record that holds no styles writes nothing (validation reports it).
             if (!own || typeof own !== 'object') continue;
-            addRules(rules, `.${cls}`.repeat(times), keepWeakerHides(def!, n, partId, own), itemOverrideOpts(def!, n, partId, own));
+            addRules(rules, `.${cls}`.repeat(times), keepWeakerHides(def!, n, partId, own), itemOverrideOpts(state, def!, n, partId, own));
           }
         }
       } else {
@@ -840,11 +902,25 @@ export const slotIdent = (slot: string) => `slot_${safeIdent(slot)}`;
 
 function idAttrs(ctx: EmitCtx, nodeId: string): string {
   if (!ctx.instrument) return '';
+  const c = ctx.def ? `data-so-ctx={__so}` : `data-so-ctx=${attrJs(ctx.ctxExpr)}`;
+  return ` ${c} data-so-node="${nodeId}"${itemsAttr(ctx, nodeId)}`;
+}
+
+/**
+ * Editor variants: the repeated items a node is rendered for, as the expression of their IDs joined by commas, or
+ * null outside every repeat. A definition's root is never inside a repeat of its own: it is rendered for the items
+ * its placement sits in, in the design around it (`__so_at`), so selecting a placement in the second item of a list
+ * finds only that one.
+ */
+function itemsExpr(ctx: EmitCtx, nodeId: string): string | null {
   // Each item ID escapes "%" and ",", so an ID with a comma still reads back as one item (see model.ts itemPathOf).
   // Plain string methods: no global a property's name could hide, and nothing that can throw on odd characters.
-  const items = ctx.items.length ? ` data-so-items={[${ctx.items.map((i) => `(${i}.id + '').replaceAll('%', '%25').replaceAll(',', '%2C')`).join(', ')}].join(',')}` : '';
-  const c = ctx.def ? `data-so-ctx={__so}` : `data-so-ctx=${attrJs(ctx.ctxExpr)}`;
-  return ` ${c} data-so-node="${nodeId}"${items}`;
+  if (ctx.items.length) return `[${ctx.items.map((i) => `(${i}.id + '').replaceAll('%', '%25').replaceAll(',', '%2C')`).join(', ')}].join(',')`;
+  return ctx.def && nodeId === ctx.def.tree?.rootIds[0] ? '__so_at' : null;
+}
+function itemsAttr(ctx: EmitCtx, nodeId: string): string {
+  const items = itemsExpr(ctx, nodeId);
+  return items === null ? '' : items === '__so_at' ? ' data-so-items={__so_at || undefined}' : ` data-so-items={${items}}`;
 }
 
 function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string {
@@ -856,10 +932,9 @@ function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string 
       // A part shown once per list item also takes the class of its own item's styles.
       if (ctx.items.length && repeatedPartList(ctx.def, pid)) parts.push(`so_oi?.[${ctx.items[ctx.items.length - 1]}.id]?.[${js(pid)}]`);
     }
-    if (node.id === ctx.def.tree?.rootIds[0]) {
-      for (const [axis] of axesOf(ctx.def)) parts.push(`\`so-${defKey(ctx.def.id)}--${axis}-\${${variantProp(axis)}}\``);
-      parts.push('className');
-    }
+    const root = node.id === ctx.def.tree?.rootIds[0];
+    for (const [axis] of root ? axesOf(ctx.def) : nodeAxes(ctx.def, node.id).map((a) => [a])) parts.push(`\`so-${defKey(ctx.def.id)}--${axis}-\${${variantProp(axis)}}\``);
+    if (root) parts.push('className');
     return `{[${parts.join(', ')}]}`;
   }
   const parts = [js(pageNodeClass(node.id)), ...extra];
@@ -1633,9 +1708,18 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     }
     if (Object.keys(byItem).length) attrs.push(`so_oi={${js(byItem)}}`);
   }
+  // Inside a design, a code component's inner parts take the design's override classes the same way; its root is
+  // reached through the node class `class` already passes.
+  if (ctx.def && def.kind === 'code') {
+    const map: Record<string, string> = {};
+    for (const partId of Object.keys(node.overrides ?? {}).sort()) if (partId !== 'root' && Object.hasOwn(def.parts, partId)) map[partId] = nestedOverrideClass(ctx.def, node.id, partId);
+    if (Object.keys(map).length) attrs.push(`so_o={${js(map)}}`);
+  }
   if (ctx.instrument && def.kind === 'managed') {
     const childCtx = ctx.def ? `__so + ${js('|' + node.id)}` : js(`${ctx.ctxExpr}|${node.id}`);
     attrs.push(`__so={${childCtx}}`);
+    const at = itemsExpr(ctx, node.id);
+    if (at) attrs.push(`__so_at={${at}}`);
   }
   // Slots
   let slotContent = '';
@@ -1655,7 +1739,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   let markup = slotContent ? `${open}>\n${slotContent}\n${p}</${name}>` : `${open}/>`;
   if (ctx.instrument && def.kind === 'code') {
     const c = ctx.def ? '{__so}' : attrJs(ctx.ctxExpr);
-    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}" data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
+    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
   }
   return markup;
 }
@@ -1847,7 +1931,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   if (treeTakesEager(state, def, new Map(), new Set())) propDecls.push(`\t\tso_eager = false,`);
   // A converted copy is generated before its source exists, so its tree decides, as for `so_eager`.
   if (treeRowNeeds(state, def)) propDecls.push(`\t\tso_pages = undefined,`);
-  if (opts.instrument) propDecls.push(`\t\t__so = '',`);
+  if (opts.instrument) propDecls.push(`\t\t__so = '',`, `\t\t__so_at = '',`);
   propDecls.push(`\t\tclass: className = ''`);
   const imports = renderImports(ctx.imports);
   const uid = ctx.usesUid ? `\tconst uid = $props.id();\n` : '';
@@ -1939,6 +2023,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   // Without a public address they are site paths, resolved as authored links are, so they hold under any sub-path.
   const alternates = pageAlternates(state, page);
   for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${base ? js(base + alt.route) : `resolve(${js(alt.route)})`}} />`);
+  // `<` is escaped inside the JSON, so no text can end the script.
   const ldScript = (ld: Record<string, unknown>) => `\t{@html ${js(`<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`)}}`;
   // Structured data: the home page describes the website itself, once a public URL is known.
   if (base && page.id === site.homePageId && !page.seo.noindex) {
@@ -1946,6 +2031,16 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
     if (site.description) ld.description = site.description;
     if (isLanguageCode(site.language)) ld.inLanguage = site.language;
     head.push(ldScript(ld));
+  }
+  // A page's contact sections describe the business, and its FAQ the questions it answers, as the page shows them.
+  if (!page.seo.noindex) {
+    const found = structuredContent(state, page);
+    const facts = (k: string, list: string[]) => (list.length ? { [k]: list.length === 1 ? list[0] : list } : {});
+    // A business is named by the site; a site with no name says nothing about one.
+    for (const b of site.name.trim() ? found.businesses : [])
+      head.push(ldScript({ '@context': 'https://schema.org', '@type': 'LocalBusiness', name: site.name, ...(base ? { url: base + '/' } : {}), ...facts('email', b.email), ...facts('telephone', b.telephone), ...facts('address', b.address) }));
+    if (found.faq.length)
+      head.push(ldScript({ '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: found.faq.map((e) => ({ '@type': 'Question', name: e.question, acceptedAnswer: { '@type': 'Answer', text: e.answer } })) }));
   }
   // On a site in more than one language, every page also says which language it is in.
   if (base && !page.seo.noindex && languagesByRoute(state).length) {

@@ -9,10 +9,10 @@ import type { AssetRecord, PageDoc, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
 import { declaredLanguage, pageLanguage, sameLanguage } from '@shared/languages';
 import { STARTER_ASSETS } from '@catalogue/starters';
-import { validateState } from '@engine/validate';
+import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { describeDraftLink, publicationPlan, unlinkedButtons } from '@generator/checks';
+import { describeDraftLink, netlifyFormClashes, publicationPlan, unlinkedButtons } from '@generator/checks';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
@@ -793,6 +793,16 @@ export function sectionLinkWarnings(state: ProjectState): string[] {
   if (!broken.length) return [];
   const lead = broken.length === 1 ? 'Project health found a link to a section its page does not have. Fix it before building the exported project:' : `Project health found ${broken.length} links to sections their pages do not have. Fix them before building the exported project:`;
   return [lead, ...broken];
+}
+
+/** Warnings for contact forms that send to Netlify under one form name, one per name. */
+export function formNameWarnings(state: ProjectState): string[] {
+  return netlifyFormClashes(state).map((clash) => formNameClashMessage(state, clash));
+}
+
+/** Warnings for code components that may show a theme font the site leaves out. */
+export function runtimeFontWarnings(state: ProjectState): string[] {
+  return runtimeFontDiagnostics(state).map((d) => d.message);
 }
 
 /** How many unlinked buttons an export warning names before it sums up the rest. */

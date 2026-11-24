@@ -37,14 +37,24 @@ export function ctxOf(ref: ElementRef): string {
 
 /** Descriptor the bridge uses to find the DOM element(s) for a reference. */
 export function descOf(state: ProjectState, ref: ElementRef): BridgeDesc {
-  const n = nodeAt(state, ref);
-  // A managed instance boundary is rendered by its definition root.
-  if (n?.kind === 'instance') {
-    const def = state.components[n.definitionId];
-    if (def?.kind === 'managed' && def.tree) return { ctx: [ctxOf(ref), ref.nodeId].join('|'), node: def.tree.rootIds[0], items: '' };
+  const items = (ref.itemPath ?? []).map(encodeItemId).join(',');
+  // A managed instance boundary is rendered by its definition root (through any component that root places), which
+  // carries the items the placement sits in.
+  let ctx = ctxOf(ref);
+  let nodeId = ref.nodeId;
+  // A definition that places itself at its root (refused by validation) stops at the second visit.
+  const seen = new Set<string>();
+  for (let n = nodeAt(state, ref); n?.kind === 'instance'; ) {
+    const def = own(state.components, n.definitionId);
+    const root = def?.kind === 'managed' ? def.tree?.rootIds[0] : undefined;
+    if (!def?.tree || !root || seen.has(def.id)) break;
+    seen.add(def.id);
+    ctx = `${ctx}|${nodeId}`;
+    nodeId = root;
+    n = own(def.tree.nodes, root);
   }
   // Escaped as the preview writes them, so an item ID with a comma stays one item.
-  return { ctx: ctxOf(ref), node: ref.nodeId, items: (ref.itemPath ?? []).map(encodeItemId).join(',') };
+  return { ctx, node: nodeId, items };
 }
 
 const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
@@ -96,12 +106,21 @@ function refFromDesc(state: ProjectState, d: BridgeDesc): ElementRef | null {
   return ref;
 }
 
-/** If the reference is the root element of an instance, return the instance boundary instead. */
+/**
+ * If the reference is the root element of an instance, return the instance boundary instead (the outermost one, when
+ * a definition's root is itself a component). A root's items are those its placement sits in, and a placement inside
+ * a design is named as the design's part when it is one.
+ */
 export function boundaryOf(state: ProjectState, ref: ElementRef): ElementRef {
-  if (!ref.instancePath.length) return ref;
-  const r = resolveRef(state, ref);
-  if (r.def?.tree?.rootIds[0] === ref.nodeId) return { owner: ref.owner, instancePath: ref.instancePath.slice(0, -1), nodeId: ref.instancePath[ref.instancePath.length - 1] };
-  return ref;
+  let b = ref;
+  while (b.instancePath.length && resolveRef(state, b).def?.tree?.rootIds[0] === b.nodeId) {
+    const next: ElementRef = { owner: b.owner, instancePath: b.instancePath.slice(0, -1), nodeId: b.instancePath[b.instancePath.length - 1] };
+    if (ref.itemPath?.length) next.itemPath = ref.itemPath;
+    const partId = next.instancePath.length ? partIdFor(resolveRef(state, next).def, next.nodeId) : undefined;
+    if (partId) next.partId = partId;
+    b = next;
+  }
+  return b;
 }
 
 /** Is this reference a useful selection target (a primitive, a declared part or bound content)? */
@@ -369,6 +388,9 @@ export function toDefinitionRef(state: ProjectState, definitionId: string, ref: 
     const nested = ref.instancePath[k + 1];
     let inner: ElementRef = nested ? { owner, instancePath: [], nodeId: nested } : { owner, instancePath: [], nodeId: ref.nodeId };
     if (!nested && ref.itemPath?.length) inner.itemPath = ref.itemPath;
+    // Picked on its own root, a component inside the design keeps the items of the design it is repeated in.
+    const b = nested ? boundaryOf(state, ref) : undefined;
+    if (b?.itemPath?.length && b.instancePath.length === k + 1 && b.nodeId === nested) inner.itemPath = b.itemPath;
     const partId = partIdFor(state.components[definitionId], inner.nodeId);
     if (partId) inner = { ...inner, partId };
     return { ref: inner, placement: { owner: ref.owner, instancePath: ref.instancePath.slice(0, k), nodeId: ref.instancePath[k] } };
@@ -379,10 +401,20 @@ export function toDefinitionRef(state: ProjectState, definitionId: string, ref: 
 /** What a click on the canvas picks while editing a component everywhere: the innermost of the component's
  *  own nodes under the pointer (every node of the design can be picked), or null outside the component. */
 export function definitionPick(state: ProjectState, definitionId: string, chain: BridgeDesc[]): { ref: ElementRef; placement: ElementRef } | null {
-  for (const d of chain) {
+  for (const [i, d] of chain.entries()) {
     const r = refFromDesc(state, d);
     const hit = r && toDefinitionRef(state, definitionId, r);
-    if (hit) return hit;
+    if (!hit) continue;
+    // A component inside the design, picked by something inside it: its own root, further out, says which item of
+    // the design's lists it is in.
+    if (!hit.ref.itemPath?.length && resolveRef(state, hit.ref).node?.kind === 'instance')
+      for (const outer of chain.slice(i + 1)) {
+        const o = refFromDesc(state, outer);
+        const at = o && toDefinitionRef(state, definitionId, o);
+        if (!at || at.ref.nodeId !== hit.ref.nodeId || refKey(at.placement) !== refKey(hit.placement)) break;
+        if (at.ref.itemPath?.length) return { ...hit, ref: { ...hit.ref, itemPath: at.ref.itemPath } };
+      }
+    return hit;
   }
   return null;
 }

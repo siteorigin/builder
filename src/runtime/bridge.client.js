@@ -10,6 +10,8 @@ let selected = null; // descriptor
 let hovered = null;
 /** The innermost element under the pointer, as last reported to the editor. */
 let pointerAt = null;
+/** The element `pointerAt` describes. */
+let pointerEl = null;
 let editing = null; // { el, desc, editId, original, rich }
 let linkEditor = null; // { host, input, range }
 /** Larger commits than this would be dropped by the editor's message size check, or refused by the editor. */
@@ -299,14 +301,18 @@ document.addEventListener(
     // same element nothing is reported, so the elements around it are only looked at once it reaches another.
     const el = innermost(e.target);
     const next = el ? descOf(el) : null;
-    if (sameDesc(next, pointerAt)) return;
+    // Another element with the same descriptor is news too: the same part of a component placed in another list item
+    // differs only further out, in the items its placement carries.
+    if (el === pointerEl && sameDesc(next, pointerAt)) return;
     pointerAt = next;
+    pointerEl = el;
     send('hover', { chain: chainFrom(el) });
   },
   true
 );
 document.documentElement.addEventListener('mouseleave', () => {
   pointerAt = null;
+  pointerEl = null;
   hovered = null;
   send('hover', { chain: [] });
   scheduleRects();
@@ -1269,6 +1275,7 @@ window.addEventListener('message', async (e) => {
       if (mode === 'edit') for (const viewer of document.querySelectorAll('dialog.so-viewer[open]')) viewer.close();
       hovered = null;
       pointerAt = null;
+      pointerEl = null;
       // Preview shows the disclosures as visitors find them; editing reveals the item again.
       reconcileReveal();
       scheduleRects();
@@ -1453,9 +1460,10 @@ if (import.meta.hot) {
 const style = document.createElement('style');
 // A button with no destination is left out of the site: Edit shows it flagged so it can be fixed, Preview leaves it
 // out as visitors will see the page. A note only for the author (a video section with no video yet) is the same.
+// A placement's styles for a code component are important, so hiding takes the weight of an id no element has.
 style.textContent =
   'html[data-so-editing] a, html[data-so-editing] summary, html[data-so-editing] button { cursor: default; } html[data-so-editing] [contenteditable] { cursor: text; }' +
-  ' html:not([data-so-editing]) [data-so-unlinked], html:not([data-so-editing]) [data-so-editor-only] { display: none !important; }' +
+  ' html:not([data-so-editing]) :is([data-so-unlinked], [data-so-editor-only]):not(#so-editor) { display: none !important; }' +
   ' html[data-so-editing] [data-so-unlinked] { cursor: default; box-shadow: none; opacity: 0.6; outline: 2px dashed #d97706; outline-offset: 2px; }';
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);

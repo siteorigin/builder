@@ -311,7 +311,7 @@ describe('generating variant axes', () => {
     const files = generateProject(s);
     const css = files.get(`${STYLES_DIR}/components.css`)!;
     expect(css).toContain('.so-foundation-features-grid--tone-inverse.so-foundation-features-grid__root');
-    expect(css).toContain('.so-foundation-features-grid--layout-four-columns .so-foundation-features-grid__grid');
+    expect(css).toContain('.so-foundation-features-grid--layout-four-columns.so-foundation-features-grid__grid');
     const component = generateManagedComponent(s, s.components['foundation.features.grid'], {});
     expect(component).toContain('variant_tone = "default"');
     expect(component).toContain('variant_layout = "default"');
@@ -372,7 +372,7 @@ describe('generating variant axes', () => {
     const def = s.components['foundation.features.grid'];
     def.variantAxes!.tone.options.muted.styles!.grid = { base: { hidden: true } };
     def.variantAxes!.layout.options['two-columns'].styles!.grid = { base: { hidden: false } };
-    expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).toMatch(/--layout-two-columns \.so-foundation-features-grid__grid \{[^}]*display: /);
+    expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).toMatch(/--layout-two-columns\.so-foundation-features-grid__grid \{[^}]*display: /);
   });
 
   /** A first-format conversion: its source places a managed child with one `variant` and reuses the child's classes. */

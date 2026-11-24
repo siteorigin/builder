@@ -101,6 +101,35 @@ export function resolveFontStack(state: ProjectState, value: string): { stack: s
 }
 
 /**
+ * Ways a code component can choose a font family while it runs, where its name need not be written out: a Svelte
+ * style directive or an interpolated style value, a script's `fontFamily`, `font` or `setProperty('font-family', …)`,
+ * and a font that comes from a custom property other than a site style's (`--so-…`, whose value the tokens carry).
+ */
+const RUNTIME_FONT = [
+  /\bstyle:font(?:-family)?\s*=/,
+  /\bfontFamily\b/,
+  /\.font\s*=(?!=)/,
+  /['"`]font(?:-family)?['"`]\s*,/,
+  /\bfont(?:-family)?\s*:[^;<>}]*(?:\{|\$\{)/,
+  /\bfont(?:-family)?\s*:[^;{}]*var\(\s*--(?!so-)/
+];
+
+/** Whether a code component's source can choose a font family at run time, which `usedPackFonts` cannot see. */
+export function choosesFontAtRunTime(source: string): boolean {
+  return RUNTIME_FONT.some((re) => re.test(source));
+}
+
+/**
+ * Whether a code component's source says which theme fonts it uses, in a comment that starts with `Fonts:` and names
+ * at least one of `families` (`<!-- Fonts: Lora Variable -->`). The families it names ship with the site, as any
+ * family its source spells out.
+ */
+export function declaresFonts(source: string, families: string[]): boolean {
+  const said = [...source.matchAll(/<!--\s*fonts?\s*:([\s\S]*?)-->|\/\*\s*fonts?\s*:([\s\S]*?)\*\/|\/\/\s*fonts?\s*:([^\n]*)/gi)].map((m) => (m[1] ?? m[2] ?? m[3] ?? '').replace(/\s+/g, ' ').toLowerCase());
+  return said.some((text) => families.some((f) => text.includes(f.replace(/\s+/g, ' ').toLowerCase())));
+}
+
+/**
  * The theme fonts a project uses, so unused fonts are not built into the site. It reads tokens, styles and code
  * component source for the family name; a code component that builds a family name at run time is not seen.
  */

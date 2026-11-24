@@ -109,11 +109,17 @@ function grid(setup: { node?: Record<string, ResponsiveStyles>; tone?: Record<st
   return { state, def };
 }
 
-/** A node of the design as the page renders it: the root carries the selected options' classes. */
+/**
+ * A node of the design as the page renders it: the root carries the selected options' classes, and any other node
+ * an axis styles carries that axis's option class too.
+ */
 function element(def: ComponentDefinition, nodeId: string, extra: string[] = []): El {
   const root = def.tree!.rootIds[0];
-  const rootClasses = [nodeClass(def, root), variantClass(def, 'tone', 'plain'), variantClass(def, 'layout', 'wide')];
-  return nodeId === root ? { classes: [...rootClasses, ...extra], ancestors: [] } : { classes: [nodeClass(def, nodeId), ...extra], ancestors: [rootClasses] };
+  const selected: Array<[string, string]> = [['tone', 'plain'], ['layout', 'wide']];
+  const rootClasses = [nodeClass(def, root), ...selected.map(([axis, option]) => variantClass(def, axis, option))];
+  const styledBy = (axis: string) => Object.values(def.variantAxes![axis].options).some((o) => !!o.styles?.[nodeId]);
+  const own = selected.filter(([axis]) => styledBy(axis)).map(([axis, option]) => variantClass(def, axis, option));
+  return nodeId === root ? { classes: [...rootClasses, ...extra], ancestors: [] } : { classes: [nodeClass(def, nodeId), ...own, ...extra], ancestors: [rootClasses] };
 }
 
 /** For each size: what the Inspector shows as inherited, and what the generated stylesheet renders. */
@@ -171,10 +177,13 @@ describe('the Inspector’s inherited styles match the generated CSS', () => {
     for (const option of Object.keys(def.variantAxes!.layout.options)) {
       const variants = { layout: option };
       const inherited = designStyles(def, 'grid', variants);
-      const root = [nodeClass(def, 'root'), ...Object.entries({ tone: 'default', ...variants }).map(([axis, o]) => variantClass(def, axis, o))];
+      const selected = Object.entries({ tone: 'default', ...variants });
+      const root = [nodeClass(def, 'root'), ...selected.map(([axis, o]) => variantClass(def, axis, o))];
+      // The grid carries the option of each axis that styles it.
+      const own = selected.filter(([axis]) => Object.values(def.variantAxes![axis].options).some((o) => !!o.styles?.grid)).map(([axis, o]) => variantClass(def, axis, o));
       for (const size of SIZES) {
         const shown = inherited[size]?.columns;
-        expect(shown === undefined ? undefined : cssOf('columns', shown), `${option} on ${size}`).toBe(computed(rules, { classes: [nodeClass(def, 'grid')], ancestors: [root] }, WIDTH[size], 'grid-template-columns'));
+        expect(shown === undefined ? undefined : cssOf('columns', shown), `${option} on ${size}`).toBe(computed(rules, { classes: [nodeClass(def, 'grid'), ...own], ancestors: [root] }, WIDTH[size], 'grid-template-columns'));
       }
     }
   });

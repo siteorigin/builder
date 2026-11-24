@@ -2158,6 +2158,9 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   const sourcePath = `${CUSTOM_DIR}/${pascal(name)}-${newId.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;
   // One working copy is both generated and stored, so the source shows exactly the properties the copy declares.
   const work: ComponentDefinition = { ...clone(def), id: newId, kind: 'code', sourcePath };
+  // A code component takes `class` for its root's classes, so a property of that name (older documents may have
+  // one) moves to a name of its own first, with the placement's value and every binding to it.
+  moveCodeReservedProps(work, node);
   promotePageLinks(state, work);
   // The source renders rich text through the RichText helper, which takes blocks.
   for (const schema of Object.values(work.properties)) {
@@ -2323,6 +2326,89 @@ function showsPageLink(schema: PropSchema, v: unknown, code: boolean): boolean {
     default:
       return holdsPageLink(v);
   }
+}
+
+/**
+ * Names a converted code component cannot keep: a placement passes `class` as its root's classes, and a code
+ * component's manifest refuses it as a property or list field name.
+ */
+const CODE_RESERVED_PROPS = ['class'];
+
+/**
+ * Renames what a definition converted to code cannot keep (CODE_RESERVED_PROPS): its properties of those names, and
+ * its lists' fields of those names, each to a free name of its own (`classValue`, `classValue2`…, also clear of keys
+ * saved values still hold). Its schema, list defaults, examples and design follow, and so do the values `placed` (the
+ * placement being converted) gives it, so nothing it shows changes. A list the placement is handed from the design
+ * around it keeps its fields: its rows come with their keys.
+ */
+function moveCodeReservedProps(def: ComponentDefinition, placed: InstanceNode) {
+  const free = (taken: Set<string>, from: string) => {
+    let to = `${from}Value`;
+    for (let i = 2; taken.has(to); i++) to = `${from}Value${i}`;
+    taken.add(to);
+    return to;
+  };
+  const keyed = <T>(o: Record<string, T>, rename: (k: string) => string) => Object.fromEntries(Object.entries(o).map(([k, v]) => [rename(k), v]));
+  const examples = def.examples ?? [];
+  const takenProps = new Set([...Object.keys(def.properties), ...Object.keys(placed.props), ...examples.flatMap((e) => Object.keys(e.props))]);
+  const props = new Map<string, string>();
+  for (const from of CODE_RESERVED_PROPS) if (Object.hasOwn(def.properties, from)) props.set(from, free(takenProps, from));
+  const prop = (k: string) => props.get(k) ?? k;
+  // Each list's moved fields, by the list's new name.
+  const fields = new Map<string, Map<string, string>>();
+  for (const [name, schema] of Object.entries(def.properties)) {
+    // A list the design around the placement hands it keeps its rows' keys, so its fields keep their names too.
+    if (schema.type !== 'list' || isBinding(placed.props[name])) continue;
+    const saved = [schema.default, placed.props[name], ...examples.map((e) => e.props[name])].flatMap((v) => (Array.isArray(v) ? v : []));
+    const taken = new Set([...Object.keys(schema.fields), ...saved.flatMap((it) => (it && typeof it === 'object' ? Object.keys(it) : []))]);
+    const moved = new Map<string, string>();
+    for (const from of CODE_RESERVED_PROPS) if (Object.hasOwn(schema.fields, from)) moved.set(from, free(taken, from));
+    if (moved.size) fields.set(prop(name), moved);
+  }
+  if (!props.size && !fields.size) return;
+  const items = (list: string, v: unknown) => {
+    const moved = fields.get(list);
+    return moved && Array.isArray(v) ? v.map((it) => (it && typeof it === 'object' && !isBinding(it) ? keyed(it as Record<string, unknown>, (k) => moved.get(k) ?? k) : it)) : v;
+  };
+  def.properties = Object.fromEntries(
+    Object.entries(def.properties).map(([k, schema]): [string, PropSchema] => {
+      const name = prop(k);
+      const moved = fields.get(name);
+      if (schema.type !== 'list' || !moved) return [name, schema];
+      const f = (x: string) => moved.get(x) ?? x;
+      const teaser = schema.pageTeaser ? (Object.fromEntries(Object.entries(schema.pageTeaser).map(([t, v]) => [t, typeof v === 'string' ? f(v) : v])) as typeof schema.pageTeaser) : undefined;
+      return [name, { ...schema, fields: keyed(schema.fields, f), default: items(name, schema.default) as ListItem[], ...(schema.titleField ? { titleField: f(schema.titleField) } : {}), ...(teaser ? { pageTeaser: teaser } : {}) }];
+    })
+  );
+  const values = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [prop(k), items(prop(k), v)]));
+  for (const ex of examples) ex.props = values(ex.props);
+  placed.props = values(placed.props);
+  if (!def.tree) return;
+  // Bindings sit anywhere in a node (text, conditions and their comparisons, a nested component's values and
+  // variants): a property anywhere, and an item field in what a repeat over that list shows.
+  const rebind = (v: unknown, list?: string): unknown => {
+    if (Array.isArray(v)) return v.map((x) => rebind(x, list));
+    if (!v || typeof v !== 'object') return v;
+    if (isBinding(v)) {
+      if ('$prop' in v && typeof v.$prop === 'string') return { ...v, $prop: prop(v.$prop) };
+      if ('$item' in v && typeof v.$item === 'string' && list) return { ...v, $item: fields.get(list)?.get(v.$item) ?? v.$item };
+      return v;
+    }
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, rebind(x, list)]));
+  };
+  const tree = def.tree;
+  const seen = new Set<string>();
+  const walk = (id: string, list?: string) => {
+    const n = tree.nodes[id];
+    if (!n || seen.has(id)) return;
+    seen.add(id);
+    tree.nodes[id] = rebind(n, list) as GraphNode;
+    const inner = n.kind === 'repeat' && isBinding(n.list) && '$prop' in n.list ? prop(n.list.$prop) : list;
+    for (const cl of childLists(n)) for (const c of cl.ids) walk(c, inner);
+  };
+  tree.rootIds.forEach((r) => walk(r));
+  // A node not attached to the tree still follows the renamed properties.
+  for (const [id, n] of Object.entries(tree.nodes)) if (!seen.has(id)) tree.nodes[id] = rebind(n) as GraphNode;
 }
 
 function createCode(state: ProjectState, op: Op<'component.createCode'>): OpResult {
