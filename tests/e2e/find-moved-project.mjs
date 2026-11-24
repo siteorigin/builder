@@ -185,7 +185,8 @@ assert.equal(await win.locator('.recent-card').first().getAttribute('title'), `M
 assert.equal(await missingCard().locator('.recent-card').getAttribute('title'), `Mill Road\n${other}`);
 await missingCard().getByRole('button', { name: /^Remove Mill Road.* from recent projects$/ }).click();
 await eventually(async () => assert.deepEqual(await listed(), [[archived, false]]));
-assert.equal(await missingCard().count(), 0, 'no card says its folder is not found');
+await eventually(async () => assert.equal(await missingCard().count(), 0, 'the missing card is gone'));
+assert.equal(await win.locator('.recent-card').count(), 1);
 
 allErrors.push(...errors);
 await app.close();
