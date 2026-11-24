@@ -2,7 +2,9 @@ import type { EditorDestination } from '@shared/api';
 import type { ElementRef } from '@shared/types';
 import { getState, inspectorFocusRequest, setState, toast } from '../store';
 import { openSection } from '../components/ui';
-import { goToShellPart, openComponentStudio, openLayout, openSiteStyles, selectPage, setMode } from './actions';
+import { pageShowing } from '@shared/page-shell';
+import { siteEntries } from '@generator/index';
+import { openComponentStudio, openLayout, openSiteStyles, selectPage, setMode } from './actions';
 import { formDestinationField } from './destinations';
 
 /** The control each Site details field is reached by (see SiteStyles): a site image's card, by its first button. */
@@ -39,7 +41,16 @@ export function openEditorDestination(dest: EditorDestination) {
   else if (owner.kind === 'template') openLayout(owner.id);
   else if (owner.kind === 'component') {
     if (!openComponentStudio(owner.id)) return toast('That form is in a component that can no longer be edited here.', 'info');
-  } else if (!goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id} right now.`, 'info');
-  // The Inspector of the form takes the request: it opens Content and focuses the setting once it shows.
-  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, inspectorFocus: inspectorFocusRequest({ opening: snap.workspaceKey, owner, nodeId, prop: field.prop, label: field.label }) });
+  } else {
+    // The page on screen when it shows the shared part, else the first that does; else an entry, whose page shows both.
+    const pageId = pageShowing(snap.state, owner.id, s.definitionMode?.returnPageId ?? s.pageId);
+    const entry = pageId ? undefined : siteEntries(snap.state)[0];
+    // Chosen even when it is the page already open, so a collection layout or a component being edited closes.
+    if (pageId) selectPage(pageId, ref);
+    else if (entry) openLayout(entry.collection.settings.id, entry.entry.id);
+    else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
+  }
+  // The Inspector of the form takes the request: it opens Content (and a field's row) and focuses the setting once it shows.
+  const at = field.itemId ? { itemId: field.itemId, field: field.field } : {};
+  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, inspectorFocus: inspectorFocusRequest({ opening: snap.workspaceKey, owner, nodeId, prop: field.prop, ...at, label: field.label }) });
 }

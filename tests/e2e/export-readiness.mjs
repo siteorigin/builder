@@ -98,7 +98,7 @@ const result = modal.locator('.export-result');
 await result.waitFor({ timeout: 300000 });
 assert.match(await result.innerText(), /^Exported \d+ pages/, `the website export succeeds: ${await modal.innerText()}`);
 const out = join(exportsDir, 'lookbook-studio-site');
-assert.ok(existsSync(join(out, 'lookbook', 'index.html')), 'the Lookbook page was exported with its form');
+assert.match(readFileSync(join(out, 'lookbook', 'index.html'), 'utf8'), /<form[\s>]/, 'the Lookbook page was exported with its form');
 assert.equal(existsSync(join(out, 'sitemap.xml')), false, 'no sitemap without a public URL');
 const latest = modal.getByRole('region', { name: 'Recent exports' }).getByRole('listitem').first();
 const toggle = latest.getByRole('button', { name: /Review \d+ export notes/ });
@@ -113,9 +113,15 @@ assert.equal(await urlNote.getByRole('button', { name: 'Go to Public URL' }).cou
 // The form's note leads the notes: failed enquiries matter most.
 assert.match(await latest.locator('.export-note-line').first().innerText(), /contact form/);
 await modal.screenshot({ path: join(SHOTS, 'export-readiness-result.png') });
+await formNote.getByRole('button', { name: 'Go to form' }).click();
+await expectAtForm('from the export result');
 
-step('Go to Public URL opens Site details on the field, focused');
-await urlNote.getByRole('button', { name: 'Go to Public URL' }).click();
+step('reopened, the export keeps the notes that lead somewhere; Go to Public URL opens Site details on the field, focused');
+await win.getByRole('button', { name: 'Export', exact: true }).click();
+const kept = modal.getByRole('region', { name: 'Recent exports' }).getByRole('listitem').first();
+await kept.locator('.export-note-line', { hasText: 'No public site URL is set' }).waitFor();
+assert.equal(await kept.locator('.export-note-line').count(), 2, 'the form and the public URL, and not the notes with nothing to fix');
+await kept.locator('.export-note-line', { hasText: 'No public site URL is set' }).getByRole('button', { name: 'Go to Public URL' }).click();
 await modal.waitFor({ state: 'detached' });
 const detailsHead = win.locator('#dock-panel-styles button.section-head', { hasText: 'Site details' });
 await eventually(async () => assert.equal(await detailsHead.getAttribute('aria-expanded'), 'true', 'Site details is open'));

@@ -93,13 +93,25 @@ describe('the website’s contact forms visitors cannot send', () => {
     expect(websiteFormProblems(published).filter((d) => d.owner?.kind === 'template').map(at)).toEqual([`template:posts:${node.id}`]);
   });
 
-  it('does not call a layout’s form unconnected when each entry gives it its endpoint', () => {
-    // Entry content › Form endpoint URL › each entry's excerpt: the generator reads it from the entry, so Project health
-    // cannot judge it from the layout's default, and neither does the export.
-    const s = apply(fresh(), [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_soon', title: 'Coming soon', draft: false }]);
+  it('judges a layout’s form that takes its endpoint from each entry as each entry’s page is built', () => {
+    // Entry content › Form endpoint URL › each entry's excerpt: the generator reads it from the entry, so the layout's
+    // default decides nothing, and an entry with a usable address can send.
+    const s = apply(fresh(), [
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open studio', draft: false, excerpt: 'https://formspree.io/f/abcd1234' }
+    ]);
     const node = place(s, s.collections.posts.settings.template!, { endpoint: { $entry: 'excerpt' } });
     expect(healthForms(s).map(at)).not.toContain(`template:posts:${node.id}`);
     expect(websiteFormProblems(s)).toEqual([]);
+    // A published entry whose excerpt is no address: its page's form cannot send, and the finding names it.
+    const blank = apply(s, [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_blank', title: 'Coming soon', draft: false }]);
+    const message = `Posts layout: the contact form is not connected to a form service on the “Coming soon” entry, so visitors cannot send it there. ${FORM_SERVICES.endpoint.missing}`;
+    expect(websiteFormProblems(blank).map((d) => [at(d), d.message])).toEqual([[`template:posts:${node.id}`, message]]);
+    expect(healthForms(blank).filter((d) => d.owner?.kind === 'template').map((d) => d.message)).toEqual([message]);
+    // Kept as a draft, it is not on the website; Project health still says so.
+    const drafted = apply(blank, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_blank', draft: true }]);
+    expect(websiteFormProblems(drafted)).toEqual([]);
+    expect(healthForms(drafted).filter((d) => d.owner?.kind === 'template').map((d) => d.message)).toEqual([message]);
     // A page's form has no entry to read from: the binding is exported empty, and the default decides.
     const { s: page, node: pageForm } = lookbook({ endpoint: { $entry: 'excerpt' } });
     expect(healthForms(page).map(at)).toContain(`page:pg_lookbook:${pageForm.id}`);
@@ -125,8 +137,8 @@ describe('where a Project health finding leads', () => {
     const owner: OwnerRef = { kind: 'page', id: 'pg_lookbook' };
     const finding = (code: string): Diagnostic => ({ severity: 'warning', code, message: '', owner, nodeId: node.id });
     expect(destinationForDiagnostic(s, finding('FORM_UNCONNECTED'))).toEqual({ kind: 'form', owner, nodeId: node.id, setting: 'connection' });
-    expect(destinationForDiagnostic(s, finding('FORM_FIELD_KEYS'))).toEqual({ kind: 'form', owner, nodeId: node.id, setting: 'fields' });
-    expect(destinationForDiagnostic(s, finding('FORM_NO_CHOICES'))).toEqual({ kind: 'form', owner, nodeId: node.id, setting: 'fields' });
+    expect(destinationForDiagnostic(s, finding('FORM_FIELD_KEYS'))).toEqual({ kind: 'form', owner, nodeId: node.id, setting: 'fieldKeys' });
+    expect(destinationForDiagnostic(s, finding('FORM_NO_CHOICES'))).toEqual({ kind: 'form', owner, nodeId: node.id, setting: 'fieldChoices' });
     expect(destinationForDiagnostic(s, finding('FORM_NAME_DUPLICATE'))).toEqual({ kind: 'form', owner, nodeId: node.id, setting: 'formName' });
     // Anything else keeps its own action.
     expect(destinationForDiagnostic(s, finding('BUTTON_UNLINKED'))).toBeNull();
@@ -153,6 +165,9 @@ describe('where a Project health finding leads', () => {
     const clashes = formNameDiagnostics(s).filter((d) => d.owner?.kind === 'page');
     expect(clashes.length).toBeGreaterThan(0);
     for (const d of clashes) expect(destinationForDiagnostic(s, d)).toBeNull();
+    // A setting of the placement's own that happens to share the name is not the form's.
+    wrapper.properties.formName = { type: 'string', label: 'Form name', default: '' } as never;
+    for (const d of clashes) expect(destinationForDiagnostic(s, d)).toBeNull();
   });
 
   it('focuses the setting the form’s service needs now, or the service when none can be read', () => {
@@ -163,8 +178,19 @@ describe('where a Project health finding leads', () => {
     expect(formDestinationField(s, dest)?.prop).toBe('accessKey');
     node.props.provider = 'carrier-pigeon';
     expect(formDestinationField(s, dest)?.prop).toBe('provider');
-    expect(formDestinationField(s, { ...dest, setting: 'fields' })?.prop).toBe('fields');
     expect(formDestinationField(s, { ...dest, setting: 'formName' })?.prop).toBe('formName');
+    // A field finding opens the row with the problem: the second of two fields sent under one name, or a question with
+    // no choices. With none found, the list itself.
+    const fields = [
+      { id: 'f_name', label: 'Name', name: 'name', type: 'text' },
+      { id: 'f_pick', label: 'Pick one', name: 'pick', type: 'choice', options: [] },
+      { id: 'f_again', label: 'Your name', name: 'name', type: 'text' }
+    ];
+    node.props.fields = fields;
+    expect(formDestinationField(s, { ...dest, setting: 'fieldKeys' })).toEqual({ prop: 'fields', label: 'Fields', itemId: 'f_again', field: 'name' });
+    expect(formDestinationField(s, { ...dest, setting: 'fieldChoices' })).toEqual({ prop: 'fields', label: 'Fields', itemId: 'f_pick', field: 'options' });
+    node.props.fields = [fields[0]];
+    expect(formDestinationField(s, { ...dest, setting: 'fieldKeys' })).toEqual({ prop: 'fields', label: 'Fields' });
     // A form deleted since has nowhere to go.
     delete s.pages.pg_lookbook.nodes[node.id];
     expect(formDestinationField(s, dest)).toBeNull();
@@ -174,7 +200,9 @@ describe('where a Project health finding leads', () => {
 describe('an earlier export’s note, read against the project now', () => {
   it('leads to the form while it still cannot send, then says to export again', () => {
     const { s, node } = lookbook();
-    const [note] = websiteFormNotes(s);
+    // Another form visitors cannot send stays on the site throughout: the note is about its own form only.
+    place(s, s.pages[s.site.homePageId]);
+    const note = websiteFormNotes(s).find((n) => n.destination?.kind === 'form' && n.destination.nodeId === node.id)!;
     expect(noteState(s, note, websiteFormNotes(s))).toBe('open');
     // Renaming the page changes the words, not the form the note is about.
     const renamed = apply(s, [{ type: 'page.update', pageId: 'pg_lookbook', title: 'Look book' }]);
@@ -186,6 +214,9 @@ describe('an earlier export’s note, read against the project now', () => {
     expect(noteState(connected, note, websiteFormNotes(connected))).toBe('fixed');
     const drafted = apply(s, [{ type: 'page.update', pageId: 'pg_lookbook', draft: true }]);
     expect(noteState(drafted, note, websiteFormNotes(drafted))).toBe('gone');
+    // Connected and then kept as a draft: off the website, not something visitors can now send.
+    const connectedDraft = apply(connected, [{ type: 'page.update', pageId: 'pg_lookbook', draft: true }]);
+    expect(noteState(connectedDraft, note, websiteFormNotes(connectedDraft))).toBe('gone');
     const removed = apply(s, [{ type: 'node.remove', owner: { kind: 'page', id: 'pg_lookbook' }, nodeId: node.id }]);
     expect(noteState(removed, note, websiteFormNotes(removed))).toBe('gone');
   });
@@ -199,6 +230,10 @@ describe('an earlier export’s note, read against the project now', () => {
     expect(noteState(s, note, [])).toBe('open');
     s.site.baseUrl = 'https://example.com';
     expect(noteState(s, note, [])).toBe('fixed');
+    // Cleared again (or undone): the note leads to the field again.
+    s.site.baseUrl = '';
+    expect(noteState(s, note, [])).toBe('open');
+    s.site.baseUrl = 'https://example.com';
     // A note with nothing to fix has no state.
     expect(noteState(s, { message: 'Private files were left out.' } satisfies ExportNote, [])).toBeNull();
   });

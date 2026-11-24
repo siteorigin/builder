@@ -491,9 +491,10 @@ export function ExportModal() {
       lastAvailability.current = availability;
       setAnnounced(availability);
     }
-    // A control that went away with its blocker leaves focus nowhere.
+    // A control that went away with its blocker, or with what a note or the form review named (fixed meanwhile), leaves
+    // focus nowhere.
     if (document.activeElement === document.body) firstControl()?.focus();
-  }, [availability, longLinks]);
+  }, [availability, longLinks, state]);
   const resultRef = useRef<HTMLDivElement>(null);
   const buttons = useRef<Record<ExportKind, HTMLButtonElement | null>>({ static: null, source: null });
   // Where focus goes once the job ends: the result when there is one to read, else back on the button used.
