@@ -139,7 +139,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'page.remove':
       return pageRemove(state, op);
     case 'page.setHome':
-      return pageSetHome(state, op.pageId, op.keepOldAddress !== false);
+      return pageSetHome(state, op.pageId, op.keepOldAddress !== false, ctx.addressesAtStart);
     case 'node.insert':
       return nodeInsert(state, op);
     case 'node.remove': {
@@ -906,7 +906,7 @@ export type HomeChange = { moved: RouteMove[]; kept?: string };
  * `keepOldAddress`, the page's old address keeps working and sends visitors on, so old links and bookmarks still
  * reach it. That address is kept before the previous Home's is chosen, so the previous Home can never take it.
  */
-function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolean): HomeChange {
+function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolean, atStart?: ReadonlySet<string>): HomeChange {
   const page = own(state.pages, pageId) ?? fail(`Page "${pageId}" does not exist.`);
   if (state.site.homePageId === pageId) return { moved: [] };
   if (page.draft === true) fail(`"${page.title}" is a draft. Publish it before making it the Home page.`);
@@ -915,7 +915,9 @@ function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolea
   const moved: RouteMove[] = [{ pageId, from: vacated, to: '/' }];
   page.route = '/';
   state.site.homePageId = pageId;
-  if (keepOldAddress) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from: vacated, pageId }];
+  // Only an address the page was served at when the batch began, as a move keeps (see movePages).
+  const keep = keepOldAddress && (!atStart || atStart.has(vacated.toLowerCase())) && !validateRoute(vacated);
+  if (keep) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from: vacated, pageId }];
   if (old) {
     // Home was published whatever its document said: it stays published at its new address.
     delete old.draft;
@@ -924,7 +926,7 @@ function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolea
     claimRoute(state, old.route);
     moved.push({ pageId: old.id, from, to: old.route });
   }
-  return keepOldAddress ? { moved, kept: vacated } : { moved };
+  return keep ? { moved, kept: vacated } : { moved };
 }
 
 /** What making `pageId` Home would change, without changing anything. */

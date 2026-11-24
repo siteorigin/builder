@@ -128,10 +128,9 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         if (!fields.length) add(op, `page:${op.pageId}`, render, linkTo(o));
         else fields.forEach((f) => add(op, `page:${op.pageId}`, render, linkTo(o), PAGE_FIELDS[f]));
         // A new address moves the pages inside the page too (see shared/page-tree.ts): say so, naming them.
-        // Where each is at the end of the run, and whether its old address still leads there.
-        const moved = ((results[i] ?? {}) as { moved?: Array<{ pageId: string; from: string }> }).moved?.filter((m) => m.pageId !== op.pageId && after.pages[m.pageId]) ?? [];
-        const kept = (m: { pageId: string; from: string }) => (after.site.redirects ?? []).some((r) => r?.pageId === m.pageId && r.from?.toLowerCase() === m.from.toLowerCase());
-        if (moved.length) plain(op, `Moved ${joinWords(moved.map((m) => `${where({ kind: 'page', id: m.pageId })} (now ${after.pages[m.pageId].route})`))} with it${moved.every(kept) ? '; old addresses keep working' : ''}`);
+        // Where each is at the end of the run.
+        const moved = ((results[i] ?? {}) as { moved?: Array<{ pageId: string }> }).moved?.filter((m) => m.pageId !== op.pageId && after.pages[m.pageId]) ?? [];
+        if (moved.length) plain(op, `Moved ${joinWords(moved.map((m) => `${where({ kind: 'page', id: m.pageId })} (now ${after.pages[m.pageId].route})`))} with it`);
         return;
       }
       case 'page.duplicate':

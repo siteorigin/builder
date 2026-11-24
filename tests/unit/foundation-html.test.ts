@@ -558,7 +558,7 @@ describe('shell.header', () => {
     const nav = (out: string) =>
       out.match(/<ul class="so-header__list[^"]*"[^>]*>[\s\S]*<\/ul>(?=\s*(<a class="so-btn|<\/nav>))/)![0].replace(/ class="svelte-[a-z0-9]+"/g, '').replace(/ svelte-[a-z0-9]+/g, '').replace(/\s+/g, ' ').replace(/> </g, '><');
     const toggle = (id: string, label: string) =>
-      `<button type="button" class="so-header__sub-toggle" aria-expanded="false" aria-controls="so-sub-${id}"><span class="so-visually-hidden">${label} submenu</span><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"></path></svg></button>`;
+      `<button type="button" class="so-header__sub-toggle" aria-expanded="false" aria-controls="so-sub:${id}"><span class="so-visually-hidden">${label} submenu</span><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"></path></svg></button>`;
 
     it('nests links marked to show under the link above in a hidden list its button controls', () => {
       const links = [
@@ -572,7 +572,7 @@ describe('shell.header', () => {
         '<ul class="so-header__list">' +
           '<li><a href="/" aria-current="page">Home</a></li>' +
           `<li class="so-header__group"><a href="/about/">About</a>${toggle('1', 'About')}` +
-          '<ul id="so-sub-1" class="so-header__sub" hidden=""><li><a href="https://example.com/team">Team</a></li><li><a href="/contact/">Contact</a></li></ul></li>' +
+          '<ul id="so-sub:1" class="so-header__sub" hidden=""><li><a href="https://example.com/team">Team</a></li><li><a href="/contact/">Contact</a></li></ul></li>' +
           '<li><a href="https://example.com/shop">Shop</a></li>' +
           '</ul>'
       );
@@ -582,7 +582,7 @@ describe('shell.header', () => {
       const flat = nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }, { id: 'l2', label: 'Contact', link: link('/contact/'), sub: false }] }));
       expect(flat).toBe('<ul class="so-header__list"><li><a href="/about/">About</a></li><li><a href="/contact/">Contact</a></li></ul>');
       const leading = nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/'), sub: true }, { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true }] }));
-      expect(leading).toBe(`<ul class="so-header__list"><li class="so-header__group"><a href="/about/">About</a>${toggle('0', 'About')}<ul id="so-sub-0" class="so-header__sub" hidden=""><li><a href="/contact/">Contact</a></li></ul></li></ul>`);
+      expect(leading).toBe(`<ul class="so-header__list"><li class="so-header__group"><a href="/about/">About</a>${toggle('0', 'About')}<ul id="so-sub:0" class="so-header__sub" hidden=""><li><a href="/contact/">Contact</a></li></ul></li></ul>`);
       // Items stored before submenus existed have no mark: they are top-level links.
       expect(nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }] }))).toBe('<ul class="so-header__list"><li><a href="/about/">About</a></li></ul>');
     });
@@ -595,8 +595,8 @@ describe('shell.header', () => {
         { id: 'x"y', label: 'Team', link: { type: 'url', target: 'https://example.com/team' }, sub: true }
       ];
       const out = nav(authoredHtml('shell.header', { links }));
-      expect([...out.matchAll(/aria-controls="([^"]*)"/g)].map((m) => m[1])).toEqual(['so-sub-0', 'so-sub-1']);
-      expect([...out.matchAll(/<ul id="([^"]*)" class="so-header__sub"/g)].map((m) => m[1])).toEqual(['so-sub-0', 'so-sub-1']);
+      expect([...out.matchAll(/aria-controls="([^"]*)"/g)].map((m) => m[1])).toEqual(['so-sub:0', 'so-sub:1']);
+      expect([...out.matchAll(/<ul id="([^"]*)" class="so-header__sub"/g)].map((m) => m[1])).toEqual(['so-sub:0', 'so-sub:1']);
     });
 
     it('marks only the open page, and its parent link as the section, on a page under it', () => {

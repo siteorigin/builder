@@ -1732,6 +1732,9 @@ function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; 
  * menu is chosen in the menu itself.
  */
 function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
+  // The version of the project these choices come from: a move is sent against it, so a page that moved meanwhile
+  // asks the author to choose again rather than landing somewhere else.
+  const revision = useStore((s) => s.snapshot?.revision);
   const rows = pageRows(state.pages, state.site.pageOrder);
   const parentId = pageParents(Object.values(state.pages)).get(page.id) ?? '';
   const leaf = routeLeaf(page.route);
@@ -1753,7 +1756,7 @@ function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
     if (id === HERE) return;
     const to = id ? choices.find((c) => c.id === id)?.to : atTop;
     if (!to || to === page.route) return;
-    void applyOps([{ type: 'page.update', pageId: page.id, route: to }], id ? `Move page into ${state.pages[id].title}` : 'Move page to the top level');
+    void applyOps([{ type: 'page.update', pageId: page.id, route: to }], id ? `Move page into ${state.pages[id].title}` : 'Move page to the top level', undefined, revision);
   };
   return (
     <Field label="Inside" hint={exact ? 'Moves the page and its address. Its link in the header menu stays where it is.' : `Its address, ${page.route}, has folders of its own. Choosing a page moves it straight inside that page.`}>

@@ -122,7 +122,7 @@ try {
   assert.equal(r.ok, true, `static export succeeds: ${r.message} ${r.warnings?.join(' ') ?? ''}`);
   const served = await (await fetch(`${ORIGIN}/studio/work/kitchens/`)).text();
   assert.match(served, /<h1[^>]*>\s*Kitchens\s*</, 'the nested address loads directly, with its content in the first HTML');
-  assert.match(served, /<ul id="so-sub-[^"]+" class="so-header__sub[^"]*"[^>]*hidden/, 'the submenu is in the HTML, hidden until opened');
+  assert.match(served, /<ul id="so-sub:[^"]+" class="so-header__sub[^"]*"[^>]*hidden/, 'the submenu is in the HTML, hidden until opened');
   assert.doesNotMatch(served, /data-so-|siteorigin-bridge/, 'no editor instrumentation');
 
   browser = await chromium.launch();

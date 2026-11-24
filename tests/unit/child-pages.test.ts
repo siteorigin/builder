@@ -143,6 +143,10 @@ describe('moving a page', () => {
     // Spring would end up five levels deep.
     expect(refused('/a/b/lookbook/')).toMatch(/would move “Spring” to \/a\/b\/lookbook\/kitchens\/spring\/, which is not possible: Routes can be at most four levels deep/);
     const blocked = applyOperations(s, [{ type: 'page.create', pageId: 'pg_workkit', title: 'Work kitchens', route: '/work/kitchens/' }]).state;
+    // A page written with capitals by hand is in the way all the same.
+    const capitals = structuredClone(blocked);
+    capitals.pages.pg_workkit.route = '/Work/Kitchens/';
+    expect(() => applyOperations(capitals, [{ type: 'page.update', pageId: 'pg_lookbook', route: '/work/' }])).toThrow(/which “Work kitchens” already uses/);
     expect(() => applyOperations(blocked, [{ type: 'page.update', pageId: 'pg_lookbook', route: '/WORK/' }])).toThrow(/would move “Kitchens” to \/work\/kitchens\/, which “Work kitchens” already uses/);
     expect(() => applyOperations(blocked, [{ type: 'page.update', pageId: 'pg_lookbook', route: '/work/kitchens/' }])).toThrow(/Another page already uses \/work\/kitchens\//);
     expect(routes(blocked)).toMatchObject({ Lookbook: '/lookbook/', Kitchens: '/lookbook/kitchens/', Spring: '/lookbook/kitchens/spring/' });
@@ -192,6 +196,15 @@ describe('moving a page', () => {
     ]).state;
     expect(through.pages.pg_kitchens.route).toBe('/work/kitchens/');
     expect(through.site.redirects?.some((r) => r.from === '/work/kitchens/')).toBe(false);
+    // Making a page Home keeps its old address the same way: not one it only passed through.
+    const home = applyOperations(s, [
+      { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/work/kitchens/' },
+      { type: 'page.setHome', pageId: byTitle(s, 'About').id },
+      { type: 'page.update', pageId: 'pg_lookbook', route: '/work/' }
+    ]);
+    expect(home.results[1]).not.toHaveProperty('kept');
+    expect(home.state.pages.pg_kitchens.route).toBe('/work/kitchens/');
+    expect(home.state.site.redirects?.map((r) => r.from).sort()).toEqual(['/about/', '/lookbook/', '/lookbook/kitchens/', '/lookbook/kitchens/spring/']);
     const legacy = lookbook();
     legacy.pages.pg_lookbook.route = '/Lookbook/';
     const moved = applyOperations(legacy, [{ type: 'page.update', pageId: 'pg_lookbook', route: '/studio/' }]).state;
@@ -216,6 +229,10 @@ describe('moving a page', () => {
     const r = applyOperations(s, [{ type: 'page.duplicate', pageId: 'pg_kitchens', title: 'Kitchens' }]);
     expect(r.results[0].route).toBe('/lookbook/kitchens-2/');
     expect(r.state.pages[r.results[0].pageId as string].route).toBe('/lookbook/kitchens-2/');
+    // An old address kept in that folder is not given to the copy.
+    const kept = applyOperations(s, [{ type: 'page.create', pageId: 'pg_kitch002', title: 'Kitchens 2', route: '/lookbook/kitchens-2/' }]).state;
+    const vacated = applyOperations(kept, [{ type: 'page.update', pageId: 'pg_kitch002', route: '/elsewhere/' }]).state;
+    expect(applyOperations(vacated, [{ type: 'page.duplicate', pageId: 'pg_kitchens', title: 'Kitchens' }]).results[0].route).toBe('/lookbook/kitchens-3/');
   });
 });
 
@@ -339,14 +356,11 @@ describe('what else reads a page’s place', () => {
     const ops = [{ type: 'page.update' as const, pageId: 'pg_lookbook', route: '/work/' }];
     const r = applyOperations(s, ops);
     const labels = describeOps(ops, s, r.state, r.results).map((c) => c.label);
-    expect(labels).toEqual(['Changed the address of page Lookbook', 'Moved Kitchens (now /work/kitchens/) and Spring (now /work/kitchens/spring/) with it; old addresses keep working']);
+    expect(labels).toEqual(['Changed the address of page Lookbook', 'Moved Kitchens (now /work/kitchens/) and Spring (now /work/kitchens/spring/) with it']);
     expect(pagesTouched(ops, r.state)).toBe('all');
     // Moved again later in the run: the report says where they ended up, and only promises what still holds.
     const again = applyOperations(r.state, [{ type: 'page.update', pageId: 'pg_kitchens', route: '/rooms/' }]).state;
-    expect(describeOps(ops, s, again, r.results).at(-1)!.label).toBe('Moved Kitchens (now /rooms/) and Spring (now /rooms/spring/) with it; old addresses keep working');
-    // A page made later at one of the old addresses takes it over: the report no longer promises it.
-    const taken = applyOperations(s, [...ops, { type: 'page.create', title: 'Kitchens archive', route: '/lookbook/kitchens/' }]);
-    expect(describeOps(ops, s, taken.state, taken.results.slice(0, 1)).at(-1)!.label).toBe('Moved Kitchens (now /work/kitchens/) and Spring (now /work/kitchens/spring/) with it');
+    expect(describeOps(ops, s, again, r.results).at(-1)!.label).toBe('Moved Kitchens (now /rooms/) and Spring (now /rooms/spring/) with it');
     // A page with nothing inside it changes where links to it lead on other pages too.
     expect(pagesTouched([{ type: 'page.update', pageId: 'pg_spring01', route: '/spring/' }], r.state)).toBe('all');
     expect(pagesTouched([{ type: 'page.update', pageId: 'pg_lookbook', seoTitle: 'Lookbook' }], r.state)).toEqual(new Set(['pg_lookbook']));
