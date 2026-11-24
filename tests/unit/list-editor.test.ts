@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote } from '../../src/renderer/src/lib/list-editor';
+import type { ProjectState } from '../../src/shared/types';
+import { addLimitNote, countLabel, countText, listEditLabel, moveAnnouncement, moveFocusTarget, removeLimitNote, type ListEdit } from '../../src/renderer/src/lib/list-editor';
 import { contact } from '../../src/catalogue/foundation/conversion';
 
 describe('list capacity', () => {
@@ -57,5 +58,57 @@ describe('focus after a move', () => {
   it('announces the new position', () => {
     expect(moveAnnouncement('Materials & colour', 0, 4)).toBe('Materials & colour moved to position 1 of 4');
     expect(moveAnnouncement('Planning', 2, 4)).toBe('Planning moved to position 3 of 4');
+  });
+});
+
+describe('History and Undo wording for a list edit', () => {
+  const owner = { kind: 'page', id: 'home' } as const;
+  const cards = [
+    { id: 'i1', title: 'Planning & layout', text: 'a' },
+    { id: 'i2', title: 'Materials & colour', text: 'b' },
+    { id: 'i3', title: '', text: 'c' }
+  ];
+  const schema = {
+    type: 'list',
+    label: 'Cards',
+    itemLabel: 'Card',
+    titleField: 'title',
+    fields: { title: { type: 'text', label: 'Title' }, text: { type: 'text', label: 'Text' } },
+    default: []
+  };
+  const state = {
+    pages: { home: { id: 'home', title: 'Home', nodes: { n1: { kind: 'instance', id: 'n1', definitionId: 'services', props: { items: cards } } } } },
+    components: { services: { id: 'services', name: 'Services', properties: { items: schema } } },
+    assets: { assets: {} }
+  } as unknown as ProjectState;
+  const label = (op: ListEdit, everywhere = false) => listEditLabel(state, owner, 'n1', 'items', op, 'Edit Cards', everywhere);
+
+  it('names the row, the list, the section and the page for each kind of edit', () => {
+    expect(label({ kind: 'insert' })).toBe('Add card 4 to Cards (Services on Home)');
+    expect(label({ kind: 'remove', itemId: 'i1' })).toBe('Remove “Planning & layout” from Cards (Services on Home)');
+    expect(label({ kind: 'move', itemId: 'i2', index: 0 })).toBe('Move “Materials & colour” from 2 to 1 in Cards (Services on Home)');
+    expect(label({ kind: 'field', itemId: 'i1', field: 'text' })).toBe('Edit Text of “Planning & layout” in Cards (Services on Home)');
+  });
+
+  it('tells an add from a remove, a move and a field edit made close together', () => {
+    const labels = [label({ kind: 'insert' }), label({ kind: 'move', itemId: 'i2', index: 0 }), label({ kind: 'insert' }), label({ kind: 'remove', itemId: 'i3' })];
+    expect(new Set(labels).size).toBe(labels.length - 1);
+    expect(labels).not.toContain('Edit Cards');
+  });
+
+  it('names a row with no title by its place, and a long title shortened', () => {
+    expect(label({ kind: 'remove', itemId: 'i3' })).toContain('“Card 3”');
+    cards[0].title = 'A very long title that goes on and on and on';
+    expect(label({ kind: 'remove', itemId: 'i1' })).toContain('“A very long title that goes on…”');
+    cards[0].title = 'Planning & layout';
+  });
+
+  it('names a design, not a page, for an edit made everywhere', () => {
+    expect(label({ kind: 'remove', itemId: 'i1' }, true)).toBe('Remove “Planning & layout” from Cards everywhere');
+  });
+
+  it('keeps the generic label when the row is gone or the list is not there', () => {
+    expect(label({ kind: 'remove', itemId: 'gone' })).toBe('Edit Cards');
+    expect(listEditLabel(state, owner, 'missing', 'items', { kind: 'insert' }, 'Edit Cards')).toBe('Edit Cards');
   });
 });
