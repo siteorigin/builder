@@ -959,7 +959,7 @@ describe('selection tools', () => {
   it('never offers a tag for rich text, or a tag or style a repeated item sets (#195)', () => {
     const state = createStarterState('blank', 'Test', false);
     const home = state.pages[state.site.homePageId];
-    home.nodes.n_rich = { id: 'n_rich', kind: 'text', tag: 'p', text: '', rich: true };
+    home.nodes.n_rich = { id: 'n_rich', kind: 'text', tag: 'div', text: '', rich: true };
     home.nodes.n_boundTag = { id: 'n_boundTag', kind: 'text', tag: { $item: 'level' }, text: 'x' };
     home.nodes.n_boundBtn = { id: 'n_boundBtn', kind: 'link', link: { type: 'none', target: '' }, label: 'Go', appearance: { $item: 'style' } };
     const fieldsOf = (nodeId: string) => Object.keys((selectionTools(state, { owner: { kind: 'page', id: home.id }, nodeId })![0].parameters.properties as { props: { properties: object } }).props.properties);
@@ -970,11 +970,13 @@ describe('selection tools', () => {
 
   it('keeps each list’s own shape for a field name two lists share (#195)', async () => {
     const statsList = { type: 'list', label: 'Stats', itemLabel: 'Stat', fields: { title: { type: 'number', label: 'Value', default: 0 } }, default: [] } as unknown as PropSchema;
+    type List = Extract<PropSchema, { type: 'list' }>;
     let gridDef = '';
     const { session, adapter, run } = await setup(
       [
-        // The other list's shape for the same name is refused by field, and nothing is applied.
-        () => [call('l0', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: 'Care' } })],
+        // The other list's shape for the same name is refused by field, and nothing is applied, even where the
+        // list's own check would have taken it.
+        () => [call('l0', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: '42' } })],
         () => [call('l1', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: 42 } })],
         () => [call('l2', 'edit_selected_list', { prop: 'items', action: 'insert', fields: { icon: 'leaf', title: 'Care', description: 'Weekly.' } })],
         () => finish()
@@ -984,7 +986,11 @@ describe('selection tools', () => {
       (s) => {
         const grid = s.pages[s.site.homePageId].nodes[s.pages[s.site.homePageId].rootIds[2]] as InstanceNode;
         gridDef = grid.definitionId;
-        s.components[gridDef].properties.stats = statsList;
+        const props = s.components[gridDef].properties;
+        props.stats = statsList;
+        // The same shape under another label is one shape.
+        const items = props.items as List;
+        props.notes = { ...items, label: 'Notes', fields: { title: { ...items.fields.title, label: 'Note' } }, default: [] } as PropSchema;
       }
     );
     const ref = { ...heroRef(session.state), nodeId: pageAt(session.state, '/')!.rootIds[2] };
@@ -992,11 +998,13 @@ describe('selection tools', () => {
     const tool = adapter.requests[0].tools.find((t) => t.name === 'edit_selected_list')!;
     const title = ((tool.parameters.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
     expect(title.anyOf?.map((b) => b.type)).toEqual(['string', 'number']);
-    expect(title.anyOf?.map((b) => b.description)).toEqual(['When prop is "items": Title', 'When prop is "stats": Value']);
+    expect(title.anyOf?.map((b) => b.description)).toEqual(['When prop is "items" or "notes": Title', 'When prop is "stats": Value']);
     const strict = toStrictSchema(tool.parameters);
+    const strictTitle = ((strict.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
+    expect(JSON.stringify(strictTitle)).toMatch(/"type":"string".*"type":"number"/);
     expect(findForbiddenShapes(strict)).toEqual([]);
     expect(JSON.stringify(strict)).not.toContain('$json');
-    expect(lastResult(adapter.requests[1]).fields.map((f: { field: string }) => f.field)).toEqual(['fields.title']);
+    expect(lastResult(adapter.requests[1]).fields).toEqual([{ field: 'fields.title', message: 'must be number for "stats"' }]);
     const grid = nodeAt(session.state, 2).props;
     expect((grid.stats as Array<{ title: number }>).map((i) => i.title)).toEqual([42]);
     expect((grid.items as Array<{ title: string }>).at(-1)?.title).toBe('Care');
@@ -1091,9 +1099,10 @@ describe('context budget', () => {
 
   describe('code, element, layout and project reads (#195)', () => {
     const pad = 'q'.repeat(4000);
-    const src = (def: string, start: number, end: number, hash: string) => JSON.stringify({ definitionId: def, editable: true, hash, totalLines: 900, startLine: start, endLine: end, source: pad });
+    const src = (def: string, start: number, end: number, hash: string, endLine = end) =>
+      JSON.stringify({ definitionId: def, editable: true, hash, totalLines: 900, startLine: start, endLine, source: Array.from({ length: end - start + 1 }, () => 'let x = 1;').join('\n') + pad });
     const element = (id: string, rev = 3) => JSON.stringify({ revision: rev, owner: { kind: 'page', id }, node: { id: 'n_1', kind: 'instance', props: { body: pad } }, displayName: 'Hero', parent: null });
-    const layout = (pageId: string, viewport: string) => JSON.stringify({ pageId, viewport, width: 390, report: { issues: [], headings: pad } });
+    const layout = (pageId: string, viewport: string, rev?: number) => JSON.stringify({ ...(rev !== undefined ? { revision: rev } : {}), pageId, viewport, width: 390, report: { issues: [], headings: pad } });
     const project = (rev = 3) => JSON.stringify({ revision: rev, homePageId: 'pg_a', pages: [{ id: 'pg_a', route: '/' }, { id: 'pg_b', route: '/about/' }], tokens: pad });
     const filler = (id: string) => read(id, {}, '{"errors":[]}', 'validate_project');
     const at = (items: CanonicalItem[], callId: string) => results(items).find((r) => r.callId === callId)!.content;
@@ -1105,6 +1114,8 @@ describe('context budget', () => {
         ...read('s2', { definitionId: 'def_a' }, src('def_a', 1, 400, 'sha_one'), 'read_source'),
         // Other lines of the same source are not a replacement.
         ...read('s3', { definitionId: 'def_a', startLine: 401 }, src('def_a', 401, 800, 'sha_one'), 'read_source'),
+        // Fewer lines than an earlier read are not a replacement either.
+        ...read('s4', { definitionId: 'def_a', startLine: 1, endLine: 80 }, src('def_a', 1, 80, 'sha_one'), 'read_source'),
         ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a'), 'inspect_element'),
         ...read('e2', { owner: { kind: 'page', id: 'pg_b' }, nodeId: 'n_1' }, element('pg_b'), 'inspect_element'),
         ...read('e3', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a'), 'inspect_element'),
@@ -1116,11 +1127,12 @@ describe('context budget', () => {
         ...read('p1', { sections: ['tokens'] }, project(), 'read_project'),
         ...read('p2', { sections: ['catalogue', 'pages'] }, project(), 'read_project'),
         ...read('p3', { sections: ['catalogue', 'tokens'] }, project(), 'read_project'),
+        ...read('p4', {}, project(), 'read_project'),
         ...filler('f1'),
         ...filler('f2')
       ];
       const kept = structuredClone(items);
-      const r = applyContextBudget(items, optsWith(20000));
+      const r = applyContextBudget(items, optsWith(26000));
       expect(r.tombstoned).toBe(5);
       expect(at(items, 's1')).toBe('[Superseded read_source def_a lines 1–80 of 900. Read it again for the current source and hash.]');
       expect(at(items, 's1')).not.toContain('sha_one');
@@ -1128,7 +1140,7 @@ describe('context budget', () => {
       expect(at(items, 'l1')).toBe('[Superseded inspect_layout pg_a phone. Measure it again if you need it.]');
       expect(at(items, 'p1')).toBe('[Superseded read_project at rev 3 (tokens). Pages: pg_a /, pg_b /about/. Read it again if you need it.]');
       expect(at(items, 'p2')).toContain('[Superseded read_project at rev 3 (catalogue, pages).');
-      for (const id of ['s2', 's3', 'e2', 'e3', 'l2', 'l3', 'p3']) expect(at(items, id), id).toBe(at(kept, id));
+      for (const id of ['s2', 's3', 's4', 'e2', 'e3', 'l2', 'l3', 'p3', 'p4']) expect(at(items, id), id).toBe(at(kept, id));
     });
 
     it('never lets a read cut short by the size limit replace a complete one', () => {
@@ -1136,15 +1148,23 @@ describe('context budget', () => {
       const items: CanonicalItem[] = [
         ...read('a', { pageId: 'pg_a' }, big(1)),
         ...read('b', { pageId: 'pg_a' }, cut(big(2))),
-        ...read('s1', { definitionId: 'def_a' }, cut(src('def_a', 1, 400, 'sha_one')), 'read_source'),
+        ...read('s1', { definitionId: 'def_a', startLine: 1, endLine: 400 }, cut(src('def_a', 1, 400, 'sha_one')), 'read_source'),
         ...read('s2', { definitionId: 'def_a' }, src('def_a', 1, 400, 'sha_one'), 'read_source'),
+        // A cut read does not show every line it asked for, so it replaces nothing, even another cut read.
+        ...read('s3', { definitionId: 'def_b', startLine: 200, endLine: 400 }, cut(src('def_b', 200, 400, 'sha_b')), 'read_source'),
+        ...read('s4', { definitionId: 'def_b', startLine: 1, endLine: 400 }, cut(src('def_b', 1, 400, 'sha_b')), 'read_source'),
+        // An end before the start returns all but the last line: what came back is what counts.
+        ...read('s5', { definitionId: 'def_c', endLine: -1 }, src('def_c', 1, 899, 'sha_c', -1), 'read_source'),
+        ...read('s6', { definitionId: 'def_c', endLine: 80 }, src('def_c', 1, 80, 'sha_c'), 'read_source'),
         ...filler('f1'),
         ...filler('f2')
       ];
-      applyContextBudget(items, optsWith(8000));
+      const kept = structuredClone(items);
+      applyContextBudget(items, optsWith(16000));
       expect(at(items, 'a')).toBe(big(1));
       // A complete read of the lines the cut one asked for replaces it.
       expect(at(items, 's1')).toBe('[Superseded read_source def_a. Read it again for the current source and hash.]');
+      for (const id of ['s3', 's5']) expect(at(items, id), id).toBe(at(kept, id));
     });
 
     it('under pressure collapses what a later change made stale, then sources once anything has changed', () => {
@@ -1170,29 +1190,62 @@ describe('context budget', () => {
       ];
       // Enough room once the stale reads are gone: the sources nothing changed are kept.
       const roomy = history();
-      applyContextBudget(roomy, optsWith(4000));
+      applyContextBudget(roomy, optsWith(7400));
       for (const id of ['s1', 'e1', 'l1', 'p1']) expect(at(roomy, id), id).toMatch(/^\[Superseded /);
       for (const id of ['c1', 's2']) expect(at(roomy, id), id).not.toContain('Superseded');
       // Tighter still, a source is given up after a change that need not have named it (a theme switch removes
       // components without naming them), but a failed patch changed nothing.
       const tight = history();
-      applyContextBudget(tight, optsWith(2000));
+      applyContextBudget(tight, optsWith(3000));
       for (const id of ['c1', 's2']) expect(at(tight, id), id).toMatch(/^\[Superseded read_source/);
       // With no change at all, nothing is stale.
       const quiet = history().filter((i) => !('callId' in i && i.callId === 'm') && !(i.kind === 'assistant' && i.toolCalls[0]?.id === 'm'));
-      applyContextBudget(quiet, optsWith(2000));
+      applyContextBudget(quiet, optsWith(3000));
       for (const id of ['c1', 's1', 'e1', 'l1', 'p1', 's2']) expect(at(quiet, id), id).not.toContain('Superseded');
     });
 
-    it('counts a change that was not a tool’s result, such as links connected when a page was created', () => {
-      const items = (): CanonicalItem[] => [...read('p1', {}, project(3), 'read_project'), ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a', 3), 'inspect_element'), ...filler('f1'), ...filler('f2')];
+    it('under pressure collapses a source a later read shows has changed, with no change in between', () => {
+      const items: CanonicalItem[] = [
+        ...read('d1', { definitionId: 'def_d' }, src('def_d', 1, 400, 'sha_d1'), 'read_source'),
+        ...read('d2', { definitionId: 'def_d', startLine: 401 }, src('def_d', 401, 800, 'sha_d2'), 'read_source'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      applyContextBudget(items, optsWith(2000));
+      expect(at(items, 'd1')).toMatch(/^\[Superseded read_source def_d lines 1–400 of 900\./);
+      expect(at(items, 'd2')).toBe(src('def_d', 401, 800, 'sha_d2'));
+    });
+
+    it('goes by the revision a read was made at: a change that was not a tool’s result counts, a change that changed nothing does not', () => {
+      const noop: CanonicalItem[] = [
+        { kind: 'assistant', text: '', toolCalls: [{ id: 'm', name: 'apply_operations', arguments: '{"operations":[]}' }] },
+        { kind: 'tool_result', callId: 'm', name: 'apply_operations', content: '{"ok":true,"revision":3}' }
+      ];
+      const cut = (s: string) => JSON.stringify({ truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
+      const items = (): CanonicalItem[] => [
+        ...read('p1', {}, cut(project(3)), 'read_project'),
+        ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a', 3), 'inspect_element'),
+        ...read('l1', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone', 3), 'inspect_layout'),
+        ...noop,
+        ...filler('f1'),
+        ...filler('f2')
+      ];
       const current = items();
       applyContextBudget(current, optsWith(2000, { revision: 3 }));
-      expect(at(current, 'p1')).toBe(project(3));
+      for (const id of ['p1', 'e1', 'l1']) expect(at(current, id), id).not.toContain('Superseded');
+      // Links connected when a page was created move the revision without a tool result.
       const moved = items();
       applyContextBudget(moved, optsWith(2000, { revision: 4 }));
-      expect(at(moved, 'p1')).toMatch(/^\[Superseded read_project at rev 3\./);
+      expect(at(moved, 'p1')).toMatch(/^\[Superseded read_project\. /);
       expect(at(moved, 'e1')).toMatch(/^\[Superseded inspect_element n_1/);
+      expect(at(moved, 'l1')).toBe('[Superseded inspect_layout pg_a phone. Measure it again if you need it.]');
+    });
+
+    it('keeps every collapsed read to one line', () => {
+      const titled = JSON.stringify({ revision: 1, id: 'pg_a', title: 'About\nUs', owner: { kind: 'page', id: 'pg_a' }, sections: [{ id: 'n_1', componentId: 'hero.split', props: { heading: pad } }] });
+      const items: CanonicalItem[] = [...read('a', { pageId: 'pg_a' }, titled), ...read('b', { pageId: 'pg_a' }, titled), ...filler('f1'), ...filler('f2')];
+      applyContextBudget(items, optsWith(2000));
+      expect(at(items, 'a')).toMatch(/^\[Superseded read_page pg_a "About Us"/);
     });
   });
 

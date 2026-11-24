@@ -616,7 +616,7 @@ describe('constrained JSON', () => {
       expect(messages[3].content).toBe('Which button?\n\nNow the button');
     }
     // Native tool calling keeps the plain text.
-    await run(native(), { items: items.slice(0, 3), tools: [] });
+    await run(native(), { items: items.slice(0, 3) });
     expect(posts()[3].body.messages[2]).toEqual({ role: 'assistant', content: 'Made the headline bolder.' });
   });
 

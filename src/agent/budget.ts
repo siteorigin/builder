@@ -65,7 +65,9 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
   if (item.isError || item.content.startsWith(TOMBSTONE)) return null;
   const body = parse(item.content);
   const partial = body?.truncated === true;
-  const base = { index, name: item.name, ...(partial ? { partial } : {}), ...(typeof body?.revision === 'number' ? { revision: body.revision } : {}) };
+  // A result cut short still starts with its revision, when it has one.
+  const revision = partial ? Number(/^\{"revision":(\d+)[,}]/.exec(String(body!.partial ?? ''))?.[1] ?? NaN) : body?.revision;
+  const base = { index, name: item.name, ...(partial ? { partial } : {}), ...(typeof revision === 'number' && Number.isFinite(revision) ? { revision } : {}) };
   if (item.name === 'read_page') {
     const pageId = String(body?.owner?.id ?? body?.id ?? args.pageId ?? '');
     if (!pageId) return null;
@@ -84,8 +86,10 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     const definitionId = String(body?.definitionId ?? args.definitionId ?? '');
     // A managed component's answer is a one-line note with no source to collapse.
     if (!definitionId || (!partial && typeof body?.source !== 'string')) return null;
+    // The lines actually shown: a cut result shows an unknown share of what was asked for, and an end before
+    // the start (which the tool accepts) does not say what came back.
     const start = Number(partial ? (args.startLine ?? 1) : body!.startLine);
-    const end = Number(partial ? (args.endLine ?? start + 399) : body!.endLine);
+    const end = partial ? Number(args.endLine ?? start + 399) : start + String(body!.source).split('\n').length - 1;
     return { ...base, target: `source:${definitionId}`, definitionId, lines: [start, end], ...(partial ? {} : { hash: String(body!.hash) }) };
   }
   if (item.name === 'inspect_element') {
@@ -105,7 +109,8 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
 function replaces(newer: ReadInfo, older: ReadInfo): boolean {
   if (newer.index <= older.index || newer.target !== older.target || (newer.partial && !older.partial)) return false;
   if (newer.name === 'read_project') return older.extras!.every((s) => newer.extras!.includes(s));
-  if (newer.name === 'read_source') return newer.lines![0] <= older.lines![0] && newer.lines![1] >= older.lines![1];
+  // Only a complete read is known to show every line it covers.
+  if (newer.name === 'read_source') return !newer.partial && newer.lines![0] <= older.lines![0] && newer.lines![1] >= older.lines![1];
   return true;
 }
 
@@ -190,7 +195,7 @@ export function applyContextBudget(
     });
     const collapse = (r: ReadInfo) => {
       const it = items[r.index] as Extract<CanonicalItem, { kind: 'tool_result' }>;
-      const line = tombstoneFor(r, it.content, argsByCall.get(it.callId) ?? {});
+      const line = tombstoneFor(r, it.content, argsByCall.get(it.callId) ?? {}).replace(/\s*[\r\n]+\s*/g, ' ');
       if (line.length >= it.content.length) return;
       estimate -= estimateTokens(it.content) - estimateTokens(line);
       it.content = line;
@@ -210,9 +215,10 @@ export function applyContextBudget(
       if (r.name === 'read_page') return changedAfter(r.pageId!);
       // A patch names its component; a later read with another hash shows a change made some other way.
       if (r.name === 'read_source') return changedAfter(r.definitionId!) || (!!r.hash && reads.some((n) => n.index > r.index && n.target === r.target && !!n.hash && n.hash !== r.hash));
-      // A measurement, an element's props and the project summary all describe the revision they were read at.
+      // A measurement, an element's props and the project summary all describe the revision they were read at:
+      // only a change that moved it (whether or not a tool made it) makes them stale.
       if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'read_project') return false;
-      return r.index < lastMutation || (r.revision !== undefined && opts.revision !== undefined && r.revision < opts.revision);
+      return r.revision !== undefined && opts.revision !== undefined ? r.revision < opts.revision : r.index < lastMutation;
     };
     if (estimate > available * HARD_LIMIT) {
       for (const r of reads) {
