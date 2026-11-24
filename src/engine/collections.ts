@@ -124,24 +124,24 @@ export function entryAddressesInUse(state: ProjectState): Map<string, string> {
   return out;
 }
 
-/** An entry answers at `route` again: an old address of its own kept there stops sending visitors on. */
-function claimOwnAddress(state: ProjectState, route: string, entryId: string) {
-  const key = route.toLowerCase();
+/** Entries answer at these addresses again (lowercased, by entry ID): an old address of each one's own kept there stops sending visitors on. */
+function claimOwnAddresses(state: ProjectState, routes: ReadonlyMap<string, string>) {
   const list = keptAddresses(state);
-  const rest = list.filter((r) => !(r?.entryId === entryId && typeof r.from === 'string' && r.from.toLowerCase() === key));
+  const rest = list.filter((r) => !(typeof r?.entryId === 'string' && typeof r.from === 'string' && routes.get(r.from.toLowerCase()) === r.entryId));
   if (rest.length !== list.length) setKeptAddresses(state, rest);
 }
 
 /**
- * Keeps `from`, an address a published entry has just left, working for old links and bookmarks: it sends visitors
- * on to wherever the entry is, now and after later moves. Only an address visitors reached that entry at when the
- * batch began (`atStart`), one an address can be, and one nothing else holds now.
+ * Whether `from`, an address an entry has just left, is one to keep working for it: an address visitors reached that
+ * entry at when the batch began (`atStart`), or reached an entry the batch has since removed (whose old addresses
+ * this one took over), whatever the entry's draft flag says in between. Without a batch to go by, an address the
+ * entry had while published. Never one an address cannot be, or one anything else holds now.
  */
-function keepEntryAddress(state: ProjectState, entryId: string, from: string, atStart: ReadonlyMap<string, string> | undefined, holder = routeIndex(state)) {
-  if (from === '/' || validateRoute(from)) return;
-  if (atStart && atStart.get(from.toLowerCase()) !== entryId) return;
-  if (holder(from)) return;
-  setKeptAddresses(state, [...keptAddresses(state), { from, entryId }]);
+function keepsAddress(state: ProjectState, entryId: string, from: string, published: boolean, atStart: ReadonlyMap<string, string> | undefined, holder: ReturnType<typeof routeIndex>): boolean {
+  if (from === '/' || validateRoute(from) || holder(from)) return false;
+  if (!atStart) return published;
+  const owner = atStart.get(from.toLowerCase());
+  return owner !== undefined && (owner === entryId || !findEntry(state, owner));
 }
 
 // ---------------------------------------------------------------------------
@@ -256,16 +256,20 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     const held = routeIndex(state);
     const taken = held(route, except);
     if (taken) fail(`${route} is already the address of ${taken.label}. Choose another address for the collection.`);
+    // Nor one of its own entries' addresses, which the collection would take from under it.
+    const under = Object.values(c.entries).find((e) => entryRoute(c, e).toLowerCase() === route.toLowerCase());
+    if (under) fail(`${route} is the address of the entry “${under.title}”. Choose another address for the collection.`);
     for (const e of Object.values(c.entries)) {
       const holder = held(`${route}${e.slug}/`, { ...except, entryIds: new Set([e.id]) });
       if (holder) fail(`Moving the collection to ${route} would give “${e.title}” the address ${route}${e.slug}/, which is ${holder.label}'s. Change that entry's slug first, or choose another address.`);
     }
     const left = Object.values(c.entries).map((e) => ({ e, from: entryRoute(c, e) }));
     c.settings.route = route;
-    for (const { e } of left) claimOwnAddress(state, entryRoute(c, e), e.id);
+    claimOwnAddresses(state, new Map(left.map(({ e }) => [entryRoute(c, e).toLowerCase(), e.id])));
     // Each published entry's address keeps working, sending visitors on to the entry's new one.
     const holder = routeIndex(state);
-    for (const { e, from } of left) if (e.draft === false) keepEntryAddress(state, e.id, from, atStart, holder);
+    const kept = left.filter(({ e, from }) => keepsAddress(state, e.id, from, e.draft === false, atStart, holder)).map(({ e, from }): SiteRedirect => ({ from, entryId: e.id }));
+    if (kept.length) setKeptAddresses(state, [...keptAddresses(state), ...kept]);
   }
   if (op.taxonomies !== undefined || op.fields !== undefined) {
     const taxonomies = op.taxonomies !== undefined ? normalizeTaxonomies(op.taxonomies) : c.settings.taxonomies;
@@ -306,9 +310,9 @@ function date(v: string, what: string): string {
 }
 
 /**
- * Applies the details an operation gives to an entry; anything it leaves out stays as it is. A published entry given
- * a new slug keeps its old address working (see keepEntryAddress): published before this change, since a draft's
- * address is one no visitor has.
+ * Applies the details an operation gives to an entry; anything it leaves out stays as it is. An entry given a new slug
+ * keeps its old address working when visitors reached it there as the batch began (see keepsAddress), since a
+ * draft's address is one no visitor has.
  */
 function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, op: EntryFields, atStart?: ReadonlyMap<string, string>) {
   const label = `“${op.title ?? entry.title}”`;
@@ -360,8 +364,8 @@ function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, o
       const from = entryRoute(c, entry);
       refuseTaken(state, `${c.settings.route}${slug}/`, { entryIds: new Set([entry.id]) }, 'slug');
       entry.slug = slug;
-      claimOwnAddress(state, entryRoute(c, entry), entry.id);
-      if (wasPublished) keepEntryAddress(state, entry.id, from, atStart);
+      claimOwnAddresses(state, new Map([[entryRoute(c, entry).toLowerCase(), entry.id]]));
+      if (keepsAddress(state, entry.id, from, wasPublished, atStart, routeIndex(state))) setKeptAddresses(state, [...keptAddresses(state), { from, entryId: entry.id }]);
     }
   }
   if (op.body !== undefined) entry.body = normalizeRichText(op.body ?? [], state, `${label} text`, undefined, { entries: true });
@@ -379,6 +383,8 @@ export function entryCreate(state: ProjectState, op: Op<'entry.create'>): OpResu
     entry.slug = explicitSlug(op.slug);
     refuseTaken(state, entryRoute(c, entry), { entryIds: new Set([id]) }, 'slug');
   } else entry.slug = autoSlug(state, c, title, id);
+  // An old address kept for this ID (a document edited by hand) is the entry's own again.
+  claimOwnAddresses(state, new Map([[entryRoute(c, entry).toLowerCase(), id]]));
   applyEntryFields(state, c, entry, { ...op, slug: undefined });
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder.push(id);
   return { collectionId: c.settings.id, entryId: id, slug: entry.slug, route: entryRoute(c, entry) };

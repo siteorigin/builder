@@ -169,6 +169,10 @@ const THUMB_SETTLE_MS = 400;
 /** Real web fonts are far smaller; a font file is read whole for the editor's samples. */
 const MAX_FONT_FILE = 32 * 1024 * 1024;
 
+
+/** The editor's identity attributes inside a tag, or its bridge: never in a built page. A page's own words can say the same
+ * names, escaped in its text, so only a start tag counts. */
+const EDITOR_MARKUP = /<[a-z][^<>]*\sdata-so-(?:ctx|node)=|siteorigin-bridge/i;
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -2093,7 +2097,7 @@ export class Controller {
       const file = join(out, p.route === '/' ? 'index.html' : join(p.route, 'index.html'));
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings };
       const html = await fs.readFile(file, 'utf8');
-      if (/data-so-(ctx|node)|siteorigin-bridge/.test(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings };
+      if (EDITOR_MARKUP.test(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings };
       const language = pageLanguageWarning(live, p, html);
       if (language) warnings.push(language);
     }
@@ -2101,13 +2105,13 @@ export class Controller {
     for (const { route } of siteEntries(live)) {
       const file = join(out, route, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings };
-      if (/data-so-(ctx|node)|siteorigin-bridge/.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings };
+      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings };
     }
     // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
     for (const { from } of liveRedirects(live)) {
       const file = join(out, from, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${from}, an old address that should send visitors on.`, warnings };
-      if (/data-so-(ctx|node)|siteorigin-bridge/.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings };
+      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings };
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
@@ -2139,7 +2143,8 @@ export class Controller {
     const relative = notFoundAddressWarning(notFound);
     if (relative) warnings.push(relative);
     const pages = live.site.pageOrder.length;
-    const exported = `${pages} page${pages === 1 ? '' : 's'}`;
+    const entries = siteEntries(live).length;
+    const exported = `${pages} page${pages === 1 ? '' : 's'}${entries ? ` and ${entries} collection entr${entries === 1 ? 'y' : 'ies'}` : ''}`;
     const problem = await this.publish(s, out, dest, format);
     if (problem) return { ok: false, message: problem, warnings };
     warnings.push(notFoundHostNote(basePath(state)));

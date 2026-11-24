@@ -40,6 +40,9 @@ function openFailedPage(pageId: string) {
 
 /** Select the element that holds a link to a draft, on the page or shared part it is in, so the link can be changed. */
 function openDraftLink(l: DraftLink) {
+  // A collection entry's text has no place in the inspector yet (the dialog offers no button for one).
+  if (l.owner.kind === 'entry') return;
+  const owner = l.owner as { kind: 'page' | 'shell'; id: string };
   const s = getState();
   const st = s.snapshot?.state;
   const tree = st && (l.owner.kind === 'shell' ? st.site.shell[l.owner.id as 'header' | 'footer'] : st.pages[l.owner.id]);
@@ -47,7 +50,7 @@ function openDraftLink(l: DraftLink) {
   if (l.owner.kind === 'shell') {
     if (!goToShellPart(l.owner.id)) return toast(`No page shows the shared ${l.owner.id}, so the link is not on any page.`, 'info');
   } else if (s.pageId !== l.owner.id || s.definitionMode) selectPage(l.owner.id);
-  setState({ modal: null, mode: 'edit', selection: { owner: l.owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true, definitionMode: null });
+  setState({ modal: null, mode: 'edit', selection: { owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true, definitionMode: null });
   setTimeout(() => openSection('content'), 50);
 }
 
@@ -627,9 +630,12 @@ export function ExportModal() {
                       return (
                         <li key={i}>
                           <span className="grow">{said}</span>
-                          <button className="btn btn-sm" disabled={!!busy} aria-label={`Open ${said} in the inspector`} aria-describedby="export-draft-links-summary" onClick={() => openDraftLink(l)}>
-                            Open
-                          </button>
+                          {/* A collection entry's text has no place in the inspector yet: the line names the entry. */}
+                          {l.owner.kind !== 'entry' && (
+                            <button className="btn btn-sm" disabled={!!busy} aria-label={`Open ${said} in the inspector`} aria-describedby="export-draft-links-summary" onClick={() => openDraftLink(l)}>
+                              Open
+                            </button>
+                          )}
                         </li>
                       );
                     })}

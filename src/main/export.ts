@@ -14,7 +14,7 @@ import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@en
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, draftTarget, netlifyFormClashes, publicationPlan, unlinkedButtons } from '@generator/checks';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries } from '@generator/index';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
@@ -618,8 +618,9 @@ export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */
 export function draftSourceNotes(state: ProjectState): string[] {
   const { drafts, draftLinks } = publicationPlan(state);
-  if (!drafts.length) return [];
-  const names = drafts.map((p) => p.title);
+  // Draft collection entries are kept the same way.
+  const names = [...drafts.map((p) => p.title), ...siteEntries(state).filter((e) => isDraftEntry(e.entry)).map((e) => e.entry.title)];
+  if (!names.length) return [];
   const notes = [
     `${names.length === 1 ? `The draft ${names[0]} is` : `The drafts ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} are`} kept in the project to edit in SiteOrigin Builder, and left out of its website build.`
   ];

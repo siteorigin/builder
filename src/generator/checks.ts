@@ -1071,8 +1071,8 @@ export function shellPageLinks(state: ProjectState, pageIds: string[]): ShellPag
 
 
 export interface SectionLinkIssue {
-  /** Where the link is: a page or the shared header or footer. */
-  owner: { kind: 'page' | 'shell'; id: string };
+  /** Where the link is: a page, the shared header or footer, or a collection entry's text. */
+  owner: { kind: 'page' | 'shell' | 'entry'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
@@ -1173,13 +1173,39 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       seen.add(id);
       out.push(issue);
     }
+  // An entry's text: its page has the layout's and the header and footer's sections, and none of a page's.
+  for (const { entry } of siteEntries(state)) {
+    const owner = { kind: 'entry' as const, id: entry.id };
+    entryTextLinks(entry.body).forEach(({ link, label }, i) => {
+      const key = `body:${i}`;
+      if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
+        if (!idsOf(link.target).has(link.anchor)) out.push({ owner, nodeId: '', key, label, inText: true, fragment: link.anchor, pageId: link.target });
+      } else if (link.type === 'anchor' && link.target) {
+        const fragment = link.target.replace(/^#/, '');
+        if (!entryIds.has(fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
+      }
+    });
+  }
+  return out;
+}
+
+/** The links in an entry's text, in order, each with its words. */
+function entryTextLinks(body: unknown): Array<{ link: LinkValue; label: string }> {
+  const out: Array<{ link: LinkValue; label: string }> = [];
+  const spans = (list: unknown) => {
+    for (const s of Array.isArray(list) ? (list as RichSpan[]) : []) if (s?.link && typeof s.link.type === 'string' && typeof s.link.target === 'string') out.push({ link: s.link, label: typeof s.text === 'string' ? s.text.trim() : '' });
+  };
+  for (const b of Array.isArray(body) ? body : []) {
+    if (isListBlock(b)) b.items.forEach(spans);
+    else spans((b as { spans?: unknown })?.spans);
+  }
   return out;
 }
 
 /** A link visitors would see on the published site that goes to a draft page. */
 export interface DraftLink {
-  /** Where the link is: a published page, or the shared header or footer shown on one. */
-  owner: { kind: 'page' | 'shell'; id: string };
+  /** Where the link is: a published page, the shared header or footer shown on one, or a published entry's text. */
+  owner: { kind: 'page' | 'shell' | 'entry'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
@@ -1282,6 +1308,22 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       seen.add(id);
       draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to });
     }
+  // A published entry's text: a link to a draft entry, a page link to a draft page, or a typed address of one.
+  const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
+  for (const { entry } of entries) {
+    if (draftEntryIds.has(entry.id)) continue;
+    for (const { link, label } of entryTextLinks(entry.body)) {
+      const to: (DraftTarget & { anchor?: string }) | null =
+        link.type === 'entry' && draftEntryIds.has(link.target)
+          ? { entryId: link.target }
+          : link.type === 'page' && draftIds.has(link.target)
+            ? { pageId: link.target, ...(link.anchor ? { anchor: link.anchor } : {}) }
+            : link.type === 'url'
+              ? draftAtAddress(state, link.target, withheld)
+              : null;
+      if (to) draftLinks.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, inText: true, ...to });
+    }
+  }
   return { published, drafts, draftLinks };
 }
 
@@ -1291,8 +1333,9 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
  * preview (/winter-stock-preview/)".
  */
 export function describeDraftLink(state: ProjectState, l: DraftLink): string {
-  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : state.pages[l.owner.id];
-  const place = l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : (state.pages[l.owner.id]?.title ?? 'A page');
+  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : l.owner.kind === 'page' ? state.pages[l.owner.id] : undefined;
+  const entry = l.owner.kind === 'entry' ? findEntry(state, l.owner.id) : undefined;
+  const place = l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[l.owner.id]?.title ?? 'A page');
   const node = tree?.nodes[l.nodeId];
   const where = node && node.kind === 'instance' ? `${place} · ${displayName(state, node)}` : place;
   const draft = draftTarget(state, l);

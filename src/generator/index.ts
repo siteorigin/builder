@@ -3050,7 +3050,7 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   const title = `${entry.title} · ${site.name}`;
   const description = entry.excerpt || site.description;
   const published = isArticleDate(entry.publishedAt) ? entry.publishedAt : undefined;
-  const updated = isArticleDate(entry.updatedAt) && entry.updatedAt !== published ? entry.updatedAt : undefined;
+  const updated = isArticleDate(entry.updatedAt) ? entry.updatedAt : undefined;
   const asset = (id: unknown) => (typeof id === 'string' && Object.hasOwn(state.assets.assets, id) && state.assets.assets[id].kind === 'image' ? state.assets.assets[id] : undefined);
   const featured = asset(entry.featuredImage);
   const head: string[] = [`\t<title>{${js(title)}}</title>`];

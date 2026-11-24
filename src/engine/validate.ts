@@ -398,13 +398,15 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       site: `card:${p.nodeId}`
     });
   for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
-    const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : (state.pages[i.owner.id]?.title ?? 'A page');
+    const entry = i.owner.kind === 'entry' ? findEntry(state, i.owner.id) : undefined;
+    const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[i.owner.id]?.title ?? 'A page');
     const what = i.label ? `the “${i.label}” link${i.inText ? ' in the text' : ''}` : `a link${i.inText ? ' in the text' : ''}`;
     const fix = i.inText ? 'Change the link in the text to a section the page has.' : 'Choose one of the page’s sections in the link’s Section list.';
     // Collection entries are named by how many there are: a blog can have hundreds. Their pages have no sections, so
     // the link has to name the page that has the section.
     const entries = i.entries ?? [];
-    const lacking = [...(i.pages ?? []).map((id) => state.pages[id].title), ...(entries.length === 1 ? [`the entry “${findEntry(state, entries[0])?.entry.title ?? entries[0]}”`] : entries.length ? [`${entries.length} collection entries`] : [])];
+    // An entry's own link is about its own page.
+    const lacking = entry && entries.length ? ['its page'] : [...(i.pages ?? []).map((id) => state.pages[id].title), ...(entries.length === 1 ? [`the entry “${findEntry(state, entries[0])?.entry.title ?? entries[0]}”`] : entries.length ? [`${entries.length} collection entries`] : [])];
     const onEntries = entries.length ? ' Entries have none of a page’s sections: point the link at the page that has the section.' : '';
     const message = i.pageId
       ? `${where}: ${what} goes to #${i.fragment} on ${state.pages[i.pageId].title}, but that page has no section with that ID. ${fix}`
@@ -413,7 +415,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     // Which link it is, and where it goes: a link in text by its text, since another link added before it renumbers it. The
     // pages missing the section are left out, so fixing one of them never makes the link look newly broken.
     const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
-    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
+    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
   // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
   // ones), and the pictures of a project component, which can only show images.
