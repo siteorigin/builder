@@ -91,7 +91,7 @@ function inspectLayout(pageId: string, width: number): Promise<unknown> {
 /**
  * Show components in isolated preview frames in the editor window, step by step (see ComponentPreviewStep), and give
  * back what each frame reported. `measure` adds checks and a time budget; `signal` stops waiting for the answer
- * (with no results), while the editor finishes the step it is on and drops the rest of a budgeted batch by itself.
+ * (with no results) and tells the editor to stop the batch, as running out of time does.
  */
 function previewComponents(steps: ComponentPreviewStep[], measure?: ComponentPreviewMeasure, signal?: AbortSignal): Promise<ComponentPreviewResult[]> {
   return new Promise((resolve, reject) => {
@@ -102,13 +102,17 @@ function previewComponents(steps: ComponentPreviewStep[], measure?: ComponentPre
       signal?.removeEventListener('abort', onAbort);
       pendingComponentPreviews.delete(requestId);
     };
+    // The editor is told, so it starts no more of the batch's steps.
+    const cancel = () => controller.send('component-preview:cancel', { requestId });
     const onAbort = () => {
       settle();
+      cancel();
       resolve([]);
     };
     const timer = setTimeout(
       () => {
         settle();
+        cancel();
         reject(new Error('The preview did not respond in time.'));
       },
       // A step may wait for its files (15s), its page (12s) and its measurement (8s); a budgeted batch starts none

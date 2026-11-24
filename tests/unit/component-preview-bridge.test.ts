@@ -182,7 +182,9 @@ describe('the bridge in an isolated component preview', () => {
     const plain = await run(body, { key: 'abcdefabcdefabcdef', mounted: true });
     expect(plain.report.checks).toBeUndefined();
     expect(plain.report.issues.map((i) => i.kind)).not.toContain('low-contrast');
-    const { report } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true }, { readability: true });
+    // Asked as the AI's component inspection asks: with the gaps too.
+    const { report } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true }, { readability: true, gaps: true });
+    expect(Array.isArray(report.gaps)).toBe(true);
     expect(report.checks?.contrast.checked).toBeGreaterThan(0);
     expect(report.issues.find((i) => i.kind === 'low-contrast')).toMatchObject({ desc: { ctx: 'preview:c1|preview', node: 'h' } });
     expect(report.issues.map((i) => i.kind)).not.toContain('heading-structure');
@@ -199,13 +201,13 @@ describe('the bridge in an isolated component preview', () => {
       tree: { rootIds: ['r'], nodes: { r: { id: 'r', kind: 'element', tag: 'div', children: ['h', 'row', 'p'] }, h: { id: 'h', kind: 'text' }, row: { id: 'row', kind: 'element', tag: 'div', children: ['btn'] }, btn: { id: 'btn', kind: 'text' }, p: { id: 'p', kind: 'text' } } }
     } as unknown as ComponentDefinition;
     const cases: InspectCase[] = [
-      { label: 'links set', variants: {}, props: {} },
-      { label: 'empty', variants: {}, props: {}, control: 'links set' }
+      { label: 'filled', variants: {}, props: {} },
+      { label: 'empty', variants: {}, props: {}, control: 'filled' }
     ];
     const findings = async (container: string, row: string) => {
       const results: ComponentPreviewResult[] = [];
       for (const links of [true, false]) {
-        const { report } = await run(card(container, row, links), { key: 'abcdefabcdefabcdef', mounted: true }, { gaps: true });
+        const { report } = await run(card(container, row, links), { key: 'abcdefabcdefabcdef', mounted: true }, { readability: true, gaps: true });
         // Measured at one width here; the digest reads it as both.
         results.push({ state: 'ready', width: 390, report }, { state: 'ready', width: 1280, report });
       }
@@ -218,4 +220,16 @@ describe('the bridge in an isolated component preview', () => {
     // The container's gap spaces them, whatever is shown.
     expect(await findings('display:flex;flex-direction:column;gap:16px', '')).toEqual([]);
   }, 40000);
+
+  it.skipIf(!browserInstalled)('measures gaps only from boxes a visitor sees in the flow, named by their list items (#362)', async () => {
+    const at = (node: string, items = '') => `data-so-ctx="preview:c1|preview" data-so-node="${node}"${items ? ` data-so-items="${items}"` : ''}`;
+    const body = `<main id="main"><div ${at('r')}><p ${at('a')} style="margin:0">A</p><p ${at('hidden')} style="margin:0;visibility:hidden">H</p><p ${at('b')} style="margin:0">B</p><span ${at('inline')}>I</span><div style="display:contents"><p ${at('c', 'i1')} style="margin:8px 0 0">C</p></div></div></main>`;
+    const { report } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true }, { gaps: true });
+    const pairs = (report.gaps as Array<{ a: { node: string; items: string }; b: { node: string; items: string }; gap: number }>).map((g) => [g.a.node, g.b.node, g.b.items, g.gap]);
+    // The hidden box keeps a and b apart and is never an end; the inline box is never an end; the wrapper is looked through.
+    expect(pairs).toEqual([]);
+    const plain = `<main id="main"><div ${at('r')}><p ${at('a')} style="margin:0">A</p><div style="display:contents"><p ${at('c', 'i1')} style="margin:8px 0 0">C</p></div></div></main>`;
+    const { report: second } = await run(plain, { key: 'abcdefabcdefabcdef', mounted: true }, { gaps: true });
+    expect(second.gaps).toEqual([{ a: { ctx: 'preview:c1|preview', node: 'a', items: '', n: 0, of: 1 }, b: { ctx: 'preview:c1|preview', node: 'c', items: 'i1', n: 0, of: 1 }, gap: 8 }]);
+  }, 30000);
 });

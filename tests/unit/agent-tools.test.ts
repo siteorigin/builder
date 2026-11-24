@@ -9,6 +9,8 @@ import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolDefinition } from '@agent/types';
 import { executeTool, FOCUSED_PAGE_OPERATIONS, PAGE_OPERATIONS, toolsForRun } from '@agent/tools';
+import { inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from '@agent/component-inspection';
+import { InspectionLog } from '@agent/report';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { checkProps, connectPendingLinks, newMacroMemory, runUpsert, upsertToolSchema, withStoredFields } from '@agent/macros';
 import { checkAuthority, type Authority } from '@agent/scope';
@@ -1505,6 +1507,11 @@ describe('context budget', () => {
       const r = applyContextBudget(items, optsWith(10000, { revision: 3 }));
       expect(r.tombstoned).toBe(1);
       expect(at(items, 'c1')).toBe('[Superseded inspect_component def_grid at rev 3. Inspect it again if you need it.]');
+      // A later check that measured less (its time ran out) never stands in for one that measured everything.
+      const retry: CanonicalItem[] = [...read('k1', { definitionId: 'def_grid' }, check('def_grid', 3), 'inspect_component'), ...read('k2', { definitionId: 'def_grid' }, check('def_grid', 3, { incomplete: true }), 'inspect_component'), ...filler('f1'), ...filler('f2')];
+      const retried = structuredClone(retry);
+      applyContextBudget(retry, optsWith(4000, { revision: 3 }));
+      expect(at(retry, 'k1')).toBe(at(retried, 'k1'));
       for (const id of ['c2', 'c3', 'c4', 'c5']) expect(at(items, id), id).toBe(at(kept, id));
       // Once the project moved on, every check made before is out of date.
       const moved = structuredClone(kept);
@@ -2547,7 +2554,7 @@ describe('a run limited to one page (#513)', () => {
 });
 
 describe('inspect_component (#362)', () => {
-  const ok = (step: ComponentPreviewStep, issues: unknown[] = []): ComponentPreviewResult => ({ state: 'ready', width: step.width, definitionId: 'x', bounds: null, text: '', report: { viewportWidth: step.width, issues, runtimeErrors: [], checks: { contrast: { checked: 3, failed: 0, unverified: 0 } } } });
+  const ok = (step: ComponentPreviewStep, issues: unknown[] = []): ComponentPreviewResult => ({ state: 'ready', width: step.width, definitionId: 'x', bounds: null, text: '', report: { viewportWidth: step.width, issues, runtimeErrors: [], checks: { contrast: { checked: 3, failed: 0, unverified: 0 } }, gaps: [] } });
   function host(state: ProjectState, measure?: (steps: ComponentPreviewStep[]) => Promise<ComponentPreviewResult[]>) {
     const applied: unknown[] = [];
     const sent: ComponentPreviewStep[][] = [];
@@ -2575,8 +2582,10 @@ describe('inspect_component (#362)', () => {
     expect(applied).toEqual([]);
     expect(JSON.stringify(state)).toBe(before);
     const steps = sent[0];
-    expect(steps.length % 2).toBe(0);
-    expect(steps.length).toBeLessThanOrEqual(16);
+    const target = resolveInspectTarget(state, { componentId: 'features.grid' });
+    if ('error' in target) throw new Error(target.error);
+    const cases = planComponentInspection(target);
+    expect(steps).toEqual(inspectionSteps(target, cases.slice(0, MAX_CASES)));
     expect(steps.map((st) => st.width).slice(0, 2)).toEqual([390, 1280]);
     expect(steps.every((st) => st.spec.componentId === 'features.grid' && st.spec.definitionId === undefined)).toBe(true);
     const content = out.content as { revision: number; summary: string; cases: string[]; definitionId: string };
@@ -2584,6 +2593,12 @@ describe('inspect_component (#362)', () => {
     expect(content.definitionId).toBe(catalogueComponent(state.site.themeId, 'features.grid')!.id);
     expect(content.summary).toMatch(new RegExp(`^${catalogueComponent(state.site.themeId, 'features.grid')!.name}: no problems found in \\d+ cases at phone \\(390px\\) and desktop \\(1280px\\) width\\.`));
     expect(content.cases[0]).toBe('defaults');
+    // A later window is measured from where the last one stopped.
+    if (cases.length > 2) {
+      const later = await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: cases.length - 1 }), h, 'c2');
+      expect(sent[1]).toEqual(inspectionSteps(target, cases.slice(cases.length - 1)));
+      expect((later.content as { offset: number; cases: string[] }).cases).toEqual([cases.at(-1)!.label]);
+    }
   });
 
   it('never reports a check that could not run as a clean component', async () => {
@@ -2602,19 +2617,57 @@ describe('inspect_component (#362)', () => {
     const fine = host(state, async (steps) => steps.map((st) => ok(st)));
     expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: 99 }), fine.h, 'c5')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT', message: expect.stringContaining('past the last') } });
     expect(await executeTool('inspect_component', JSON.stringify({}), fine.h, 'c6')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT' } });
+    const target = resolveInspectTarget(state, { componentId: 'features.grid' });
+    if ('error' in target) throw new Error(target.error);
+    const total = planComponentInspection(target).length;
+    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: total }), fine.h, 'c7')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT' } });
+    const nothing = host(state, async () => null as unknown as ComponentPreviewResult[]);
+    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), nothing.h, 'c8')).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
   });
 
-  it('gives the model each finding with where it is, and the run the stop signal (#362)', async () => {
-    let signal: AbortSignal | undefined;
+  it('gives the model each finding with where it is, the card a row for it, and stops with the run (#362)', async () => {
+    const signals: AbortSignal[] = [];
+    let release = () => {};
     const inspectComponent = async (steps: ComponentPreviewStep[], s?: AbortSignal) => {
-      signal = s;
+      signals.push(s!);
+      // The second check is still measuring when the run is stopped.
+      if (signals.length === 2) await new Promise<void>((done) => (release = done));
       return steps.map((st, i) => ok(st, i === 0 ? [{ kind: 'text-overflow', desc: { ctx: 'preview:x|preview', node: 'nope', items: '' }, text: 'Long', message: 'Text is wider than its box.' }] : []));
     };
-    const { adapter, run } = await setup([() => [call('i1', 'inspect_component', { componentId: 'features.grid' })], () => finish('Checked.')], {}, 'business', undefined, { inspectComponent });
-    await run('Check the features grid');
-    const result = lastResult(adapter.requests[1]);
-    expect(result.findings).toEqual([{ kind: 'text-overflow', message: 'Text is wider than its box.', text: 'Long', in: ['defaults: phone'] }]);
-    expect(signal).toBeInstanceOf(AbortSignal);
+    const env = await setup([() => [call('i1', 'inspect_component', { componentId: 'features.grid' })], () => finish('Checked.'), () => [call('i2', 'inspect_component', { componentId: 'features.grid' })], () => finish('Unreachable.')], {}, 'business', undefined, { inspectComponent });
+    const { result } = await env.run('Check the features grid');
+    const read = lastResult(env.adapter.requests[1]);
+    expect(read.findings).toEqual([{ kind: 'text-overflow', message: 'Text is wider than its box.', text: 'Long', in: ['defaults: phone'] }]);
+    // Nothing changed, and the check found a problem: the card says so rather than reading as a clean result.
+    expect(result?.checks).toEqual([{ status: 'issue', text: expect.stringMatching(/ has 1 problem in its variants or with long or empty content\.$/) }]);
+    // The run's own signal: stopping it stops waiting for the measurement.
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[0].aborted).toBe(false);
+    void env.run('Check it again');
+    while (signals.length < 2) await new Promise((r) => setTimeout(r, 5));
+    expect(signals[1]).not.toBe(signals[0]);
+    expect(signals[1].aborted).toBe(false);
+    release();
+  });
+
+  it('lists each component check on the card: problems, part not run, none found, or before later changes', () => {
+    const log = new InspectionLog();
+    const state = createStarterState('blank', 'Inspect', false);
+    log.recordComponent('a', true, { name: 'Card', findings: [{}, {}], omittedFindings: 1 });
+    log.recordComponent('b', true, { name: 'Hero', incomplete: true });
+    log.recordComponent('c', true, { name: 'Quote' });
+    log.recordComponent('d', false, { error: 'VALIDATION_FAILED' });
+    expect(log.checks(state)).toEqual([
+      { status: 'issue', text: 'Card has 3 problems in its variants or with long or empty content.' },
+      { status: 'unverified', text: 'Only part of Hero could be checked in its variants and with long and empty content.' },
+      { status: 'pass', text: 'Quote has no layout or readability problems in its variants or with long and empty content.' },
+      { status: 'unverified', text: "Couldn't check a component in its variants and with long and empty content." }
+    ]);
+    // An edit of one page leaves them; one that reaches every page (a component's design) does not.
+    log.invalidate(new Set(['pg_a']));
+    expect(log.checks(state)[2].status).toBe('pass');
+    log.invalidate('all');
+    expect(log.checks(state)[2]).toEqual({ status: 'unverified', text: 'Quote has no layout or readability problems in its variants or with long and empty content, before later changes.' });
   });
 
   it('is offered where a component’s design can change, never to a page run or a read-only question', () => {

@@ -259,19 +259,35 @@ export function componentFrame(): ComponentFrame {
   };
 }
 
+/** Batches still running, by request: each stops at once (its frames removed) when the main process cancels it. */
+const runningBatches = new Map<string, () => void>();
+
+/** The main process stopped waiting for a batch (the request was stopped, or timed out): start no more of its steps. */
+export function cancelComponentPreviews(requestId: string) {
+  runningBatches.get(requestId)?.();
+}
+
 /**
  * Show components in isolated preview frames step by step, as the main process asked, and answer with what each
  * frame reported. Every frame is removed afterwards. With `measure.budgetMs`, no step starts once that has passed:
- * the answer then ends with the last step started.
+ * the answer then ends with the last step started. A batch also stops when it is cancelled, or when the project it
+ * was asked for is no longer the one open.
  */
 export async function runComponentPreviews(req: { requestId: string; steps: ComponentPreviewStep[]; measure?: ComponentPreviewMeasure }) {
   const frames = new Map<number, ComponentFrame>();
   const results: ComponentPreviewResult[] = [];
   const measure = req.measure && typeof req.measure === 'object' ? req.measure : undefined;
   const until = Number.isFinite(measure?.budgetMs) ? Date.now() + Math.max(0, measure!.budgetMs!) : Infinity;
+  const opening = getState().snapshot?.workspaceKey;
+  let cancelled = false;
+  runningBatches.set(req.requestId, () => {
+    cancelled = true;
+    // A step under way ends with an error rather than finishing for no one.
+    for (const f of frames.values()) f.dispose();
+  });
   try {
     for (const step of (Array.isArray(req.steps) ? req.steps : []).slice(0, 50)) {
-      if (Date.now() > until) break;
+      if (cancelled || Date.now() > until || getState().snapshot?.workspaceKey !== opening) break;
       const n = Number.isInteger(step?.frame) && step.frame! >= 0 && step.frame! < 4 ? step.frame! : 0;
       const width = Number.isFinite(step?.width) ? Math.min(4000, Math.max(200, Math.round(step.width))) : 1280;
       let f = frames.get(n);
@@ -280,6 +296,7 @@ export async function runComponentPreviews(req: { requestId: string; steps: Comp
       results.push(await f.update(step.spec, width, measure).catch((e: unknown): ComponentPreviewResult => ({ state: 'error', error: `The component preview failed: ${e instanceof Error ? e.message : String(e)}`, width })));
     }
   } finally {
+    runningBatches.delete(req.requestId);
     for (const f of frames.values()) f.dispose();
   }
   api.componentPreviewResult(req.requestId, results);

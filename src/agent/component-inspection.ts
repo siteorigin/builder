@@ -10,7 +10,7 @@ import { conditionRef, isBinding, isBindingRef, isComparison } from '@shared/typ
 import { axesOf } from '@shared/variants';
 import { catalogueComponent } from '@catalogue/index';
 import { defaultProps } from '@engine/install';
-import { findParent, getTree } from '@engine/tree';
+import { enclosingRepeatProp, findParent, getTree } from '@engine/tree';
 
 /** The widths a component is measured at, as inspect_layout names them. */
 export const INSPECT_WIDTHS = { phone: 390, desktop: 1280 } as const;
@@ -68,6 +68,9 @@ export interface InspectTarget {
   notes: string[];
 }
 
+/** A code component's markup says nothing the sweep can read about which text is optional. */
+const codeNote = (def: ComponentDefinition) => (def.kind === 'code' ? ['A code component does not say which of its text is optional, so only its links were left empty.'] : []);
+
 /** The component named by exactly one of a definition ID, a theme component ID, or a placement (owner and nodeId). */
 export function resolveInspectTarget(state: ProjectState, a: InspectArgs): InspectTarget | { error: string } {
   const named = [a.definitionId !== undefined, a.componentId !== undefined, a.owner !== undefined || a.nodeId !== undefined].filter(Boolean).length;
@@ -75,7 +78,7 @@ export function resolveInspectTarget(state: ProjectState, a: InspectArgs): Inspe
   if (a.definitionId !== undefined) {
     const def = own(state.components, a.definitionId);
     if (!def) return { error: `The project has no component "${a.definitionId}". read_project with sections ["components"] lists them.` };
-    return { def, select: { definitionId: def.id }, values: defaultProps(def), variants: {}, notes: [] };
+    return { def, select: { definitionId: def.id }, values: defaultProps(def), variants: {}, notes: codeNote(def) };
   }
   if (a.componentId !== undefined) {
     const source = catalogueComponent(state.site.themeId, a.componentId);
@@ -83,7 +86,7 @@ export function resolveInspectTarget(state: ProjectState, a: InspectArgs): Inspe
     // The project's copy, with any changes made to it, when it has one.
     const installed = own(state.components, source.id);
     const def = installed ?? source;
-    return { def, select: installed ? { definitionId: installed.id } : { componentId: a.componentId }, values: defaultProps(def), variants: {}, notes: [] };
+    return { def, select: installed ? { definitionId: installed.id } : { componentId: a.componentId }, values: defaultProps(def), variants: {}, notes: codeNote(def) };
   }
   if (!a.owner || !a.nodeId) return { error: 'A placement needs both owner and nodeId.' };
   let node: GraphNode | undefined;
@@ -112,7 +115,11 @@ export function resolveInspectTarget(state: ProjectState, a: InspectArgs): Inspe
     else if (a && isBindingRef(v)) bound.push(`the ${a.label} variant`);
   }
   const notes = bound.length ? [`Bound to its surroundings, so shown with the default: ${bound.join(', ')}.`] : [];
-  return { def, select: { definitionId: def.id }, placement: { owner: a.owner, nodeId: a.nodeId }, values, variants, notes };
+  // The preview shows a component's own content and variants; what a placement adds around them is not in it.
+  const slotted = Object.values(node.slots ?? {}).some((ids) => Array.isArray(ids) && ids.length);
+  const styled = Object.keys(node.overrides ?? {}).length || Object.keys(node.itemOverrides ?? {}).length || Object.keys(node.styles ?? {}).length;
+  if (slotted || styled) notes.push(`Shown without ${[slotted ? 'what is placed in its slots' : '', styled ? 'its own style changes' : ''].filter(Boolean).join(' or ')}; inspect_layout measures it on its page.`);
+  return { def, select: { definitionId: def.id }, placement: { owner: a.owner, nodeId: a.nodeId }, values, variants, notes: [...notes, ...codeNote(def)] };
 }
 
 /** One combination of variant options and content measured at every width. */
@@ -142,23 +149,36 @@ function eachScalar(def: ComponentDefinition, values: Record<string, unknown>, f
 }
 
 const isEmptyLink = (v: unknown) => !isRecord(v) || v.type === 'none' || v.type === undefined || !String(v.target ?? '').trim();
+const isEmptyText = (v: unknown) => (typeof v === 'string' ? !v.trim() : Array.isArray(v) ? !v.length : v === undefined || v === null);
+
+/** Text a visitor never reads: an address, a key or a name forms send answers under. Long text there breaks the component instead of testing it. */
+const MACHINE_LABEL = /\b(url|web address|video address|endpoint|access key|api key|id|slug|anchor|embed|field name|form name)\b/i;
+const MACHINE_VALUE = /^(https?:\/\/|mailto:|tel:|\/|#)/i;
+const isMachineText = (schema: ScalarPropSchema, value: unknown) => MACHINE_LABEL.test(schema.label ?? '') || (typeof value === 'string' && MACHINE_VALUE.test(value.trim()));
+
+/** Where a field is, as optionalContent names it: "name", "name.field", or "list[]field" for a list item's field. */
+const fieldKey = (w: { prop: string; field?: string; list?: boolean }) => (w.list ? `${w.prop}[]${w.field}` : w.field ? `${w.prop}.${w.field}` : w.prop);
 
 /**
- * The content a design shows only when it is there (a `when` or `unless` testing that a value is present): property
- * names, object fields ("name.field") and list item fields ("[]field").
+ * The content a design shows only when it is there (a `when` or `unless` testing that a value is present, or that it
+ * is not the empty string), keyed as fieldKey names it. A list item's field is named with the list that repeats it.
  */
 function optionalContent(def: ComponentDefinition): Set<string> {
   const out = new Set<string>();
-  const add = (c: Condition | undefined) => {
-    if (!c || isComparison(c)) return;
+  const add = (nodeId: string, c: Condition | undefined, test: 'when' | 'unless') => {
+    if (!c) return;
+    // A comparison with the empty string tests presence too: `when` it is not empty, `unless` it is.
+    if (isComparison(c) && !(test === 'when' ? 'ne' in c && c.ne === '' : 'eq' in c && c.eq === '')) return;
     const ref = conditionRef(c);
     if (!ref || !isBinding(ref)) return;
-    if ('$item' in ref) out.add(`[]${ref.$item}`);
-    else out.add(ref.field ? `${ref.$prop}.${ref.field}` : ref.$prop);
+    if ('$item' in ref) {
+      const list = enclosingRepeatProp(def, nodeId);
+      if (list) out.add(`${list}[]${ref.$item}`);
+    } else out.add(ref.field ? `${ref.$prop}.${ref.field}` : ref.$prop);
   };
   for (const n of Object.values(def.tree?.nodes ?? {})) {
-    add(n.when);
-    add(n.unless);
+    add(n.id, n.when, 'when');
+    add(n.id, n.unless, 'unless');
   }
   return out;
 }
@@ -171,87 +191,97 @@ function emptied(schema: ScalarPropSchema): unknown {
   return undefined;
 }
 
-/** `text` cut to a field's length limit. */
-const longFor = (schema: ScalarPropSchema) => (schema.type === 'string' && schema.maxLength !== undefined ? LONG_TEXT.slice(0, Math.max(1, schema.maxLength)) : LONG_TEXT);
+const cutTo = (schema: ScalarPropSchema, text: string) => (schema.type === 'string' && schema.maxLength !== undefined ? text.slice(0, Math.max(1, schema.maxLength)) : text);
+const SAMPLE_TEXT = 'Sample text';
 
 /**
- * Every case to measure, in the order they are measured: the starting point, the stress cases (links shown and
- * then left empty with the optional text, long text, one and five list items), and each other option of every
- * variant axis on its own. Cases that would show the same thing are measured once, under both names.
+ * Every empty link given somewhere to go and every empty piece of text a short sample, so that what a design shows
+ * only with content (a button needs a label and a destination) is shown.
+ */
+function fill(def: ComponentDefinition, values: Record<string, unknown>): void {
+  eachScalar(def, values, (s, v, set) => {
+    if (s.type === 'link') {
+      if (isEmptyLink(v)) set({ ...SAMPLE_LINK });
+    } else if ((s.type === 'string' || s.type === 'richtext') && isEmptyText(v) && !isMachineText(s, v)) set(s.type === 'string' ? cutTo(s, SAMPLE_TEXT) : [{ type: 'p', spans: [{ text: `${SAMPLE_TEXT}.` }] }]);
+  });
+}
+
+/**
+ * Every case to measure, in the order they are measured: the starting point; the stress cases, all from the
+ * starting content with every link set and empty text filled (so what shows only with content is measured too):
+ * that filled content, then links and optional text left empty, long text, one and five list items; and each other
+ * option of every variant axis on its own. Cases that would show the same thing are measured once, under both names.
  */
 export function planComponentInspection(target: InspectTarget): InspectCase[] {
   const { def } = target;
-  const base = target.values;
   const cases: Array<InspectCase & { controlOf?: InspectCase }> = [];
+  const byKey = new Map<string, InspectCase & { controlOf?: InspectCase }>();
   /** The case kept: `c`, or the one already planned that shows the same thing, now also named for `c`. */
   const add = (c: InspectCase & { controlOf?: InspectCase }) => {
     const key = JSON.stringify([c.variants, c.props]);
-    const same = cases.find((x) => JSON.stringify([x.variants, x.props]) === key);
+    const same = byKey.get(key);
     if (!same) {
       cases.push(c);
+      byKey.set(key, c);
       return c;
     }
-    same.label = `${same.label} + ${c.label}`;
+    if (!same.label.split(' + ').includes(c.label)) same.label = `${same.label} + ${c.label}`;
     if (c.controlOf && c.controlOf !== same) same.controlOf ??= c.controlOf;
     return same;
   };
-  const start = add({ label: target.placement ? 'as placed' : 'defaults', variants: { ...target.variants }, props: clone(base) });
+  add({ label: target.placement ? 'as placed' : 'defaults', variants: { ...target.variants }, props: clone(target.values) });
 
-  // Links shown, then links and optional text left empty: what disappears must not take the spacing with it.
+  // Every link set and empty text filled, then links and optional text left empty: what disappears must not take
+  // the spacing with it.
+  const shown = clone(target.values);
+  fill(def, shown);
+  const filled = add({ label: 'filled', variants: { ...target.variants }, props: shown });
   const optional = optionalContent(def);
-  let links = 0;
-  let empties = 0;
-  const shown = clone(base);
-  eachScalar(def, shown, (s, v, set) => {
-    if (s.type !== 'link') return;
-    links++;
-    if (isEmptyLink(v)) set({ ...SAMPLE_LINK });
-  });
   const empty = clone(shown);
+  let empties = 0;
   eachScalar(def, empty, (s, v, set, w) => {
-    const key = w.list ? `[]${w.field}` : w.field ? `${w.prop}.${w.field}` : w.prop;
-    if (s.type !== 'link' && !optional.has(key)) return;
+    if (s.type !== 'link' && !optional.has(fieldKey(w))) return;
     const e = emptied(s);
     if (e === undefined || JSON.stringify(e) === JSON.stringify(v)) return;
     set(e);
     empties++;
   });
-  if (empties) {
-    const control = links ? add({ label: 'links set', variants: { ...target.variants }, props: shown }) : start;
-    add({ label: 'empty', variants: { ...target.variants }, props: empty, controlOf: control });
-  }
+  if (empties) add({ label: 'empty', variants: { ...target.variants }, props: empty, controlOf: filled });
 
-  // Long text everywhere text goes.
-  const long = clone(base);
+  // Long text everywhere a visitor reads text.
+  const long = clone(shown);
   let texts = 0;
-  eachScalar(def, long, (s, _v, set) => {
-    if (s.type === 'string') set(longFor(s));
-    else if (s.type === 'richtext') set([{ type: 'p', spans: [{ text: LONG_TEXT }] }]);
-    else return;
+  eachScalar(def, long, (s, v, set) => {
+    if ((s.type !== 'string' && s.type !== 'richtext') || isMachineText(s, v)) return;
+    set(s.type === 'string' ? cutTo(s, LONG_TEXT) : [{ type: 'p', spans: [{ text: LONG_TEXT }] }]);
     texts++;
   });
   if (texts) add({ label: 'long text', variants: { ...target.variants }, props: long });
 
-  // One and five items in every list an author fills, within its limits.
+  // One and five items in every list an author fills, within its limits, each with content enough to show.
   for (const count of ITEM_COUNTS) {
-    const props = clone(base);
-    let changed = false;
+    const props = clone(shown);
+    const counts = new Set<number>();
     for (const [name, schema] of Object.entries(def.properties)) {
       if (schema.type !== 'list' || schema.feed) continue;
       const items = Array.isArray(props[name]) ? (props[name] as ListItem[]) : [];
       const n = Math.min(schema.max ?? Infinity, Math.max(schema.min ?? 0, count));
       if (n === items.length) continue;
       // Copies of the items there are, or items of default values when there are none; given IDs of their own.
-      props[name] = Array.from({ length: n }, (_, i) => ({ ...(items.length ? clone(items[i % items.length]) : {}), id: `sweep${i + 1}` }));
-      changed = true;
+      const blank = Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, clone(f.default)]));
+      props[name] = Array.from({ length: n }, (_, i) => ({ ...(items.length ? clone(items[i % items.length]) : clone(blank)), id: `sweep${i + 1}` }));
+      counts.add(n);
     }
-    if (changed) add({ label: count === 1 ? '1 item' : `${count} items`, variants: { ...target.variants }, props });
+    if (!counts.size) continue;
+    fill(def, props);
+    const n = counts.size === 1 ? [...counts][0] : count;
+    add({ label: `${n} item${n === 1 ? '' : 's'}`, variants: { ...target.variants }, props });
   }
 
-  // Each other option of each axis, the rest as they start.
+  // Each other option of each axis, the rest as they start, with the content filled.
   for (const [axis, a] of axesOf(def)) {
     const current = target.variants[axis] ?? a.default;
-    for (const option of Object.keys(a.options)) if (option !== current) add({ label: `${axis}=${option}`, variants: { ...target.variants, [axis]: option }, props: clone(base) });
+    for (const option of Object.keys(a.options)) if (option !== current) add({ label: `${axis}=${option}`, variants: { ...target.variants, [axis]: option }, props: shown });
   }
   // Named once every merge is done.
   return cases.map(({ controlOf, ...c }) => (controlOf ? { ...c, control: controlOf.label } : c));
@@ -313,12 +343,13 @@ export function componentLocation(def: ComponentDefinition, desc: Desc | undefin
 
 /**
  * Two stacked elements one after the other and the space between them, as the bridge reports them (`gaps`). Each is
- * named by where it rendered and which of the elements rendered there it is (`n` of `of`, in document order), since
- * list items take new IDs in every preview.
+ * named by where it rendered, the list items it is in (the same in two cases planned from the same content), and
+ * which of the elements rendered there it is (`n` of `of`, in document order).
  */
 interface GapEnd {
   ctx: string;
   node: string;
+  items: string;
   n: number;
   of: number;
 }
@@ -344,25 +375,29 @@ export interface ComponentDigest {
   content: Record<string, unknown>;
 }
 
-const cut = (s: unknown) => {
+const cut = (s: unknown, max = MAX_TEXT) => {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
-  return t.length > MAX_TEXT ? `${t.slice(0, MAX_TEXT - 1)}…` : t;
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
-const locKey = (l: ComponentLocation | undefined) => (l ? `${l.nodeId}/${l.partId ?? ''}` : '');
+/** An element measured, as the same element in every case: where it rendered, not which list item it showed. */
+const descKey = (d: Desc | undefined) => (d && typeof d.ctx === 'string' && typeof d.node === 'string' ? `${d.ctx}|${d.node}${d.inside ? '|inside' : ''}` : '');
 
-const endKey = (e: GapEnd) => `${e.ctx}\u0000${e.node}\u0000${e.n}`;
-const baseKey = (e: GapEnd) => `${e.ctx}\u0000${e.node}`;
+const endKey = (e: GapEnd) => `${e.ctx}\u0000${e.node}\u0000${e.items}\u0000${e.n}`;
+const baseKey = (e: GapEnd) => `${e.ctx}\u0000${e.node}\u0000${e.items}`;
 
+/** The stacked gaps a measurement reported, or null when it has none to compare (not asked for, or cut short). */
 const gapsOf = (r: ComponentPreviewResult | undefined): Gap[] | null => {
-  const g = (r?.report as { gaps?: unknown } | undefined)?.gaps;
-  const end = (e: unknown): e is GapEnd => isRecord(e) && typeof e.ctx === 'string' && typeof e.node === 'string' && Number.isInteger(e.n) && Number.isInteger(e.of);
+  const report = r?.report as { gaps?: unknown; gapsIncomplete?: unknown } | undefined;
+  if (report?.gapsIncomplete) return null;
+  const g = report?.gaps;
+  const end = (e: unknown): e is GapEnd => isRecord(e) && typeof e.ctx === 'string' && typeof e.node === 'string' && typeof e.items === 'string' && Number.isInteger(e.n) && Number.isInteger(e.of);
   return Array.isArray(g) ? (g as Gap[]).filter((x) => isRecord(x) && end(x.a) && end(x.b) && Number.isFinite(x.gap)) : null;
 };
 
 /**
  * Elements that touch in `empty` but had space between them in `control`, where whatever stood between them has gone:
  * spacing carried by the content that was left empty. An element rendered a different number of times in the two
- * (a repeated row, one of them gone) is skipped, since its position no longer says which one it is.
+ * (a repeated row outside a list, one of them gone) is skipped, since its position no longer says which one it is.
  */
 function collapsedGaps(control: Gap[], empty: Gap[]): Array<{ a: GapEnd; b: GapEnd; before: number; after: number }> {
   const next = new Map(control.map((g) => [endKey(g.a), g]));
@@ -391,22 +426,34 @@ function collapsedGaps(control: Gap[], empty: Gap[]): Array<{ a: GapEnd; b: GapE
   return out;
 }
 
+/** Where a sweep cut short goes on from: never between an empty case and the case it is compared with. */
+export function resumeAt(cases: InspectCase[], index: number): number {
+  let i = index;
+  while (i > 0 && i < cases.length && (cases[i].control === cases[i - 1].label || cases[i - 1].control === cases[i].label)) i--;
+  return i;
+}
+
 /**
  * What the measurements of `cases` found: each defect once, with the cases and widths it showed in, the
  * measurements that failed, and what is left to measure. A component with nothing found gets a one-line summary.
- * `results` answer the steps of inspectionSteps in order; a short list means the rest ran out of time.
+ * `results` answer the steps of inspectionSteps in order; a short list means the rest ran out of time. `all` is the
+ * whole plan the cases are a window of, from `window.offset`.
  */
-export function digestComponentInspection(target: InspectTarget, cases: InspectCase[], results: ComponentPreviewResult[], window: { offset: number; total: number }): ComponentDigest {
+export function digestComponentInspection(target: InspectTarget, cases: InspectCase[], results: ComponentPreviewResult[], window: { offset: number; total: number; all?: InspectCase[] }): ComponentDigest {
   const { def } = target;
   const groups = new Map<string, ComponentFinding & { seen: Map<string, Set<Viewport>> }>();
-  const failures = new Map<string, Map<string, Set<Viewport>>>();
-  const runtime = new Map<string, Map<string, Set<Viewport>>>();
+  const failures = new Map<string, { error: string; seen: Map<string, Set<Viewport>> }>();
+  const runtime = new Map<string, { error: string; seen: Map<string, Set<Viewport>> }>();
   const note = (into: Map<string, Set<Viewport>>, label: string, v: Viewport) => {
     if (!into.has(label)) into.set(label, new Set());
     into.get(label)!.add(v);
   };
+  const noteIn = (into: Map<string, { error: string; seen: Map<string, Set<Viewport>> }>, error: string, label: string, v: Viewport) => {
+    if (!into.has(error)) into.set(error, { error: cut(error, 300), seen: new Map() });
+    note(into.get(error)!.seen, label, v);
+  };
   const where = (seen: Map<string, Set<Viewport>>) => [...seen].map(([label, vs]) => `${label}: ${VIEWPORTS.filter((v) => vs.has(v)).join(', ')}`);
-  const totals = { checked: 0, failed: 0, unverified: 0, incomplete: false };
+  const totals = { unverified: 0, incomplete: false };
   let measured = 0;
   let reached = 0;
   const steps = cases.length * VIEWPORTS.length;
@@ -425,27 +472,28 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
     if (!r) continue;
     reached++;
     const report = r.report as { issues?: unknown; checks?: Record<string, { checked?: number; failed?: number; unverified?: number; incomplete?: boolean }>; runtimeErrors?: unknown; error?: unknown } | undefined;
-    if (r.state !== 'ready' || !report || typeof report !== 'object' || report.error || !Array.isArray(report.issues)) {
-      const why = cut(r.error ?? report?.error ?? 'The component could not be measured.');
-      if (!failures.has(why)) failures.set(why, new Map());
-      note(failures.get(why)!, c.label, v);
+    // Without its readability counts a measurement did not run every check: it is never read as a clean one.
+    const why = r.state !== 'ready' ? (r.error ?? 'The component could not be measured.') : !report || typeof report !== 'object' ? 'The component could not be measured.' : report.error ? report.error : !Array.isArray(report.issues) || !isRecord(report.checks) ? 'The measurement did not run every check.' : null;
+    if (why) {
+      noteIn(failures, String(why), c.label, v);
       continue;
     }
     measured++;
     gaps.set(`${c.label}\u0000${v}`, gapsOf(r));
-    for (const check of Object.values(report.checks ?? {})) {
-      totals.checked += Number(check?.checked) || 0;
-      totals.failed += Number(check?.failed) || 0;
+    for (const check of Object.values(report!.checks ?? {})) {
       totals.unverified += Number(check?.unverified) || 0;
       if (check?.incomplete) totals.incomplete = true;
     }
-    for (const issue of report.issues as Array<{ kind?: unknown; message?: unknown; text?: unknown; desc?: Desc; with?: { desc?: Desc; text?: unknown } }>) {
+    for (const issue of report!.issues as Array<{ kind?: unknown; message?: unknown; text?: unknown; desc?: Desc; with?: { desc?: Desc; text?: unknown } }>) {
       if (!issue || !KINDS.has(String(issue.kind))) continue;
       const kind = String(issue.kind);
       const at = componentLocation(def, issue.desc);
       const other = issue.with && typeof issue.with === 'object' ? { at: componentLocation(def, issue.with.desc), text: issue.with.text } : undefined;
-      // Unaddressed markup is told apart by what it says; the design's own elements by where they are.
-      const key = [kind, locKey(at), at || !issue.desc ? '' : cut(issue.text).slice(0, 30), other ? locKey(other.at) : ''].join('\u0000');
+      // The same element in every case, by where it rendered (or what it says, for markup with no address); an
+      // overlap is one finding whichever of its two boxes the bridge named first.
+      const self = descKey(issue.desc) || `text:${cut(issue.text, 30)}`;
+      const partner = other ? descKey(issue.with!.desc) || `text:${cut(other.text, 30)}` : '';
+      const key = [kind, ...(kind === 'overlap' ? [self, partner].sort() : [self, partner])].join('\u0000');
       record(
         {
           kind,
@@ -459,71 +507,86 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
         key
       );
     }
-    for (const err of Array.isArray(report.runtimeErrors) ? report.runtimeErrors : []) {
-      const msg = cut(err);
-      if (!runtime.has(msg)) runtime.set(msg, new Map());
-      note(runtime.get(msg)!, c.label, v);
-    }
+    for (const err of Array.isArray(report!.runtimeErrors) ? report!.runtimeErrors : []) noteIn(runtime, String(err), c.label, v);
   }
 
   // Spacing that went with content left empty, against the same case with the content shown.
+  const unchecked: string[] = [];
   for (const c of cases) {
     if (!c.control) continue;
     for (const v of VIEWPORTS) {
-      const control = gaps.get(`${c.control}\u0000${v}`);
       const empty = gaps.get(`${c.label}\u0000${v}`);
-      if (!control || !empty) continue;
+      if (empty === undefined) continue;
+      const control = gaps.get(`${c.control}\u0000${v}`);
+      if (!control || !empty) {
+        unchecked.push(v);
+        continue;
+      }
       for (const hit of collapsedGaps(control, empty)) {
         const at = componentLocation(def, hit.a);
         const other = componentLocation(def, hit.b);
         record(
           {
             kind: 'spacing-collapse',
-            message: `With the links and optional text empty, these two touch (${hit.after}px apart); with them shown there was at least ${hit.before}px of space between. Space them with the gap of their container, not with the content that can be empty.`,
+            message: `With the links and optional text empty, these two touch (${hit.after}px apart); with them shown there was at least ${hit.before}px between them. If they should not touch, space them with their container's gap rather than with the content that can be empty.`,
             ...(at ? { at } : {}),
             with: other ? { at: other } : {}
           },
           c.label,
           v,
-          ['spacing-collapse', locKey(at), locKey(other), at ? '' : `${hit.a.node}`].join('\u0000')
+          ['spacing-collapse', `${hit.a.ctx}|${hit.a.node}`, `${hit.b.ctx}|${hit.b.node}`].join('\u0000')
         );
       }
     }
   }
 
   const all = [...groups.values()].map(({ seen, ...f }) => ({ ...f, in: where(seen) }));
-  const findings = all.slice(0, MAX_FINDINGS);
-  const failed = [...failures].map(([error, seen]) => ({ error, in: where(seen) }));
-  const errors = [...runtime].map(([error, seen]) => ({ error, in: where(seen) }));
-  // The cases not reached in time are measured next, from the first of them.
-  const done = Math.floor(reached / VIEWPORTS.length);
-  const nextOffset = window.offset + (reached < steps ? done : cases.length);
+  // At most MAX_FINDINGS, keeping the first of every kind found, in the order found.
+  const keep = new Set<ComponentFinding>();
+  const kinds = new Set<string>();
+  for (const f of all) if (!kinds.has(f.kind)) kinds.add(f.kind), keep.add(f);
+  for (const f of all) if (keep.size < MAX_FINDINGS) keep.add(f);
+  const findings = all.filter((f) => keep.has(f));
+  const failed = [...failures.values()].map(({ error, seen }) => ({ error, in: where(seen) }));
+  const errors = [...runtime.values()].map(({ error, seen }) => ({ error, in: where(seen) }));
+  // The cases not reached in time are measured next, from the first of them (with the case it is compared with).
+  const complete = Math.floor(reached / VIEWPORTS.length);
+  const list = window.all ?? cases;
+  const first = window.all ? 0 : window.offset;
+  const nextOffset = reached < steps ? Math.max(window.offset, resumeAt(list, window.offset + complete - first) + first) : window.offset + cases.length;
   const remaining = window.total - nextOffset;
-  const measuredCases = cases.slice(0, Math.ceil(reached / VIEWPORTS.length)).map((c) => c.label);
+  const done = cases.slice(0, complete).map((c) => c.label);
+  const half = reached % VIEWPORTS.length ? cases[complete].label : undefined;
 
   const parts: string[] = [];
+  const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
   const widths = `phone (${INSPECT_WIDTHS.phone}px) and desktop (${INSPECT_WIDTHS.desktop}px) width`;
   const problems = all.length + errors.length;
-  if (!problems && !failed.length) parts.push(`${def.name}: no problems found in ${measuredCases.length} case${measuredCases.length === 1 ? '' : 's'} at ${widths}.`);
-  else parts.push(`${def.name}: ${problems} problem${problems === 1 ? '' : 's'} found in ${measuredCases.length} case${measuredCases.length === 1 ? '' : 's'} at ${widths}.`);
-  if (failed.length) parts.push(`${reached - measured} measurement${reached - measured === 1 ? '' : 's'} failed and ${reached - measured === 1 ? 'was' : 'were'} not checked.`);
-  if (totals.unverified) parts.push(`${totals.unverified} text contrast check${totals.unverified === 1 ? '' : 's'} over pictures could not be measured.`);
+  const clean = !problems && !failed.length && !unchecked.length && !totals.incomplete;
+  parts.push(`${def.name}: ${clean ? 'no problems found' : `${plural(problems, 'problem')} found`} in ${plural(done.length, 'case')} at ${widths}.`);
+  if (half) parts.push(`"${half}" was measured at phone width only.`);
+  if (failed.length) parts.push(`${plural(reached - measured, 'measurement')} failed and ${reached - measured === 1 ? 'was' : 'were'} not checked.`);
+  if (unchecked.length) parts.push(`The spacing with content left empty could not be compared at ${[...new Set(unchecked)].join(' and ')} width.`);
+  if (totals.unverified) parts.push(`${plural(totals.unverified, 'text contrast check')} could not be measured without pixels.`);
   if (totals.incomplete) parts.push('Some checks ran out of time, so they are incomplete.');
-  if (remaining > 0) parts.push(`${remaining} more case${remaining === 1 ? '' : 's'} to measure: call again with offset ${nextOffset}.`);
+  if (remaining > 0) parts.push(`${plural(remaining, 'more case')} to measure: call again with offset ${nextOffset}.`);
 
   const content: Record<string, unknown> = {
     definitionId: def.id,
+    name: def.name,
     ...(target.placement ? { placement: target.placement } : {}),
     ...(window.offset ? { offset: window.offset } : {}),
-    cases: measuredCases,
+    cases: done,
     summary: parts.join(' '),
     ...(findings.length ? { findings } : {}),
     ...(all.length > findings.length ? { omittedFindings: all.length - findings.length } : {}),
     ...(errors.length ? { runtimeErrors: errors.slice(0, 5) } : {}),
+    ...(errors.length > 5 ? { omittedRuntimeErrors: errors.length - 5 } : {}),
     ...(failed.length ? { failed: failed.slice(0, 5) } : {}),
     ...(target.notes.length ? { notes: target.notes } : {}),
-    ...(remaining > 0 ? { next: { offset: nextOffset, remaining } } : {})
+    ...(remaining > 0 ? { next: { offset: nextOffset, remaining } } : {}),
+    // Something in this window was not checked: a later check of fewer cases never stands in for this one.
+    ...(failed.length || unchecked.length || half || reached < steps ? { incomplete: true } : {})
   };
   return { measured, content };
 }
-

@@ -1633,6 +1633,11 @@ export class Orchestrator {
             const c = outcome.content as { pageId?: string; viewport?: string };
             inspections.record(c.pageId ?? `?${call.arguments}`, c.viewport ?? '', outcome.ok, outcome.content);
           }
+          if (call.name === 'inspect_component') {
+            // Keyed by the component the tool resolved, its sample and its window, so a repeated check replaces the last.
+            const c = outcome.content as { definitionId?: string; placement?: unknown; offset?: number };
+            inspections.recordComponent(c.definitionId ? JSON.stringify([c.definitionId, c.placement ?? null, c.offset ?? 0]) : `?${call.arguments}`, outcome.ok, outcome.content);
+          }
           this.emitMessage(msg, runId);
           items.push({ kind: 'tool_result', callId: call.id, name: call.name, content: serializeResult(outcome.content), isError: !outcome.ok });
           if (MUTATING_TOOLS.has(call.name as never)) msg.text = '';

@@ -549,25 +549,48 @@ export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<st
  */
 export class InspectionLog {
   private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; stale: boolean }>();
+  /** Component checks (inspect_component), by component, sample and window of cases. */
+  private components = new Map<string, { ok: boolean; content: unknown; stale: boolean }>();
 
   record(pageId: string, viewport: string, ok: boolean, content: unknown) {
     // Setting an existing key keeps the order of first inspection while the result is the latest one.
     this.latest.set(`${pageId}\n${viewport}`, { pageId, ok, content, stale: false });
   }
 
+  /** A check of one component on its own; `key` names the component, its sample and the window of cases. */
+  recordComponent(key: string, ok: boolean, content: unknown) {
+    this.components.set(key, { ok, content, stale: false });
+  }
+
   /** An edit landed on these pages (or on what every page shares) after their checks ran. */
   invalidate(pages: Set<string> | 'all') {
     for (const e of this.latest.values()) if (pages === 'all' || pages.has(e.pageId)) e.stale = true;
+    // A component's design, the site's styles and the theme reach every page; an edit of one page's content does not.
+    if (pages === 'all') for (const e of this.components.values()) e.stale = true;
   }
 
   /** Each check names its page, so a check is never read as being about another page the run changed. */
   checks(state: ProjectState): ChatCheck[] {
-    return [...this.latest.values()].flatMap((e) => {
+    const stale = (rows: ChatCheck[]) => rows.map((r): ChatCheck => ({ status: 'unverified', text: `${r.text.replace(/\.$/, '')}, before later changes.` }));
+    const pages = [...this.latest.values()].flatMap((e) => {
       const page = Object.hasOwn(state.pages, e.pageId) ? state.pages[e.pageId] : undefined;
       // A page the run removed after checking it has nothing left to report on; an unknown page has no title.
       if (!page && !e.pageId.startsWith('?')) return [];
       const rows = inspectionChecks(e.ok, e.content, page ? ` on ${page.title}` : '');
-      return e.stale ? rows.map((r): ChatCheck => ({ status: 'unverified', text: `${r.text.replace(/\.$/, '')}, before later changes.` })) : rows;
+      return e.stale ? stale(rows) : rows;
     });
+    const components = [...this.components.values()].flatMap((e) => (e.stale ? stale([componentCheck(e.ok, e.content)]) : [componentCheck(e.ok, e.content)]));
+    return [...pages, ...components];
   }
+}
+
+/** One component check as the result card lists it: problems found, part of it not run, or none found. */
+export function componentCheck(ok: boolean, content: unknown): ChatCheck {
+  const c = (content ?? {}) as { name?: unknown; findings?: unknown[]; omittedFindings?: unknown; runtimeErrors?: unknown[]; incomplete?: unknown; next?: unknown };
+  const name = typeof c.name === 'string' && c.name ? c.name : 'the component';
+  if (!ok) return { status: 'unverified', text: `Couldn't check ${typeof c.name === 'string' && c.name ? c.name : 'a component'} in its variants and with long and empty content.` };
+  const problems = (c.findings?.length ?? 0) + (Number(c.omittedFindings) || 0) + (c.runtimeErrors?.length ?? 0);
+  if (problems) return { status: 'issue', text: `${name} has ${plural(problems, 'problem')} in its variants or with long or empty content.` };
+  if (c.incomplete || c.next) return { status: 'unverified', text: `Only part of ${name} could be checked in its variants and with long and empty content.` };
+  return { status: 'pass', text: `${name} has no layout or readability problems in its variants or with long and empty content.` };
 }

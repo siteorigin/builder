@@ -3101,49 +3101,58 @@ function pickIssues(lists, max) {
 }
 
 /** Stacked pairs one inspection reports at most. */
-const MAX_GAPS = 400;
+const MAX_GAPS = 200;
 
 /**
  * For the AI's component inspection: each two elements of the editor's markup that follow one another stacked in
  * their container, and the space between them, so a preview with content left empty can be compared with the same
- * preview with it shown. Each is named by where it rendered and which of the elements rendered there it is, in
- * document order (`n` of `of`): list items take new IDs in every preview.
+ * preview with it shown. Each is named by where it rendered, the list items it is in, and which of the elements
+ * rendered there it is (`n` of `of`, in document order). Only the containers of the editor's elements are looked
+ * at, and only until `deadline`: `incomplete` then says the list stops short.
  */
-function stackGaps() {
+function stackGaps(deadline) {
+  const gaps = [];
+  let incomplete = false;
   const main = document.getElementById('main');
-  if (!main) return [];
+  if (!main) return { gaps, incomplete };
   const children = Object.getOwnPropertyDescriptor(Element.prototype, 'children').get;
   const ends = new Map();
   const totals = new Map();
-  for (const el of main.querySelectorAll('[data-so-node]')) {
-    const d = descOf(el);
-    const base = `${d.ctx}\u0000${d.node}`;
-    const n = totals.get(base) || 0;
-    totals.set(base, n + 1);
-    ends.set(el, { ctx: d.ctx, node: d.node, n, base });
-  }
-  const end = (e) => ({ ctx: e.ctx, node: e.node, n: e.n, of: totals.get(e.base) });
-  /** The boxes a container lays out in the flow, in order, looking through wrappers that take no box. */
-  const laidOut = (parent) => {
-    const out = [];
-    for (const c of children.call(parent)) {
-      const s = getComputedStyle(c);
-      if (s.display === 'none') continue;
-      if (s.display === 'contents') {
-        out.push(...laidOut(c));
-        continue;
-      }
-      if (s.position === 'absolute' || s.position === 'fixed') continue;
-      const r = Element.prototype.getBoundingClientRect.call(c);
-      if (r.width || r.height) out.push({ el: c, r });
-    }
-    return out;
-  };
-  const gaps = [];
+  const parents = new Set();
   try {
-    for (const parent of [main, ...main.querySelectorAll('*')]) {
-      if (gaps.length >= MAX_GAPS) break;
-      if (getComputedStyle(parent).display === 'contents') continue;
+    for (const el of main.querySelectorAll('[data-so-node]')) {
+      const d = descOf(el);
+      const base = `${d.ctx}\u0000${d.node}\u0000${d.items}`;
+      const n = totals.get(base) || 0;
+      totals.set(base, n + 1);
+      ends.set(el, { ctx: d.ctx, node: d.node, items: d.items, n, base });
+      // The container that lays it out, looking through wrappers that take no box.
+      let p = el.parentElement;
+      while (p && p !== main && getComputedStyle(p).display === 'contents') p = p.parentElement;
+      if (p && (p === main || main.contains(p))) parents.add(p);
+    }
+    const end = (e) => ({ ctx: e.ctx, node: e.node, items: e.items, n: e.n, of: totals.get(e.base) });
+    /** The boxes a container lays out in the flow, in order; `edge` when one can be measured from (shown, block-level, in place). */
+    const laidOut = (parent) => {
+      const out = [];
+      for (const c of children.call(parent)) {
+        const s = getComputedStyle(c);
+        if (s.display === 'none') continue;
+        if (s.display === 'contents') {
+          out.push(...laidOut(c));
+          continue;
+        }
+        if (s.position === 'absolute' || s.position === 'fixed') continue;
+        const r = Element.prototype.getBoundingClientRect.call(c);
+        if (r.width || r.height) out.push({ el: c, r, edge: s.visibility !== 'hidden' && !s.display.startsWith('inline') && s.position !== 'sticky' });
+      }
+      return out;
+    };
+    for (const parent of parents) {
+      if (gaps.length >= MAX_GAPS || Date.now() > deadline) {
+        incomplete = true;
+        break;
+      }
       const boxes = laidOut(parent);
       for (let i = 1; i < boxes.length && gaps.length < MAX_GAPS; i++) {
         const a = boxes[i - 1];
@@ -3151,14 +3160,15 @@ function stackGaps() {
         const ea = ends.get(a.el);
         const eb = ends.get(b.el);
         // Stacked: the second below the first, sharing some of its width (not the next card of a row).
-        if (!ea || !eb || b.r.top < a.r.bottom - 1 || b.r.left >= a.r.right || b.r.right <= a.r.left) continue;
+        if (!ea || !eb || !a.edge || !b.edge || b.r.top < a.r.bottom - 1 || b.r.left >= a.r.right || b.r.right <= a.r.left) continue;
         gaps.push({ a: end(ea), b: end(eb), gap: Math.round((b.r.top - a.r.bottom) * 2) / 2 });
       }
     }
   } catch {
     // Markup whose own properties are hidden (a form's named controls) ends the list early rather than the report.
+    incomplete = true;
   }
-  return gaps;
+  return { gaps, incomplete };
 }
 
 /**
@@ -3230,8 +3240,14 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     issues: listed,
     runtimeErrors: errors.slice(-10),
     ...(preview ? { preview } : {}),
-    ...(opts.gaps ? { gaps: stackGaps() } : {})
+    ...(opts.gaps ? stackReport(readableBy + 500) : {})
   };
+}
+
+/** The stacked gaps for a report, and whether they stop short. */
+function stackReport(deadline) {
+  const { gaps, incomplete } = stackGaps(deadline);
+  return { gaps, ...(incomplete ? { gapsIncomplete: true } : {}) };
 }
 
 // ---------------------------------------------------------------------------

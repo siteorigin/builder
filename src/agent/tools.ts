@@ -21,7 +21,7 @@ import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 import { changedComponents, componentWarnings, introducedReusability } from './reusability';
 import { isReusabilityWarning } from '@engine/reusability';
 import { OP_REACH, type AuthorityGrants } from './scope';
-import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
+import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget, resumeAt } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component']), id: z.string() });
@@ -110,7 +110,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   inspect_layout:
     'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). No screenshots.',
   inspect_component:
-    'Check one component on its own, off-screen, without changing anything: it is measured at phone (390px) and desktop (1280px) width in each option of every variant axis, and with stress content: long text with an unbroken long word, links and optional text left empty, one and five list items. Returns each overflow, cut-off text, low contrast, overlap, small tap target, runtime error and spacing collapse once, with the cases and widths it showed in and where it is in the design (at: nodeId and partId, for node.setStyle on owner { kind: "component", id: definitionId }); a clean component gets a one-line summary. Use after building or changing a reusable component, then fix what it finds and check again.',
+    'Check one component on its own, off-screen, without changing anything: it is measured at phone (390px) and desktop (1280px) width with every link set and empty text filled, in each option of every variant axis, and with stress content: long text with an unbroken long word, links and optional text left empty, one and five list items. Returns each overflow, cut-off text, low contrast, overlap, small tap target, runtime error and spacing collapse once, with the cases and widths it showed in and where it is in the design: at.nodeId is the node of its design (node.setStyle { owner: { kind: "component", id: definitionId }, nodeId } changes it on every placement) and at.partId the part it belongs to. A theme component must be in the project before its design can change. A clean component gets a one-line summary. Use after building or changing a reusable component, then fix what it finds and check again.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
   request_clarification:
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
@@ -525,6 +525,25 @@ export function fitInspection<R>(envelope: Record<string, unknown>, report: R): 
   return r as R;
 }
 
+/**
+ * A component check cut, when it must be, to fit a tool result whole, so it keeps the fields that say what it is
+ * (and the budget reads): first the texts of its findings, then findings from the end, keeping one of every kind.
+ */
+function fitComponentCheck(content: Record<string, unknown>): Record<string, unknown> {
+  const room = MAX_RESULT_CHARS - 200;
+  if (JSON.stringify(content).length <= room || !Array.isArray(content.findings)) return content;
+  const findings = (content.findings as Array<Record<string, unknown>>).map(({ text: _t, ...f }) => (f.with && typeof f.with === 'object' ? { ...f, with: { ...(f.with as Record<string, unknown>), text: undefined } } : f));
+  const out = { ...content, findings };
+  let omitted = Number(content.omittedFindings ?? 0);
+  while (JSON.stringify(out).length > room) {
+    const last = findings.findLastIndex((f, i) => findings.findIndex((g) => g.kind === f.kind) !== i);
+    if (last < 0) break;
+    findings.splice(last, 1);
+    omitted++;
+  }
+  return omitted ? { ...out, omittedFindings: omitted } : out;
+}
+
 export function serializeResult(content: unknown): string {
   const s = JSON.stringify(content);
   if (s.length <= MAX_RESULT_CHARS) return s;
@@ -727,8 +746,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const target = resolveInspectTarget(state, a);
       if ('error' in target) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: target.error } };
       const cases = planComponentInspection(target);
-      const offset = a.offset ?? 0;
-      if (offset >= cases.length) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `There are ${cases.length} cases to measure; offset ${offset} is past the last.` } };
+      if ((a.offset ?? 0) >= cases.length) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `There are ${cases.length} cases to measure; offset ${a.offset} is past the last.` } };
+      // An empty case is measured with the case it is compared with.
+      const offset = resumeAt(cases, a.offset ?? 0);
       const failed = (message: string) => ({ ok: false, content: { error: 'VALIDATION_FAILED', definitionId: target.def.id, message: `The component could not be inspected: ${message}` } });
       if (!host.inspectComponent) return failed('measuring a component is not available here.');
       const window = cases.slice(offset, offset + MAX_CASES);
@@ -741,10 +761,10 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       }
       // Measured against a project that changed meanwhile: it says nothing certain about either.
       if (host.revision() !== revision) return { ok: false, content: { error: 'STALE_REVISION', definitionId: target.def.id, message: 'The project changed while the component was measured. Inspect it again.' } };
-      const digest = digestComponentInspection(target, window, Array.isArray(results) ? results : [], { offset, total: cases.length });
+      const digest = digestComponentInspection(target, window, Array.isArray(results) ? results : [], { offset, total: cases.length, all: cases });
       // Nothing measured is a check that could not run, never a clean component.
       if (!digest.measured) return failed(String((digest.content.failed as Array<{ error: string }> | undefined)?.[0]?.error ?? 'the preview gave no measurements.'));
-      return { ok: true, content: { revision, ...digest.content } };
+      return { ok: true, content: fitComponentCheck({ revision, ...digest.content }) };
     }
     case 'validate_project': {
       const a = args as z.infer<(typeof TOOL_ARGS)['validate_project']>;

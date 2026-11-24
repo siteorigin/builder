@@ -122,7 +122,8 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     // component named by its catalogue ID is the same one by its definition ID.
     const id = body?.definitionId ?? args.definitionId ?? args.componentId;
     if (!id) return null;
-    return { ...base, target: `component-check:${componentSample(body, args)}:${id}:${Number(body?.offset ?? args.offset ?? 0)}` };
+    // A check that left some of its cases unmeasured never stands in for one that measured them.
+    return { ...base, ...(body?.incomplete === true ? { partial: true } : {}), target: `component-check:${componentSample(body, args)}:${id}:${Number(body?.offset ?? args.offset ?? 0)}` };
   }
   return null;
 }
