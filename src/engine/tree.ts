@@ -1,5 +1,5 @@
-import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { isBinding } from '@shared/types';
+import type { AppearPreset, ComponentDefinition, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import { isAppearPreset, isBinding } from '@shared/types';
 import { pageParents } from '@shared/page-tree';
 
 export class EngineError extends Error {
@@ -310,4 +310,16 @@ export function anchorCapable(state: ProjectState, def: ComponentDefinition | un
   if (!def || def.kind !== 'managed' || !def.tree || depth > 10) return false;
   const root = def.tree.nodes[def.tree.rootIds[0]];
   return root?.kind !== 'instance' || anchorCapable(state, state.components[root.definitionId], depth + 1);
+}
+
+/**
+ * The entrance a design gives its root (`appear`), which a placement shows unless it chooses its own: the root
+ * container's, or, for a root that places another design, that placement's choice or else its design's.
+ */
+export function designAppear(state: ProjectState, def: ComponentDefinition | undefined, depth = 0): AppearPreset | undefined {
+  if (!def || def.kind !== 'managed' || !def.tree || depth > 10) return undefined;
+  const root = def.tree.nodes[def.tree.rootIds[0]];
+  if (root?.kind === 'element') return isAppearPreset(root.appear) ? root.appear : undefined;
+  if (root?.kind !== 'instance' || root.appear === 'none') return undefined;
+  return isAppearPreset(root.appear) ? root.appear : designAppear(state, state.components[root.definitionId], depth + 1);
 }

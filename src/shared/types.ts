@@ -107,6 +107,15 @@ export const ICON_POSITIONS: IconPosition[] = ['start', 'end'];
 export type ElementAction = 'none' | 'image' | 'link';
 export const ELEMENT_ACTIONS: ElementAction[] = ['none', 'image', 'link'];
 
+/**
+ * How a section or container enters the first time it scrolls into view (`appear`). Content is always visible until
+ * the site's runtime arms it, so a page without JavaScript, a printout and a visitor who asks for reduced motion see
+ * everything at once.
+ */
+export type AppearPreset = 'fade' | 'lift' | 'scale-subtle';
+export const APPEAR_PRESETS: AppearPreset[] = ['fade', 'lift', 'scale-subtle'];
+export const isAppearPreset = (v: unknown): v is AppearPreset => typeof v === 'string' && (APPEAR_PRESETS as string[]).includes(v);
+
 // ---------------------------------------------------------------------------
 // Property schema
 // ---------------------------------------------------------------------------
@@ -317,6 +326,8 @@ export interface ElementNode extends NodeBase {
    * collapsing element by its children, a repeat by its list). A child that always renders keeps this one.
    */
   collapseEmpty?: boolean;
+  /** How the container enters when it first scrolls into view. Absent: it is simply there. */
+  appear?: AppearPreset;
 }
 export interface TextNode extends NodeBase {
   kind: 'text';
@@ -369,6 +380,11 @@ export interface RepeatNode extends NodeBase {
   kind: 'repeat';
   list: { $prop: string };
   children: string[];
+  /**
+   * Items that enter together (a row of cards scrolling into view) start their entrances one after another. Only
+   * the item's own entrance (`appear` on a direct child) is staggered; it does nothing without one.
+   */
+  appearStagger?: boolean;
 }
 export interface SlotNode extends NodeBase {
   kind: 'slot';
@@ -393,6 +409,11 @@ export interface InstanceNode extends NodeBase {
   itemOverrides?: Record<string, ItemStyles>;
   /** Content placed into the definition's declared slots. */
   slots?: Record<string, string[]>;
+  /**
+   * How the section enters when it first scrolls into view, on its component's root element. Absent: the design's own
+   * choice for its root; `none`: no entrance here, whatever the design chooses. Managed components only.
+   */
+  appear?: AppearPreset | 'none';
 }
 
 /** A placement's content in one slot: the list it holds, or none when a hand edit left something else there. */

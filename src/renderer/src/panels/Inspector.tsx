@@ -44,7 +44,7 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
-import { codeImportantProps, codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
+import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { applyOps, applyWith, commitOps, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
@@ -52,6 +52,7 @@ import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-sty
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, placedOnPage, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
+import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, createComponentTarget, definitionView, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
@@ -532,6 +533,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const styledPart = def.kind === 'code' && def.parts[codePart] ? codePart : 'root';
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
+  // An entrance lands on the design's root element, which only a design built in the editor places.
+  const entrance = anchorCapable(state, def);
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
   const set = (prop: string, value: unknown, edit?: PendingEdit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], `Edit ${def.properties[prop]?.label ?? prop}`, `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number) =>
@@ -771,7 +774,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           )}
         </div>
       </Section>
-      <Section title="Advanced" id="advanced" defaultOpen={false} level={LEVEL} scope={node.anchor ? `#${node.anchor}` : undefined}>
+      <Section title="Advanced" id="advanced" defaultOpen={false} level={LEVEL} scope={[node.anchor && `#${node.anchor}`, entrance && appearSummary(node, designAppear(state, def))].filter(Boolean).join(' · ') || undefined}>
         <Field label="Layer name" hint="Shown in Layers. Not visible on the site.">
           <DraftInput value={node.name ?? ''} placeholder={def.name} onCommit={(v) => void applyOps([{ type: 'node.rename', owner, nodeId: node.id, name: v }], 'Rename layer')} />
         </Field>
@@ -780,6 +783,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             <DraftInput value={node.anchor ?? ''} placeholder="e.g. pricing" onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'anchor', value: v.trim() }], 'Set anchor')} />
           </Field>
         )}
+        {entrance && <EntranceField owner={owner} node={node} design={designAppear(state, def)} />}
         {dev && (
           <p className="mono faint insp-note" style={{ userSelect: 'text' }}>
             {node.id} · {def.id}
@@ -1263,10 +1267,11 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], 'Reset styles')}
         />
       </Section>
-      <Section title="Advanced" id="prim-advanced" defaultOpen={false} level={LEVEL} scope={node.anchor ? `#${node.anchor}` : undefined}>
+      <Section title="Advanced" id="prim-advanced" defaultOpen={false} level={LEVEL} scope={[node.anchor && `#${node.anchor}`, node.kind === 'element' && appearSummary(node)].filter(Boolean).join(' · ') || undefined}>
         <Field label="Anchor ID" hint="Lets links jump straight to this element, as #services.">
           <DraftInput value={node.anchor ?? ''} placeholder="e.g. services" onCommit={(v) => content('anchor', v)} />
         </Field>
+        {node.kind === 'element' && <EntranceField owner={owner} node={node} />}
       </Section>
     </>
   );
@@ -1566,6 +1571,17 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       {/* A component placed in the design: what it is given here, the same in every placement. */}
       {node.kind === 'instance' && placedDef && <NestedInputs state={state} def={def} node={node} placedDef={placedDef} />}
       <ConditionControls def={def} node={node} level={LEVEL} />
+      {(node.kind === 'element' || node.kind === 'repeat' || (node.kind === 'instance' && anchorCapable(state, placedDef))) && (
+        <Section
+          title="Entrance"
+          id="def-entrance"
+          defaultOpen={false}
+          level={LEVEL}
+          scope={node.kind === 'repeat' ? (node.appearStagger ? 'Staggered' : undefined) : appearSummary(node, node.kind === 'instance' ? designAppear(state, placedDef) : undefined)}
+        >
+          {node.kind === 'repeat' ? <StaggerSwitch owner={owner} node={node} /> : <EntranceField owner={owner} node={node} design={node.kind === 'instance' ? designAppear(state, placedDef) : undefined} />}
+        </Section>
+      )}
       <Section title="Style" id="def-style" level={LEVEL} scope={repeated ? `Every ${itemWord ?? 'item'} · ${placements}` : placements}>
         {node.kind === 'instance' ? (
           <StyleControls

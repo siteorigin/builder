@@ -158,6 +158,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       base.props = agentProps(def, n.props, state.pages);
       if (n.overrides) base.styleOverrides = n.overrides;
       if (n.itemOverrides) base.itemStyleOverrides = n.itemOverrides;
+      if (n.appear) base.appear = n.appear;
       if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.keys(n.slots).map((k) => [k, slotChildren(n, k).map((c) => compactNode(state, tree, c, depth + 1))]));
       break;
     }
@@ -165,6 +166,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       base.kind = 'element';
       base.tag = n.tag;
       if (n.styles) base.styles = n.styles;
+      if (n.appear) base.appear = n.appear;
       if (depth < 5) base.children = n.children.map((c) => compactNode(state, tree, c, depth + 1));
       break;
     case 'text':

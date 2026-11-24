@@ -1880,7 +1880,9 @@ style.textContent =
   ' html[data-so-editing] [data-so-unlinked] { cursor: default; box-shadow: none; opacity: 0.6; outline: 2px dashed #d97706; outline-offset: 2px; }' +
   // An empty slot, where the author can put content: a labelled drop area, never part of the site.
   ' html[data-so-editing] [data-so-slot-empty] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; box-sizing: border-box; min-height: 72px; padding: 12px 16px; border: 2px dashed rgba(100, 116, 139, 0.55); border-radius: 8px; background: rgba(148, 163, 184, 0.08); color: #475569; font: 13px/1.35 system-ui, -apple-system, sans-serif; text-align: center; }' +
-  ' html[data-so-editing] [data-so-slot-empty] strong { font-weight: 600; } html[data-so-editing] [data-so-slot-empty] span { opacity: 0.8; }';
+  ' html[data-so-editing] [data-so-slot-empty] strong { font-weight: 600; } html[data-so-editing] [data-so-slot-empty] span { opacity: 0.8; }' +
+  // Edit shows every section as designed: an entrance the site's observer armed (it arms nothing in Edit) never hides one.
+  ' html[data-so-editing] [data-appear-state]:not(#so-editor) { animation: none !important; }';
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);
 const previewAtStart = previewState();

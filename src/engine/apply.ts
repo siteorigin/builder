@@ -21,7 +21,7 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isBinding, isComparison, slotChildren, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
+import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isAppearPreset, isBinding, isComparison, slotChildren, type AppearPreset, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
@@ -1647,6 +1647,26 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       else delete node.collapseEmpty;
       return {};
     }
+    case 'appear': {
+      if (node.kind !== 'element' && node.kind !== 'instance') fail('Only sections and containers have an entrance.');
+      // A section's entrance lands on its component's root element, which only managed components place.
+      if (node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Entrances can only be set on sections built in the editor, not on code components.');
+      const a = v === null || v === undefined || v === '' ? null : v;
+      if (a !== null && a !== 'none' && !isAppearPreset(a)) fail(`An entrance is ${APPEAR_PRESETS.join(', ')} or none.`);
+      // A placement keeps `none`, which turns its design's own entrance off; clearing it goes back to the design's.
+      if (a === null) delete node.appear;
+      else if (node.kind === 'instance') node.appear = a as AppearPreset | 'none';
+      else if (a === 'none') delete node.appear;
+      else node.appear = a as AppearPreset;
+      return {};
+    }
+    case 'appearStagger': {
+      if (node.kind !== 'repeat') fail('Only a repeated list staggers its items’ entrances.');
+      if (typeof v !== 'boolean') fail('appearStagger is true or false.');
+      if (v) node.appearStagger = true;
+      else delete node.appearStagger;
+      return {};
+    }
   }
 }
 
@@ -2108,6 +2128,9 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   // A component can be placed many times, so its root cannot hold a page-unique anchor: the placement keeps it.
   const anchor = rootNode.anchor;
   delete rootNode.anchor;
+  // The root's entrance stays with the placement too, so the section enters as before and the next one chooses its own.
+  const appear = rootNode.kind === 'element' || rootNode.kind === 'instance' ? rootNode.appear : undefined;
+  if (rootNode.kind === 'element' || rootNode.kind === 'instance') delete rootNode.appear;
   // A section made into a component (with the content in its slots) is still called what it was, and its placements
   // offer the styles the section's own root offers.
   const named = root.name ?? (root.kind === 'instance' ? displayName(state, root) : undefined);
@@ -2223,6 +2246,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   // Replace the subtree with an instance.
   const inst: InstanceNode = { id: newId('n'), kind: 'instance', definitionId: def.id, props };
   if (anchor) inst.anchor = anchor;
+  if (appear) inst.appear = appear;
   if (Object.keys(instSlots).length) inst.slots = instSlots;
   const removed = new Set(subtreeIds(tree, op.nodeId));
   if (ownerDef) {
@@ -2314,6 +2338,16 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   // one) moves to a name of its own first, with the placement's value and every binding to it.
   moveCodeReservedProps(work, node);
   promotePageLinks(state, work);
+  // A code component takes no entrance from its placement, so the placement's own becomes the copy's (the placement
+  // lets go of it once the source is made, which it is while the site still counts it).
+  if (node.appear !== undefined) {
+    const root = work.tree!.nodes[work.tree!.rootIds[0]];
+    if (root?.kind === 'instance') root.appear = node.appear;
+    else if (root?.kind === 'element') {
+      if (isAppearPreset(node.appear)) root.appear = node.appear;
+      else delete root.appear;
+    }
+  }
   // The source renders rich text through the RichText helper, which takes blocks.
   for (const schema of Object.values(work.properties)) {
     if (schema.type === 'richtext') schema.codeForm = 'blocks';
@@ -2351,6 +2385,7 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   else delete copy.dependencies;
   state.components[copy.id] = copy;
   node.definitionId = copy.id;
+  delete node.appear;
   return { definitionId: copy.id, sourcePath: copy.sourcePath };
 }
 
