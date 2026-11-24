@@ -1620,7 +1620,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     deny({ type: 'component.rename', definitionId: id, name: 'Other' });
     deny({ type: 'page.create', title: 'New' });
     // The component has gone (its copy was undone): nothing may change.
-    expect(checkAuthority(base, [{ type: 'node.setStyle', owner, nodeId: 'heading', scope: 'base', style: 'color', value: '#000' } as EditOperation], authority)).toMatch(/no longer in the site/);
+    expect(checkAuthority(base, [{ type: 'node.setStyle', owner, nodeId: 'heading', scope: 'base', style: 'color', value: '#000' } as unknown as EditOperation], authority)).toMatch(/no longer in the site/);
     // An element selected inside it that has gone limits nothing, not even an addition to the contract.
     const stale: Authority = { kind: 'selection', owner, nodeId: 'n_gone', label: 'Tagline' };
     expect(checkAuthority(state, [{ type: 'component.setPropSchema', definitionId: id, prop: 'extra', schema: { type: 'string', label: 'Extra', default: '' } }], stale)).toMatch(/no longer exists/);
