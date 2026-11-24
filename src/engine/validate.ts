@@ -339,7 +339,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       ? `${where}: ${what} goes to #${i.fragment} on ${state.pages[i.pageId].title}, but that page has no section with that ID. ${fix}`
       : `${where}: ${what} goes to #${i.fragment}, but ${listed((i.pages ?? []).map((id) => state.pages[id].title))} ${(i.pages ?? []).length > 1 ? 'have' : 'has'} no section with that ID. ${fix}`;
     // Which link it is, where one placement shows several with the same text (one per card, say).
-    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId, site: `${i.nodeId ?? ''}|${i.key}#${i.fragment}` });
+    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId, site: JSON.stringify([i.nodeId ?? null, i.key, i.pageId ?? null, i.fragment, [...(i.pages ?? [])].sort()]) });
   }
   // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
   // ones), and the pictures of a project component, which can only show images.

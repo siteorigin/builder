@@ -7,7 +7,8 @@
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
-import { enclosingRepeatProp, getTree, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
+import { enclosingRepeatProp, findParent, getTree, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
+import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
 import { walkOperations } from '@engine/apply';
 
@@ -74,6 +75,16 @@ export function partReach(def: ComponentDefinition, regionNodeId: string): PartR
   // Whether every use of a property, or of an item field of a list, is inside the part.
   const only = new Map<string, boolean>();
   const fields = new Map<string, Map<string, boolean>>();
+  // A list repeated inside another repeat shows the same items in every outer item: one of its items is not one place.
+  const insideAnotherRepeat = (id: string) => {
+    let at: string | null | undefined = id;
+    let repeats = 0;
+    for (let guard = 0; at && guard < 50; guard++) {
+      if (tree?.nodes[at]?.kind === 'repeat' && ++repeats > 1) return true;
+      at = tree ? findParent(tree, at)?.parentId : null;
+    }
+    return false;
+  };
   for (const site of bindingSites(def)) {
     const inside = nodes.has(site.node.id);
     if ('$prop' in site.binding) {
@@ -83,7 +94,7 @@ export function partReach(def: ComponentDefinition, regionNodeId: string): PartR
     const list = enclosingRepeatProp(def, site.node.id);
     if (!list) continue;
     const uses = fields.get(list) ?? new Map<string, boolean>();
-    uses.set(site.binding.$item, (uses.get(site.binding.$item) ?? true) && inside);
+    uses.set(site.binding.$item, (uses.get(site.binding.$item) ?? true) && inside && !insideAnotherRepeat(site.node.id));
     fields.set(list, uses);
   }
   const itemFields = new Map<string, Set<string>>();
@@ -135,11 +146,15 @@ function outsidePart(op: EditOperation, sel: NonNullable<ReturnType<typeof selec
   switch (op.type) {
     case 'node.setStyle':
     case 'node.resetStyles': {
-      // The part's own style is shared by every item it is shown for; one item may also be styled alone.
       const partId = op.partId ?? 'root';
       const own = Object.hasOwn(def.parts, partId) ? def.parts[partId] : undefined;
       if (partId !== part.partId && !(own && reach.nodes.has(own.nodeId))) return `${op.type} styles a part of ${label} other than the selected one.`;
-      if (part.itemId !== undefined && op.itemId !== undefined && op.itemId !== part.itemId) return `${op.type} styles an item of ${label} other than the selected one.`;
+      // With one item selected, a part shown for every item is styled for that item alone: its shared style is every item's.
+      const shownPerItem = !!own && !!def.tree && !!enclosingRepeatProp(def, own.nodeId);
+      if (part.itemId !== undefined && shownPerItem) {
+        if (!repeatedPartList(def, partId)) return `${op.type} would style every item of ${label}: this part cannot be styled for one item alone, so ask the user first.`;
+        if (op.itemId !== part.itemId) return `${op.type} styles ${op.itemId === undefined ? 'every item' : 'another item'} of ${label}, not only the selected one: pass itemId "${part.itemId}", or ask the user before styling more.`;
+      }
       return null;
     }
     case 'instance.setProp': {
@@ -165,7 +180,8 @@ function outsidePart(op: EditOperation, sel: NonNullable<ReturnType<typeof selec
 /** Content placed in the slots a selected part renders, in the owner's tree: it is inside the part. */
 function slotContent(state: ProjectState, owner: OwnerRef, sel: NonNullable<ReturnType<typeof selectedPart>>): Set<string> {
   const out = new Set<string>();
-  if (!sel.reach.slots.size) return out;
+  // A slot inside a repeated part shows the same content in every item: not one selected item's.
+  if (!sel.reach.slots.size || (sel.part.itemId !== undefined && sel.reach.repeated)) return out;
   const tree = getTree(state, owner);
   for (const name of sel.reach.slots) for (const child of sel.inst.slots?.[name] ?? []) for (const id of subtreeIds(tree, child)) out.add(id);
   return out;

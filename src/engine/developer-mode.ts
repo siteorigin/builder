@@ -6,7 +6,7 @@
 import type { ComponentDefinition, ProjectState } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
 import { getTheme } from '@catalogue/index';
-import { walkOperations } from './apply';
+import { walkOperations, type ApplyContext } from './apply';
 import { getTree } from './tree';
 
 /** Operations that work with source directly. */
@@ -51,8 +51,9 @@ export function developerModeReason(state: ProjectState, op: EditOperation): str
  * project as the operations before it leave it, applied as the engine applies them, so a theme switched or a component
  * installed earlier in the same batch is the one it copies.
  */
-export function developerModeRefusal(state: ProjectState, ops: EditOperation[]): string | null {
+export function developerModeRefusal(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): string | null {
   if (ops.some((o) => CODE_OPERATIONS.has(o.type))) return developerModeReason(state, ops.find((o) => CODE_OPERATIONS.has(o.type))!);
   if (!ops.some((o) => COPIES.has(o.type))) return null;
-  return walkOperations(state, ops, (draft, op) => (COPIES.has(op.type) ? developerModeReason(draft, op) : null));
+  // `ctx` is the context the batch will apply with (the editor's clipboard), so a paste stages as it will land.
+  return walkOperations(state, ops, (draft, op) => (COPIES.has(op.type) ? developerModeReason(draft, op) : null), ctx);
 }

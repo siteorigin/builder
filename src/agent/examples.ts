@@ -42,7 +42,9 @@ export function examplesFor(state: ProjectState, componentId: string | undefined
 /** The compact form shown to the model: a ready-to-send section. */
 export function exampleSection(ex: AiExample) {
   // One choice is a variant, which every component's tool schema takes; variants is offered where there are several axes.
+  // "default" is on most axes and means the first, so it keeps its axis.
   const picks = Object.entries(ex.variants ?? {});
-  const variant = ex.variant ?? (picks.length === 1 ? picks[0][1] : undefined);
-  return { for: ex.description, section: { componentId: ex.componentId, ...(variant ? { variant } : {}), ...(picks.length > 1 ? { variants: ex.variants } : {}), props: ex.props } };
+  const one = picks.length === 1 && picks[0][1] !== 'default' && ex.variant === undefined;
+  const variant = ex.variant ?? (one ? picks[0][1] : undefined);
+  return { for: ex.description, section: { componentId: ex.componentId, ...(variant ? { variant } : {}), ...(picks.length && !one ? { variants: ex.variants } : {}), props: ex.props } };
 }

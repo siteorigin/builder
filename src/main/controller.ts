@@ -10,7 +10,6 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
-import { developerModeRefusal } from '@engine/developer-mode';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import type { BuildFailureContext } from './build-failure';
@@ -1222,12 +1221,11 @@ export class Controller {
     if (opts.opening !== undefined && opts.opening !== this.workspaceKey) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
     // The AI owns the project from the moment it starts, before its run takes the session's write lock.
     if (this.aiBusy()) return { ok: false, revision: session.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
-    // Code, and copies that would make new code, need Developer mode: the same check the AI's edits go through.
-    const refusal = (await loadSettings()).settings.developerMode ? null : developerModeRefusal(session.state, batch.operations);
-    if (refusal) return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: `${refusal} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
+    // Code, and copies that would make new code, need Developer mode: the session checks the batch as it applies it.
+    const codeAllowed = (await loadSettings()).settings.developerMode;
     // An edit belongs to the project it was made in: one closing, closed or switched meanwhile never receives it.
     if (this.session !== session || this.closing) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
-    return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user' });
+    return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user', codeAllowed });
   }
 
   /**

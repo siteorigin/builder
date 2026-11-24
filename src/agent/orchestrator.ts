@@ -686,6 +686,7 @@ export class Orchestrator {
       toolsForRun({
         state: session.state,
         selection: authority.kind === 'selection' ? selected : null,
+        widened: authority.kind === 'site' ? selected : null,
         capabilities,
         codeEnabled,
         // Contract edits are visual changes to managed components: offered whenever the run may change a component's
@@ -811,6 +812,7 @@ export class Orchestrator {
       macros,
       // Stays valid for the rest of a turn in which the user widens the scope.
       selection: () => selected,
+      selectionLimited: () => authority.kind === 'selection',
       state: readState,
       revision: readRevision,
       diagnostics: () => session.diagnostics(),

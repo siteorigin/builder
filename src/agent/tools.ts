@@ -207,6 +207,8 @@ export function toolsForRun(opts: {
   ask?: boolean;
   /** The small set whatever the window: the request would not fit beside the general tools. */
   focused?: boolean;
+  /** The selection a run started from, once the user has let it change more. */
+  widened?: SelectionTarget | null;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
@@ -227,7 +229,10 @@ export function toolsForRun(opts: {
     { name: 'upsert_page_with_sections', description: DESCRIPTIONS.upsert_page_with_sections, parameters: upsertToolSchema(state) },
     { name: 'update_site_brand', description: DESCRIPTIONS.update_site_brand, parameters: brandToolSchema(state) }
   ];
-  return { tools: [...macros, ...(focused ? general.filter((t) => t.name !== 'apply_operations') : general)], mode: 'site', focused };
+  // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
+  // do (styling every card of a selected one, say).
+  const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
+  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations') : general)], mode: 'site', focused };
 }
 
 /** An image in the project's library, or null for an unknown ID or a font. */
@@ -265,6 +270,8 @@ export interface ToolHost {
   macros?: MacroMemory;
   /** The element a selection-scoped run is working on. */
   selection?(): SelectionTarget | null;
+  /** Whether the run is still limited to its selection: the user has not let it change more. */
+  selectionLimited?(): boolean;
 }
 
 export interface ToolOutcome {

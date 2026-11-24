@@ -213,7 +213,10 @@ function emptiedBy(field: PropSchema, v: unknown): string | null {
  * The tools for a selection, or null when they cannot cover it: inside a component's own definition, or on a
  * layout element whose content lives in its children. Those selections use the general tools.
  */
-export function selectionTools(state: ProjectState, target: SelectionTarget | null): ToolDefinition[] | null {
+/**
+ * `widened`: the user has let the run change more than the selection, so a selected item no longer limits its styles.
+ */
+export function selectionTools(state: ProjectState, target: SelectionTarget | null, opts: { widened?: boolean } = {}): ToolDefinition[] | null {
   if (!target || target.nested || target.owner.kind === 'component') return null;
   const r = resolve(state, target);
   if (!r || !Object.keys(r.properties).length) return null;
@@ -284,6 +287,8 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   // Parts shown once per list item, which can be styled for one item alone.
   const perItem = r.def ? parts.filter((p) => repeatedPartList(r.def!, p)) : [];
   // With one item selected, its part is styled for that item alone unless the user widens the request.
+  // A selected item limits a run to its own style until the user widens it: omitted, itemId is that item.
+  const itemOnly = !!target.itemId && !!reach && !opts.widened;
   const selectedItem = target.itemId ? ` The selected item is "${target.itemId}".` : '';
   tools.push({
     name: 'style_selected_element',
@@ -296,7 +301,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
           ? {
               itemId: {
                 type: 'string',
-                description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style. Omit to style every item.${selectedItem}`
+                description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style.${itemOnly ? ` Omitted, it is the selected item "${target.itemId}": styling every item needs request_wider_scope first.` : ` Omit to style every item.${selectedItem}`}`
               },
               resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles; then apply styles, which may be empty.' }
             }
@@ -441,6 +446,8 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
   const perItem = r.node.kind === 'instance' && r.def ? Object.keys(r.def.parts).filter((p) => repeatedPartList(r.def!, p)) : [];
   // One item's style needs a repeated part: the one named, the selected one, or the only one there is.
   const partId = r.node.kind === 'instance' ? (a.partId ?? target.partId ?? (a.itemId && perItem.length === 1 ? perItem[0] : undefined)) : undefined;
+  // While the run is limited to a selected item, a part shown for every item is styled for that item alone.
+  if (a.itemId === undefined && target.itemId !== undefined && partId && perItem.includes(partId) && host.selectionLimited?.() !== false && selectedPartReach(r, target)) a.itemId = target.itemId;
   if (r.node.kind !== 'instance' && a.partId) return fieldError([{ field: 'partId', message: 'this element has no parts' }], note);
   if (a.itemId !== undefined && (!partId || !perItem.includes(partId)))
     return fieldError([{ field: a.partId ? 'partId' : 'itemId', message: perItem.length ? `to style one item, name a repeated part: ${perItem.join(', ')}` : 'this element has no part repeated per item' }], note);

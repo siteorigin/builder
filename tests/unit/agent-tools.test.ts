@@ -1104,11 +1104,14 @@ describe('context budget', () => {
       ...read('a', { owner, nodeId: 'n_1', prop: 'body' }, part(0), 'inspect_element'),
       ...read('b', { owner, nodeId: 'n_1', prop: 'body', offset: 8000 }, part(8000), 'inspect_element'),
       ...read('c', { owner, nodeId: 'n_1', prop: 'heading' }, part(0, 'heading'), 'inspect_element'),
-      ...read('d', { owner, nodeId: 'n_1', prop: 'body', offset: 16000 }, part(16000), 'inspect_element')
+      ...read('d', { owner, nodeId: 'n_1', prop: 'body', offset: 16000 }, part(16000), 'inspect_element'),
+      ...read('e', { owner, nodeId: 'n_1', prop: 'items', itemId: 'i_a', field: 'text' }, part(0, 'items'), 'inspect_element'),
+      ...read('f', { owner, nodeId: 'n_1', prop: 'items', itemId: 'i_b', field: 'text' }, part(0, 'items'), 'inspect_element'),
+      ...read('g', { owner, nodeId: 'n_1', prop: 'items', itemId: 'i_b', field: 'note' }, part(0, 'items'), 'inspect_element')
     ];
     applyContextBudget(items, opts(9000));
     // No part stands in for another: each still holds its text.
-    expect(results(items).map((r) => r.content.includes('x'.repeat(8000)))).toEqual([true, true, true, true]);
+    expect(results(items).map((r) => r.content.includes('x'.repeat(8000)))).toEqual([true, true, true, true, true, true, true]);
   });
 
   it('leaves everything alone while there is room', () => {
@@ -1773,6 +1776,7 @@ describe('reading long rich text whole (#132)', () => {
     // The selection shows only a preview of the body, and the run is offered the read that returns it whole.
     expect(adapter.requests[0].tools.map((t) => t.name)).toContain('inspect_element');
     expect((adapter.requests[0].items.at(-1) as { text: string }).text).toMatch(/"truncated":\s*true/);
+    expect((adapter.requests[0].items.at(-1) as { text: string }).text).toContain('Read it whole with inspect_element');
     const expected = structuredClone(before);
     const tail = expected.at(-1)!.spans.at(-1)!;
     tail.text = tail.text.replace('TAILWORD', 'CHANGED');
@@ -1829,6 +1833,8 @@ describe('a selected part or placement scopes the run (#132)', () => {
           asked.push(lastResult(req).error?.message ?? '');
           return [call('h5', 'request_wider_scope', { question: 'This needs the whole section. OK?' })];
         },
+        // After the user's no, the run is still limited to the heading.
+        () => [call('h6', 'update_selected_props', { props: { lead: 'Still outside the heading' } })],
         () => finish('Changed the headline; the rest stays as it is.')
       ],
       focused
@@ -1846,7 +1852,7 @@ describe('a selected part or placement scopes the run (#132)', () => {
     expect((tool.properties as Record<string, unknown>).variants).toBeUndefined();
     // The model asked to widen, and the user's no kept the run on the heading.
     expect(answers).toHaveLength(0);
-    for (const i of [2, 3, 4]) {
+    for (const i of [2, 3, 4, 6]) {
       const r = lastResult(adapter.requests[i]);
       expect(r.error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
       expect(r.error?.message, `call ${i}`).toContain('request_wider_scope');
@@ -1888,12 +1894,12 @@ describe('a selected part or placement scopes the run (#132)', () => {
           expectedRevision: session.revision,
           operations: [
             { type: 'instance.setProp', owner: owner(), nodeId: gridId(), prop: 'items', itemId: poetry, field: 'title', value: 'Poetry night' },
-            { type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' },
-            // The card part's own style is shared by every card it is shown for: it is the selected part.
-            { type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', scope: 'base', property: 'radius', value: '0px' }
+            { type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' }
           ]
         })
       ],
+      // The style every card shares is not the selected card's alone.
+      () => [call('c6', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', scope: 'base', property: 'radius', value: '0px' }] })],
       () => finish('Renamed and coloured this card.')
     ]);
     const grid = nodeAt(session.state, 2);
@@ -1904,7 +1910,7 @@ describe('a selected part or placement scopes the run (#132)', () => {
     const before = structuredClone(grid);
     const revision = session.revision;
     await run('Rename this card and make it pale blue', { owner: { kind: 'page', id: home(session.state).id }, instancePath: [grid.id], nodeId: def.parts.card.nodeId, partId: 'card', itemPath: [poetry] });
-    for (const i of [1, 2, 3, 4]) expect(lastResult(adapter.requests[i]).error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
+    for (const i of [1, 2, 3, 4, 6]) expect(lastResult(adapter.requests[i]).error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
     // Nothing of the refused batch landed, not even its allowed first operation.
     expect(afterRefused).toEqual({ revision, grid: before });
     expect(lastResult(adapter.requests[5]).ok).toBe(true);
@@ -1913,7 +1919,7 @@ describe('a selected part or placement scopes the run (#132)', () => {
     expect(afterItems).toHaveLength(items.length);
     expect(afterItems[0]).toEqual(items[0]);
     expect(afterItems[1].title).toBe('Poetry night');
-    expect(after.overrides?.card?.base).toEqual({ ...(before.overrides?.card?.base ?? {}), radius: '0px' });
+    expect(after.overrides).toEqual(before.overrides);
     expect(after.itemOverrides).toEqual({ card: { list: 'items', items: { [poetry]: { base: { background: '#dbeeff' } } } } });
   });
 
@@ -1945,6 +1951,7 @@ describe('a selected part or placement scopes the run (#132)', () => {
     );
     const def = () => session.state.components[defId];
     const before = (def().properties.heading as { default: unknown }).default;
+    const ownHeading = (pageAt(session.state, '/')!.nodes[pageAt(session.state, '/')!.rootIds[0]] as InstanceNode).props.heading;
     answers.push('Yes, allow changes beyond the selection');
     await run('Change the default heading', { owner: { kind: 'component', id: defId }, instancePath: [], nodeId: 'heading' });
     expect(lastResult(adapter.requests[1]).error?.message).toMatch(/changes the default of the "heading" property/);
@@ -1955,7 +1962,7 @@ describe('a selected part or placement scopes the run (#132)', () => {
     const placements = Object.values(session.state.pages).flatMap((p) => Object.values(p.nodes)).filter((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === defId);
     expect(placements).toHaveLength(2);
     expect(placements.filter((n) => Object.hasOwn(n.props, 'heading')).map((n) => n.props.heading)).toHaveLength(1);
-    expect(placements.find((n) => Object.hasOwn(n.props, 'heading'))!.props.heading).not.toBe('A new default');
+    expect(placements.find((n) => Object.hasOwn(n.props, 'heading'))!.props.heading).toBe(ownHeading);
     expect(defaultWhenAsked).not.toBe('A new default');
   });
 });
@@ -2003,6 +2010,8 @@ describe('values sent back as they were read (#132)', () => {
           const image = hero.props.image as { assetId: string; alt: string };
           return [call('k1', 'update_selected_props', { props: { heading: 'New headline', primaryLink: 'pg_gone', image: { assetId: image.assetId, alt: image.alt } } })];
         },
+        // An explicit setting is what the sender means: it is not swapped for the stored one.
+        () => [call('k2', 'update_selected_props', { props: { image: { assetId: 'a_gone', alt: 'Kitchen', decorative: false } } })],
         () => finish()
       ],
       focused,
@@ -2019,6 +2028,7 @@ describe('values sent back as they were read (#132)', () => {
     expect(lastResult(adapter.requests[1]).ok).toBe(true);
     const hero = pageAt(session.state, '/')!.nodes[home.rootIds[0]] as InstanceNode;
     expect(hero.props).toMatchObject({ heading: 'New headline', primaryLink: { type: 'page', target: 'pg_gone' }, image: { assetId: 'a_gone', alt: 'Kitchen', decorative: true } });
+    expect(lastResult(adapter.requests[2]).fields?.map((f: { field: string }) => f.field)).toEqual(['props.image']);
   });
 
   it('checks a page-list card sent with a route against the card the write merges it with', async () => {
@@ -2092,5 +2102,42 @@ describe('values sent back as they were read (#132)', () => {
     const ex = { id: 'x', componentId: 'stats.row', keywords: [], description: 'd', variants: { tone: 'inverse' }, props: {} };
     expect(exampleSection(ex).section).toEqual({ componentId: 'stats.row', variant: 'inverse', props: {} });
     expect(exampleSection({ ...ex, variants: { tone: 'inverse', layout: 'two-columns' } }).section).toMatchObject({ variants: { tone: 'inverse', layout: 'two-columns' } });
+  });
+});
+
+describe('a selected card styles itself until the user widens the run (#132)', () => {
+  // Constrained decoding is a focused run at any window; this one has room for the site tools once widened.
+  const focused = { contextWindowTokens: 32000, maxOutputTokens: 2000, toolCalling: 'constrained-json' as const };
+  const grid = (s: ProjectState) => pageAt(s, '/')!.nodes[pageAt(s, '/')!.rootIds[2]] as InstanceNode;
+
+  it('styles only the selected card when no item is named, and every card once the user allows it', async () => {
+    let poetry = '';
+    let afterFirst: unknown;
+    const { session, adapter, run, answers } = await setup(
+      [
+        () => [call('s1', 'style_selected_element', { scope: 'base', styles: [{ property: 'background', value: '#dbeeff' }] })],
+        () => {
+          afterFirst = structuredClone({ overrides: grid(session.state).overrides ?? null, items: grid(session.state).itemOverrides ?? null });
+          return [call('s2', 'request_wider_scope', { question: 'Style every card?' })];
+        },
+        (req) => {
+          // Widened, a small model keeps the style tool for the selected element.
+          expect(req.tools.map((t) => t.name)).toContain('style_selected_element');
+          return [call('s3', 'style_selected_element', { scope: 'base', styles: [{ property: 'radius', value: '0px' }] })];
+        },
+        () => finish('Styled the cards.')
+      ],
+      focused
+    );
+    answers.push('Yes, allow changes beyond the selection');
+    const g = grid(session.state);
+    poetry = (g.props.items as ListItem[])[1].id;
+    const def = session.state.components[g.definitionId];
+    const before = structuredClone(g.overrides ?? null);
+    await run('Make this card pale blue, then round every card', { owner: { kind: 'page', id: pageAt(session.state, '/')!.id }, instancePath: [g.id], nodeId: def.parts.card.nodeId, partId: 'card', itemPath: [poetry] });
+    expect(adapter.requests[0].tools.find((t) => t.name === 'style_selected_element')!.description).toBeDefined();
+    expect(afterFirst).toEqual({ overrides: before, items: { card: { list: 'items', items: { [poetry]: { base: { background: '#dbeeff' } } } } } });
+    expect(lastResult(adapter.requests[3]).ok).toBe(true);
+    expect(grid(session.state).overrides?.card?.base).toMatchObject({ radius: '0px' });
   });
 });

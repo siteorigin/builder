@@ -215,7 +215,17 @@ function storedIfUnchanged(schema: PropSchema, sent: unknown, stored: unknown, s
   const was = stored as Partial<LinkValue & ImageValue> | null;
   if (!was || typeof was !== 'object') return undefined;
   if (schema.type === 'link' && typeof sent === 'string' && was.type === 'page' && was.target === sent && !Object.hasOwn(state.pages, sent)) return stored;
-  if (schema.type === 'image' && isRow(sent) && typeof was.assetId === 'string' && sent.assetId === was.assetId && String(sent.alt ?? '') === String(was.alt ?? '') && !Object.hasOwn(state.assets.assets, was.assetId)) return stored;
+  // Only the settings it leaves out come from the stored image: one it sends is the one it means.
+  if (
+    schema.type === 'image' &&
+    isRow(sent) &&
+    typeof was.assetId === 'string' &&
+    sent.assetId === was.assetId &&
+    String(sent.alt ?? '') === String(was.alt ?? '') &&
+    Object.keys(sent).every((k) => k === 'assetId' || k === 'alt' || same(sent[k], (was as Record<string, unknown>)[k])) &&
+    !Object.hasOwn(state.assets.assets, was.assetId)
+  )
+    return stored;
   return undefined;
 }
 
@@ -292,7 +302,7 @@ export function checkProps(
           return row;
         }
         const ownId = typeof row.id === 'string' && !claimed.has(row.id) ? row.id : undefined;
-        if (ownId) claimed.add(ownId);
+        if (ownId !== undefined) claimed.add(ownId);
         const was = storedItem(matched ? matched[i] : ownId);
         const copy: Record<string, unknown> = {};
         for (const [f, x] of Object.entries(row)) {

@@ -10,7 +10,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
-import { authorityFor, canEditContracts, checkAuthority, OP_REACH, type Authority } from '@agent/scope';
+import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
@@ -2293,6 +2293,25 @@ describe('Developer mode and code components (#132)', () => {
     expect(Object.values(session.state.components).some((d) => d.name === 'Section copy' && d.kind !== 'code')).toBe(true);
   });
 
+  it('refuses an editor batch whose paste comes before a copy of a code component, with the clipboard it will apply with (#132)', async () => {
+    const env = await setup([]);
+    const session = env.session;
+    const home = session.state.site.homePageId;
+    const copied = await session.copy(home, session.state.pages[home].rootIds[0], session.revision);
+    expect(copied.ok).toBe(true);
+    const ops: EditOperation[] = [
+      { type: 'node.paste', clipboardId: copied.clipboardId!, toOwner: { kind: 'page', id: home } },
+      { type: 'component.duplicate', definitionId: 'foundation.shell.header', name: 'Header copy' }
+    ];
+    const before = codeDefs(session.state);
+    const refused = await session.apply({ operations: ops }, { label: 'Paste', source: 'user', codeAllowed: false });
+    expect(refused).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
+    expect(refused.error?.message).toMatch(/is a code component.*Turn on Developer mode in Settings/);
+    expect(codeDefs(session.state)).toEqual(before);
+    // The paste alone is fine.
+    expect((await session.apply({ operations: [ops[0]] }, { label: 'Paste', source: 'user', codeAllowed: false })).ok).toBe(true);
+  });
+
   it('refuses a code operation anywhere in a batch, not only first (#132)', async () => {
     let session: ProjectSession;
     const hero = () => session.state.pages[session.state.site.homePageId].rootIds[0];
@@ -2338,6 +2357,13 @@ describe('repair baseline identity (#132)', () => {
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);
     expect(second[0]).not.toBe(first[0]);
+    // The same row's link sent to another page's missing section is another broken link.
+    const about = Object.values(s0.pages).find((p) => p.route === '/about/')!.id;
+    const contact = Object.values(s0.pages).find((p) => p.route === '/contact/')!.id;
+    const toPage = (pageId: string) =>
+      keys(applyOperations(s0, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'pricing.plans', newNodeId: 'n_plans', props: { plans: [{ id: 'i_0', name: 'Plan', price: '$1', actionLabel: 'Details', actionLink: { type: 'page', target: pageId, anchor: 'missing' } }] } }]).state);
+    expect(toPage(about)).toHaveLength(1);
+    expect(toPage(contact)[0]).not.toBe(toPage(about)[0]);
   });
 });
 
@@ -2398,6 +2424,30 @@ describe('part scope rules (#132)', () => {
     expect(checkAuthority(s0, [{ type: 'instance.setProp', owner, nodeId: header, prop: 'siteName', value: 'Renamed' }], code)).toMatch(/more of Header than the selected part/);
     const nested = authorityFor({ owner, instancePath: [header, 'n_inner'], nodeId: 'n_inner' }, 'Header');
     expect(checkAuthority(s0, [{ type: 'instance.listInsert', owner, nodeId: header, prop: 'links' }], nested)).toMatch(/inside another component placed in Header/);
+  });
+
+  it('keeps content in a slot every card shows, and a list repeated in every card, from a one-card selection (#132)', () => {
+    const s0 = base();
+    const { state: placed, owner, nodeId, def } = placeOn(s0, 'features.grid');
+    // A project copy whose cards render a slot.
+    const { state: forked, results } = applyOperations(placed, [{ type: 'component.fork', definitionId: def.id }]);
+    const id = (results[0] as { definitionId: string }).definitionId;
+    const { state } = applyOperations(forked, [
+      { type: 'component.setSlot', definitionId: id, slot: 'extra', label: 'Extra' },
+      { type: 'node.insert', owner: { kind: 'component', id }, parentId: 'card', primitive: 'slot', bind: 'extra' },
+      { type: 'node.insert', owner, parentId: nodeId, slot: 'extra', primitive: 'paragraph', text: 'Shown in every card', newNodeId: 'n_extra' }
+    ]);
+    const item = ((state.pages[owner.id].nodes[nodeId] as InstanceNode).props.items as ListItem[])[0].id;
+    const edit: EditOperation = { type: 'node.setContent', owner, nodeId: 'n_extra', field: 'text', value: 'Changed' };
+    expect(checkAuthority(state, [edit], partOf(owner, nodeId, 'card', { partId: 'card', itemPath: [item] }))).toMatch(/outside the selected part/);
+    expect(checkAuthority(state, [edit], partOf(owner, nodeId, 'card', { partId: 'card' }))).toBeNull();
+    // A list repeated inside each card shows the same items in every card.
+    const nested = structuredClone(state.components[id]);
+    nested.tree!.nodes['inner-repeat'] = { id: 'inner-repeat', kind: 'repeat', list: { $prop: 'details' }, children: ['inner-text'] } as never;
+    nested.tree!.nodes['inner-text'] = { id: 'inner-text', kind: 'text', tag: 'p', text: { $item: 'note' } } as never;
+    (nested.tree!.nodes.card as { children: string[] }).children.push('inner-repeat');
+    expect(partReach(nested, 'inner-text').itemFields.get('details')).toBeUndefined();
+    expect(partReach(nested, 'card').itemFields.get('items')).toBeDefined();
   });
 
   it('lets a container part change the content placed in its slot, and nothing else (#132)', () => {
