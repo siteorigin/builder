@@ -20,6 +20,8 @@ export interface MockReply {
   keepOpen?: boolean;
   /** Wait this long before answering, as a model that takes a while to start would. */
   delayMs?: number;
+  /** After the last frame, keep sending this frame every `everyMs` until the client goes away: a reply that never ends. */
+  endless?: { frame: unknown; everyMs: number };
 }
 
 export interface MockRequest {
@@ -134,7 +136,9 @@ export class MockOpenAIServer {
     }
     this.open.add(res);
     let finished = false;
+    let endless: ReturnType<typeof setInterval> | undefined;
     res.on('close', () => {
+      clearInterval(endless);
       this.open.delete(res);
       if (!finished) this.disconnects++;
     });
@@ -152,6 +156,11 @@ export class MockOpenAIServer {
       res.write(typeof f === 'string' ? f : `data: ${JSON.stringify(f)}\n\n`);
       await new Promise((r) => setImmediate(r));
       if (res.destroyed) return;
+    }
+    if (reply.endless) {
+      const { frame, everyMs } = reply.endless;
+      endless = setInterval(() => res.write(typeof frame === 'string' ? frame : `data: ${JSON.stringify(frame)}\n\n`), everyMs);
+      return;
     }
     if (reply.stallAfter !== undefined || reply.keepOpen) return;
     finished = true;

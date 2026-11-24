@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import type { AiEvent, ChatContext } from '@shared/api';
 import type { ElementRef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { Orchestrator } from '@agent/orchestrator';
+import { LIMITS, Orchestrator } from '@agent/orchestrator';
 import { LocalAdapter, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { DEFAULT_LOCAL_PROFILE, type LocalModelProfile } from '@agent/models';
 import { findForbiddenShapes } from '@agent/strict-schema';
@@ -166,6 +166,41 @@ describe('orchestrator with constrained JSON', () => {
     expect(result?.status).toBe('failed');
     expect(result?.error).toMatch(/did not start responding/);
     expect(headerName(session, header)).toBe(before);
+  });
+
+  it('ends a reply that streams without end at the time limit, keeping the valid work so far', async () => {
+    const limit = LIMITS.localActiveMs;
+    LIMITS.localActiveMs = 700;
+    try {
+      const { session, run, header } = await setup();
+      const before = headerName(session, header);
+      // Real content keeps arriving well inside the idle timeout, so only the run's own limit can end it.
+      server.script(envelopeReply('update_site_brand', rename('Harbor Coffee'), 'Renaming the site'), { frames: [sseChunk({ role: 'assistant' })], endless: { frame: sseChunk({ content: ' and more' }), everyMs: 20 } });
+      const { runId, result } = await run('Rename the site, then keep going');
+      expect(result).toMatchObject({ status: 'completed', canUndo: true, incomplete: true, error: 'time limit' });
+      expect(result?.summary).toMatch(/time limit/);
+      expect(headerName(session, header)).toBe('Harbor Coffee');
+      await expect.poll(() => server.disconnects).toBe(1);
+      expect(server.requests.filter((r) => r.method === 'POST')).toHaveLength(2);
+      expect((await session.undoGroup(runId)).ok).toBe(true);
+      expect(headerName(session, header)).toBe(before);
+    } finally {
+      LIMITS.localActiveMs = limit;
+    }
+  });
+
+  it('gives a local model its own, longer time limit than a cloud one', async () => {
+    const cloud = LIMITS.activeMs;
+    LIMITS.activeMs = 50;
+    try {
+      const { run } = await setup();
+      // Slower than the cloud limit allows, as a local model reading a long prompt is.
+      server.script({ ...envelopeReply('finish', { message: 'Nothing to change.' }), delayMs: 300 });
+      const { result } = await run('Hello');
+      expect(result).toMatchObject({ status: 'no-changes', summary: 'Nothing to change.' });
+    } finally {
+      LIMITS.activeMs = cloud;
+    }
   });
 
   it('fails clearly, with nothing changed, when no server is running', async () => {

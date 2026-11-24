@@ -27,6 +27,8 @@ export const LIMITS = {
   toolCalls: 100,
   repairPasses: 2,
   activeMs: 10 * 60_000,
+  /** A model on the user's own computer can spend minutes reading each long prompt before it answers. */
+  localActiveMs: 30 * 60_000,
   repeatedFailures: 2,
   providerRetries: 3,
   truncationRetries: 2
@@ -625,6 +627,9 @@ export class Orchestrator {
       await finish('failed', ad.error, { error: ad.error });
       return;
     }
+    /** Working time the run may use, not counting time spent waiting for the user's answers. */
+    const limitMs = ad.provider === 'local' ? LIMITS.localActiveMs : LIMITS.activeMs;
+    const timeLimit = `the ${Math.round(limitMs / 60_000)}-minute time limit`;
     const lockErr = ask ? null : await session.beginRun(runId);
     if (lockErr) {
       await finish('failed', lockErr, { error: lockErr });
@@ -957,8 +962,8 @@ export class Orchestrator {
         }
         activeMs += Date.now() - lastResume;
         lastResume = Date.now();
-        if (activeMs > LIMITS.activeMs) {
-          await stopAtLimit(`the ${Math.round(LIMITS.activeMs / 60_000)}-minute time limit`, 'time limit');
+        if (activeMs > limitMs) {
+          await stopAtLimit(timeLimit, 'time limit');
           return;
         }
         current = runTools();
@@ -970,39 +975,70 @@ export class Orchestrator {
           await stopAtLimit("the model's context limit", 'context limit');
           return;
         }
-        // Stream one model turn with bounded retries for temporary provider errors.
+        // Stream one model turn with bounded retries for temporary provider errors. The time limit also ends a
+        // reply in progress, so a server that keeps streaming cannot outlast it; Stop still means Stop.
         let done: Extract<ModelEvent, { type: 'done' }> | null = null;
-        for (let attempt = 0; ; attempt++) {
-          let turnText = '';
-          let err: Extract<ModelEvent, { type: 'error' }> | null = null;
-          // Reasoning models spend part of the output budget thinking, so the adapter's full budget is used.
-          for await (const ev of ad.adapter.streamTurn({ model: ad.model, system, items, tools, maxOutputTokens: budget.maxOutputTokens }, signal)) {
+        let failed: Extract<ModelEvent, { type: 'error' }> | null = null;
+        let expired = false;
+        const turn = new AbortController();
+        const forwardStop = () => turn.abort();
+        signal.addEventListener('abort', forwardStop, { once: true });
+        const deadline = setTimeout(() => {
+          expired = true;
+          turn.abort();
+        }, limitMs - activeMs);
+        try {
+          for (let attempt = 0; ; attempt++) {
+            let turnText = '';
+            let err: Extract<ModelEvent, { type: 'error' }> | null = null;
+            // Reasoning models spend part of the output budget thinking, so the adapter's full budget is used.
+            for await (const ev of ad.adapter.streamTurn({ model: ad.model, system, items, tools, maxOutputTokens: budget.maxOutputTokens }, turn.signal)) {
+              if (signal.aborted) throw new Error('Cancelled');
+              if (expired) break;
+              if (ev.type === 'text') {
+                turnText += ev.delta;
+                msg.text = finalText + turnText;
+                this.deps.emit({ runId, conversationId: this.conversation?.id ?? '', kind: 'text', text: msg.text });
+              } else if (ev.type === 'done') done = ev;
+              else if (ev.type === 'error') err = ev;
+            }
             if (signal.aborted) throw new Error('Cancelled');
-            if (ev.type === 'text') {
-              turnText += ev.delta;
-              msg.text = finalText + turnText;
-              this.deps.emit({ runId, conversationId: this.conversation?.id ?? '', kind: 'text', text: msg.text });
-            } else if (ev.type === 'done') done = ev;
-            else if (ev.type === 'error') err = ev;
+            // A reply that finished just as time ran out is not acted on either.
+            if (expired) break;
+            if (done) break;
+            if (!err || err.code === 'cancelled') throw new Error('Cancelled');
+            if (['rate_limit', 'overloaded', 'network'].includes(err.code) && attempt < LIMITS.providerRetries) {
+              const wait = Math.min(err.retryAfterMs ?? 1000 * 3 ** attempt, 20000);
+              const a = addActivity(`${err.message} Retrying…`, 'provider');
+              await sleep(wait, turn.signal);
+              if (signal.aborted) throw new Error('Cancelled');
+              if (expired) break;
+              a.status = 'done';
+              continue;
+            }
+            failed = err;
+            break;
           }
-          if (done) break;
-          if (!err || err.code === 'cancelled') throw new Error('Cancelled');
-          if (['rate_limit', 'overloaded', 'network'].includes(err.code) && attempt < LIMITS.providerRetries) {
-            const wait = Math.min(err.retryAfterMs ?? 1000 * 3 ** attempt, 20000);
-            const a = addActivity(`${err.message} Retrying…`, 'provider');
-            await sleep(wait, signal);
-            if (signal.aborted) throw new Error('Cancelled');
-            a.status = 'done';
-            continue;
-          }
+        } finally {
+          clearTimeout(deadline);
+          signal.removeEventListener('abort', forwardStop);
+        }
+        if (expired) {
+          // Valid work so far is kept, as at any other limit.
+          msg.text = finalText;
+          await stopAtLimit(timeLimit, 'time limit');
+          return;
+        }
+        if (failed) {
           // The provider's count is the real one: a request it finds too long keeps the valid work so far.
-          if (err.code === 'invalid_request' && /context.{0,20}(length|window|limit)|too long|too many tokens|maximum context/i.test(err.message) && session.runChanged()) {
+          if (failed.code === 'invalid_request' && /context.{0,20}(length|window|limit)|too long|too many tokens|maximum context/i.test(failed.message) && session.runChanged()) {
             await stopAtLimit("the model's context limit", 'context limit');
             return;
           }
-          await revertAndFinish('failed', err.code === 'auth' ? 'The AI provider rejected the API key. Update it in Settings.' : `The AI request failed: ${err.message}`, err.message);
+          await revertAndFinish('failed', failed.code === 'auth' ? 'The AI provider rejected the API key. Update it in Settings.' : `The AI request failed: ${failed.message}`, failed.message);
           return;
         }
+        if (!done) throw new Error('Cancelled');
         if (done.usage) usage = { inputTokens: usage.inputTokens + done.usage.inputTokens, outputTokens: usage.outputTokens + done.usage.outputTokens };
         if (done.stopReason === 'max_tokens' && !done.toolCalls.length) {
           // A cut-off turn is dropped from the history (an empty assistant message is invalid for some
@@ -1146,6 +1182,11 @@ export class Orchestrator {
             continue;
           }
           if (revisionBound) mutationTried = true;
+          // A tool started now would run past the time limit; the work so far is kept instead.
+          if (activeMs + Date.now() - lastResume > limitMs) {
+            await stopAtLimit(timeLimit, 'time limit');
+            return;
+          }
           if (++toolCalls > LIMITS.toolCalls) {
             // Every call of the turn still needs a result before the next request; none is sent.
             await stopAtLimit(`the limit of ${LIMITS.toolCalls} tool calls`, 'tool limit');
