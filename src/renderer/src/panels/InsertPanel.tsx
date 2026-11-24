@@ -1327,6 +1327,8 @@ export function InsertPanel() {
   // reach the preview it opened.
   const hover = (key: string, section = false) => ({
     onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
+      // A tile being dragged to the canvas crosses others on its way: they open nothing.
+      if (document.documentElement.classList.contains('insert-dragging')) return;
       const el = e.currentTarget;
       if (dismissed.current !== key) dismissed.current = null;
       if (dismissed.current === key) return setPointed(key);
