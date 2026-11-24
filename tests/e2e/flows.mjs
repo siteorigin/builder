@@ -88,24 +88,30 @@ const mediaBody = () =>
   });
 const lastText = (body) => body[1].spans.map((x) => x.text).join('');
 const second = rich.locator('p').nth(1);
-await rich.scrollIntoViewIfNeeded();
+// The canvas is scaled to fit, so a word's place on screen is its place in the frame, scaled.
+const onScreen = async (word) => {
+  const at = await second.evaluate((p, w) => {
+    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const i = n.nodeValue.indexOf(w);
+      if (i < 0) continue;
+      const r = document.createRange();
+      r.setStart(n, i + 2);
+      r.setEnd(n, i + 3);
+      const b = r.getBoundingClientRect();
+      return { x: b.left + b.width / 2, y: b.top + b.height / 2, width: innerWidth };
+    }
+    throw new Error(`no ${w}`);
+  }, word);
+  const box = await win.locator('.frame-box iframe').boundingBox();
+  const scale = box.width / at.width;
+  return { x: box.x + at.x * scale, y: box.y + at.y * scale };
+};
+// Selected first, where the editor scrolls it to, then double-clicked where it then is.
 await rich.click();
-await win.waitForTimeout(300);
-const cushion = await rich.evaluate((el) => {
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    const at = n.nodeValue.indexOf('cushion');
-    if (at < 0) continue;
-    const r = document.createRange();
-    r.setStart(n, at + 2);
-    r.setEnd(n, at + 3);
-    const box = r.getBoundingClientRect();
-    const root = el.getBoundingClientRect();
-    return { x: box.left - root.left + box.width / 2, y: box.top - root.top + box.height / 2 };
-  }
-  throw new Error('no cushion');
-});
-await rich.dblclick({ position: cushion });
+await win.waitForTimeout(800);
+const cushion = await onScreen('cushion');
+await win.mouse.dblclick(cushion.x, cushion.y);
 await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited'));
 assert.equal(await rich.evaluate(() => getSelection().toString()), 'cushion', 'the edit selects the word double-clicked, not the whole text');
 await win.keyboard.type('detail');
@@ -142,8 +148,9 @@ await eventually(async () => assert.equal(await second.locator('br').count(), 2,
 // Opening the edit again and leaving it changes nothing.
 const settled = (await mediaBody()).revision;
 await rich.click();
-await win.waitForTimeout(300);
-await rich.dblclick({ position: cushion });
+await win.waitForTimeout(800);
+const detail = await onScreen('detail');
+await win.mouse.dblclick(detail.x, detail.y);
 await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited again'));
 await win.keyboard.press(`${MOD}+Enter`);
 await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), null, 'the edit ends'));
