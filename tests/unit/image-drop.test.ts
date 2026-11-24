@@ -491,6 +491,7 @@ describe('an image first, then between content (#506)', () => {
     expect(assetAim(null, null, false, insert)).toEqual({ kind: 'pending' });
     expect(asked).toBe(0);
     expect(assetAim(null, null, true, insert)).toEqual({ kind: 'insert', aim: between(s) });
+    expect(asked).toBe(1);
     // Where nothing can go, the place says why, with nowhere to drop.
     const refused: InsertAim = { at: null, refused: 'It has more than one place for content.', line: null, outline: rect, where: null };
     expect(assetAim(null, null, true, () => refused)).toEqual({ kind: 'insert', aim: refused });

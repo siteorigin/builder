@@ -1932,6 +1932,8 @@ export function Canvas() {
         if (moved) measure();
         if (askAgain) ask();
         if (done) return;
+        // Covered since it was let go (a menu or note of the editor's over the release point): nothing changes.
+        if (late && p && !onPage()) return end(false);
         show();
         // Let go anywhere but on an image: the place goes by the page as it lays out now (a picture or font that loaded
         // while the pointer was still can move it without a scroll), measured again after this answer, never ahead of it.
@@ -2018,8 +2020,7 @@ export function Canvas() {
       listen(false);
       // Let go off the page (or over the editor's own menus and notes): nothing changes.
       if (!onPage()) return end(false);
-      // What the drag shows where it is let go: a release does that, or nothing.
-      show();
+      // What the drag last showed on the page as it is let go: a release does that, or nothing.
       shown = seen;
       // The drop goes where it was let go, once the page has said what is there now.
       timer = setTimeout(() => {

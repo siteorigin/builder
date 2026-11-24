@@ -1250,7 +1250,7 @@ describe('placing a library image from Assets (issue #13)', () => {
       expect(page().nodes[inColumn[0]]).toMatchObject({ kind: 'image', image: { assetId: nook.id, alt: nook.altSuggestion } });
       expect((page().nodes[grid] as ElementNode).children).toEqual([column]);
       expect(store.getState().selection).toMatchObject({ owner, nodeId: inColumn[0] });
-      expect(lastToast()!.text).toMatch(/^Placed “Reading nook” inside /);
+      expect(lastToast()!.text).toMatch(/^Placed “Reading nook” inside .+ on Home\.$/);
     });
 
     it('is refused for the reasons Place on page gives, and changes nothing', async () => {
@@ -1286,6 +1286,10 @@ describe('placing a library image from Assets (issue #13)', () => {
       await write([{ type: 'node.setContent', owner, nodeId: intro, field: 'text', value: 'Hello' }]);
       expect(await actions.dropAssetAt(photo.id, at, rev)).toBe(false);
       expect(lastToast()).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
+      // Between sections too, where a Section is made for it.
+      const sections = page().rootIds.length;
+      expect(await actions.dropAssetAt(photo.id, { owner, parentId: null, index: 1 }, rev)).toBe(false);
+      expect(page().rootIds).toHaveLength(sections);
       expect(placed(page(), photo.id)).toEqual([]);
       // Changed where this window has not heard of it yet: the project itself refuses it, once, without trying again.
       const calls = applyCalls;
