@@ -133,6 +133,16 @@ function openProjectDialog(folder: boolean): OpenDialogOptions {
   };
 }
 
+/**
+ * Find folder… on a missing recent project (#217): a folder, on every platform. A ZIP file would unpack a new copy, never
+ * the folder the project was moved to.
+ */
+function findFolderDialog(name: string | undefined): OpenDialogOptions {
+  const defaultPath = existsSync(defaultProjectsFolder()) ? defaultProjectsFolder() : undefined;
+  const message = name ? `Choose the folder ${name} is in now.` : 'Choose the folder the project is in now.';
+  return { title: name ? `Find ${name}` : 'Find a project folder', message, defaultPath, properties: ['openDirectory'] };
+}
+
 /** Is `path` a ZIP file (a folder that happens to end in .zip is still a folder)? */
 async function isZipFile(path: string): Promise<boolean> {
   if (!/\.zip$/i.test(path)) return false;
@@ -585,12 +595,16 @@ export class Controller {
     let dir = dirArg;
     if (!dir) {
       const win = this.getWindow();
-      const r = await dialog.showOpenDialog(win!, openProjectDialog(folder));
+      const finding = replaces === undefined ? undefined : (await loadSettings()).recents.find((r) => r.dir === replaces)?.name;
+      const r = await dialog.showOpenDialog(win!, replaces === undefined ? openProjectDialog(folder) : findFolderDialog(finding));
       if (r.canceled || !r.filePaths[0]) return { ok: false };
       dir = r.filePaths[0];
       if (basename(dir) === MANIFEST_FILE) dir = join(dir, '..');
     }
-    if (await isZipFile(dir)) return this.openZip(dir, abort);
+    if (await isZipFile(dir)) {
+      if (replaces !== undefined) return { ok: false, message: 'Choose the folder the project is in now. A ZIP file would make a new copy of it.' };
+      return this.openZip(dir, abort);
+    }
     if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' };
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.

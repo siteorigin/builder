@@ -1,6 +1,6 @@
 import { app } from 'electron';
-import { existsSync, promises as fs } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, promises as fs, statSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
 import { PROVIDER_LABELS } from '@shared/turn-model';
 import { atomicWrite } from './project/fsutil';
@@ -139,16 +139,29 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
 }
 
 const MAX_RECENTS = 20;
-const listedFolderGone = (dir: string) => !existsSync(join(dir, 'siteorigin.project.json'));
+const MANIFEST = 'siteorigin.project.json';
 
 /**
- * Whether a project just opened is the one a recent entry listed (#217). An entry remembers its project's ID; one
- * listed before IDs were kept is matched by its name and its folder's name together, since a folder that has gone can
- * no longer be asked for its ID.
+ * Whether a listed project's folder is known to be gone: nothing at its path. A folder that cannot be looked into
+ * right now (no permission, say) is not known to be gone, so its entry is never given away for it.
+ */
+function listedFolderGone(dir: string): boolean {
+  try {
+    statSync(join(dir, MANIFEST));
+    return false;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
+}
+
+/**
+ * Whether a project just opened is the one a recent entry listed (#217), by the project ID the entry remembers. An
+ * entry listed before IDs were kept can never be told apart from another project of its name (a project's folder is
+ * named after it), so nothing replaces it: it stays until it is removed.
  */
 function sameProject(old: RecentProject, opened: RecentProject): boolean {
-  if (old.projectId) return old.projectId === opened.projectId;
-  return old.name === opened.name && basename(old.dir) === basename(opened.dir);
+  return typeof old.projectId === 'string' && old.projectId !== '' && old.projectId === opened.projectId;
 }
 
 /**
@@ -191,7 +204,7 @@ export async function renameRecent(dir: string, name: string) {
 
 export async function recents(): Promise<RecentProject[]> {
   const s = await loadSettings();
-  return s.recents.map((r) => ({ ...r, missing: listedFolderGone(r.dir) }));
+  return s.recents.map((r) => ({ ...r, missing: !existsSync(join(r.dir, MANIFEST)) }));
 }
 
 export async function removeRecent(dir: string) {

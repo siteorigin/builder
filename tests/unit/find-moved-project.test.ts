@@ -4,11 +4,11 @@
  * restart reads. A cancel, another project of the same name, or an opening that is not listed keeps the entry.
  */
 import { EventEmitter } from 'node:events';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { OpenDialogReturnValue } from 'electron';
+import type { OpenDialogOptions, OpenDialogReturnValue } from 'electron';
 
 /** A stand-in for Electron's utility process that starts at once and exits when asked to stop. */
 class FakeWorker extends EventEmitter {
@@ -27,14 +27,19 @@ class FakeWorker extends EventEmitter {
   }
 }
 
-/** What the folder picker answers next, in order: a cancel once none are left. */
-const env = vi.hoisted(() => ({ userData: '', picks: [] as OpenDialogReturnValue[] }));
+/** What the folder picker answers next, in order (a cancel once none are left), and what each picker was asked. */
+const env = vi.hoisted(() => ({ userData: '', picks: [] as OpenDialogReturnValue[], asked: [] as OpenDialogOptions[] }));
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
   BrowserWindow: class {},
   shell: { showItemInFolder: () => undefined },
   nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
-  dialog: { showOpenDialog: async () => env.picks.shift() ?? { canceled: true, filePaths: [] } },
+  dialog: {
+    showOpenDialog: async (_win: unknown, opts: OpenDialogOptions) => {
+      env.asked.push(opts);
+      return env.picks.shift() ?? { canceled: true, filePaths: [] };
+    }
+  },
   utilityProcess: { fork: () => new FakeWorker() }
 }));
 
@@ -56,6 +61,7 @@ const temp = (name: string) => {
 beforeEach(() => {
   env.userData = temp('userdata');
   env.picks = [];
+  env.asked = [];
 });
 afterEach(async () => {
   for (const c of controllers.splice(0)) await c.close();
@@ -94,28 +100,38 @@ const listed = async (...roots: string[]) => (await settings.recents()).filter((
 const saved = (...roots: string[]) =>
   (JSON.parse(readFileSync(join(env.userData, 'settings.json'), 'utf8')) as { recents: Array<{ dir: string; name: string; projectId?: string }> }).recents.filter((r) => roots.some((root) => r.dir.startsWith(root)));
 
-/** Mill Road opened once in its client folder, then closed and moved to delivered work while the app was not looking. */
-async function movedMillRoad() {
+/**
+ * Mill Road opened once in its client folder, then closed and moved to delivered work while the app was not looking,
+ * into a folder called `folder`.
+ */
+async function movedMillRoad(folder = 'mill-road') {
   const root = temp('work');
   const old = await makeProject(join(root, 'clients'), 'mill-road', 'Mill Road');
   const c = controller();
   expect((await c.trustAndOpen(old)).ok).toBe(true);
   await c.close();
   mkdirSync(join(root, 'delivered'));
-  const moved = join(root, 'delivered', 'mill-road');
+  const moved = join(root, 'delivered', folder);
   renameSync(old, moved);
   return { root, old, moved, c };
 }
 
 describe('finding a moved project from its missing recent entry (#217)', () => {
-  it('lists each project with its own ID, through a rename of its site', async () => {
+  it('lists each project with its own ID, through a rename of its site, and a duplicate with the copy’s', async () => {
     const root = temp('work');
     const dir = await makeProject(root, 'mill-road', 'Mill Road');
     const c = controller();
     expect((await c.trustAndOpen(dir)).ok).toBe(true);
     expect((await c.apply({ operations: [{ type: 'site.update', name: 'Mill Road Bakery' }] }, { label: 'Rename site' })).ok).toBe(true);
+    const dup = await c.duplicate({ name: 'Mill Road Copy', parentDir: root, opening: c.openingKey! });
+    expect(dup).toMatchObject({ ok: true, dir: join(root, 'mill-road-copy') });
     await c.close();
-    expect(saved(root)).toEqual([expect.objectContaining({ dir, name: 'Mill Road Bakery', projectId: projectId(dir) })]);
+    const copy = join(root, 'mill-road-copy');
+    expect(projectId(copy)).not.toBe(projectId(dir));
+    expect(saved(root)).toEqual([
+      expect.objectContaining({ dir: copy, name: 'Mill Road Copy', projectId: projectId(copy) }),
+      expect.objectContaining({ dir, name: 'Mill Road Bakery', projectId: projectId(dir) })
+    ]);
   });
 
   it('replaces the missing entry with the moved folder once it has opened, even when the moved folder is listed already, and keeps it so after a restart', async () => {
@@ -144,10 +160,17 @@ describe('finding a moved project from its missing recent entry (#217)', () => {
     expect((await fresh.recents()).filter((r) => r.dir.startsWith(root)).map((r) => [r.dir, r.name, r.missing])).toEqual([[moved, 'Mill Road', false]]);
   });
 
-  it('keeps the missing entry when the picker or the trust prompt is cancelled, and replaces it once trusted', async () => {
-    const { root, old, moved, c } = await movedMillRoad();
-    // The picker cancelled.
+  it('keeps the missing entry when the picker or the trust prompt is cancelled, and replaces it once trusted, whatever the folder is now called', async () => {
+    const { root, old, moved, c } = await movedMillRoad('mill-road-2026');
+    // The picker cancelled. It asked for a folder, naming the project, on every platform.
     expect(await c.open(undefined, { folder: true, replaces: old })).toEqual({ ok: false });
+    expect(env.asked).toEqual([expect.objectContaining({ title: 'Find Mill Road', message: 'Choose the folder Mill Road is in now.', properties: ['openDirectory'] })]);
+    expect((await listed(root)).map((r) => r.dir)).toEqual([old]);
+    // A ZIP file would unpack a new copy: it is refused before anything is read or made.
+    const zip = join(root, 'mill-road-backup.zip');
+    writeFileSync(zip, 'not read');
+    const refused = await c.open(zip, { replaces: old });
+    expect(refused).toEqual({ ok: false, message: expect.stringContaining('ZIP file') });
     expect((await listed(root)).map((r) => r.dir)).toEqual([old]);
     // The moved folder is not trusted at its new place: the open stops at the trust prompt, and Cancel ends it there.
     pick(moved);
@@ -210,21 +233,46 @@ describe('finding a moved project from its missing recent entry (#217)', () => {
 describe('the recent entry a found project replaces', () => {
   const at = (dir: string, name: string, projectId?: string) => ({ dir, name, openedAt: '2026-01-01T00:00:00.000Z', ...(projectId ? { projectId } : {}) });
 
-  it('matches an entry listed before IDs were kept by its name and its folder’s name together', async () => {
+  it('keeps an entry listed before IDs were kept, or with an ID that is not one, until it is removed', async () => {
     const root = temp('legacy');
-    const s = await settings.loadSettings();
     const gone = join(root, 'clients', 'mill-road');
-    s.recents = [at(gone, 'Mill Road')];
-    const elsewhere = join(root, 'harbour', 'harbour-site');
-    const renamed = join(root, 'renamed', 'mill-road');
+    const odd = join(root, 'odd', 'mill-road');
+    const empty = join(root, 'empty', 'mill-road');
+    // A settings file from before IDs were kept, and hand-edited rows. A project's folder is named after it, so two
+    // Mill Roads sit in two mill-road folders: nothing tells these apart from another project of that name.
+    writeFileSync(join(env.userData, 'settings.json'), JSON.stringify({ recents: [at(gone, 'Mill Road'), { ...at(odd, 'Mill Road'), projectId: 42 }, { ...at(empty, 'Mill Road'), projectId: '' }] }));
+    vi.resetModules();
+    const fresh = await import('../../src/main/settings');
+    const mine = async () => (await fresh.recents()).filter((r) => r.dir.startsWith(root)).map((r) => r.dir);
+    expect(await mine()).toEqual([gone, odd, empty]);
     const moved = join(root, 'delivered', 'mill-road');
-    // Same name in another folder, or the same folder name under another name: not the project that was listed.
-    await settings.addRecent(elsewhere, 'Mill Road', 'pharbour', gone);
-    await settings.addRecent(renamed, 'Mill Road Bakery', 'pbakery', gone);
-    expect((await listed(root)).map((r) => r.dir)).toEqual([renamed, elsewhere, gone]);
-    await settings.addRecent(moved, 'Mill Road', 'pmill', gone);
-    expect((await listed(root)).map((r) => r.dir)).toEqual([moved, renamed, elsewhere]);
+    for (const replaces of [gone, odd, empty]) await fresh.addRecent(moved, 'Mill Road', 'pmill', replaces);
+    expect(await mine()).toEqual([moved, gone, odd, empty]);
     expect(saved(root).find((r) => r.dir === moved)?.projectId).toBe('pmill');
+    await fresh.removeRecent(gone);
+    expect(await mine()).toEqual([moved, odd, empty]);
+  });
+
+  it('keeps the entry of a folder that cannot be looked into, which is not known to be gone', async () => {
+    const root = temp('locked');
+    const s = await settings.loadSettings();
+    const parent = join(root, 'clients');
+    const original = join(parent, 'mill-road');
+    mkdirSync(original, { recursive: true });
+    writeFileSync(join(original, 'siteorigin.project.json'), '{}');
+    s.recents = [at(original, 'Mill Road', 'pmill')];
+    const copy = join(root, 'copy', 'mill-road');
+    chmodSync(parent, 0o000);
+    try {
+      await settings.addRecent(copy, 'Mill Road', 'pmill', original);
+    } finally {
+      chmodSync(parent, 0o755);
+    }
+    expect(s.recents.map((r) => r.dir)).toEqual([copy, original]);
+    // Known to be gone, the same project takes its place.
+    rmSync(original, { recursive: true });
+    await settings.addRecent(join(root, 'found', 'mill-road'), 'Mill Road', 'pmill', original);
+    expect(s.recents.map((r) => r.dir)).toEqual([join(root, 'found', 'mill-road'), copy]);
   });
 
   it('is never pushed off a full list by another project opened for it', async () => {

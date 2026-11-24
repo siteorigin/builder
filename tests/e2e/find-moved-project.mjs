@@ -3,12 +3,12 @@
 // Find folder… beside its own Remove. Cancelling the picker, choosing another project called Mill Road in a folder of
 // the same name, or cancelling the trust prompt keeps the card. Opened through Open project, the moved folder is
 // listed beside the missing card (the report); Find folder… on that card, choosing it, leaves Mill Road listed once.
-// Moved again, it is found through the trust prompt. Each time the list is the same after a restart. The app's chooser
-// fixtures answer the pickers, so nothing appears on screen.
+// Moved again, it is found through the trust prompt. Each time the list is the same after a restart, and Remove still
+// takes a missing card off on its own. The app's chooser fixtures answer the pickers, so nothing appears on screen.
 import assert from 'node:assert/strict';
-import { mkdirSync, realpathSync, renameSync } from 'node:fs';
+import { mkdirSync, realpathSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { answerChoosers, chooseMenu, choosersShown, createProject, desktopCursor, eventually, launch, scratch, step } from './harness.mjs';
+import { answerChoosers, choosersShown, createProject, desktopCursor, eventually, launch, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('find-moved-project');
 const clients = join(WORK, 'clients');
@@ -25,7 +25,8 @@ const missingCard = () => win.locator('.recent-item.missing');
 const trustPrompt = () => win.getByRole('dialog', { name: 'Trust this project?' });
 
 async function closeProject() {
-  await chooseMenu(app, ['File', 'Close Project']);
+  const closed = await win.evaluate(() => window.builder.projects.close());
+  assert.equal(closed.ok, true, 'the project closes');
   await win.waitForSelector('.welcome');
   await win.locator('.recent-card').first().waitFor();
 }
@@ -44,12 +45,20 @@ async function openProjectButton(dir) {
   await win.locator('.welcome-action', { hasText: 'Open project…' }).click();
 }
 
-/** Find folder… on the missing card, the picker answering with `answer` ({ paths } or { cancel: true }). */
+/**
+ * Find folder… on the missing card, the picker answering with `answer` ({ paths } or { cancel: true }). The answer is
+ * only taken by a folder picker that names the project, so a picker of any other kind is refused and fails the step.
+ */
 async function findFolder(answer) {
   const since = await desktopCursor(app);
-  await answerChoosers(app, [{ dialog: 'open', ...answer }]);
+  const [id] = await answerChoosers(app, [{ dialog: 'open', title: 'Find Mill Road', selection: 'folder', ...answer }]);
   await missingCard().locator('.recent-card').click();
-  await eventually(async () => assert.equal((await choosersShown(app, since)).length, 1, 'one picker is shown'));
+  await eventually(async () => {
+    const shown = await choosersShown(app, since);
+    assert.equal(shown.length, 1, 'one picker is shown');
+    assert.equal(shown[0].answer, id, 'it took the answer meant for it');
+    assert.equal(shown[0].outcome, answer.cancel ? 'cancelled' : 'chosen');
+  });
 }
 
 step('Mill Road, and another site called Mill Road for another client, which is then taken off the list');
@@ -165,15 +174,18 @@ await eventually(async () =>
   ])
 );
 
-step('after a restart the list is the same');
+step('after a restart the list is the same; the other Mill Road, gone meanwhile, is taken off it with Remove');
+rmSync(other, { recursive: true });
 await restart();
 assert.deepEqual(await listed(), [
   [archived, false],
-  [other, false]
+  [other, true]
 ]);
-assert.equal(await missingCard().count(), 0);
-assert.equal(await win.locator('.recent-card', { hasText: 'Mill Road' }).count(), 2, 'two Mill Roads, each its own project');
 assert.equal(await win.locator('.recent-card').first().getAttribute('title'), `Mill Road\n${archived}`);
+assert.equal(await missingCard().locator('.recent-card').getAttribute('title'), `Mill Road\n${other}`);
+await missingCard().getByRole('button', { name: /^Remove Mill Road.* from recent projects$/ }).click();
+await eventually(async () => assert.deepEqual(await listed(), [[archived, false]]));
+assert.equal(await missingCard().count(), 0, 'no card says its folder is not found');
 
 allErrors.push(...errors);
 await app.close();
