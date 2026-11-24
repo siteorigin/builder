@@ -411,6 +411,8 @@ body.dialog-open .toast :is(.btn, .held-actions) { display: none; }
 body.dialog-open .toast { pointer-events: none; }
 /* A typed edit kept while the AI works: stays until the author applies or discards it. */
 .toasts .toast-group { display: contents; }
+/* The Previewing bar sits 18px above the canvas floor (about 42px above the window) and is 36px tall: keep the stack above it. */
+body:has(.preview-pill) .toasts { bottom: 90px; }
 .toast.held { align-items: flex-start; max-width: 460px; }
 .toast.held .held-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .toast.held .held-where { font-weight: 600; }
