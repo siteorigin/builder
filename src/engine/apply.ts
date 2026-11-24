@@ -1169,7 +1169,10 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
     nodes = primitiveNode(state, op.primitive, op.text);
     // A paragraph or span container holds only inline content, so text inserted there is inline text.
     const text = nodes[0];
-    if (text.kind === 'text' && !text.rich && op.parentId && insertsInline(state, op.owner, op.parentId, op.slot)) text.tag = 'span';
+    const holder = op.parentId && Object.hasOwn(tree.nodes, op.parentId) ? tree.nodes[op.parentId] : undefined;
+    // Content placed in a component without naming a slot goes in its first one (see insertionList).
+    const slot = op.slot ?? (holder?.kind === 'instance' ? Object.keys(state.components[holder.definitionId]?.slots ?? {})[0] : undefined);
+    if (text.kind === 'text' && !text.rich && op.parentId && insertsInline(state, op.owner, op.parentId, slot)) text.tag = 'span';
   } else {
     let def: ComponentDefinition;
     if (op.definitionId) def = state.components[op.definitionId] ?? fail(`Component definition "${op.definitionId}" is not installed.`);

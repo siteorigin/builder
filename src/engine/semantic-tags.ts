@@ -13,7 +13,7 @@
  */
 import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { ELEMENT_TAGS, TEXT_TAGS, isBinding } from '@shared/types';
-import { isCardLink } from '@generator/card-links';
+import { brokenCardKeys, cardKey, isCardLink } from '@generator/card-links';
 import { boundSchema } from './schema';
 import { allTrees, getNode, getTree, instancesOf } from './tree';
 
@@ -93,6 +93,14 @@ class Structure {
       this.ctxs.set(key, c);
     }
     return c;
+  }
+
+  private brokenCards?: Set<string>;
+
+  /** Whether a card renders as its plain container, because something interactive renders inside it. */
+  broken(ctx: TreeCtx, id: string): boolean {
+    this.brokenCards ??= brokenCardKeys(this.state);
+    return this.brokenCards.has(cardKey({ owner: ctx.owner, cardId: id }));
   }
 
   /** A managed definition's tree, read as its own document. */
@@ -187,7 +195,7 @@ class Reader {
   /** The tags an element can render as: its own, and a link's when it is a card the link renders in place of. */
   shown(ctx: TreeCtx, n: GraphNode): readonly string[] | null {
     const tags = this.tags(ctx, n);
-    return tags && linkCard(n) ? [...tags, 'a'] : tags;
+    return tags && linkCard(n) && !this.structure.broken(ctx, n.id) ? [...tags, 'a'] : tags;
   }
 
   around(a: Around): { tags: readonly string[]; node?: GraphNode } {
@@ -206,13 +214,20 @@ class Reader {
     if (seen.has(key)) return false;
     seen.add(key);
     const nodes = ctx.tree.nodes;
+    // A node met twice holds itself (edited by hand), which renders nothing certain.
+    const walked = new Set<string>();
     const ok = (id: string): boolean => {
       const n = Object.hasOwn(nodes, id) ? nodes[id] : undefined;
       if (!n) return true;
+      if (walked.has(id)) return false;
+      walked.add(id);
       if (n.kind === 'repeat') return n.children.every(ok);
       if (n.kind === 'instance') {
         const inner = this.structure.defCtx(n.definitionId);
-        return !!inner && this.designInline(inner, seen) && Object.values(n.slots ?? {}).every((ids) => (ids ?? []).every(ok));
+        if (!inner || !this.designInline(inner, seen)) return false;
+        // Only content in a slot the design renders shows.
+        const rendered = new Set(Object.values(inner.tree.nodes).flatMap((x) => (x.kind === 'slot' ? [x.slot] : [])));
+        return Object.entries(n.slots ?? {}).every(([slot, ids]) => !rendered.has(slot) || (ids ?? []).every(ok));
       }
       if (!inline(this.rendered(ctx, n))) return false;
       return n.kind !== 'element' || n.children.every(ok);
@@ -314,17 +329,23 @@ function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingP
     const above = structure.ancestors(ctx, id).map((a) => reader.around(a));
     // A block inside a paragraph closes it, so the browser builds a different page from the one the site's code expects.
     // A placed component is inline only when everything its design renders is.
-    if (!inline(r) || !(r?.via ?? []).every((d) => reader.designInline(d))) {
-      if (above.some((a) => some(a.tags, ['p']))) say('error', 'in-paragraph', 'can’t go inside a paragraph container, which holds only inline text, buttons, links and icons.');
-      if (above.some((a) => some(a.tags, ['span']))) say('error', 'in-span', 'can’t go inside a span container, which holds only inline text, buttons, links and icons.');
+    const inParagraph = above.some((a) => some(a.tags, ['p']));
+    const inSpan = above.some((a) => some(a.tags, ['span']));
+    if ((inParagraph || inSpan) && (!inline(r) || !(r?.via ?? []).every((d) => reader.designInline(d)))) {
+      if (inParagraph) say('error', 'in-paragraph', 'can’t go inside a paragraph container, which holds only inline text, buttons, links and icons.');
+      if (inSpan) say('error', 'in-span', 'can’t go inside a span container, which holds only inline text, buttons, links and icons.');
     }
     if (some(tags, LANDMARK_ENDS) && above.some((a) => some(a.tags, LANDMARK_ENDS))) say('error', 'landmark', 'can’t be a header or footer inside another header or footer.');
     for (const at of structure.up(ctx, id).parents) {
       const p = reader.around(at);
       // A term and its description may be grouped in one plain container inside the list: the container's own parents.
-      const group = !('outer' in at) && p.node?.kind === 'element' && every(p.tags, ['div']) ? structure.up(at.ctx, at.id).parents.map((g) => reader.around(g)) : null;
+      const groupUp = !('outer' in at) && p.node?.kind === 'element' && every(p.tags, ['div']) ? structure.up(at.ctx, at.id) : null;
+      const group = groupUp ? groupUp.parents.map((g) => reader.around(g)) : null;
       if (some(tags, ['li']) && !every(p.tags, ['ul', 'ol'])) say('error', 'li', 'is a list item, so it goes directly inside a list (ul or ol).');
-      if (some(tags, ['dt', 'dd']) && !every(p.tags, ['dl']) && !(group && group.every((g) => every(g.tags, ['dl']))))
+      // A term opened inside another term or description closes it, even through a plain container, so a group whose
+      // list is decided elsewhere (the edge of a component's design) is not trusted to be in one.
+      const groupInList = !!groupUp && !groupUp.open && group!.length > 0 && group!.every((g) => every(g.tags, ['dl']));
+      if (some(tags, ['dt', 'dd']) && !every(p.tags, ['dl']) && !groupInList)
         say('error', 'dl-item', 'is a term or description, so it goes inside a description list (dl).');
       if (some(tags, ['figcaption']) && !every(p.tags, ['figure'])) say('error', 'figcaption', 'is a caption, so it goes directly inside a figure.');
       if (some(tags, ['summary']) && !every(p.tags, ['details'])) say('error', 'summary', 'is a summary, so it goes directly inside a details element.');
@@ -353,6 +374,12 @@ function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingP
 /** Every nesting problem in one tree, with `override` standing in for one node's tag: what the tree would hold with it. */
 export function nestingProblems(state: ProjectState, owner: OwnerRef, tree: NodeTree, override?: TagOverride): NestingProblem[] {
   return treeProblems(new Reader(new Structure(state), override), owner, tree);
+}
+
+/** Nesting problems of each document of one project in turn, reading the project once. */
+export function nestingChecker(state: ProjectState): (owner: OwnerRef, tree: NodeTree) => NestingProblem[] {
+  const reader = new Reader(new Structure(state));
+  return (owner, tree) => treeProblems(reader, owner, tree);
 }
 
 type Doc = { owner: OwnerRef; tree: NodeTree; label: string };

@@ -558,6 +558,60 @@ describe('across documents (#189)', () => {
   });
 });
 
+describe('edges the final review found (#189)', () => {
+  it('survives a hand-edited inline design that holds itself, inside a paragraph', () => {
+    const { s, o } = pageWithStack();
+    const loop = addDef(s, { componentId: 'test.loop', name: 'Loop', properties: {}, parts: {}, build: (b) => b.el('root', 'span', {}, []) }, false);
+    (loop.tree!.nodes.root as { children: string[] }).children.push('root');
+    const placed = apply(s, [setTag(o, 'n_title01', 'span'), setTag(o, 'n_body01', 'span'), { type: 'node.insert', newNodeId: 'n_loop0001', owner: o, parentId: 'n_stack01', definitionId: loop.id }]);
+    (home(placed).nodes.n_stack01 as { tag: string }).tag = 'p';
+    expect(() => validateState(placed)).not.toThrow();
+  });
+
+  it('keeps a term out of a group whose list is decided outside the design', () => {
+    const s = blank();
+    const def = addDef(s, { componentId: 'test.term-group', name: 'Term group', properties: {}, parts: {}, build: (b) => b.el('root', 'div', {}, [b.text('t', 'p', 'Price'), b.el('inner', 'dl', {}, [b.el('g', 'div', {}, [b.text('u', 'p', 'Size')])])]) });
+    // Placed in a description, a term at the design's edge would close it.
+    expect(tagProblem(s, defOwner(def), 't', 'dt')).toMatch(/is a term or description/);
+    // A group whose list is in the design is fine.
+    expect(tagProblem(s, defOwner(def), 'u', 'dt')).toBeNull();
+  });
+
+  it('lets a paragraph hold an inline component whatever sits in a slot it never renders', () => {
+    const { s, o } = pageWithStack();
+    const badge = addDef(s, { componentId: 'test.badge-slot', name: 'Badge slot', properties: {}, parts: {}, slots: { unused: { label: 'Unused' } }, build: (b) => b.el('root', 'span', {}, [b.text('t', 'strong', 'New')]) }, false);
+    const placed = apply(s, [
+      setTag(o, 'n_title01', 'span'),
+      setTag(o, 'n_body01', 'span'),
+      { type: 'node.insert', newNodeId: 'n_badge01', owner: o, parentId: 'n_stack01', definitionId: badge.id },
+      { type: 'node.insert', newNodeId: 'n_hidden1', owner: o, parentId: 'n_badge01', slot: 'unused', primitive: 'heading' }
+    ]);
+    expect(home(placed).nodes.n_hidden1).toMatchObject({ tag: 'h2' });
+    expect(home(apply(placed, [setTag(o, 'n_stack01', 'p')])).nodes.n_stack01).toMatchObject({ tag: 'p' });
+  });
+
+  it('reads a card that renders plain (something interactive is inside) as its own tag', () => {
+    const { s, o } = pageWithRows();
+    const broken = apply(s, [
+      setTag(o, 'n_row0001', 'figure'),
+      { type: 'node.setContent', owner: o, nodeId: 'n_row0001', field: 'link', value: { type: 'url', target: 'https://example.com' } },
+      { type: 'node.insert', newNodeId: 'n_button01', owner: o, parentId: 'n_row0001', primitive: 'button' }
+    ]);
+    expect(validateState(broken).map((d) => d.code)).toContain('CARD_LINK_INTERACTIVE');
+    expect(home(apply(broken, [setTag(o, 'n_text0001', 'figcaption')])).nodes.n_text0001).toMatchObject({ tag: 'figcaption' });
+  });
+
+  it('inserts inline text into a component’s first slot when no slot is named', () => {
+    const s = blank();
+    addDef(s, { componentId: 'test.first-slot', name: 'First slot', properties: {}, parts: {}, slots: { extra: { label: 'Extra' } }, build: (b) => b.el('root', 'div', {}, [b.el('line', 'span', {}, [b.slot('extra-slot', 'extra')])]) });
+    const o = pageOwner(s);
+    const inst = home(s).rootIds.at(-1)!;
+    const r = apply(s, [{ type: 'node.insert', newNodeId: 'n_text0001', owner: o, parentId: inst, primitive: 'heading' }]);
+    expect(home(r).nodes.n_text0001).toMatchObject({ tag: 'span' });
+    expect((home(r).nodes[inst] as InstanceNode).slots).toEqual({ extra: ['n_text0001'] });
+  });
+});
+
 describe('the Inspector’s choices (#189)', () => {
   it('offers every tag of the kind, and says why one can’t go here', () => {
     const { s, o } = pageWithRows();
