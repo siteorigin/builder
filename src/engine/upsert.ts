@@ -478,6 +478,8 @@ function checkBindings(state: ProjectState, def: ComponentDefinition, sites: Bin
       if (problem) fail(`${at} ${problem}`);
       continue;
     }
+    // An entry's fields are a collection layout's alone: a component has no entry to read them from.
+    if ('$entry' in b) fail(`${at} shows the entry field "${b.$entry}", which only a collection's layout can.`);
     const schema = boundSchema(def, node.id, b);
     if (!schema) {
       if ('$prop' in b) {
