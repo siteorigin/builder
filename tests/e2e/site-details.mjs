@@ -2,10 +2,12 @@
 // field as an unsaved draft, with the reason and the value still saved beside it, until it is corrected (Add
 // https:// for a host name typed on its own), saved or discarded with Escape. Nothing invalid reaches the project,
 // a closed section keeps the draft, and leaving the project with one asks first and Keep editing returns to it.
+// The favicon and the social sharing image use the library's visual picker: thumbnails, search, import and None (#34).
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { crc32, deflateSync } from 'node:zlib';
+import { answerChoosers, createProject, eventually, launch, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('site-details');
 const { app, win, errors } = await launch(WORK);
@@ -46,6 +48,77 @@ await win.locator('#dock-panel-styles').waitFor();
 await expand();
 const language = site().language;
 assert.equal(site().baseUrl, undefined, 'a new site has no public URL');
+
+step('the favicon and social image are chosen from the visual picker, with a thumbnail at their own shape');
+const picker = (name) => details().locator('.insp-image').filter({ has: win.locator('.insp-group-title', { hasText: new RegExp(`^${name}$`) }) });
+assert.equal(await details().locator('select.select').count(), 1, 'the only select left in Site details is the text direction');
+/** A small solid-colour PNG, so each import is a different picture. */
+const makePng = (file, [r, g, b], w = 8, h = 8) => {
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const out = Buffer.alloc(body.length + 8);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc32(body), body.length + 4);
+    return out;
+  };
+  const head = Buffer.alloc(13);
+  head.writeUInt32BE(w, 0);
+  head.writeUInt32BE(h, 4);
+  head.set([8, 2, 0, 0, 0], 8);
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: w }, () => [r, g, b]).flat())]);
+  writeFileSync(file, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', head), chunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: h }, () => row)))), chunk('IEND', Buffer.alloc(0))]));
+  return file;
+};
+const imports = [makePng(join(WORK, 'sunrise.png'), [250, 160, 60]), makePng(join(WORK, 'harbour.png'), [40, 110, 200]), makePng(join(WORK, 'meadow.png'), [60, 170, 90])];
+{
+  // An empty library says so and offers the import, without leaving Site details.
+  const box = picker('Favicon');
+  await box.getByRole('button', { name: 'Choose image…' }).click();
+  assert.match(await box.locator('.insp-pick').innerText(), /No images yet/, 'an empty library says so');
+  for (const [n, f] of imports.entries()) {
+    if (n) await box.getByRole('button', { name: 'Change…' }).click();
+    await answerChoosers(app, [{ dialog: 'open', paths: [f] }]);
+    const before = site().favicon;
+    await box.getByRole('button', { name: 'Import…' }).click();
+    await eventually(() => assert.ok(site().favicon && site().favicon !== before, 'the imported image is chosen'));
+    await eventually(async () => assert.equal(await box.locator('.insp-pick').count(), 0, 'the picker closed after the import'));
+  }
+  await box.getByRole('button', { name: 'Remove favicon' }).click();
+  await eventually(() => assert.equal(site().favicon ?? null, null, 'None again'));
+}
+for (const [name, key] of [['Favicon', 'favicon'], ['Social sharing image', 'socialImage']]) {
+  const box = picker(name);
+  assert.equal(await box.locator('.insp-image-name').innerText(), 'None', `${name} starts as None`);
+  await box.getByRole('button', { name: 'Choose image…' }).click();
+  const tiles = box.locator('.insp-pick-tile');
+  await tiles.first().waitFor();
+  assert.ok((await tiles.count()) >= 3, `the picker lists the library as tiles (${await tiles.count()})`);
+  assert.ok((await tiles.first().locator('img').count()) === 1, 'each tile shows its picture');
+  await box.getByRole('listbox', { name: 'Your images' }).locator('[tabindex="0"]').focus();
+  await win.keyboard.press('ArrowRight');
+  await win.keyboard.press('Enter');
+  await eventually(() => assert.ok(site()[key], `${name} saved`));
+  assert.equal(await box.locator('.insp-pick').count(), 0, 'the picker closed after choosing');
+  await eventually(async () => assert.equal(await box.locator('.insp-image-thumb img').count(), 1, `${name} shows the chosen image`));
+  assert.equal(await box.locator('.insp-alt, input[type="checkbox"], [role="switch"]').count(), 0, 'no description or decorative controls');
+  const shape = await box.locator('.insp-image-thumb').evaluate((el) => el.getBoundingClientRect().width / el.getBoundingClientRect().height);
+  if (key === 'favicon') assert.ok(Math.abs(shape - 1) < 0.02, `the favicon preview is square (${shape})`);
+  else assert.ok(Math.abs(shape - 1200 / 630) < 0.05, `the social preview is 1.91:1 (${shape})`);
+  await box.getByRole('button', { name: `Remove ${name.toLowerCase()}` }).click();
+  await eventually(() => assert.equal(site()[key] ?? null, null, `${name} removed (None)`));
+  assert.equal(await box.locator('.insp-image-name').innerText(), 'None');
+}
+{
+  const social = picker('Social sharing image');
+  await answerChoosers(app, [{ dialog: 'open', paths: [makePng(join(WORK, 'share.png'), [200, 60, 120], 16, 8)] }]);
+  await social.getByRole('button', { name: 'Choose image…' }).click();
+  await social.getByRole('button', { name: 'Import…' }).click();
+  await eventually(() => assert.ok(site().socialImage, 'an image imported from the picker is chosen'));
+  await eventually(async () => assert.equal(await social.locator('.insp-image-thumb img').count(), 1, 'the imported image is shown'));
+  await social.getByRole('button', { name: 'Remove social sharing image' }).click();
+  await eventually(() => assert.equal(site().socialImage ?? null, null));
+}
 
 step('a host name typed without https:// stays in the field, unsaved, with the reason and a fix beside it');
 await input('Public URL').fill('kloof.example');

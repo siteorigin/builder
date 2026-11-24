@@ -455,6 +455,17 @@ function revealInGrid(grid: HTMLElement | null) {
   else if (r.top < g.top) grid.scrollTop -= g.top - r.top + 4;
 }
 
+/**
+ * A site-level image that carries no description: the browser tab icon (shown square) or the picture shown when
+ * the site is shared (shown at the 1.91:1 shape link previews crop it to).
+ */
+export type PlainImage = 'favicon' | 'social';
+
+/** The picker for a site image: the image editor's thumbnail, search, import and keyboard grid, with None as Remove. */
+export function SiteImageField({ value, onChange, state, title, plain }: { value: string | null | undefined; onChange: (assetId: string | null) => void; state: ProjectState; title: string; plain: PlainImage }) {
+  return <ImageEditor value={{ assetId: value ?? null, alt: '' }} onChange={(v) => onChange(v.assetId ?? null)} state={state} title={title} plain={plain} />;
+}
+
 /** Images whose description was kept from the picture they replaced and not yet checked, by image and description:
  *  the flag outlives the editor (a list item closed and opened again) until the description is checked or changed. */
 const carriedDescriptions = new Set<string>();
@@ -464,7 +475,7 @@ const carryKey = (x: ImageValue | null | undefined, project: string | undefined)
  * Image editor: one card holding the picture, its description and whether it is decorative. `title` puts the
  * field's name inside the card (like the other field groups); a standalone image passes none.
  */
-export function ImageEditor({ value, onChange, state, title }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string }) {
+export function ImageEditor({ value, onChange, state, title, plain }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage }) {
   const runtime = useStore((s) => s.runtime);
   // The project as this editor shows it: an import checks its placement against it.
   const snapshot = useStore((s) => s.snapshot);
@@ -602,7 +613,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
     }
   };
   // Until there is an image (or something already set about it), the chooser is the only thing to do.
-  const details = !!asset || !!v.alt || !!v.decorative;
+  const details = !plain && (!!asset || !!v.alt || !!v.decorative);
   // An image the field still names but Assets no longer has: said, and removable, rather than shown as empty.
   const gone = !!v.assetId && !asset;
   // Remove takes its own button away: focus that was on it goes to the chooser once the image is gone.
@@ -616,7 +627,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
   }, [asset]);
   return (
     <div
-      className={`insp-image${over ? ' drop-over' : ''}`}
+      className={`insp-image${over ? ' drop-over' : ''}${plain ? ` plain-${plain}` : ''}`}
       role={title ? 'group' : undefined}
       aria-labelledby={title ? titleId : undefined}
       onKeyDown={(e) => {
@@ -633,10 +644,10 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
         {carriedSaid.text}
       </span>
       <div className="insp-image-top">
-        <div className={`insp-image-thumb${asset ? '' : ' empty'}`}>{asset && devUrl ? <AssetImage key={missingKey(snapshot, asset.id)} asset={asset} devUrl={devUrl} cover alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
+        <div className={`insp-image-thumb${asset ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined}>{asset && devUrl ? <AssetImage key={missingKey(snapshot, asset.id)} asset={asset} devUrl={devUrl} cover alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
         <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
           <span className={`insp-image-name${asset ? '' : gone ? ' gone' : ' none'}`} id={`${titleId}-now`} title={asset?.name}>
-            {asset ? (labels.get(asset.id)?.label ?? asset.name) : over ? 'Drop to use this image' : gone ? 'This image is no longer in Assets' : 'No image chosen'}
+            {asset ? (labels.get(asset.id)?.label ?? asset.name) : over ? 'Drop to use this image' : gone ? 'This image is no longer in Assets' : plain ? 'None' : 'No image chosen'}
           </span>
           <span className="row" style={{ gap: 4 }}>
             <button ref={chooseBtn} className="btn btn-sm" aria-describedby={gone ? `${titleId}-now` : undefined} aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>

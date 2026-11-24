@@ -11,11 +11,11 @@ import { allTrees, instancesOf } from '@engine/tree';
 import { forEachTokenPropRef } from '@engine/tokens';
 import { api, applyOps, useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
-import { assetLabels, sortAssets } from '@shared/asset-order';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
+import { SiteImageField } from './PropEditors';
 import { FontSelect, familyName } from './FontSelect';
 import { usePreviewStack } from '../lib/editor-fonts';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
@@ -472,7 +472,6 @@ function CheckedField({ label, hint, value: saved, check, onCommit, unusable, cl
 
 export function SiteStyles() {
   const snap = useStore((s) => s.snapshot);
-  const assetSort = useStore((s) => s.assetSort);
   const [dev, setDev] = useState(false);
   useEffect(() => void api.app.info().then((i) => setDev(i.dev)), []);
   const tokens = useMemo(() => (snap ? effectiveTokens(snap.state) : []), [snap?.state.tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -497,9 +496,6 @@ export function SiteStyles() {
   const shownStack = usePreviewStack();
   if (!snap) return null;
   const st = snap.state;
-  // The image menus list images in the order Assets does.
-  const images = sortAssets(Object.values(st.assets.assets).filter((a) => a.kind === 'image'), assetSort);
-  const imageLabels = assetLabels(images);
   const theme = getTheme(st.site.themeId);
   const overrides = st.tokens.overrides;
   const byId = (id: string) => tokens.find((t) => t.id === id);
@@ -1387,25 +1383,11 @@ export function SiteStyles() {
             <option value="rtl">Right to left</option>
           </select>
         </Field>
-        <Field label="Favicon">
-          <select className="select" value={site.favicon ?? ''} onChange={(e) => updSite({ favicon: e.target.value || null })}>
-            <option value="">None</option>
-            {images.map((a) => (
-              <option key={a.id} value={a.id}>
-                {imageLabels.get(a.id)?.label}
-              </option>
-            ))}
-          </select>
+        <Field hint="The small icon in browser tabs. A square image works best.">
+          <SiteImageField title="Favicon" plain="favicon" state={st} value={site.favicon} onChange={(id) => updSite({ favicon: id })} />
         </Field>
-        <Field label="Social sharing image">
-          <select className="select" value={site.socialImage ?? ''} onChange={(e) => updSite({ socialImage: e.target.value || null })}>
-            <option value="">None</option>
-            {images.map((a) => (
-              <option key={a.id} value={a.id}>
-                {imageLabels.get(a.id)?.label}
-              </option>
-            ))}
-          </select>
+        <Field hint="The picture shown when the site is shared. Link previews crop it to about 1.91 to 1, so 1200 by 630 pixels is ideal.">
+          <SiteImageField title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} />
         </Field>
       </Section>
 
