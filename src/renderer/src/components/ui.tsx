@@ -14,8 +14,23 @@ const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => us
 // Editable content counts (the code editor's text area is one), so Tab order and wrapping inside a dialog see it.
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
 
+/** Whether an element is on screen and can take focus: rendered and visible (not in a hidden panel), enabled,
+ *  and not inert. */
+const reachable = (n: HTMLElement) => n.offsetParent !== null && !n.closest('[inert]') && !n.matches(':disabled') && getComputedStyle(n).visibility !== 'hidden';
+/** The Tab stops inside `root` (within `scope` when given): focusable, on screen and not left out of the Tab
+ *  order, so a roving group (radios, tabs) counts once, at its current option. */
+const tabStops = (root: HTMLElement, scope?: string) => [...root.querySelectorAll<HTMLElement>(scope ? `${scope} :is(${FOCUSABLE})` : FOCUSABLE)].filter((n) => n.tabIndex >= 0 && reachable(n));
+
 /** Dialogs currently open, innermost last; global shortcuts stay out of the way while any is open. */
 export const openDialogs: HTMLElement[] = [];
+const dialogWatchers = new Set<() => void>();
+const dialogsChanged = () => dialogWatchers.forEach((fn) => fn());
+const watchDialogs = (fn: () => void) => {
+  dialogWatchers.add(fn);
+  return () => void dialogWatchers.delete(fn);
+};
+/** Whether any dialog is open, kept current as dialogs open and close. */
+export const useDialogOpen = () => useSyncExternalStore(watchDialogs, () => openDialogs.length > 0);
 
 /**
  * Keyboard model shared by every dialog (WAI-ARIA APG dialog pattern). Dialogs render in a portal and the
@@ -48,18 +63,28 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
     const below = openDialogs[openDialogs.length - 2]?.closest<HTMLElement>('.overlay-backdrop');
     if (below) below.inert = true;
     document.body.classList.add('dialog-open');
+    dialogsChanged();
     if (!el.contains(document.activeElement)) {
-      const inBody = el.querySelector<HTMLElement>('.modal-body ' + FOCUSABLE.split(', ').join(', .modal-body '));
-      const first = el.querySelector<HTMLElement>('[data-autofocus]') ?? inBody ?? el.querySelector<HTMLElement>('.modal-foot ' + FOCUSABLE.split(', ').join(', .modal-foot ')) ?? el;
+      const asked = [...el.querySelectorAll<HTMLElement>('[data-autofocus]')].find(reachable);
+      const first = asked ?? tabStops(el, '.modal-body')[0] ?? tabStops(el, '.modal-foot')[0] ?? el;
       first.focus();
+      // A control that refused focus leaves it on the dialog itself, never outside it.
+      if (!el.contains(document.activeElement)) el.focus();
     }
     // If focus falls out of the dialog (a button inside disabled or unmounted itself), keys still belong
     // to the dialog: Escape closes it and Tab brings focus back in.
     const stray = (e: KeyboardEvent) => {
-      if (openDialogs[openDialogs.length - 1] !== el || el.contains(e.target as Node)) return;
+      // A menu opened from the dialog (portalled outside it) handles its own keys, and so does an input method.
+      if (e.defaultPrevented || openMenus.count || openDialogs[openDialogs.length - 1] !== el || el.contains(e.target as Node)) return;
+      if (e.isComposing || e.keyCode === 229) return;
       // Holding Escape on a field that has just let go of focus is still one press.
       if (e.key === 'Escape') (e.preventDefault(), !e.repeat && closeRef.current());
-      else if (e.key === 'Tab') (e.preventDefault(), el.querySelector<HTMLElement>(FOCUSABLE)?.focus());
+      else if (e.key === 'Tab') {
+        // Back in, in the direction pressed; the dialog itself when it has no stops left.
+        e.preventDefault();
+        const stops = tabStops(el);
+        ((e.shiftKey ? stops[stops.length - 1] : stops[0]) ?? el).focus();
+      }
     };
     window.addEventListener('keydown', stray);
     return () => {
@@ -68,7 +93,8 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
       if (root && !openDialogs.length) root.inert = false;
       if (below) below.inert = false;
       if (!openDialogs.length) document.body.classList.remove('dialog-open');
-      const visible = (n: HTMLElement | null) => !!n && document.contains(n) && n.offsetParent !== null;
+      dialogsChanged();
+      const visible = (n: HTMLElement | null) => !!n && document.contains(n) && reachable(n);
       const inRegion = region && document.contains(region) ? [...region.querySelectorAll<HTMLElement>('textarea, input, [tabindex="0"], button:not([disabled])')].find(visible) : undefined;
       const back = visible(opener) && !opener!.closest('[role="menu"]') ? opener : inRegion ?? [...document.querySelectorAll<HTMLElement>('[role="treeitem"][tabindex="0"], [role="option"][aria-selected="true"]')].find(visible) ?? null;
       // Only restore when focus has nowhere better to be; a dialog action may have focused something new.
@@ -86,7 +112,7 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
       return;
     }
     if (e.key !== 'Tab') return;
-    const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((n) => n.offsetParent !== null);
+    const items = tabStops(el);
     if (!items.length) return e.preventDefault();
     const i = items.indexOf(document.activeElement as HTMLElement);
     if (e.shiftKey && (i === 0 || (i === -1 && (document.activeElement === el || !el.contains(document.activeElement))))) (e.preventDefault(), items[items.length - 1].focus());
@@ -95,22 +121,27 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
   };
 }
 
-/** The one dialog shell. `footer` holds the actions: the dismiss-only action is always a secondary "Close". */
-export function Modal({ title, icon, onClose, children, footer, wide, describedBy, busy }: { title: ReactNode; icon?: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; describedBy?: string; busy?: boolean }) {
+/**
+ * The one dialog shell. `footer` holds the actions: the dismiss-only action is always a secondary "Close".
+ * The title icon is quiet (--text-2) unless the dialog gives it a meaning hue. A press on the backdrop closes
+ * it, except with `dismissOnBackdrop={false}`: a dialog over work in progress, whose close would cancel that
+ * work, ends only by its own buttons, Escape, or the close button.
+ */
+export function Modal({ title, icon, onClose, children, footer, wide, describedBy, busy, dismissOnBackdrop = true }: { title: ReactNode; icon?: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; describedBy?: string; busy?: boolean; dismissOnBackdrop?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   // While busy (creating a project, opening a trusted one), only the dialog's own buttons can end it.
   const close = () => !busy && onClose();
   const onKeyDown = useDialogFocus(ref, close);
   return createPortal(
-    <div className="overlay-backdrop" onMouseDown={(e) => e.target === e.currentTarget && close()}>
+    <div className="overlay-backdrop" onMouseDown={(e) => dismissOnBackdrop && e.target === e.currentTarget && close()}>
       <div ref={ref} tabIndex={-1} className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={describedBy} onKeyDown={onKeyDown}>
         <div className="modal-head">
           {icon}
           <h2 className="grow" id={titleId}>
             {title}
           </h2>
-          <button className="icon-btn" onClick={close} disabled={busy} aria-label="Close" title="Close (Esc)">
+          <button className="icon-btn" onClick={close} disabled={busy} aria-label="Close" title={busy ? undefined : 'Close (Esc)'}>
             <X />
           </button>
         </div>
@@ -139,7 +170,7 @@ export interface MenuItem {
 export const openMenus = { count: 0 };
 /** The trigger of the most recently used menu, so a dialog opened from a menu item can return focus to it. */
 const menuReturn: { target: HTMLElement | null } = { target: null };
-const ITEM = '[role^="menuitem"]:not([data-disabled])';
+const ITEM = '[role^="menuitem"]:not([data-disabled], [aria-disabled="true"])';
 
 /** Whether the last input was a key. A keyboard-opened menu lands on its first item (its last for
  *  `focusLast`); a pointer-opened one focuses the menu itself and waits for the arrow keys, so a click never
@@ -164,9 +195,9 @@ const boxOf = (el: HTMLElement): Box => {
 /**
  * Popup menu, built on Radix DropdownMenu (WAI-ARIA APG menu pattern). It opens at a point (right-click) or
  * against a trigger, flipping and shifting to stay 8px inside the window. A keyboard-opened menu focuses
- * its first item (its last with `focusLast`); Up/Down wrap, Home/End jump, letters jump by label,
- * Enter/Space choose, Escape or Tab close. It is modal, so the first press outside (in the page preview too)
- * only closes it. Focus returns to the trigger (else whatever had focus when it opened) unless an action
+ * its first available item (its last with `focusLast`); Up/Down wrap, Home/End jump, letters jump by label,
+ * Enter/Space choose, Escape or Tab close. Unavailable items are reached by the arrows but do nothing. It is
+ * modal, so the first press outside (in the page preview too) only closes it. Focus returns to the trigger (else whatever had focus when it opened) unless an action
  * moved it somewhere, such as into a dialog.
  */
 export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger, focusLast }: { x: number; y: number; items: MenuItem[]; onClose: () => void; label?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; trigger?: HTMLElement; focusLast?: boolean }) {
@@ -231,7 +262,9 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
             <Check />
           </DropdownMenu.ItemIndicator>
         );
-        const props = { className: `menu-item${it.danger ? ' danger' : ''}`, disabled: it.disabled, textValue: it.label, onSelect: () => choose(it) };
+        // An unavailable item stays in the arrow-key order (APG menu: disabled items are focusable, so the
+        // author can find what exists), but choosing it does nothing and leaves the menu open.
+        const props = { className: `menu-item${it.danger ? ' danger' : ''}`, 'aria-disabled': it.disabled || undefined, textValue: it.label, onSelect: (e: Event) => (it.disabled ? e.preventDefault() : choose(it)) };
         const inner = (
           <>
             {lead && <span className="menu-lead">{it.icon ?? (radio ? indicator : null)}</span>}
@@ -857,14 +890,166 @@ function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
   );
 }
 
+type ToastItem = ReturnType<typeof useStore.getState>['toasts'][number];
+/** How long an action a dialog held back stays on offer once the last dialog has closed. */
+const RETURN_MS = 6000;
+/** How long an action stays after the pointer and focus have both left it. */
+const LINGER_MS = 2000;
+/** The most notices shown at once. */
+const MAX_SHOWN = 3;
+
+/**
+ * Notices with an action (Undo) outlive their store timer while that action cannot be used yet, so it is never
+ * lost. While any dialog is open every action notice is held, and one the store has already retired stays out
+ * of sight; once the last dialog closes each gets a full RETURN_MS from that moment. While the pointer is over
+ * a notice, or focus is in it, it is held too, and goes LINGER_MS after both have left. The store's timer is
+ * left alone: a notice it removes early is kept here, in the same place on the page, until its time is up.
+ */
+function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
+  // Every action notice still in play, and when each may go (Infinity while held).
+  const known = useRef(new Map<number, ToastItem>());
+  const until = useRef(new Map<number, number>());
+  // A notice's time when the pointer or focus arrived, so leaving it never shortens that time.
+  const before = useRef(new Map<number, number>());
+  const hovered = useRef(new Set<number>());
+  const focused = useRef(new Set<number>());
+  // Bumped for each notice a dialog held back, when the last dialog closes: the notice is put back as a new
+  // element, so the live region announces it, and its Undo, again.
+  const round = useRef(new Map<number, number>());
+  // Notices waiting for one of the visible slots: their time starts when they get one.
+  const waiting = useRef(new Set<number>());
+  const wasOpen = useRef(dialogOpen);
+  const [, setTick] = useState(0);
+  const refresh = () => setTick((n) => n + 1);
+  const live = (id: number) => toasts.some((t) => t.id === id);
+  const engaged = (id: number) => hovered.current.has(id) || focused.current.has(id);
+  const inPlay = (id: number) => live(id) || (until.current.get(id) ?? 0) > Date.now();
+  const forget = (id: number) => {
+    for (const m of [known.current, until.current, before.current, round.current]) m.delete(id);
+    for (const m of [hovered.current, focused.current, waiting.current]) m.delete(id);
+  };
+  // The last dialog just closed: each notice it held is put back as a new element (re-keyed here, while
+  // rendering, so it mounts once), and the live region announces it and its Undo again.
+  if (wasOpen.current && !dialogOpen) for (const [id, t] of until.current) if (t === Infinity && !engaged(id)) round.current.set(id, (round.current.get(id) ?? 0) + 1);
+  wasOpen.current = dialogOpen;
+  for (const t of toasts) if (t.action) known.current.set(t.id, t);
+  // Worked out while rendering, so a held notice never leaves the page between the store dropping it and this
+  // taking it over: the same element stays, and so does any focus in it.
+  const now = Date.now();
+  const kept = [...known.current.values()].filter((t) => !live(t.id) && (until.current.get(t.id) ?? 0) > now);
+  useEffect(() => {
+    if (dialogOpen) {
+      // Nothing behind a dialog is pointed at or focused: a notice the dialog hid gets no leave event.
+      hovered.current.clear();
+      focused.current.clear();
+      for (const id of known.current.keys()) if (inPlay(id)) until.current.set(id, Infinity);
+    } else {
+      // The last dialog closed: everything it held back gets a full window from now.
+      const end = Date.now() + RETURN_MS;
+      for (const [id, t] of until.current) if (t === Infinity && !engaged(id)) until.current.set(id, end);
+    }
+    refresh();
+  }, [dialogOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (dialogOpen) for (const t of toasts) if (t.action) until.current.set(t.id, Infinity);
+  }, [toasts, dialogOpen]);
+  // Forget notices whose time is up, and wake when the next kept one is due.
+  useEffect(() => {
+    const at = Date.now();
+    for (const id of [...known.current.keys()]) {
+      if (live(id) || (until.current.get(id) ?? 0) > at) continue;
+      forget(id);
+    }
+    const next = Math.min(...[...known.current.keys()].filter((id) => !live(id)).map((id) => until.current.get(id) ?? 0));
+    if (!Number.isFinite(next)) return;
+    const timer = setTimeout(refresh, Math.max(0, next - at));
+    return () => clearTimeout(timer);
+  });
+  return {
+    kept,
+    key: (t: ToastItem) => `${t.id}.${round.current.get(t.id) ?? 0}`,
+    held: engaged,
+    /** Of `candidates` (every notice that could show), those not in `visible` wait, and their time starts
+     *  only once they get a slot. */
+    slots: (candidates: ToastItem[], visible: Set<number>) => {
+      let changed = false;
+      for (const t of candidates) {
+        if (!t.action) continue;
+        if (!visible.has(t.id)) {
+          waiting.current.add(t.id);
+          if (until.current.get(t.id) !== Infinity) (until.current.set(t.id, Infinity), (changed = true));
+        } else if (waiting.current.delete(t.id) && !engaged(t.id)) {
+          until.current.set(t.id, Date.now() + RETURN_MS);
+          changed = true;
+        }
+      }
+      if (changed) refresh();
+    },
+    engage: (t: ToastItem, how: 'hover' | 'focus', on: boolean) => {
+      if (!t.action) return;
+      const set = how === 'hover' ? hovered.current : focused.current;
+      if (on) {
+        if (set.has(t.id)) return;
+        if (!engaged(t.id)) {
+          const was = until.current.get(t.id) ?? 0;
+          before.current.set(t.id, Number.isFinite(was) ? was : 0);
+        }
+        set.add(t.id);
+        until.current.set(t.id, Infinity);
+      } else {
+        if (!set.delete(t.id) || engaged(t.id)) return;
+        // While a dialog is open the notice stays held; its window starts when the dialog closes.
+        if (!openDialogs.length) until.current.set(t.id, Math.max(before.current.get(t.id) ?? 0, Date.now() + LINGER_MS));
+        refresh();
+      }
+    },
+    used: (t: ToastItem) => {
+      forget(t.id);
+      refresh();
+    }
+  };
+}
+
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
   const held = useStore((s) => s.heldEdits);
   const snapshot = useStore((s) => s.snapshot);
   const aiRunId = useStore((s) => (s.snapshot?.aiBusy ? (s.snapshot.aiRunId ?? null) : null));
+  const dialogOpen = useDialogOpen();
+  const times = useActionTimes(toasts, dialogOpen);
+  // A kept notice is shown only once no dialog holds it back, and only while its action still applies; it then
+  // returns as a new status message, so its Undo is announced again.
+  const actionable = (t: ToastItem) => !!t.action && (!t.action.undoes || undoAvailable(t.action.undoes, snapshot));
+  // In the order they arrived (a kept notice stays where it was), and at most the newest few, so the band at
+  // the bottom stays small; any older ones show as the newer ones go.
+  const ordered = [...toasts, ...(dialogOpen ? [] : times.kept.filter(actionable))].sort((a, b) => a.id - b.id);
+  // The newest few, plus any the author is pointing at or in, so a new arrival never pulls one from under them.
+  const newest = new Set(ordered.slice(-MAX_SHOWN).map((t) => t.id));
+  const shownToasts = ordered.filter((t) => newest.has(t.id) || times.held(t.id));
+  useEffect(() => {
+    if (!dialogOpen) times.slots(ordered, new Set(shownToasts.map((t) => t.id)));
+  });
+  // The notices' band at the bottom of the window (their height plus clearance), which dialogs stop short of.
+  const stack = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = stack.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const root = document.documentElement;
+    const measure = () => {
+      const h = el.getBoundingClientRect().height;
+      root.style.setProperty('--toast-band', h ? `${Math.ceil(h) + 56}px` : '0px');
+    };
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => {
+      watch.disconnect();
+      root.style.removeProperty('--toast-band');
+    };
+  }, []);
   // Rendered outside the app root, so toasts stay readable (and actionable) while a dialog makes the root inert.
   return createPortal(
-    <div className="toasts">
+    <div className="toasts" ref={stack}>
       {held.length > 0 && (
         <div className="toast-group" role="region" aria-label="Edits not saved yet">
           {held.map((h) => (
@@ -873,20 +1058,29 @@ export function Toasts() {
         </div>
       )}
       <div className="toast-group" role="status" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'error' ? 'alert' : undefined}>
+        {shownToasts.map((t) => (
+          <div
+            key={times.key(t)}
+            className={`toast ${t.kind}`}
+            role={t.kind === 'error' ? 'alert' : undefined}
+            onMouseEnter={() => times.engage(t, 'hover', true)}
+            onMouseLeave={() => times.engage(t, 'hover', false)}
+            onFocus={() => times.engage(t, 'focus', true)}
+            onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && times.engage(t, 'focus', false)}
+          >
             {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
             <span className="grow">{t.text}</span>
             {/* An Undo whose change has been undone some other way, or whose project has closed, is withdrawn. */}
-            {t.action && (!t.action.undoes || undoAvailable(t.action.undoes, snapshot)) && (
+            {actionable(t) && (
               <button
                 className="btn btn-sm btn-ghost"
                 onClick={() => {
+                  times.used(t);
                   t.action!.run();
                   setToasts(useStore.getState().toasts.filter((x) => x.id !== t.id));
                 }}
               >
-                {t.action.label}
+                {t.action!.label}
               </button>
             )}
           </div>
