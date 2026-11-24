@@ -855,9 +855,10 @@ for (let open = 0; open < 2; open++) {
   const live = posts.filter((p) => p.draft === false).length;
   const held = posts.length - live;
   assert.ok(live > 1 && held > 0, 'the blog has published posts and a draft');
-  assert.match(await modal.getByTestId('export-pages').first().innerText(), new RegExp(`It also publishes ${live} entries from Posts\\.`), 'the summary counts the published posts');
+  // Eight pages are counted, not named; the sentence on the posts follows them in the same line.
+  assert.match((await modal.getByTestId('export-pages').locator('p').first().innerText()).trim(), new RegExp(`^The website publishes \\d+ pages\\. It also publishes ${live} entries from Posts\\.$`), 'the summary counts the published posts');
   const heldPhrase = held === 1 ? '1 draft entry from Posts is' : `${held} draft entries from Posts are`;
-  assert.match(await modal.getByTestId('export-drafts').innerText(), new RegExp(`${heldPhrase}( also)? left out`), 'the summary says the draft posts are left out');
+  assert.equal((await modal.getByTestId('export-drafts').innerText()).trim(), `${heldPhrase} left out. Drafts stay in the editable project.`, 'the summary says the draft posts are left out');
   for (const [i, e] of recent.entries()) {
     const item = items.nth(i);
     const text = await item.innerText();

@@ -11,8 +11,8 @@ import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { entryFile, generateLayout, generateProject, generateSitemap, liveRedirects, publishedState, resolveLink } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
-import { publicationPlan } from '@generator/checks';
-import { draftLinksStop, draftSourceNotes, isGeneratedReadme, projectReadme, withheldRoutes } from '../../src/main/export';
+import { publicationIds, publicationPlan } from '@generator/checks';
+import { draftLinksStop, draftSourceNotes, isGeneratedReadme, projectReadme, publishedChanged, withheldRoutes } from '../../src/main/export';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -240,6 +240,29 @@ describe('draft entries and the website export', () => {
     const damaged = structuredClone(s);
     damaged.collections.posts.entries.en_winter.slug = 'Not a slug';
     expect(publicationPlan(damaged).publishedEntries.map((e) => e.entry.id)).toEqual(['en_spring']);
+    // A newer draft hand-edited onto a published post's address does not hide the post: the website gets it once the draft is out.
+    const clash = structuredClone(s);
+    clash.collections.posts.entries.en_secret.slug = 'winter-workshop';
+    const held = publicationPlan(clash);
+    expect(held.publishedEntries.map((e) => [e.entry.id, e.route])).toEqual([['en_spring', '/blog/spring-open-studio/'], ['en_winter', '/blog/winter-workshop/']]);
+    expect(generateProject(publishedState(clash)).has('src/routes/blog/winter-workshop/+page.svelte')).toBe(true);
+  });
+
+  it('stops a website export when the entries it publishes are not the ones the author was shown (#568)', () => {
+    const s = blog();
+    const shown = publicationIds(publicationPlan(s));
+    expect(shown).toEqual(expect.arrayContaining(['en_spring', 'en_winter']));
+    expect(shown).not.toContain('en_secret');
+    expect(publishedChanged(s, shown)).toBeNull();
+    // The draft was published while the export was starting: the author saw it counted among the drafts.
+    const published = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false });
+    expect(publishedChanged(published, shown)?.message).toMatch(/changed while the export was starting/);
+    // And a post kept back in its place, with as many entries as before.
+    const swapped = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: true });
+    expect(publicationIds(publicationPlan(swapped))).toHaveLength(shown.length);
+    expect(publishedChanged(swapped, shown)).not.toBeNull();
+    // Pages alone are not what this site publishes.
+    expect(publishedChanged(s, publicationPlan(s).published.map((p) => p.id))).not.toBeNull();
   });
 
   it('stops the website export over a typed address of a draft entry, naming it', () => {

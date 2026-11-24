@@ -13,7 +13,7 @@ import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
-import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, resolveLink, siteEntries, stateActionWorks } from './index';
+import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
@@ -1360,6 +1360,11 @@ export interface PublicationPlan {
   draftLinks: DraftLink[];
 }
 
+/** The IDs of what a website export publishes: its pages and its collection entries (an entry's ID is unique among them). */
+export function publicationIds(plan: Pick<PublicationPlan, 'published' | 'publishedEntries'>): string[] {
+  return [...plan.published.map((p) => p.id), ...plan.publishedEntries.map((e) => e.entry.id)];
+}
+
 /**
  * The draft a typed web address opens, when it is on the site's own public URL and names a draft's address or an
  * old address that leads to a draft. `withheld` maps those addresses, lowercased, to the draft.
@@ -1406,7 +1411,10 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
   const draftLinks: DraftLink[] = [];
   const entries = siteEntries(state);
   const draftEntries = entries.filter((e) => isDraftEntry(e.entry));
-  const publishedEntries = entries.filter((e) => !isDraftEntry(e.entry));
+  // The entries that get a page are the website's, judged as its export judges them: with the drafts already left out,
+  // so a draft that holds an address (a hand-edited clash) never hides the published entry that gets it.
+  const live = publishedState(state);
+  const publishedEntries = live === state ? entries : siteEntries(live);
   if (!drafts.length && !draftEntries.length) return { published, drafts, publishedEntries, draftEntries, draftLinks };
   const draftIds = new Set(drafts.map((p) => p.id));
   // The addresses visitors would find nothing at: each draft's own, and the old addresses that lead to one.
