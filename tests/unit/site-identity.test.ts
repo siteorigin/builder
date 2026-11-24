@@ -436,14 +436,24 @@ describe('structured data in the exported website', () => {
     // The X handle is said on every page and entry, with or without a public URL.
     const documents = [...files].filter(([path, content]) => path.endsWith('+page.svelte') && /from siteorigin\/(pages\/|collections\/[^/]+\/entries\/)/.test(content));
     expect(documents.length).toBeGreaterThanOrEqual(6);
-    for (const [path, content] of documents) expect(content, path).toContain('<meta name="twitter:site" content={"@riverside"} />');
+    for (const [path, content] of documents) expect(content, path).toContain('<meta name="twitter:site" content="@riverside" />');
 
     // Without a public URL nothing has an address to hang the graph off: no page carries one.
     const local = copy(s);
     delete local.site.baseUrl;
     const localFiles = generateProject(local);
     expect([...graphsByDocument(localFiles).values()].flat()).toEqual([]);
-    expect(localFiles.get('src/routes/+page.svelte')).toContain('<meta name="twitter:site" content={"@riverside"} />');
+    expect(localFiles.get('src/routes/+page.svelte')).toContain('<meta name="twitter:site" content="@riverside" />');
+  });
+
+  it('names the publisher’s X handle before one stored on the site itself, which stays the fallback', () => {
+    const { state } = site();
+    const legacy = copy(state);
+    legacy.site.twitterSite = 'oldstudio';
+    expect(generateProject(legacy).get('src/routes/+page.svelte')).toContain('<meta name="twitter:site" content="@oldstudio" />');
+    const home = generateProject(business(legacy)).get('src/routes/+page.svelte')!;
+    expect(home).toContain('<meta name="twitter:site" content="@riverside" />');
+    expect(home).not.toContain('@oldstudio');
   });
 
   it('rewrites the pages an identity change reaches, a cached run giving the bytes a fresh one does', () => {
