@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectSnapshot } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
-import type { AssetRecord, GraphNode, ImageNode, ImageValue, InstanceNode, OwnerRef } from '@shared/types';
+import type { AssetRecord, ElementNode, GraphNode, ImageNode, ImageValue, InstanceNode, OwnerRef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { assetUsages } from '@engine/apply';
 import { ProjectSession } from '../../src/main/project/session';
@@ -56,7 +56,7 @@ type Placement = { at: { owner: OwnerRef; parentId: string | null; slot?: string
 interface ActionsModule {
   imagePlacement(): Placement;
   placeAsset(assetId: string, shown: string): Promise<boolean>;
-  insert(spec: { primitive?: string; componentId?: string; definitionId?: string; text?: string }, label: string): Promise<void>;
+  insert(spec: { primitive?: string; componentId?: string; definitionId?: string; text?: string; columns?: number }, label: string): Promise<void>;
   insertPlan(spec: { primitive?: string; componentId?: string; definitionId?: string }): { role: string; at: Placement['at'] };
   insertionPoint(kind: 'section' | 'element', from?: unknown): Placement['at'];
 }
@@ -716,6 +716,64 @@ describe('placing a library image from Assets (issue #13)', () => {
       expect(node.kind === 'text' && node.text).toEqual([{ type: kind, items: words.map((text) => [{ text }]) }]);
       expect(store.getState().selection).toMatchObject({ owner });
     }
+  });
+
+  it('inserts a column layout as one change, ready to fill its first column; each column then takes content as one change of its own (#514)', async () => {
+    const { owner, page, entries } = await library();
+    const roots = [...page().rootIds];
+    const history = entries();
+    await actions.insert(basicSpec(BASICS.find((b) => b.name === '2 columns')!), '2 columns');
+    expect(applyCalls).toBe(1);
+    expect(entries()).toBe(history + 1);
+    // Home has no Section that takes content: the Grid comes in a new one at the end of the page.
+    expect(page().rootIds.slice(0, -1)).toEqual(roots);
+    const wrapper = page().nodes[page().rootIds.at(-1)!] as InstanceNode;
+    const [gridId] = wrapper.slots!.content;
+    const grid = page().nodes[gridId] as ElementNode;
+    expect(grid).toMatchObject({ kind: 'element', name: 'Columns', styles: { desktop: { columns: 2 } } });
+    const [left, right] = grid.children;
+    expect([page().nodes[left].name, page().nodes[right].name]).toEqual(['Column 1', 'Column 2']);
+    // The first column is selected, not the Grid (where the next element would add a third cell) or the last column.
+    const selected = () => store.getState().selection as { nodeId: string } | null;
+    expect(store.getState().selection).toEqual({ owner, instancePath: [], nodeId: left });
+    // So the next element fills it; then a click on the other column's frame (#511) selects it, and Insert fills that.
+    for (const [column, text, pick] of [[left, 'Left words', false], [right, 'Right words', true]] as const) {
+      if (pick) store.setState({ selection: { owner, instancePath: [], nodeId: column } });
+      const before = entries();
+      await actions.insert({ primitive: 'paragraph', text }, 'Paragraph');
+      expect(entries()).toBe(before + 1);
+      const [added] = (page().nodes[column] as ElementNode).children;
+      expect(page().nodes[added]).toMatchObject({ kind: 'text', text });
+      expect(selected()?.nodeId).toBe(added);
+    }
+    expect(grid.children).toEqual((page().nodes[gridId] as ElementNode).children);
+    // Undo takes back one paragraph at a time, then the whole layout with the Section made for it.
+    await session!.undo();
+    expect((page().nodes[right] as ElementNode).children).toEqual([]);
+    expect((page().nodes[left] as ElementNode).children).toHaveLength(1);
+    await session!.undo();
+    expect((page().nodes[left] as ElementNode).children).toEqual([]);
+    await session!.undo();
+    expect(page().nodes[gridId]).toBeUndefined();
+    expect(page().nodes[left]).toBeUndefined();
+    expect(page().rootIds).toEqual(roots);
+  });
+
+  it('inserts a column layout beside a section that takes no content in a new Section, which one Undo takes away with it (#514)', async () => {
+    const { owner, page, gallery, entries } = await library();
+    store.setState({ selection: { owner, instancePath: [], nodeId: gallery } });
+    const roots = [...page().rootIds];
+    const history = entries();
+    await actions.insert({ primitive: 'grid', columns: 3 }, '3 columns');
+    expect(entries()).toBe(history + 1);
+    const wrapper = page().rootIds[roots.indexOf(gallery) + 1];
+    expect(page().rootIds.filter((id) => id !== wrapper)).toEqual(roots);
+    const [gridId] = (page().nodes[wrapper] as InstanceNode).slots!.content;
+    const columns = (page().nodes[gridId] as ElementNode).children;
+    expect(columns).toHaveLength(3);
+    expect((store.getState().selection as { nodeId: string }).nodeId).toBe(columns[0]);
+    await session!.undo();
+    expect(page().rootIds).toEqual(roots);
   });
 
   it('inserts into the Section whose Container is picked in Layers, not the page’s last Section (#185)', async () => {

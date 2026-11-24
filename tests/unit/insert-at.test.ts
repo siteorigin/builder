@@ -3,7 +3,8 @@ import type { ElementNode, ElementRef, InstanceNode, OwnerRef, PageDoc, ProjectS
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor } from '../../src/renderer/src/lib/insert-at';
+import { validateState } from '@engine/validate';
+import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor, type InsertAt } from '../../src/renderer/src/lib/insert-at';
 
 /**
  * Where Insert puts a project component (#52): a card made inside a grid goes beside the selected card in that grid,
@@ -385,5 +386,62 @@ describe('a part or repeated item inside a placed section inserts beside that se
     expect(insertAt(state, owner, 'element', from)).toEqual(insertAt(state, owner, 'element', ref(owner, first)));
     // A repeated item of it too.
     for (const role of ['section', 'element'] as const) expect(insertAt(state, owner, role, { ...from, itemPath: ['row-1'] })).toEqual(insertAt(state, owner, role, from));
+  });
+});
+
+describe('a column layout comes with its empty columns, in one change (#514)', () => {
+  /** The Grid a batch made, its columns, and the page after it. */
+  const made = (state: ProjectState, gridId: string) => {
+    const page = home(state);
+    const grid = page.nodes[gridId] as ElementNode;
+    return { grid, columns: grid.children.map((id) => page.nodes[id] as ElementNode) };
+  };
+
+  for (const n of [2, 3, 4])
+    it(`${n} columns: a Grid holding ${n} empty Stacks, named for their places, side by side on desktop`, () => {
+      const p = exhibitors();
+      const at = insertAt(p.state, p.owner, 'element', ref(p.owner, p.intro))!;
+      expect(at).toEqual({ owner: p.owner, parentId: p.intro, slot: 'content' });
+      const ops = insertOps(at, { primitive: 'grid', columns: n }, 'element', 'n_columns');
+      expect(ops[0]).toEqual({ type: 'node.insert', newNodeId: 'n_columns', owner: p.owner, parentId: p.intro, slot: 'content', index: undefined, primitive: 'grid' });
+      const { state } = apply(p.state, ops);
+      expect((home(state).nodes[p.intro] as InstanceNode).slots?.content).toEqual(['n_columns']);
+      const { grid, columns } = made(state, 'n_columns');
+      // One column above the other on phones and tablets, as any Grid starts; side by side on desktop.
+      expect(grid).toMatchObject({ kind: 'element', name: 'Columns', styles: { base: { layout: 'grid', columns: 1 }, desktop: { columns: n } } });
+      expect(new Set(grid.children).size).toBe(n);
+      expect(columns.map((c) => c.name)).toEqual(Array.from({ length: n }, (_, i) => `Column ${i + 1}`));
+      for (const c of columns) expect(c).toMatchObject({ kind: 'element', children: [], styles: { base: { layout: 'stack' } } });
+      expect(validateState(state).filter((d) => d.severity === 'error')).toEqual([]);
+      // The first column is what Insert selects, so the next element fills it rather than adding a fourth cell.
+      expect(insertSelection(ops, 'n_columns')).toBe(grid.children[0]);
+    });
+
+  it('on a page with nowhere to put it, comes in a new Section; each insert names its own Grid', () => {
+    let state = createStarterState('blank', 'Plain', false);
+    const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
+    const at = insertAt(state, owner, 'element', null)!;
+    expect(at.parentId).toBeNull();
+    const ops = insertOps(at, { primitive: 'grid', columns: 2 }, 'element');
+    expect(ops[0]).toMatchObject({ type: 'node.insert', parentId: null, componentId: 'layout.section' });
+    const gridId = (ops[1] as { newNodeId?: string }).newNodeId!;
+    expect(gridId).toMatch(/^n_/);
+    state = apply(state, ops).state;
+    const section = home(state).nodes[home(state).rootIds[0]] as InstanceNode;
+    expect(section.slots?.content).toEqual([gridId]);
+    expect(made(state, gridId).columns).toHaveLength(2);
+    // Planned again, it is another Grid with other columns.
+    const again = insertOps(at, { primitive: 'grid', columns: 2 }, 'element');
+    expect((again[1] as { newNodeId?: string }).newNodeId).not.toBe(gridId);
+  });
+
+  it('a count that is not a column layout, or a spec that is no Grid, inserts as it did', () => {
+    const p = exhibitors();
+    const at: InsertAt = { owner: p.owner, parentId: p.grid };
+    for (const columns of [1, 2.5, 9]) expect(insertOps(at, { primitive: 'grid', columns }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.grid, slot: undefined, index: undefined, primitive: 'grid' }]);
+    // Anything else inserted is itself what is selected, a new section around it or not.
+    expect(insertSelection(insertOps(at, { primitive: 'grid' }, 'element', 'n_plain'), 'n_plain')).toBe('n_plain');
+    expect(insertSelection(insertOps({ owner: p.owner, parentId: null }, { primitive: 'heading' }, 'element', 'n_title'), 'n_title')).toBe('n_title');
+    expect(insertOps(at, { primitive: 'stack', columns: 2 }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.grid, slot: undefined, index: undefined, primitive: 'stack' }]);
   });
 });

@@ -7,6 +7,7 @@
 // Each capture is verified on screen after it settles; a state that did not render throws instead of
 // writing a plausible-looking wrong image. Files are named `insert-{state}--{theme}.png`. Panel states are
 // cropped to the rail, the panel and a strip of canvas; `full` states are the whole window.
+import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -155,7 +156,7 @@ await win.mouse.move(900, 6);
 await scrollPanel(0);
 
 // ---- Pointer and keyboard: resting on a section tile opens its larger preview beside the panel ----
-await win.locator('.side-panel-view:not([hidden]) button.insert-tile, .side-panel-view:not([hidden]) [data-insert-tile]').nth(1).hover();
+await win.locator('.side-panel-view:not([hidden]) button.insert-tile.section').nth(1).hover();
 await pause(700);
 await shot('hover', '.insert-peek', THEMES, { keepPointer: true, wide: true });
 // A short section further down, whose small thumbnail says least.
@@ -171,12 +172,13 @@ await shot('hover-media', '.insert-peek-inset', ['light'], { keepPointer: true, 
 await win.mouse.move(900, 6);
 await pause(300);
 await scrollPanel(0);
-// Keyboard: Down from the search field enters the palette, Right moves to the next tile.
+// Keyboard: Down from the search field enters the palette at the column layouts, Right moves to the next tile.
 await panel.locator('.search input').first().focus();
 await win.keyboard.press('ArrowDown');
 await win.keyboard.press('ArrowRight');
 await pause(400);
-await shot('focus', '.insert-peek', ['light'], { wide: true });
+assert.match((await win.evaluate(() => document.activeElement?.textContent)) ?? '', /3 columns/, 'the arrow keys move through the column layouts');
+await shot('focus', '.insert-grid', ['light']);
 
 // ---- Search ----
 await search('image');

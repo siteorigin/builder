@@ -4,21 +4,35 @@
 /** A basic element Insert adds. */
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'richtext' | 'image' | 'button' | 'icon' | 'divider';
 
-/** What Insert adds. An element can start with its own text: a list's first items, in the rich text form. */
-export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; text?: string; variants?: Record<string, string> };
+/**
+ * What Insert adds. An element can start with its own text: a list's first items, in the rich text form. A Grid can
+ * start with `columns` empty columns (Stacks), each ready to take content on the canvas.
+ */
+export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; text?: string; columns?: number; variants?: Record<string, string> };
 
 export interface Basic {
   id: string;
   primitive: Primitive;
   /** The element's first text: a list's starting items, in the rich text form. */
   text?: string;
+  /** A Grid's empty columns, made with it. */
+  columns?: number;
+  /** Offered with the column layouts, near the top of Insert, rather than with the other basic elements. */
+  layout?: boolean;
   name: string;
   icon: string;
   tags: string;
 }
 
-/** Basic elements. A list is rich text that starts as a list, so its items are edited like any prose. */
+/**
+ * Basic elements. A list is rich text that starts as a list, so its items are edited like any prose. The column
+ * layouts lead: a Grid that starts with two or three empty columns, then the Row and Grid to arrange content by hand.
+ */
 export const BASICS: Basic[] = [
+  { id: 'columns-2', primitive: 'grid', columns: 2, name: '2 columns', icon: 'columns-2', tags: 'two columns 2-column two-column 2 col layout grid split side by side', layout: true },
+  { id: 'columns-3', primitive: 'grid', columns: 3, name: '3 columns', icon: 'columns-3', tags: 'three columns 3-column three-column 3 col layout grid side by side', layout: true },
+  { id: 'row', primitive: 'row', name: 'Row', icon: 'align-horizontal-space-around', tags: 'horizontal container group side by side', layout: true },
+  { id: 'grid', primitive: 'grid', name: 'Grid', icon: 'layout-grid', tags: 'columns container layout', layout: true },
   { id: 'heading', primitive: 'heading', name: 'Heading', icon: 'heading-1', tags: 'title text h1 h2' },
   { id: 'paragraph', primitive: 'paragraph', name: 'Paragraph', icon: 'pilcrow', tags: 'text copy body' },
   { id: 'bulleted-list', primitive: 'richtext', text: '- First item\n- Second item\n- Third item', name: 'Bulleted list', icon: 'list', tags: 'list bullets bullet points unordered ul items text' },
@@ -26,15 +40,13 @@ export const BASICS: Basic[] = [
   { id: 'button', primitive: 'button', name: 'Button', icon: 'rectangle-horizontal', tags: 'link action cta' },
   { id: 'image', primitive: 'image', name: 'Image', icon: 'image', tags: 'photo picture' },
   { id: 'stack', primitive: 'stack', name: 'Stack', icon: 'rows-3', tags: 'vertical container group' },
-  { id: 'row', primitive: 'row', name: 'Row', icon: 'columns-3', tags: 'horizontal container group' },
-  { id: 'grid', primitive: 'grid', name: 'Grid', icon: 'layout-grid', tags: 'columns container' },
   { id: 'container', primitive: 'container', name: 'Container', icon: 'square-dashed', tags: 'box group' },
   { id: 'icon', primitive: 'icon', name: 'Icon', icon: 'star', tags: 'symbol' },
   { id: 'divider', primitive: 'divider', name: 'Divider', icon: 'separator-horizontal', tags: 'line rule separator' }
 ];
 
 /** What Insert adds for a basic element. */
-export const basicSpec = (b: Basic): InsertSpec => ({ primitive: b.primitive, ...(b.text ? { text: b.text } : {}) });
+export const basicSpec = (b: Basic): InsertSpec => ({ primitive: b.primitive, ...(b.text ? { text: b.text } : {}), ...(b.columns ? { columns: b.columns } : {}) });
 
 /** How search reads a basic element: its name, its tags, and what it is. */
 export const basicHay = (b: Basic) => `${b.name} ${b.tags} element`.toLowerCase();

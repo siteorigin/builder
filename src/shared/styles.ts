@@ -247,6 +247,32 @@ export function placementStyleControls(def: Pick<ComponentDefinition, 'kind' | '
   return list ? [...new Set([...list, 'hidden'])] : def.kind === 'code' ? CODE_PART_CONTROLS : undefined;
 }
 
+/** The controls that arrange content in columns, in the order Column layout shows them. */
+const COLUMN_CONTROLS = ['layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap', 'align', 'justify'];
+
+/**
+ * A Section's Container, with the column controls it offers, so a placement's inspector can arrange the Section's
+ * columns directly rather than through Parts. A Section is the theme's `layout.section`, or a copy made from one
+ * (Make unique keeps the pack's component ID in its provenance), whose Container still holds its Content slot and lets
+ * its layout change. Read from the installed definition, so a Section installed before Column sizes and the separate
+ * gaps were offered offers what it has. Null for anything else: a slot another design holds is not its columns.
+ */
+export function columnLayoutPart(def: Pick<ComponentDefinition, 'kind' | 'componentId' | 'provenance' | 'parts' | 'tree'>): { partId: string; controls: string[] } | null {
+  const tree = def.kind === 'managed' ? def.tree : undefined;
+  if (!tree || (def.componentId !== 'layout.section' && def.provenance?.componentId !== 'layout.section')) return null;
+  const part = Object.hasOwn(def.parts, 'container') ? def.parts.container : undefined;
+  const nodeOf = (id: string) => (Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined);
+  const content = (id: string) => {
+    const n = nodeOf(id);
+    return n?.kind === 'slot' && n.slot === 'content';
+  };
+  const node = part ? nodeOf(part.nodeId) : undefined;
+  if (node?.kind !== 'element' || !node.children.some(content)) return null;
+  const offered = offeredStyleProps(partStyleControls(def, 'container'));
+  const controls = COLUMN_CONTROLS.filter((c) => offered.includes(c));
+  return controls.includes('layout') ? { partId: 'container', controls } : null;
+}
+
 /** The property IDs a control list offers: an empty or missing list offers every one. */
 export function offeredStyleProps(list: string[] | undefined): string[] {
   return list?.length ? list : STYLE_PROPS.map((p) => p.id);

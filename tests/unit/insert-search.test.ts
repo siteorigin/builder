@@ -27,3 +27,29 @@ describe('finding lists in Insert', () => {
     expect(spec('Heading')).toEqual({ primitive: 'heading' });
   });
 });
+
+describe('column layouts in Insert (#514)', () => {
+  const names = (q: string) => searchItems(offered(), q).map((it) => it.name);
+
+  it('finds the two- and three-column layouts by number or by word, each once', () => {
+    expect(names('2 columns')[0]).toBe('2 columns');
+    expect(names('two columns')[0]).toBe('2 columns');
+    expect(names('2-column')[0]).toBe('2 columns');
+    expect(names('3 columns')[0]).toBe('3 columns');
+    expect(names('three column')[0]).toBe('3 columns');
+    expect(names('side by side')).toEqual(expect.arrayContaining(['2 columns', '3 columns', 'Row']));
+    const columns = names('columns');
+    expect(columns).toEqual(expect.arrayContaining(['2 columns', '3 columns', 'Grid']));
+    expect(columns.filter((n) => n === '2 columns')).toHaveLength(1);
+  });
+
+  it('adds a Grid that starts with its columns, offered with the Row and Grid ahead of the other elements', () => {
+    const spec = (name: string) => basicSpec(BASICS.find((b) => b.name === name)!);
+    expect(spec('2 columns')).toEqual({ primitive: 'grid', columns: 2 });
+    expect(spec('3 columns')).toEqual({ primitive: 'grid', columns: 3 });
+    expect(spec('Grid')).toEqual({ primitive: 'grid' });
+    expect(BASICS.filter((b) => b.layout).map((b) => b.name)).toEqual(['2 columns', '3 columns', 'Row', 'Grid']);
+    // Every tile has a key of its own.
+    expect(new Set(BASICS.map((b) => b.id)).size).toBe(BASICS.length);
+  });
+});

@@ -41,7 +41,7 @@ import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@s
 import { validateRoute } from '@shared/routes';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { articleRows, feedLimit, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
-import { cascadeStyles, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
+import { cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
 import type { EditOperation } from '@shared/ops';
@@ -367,6 +367,7 @@ function countStyles(styles: ResponsiveStyles | undefined): number {
   return Object.values(styles ?? {}).reduce((n, sc) => n + Object.keys(sc ?? {}).length, 0);
 }
 const changes = (n: number) => `${n} change${n === 1 ? '' : 's'}`;
+
 
 /** The nearest repeat enclosing a node in a definition tree, if any. */
 const enclosingRepeat = enclosingRepeatProp;
@@ -799,6 +800,33 @@ function SelectionActions({ title, selection, items, group, ask = true }: { titl
   );
 }
 
+/**
+ * A Section's columns, arranged where the Section is selected rather than through Parts: its Container's Arrange,
+ * Columns, Column sizes and gaps (see columnLayoutPart). Any other change made to the Container shows here too, so
+ * nothing that outranks a column change (a Custom CSS rule, say) is out of sight while the columns are set. Nothing for
+ * a component that is no Section.
+ */
+function ColumnLayout({ owner, def, node, variants, tokens, onSet }: { owner: OwnerRef; def: ComponentDefinition; node: InstanceNode; variants: Parameters<typeof designStyles>[2]; tokens: Tokens; onSet: (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number) => unknown }) {
+  const columns = columnLayoutPart(def);
+  const part = columns ? def.parts[columns.partId] : undefined;
+  if (!columns || !part) return null;
+  const set = countStyles(node.overrides?.[columns.partId]);
+  return (
+    <Section title="Column layout" id="columns" level={LEVEL} scope={[part.label, set ? changes(set) : ''].filter(Boolean).join(' · ')}>
+      <StyleControls
+        styles={node.overrides?.[columns.partId]}
+        inherited={designStyles(def, part.nodeId, variants)}
+        wideColumns
+        allowed={columns.controls}
+        tokens={tokens}
+        onSet={onSet(columns.partId)}
+        onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: columns.partId, scope: sc }], `Reset ${part.label.toLowerCase()}`)}
+        target={`the ${part.label.toLowerCase()}`}
+      />
+    </Section>
+  );
+}
+
 function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: Tokens; selection: ElementRef }) {
   // Layers selected together with this one (the menu's Duplicate and Delete act on them all): followed so the menu
   // is rebuilt when they change, and planned with it, so what the menu says is what it does.
@@ -1013,6 +1041,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           />
         </FieldHome>
       </Section>
+      <ColumnLayout owner={owner} def={def} node={node} variants={node.variants} tokens={tokens} onSet={onStyle} />
       {axes.length > 0 && (
         <Section title="Design" id="design" level={LEVEL}>
           {axes.map(([axisId, axis]) => (
@@ -2005,6 +2034,14 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const look = target && lookable ? target : null;
   const lookAxis = look ? def.variantAxes![look.axis] : undefined;
   const lookOption = look ? lookAxis!.options[look.variant] : undefined;
+  // A component placed in the design: its choices as the site starts them. One this design's state or property sets
+  // shows that one's default.
+  const startChoices: InstanceNode['variants'] =
+    node.kind === 'instance'
+      ? Object.fromEntries(
+          Object.entries(startingVariants(node.variants, def) ?? {}).map(([axis, v]) => [axis, isBinding(v) && '$prop' in v ? ((propBindingSchema(def.properties, v)?.default as string | undefined) ?? v) : v])
+        )
+      : undefined;
   // Under a look's own rules: what the design gives this element at each size without them (its own styles and the
   // default of every other choice), and for a component placed in the design, that component's design and the
   // changes this design makes to it.
@@ -2013,11 +2050,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       ? (() => {
           const placed = state.components[node.definitionId];
           const rootId = placed?.parts.root?.nodeId ?? placed?.tree?.rootIds[0];
-          // Its choices as the site starts them: one this design's state or property sets shows that one's default.
-          const chosen = Object.fromEntries(
-            Object.entries(startingVariants(node.variants, def) ?? {}).map(([axis, v]) => [axis, isBinding(v) && '$prop' in v ? ((propBindingSchema(def.properties, v)?.default as string | undefined) ?? v) : v])
-          );
-          const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, chosen) : [];
+          const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, startChoices) : [];
           // The other choices of this design style the placed component too, as their defaults. Their rules and the
           // placed design's own are equally specific, so the stylesheet's order decides: definitions by ID.
           const outer = designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles && l.styles !== lookOption!.styles?.[node.id]);
@@ -2168,6 +2201,19 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         >
           {node.kind === 'repeat' ? <StaggerSwitch owner={owner} node={node} /> : <EntranceField owner={owner} node={node} design={node.kind === 'instance' ? designAppear(state, placedDef) : undefined} />}
         </Section>
+      )}
+      {/* The placed Section's own columns, for every look: hidden while a look is styled, which they would not follow. */}
+      {node.kind === 'instance' && placedDef?.kind === 'managed' && !look && (
+        <ColumnLayout
+          owner={owner}
+          def={placedDef}
+          node={node}
+          variants={startChoices}
+          tokens={tokens}
+          onSet={(partId) => (property, value, expectedRevision) =>
+            commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], `Edit ${def.name} definition`, styleKey(property, `${def.id}:${node.id}:${partId}:${scope}:${property}`), expectedRevision)
+          }
+        />
       )}
       <Section title="Style" id="def-style" level={LEVEL} scope={[look ? `${lookAxis!.label}: ${lookOption!.label}` : '', repeated ? `Every ${itemWord ?? 'item'}` : '', placements].filter(Boolean).join(' · ')}>
         <StyleTargetField def={def} target={look} disabledReason={lookable ? undefined : 'A look styles the elements inside this, not this itself.'} />
