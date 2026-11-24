@@ -391,8 +391,9 @@ await win.getByRole('button', { name: 'Assets', exact: true }).click();
 await pause(200);
 await openAiTab();
 
-// A run in progress, pushed through the agent's own event channel. The conversation is the fresh one.
-const convId = 'live';
+// A run in progress, pushed through the agent's own event channel. The conversation is the fresh one: the panel
+// shows a run's messages only in the conversation they are tagged with.
+const convId = (await win.evaluate(() => window.builder.ai.conversations())).active.id;
 const runId = 'r_live';
 const liveUser = { id: 'm_lu', role: 'user', text: 'Make the hero heading shorter and more confident', time: t(58), context: ctx(home, 'Heading'), runId };
 const liveAi = { id: 'm_la', role: 'assistant', text: '', time: t(58), runId, activities: [] };
