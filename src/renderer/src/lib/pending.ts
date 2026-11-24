@@ -126,6 +126,9 @@ export interface SettleDeps {
   /** How long to wait for changes to land; by default as long as it takes, since one that is slow to land
    *  is still being saved (the app asks whether to keep waiting when the editor stops answering). */
   saveTimeoutMs?: number;
+  /** Run once every tracked change has landed, and waited for: an explicit save also waits here for the
+   *  project's other queued writes (Undo, the AI's edits) to reach the disk. */
+  barrier?: () => Promise<unknown>;
 }
 
 export interface Settled {
@@ -171,6 +174,7 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
     await until(() => !drafts.has(CANVAS_DRAFT), deps.canvasTimeoutMs ?? 3000, deps.wait);
     deps.hold?.();
     if (!(await until(() => inflight.size === 0, deps.saveTimeoutMs ?? Infinity, deps.wait))) report('A change is still being saved.');
+    else if (deps.barrier) await deps.barrier().catch(() => report('A change could not be confirmed as saved.'));
     await deps.wait(0);
     // Whatever is still open was not saved: a titled Add page form, unsaved code, an edit the preview kept, or
     // (a backstop) a field typed in meanwhile.

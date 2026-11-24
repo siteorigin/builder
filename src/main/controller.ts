@@ -1185,6 +1185,14 @@ export class Controller {
     return this.workspaceKey;
   }
 
+  /**
+   * Resolves once every write already queued for the open project has finished (Save waits on this). It joins the
+   * end of the session's queue without taking the writer lock, so a later write never waits on it.
+   */
+  async flush(): Promise<void> {
+    await this.session?.exclusive(async () => undefined);
+  }
+
   /** Write pending workspace state now. Writes run one at a time, in order, so an older state never lands last. */
   flushLocalState(): Promise<void> {
     if (this.localTimer) clearTimeout(this.localTimer);

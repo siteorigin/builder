@@ -7,7 +7,7 @@ import { UnpackingModal } from './components/ProjectDialogs';
 import { Toasts, openDialogs, openMenus } from './components/ui';
 import { ConfirmHost } from './components/ConfirmDialog';
 import { runComponentPreviews, runInspection } from './lib/inspect';
-import { restorePanelWidth } from './lib/layout';
+import { restorePanelWidth, restoreViewport, restoreZoom } from './lib/layout';
 import { handleShortcut, projectHistory } from './Editor';
 import { forgetCopy } from './lib/clipboard';
 import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
@@ -129,8 +129,8 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     snapshot: snap,
     runtime: snap.runtime,
     pageId: local.pageId && snap.state.pages[local.pageId] ? local.pageId : snap.state.site.homePageId,
-    viewport: local.viewport ?? 1280,
-    zoom: local.zoom ?? 'fit',
+    viewport: restoreViewport(local.viewport),
+    zoom: restoreZoom(local.zoom),
     leftTab: (local.leftTab as never) ?? 'pages',
     rightTab: (local.rightTab as never) ?? 'inspect',
     // Every project opens with its own panel widths (or the defaults), never the last project's.

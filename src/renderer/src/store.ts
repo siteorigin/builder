@@ -265,6 +265,18 @@ export function saveLocal(state: LocalWorkspaceState) {
   if (key) void api.project.saveLocalState(state, key);
 }
 
+/** Show the preview at `width` and remember it for this project, wherever the width was chosen. */
+export function setViewport(width: number) {
+  setState({ viewport: width });
+  saveLocal({ viewport: width });
+}
+
+/** Zoom the preview and remember it for this project. */
+export function setZoom(zoom: number | 'fit') {
+  setState({ zoom });
+  saveLocal({ zoom });
+}
+
 /** The unsent message of the open conversation. */
 export const selectChatDraft = (s: State) => draftFor(s.chatDrafts, s.conversation?.id);
 

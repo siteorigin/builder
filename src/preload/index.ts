@@ -1,5 +1,19 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BuilderApi } from '@shared/api';
+import { appearanceFromArgv, editorScheme } from '@shared/appearance';
+
+// The editor's first paint is in its Appearance: its root element is marked as soon as it exists, before any
+// style is computed. The renderer keeps it up to date from then on (lib/appearance.ts).
+const markAppearance = () => {
+  const root = document.documentElement;
+  if (!root) return false;
+  if (!root.dataset.appearance) root.dataset.appearance = editorScheme(appearanceFromArgv(process.argv), matchMedia('(prefers-color-scheme: dark)').matches);
+  return true;
+};
+if (!markAppearance()) {
+  const watch = new MutationObserver(() => markAppearance() && watch.disconnect());
+  watch.observe(document, { childList: true });
+}
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
 const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking']);

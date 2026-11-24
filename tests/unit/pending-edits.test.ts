@@ -201,6 +201,51 @@ describe('settling pending edits', () => {
   });
 });
 
+describe('the save barrier', () => {
+  it('waits, after every tracked change has landed, for the barrier (the project’s queued writes) before it settles', async () => {
+    const apply = deferred();
+    trackApply(apply.promise);
+    const order: string[] = [];
+    let release!: () => void;
+    const queued = new Promise<void>((r) => (release = r));
+    let settled = false;
+    const run = settle({
+      blur: () => undefined,
+      wait,
+      barrier: () => {
+        order.push('barrier');
+        return queued;
+      }
+    });
+    void run.then(() => (settled = true));
+    await wait(40);
+    // Not before the tracked change: an edit still on its way would enter the queue after the barrier.
+    expect(order).toEqual([]);
+    apply.resolve({ ok: true });
+    await wait(40);
+    expect(order).toEqual(['barrier']);
+    expect(settled).toBe(false);
+    release();
+    const { problems, finish } = await run;
+    finish();
+    expect(problems).toEqual([]);
+  });
+
+  it('reports a barrier that fails, and a refusal heard while waiting for it', async () => {
+    const run = settle({
+      blur: () => undefined,
+      wait,
+      barrier: async () => {
+        reportRefused('That anchor is already used on this page.');
+        throw new Error('The project was closed.');
+      }
+    });
+    const { problems, finish } = await run;
+    finish();
+    expect(problems).toEqual(['That anchor is already used on this page.', 'A change could not be confirmed as saved.']);
+  });
+});
+
 describe('save status announcements', () => {
   it('clears the saved message while a change is unsaved or saving, rather than keeping it', () => {
     expect(saveStatusAnnouncement('saved', 'busy')).toBe('');

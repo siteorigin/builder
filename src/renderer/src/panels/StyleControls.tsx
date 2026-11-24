@@ -6,7 +6,7 @@ import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { DraftInput } from '../components/ui';
-import { setState, useStore } from '../store';
+import { setState, setViewport, useStore } from '../store';
 import { allSizesReach, readStyleNumber, refinementShown, styleEffective, styleReached, styleUnder } from '../lib/style-source';
 
 type Size = Exclude<ResponsiveScope, 'base'>;
@@ -151,7 +151,7 @@ export function ScopePicker({ styles }: { styles?: ResponsiveStyles }) {
               </button>
             ) : (
               <button type="button" className="style-scope-link" onClick={() => {
-                  setState({ viewport: VIEWPORT_PRESETS[scope] });
+                  setViewport(VIEWPORT_PRESETS[scope]);
                   setFocusAfter(true);
                 }}
               >

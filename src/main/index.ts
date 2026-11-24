@@ -3,8 +3,9 @@ import type { BaseWindow, KeyboardEvent, MenuItem, MenuItemConstructorOptions } 
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
-import type { ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
+import type { Appearance, ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
+import { appearanceSwitch, editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
 import { visitorStepKey } from '@shared/preview-keys';
 import { checkLocalBaseURL } from '@shared/local';
@@ -31,6 +32,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 // Tests and side-by-side development can isolate settings, credentials and caches.
 if (process.env.SITEORIGIN_USER_DATA) app.setPath('userData', process.env.SITEORIGIN_USER_DATA);
 let win: BrowserWindow | null = null;
+/** The editor's Appearance, as last saved. It styles the editor only: Electron's theme stays on System. */
+let appearance: Appearance = 'system';
+const windowBackground = () => editorBackground(editorScheme(appearance, nativeTheme.shouldUseDarkColors));
 const controller = new Controller(() => win);
 
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
@@ -229,7 +233,12 @@ function registerIpc() {
       fixAbort?.abort();
     }
     const s = await updateSettings(patch);
-    nativeTheme.themeSource = s.appearance;
+    // The editor redraws itself; Electron keeps following this computer, so the website preview never changes with it.
+    if (s.appearance !== appearance) {
+      appearance = s.appearance;
+      if (win && !win.isDestroyed()) win.setBackgroundColor(windowBackground());
+      controller.send('appearance', appearance);
+    }
     return s;
   });
   handle('app:openExternal', async (url: string) => {
@@ -332,7 +341,8 @@ function registerIpc() {
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
   });
-  handle('project:flush', async () => undefined);
+  // Save's last step: resolves once the project's queued writes are on disk.
+  handle('project:flush', () => controller.flush());
   // Development-only hooks used by the end-to-end tests in place of native save dialogs.
   if (!app.isPackaged) {
     handle('test:exportStatic', (dest: string, format?: unknown) => controller.buildStaticTo(dest, format === 'zip' ? 'zip' : 'folder'));
@@ -444,7 +454,7 @@ async function createWindow() {
     // Cleared in the same step the window is created in, so nothing can slip in between.
     windowComing = false;
   }
-  nativeTheme.themeSource = settings.appearance;
+  appearance = settings.appearance;
   win = new BrowserWindow({
     width: 1480,
     height: 920,
@@ -455,7 +465,7 @@ async function createWindow() {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: { x: 16, y: 17 },
     // The app's --bg (styles.css), so the window never flashes a different color before the editor paints.
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#11151c' : '#f2f4f7',
+    backgroundColor: windowBackground(),
     webPreferences: {
       preload: join(here, '../preload/index.cjs'),
       contextIsolation: true,
@@ -463,7 +473,9 @@ async function createWindow() {
       sandbox: true,
       webSecurity: true,
       spellcheck: true,
-      backgroundThrottling: !headless
+      backgroundThrottling: !headless,
+      // The preload draws the editor's first paint in its Appearance.
+      additionalArguments: [appearanceSwitch(appearance)]
     }
   });
   // Open maximized: the editor is used with as much room for the site preview as the screen allows.
@@ -707,7 +719,10 @@ app.whenReady().then(async () => {
   buildMenu();
   markStarted();
   // Registered once, not per window: macOS brings up a new window after the last one closes.
-  nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
+  // With Appearance on System, the window's backing color follows this computer's setting (the editor follows it itself).
+  nativeTheme.on('updated', () => {
+    if (win && !win.isDestroyed()) win.setBackgroundColor(windowBackground());
+  });
   await createWindow();
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) void createWindow();

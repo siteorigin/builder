@@ -4,7 +4,7 @@ import { BookmarkPlus, Component, FileText, FolderOpen, History, Link2, Plus, Re
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
-import { api, setState, toast, useStore } from '../store';
+import { api, setState, setViewport, toast, useStore } from '../store';
 import { pageShowing, partName } from '@shared/page-shell';
 import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline } from '../lib/actions';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
@@ -93,9 +93,9 @@ export function CommandMenu() {
       { id: 'newproject', kbd: '⇧⌘N', label: 'New project…', group: 'Project', icon: <Plus />, run: () => sendCommand('new-project') },
       { id: 'openproject', kbd: '⌘O', label: 'Open project…', group: 'Project', icon: <FolderOpen />, run: () => sendCommand('open-project') },
       { id: 'preview', label: 'Switch between edit and preview', group: 'View', icon: <Eye />, run: () => setMode(useStore.getState().mode === 'edit' ? 'preview' : 'edit') },
-      { id: 'desktop', label: 'Preview at desktop width', group: 'View', icon: <Monitor />, run: () => setState({ viewport: VIEWPORT_PRESETS.desktop }) },
-      { id: 'tablet', label: 'Preview at tablet width', group: 'View', icon: <Tablet />, run: () => setState({ viewport: VIEWPORT_PRESETS.tablet }) },
-      { id: 'phone', label: 'Preview at phone width', group: 'View', icon: <Smartphone />, run: () => setState({ viewport: VIEWPORT_PRESETS.phone }) },
+      { id: 'desktop', label: 'Preview at desktop width', group: 'View', icon: <Monitor />, run: () => setViewport(VIEWPORT_PRESETS.desktop) },
+      { id: 'tablet', label: 'Preview at tablet width', group: 'View', icon: <Tablet />, run: () => setViewport(VIEWPORT_PRESETS.tablet) },
+      { id: 'phone', label: 'Preview at phone width', group: 'View', icon: <Smartphone />, run: () => setViewport(VIEWPORT_PRESETS.phone) },
       { id: 'export', kbd: '⌘E', label: 'Export or publish your website…', group: 'Project', icon: <Upload />, run: () => setState({ modal: { kind: 'export' } }) },
       { id: 'settings', label: 'Settings…', group: 'Project', icon: <Settings />, run: () => setState({ modal: { kind: 'settings' } }) },
       { id: 'history', label: 'History…', group: 'Project', icon: <History />, run: () => setState({ modal: { kind: 'history' } }) },

@@ -166,6 +166,41 @@ describe('workspace state per project', () => {
     expect(onDisk(a).chatDrafts).toEqual({});
   });
 
+  it('restores the preview width and zoom chosen in a project when it reopens', async () => {
+    const { c, parent } = setup();
+    const a = await create(c, parent, 'Alpha');
+    c.saveLocalState({ viewport: 2400 }, opening(c));
+    c.saveLocalState({ zoom: 0.75 }, opening(c));
+    await c.close();
+    expect(await c.open(a)).toEqual({ ok: true });
+    expect(c.snapshot()!.localState).toMatchObject({ viewport: 2400, zoom: 0.75 });
+  });
+
+  it('a flush resolves only once the writes queued before it are on disk', async () => {
+    const { c, parent } = setup();
+    const a = await create(c, parent, 'Alpha');
+    // Hold the project's queue, as a slow write would, with an edit waiting behind it.
+    let release!: () => void;
+    const held = c.session!.exclusive(() => new Promise<void>((r) => (release = r)));
+    const edit = c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
+    await new Promise((r) => setTimeout(r, 20));
+    let flushed = false;
+    const flush = c.flush().then(() => {
+      flushed = true;
+      // The edit is written by the time the flush says so.
+      return JSON.parse(readFileSync(join(a, 'siteorigin', 'site.json'), 'utf8'));
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(flushed).toBe(false);
+    release();
+    await held;
+    expect((await flush).name).toBe('Renamed');
+    expect((await edit).ok).toBe(true);
+    // With no project open there is nothing to wait for.
+    await c.close();
+    await expect(c.flush()).resolves.toBeUndefined();
+  });
+
   it('an Undo offered in an earlier opening of a project never acts on a later one', async () => {
     const { c, parent } = setup();
     const a = await create(c, parent, 'Alpha');
