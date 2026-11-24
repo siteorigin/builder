@@ -226,13 +226,14 @@ export function Welcome() {
   }, [filtering]);
   const removeProject = async (r: RecentProject) => {
     if (!recents || !shown) return;
-    await api.projects.removeRecent(r.dir);
-    setCleared(false);
+    // Where focus goes is settled now, so a Pin pressed while this is saved takes over from it: the latest of a
+    // Remove or a Pin says where focus goes.
     const rest = shown.filter((x) => x.dir !== r.dir);
     const at = shown.indexOf(r);
-    // The latest of a Remove or a Pin says where focus goes.
     focusAfterPin.current = null;
     focusAfterRemove.current = (rest[at] ?? rest[at - 1])?.dir ?? '';
+    await api.projects.removeRecent(r.dir);
+    setCleared(false);
     refresh();
     toast(r.missing ? `${r.name} was removed from this list.` : `${r.name} was removed from this list. Its folder is untouched.`);
   };

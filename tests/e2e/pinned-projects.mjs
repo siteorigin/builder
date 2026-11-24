@@ -86,6 +86,18 @@ const brochure = win.getByRole('list', { name: 'Pinned projects' }).locator('.re
 assert.match(await brochure.innerText(), /Folder not found/);
 assert.match(await brochure.innerText(), /Find folder…/);
 assert.equal(await brochure.getByRole('button', { name: 'Pin Old brochure site' }).getAttribute('aria-pressed'), 'true');
+// Its card still finds the folder (#217): the folder picker named for it opens, and cancelling keeps the card pinned.
+const findSince = await desktopCursor(app);
+const [findAnswer] = await answerChoosers(app, [{ dialog: 'open', title: 'Find Old brochure site', selection: 'folder', cancel: true }]);
+await brochure.locator('.recent-card').click();
+await eventually(async () =>
+  assert.deepEqual(
+    (await choosersShown(app, findSince)).map((p) => [p.answer, p.outcome]),
+    [[findAnswer, 'cancelled']]
+  )
+);
+await eventually(async () => assert.equal(await brochure.locator('.recent-card').isEnabled(), true));
+assert.deepEqual(await folders(pinnedCards()), [longstanding, gone]);
 
 step('the two Mill Roads are told apart by their own folders');
 /** What a listed project's card shows of its folder, and what its Pin button is called. */

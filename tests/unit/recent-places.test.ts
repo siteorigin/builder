@@ -58,6 +58,8 @@ describe('the pinned and recent groups on Welcome (#259)', () => {
     expect(dirs(recentGroups(all, 'mill road').recent)).toEqual(['/Users/ana/Websites/clients/harbour/mill-road', '/Volumes/Work/delivered/mill-road']);
     expect(dirs(recentGroups(all, 'harbour').recent)).toEqual(['/Users/ana/Websites/clients/harbour/mill-road']);
     expect(dirs(recentGroups(all, '/volumes/work').recent)).toEqual(['/Volumes/Work/delivered/mill-road']);
+    // The whole path finds a project too, though its card shows "~" for the home folder.
+    expect(recentGroups(all, '/users/ana/websites/acme')).toEqual({ pinned: [all[21]], recent: [] });
     // "~" is a way to find what lives in the home folder.
     expect(recentGroups(all, '~/websites/client-1').recent.map((r) => r.name)).toEqual(['Client 1', 'Client 10', 'Client 11', 'Client 12', 'Client 13', 'Client 14', 'Client 15', 'Client 16', 'Client 17']);
     const labels = whereLabels(all);

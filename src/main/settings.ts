@@ -218,10 +218,17 @@ export async function pinRecent(dir: string, pinned: boolean): Promise<boolean> 
   const s = await loadSettings();
   const at = s.recents.findIndex((r) => r.dir === dir);
   if (at < 0) return false;
-  if ((s.recents[at].pinned === true) !== pinned) s.recents = s.recents.map((r, i) => (i === at ? withPin(r, pinned) : r));
-  // Written even when the list already says so: a pin whose earlier write failed is written again, and an answer
-  // never comes before the pin is on disk.
-  await saveSettings();
+  const was = s.recents[at].pinned === true;
+  if (was !== pinned) s.recents = s.recents.map((r, i) => (i === at ? withPin(r, pinned) : r));
+  // Written even when the list already says so, so an answer never comes before the pin is on disk.
+  try {
+    await saveSettings();
+  } catch (e) {
+    // Not saved: the entry goes back as it was (unless a later pin or unpin has changed it since), so the list never
+    // shows a pin a restart would lose, and the same request can be made again.
+    if (was !== pinned) s.recents = s.recents.map((r) => (r.dir === dir && (r.pinned === true) === pinned ? withPin(r, was) : r));
+    throw e;
+  }
   return true;
 }
 

@@ -170,10 +170,12 @@ describe('a pinned project on the Recent projects list (#259)', () => {
     site('clients/site');
     await settings.addRecent(folder, 'New client', 'pnew');
     expect((await settings.recents()).map((r) => [r.name, r.pinned === true])).toEqual([['New client', false]]);
-    // An entry listed before IDs were kept cannot be told apart from it, and keeps its pin.
-    s.recents = [at()];
-    await settings.addRecent(folder, 'New client', 'pnew');
-    expect((await settings.recents()).map((r) => [r.name, r.pinned === true])).toEqual([['New client', true]]);
+    // An entry listed before IDs were kept, or with an empty one, cannot be told apart from it, and keeps its pin.
+    for (const legacy of [at(), { ...at(), projectId: '' }]) {
+      s.recents = [legacy];
+      await settings.addRecent(folder, 'New client', 'pnew');
+      expect((await settings.recents()).map((r) => [r.name, r.pinned === true])).toEqual([['New client', true]]);
+    }
   });
 
   it('writes a pin again when its first write failed, and answers only once it is on disk', async (ctx) => {
@@ -191,6 +193,8 @@ describe('a pinned project on the Recent projects list (#259)', () => {
     // Only where the folder really refuses the write (not for an administrator, nor on Windows).
     if (!failed) return ctx.skip();
     expect(saved()[0]).not.toHaveProperty('pinned');
+    // The list says what is saved, so the same request is made again.
+    expect(await listed()).toEqual([['Longstanding client', false]]);
     expect(await settings.pinRecent(longstanding, true)).toBe(true);
     expect(saved()[0]).toMatchObject({ dir: longstanding, pinned: true });
   });
