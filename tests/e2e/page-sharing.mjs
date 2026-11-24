@@ -45,6 +45,13 @@ const cardImage = () => card().locator('.share-card-image img');
 const pickerThumb = () => picker().locator('.insp-image-thumb img');
 const field = (label) => section().locator('.field', { has: win.locator('label', { hasText: label }) });
 
+/** The site's own sharing image, in Site details. */
+const siteSocial = () => win.locator('#dock-panel-styles .insp-image.plain-social');
+async function setSiteImage(name) {
+  await siteSocial().getByRole('button', { name: /Choose image…|Change…/ }).click();
+  await siteSocial().locator('.insp-pick-tile', { hasText: new RegExp(`^${name}$`) }).click();
+}
+
 /** Choose an image from the library browser opened by the chooser. */
 async function choose(name) {
   await chooser().click();
@@ -115,10 +122,9 @@ assert.equal(await imageName().innerText(), 'Kitchen');
 
 step('the site’s image and public URL, set from the page panel, and a page that follows them');
 await win.getByRole('button', { name: 'Change the site’s sharing image' }).click();
-const detailsField = win.locator('#dock-panel-styles select[data-site-field="socialImage"]');
-await detailsField.waitFor({ state: 'visible' });
-await eventually(async () => assert.equal(await detailsField.evaluate((el) => el === document.activeElement), true, 'Site details opens with the sharing image under the cursor'));
-await detailsField.selectOption('a_studio');
+await siteSocial().waitFor({ state: 'visible' });
+await eventually(async () => assert.equal(await siteSocial().locator('.insp-image-top .btn').first().evaluate((el) => el === document.activeElement), true, 'Site details opens with the sharing image under the cursor'));
+await setSiteImage('Studio table');
 await eventually(() => assert.equal(siteFile().socialImage, 'a_studio'));
 const url = win.locator('#dock-panel-styles .field', { has: win.locator('label', { hasText: 'Public URL' }) }).getByRole('textbox', { name: 'Public URL', exact: true });
 await url.fill('https://studio.example/work/');
@@ -161,7 +167,7 @@ await choose('Studio table');
 await eventually(() => assert.equal(pageFile(home).seo.socialImage, 'a_studio', 'Home now holds the choice itself, though the site already had it'));
 assert.equal(await back().innerText(), 'Use the site’s image', 'and can return to following the site');
 await win.getByRole('button', { name: 'Change the site’s sharing image' }).click();
-await win.locator('#dock-panel-styles select[data-site-field="socialImage"]').selectOption('a_dining');
+await setSiteImage('Dining room');
 await eventually(() => assert.equal(siteFile().socialImage, 'a_dining'));
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 await openPage('Home');
@@ -177,7 +183,7 @@ await back().click();
 await eventually(() => assert.equal(pageFile(home).seo.socialImage, undefined, 'Home follows the site again'));
 await eventually(async () => assert.equal(await imageName().innerText(), 'Dining room'));
 await win.getByRole('button', { name: 'Change the site’s sharing image' }).click();
-await win.locator('#dock-panel-styles select[data-site-field="socialImage"]').selectOption('a_studio');
+await setSiteImage('Studio table');
 await eventually(() => assert.equal(siteFile().socialImage, 'a_studio'));
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 await openPage('Home');
