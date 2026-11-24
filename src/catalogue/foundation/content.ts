@@ -1,4 +1,4 @@
-import { P, managed, tok } from '../dsl';
+import { P, item, managed, tok } from '../dsl';
 import { eyebrowStyles, headingBlock, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
 
 const card = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), color: tok('color.text'), border: tok('border.default'), radius: tok('radius.lg') } as const;
@@ -196,7 +196,7 @@ export const stats = managed({
 export const gallery = managed({
   componentId: 'media.gallery',
   name: 'Gallery',
-  description: 'A responsive grid of images with optional captions.',
+  description: 'A responsive grid of images with optional captions. Each image can do nothing when clicked, open full size, or link to a page such as a case study.',
   category: 'media',
   tags: ['gallery', 'images', 'photos', 'portfolio', 'work', 'grid'],
   icon: 'images',
@@ -208,7 +208,16 @@ export const gallery = managed({
     images: P.list(
       'Images',
       'Image',
-      { image: P.image('Image'), caption: P.str('Caption', '') },
+      {
+        image: P.image('Image'),
+        caption: P.str('Caption', ''),
+        action: P.choice('When clicked', 'none', [
+          ['none', 'Nothing'],
+          ['image', 'Show full image'],
+          ['link', 'Follow link']
+        ]),
+        link: P.link('Link')
+      },
       [
         { image: { assetId: null, alt: '' }, caption: 'Garden room, Ashford' },
         { image: { assetId: null, alt: '' }, caption: 'Kitchen, Millbrook' },
@@ -233,7 +242,9 @@ export const gallery = managed({
       b.el('grid', 'ul', { name: 'Grid', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.lg') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
         b.repeat('photos', 'images', [
           b.el('photo', 'li', { name: 'Photo' }, [
-            b.el('photo-figure', 'figure', { name: 'Figure', styles: { layout: 'stack', gap: tok('space.sm') } }, [
+            // A working action wraps the whole figure, image and caption, in one link: to the full-size image (which
+            // opens in a viewer) or to the item's destination.
+            b.el('photo-figure', 'figure', { name: 'Figure', action: item('action'), link: item('link'), styles: { layout: 'stack', gap: tok('space.sm') } }, [
               b.image('image', { $item: 'image' }, { name: 'Image', styles: { aspectRatio: '4/3', radius: tok('radius.md'), objectFit: 'cover' } }),
               b.text('caption', 'figcaption', { $item: 'caption' }, { name: 'Caption', when: { $item: 'caption' }, styles: { textStyle: tok('text.small'), ...mutedStyles } })
             ])

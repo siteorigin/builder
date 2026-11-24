@@ -17,7 +17,7 @@ import type {
   RichText
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type IconPosition, type TextTag } from '@shared/types';
+import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
@@ -1131,6 +1131,12 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       if (node.kind !== 'link') fail('Only buttons and links have an icon position.');
       if (!(ICON_POSITIONS as string[]).includes(String(v))) fail(`Icon position must be ${ICON_POSITIONS.join(' or ')}.`);
       if (!setBound(node.iconPosition, () => String(v))) node.iconPosition = String(v) as IconPosition;
+      return {};
+    }
+    case 'action': {
+      if (node.kind !== 'element') fail('Only containers do something when clicked.');
+      if (typeof v !== 'string' || !(ELEMENT_ACTIONS as string[]).includes(v)) fail(`What a click does must be ${ELEMENT_ACTIONS.join(', ')}.`);
+      if (!setBound(node.action, () => String(v))) node.action = String(v) as ElementAction;
       return {};
     }
     case 'ariaLabel': {

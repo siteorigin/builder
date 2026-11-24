@@ -156,14 +156,14 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('node.setContent'),
     owner,
     nodeId: z.string(),
-    field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'anchor']),
+    field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor']),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({
     type: z.literal('node.setBinding'),
     owner,
     nodeId: z.string(),
-    field: z.enum(['text', 'image', 'fallbackAlt', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'when', 'unless', 'list', 'prop', 'variant']),
+    field: z.enum(['text', 'image', 'fallbackAlt', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'when', 'unless', 'list', 'prop', 'variant']),
     prop: z.string().optional().describe('For field "prop": the nested instance property to bind.'),
     axis: z.string().optional().describe('For field "variant": the nested instance variant axis to bind to an enum property.'),
     binding: binding.nullable().describe('{"$prop": name} or {"$item": field}; null unbinds, keeping the current default.'),

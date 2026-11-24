@@ -10,6 +10,7 @@ import type {
   Condition,
   ConditionValue,
   ComponentCategory,
+  ElementAction,
   ComponentDefinition,
   ElementTag,
   GraphNode,
@@ -64,8 +65,11 @@ export class TreeBuilder {
     return node.id;
   }
 
-  /** A container. With `link` the whole container is one link (a card), so nothing inside it may be interactive. */
-  el(id: string, tag: Bindable<ElementTag>, opts: NamedOpts & { collapseEmpty?: boolean; link?: Bindable<LinkValue> }, children: string[]): string {
+  /**
+   * A container. With `link` the whole container is one link (a card), so nothing inside it may be interactive.
+   * With `action` as well, clicking it does what the action says: nothing, open its image full size, or follow `link`.
+   */
+  el(id: string, tag: Bindable<ElementTag>, opts: NamedOpts & { collapseEmpty?: boolean; link?: Bindable<LinkValue>; action?: Bindable<ElementAction> }, children: string[]): string {
     return this.add(
       {
         id,
@@ -74,6 +78,7 @@ export class TreeBuilder {
         children,
         ...(opts.collapseEmpty ? { collapseEmpty: true } : {}),
         ...(opts.link !== undefined ? { link: opts.link } : {}),
+        ...(opts.action !== undefined ? { action: opts.action } : {}),
         ...(opts.ariaLabel !== undefined ? { ariaLabel: opts.ariaLabel } : {})
       },
       opts

@@ -147,9 +147,9 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       eyebrow: 'Selected work',
       heading: 'Recent projects',
       images: [
-        { id: 'i1', image: img(A('a_kitchen'), alt('a_kitchen')), caption: 'Kitchen, Millbrook' },
-        { id: 'i2', image: img(A('a_bedroom'), alt('a_bedroom')), caption: 'Bedroom, Ashford' },
-        { id: 'i3', image: img(A('a_reading'), alt('a_reading')), caption: 'Reading room, Old Mill' }
+        { id: 'i1', image: img(A('a_kitchen'), alt('a_kitchen')), caption: 'Kitchen, Millbrook', action: 'image' },
+        { id: 'i2', image: img(A('a_bedroom'), alt('a_bedroom')), caption: 'Bedroom, Ashford', action: 'image' },
+        { id: 'i3', image: img(A('a_reading'), alt('a_reading')), caption: 'Reading room, Old Mill', action: 'image' }
       ]
     }),
     inst(s, 'testimonials.grid', {}, 'muted'),

@@ -11,6 +11,7 @@ import { formFieldSettingsHidden, namesFormFields, offersFormChoices } from '@ca
 import { isDraftPage, liveRedirects, resolveLink, takesParagraphs } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
+import { actionWraps } from './card-links';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
@@ -706,9 +707,10 @@ function renderedLinks(state: ProjectState, tree: NodeTree): RenderedLink[] {
     text: (n, scope, reportId) => {
       if (n.rich) richLinks(evaluate(n.text, scope)).forEach((sp, i) => out.push({ link: sp.link!, label: sp.text.trim(), reportId, key: `${at(n, scope)}:${i}`, inText: true }));
     },
-    // A card links the whole container.
+    // A card links the whole container. One with an action follows its destination only while that action is `link`.
     node: (n, scope, reportId) => {
       if (n.kind !== 'element' || n.link === undefined) return;
+      if (n.action !== undefined && n.action !== null && (!actionWraps(n) || evaluate(n.action, scope) !== 'link')) return;
       const link = evaluate(n.link, scope);
       if (isLinkValue(link)) out.push({ link, label: n.name ?? '', reportId, key: at(n, scope), inText: false });
     },

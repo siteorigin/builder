@@ -54,12 +54,21 @@ async function renderHome(s: ProjectState, opts: { instrument?: boolean } = {}):
   roots.push(dir);
   const paths = join(dir, 'app-paths.js');
   writeFileSync(paths, 'export const resolve = (p) => "/studio" + p; export const asset = (p) => "/studio/" + p; export const base = "/studio";\n');
+  // Navigation callbacks never run while rendering on the server.
+  const navigation = join(dir, 'app-navigation.js');
+  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};\n');
   for (const [path, source] of generateProject(s, opts)) {
     if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
     const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
     mkdirSync(dirname(out), { recursive: true });
     const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
-    writeFileSync(out, code.replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1').replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths)));
+    writeFileSync(
+      out,
+      code
+        .replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1')
+        .replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths))
+        .replace(/(["'])\$app\/navigation\1/g, JSON.stringify(navigation))
+    );
   }
   const Page = (await import(/* @vite-ignore */ join(dir, 'src/routes/+page.svelte.js'))).default as Component<Record<string, unknown>>;
   return render(Page, { props: {} }).body.replace(/<!--[\s\S]*?-->/g, '');
