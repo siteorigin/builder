@@ -174,6 +174,22 @@ describe.skipIf(!browserInstalled)('scrolling to a new selection the page shows 
     expect(await scrollY()).toBe(at);
   });
 
+  it('keeps waiting while the editor reports the same selection again (a hover, a revision)', async () => {
+    await send('track', { selected: sel('late'), hovered: null });
+    await send('scrollTo', { desc: sel('late') });
+    await send('track', { selected: sel('late'), hovered: sel('hero') });
+    await mount('late');
+    expect(await inView('late')).toBe(true);
+  });
+
+  it('stops waiting when the selection moves to something else meanwhile', async () => {
+    await send('track', { selected: sel('late'), hovered: null });
+    await send('scrollTo', { desc: sel('late') });
+    await send('track', { selected: null, hovered: null });
+    await mount('late');
+    expect(await scrollY()).toBe(0);
+  });
+
   it('stops waiting when the page changes, or Preview starts', async () => {
     await send('scrollTo', { desc: sel('late') });
     await inFrame(`win.dispatchEvent(new win.Event('siteorigin:navigated'));`);
