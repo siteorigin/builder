@@ -1,5 +1,6 @@
 import { listItemImage, listRowTitle } from '@shared/fields';
 import { effectiveItem } from '@shared/page-teasers';
+import { placedItemIndex } from '@engine/install';
 import { treeFor } from './model';
 import type { ListItem, OwnerRef, ProjectState } from '@shared/types';
 
@@ -87,14 +88,14 @@ export function listEditLabel(state: ProjectState, owner: OwnerRef, nodeId: stri
     return quoted(listRowTitle(schema, eff, i, listItemImage(schema, eff, state.assets.assets)?.name));
   };
   const noun = schema.itemLabel.toLowerCase();
-  const at = op.kind === 'insert' ? -1 : items.findIndex((x) => x?.id === op.itemId);
+  const at = op.kind === 'insert' ? -1 : placedItemIndex(items, owner, nodeId, op.itemId);
   if (op.kind !== 'insert' && at < 0) return fallback;
   const list = schema.label;
   let what: string;
   switch (op.kind) {
     case 'insert': {
       // A card made for a page is named by it; a blank one by its place.
-      const own = op.item ? effectiveItem(state, schema, { id: '', ...op.item }) : undefined;
+      const own = op.item ? effectiveItem(state, schema, { id: '', ...op.item } as ListItem) : undefined;
       const t = schema.titleField && own ? own[schema.titleField] : undefined;
       what = `Add ${typeof t === 'string' && t.trim() ? quoted(t) : `${noun} ${items.length + 1}`} to ${list}`;
       break;

@@ -1407,7 +1407,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 const field = listSchema.fields[b.item!];
                 const item = listItems.find((x) => x.id === itemId);
                 if (!field || !item) return null;
-                const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${keyAt}:${listProp}:${itemId}:${b.item}`);
+                const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], listEditLabel(state, instOwner, instNodeId, listProp, { kind: 'field', itemId, field: b.item! }, `Edit ${field.label}`, !!everywhere), `${keyAt}:${listProp}:${itemId}:${b.item}`);
                 // A page list's card says where an empty field's text comes from.
                 const teaser = teaserFieldNote(state, listSchema, item, b.item!);
                 // An item without its own value for the field shows the field's default, on the site and here.

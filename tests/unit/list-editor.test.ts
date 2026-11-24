@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { placedItemId } from '../../src/engine/install';
 import type { ProjectState } from '../../src/shared/types';
 import { addLimitNote, countLabel, countText, listEditLabel, moveAnnouncement, moveFocusTarget, removeLimitNote, type ListEdit } from '../../src/renderer/src/lib/list-editor';
 import { contact } from '../../src/catalogue/foundation/conversion';
@@ -105,6 +106,13 @@ describe('History and Undo wording for a list edit', () => {
 
   it('names a design, not a page, for an edit made everywhere', () => {
     expect(label({ kind: 'remove', itemId: 'i1' }, true)).toBe('Remove “Planning & layout” from Cards everywhere');
+  });
+
+  it('names a default row an edit still addresses by its default id', () => {
+    const copy = placedItemId(owner, 'n1', 'i1');
+    cards[0].id = copy;
+    expect(label({ kind: 'remove', itemId: 'i1' })).toContain('“Planning & layout”');
+    cards[0].id = 'i1';
   });
 
   it('keeps the generic label when the row is gone or the list is not there', () => {
