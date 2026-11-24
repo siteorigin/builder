@@ -1098,17 +1098,29 @@ export class Session {
   /** The journal read under way, shared: a stalled app never gets a pile of them. */
   private pulling: Promise<void> | null = null;
 
+  /** The latest deadline of anyone waiting on the journal read under way: past it, it reads no further page. */
+  private pullUntil = 0;
+
   /** Bring the tracker up to date with the app's journal of the assistant's events. */
   private async pull(deadline: number) {
-    this.pulling ??= (async () => {
-      for (let i = 0; i < 100; i++) {
-        const page = (await inMain(this.app!, journalInMain, { op: 'read', after: this.assistant.cursor, limit: 1000 } as JournalCall)) as { records: RawRecord[]; next: number; latest: number; missed: number };
-        this.assistant.ingest(page.records, page.missed);
-        if (!page.records.length || page.next >= page.latest) return;
-      }
-    })().finally(() => (this.pulling = null));
-    const pulling = this.pulling;
-    await this.within(() => pulling, deadline, 'reading the assistant’s events');
+    await this.within(
+      () => {
+        this.pullUntil = Math.max(this.pullUntil, deadline);
+        this.pulling ??= (async () => {
+          for (let i = 0; i < 100 && Date.now() < this.pullUntil; i++) {
+            const page = (await inMain(this.app!, journalInMain, { op: 'read', after: this.assistant.cursor, limit: 1000 } as JournalCall)) as { records: RawRecord[]; next: number; latest: number; missed: number };
+            this.assistant.ingest(page.records, page.missed);
+            if (!page.records.length || page.next >= page.latest) return;
+          }
+        })().finally(() => {
+          this.pulling = null;
+          this.pullUntil = 0;
+        });
+        return this.pulling;
+      },
+      deadline,
+      'reading the assistant’s events'
+    );
   }
 
   /** What the chat panel shows now, or null with no editor window to read (or none read before `deadline`). */
@@ -1153,24 +1165,37 @@ export class Session {
       new DriverError('TIMEOUT', `Run ${a.runId} neither finished nor asked the author anything in time (it is ${run.state}${run.status ? `, ${run.status}` : ''}).`, {
         details: { phase: 'assistant.wait', sessionState: this.state, runId: a.runId, state: run.state, status: run.status, lastSeq: run.lastSeq, next: this.assistant.cursor, ...(run.gap ? { gap: true } : {}) }
       });
-    let run: RunView | null;
+    let run: RunView | null = null;
     let settled: ReturnType<typeof settledState>;
     let shown: ShownChat | null = null;
     for (;;) {
       if (signal.aborted) throw new DriverError('TIMEOUT', 'assistant.wait was stopped.');
-      await this.pull(end);
+      try {
+        await this.pull(end);
+      } catch (e) {
+        // A read cut short by the end of the wait ends it with where the run last stood.
+        if (e instanceof DriverError && e.code === 'TIMEOUT' && run) throw timedOut(run);
+        throw e;
+      }
       run = this.assistant.runView(a.runId);
       if (!run) throw new DriverError('TARGET_NOT_FOUND', `No run "${a.runId}" is known to this session: never seen, or let go after many newer runs.`, { details: { runId: a.runId, hint: 'Take a runId from a run.started entry of assistant.observe.' } });
       settled = settledState(run, a.after);
       // After a gap in the journal, the panel says where the run is: its very question waiting, or its finished card.
       if (!settled && run.gap) {
         shown = await this.shownChat(end);
+        const card = shown ? shownTurn(shown, run)?.reply.result : undefined;
         if (shown && run.state === 'input' && (a.after === undefined || run.question!.askedSeq > a.after) && rendered(shown, run, 'input')) settled = { reason: 'input' };
-        else if (shown && shownTurn(shown, run)?.reply.result) settled = { reason: 'terminal' };
+        else if (card) {
+          // The journal lost its end; the panel shows it. The run is reported as over, with what its card says.
+          settled = { reason: 'terminal' };
+          run = { ...run, state: 'terminal', question: null, result: run.result ?? { status: card.status, summary: card.summary, changes: card.changes ?? [], canUndo: card.buttons.includes('Undo turn') } };
+        }
       }
       if (settled) break;
-      if (Date.now() + POLL >= end) throw timedOut(run);
-      await new Promise((r) => setTimeout(r, POLL));
+      const left = end - Date.now();
+      if (left <= 0) throw timedOut(run);
+      // A short wait still looks several times: never longer than a quarter of what is left between looks.
+      await new Promise((r) => setTimeout(r, Math.max(5, Math.min(POLL, left / 4))));
     }
     // The journal leads the panel by a moment: when the panel shows the run's conversation, wait (briefly) until it
     // shows the run where it stands, so the author's next action finds it there.
@@ -2308,7 +2333,12 @@ export class Session {
     // the key file and any copy the app was writing when it ended. One that cannot be removed is said.
     if (this.live?.key && this.paths) {
       const profile = this.paths.profile;
-      const copies = await readdir(profile).then((names) => names.filter((n) => n.startsWith('api-keys.json')), () => [] as string[]);
+      // The key file, and the temporary files the app writes settings and keys through (".<hex>.tmp"), any of which
+      // may hold the key if the app ended mid-write.
+      const copies = await readdir(profile).then(
+        (names) => names.filter((n) => n.startsWith('api-keys.json') || /^\.[0-9a-f]+\.tmp$/.test(n)),
+        (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? [] : (problems.push(`the profile could not be listed to remove the live key (${String(e)})`), []))
+      );
       for (const name of copies) await rm(join(profile, name), { force: true }).catch((e: unknown) => problems.push(`the live key in ${join(profile, name)} could not be removed (${String(e)})`));
     }
     await this.mock?.stop().catch(() => undefined);

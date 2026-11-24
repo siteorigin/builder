@@ -200,6 +200,10 @@ export class AssistantTracker {
   cursor = 0;
   /** The latest seq some of whose entries were let go (0: none yet). */
   private dropped = 0;
+  /** The seqs whose entries were let go, ascending (the latest 100000): a seq that never had entries is never missed. */
+  private droppedSeqs: number[] = [];
+  /** While a batch read after a gap is taken in: a run first seen in it may have missed its own start. */
+  private afterGap = false;
   private readonly maxEntries: number;
   private readonly maxRuns: number;
 
@@ -223,10 +227,15 @@ export class AssistantTracker {
       // What a run still going did meanwhile is unknown until it next sends its whole turn.
       for (const r of this.runs.values()) if (r.view.state !== 'terminal') r.view.gap = true;
     }
-    for (const r of records) {
-      if (r.seq <= this.cursor) continue;
-      this.cursor = r.seq;
-      this.one(r);
+    this.afterGap = missed > 0;
+    try {
+      for (const r of records) {
+        if (r.seq <= this.cursor) continue;
+        this.cursor = r.seq;
+        this.one(r);
+      }
+    } finally {
+      this.afterGap = false;
     }
   }
 
@@ -237,6 +246,8 @@ export class AssistantTracker {
       const seq = this.entries[0].seq;
       while (this.entries[0]?.seq === seq) this.entries.shift();
       this.dropped = seq;
+      this.droppedSeqs.push(seq);
+      if (this.droppedSeqs.length > 100_000) this.droppedSeqs.splice(0, this.droppedSeqs.length - 100_000);
     }
   }
 
@@ -265,7 +276,8 @@ export class AssistantTracker {
           model: null,
           result: null,
           startedSeq: seq,
-          lastSeq: seq
+          lastSeq: seq,
+          ...(this.afterGap ? { gap: true as const } : {})
         },
         last: null
       };
@@ -412,7 +424,7 @@ export class AssistantTracker {
     const limit = opts.limit ?? 200;
     const oldest = this.oldest;
     // Journal events after the cursor whose entries are no longer kept, and those the journal dropped unread.
-    let missed = Math.max(0, this.dropped - after);
+    let missed = this.droppedSeqs.filter((x) => x > after).length;
     const out: Entry[] = [];
     let next = after;
     for (const e of this.entries) {
@@ -752,34 +764,51 @@ function strings(v: unknown): string[] {
   return [];
 }
 
+const OPEN = '<editor_context>\n';
+const CLOSE = '\n</editor_context>';
+
 /**
- * Where the request's own message is in a request: the latest user message that ends with the editor context the app
- * appends to it. An author's words or a tool's result may mention the tag; neither ends with the block.
+ * The editor context block the app wrote in `text`: the last `<editor_context>` block whose content reads as a JSON
+ * object. The tag may also occur in the author's words (quoted, or never closed) and inside the context's own text (a
+ * page titled with it); none of those reads as the whole object, so trying each opening from the last back finds the
+ * app's.
  */
-function requestIndex(messages: unknown[]): number {
+function contextBlock(text: string): Record<string, unknown> | null {
+  for (let close = text.lastIndexOf(CLOSE); close >= 0; close = close > 0 ? text.lastIndexOf(CLOSE, close - 1) : -1) {
+    for (let open = text.lastIndexOf(OPEN, close); open >= 0; open = open > 0 ? text.lastIndexOf(OPEN, open - 1) : -1) {
+      try {
+        const v = JSON.parse(text.slice(open + OPEN.length, close));
+        if (isRecord(v)) return v;
+      } catch {
+        // Not the app's block: an earlier opening may be.
+      }
+    }
+  }
+  return null;
+}
+
+/** A tool's result in the constrained format: the user's words, "Result of <tool>:" and then the result. */
+const RESULT = /^(?:Result of|Error from) ([\w.]+):\n([\s\S]*)$/;
+
+/**
+ * Where the request's own message is in a request: the latest user message, not a tool result, that carries the
+ * app's editor context block (merged with any note the adapter put after it).
+ */
+function requestIndex(messages: unknown[]): { index: number; context: Record<string, unknown> | null } {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (isRecord(m) && m.role === 'user' && strings(m.content).join('').trimEnd().endsWith('</editor_context>')) return i;
+    if (!isRecord(m) || m.role !== 'user') continue;
+    const text = strings(m.content).join('');
+    if (RESULT.test(text) || !text.includes(OPEN)) continue;
+    const context = contextBlock(text);
+    if (context) return { index: i, context };
   }
-  return -1;
+  return { index: -1, context: null };
 }
 
 /** The editor context the latest request carries, as the model reads it. */
 export function requestContext(req: Pick<MockRequest, 'body'>): Record<string, unknown> | null {
-  const messages: unknown[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
-  const i = requestIndex(messages);
-  if (i < 0) return null;
-  const said = strings((messages[i] as Record<string, unknown>).content).join('');
-  // The app's block closes the message; an author's words before it may quote the tag, matched or not.
-  const close = said.lastIndexOf('</editor_context>');
-  const open = said.lastIndexOf('<editor_context>', close);
-  if (open < 0) return null;
-  try {
-    const ctx = JSON.parse(said.slice(open + '<editor_context>'.length, close));
-    return isRecord(ctx) ? ctx : null;
-  } catch {
-    return null;
-  }
+  return requestIndex(Array.isArray(req.body?.messages) ? req.body.messages : []).context;
 }
 
 /** The latest tool result a request carries, parsed, with the tool it answered. */
@@ -787,13 +816,13 @@ export function latestResult(req: Pick<MockRequest, 'body'>): { tool: string; va
   const messages: unknown[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
   // Only this request's own results: they come after its message. Anything before it, an author's message that reads
   // like a result included, is not one.
-  const own = requestIndex(messages);
+  const own = requestIndex(messages).index;
   for (let i = messages.length - 1; i > own; i--) {
     const m = messages[i];
     if (!isRecord(m)) continue;
     const content = typeof m.content === 'string' ? m.content : null;
     // The constrained format sends a result as the user's words, "Result of <tool>:" and then the result.
-    const r = content && /^(?:Result of|Error from) ([\w.]+):\n([\s\S]*)$/.exec(content);
+    const r = content && RESULT.exec(content);
     if (m.role === 'user' && r) {
       try {
         return { tool: r[1], value: JSON.parse(r[2]) };
@@ -1135,7 +1164,7 @@ export async function writeLiveKey(profile: string, s: LiveSetup) {
 // ---------------------------------------------------------------------------
 
 /** Keys whose values are the app's own IDs or a fixed vocabulary: kept as they are when they look like one. */
-const KEPT_KEYS = new Set(['runId', 'conversationId', 'messageId', 'userMessageId', 'questionId', 'id', 'status', 'state', 'type', 'mode', 'reason', 'role', 'kind', 'phase', 'sessionState']);
+const KEPT_KEYS = new Set(['runId', 'conversationId', 'messageId', 'userMessageId', 'questionId', 'id', 'assetId', 'images', 'status', 'state', 'type', 'mode', 'reason', 'role', 'kind', 'phase', 'sessionState']);
 const APP_ID = /^[a-z]{1,8}_[a-z0-9]{4,40}$/;
 const VOCABULARY = new Set<string>([...TERMINAL_STATUSES, 'preparing', 'running', 'awaiting-input', 'validating', 'repairing', 'stopping', 'working', 'input', 'ending', 'terminal', 'edit', 'ask', 'user', 'assistant', 'run.started', 'text', 'step', 'question', 'answer', 'model', 'result', 'update', 'gap', 'done', 'error', 'ready', 'closing', 'closed', 'assistant.wait', 'assistant.observe']);
 
@@ -1145,9 +1174,13 @@ const VOCABULARY = new Set<string>([...TERMINAL_STATUSES, 'preparing', 'running'
  */
 export function scrubAssistant<T>(value: T, secrets: string[], scrub: (s: string) => string): T {
   if (!secrets.some(Boolean)) return value;
+  // A credential long enough not to occur in an ID by chance is scrubbed even where an ID is expected.
+  const long = secrets.filter((x) => x.length >= 8);
+  const kept = (v: string) => (APP_ID.test(v) || VOCABULARY.has(v)) && !long.some((x) => v.includes(x));
   const visit = (v: unknown, key?: string): unknown => {
-    if (typeof v === 'string') return key && KEPT_KEYS.has(key) && (APP_ID.test(v) || VOCABULARY.has(v)) ? v : scrub(v);
-    if (Array.isArray(v)) return v.map((x) => visit(x));
+    if (typeof v === 'string') return key && KEPT_KEYS.has(key) && kept(v) ? v : scrub(v);
+    // A list of IDs (a message's images) keeps its key for each of them.
+    if (Array.isArray(v)) return v.map((x) => visit(x, key === 'images' ? key : undefined));
     if (isRecord(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, visit(x, k)]));
     return v;
   };

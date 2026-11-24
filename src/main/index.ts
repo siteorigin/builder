@@ -60,6 +60,8 @@ const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
 // And they keep every assistant event in order, for a test to follow each run by its own IDs (ai-journal.ts).
 const aiJournal = launchMode(process.env, globalThis).automated ? installAiJournal(globalThis) : null;
 const AI_TURNS_SPENT = 'This test session allows no more AI requests (its limit or its time is used up), so nothing was sent.';
+/** In a test with a deadline, a provider call that would start after it is refused, wherever in a request it comes. */
+const deadlineFetch: typeof fetch | undefined = aiJournal ? (input, init) => (aiJournal.turns().spent ? Promise.reject(new Error(AI_TURNS_SPENT)) : fetch(input, init)) : undefined;
 if (headless) {
   // A hidden window must keep painting, running timers and animation frames at full speed.
   app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -467,7 +469,8 @@ function registerIpc() {
     const key = typed || (await getKey(p))?.key;
     if (!key) return { ok: false, message: 'No API key is set.' };
     const model = custom || (await loadSettings()).settings.ai.models[p];
-    return p === 'openai' ? testOpenAI(key, model) : testAnthropic(key, model);
+    const opts = deadlineFetch ? { fetch: deadlineFetch } : {};
+    return p === 'openai' ? testOpenAI(key, model, opts) : testAnthropic(key, model, opts);
   });
   // Always the saved server, so a key is only ever sent to the address the user saved.
   handle('ai:localModels', async () => {

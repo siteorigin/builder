@@ -259,7 +259,7 @@ describe('the tracker', () => {
     const page = t.read();
     expect(page.entries).toHaveLength(3);
     expect(page.missed).toBeGreaterThan(0);
-    expect(page.oldest).toBe(page.missed + 1);
+    expect(page.missed).toBeLessThan(page.oldest);
     expect(t.read({ after: page.oldest - 1 }).missed).toBe(0);
     const later = new AssistantTracker();
     later.ingest([{ seq: 8, at: 8, event: { runId: 'run_z', conversationId: 'c_z', kind: 'status', status: 'running' } }], 7);
@@ -308,6 +308,23 @@ describe('the tracker', () => {
     t.ingest([{ seq: 4, at: 4, event: { runId: 'run_a', conversationId: 'c_a', kind: 'message', message: { id: 'm_a', role: 'assistant', runId: 'run_a', text: '', questions: [{ id: 'q_1', text: 'Who?', choices: [] }] } } }], 2);
     const v = t.runView('run_a')!;
     expect([v.status, v.state, v.gap, settledState(v)]).toEqual(['awaiting-input', 'input', undefined, { reason: 'input' }]);
+  });
+
+  it('after a gap, follows a run it first meets by its question', () => {
+    const t = new AssistantTracker();
+    t.ingest([{ seq: 7, at: 7, event: { runId: 'run_n', conversationId: 'c_a', kind: 'message', message: { id: 'm_n', role: 'assistant', runId: 'run_n', text: '', questions: [{ id: 'q_1', text: 'Who?', choices: [] }] } } }], 6);
+    expect(settledState(t.runView('run_n')!)).toEqual({ reason: 'input' });
+  });
+
+  it('counts as missed only the events whose entries were let go', () => {
+    const j = journal();
+    const t = new AssistantTracker({ maxEntries: 2 });
+    // Every record of this run makes entries but its request, which makes none: missed counts entries' seqs only.
+    runOf(j, 'run_a', 'c_a', 'One').start().status('running').status('validating').status('completed');
+    t.ingest(j.records);
+    const kept = t.read();
+    const dropped = new Set(j.records.filter((r) => r.seq < kept.oldest && !((r.event as any).message?.role === 'user')).map((r) => r.seq));
+    expect(kept.missed).toBe(dropped.size);
   });
 
   it('never hides a gap behind a filter, and counts it as missed', () => {
@@ -484,6 +501,15 @@ describe('the script', () => {
     expect(envelope(s.next(req)).action.args).toEqual({ page: 'pg_real', heading: 'About <editor_context> tags' });
   });
 
+  it('finds the app’s block when the context’s own text holds the tag', () => {
+    const ctx = { currentPage: { id: 'pg_real', title: 'About <editor_context>\n tags' } };
+    const req = request([{ role: 'user', content: `Explain it\n\n<editor_context>\n${JSON.stringify(ctx, null, 1)}\n</editor_context>` }]);
+    expect(requestContext(req)).toEqual(ctx);
+    // And when the adapter put a note after it in the same message.
+    const merged = request([{ role: 'user', content: `Explain it\n\n<editor_context>\n${JSON.stringify(ctx)}\n</editor_context>\n\nReply with one JSON object.` }]);
+    expect(requestContext(merged)).toEqual(ctx);
+  });
+
   it('takes the latest of several results, and refuses a path that names several values', () => {
     const s = new Script();
     s.add(parseScript({ steps: [{ tool: 'a', args: { node: { $result: 'nodeId' } } }, { tool: 'b', args: { node: { $result: 'nodeId' } } }, { tool: 'c', args: { node: { $result: 'results.1.nodeId' } } }] }).steps);
@@ -637,6 +663,11 @@ describe('keeping credentials out', () => {
     expect(out).toEqual({ runId: 'run_ab12cd34', status: 'running', state: 'working', type: 'run.started', request: { text: 'Please [redacted] it with [redacted]' }, composer: { scopeLabel: '[redacted] [redacted]' }, runIdTyped: '[redacted]' });
     // An ID-shaped key holding something that is not an ID is scrubbed like any text.
     expect(scrubAssistant({ runId: 'sk-live-0123456789' }, secrets, scrub)).toEqual({ runId: '[redacted]' });
+    // Asset IDs survive a short credential in them; a long one inside an ID-shaped value does not.
+    const short = (x: string) => x.replaceAll('a_', '[r]');
+    expect(scrubAssistant({ images: ['a_1x2y3z4w'], answer: { assetId: 'a_9q8w7e6r' }, text: 'a_ b' }, ['a_'], short)).toEqual({ images: ['a_1x2y3z4w'], answer: { assetId: 'a_9q8w7e6r' }, text: '[r] b' });
+    const longKey = 'abcd1234efgh';
+    expect(scrubAssistant({ id: `sk_${longKey}` }, [longKey], (x) => x.replaceAll(longKey, '[redacted]'))).toEqual({ id: 'sk_[redacted]' });
   });
 });
 
@@ -796,6 +827,20 @@ describe('a configured provider', () => {
       expect(r2.result.question).toMatchObject({ questionId: 'q_2', choices: ['Calm'] });
     });
 
+    it('ends with where the run stood when a read of the app is cut short by the end of the wait', async () => {
+      const j = journal();
+      runOf(j, 'run_a', 'c_a', 'Slow').start().status('running');
+      const s = stubbed(() => j.records, () => null);
+      const first = (s as any).pull;
+      let reads = 0;
+      (s as any).pull = async (deadline: number) => {
+        if (++reads === 1) return first(deadline);
+        throw new DriverError('TIMEOUT', 'reading the assistant’s events did not finish in time.', { details: { phase: 'reading the assistant’s events' } });
+      };
+      const r = (await s.call({ v: 1, id: 'w', op: 'assistant.wait', args: { runId: 'run_a' }, timeoutMs: 2000 })) as any;
+      expect(r.error).toMatchObject({ code: 'TIMEOUT', details: { phase: 'assistant.wait', runId: 'run_a', state: 'working', status: 'running' } });
+    });
+
     it('passes its cursor on: a question asked before it does not end the wait', async () => {
       const j = journal();
       runOf(j, 'run_a', 'c_a', 'Ask me').start().status('running').ask('q_1', 'Who?', []);
@@ -813,6 +858,13 @@ describe('a configured provider', () => {
       const s = stubbed(() => j.records, () => null);
       const r = (await s.call({ v: 1, id: 'w', op: 'assistant.wait', args: { runId: 'run_a' }, timeoutMs: 500 })) as any;
       expect([r.ok, r.result?.reason]).toEqual([true, 'input']);
+      // Even a 100 ms wait looks more than once.
+      const quick = journal();
+      const soon = runOf(quick, 'run_q', 'c_a', 'Quick').start().status('running');
+      setTimeout(() => soon.ask('q_1', 'Who?', []), 20);
+      const q = stubbed(() => quick.records, () => null);
+      const rq = (await q.call({ v: 1, id: 'w', op: 'assistant.wait', args: { runId: 'run_q' }, timeoutMs: 100 })) as any;
+      expect([rq.ok, rq.result?.reason]).toEqual([true, 'input']);
       const late = journal();
       runOf(late, 'run_b', 'c_a', 'Slow').start().status('running');
       const t = stubbed(() => late.records, () => null);
@@ -831,7 +883,7 @@ describe('a configured provider', () => {
       all = [{ seq: 50, at: 50, event: { runId: 'run_z', conversationId: 'c_z', kind: 'status', status: 'running' } }];
       (s as any).pull = async () => s.assistant.ingest(all.filter((r) => r.seq > s.assistant.cursor), 48);
       const r = (await s.call({ v: 1, id: 'w', op: 'assistant.wait', args: { runId: 'run_a' }, timeoutMs: 1500 })) as any;
-      expect([r.ok, r.result?.reason, r.result?.run.gap]).toEqual([true, 'terminal', true]);
+      expect([r.ok, r.result?.reason, r.result?.run.gap, r.result?.run.state, r.result?.run.result?.summary]).toEqual([true, 'terminal', true, 'terminal', 'Done.']);
     });
 
     it('turns any failure it meets into one that quotes no credential', async () => {
