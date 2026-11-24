@@ -1,78 +1,36 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, CircleAlert, Plus, SlidersHorizontal, Trash2, Undo2 } from 'lucide-react';
-import type { PropSchema } from '@shared/types';
 import { checkPropName } from '@engine/schema';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { DraftInput, Field } from '../components/ui';
+import {
+  MAX_ITEM_FIELDS,
+  TYPES,
+  addItemField,
+  itemFieldNote,
+  optionsText,
+  parseOptions,
+  removeItemField,
+  renameNote,
+  retype,
+  rowKey,
+  setItemField,
+  settingProblems,
+  typeOptions,
+  type PropType,
+  type SchemaRow
+} from '../lib/prop-schema';
+
+export { hiddenEdits, propertiesFromRows, renamesFromRows, rowsFromProperties, schemaProblems, type SchemaRow } from '../lib/prop-schema';
 
 /**
  * The editable property schema (manifest) of a code component. Each row is one property: its label, code name and
- * type stay in view, with the default and the settings that type takes behind the row's disclosure. The engine
- * validates the whole schema when it is saved.
+ * type stay in view, with the default and the settings that type takes behind the row's disclosure. A list's item
+ * fields are rows of the same kind inside it. The engine validates the whole schema when it is saved.
  */
-export interface SchemaRow {
-  key: string;
-  name: string;
-  /** The name the property was stored under, to tell a rename from a new property. */
-  orig?: string;
-  schema: Record<string, unknown>;
-  /** Text a setting refused, by setting, kept so it can be corrected. Saving is held until it is fixed. */
-  drafts?: Record<string, { text: string; message: string }>;
-}
 
-const RANGE_PROBLEM = 'Maximum must be at least the minimum.';
-
-/** What is wrong with a row's settings: text they refused, and a range that cannot hold a value. */
-function settingProblems(row: SchemaRow): string[] {
-  const s = row.schema;
-  const out = Object.values(row.drafts ?? {}).map((d) => d.message);
-  if (s.type === 'number' && typeof s.min === 'number' && typeof s.max === 'number' && s.min > s.max) out.push(RANGE_PROBLEM);
-  return out;
-}
-
-const TYPES: Array<[PropSchema['type'], string]> = [
-  ['string', 'Text'],
-  ['richtext', 'Rich text'],
-  ['number', 'Number'],
-  ['boolean', 'On/off'],
-  ['enum', 'Choice'],
-  ['link', 'Link'],
-  ['image', 'Image'],
-  ['icon', 'Icon'],
-  ['list', 'List'],
-  ['table', 'Table']
-];
-
-let rowSeq = 0;
-const rowKey = () => `r${++rowSeq}`;
-
-export function rowsFromProperties(props: Record<string, PropSchema>): SchemaRow[] {
-  return Object.entries(props).map(([name, schema]) => ({ key: rowKey(), name, orig: name, schema: structuredClone(schema) as unknown as Record<string, unknown> }));
-}
-
-export function propertiesFromRows(rows: SchemaRow[]): Record<string, unknown> {
-  // Refused text counts as an unsaved change, so a host's dirty check and its schemaProblems gate both see it. That
-  // gate stops any save while it is there, so the marker never reaches the engine.
-  return Object.fromEntries(rows.map((r) => [r.name.trim(), r.drafts ? { ...r.schema, refusedDrafts: r.drafts } : r.schema]));
-}
-
-/** Problems the person can fix before saving; the engine checks everything else. */
-export function schemaProblems(rows: SchemaRow[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const r of rows) {
-    const n = r.name.trim();
-    try {
-      checkPropName(n);
-      if (seen.has(n)) out.push(`The property name "${n}" is used twice.`);
-    } catch (e) {
-      out.push((e as Error).message);
-    }
-    seen.add(n);
-    for (const message of settingProblems(r)) out.push(`${n}: ${message}`);
-  }
-  return out;
-}
+/** Told whether a text setting holds typed text it has not committed yet, so Save is ready before the field is left. */
+const TypingContext = createContext<(typing: boolean) => void>(() => {});
 
 /** The nearest valid code name to what was typed: "Hero Title" becomes heroTitle. */
 function camelSuggestion(name: string): string | null {
@@ -118,36 +76,16 @@ function nameProblems(rows: SchemaRow[]): Map<string, string> {
   return out;
 }
 
-/** Defaults that make sense when a property changes type, so the engine never receives a mismatched default. */
-function retype(schema: Record<string, unknown>, type: PropSchema['type']): Record<string, unknown> {
-  const base: Record<string, unknown> = { type, label: schema.label };
-  if (schema.description) base.description = schema.description;
-  if (schema.group) base.group = schema.group;
-  if (type === 'enum') base.options = [{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }];
-  if (type === 'list') Object.assign(base, { itemLabel: 'Item', fields: { title: { type: 'string', label: 'Title', default: '' } } });
-  return base;
-}
-
 const KEPT_ON_RETYPE = new Set(['type', 'label', 'description', 'group']);
 /** Whether changing this property's type would throw away something the author set. */
 const holdsSettings = (s: Record<string, unknown>) => Object.entries(s).some(([k, v]) => !KEPT_ON_RETYPE.has(k) && v !== undefined && v !== '' && v !== false);
 
-const optionsText = (o: unknown) => (Array.isArray(o) ? o.map((x: { value: string; label: string }) => (x.label && x.label !== x.value ? `${x.value} | ${x.label}` : x.value)).join('\n') : '');
-const parseOptions = (s: string) =>
-  s
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => {
-      const [value, ...rest] = l.split('|');
-      return { value: value.trim(), label: rest.join('|').trim() || value.trim() };
-    });
 const numOrUndef = (s: string) => (s.trim() === '' || !Number.isFinite(Number(s)) ? undefined : Number(s));
 const richDefault = (s: Record<string, unknown>) => (typeof s.default === 'string' ? s.default : richTextToMarkdown(toRichText(s.default as never), {}));
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** One line saying what a row's closed settings hold, so a property can be read without opening it. */
-function settingsSummary(s: Record<string, unknown>): string {
+function settingsSummary(s: Record<string, unknown>, fieldCount?: number): string {
   const defaultLine = (text: string) => {
     const line = text.trim().split('\n')[0];
     return line ? `Default: ${line}` : 'No default';
@@ -173,7 +111,7 @@ function settingsSummary(s: Record<string, unknown>): string {
     case 'icon':
       return defaultLine(String(s.default ?? ''));
     case 'list':
-      return `${String(s.itemLabel || 'Item')} · ${plural(Object.keys((s.fields as object) ?? {}).length, 'field')}`;
+      return `${String(s.itemLabel || 'Item')} · ${plural(fieldCount ?? Object.keys((s.fields as object) ?? {}).length, 'field')}`;
     default:
       return 'Set on each placement';
   }
@@ -187,13 +125,19 @@ interface RowProps {
   onToggle: () => void;
   onChange: (r: SchemaRow) => void;
   onRetype: (r: SchemaRow, lostSettings: boolean) => void;
-  onRemove: () => void;
+  /** Left out where the row cannot be removed (a list's only item field). */
+  onRemove?: () => void;
+  /** The list this row is an item field of. */
+  list?: string;
 }
 
-function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype, onRemove }: RowProps) {
+function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype, onRemove, list }: RowProps) {
   const s = row.schema;
-  const type = String(s.type) as PropSchema['type'];
+  const type = String(s.type) as PropType;
   const uid = useId();
+  const typing = useContext(TypingContext);
+  /** onLive for a text setting showing `value`: typing counts until the text matches it again. */
+  const live = (value: string) => (text: string) => typing(text !== value);
   const options = Array.isArray(s.options) ? (s.options as Array<{ value: string; label: string }>) : [];
   const drafts = row.drafts ?? {};
   const withSchema = (patch: Record<string, unknown>) => {
@@ -223,31 +167,32 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
   const firstSettingProblem = settingProblems(row)[0];
   const settingsError = !!firstSettingProblem;
   const expanded = open;
-  const named = (what: string) => `${row.name || 'New property'} ${what}`;
+  const own = row.name || (list ? 'New field' : 'New property');
+  const named = (what: string) => `${list ? `${list} ` : ''}${own} ${what}`;
   // A row with a problem says so in place of its summary, which would otherwise describe the last valid values.
-  const summary = firstSettingProblem ?? settingsSummary(s);
+  const summary = firstSettingProblem ?? settingsSummary(s, row.fields?.length);
+  const note = list ? itemFieldNote(row) : renameNote(row);
   const placementNote = type === 'link' || type === 'image' || type === 'table' ? 'Set on each placement in the inspector.' : type === 'choices' ? 'Its options are set in the component’s source.' : null;
   return (
-    <fieldset className={`schema-row${expanded ? ' open' : ''}${problem || (settingsError && !expanded) ? ' invalid' : ''}`} disabled={readOnly} data-row-key={row.key}>
-      <legend className="sr-only">{row.name || 'New property'}</legend>
+    <fieldset className={`schema-row${list ? ' schema-field' : ''}${expanded ? ' open' : ''}${problem || (settingsError && !expanded) ? ' invalid' : ''}`} disabled={readOnly} data-row-key={row.key}>
+      <legend className="sr-only">{list ? `${list} field ${own}` : own}</legend>
       <div className="schema-grid">
-        <DraftInput className="input sm schema-label" value={String(s.label ?? '')} onCommit={(label) => set({ label })} ariaLabel={named('label')} />
-        <DraftInput className="input sm mono schema-name" value={row.name} onCommit={(name) => onChange({ ...row, name: name.trim() })} ariaLabel={named('name')} aria-invalid={problem ? true : undefined} aria-describedby={problem ? `${uid}-name-error` : undefined} />
+        <DraftInput className="input sm schema-label" value={String(s.label ?? '')} onLive={live(String(s.label ?? ''))} onCommit={(label) => set({ label })} ariaLabel={named('label')} />
+        <DraftInput className="input sm mono schema-name" value={row.name} onLive={live(row.name)} onCommit={(name) => onChange({ ...row, name: name.trim() })} ariaLabel={named('name')} aria-invalid={problem ? true : undefined} aria-describedby={problem ? `${uid}-name-error` : undefined} />
         <select
           className="select sm"
           value={type}
           aria-label={named('type')}
-          onChange={(e) => onRetype({ ...row, drafts: undefined, schema: retype(s, e.target.value as PropSchema['type']) }, holdsSettings(s))}
+          onChange={(e) => onRetype(retype(row, e.target.value as PropType), holdsSettings(s))}
         >
           {/* A type this editor does not offer (several choices, set in code) is still shown as what it is. */}
-          {!TYPES.some(([v]) => v === type) && <option value={type}>{type === 'choices' ? 'Multiple choice' : type}</option>}
-          {TYPES.map(([v, l]) => (
+          {typeOptions(type, !!list).map(([v, l]) => (
             <option key={v} value={v}>
               {l}
             </option>
           ))}
         </select>
-        <button type="button" className="schema-row-toggle" aria-expanded={expanded} aria-controls={`${uid}-settings`} aria-label={`${row.name || 'New property'} settings: ${summary}`} title={summary} onClick={onToggle}>
+        <button type="button" className="schema-row-toggle" aria-expanded={expanded} aria-controls={`${uid}-settings`} aria-label={`${named('settings')}: ${summary}`} title={summary} onClick={onToggle}>
           {settingsError && <CircleAlert className="schema-toggle-alert" aria-hidden="true" />}
           <span className="ellipsis">{summary}</span>
           <ChevronDown className="schema-chevron" aria-hidden="true" />
@@ -259,11 +204,12 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
           <span>{problem}</span>
         </div>
       )}
+      {!problem && note && <div className="schema-row-note">{note}</div>}
       <div className="schema-row-settings" id={`${uid}-settings`} hidden={!expanded}>
         {type === 'string' && (
           <>
             <Field label="Default">
-              <DraftInput className={s.multiline ? 'textarea' : 'input sm'} multiline={!!s.multiline} rows={2} value={String(s.default ?? '')} onCommit={(v) => set({ default: v })} ariaLabel={named('default')} />
+              <DraftInput className={s.multiline ? 'textarea' : 'input sm'} multiline={!!s.multiline} rows={2} value={String(s.default ?? '')} onLive={live(String(s.default ?? ''))} onCommit={(v) => set({ default: v })} ariaLabel={named('default')} />
             </Field>
             <label className="schema-check">
               <input type="checkbox" checked={!!s.multiline} onChange={(e) => set({ multiline: e.target.checked || undefined })} /> Allow several lines
@@ -273,7 +219,7 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
         {type === 'richtext' && (
           <>
             <Field label="Default" hint="One paragraph per line.">
-              <DraftInput multiline rows={2} value={richDefault(s)} onCommit={(v) => set({ default: v as never })} ariaLabel={named('default')} />
+              <DraftInput multiline rows={2} value={richDefault(s)} onLive={live(richDefault(s))} onCommit={(v) => set({ default: v as never })} ariaLabel={named('default')} />
             </Field>
             <Field label="Your code receives" controlId={`${uid}-form`} hint="Blocks keep links, lists and headings: render them with RichText.svelte. Paragraph text is one string per paragraph, with **bold** and *italic*.">
               <select id={`${uid}-form`} className="select sm" value={s.codeForm === 'blocks' ? 'blocks' : 'paragraphs'} onChange={(e) => set({ codeForm: e.target.value === 'blocks' ? 'blocks' : undefined })}>
@@ -286,13 +232,13 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
         {type === 'number' && (
           <div className="schema-grid-3">
             <Field label="Default" error={drafts.default?.message}>
-              <DraftInput className="input sm" value={shown('default', s.default === undefined ? '' : String(s.default))} onCommit={commitNumber('default', 'Default')} ariaLabel={named('default')} />
+              <DraftInput className="input sm" value={shown('default', s.default === undefined ? '' : String(s.default))} onLive={live(shown('default', s.default === undefined ? '' : String(s.default)))} onCommit={commitNumber('default', 'Default')} ariaLabel={named('default')} />
             </Field>
             <Field label="Minimum" error={drafts.min?.message}>
-              <DraftInput className="input sm" value={shown('min', s.min === undefined ? '' : String(s.min))} onCommit={commitNumber('min', 'Minimum')} ariaLabel={named('minimum')} />
+              <DraftInput className="input sm" value={shown('min', s.min === undefined ? '' : String(s.min))} onLive={live(shown('min', s.min === undefined ? '' : String(s.min)))} onCommit={commitNumber('min', 'Minimum')} ariaLabel={named('minimum')} />
             </Field>
             <Field label="Maximum" error={drafts.max?.message ?? rangeError}>
-              <DraftInput className="input sm" value={shown('max', s.max === undefined ? '' : String(s.max))} onCommit={commitNumber('max', 'Maximum')} ariaLabel={named('maximum')} />
+              <DraftInput className="input sm" value={shown('max', s.max === undefined ? '' : String(s.max))} onLive={live(shown('max', s.max === undefined ? '' : String(s.max)))} onCommit={commitNumber('max', 'Maximum')} ariaLabel={named('maximum')} />
             </Field>
           </div>
         )}
@@ -304,7 +250,7 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
         {type === 'icon' && (
           <div className="grid-2">
             <Field label="Default icon">
-              <DraftInput className="input sm mono" value={String(s.default ?? '')} onCommit={(v) => set({ default: v.trim() || undefined })} ariaLabel={named('default icon')} />
+              <DraftInput className="input sm mono" value={String(s.default ?? '')} onLive={live(String(s.default ?? ''))} onCommit={(v) => set({ default: v.trim() || undefined })} ariaLabel={named('default icon')} />
             </Field>
           </div>
         )}
@@ -316,6 +262,7 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
                 rows={3}
                 className="textarea mono"
                 value={shown('options', optionsText(s.options))}
+                onLive={live(shown('options', optionsText(s.options)))}
                 onCommit={(v) => {
                   const options = parseOptions(v);
                   if (!options.length) return refuse('options', v, 'Add at least one option.');
@@ -345,43 +292,19 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
           <>
             <div className="grid-2">
               <Field label="Item name">
-                <DraftInput className="input sm" value={String(s.itemLabel ?? '')} onCommit={(v) => set({ itemLabel: v })} ariaLabel={named('item name')} />
+                <DraftInput className="input sm" value={String(s.itemLabel ?? '')} onLive={live(String(s.itemLabel ?? ''))} onCommit={(v) => set({ itemLabel: v })} ariaLabel={named('item name')} />
               </Field>
               <Field label="Most items" error={drafts.max?.message}>
-                <DraftInput className="input sm" value={shown('max', s.max === undefined ? '' : String(s.max))} onCommit={commitCount('max', 'Most items')} ariaLabel={named('most items')} />
+                <DraftInput className="input sm" value={shown('max', s.max === undefined ? '' : String(s.max))} onLive={live(shown('max', s.max === undefined ? '' : String(s.max)))} onCommit={commitCount('max', 'Most items')} ariaLabel={named('most items')} />
               </Field>
             </div>
-            <Field label="Item fields" hint={'JSON: { "title": { "type": "string", "label": "Title" } }. A richtext field with "codeForm": "blocks" reaches your code as blocks.'} error={drafts.fields?.message}>
-              <DraftInput
-                multiline
-                rows={4}
-                className="textarea mono"
-                value={shown('fields', JSON.stringify(s.fields ?? {}, null, 2))}
-                onCommit={(v) => {
-                  let fields: Record<string, unknown>;
-                  try {
-                    fields = JSON.parse(v);
-                  } catch (e) {
-                    return refuse('fields', v, `Not valid JSON: ${(e as Error).message}`);
-                  }
-                  if (!fields || typeof fields !== 'object' || Array.isArray(fields) || !Object.keys(fields).length) return refuse('fields', v, 'Item fields must be a JSON object with at least one field.');
-                  if (Object.keys(fields).length > 20) return refuse('fields', v, 'A list can have up to 20 item fields.');
-                  const malformed = Object.entries(fields).find(([, f]) => !f || typeof f !== 'object' || Array.isArray(f));
-                  if (malformed) return refuse('fields', v, `“${malformed[0]}” must be an object with a type and a label.`);
-                  if (JSON.stringify(fields) === JSON.stringify(s.fields ?? {})) return onChange({ ...row, drafts: withoutDraft('fields') });
-                  // New fields mean new default items; a title field that is gone is dropped.
-                  const titleField = typeof s.titleField === 'string' && Object.hasOwn(fields, s.titleField) ? s.titleField : undefined;
-                  accept('fields', { fields, default: undefined, titleField });
-                }}
-                ariaLabel={named('item fields')}
-              />
-            </Field>
+            <ItemFields row={row} onChange={onChange} readOnly={readOnly} />
           </>
         )}
         <div className="schema-row-foot">
           <span className="field-hint grow">{placementNote}</span>
-          {!readOnly && (
-            <button type="button" className="btn btn-sm btn-ghost btn-danger" onClick={onRemove} aria-label={`Remove ${row.name || 'property'}`}>
+          {!readOnly && onRemove && (
+            <button type="button" className="btn btn-sm btn-ghost btn-danger" onClick={onRemove} aria-label={list ? `Remove the ${own} field from ${list}` : `Remove ${row.name || 'property'}`}>
               <Trash2 /> Remove
             </button>
           )}
@@ -391,7 +314,64 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
   );
 }
 
-export function PropSchemaEditor({ rows, onChange, readOnly }: { rows: SchemaRow[]; onChange: (rows: SchemaRow[]) => void; readOnly?: boolean }) {
+/** A list's item fields, edited as rows of their own: name, label, type and the settings that type takes. */
+function ItemFields({ row, onChange, readOnly }: { row: SchemaRow; onChange: (r: SchemaRow) => void; readOnly?: boolean }) {
+  const fields = row.fields ?? [];
+  const own = row.name || 'New property';
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  const problems = nameProblems(fields);
+  const toggle = (key: string) =>
+    setOpen((o) => {
+      const next = new Set(o);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  const add = () => {
+    const next = addItemField(row);
+    setOpen((o) => new Set(o).add(next.fields!.at(-1)!.key));
+    onChange(next);
+  };
+  return (
+    <div className="schema-fields" role="group" aria-label={`${own} item fields`}>
+      <div className="schema-fields-head">
+        <span className="grow">Item fields</span>
+        {!readOnly && fields.length < MAX_ITEM_FIELDS && (
+          <button type="button" className="btn btn-sm" onClick={add} aria-label={`Add a field to ${own}`}>
+            <Plus /> Add field
+          </button>
+        )}
+      </div>
+      {fields.map((f, i) => (
+        <RowEditor
+          key={f.key}
+          row={f}
+          list={own}
+          open={open.has(f.key)}
+          problem={problems.get(f.key)}
+          readOnly={readOnly}
+          onToggle={() => toggle(f.key)}
+          onChange={(next) => onChange(setItemField(row, i, next))}
+          onRetype={(next) => onChange(setItemField(row, i, next))}
+          onRemove={fields.length > 1 ? () => onChange(removeItemField(row, i)) : undefined}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Problems inside a row: its settings, and for a list, its item fields' names and settings. */
+const rowProblemCount = (r: SchemaRow): number => settingProblems(r).length + (r.fields ? nameProblems(r.fields).size + r.fields.reduce((n, f) => n + rowProblemCount(f), 0) : 0);
+
+const ignore = () => {};
+
+/**
+ * `onTyping` hears whether a text setting holds typed text that is not committed yet: the text commits when the
+ * field is left, which pressing Save does first, so Save can be enabled while the author is still typing.
+ */
+export function PropSchemaEditor({ rows, onChange, readOnly, onTyping }: { rows: SchemaRow[]; onChange: (rows: SchemaRow[]) => void; readOnly?: boolean; onTyping?: (typing: boolean) => void }) {
+  const typing = onTyping ?? ignore;
+  // Leaving the tab or closing the editor ends any typing it reported.
+  useEffect(() => () => onTyping?.(false), [onTyping]);
   const root = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   // The last change that threw something away. It can be undone until the next edit, so undoing never loses work.
@@ -421,10 +401,10 @@ export function PropSchemaEditor({ rows, onChange, readOnly }: { rows: SchemaRow
     if (el instanceof HTMLInputElement) el.select();
   }, [rows, open]);
   const problems = nameProblems(rows);
-  const problemCount = problems.size + rows.reduce((n, r) => n + settingProblems(r).length, 0);
+  const problemCount = problems.size + rows.reduce((n, r) => n + rowProblemCount(r), 0);
   /** Go to the first problem, opening its row when the field is inside the row's settings. */
   const showFirstProblem = () => {
-    const first = rows.find((r) => problems.has(r.key) || settingProblems(r).length);
+    const first = rows.find((r) => problems.has(r.key) || rowProblemCount(r));
     if (!first) return;
     pendingFocus.current = `[data-row-key="${first.key}"] [aria-invalid="true"]`;
     setOpen((o) => {
@@ -473,7 +453,9 @@ export function PropSchemaEditor({ rows, onChange, readOnly }: { rows: SchemaRow
     </button>
   );
   return (
-    <div className="schema-editor" ref={root} onFocus={(e) => (e.target as HTMLElement).closest('.schema-row') && clearOfHead(e.target as HTMLElement)}>
+    <TypingContext.Provider value={typing}>
+    {/* Leaving a field commits it (or, after Escape, abandons it), so its typing is over either way. */}
+    <div className="schema-editor" ref={root} onFocus={(e) => (e.target as HTMLElement).closest('.schema-row') && clearOfHead(e.target as HTMLElement)} onBlur={() => typing(false)}>
       <div className="schema-head">
         <div className="schema-bar">
           <p className="schema-intro">
@@ -526,5 +508,6 @@ export function PropSchemaEditor({ rows, onChange, readOnly }: { rows: SchemaRow
         </div>
       )}
     </div>
+    </TypingContext.Provider>
   );
 }

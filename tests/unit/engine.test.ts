@@ -453,6 +453,96 @@ describe('code component schemas (§2.2)', () => {
   });
 });
 
+describe('renaming code component properties', () => {
+  const text = (label: string, extra: Record<string, unknown> = {}) => ({ type: 'string', label, default: '', ...extra });
+  /** A code component placed on the home page and inside a managed component that binds one of its properties. */
+  function placed(properties: Record<string, unknown>, props: Record<string, unknown>) {
+    let s = fresh();
+    const o = owner(s);
+    const c = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties }]);
+    s = c.state;
+    const noteId = c.results[0].definitionId as string;
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: o, definitionId: noteId, props }]);
+    s = ins.state;
+    const pageNote = ins.results[0].nodeId as string;
+    s = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: null, index: 0, primitive: 'stack' }]).state;
+    const stack = home(s).rootIds[0];
+    s = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: stack, definitionId: noteId }]).state;
+    const outer = applyOperations(s, [{ type: 'component.createFromNode', owner: o, nodeId: stack, name: 'Outer' }]);
+    s = outer.state;
+    const outerId = outer.results[0].definitionId as string;
+    const boundNote = Object.values(s.components[outerId].tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === noteId)!.id;
+    const page = (st: ProjectState) => (home(st).nodes[pageNote] as InstanceNode).props;
+    const bound = (st: ProjectState) => (st.components[outerId].tree!.nodes[boundNote] as InstanceNode).props;
+    return { s, noteId, outerId, boundNote, page, bound };
+  }
+  const save = (s: ProjectState, definitionId: string, properties: Record<string, unknown>, renames?: Array<{ from: string; to: string }>) =>
+    applyOperations(s, [{ type: 'component.updateSource', definitionId, source: '<p>y</p>\n', properties, ...(renames ? { renames } : {}) }]).state;
+
+  it('moves placement content and managed bindings to the new name', () => {
+    const p = placed({ label: text('Label', { default: 'Hi' }) }, { label: 'Authored' });
+    let s = applyOperations(p.s, [
+      { type: 'component.setPropSchema', definitionId: p.outerId, prop: 'title', schema: { type: 'string', label: 'Title', default: 'Welcome' } },
+      { type: 'node.setBinding', owner: { kind: 'component', id: p.outerId }, nodeId: p.boundNote, field: 'prop', prop: 'label', binding: { $prop: 'title' } }
+    ]).state;
+    s.components[p.noteId].examples = [{ description: 'Short', props: { label: 'Example' } }];
+    s = save(s, p.noteId, { caption: text('Caption', { default: 'Hi' }) }, [{ from: 'label', to: 'caption' }]);
+    expect(Object.keys(s.components[p.noteId].properties)).toEqual(['caption']);
+    expect(p.page(s)).toEqual({ caption: 'Authored' });
+    expect(p.bound(s)).toEqual({ caption: { $prop: 'title' } });
+    expect(s.components[p.noteId].examples![0].props).toEqual({ caption: 'Example' });
+    expect(errors(s)).toEqual([]);
+    // Without a rename the old property is removed, content and binding with it, as before.
+    const dropped = save(p.s, p.noteId, { caption: text('Caption') });
+    expect(p.page(dropped)).toEqual({});
+  });
+
+  it('swaps names at once, retypes moved content and lets a new property reuse a vacated name', () => {
+    const p = placed({ a: text('A'), b: text('B'), c: text('C') }, { a: 'first', b: 'second', c: 'third' });
+    let s = save(p.s, p.noteId, { b: text('B'), a: text('A'), c: text('C') }, [
+      { from: 'a', to: 'b' },
+      { from: 'b', to: 'a' }
+    ]);
+    expect(p.page(s)).toEqual({ a: 'second', b: 'first', c: 'third' });
+    // A chain with a type change: c becomes rich text under d, and a fresh c starts empty.
+    s = save(s, p.noteId, { b: text('B'), a: text('A'), d: { type: 'richtext', label: 'D' }, c: text('New C') }, [{ from: 'c', to: 'd' }]);
+    expect(p.page(s).d).toEqual([{ type: 'p', spans: [{ text: 'third' }] }]);
+    expect(p.page(s).c).toBeUndefined();
+    expect(s.components[p.noteId].properties.c.label).toBe('New C');
+    // Removing b and renaming a to b keeps a's content and drops b's.
+    s = save(s, p.noteId, { b: text('Was A'), d: { type: 'richtext', label: 'D' }, c: text('New C') }, [{ from: 'a', to: 'b' }]);
+    expect(p.page(s).b).toBe('second');
+    expect(p.page(s).a).toBeUndefined();
+    expect(errors(s)).toEqual([]);
+  });
+
+  it('keeps examples to the properties the component has, with values their schemas accept', () => {
+    let s = fresh();
+    const c = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: { a: text('A'), b: text('B'), c: text('C') } }]);
+    s = c.state;
+    const id = c.results[0].definitionId as string;
+    s.components[id].examples = [{ description: 'One', props: { a: 'words', b: 'kept', c: 'gone' } }];
+    s = save(s, id, { flag: { type: 'boolean', label: 'Flag' }, d: text('D') }, [
+      { from: 'a', to: 'flag' },
+      { from: 'b', to: 'd' }
+    ]);
+    expect(s.components[id].examples![0].props).toEqual({ d: 'kept' });
+  });
+
+  it('refuses content the renamed property cannot keep and malformed renames, changing nothing', () => {
+    const p = placed({ a: text('A'), b: text('B') }, { a: 'words', b: 'more' });
+    const before = JSON.stringify(p.s);
+    expect(() => save(p.s, p.noteId, { n: { type: 'boolean', label: 'N' }, b: text('B') }, [{ from: 'a', to: 'n' }])).toThrow(/cannot keep/);
+    expect(() => save(p.s, p.noteId, { n: text('N') }, [{ from: 'zz', to: 'n' }])).toThrow(/no property "zz"/);
+    expect(() => save(p.s, p.noteId, { n: text('N') }, [{ from: 'a', to: 'm' }])).toThrow(/not one of the new properties/);
+    expect(() => save(p.s, p.noteId, { a: text('A') }, [{ from: 'a', to: 'a' }])).toThrow(/to itself/);
+    expect(() => save(p.s, p.noteId, { n: text('N'), m: text('M') }, [{ from: 'a', to: 'n' }, { from: 'a', to: 'm' }])).toThrow(/renamed twice/);
+    expect(() => save(p.s, p.noteId, { n: text('N') }, [{ from: 'a', to: 'n' }, { from: 'b', to: 'n' }])).toThrow(/More than one/);
+    expect(() => applyOperations(p.s, [{ type: 'component.updateSource', definitionId: p.noteId, source: '', renames: [{ from: 'a', to: 'n' }] }])).toThrow(/needs the whole new schema/);
+    expect(JSON.stringify(p.s)).toBe(before);
+  });
+});
+
 describe('create component from a selection (§2.3)', () => {
   it('turns icons into properties, keeps the anchor on the placement and records dependencies', () => {
     let s = createStarterState('blank', 'Blank', false);
