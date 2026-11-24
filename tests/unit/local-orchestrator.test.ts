@@ -560,3 +560,57 @@ describe('why a request does not fit', () => {
     expect(v.minimumTokens).toBe(11_264);
   });
 });
+
+describe('what a constrained local run sends first (#364)', () => {
+  /**
+   * UTF-8 bytes of `messages` + `response_format` in the first request, for the business starter. The baselines are
+   * what develop sent before #364 (pretty-printed context, full schema, TypeScript-style signatures and every
+   * tool's long description). The budgets hold today's sizes with a little room: a change that grows a prompt past
+   * one should be a deliberate decision.
+   */
+  const BUDGETS = {
+    site: { code: false, baseline: 42_388, budget: 30_000 },
+    'site (code)': { code: true, baseline: 43_774, budget: 31_500 },
+    section: { code: false, baseline: 12_245, budget: 9_400 },
+    part: { code: false, baseline: 9_523, budget: 7_300 },
+    ask: { code: false, baseline: 13_138, budget: 9_400 },
+    'ask (code)': { code: true, baseline: 13_736, budget: 9_900 }
+  } as const;
+  const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
+
+  it.each(Object.entries(BUDGETS))('keeps the %s run within its budget', async (label, { code, baseline, budget }) => {
+    const { session, run } = await setup({ toolMode: 'constrained-json' }, {}, code);
+    const home = session.state.pages[session.state.site.homePageId];
+    const section = home.nodes[home.rootIds[0]] as { id: string; definitionId: string };
+    const def = session.state.components[section.definitionId];
+    // The two selections the editor sends: a whole section, and one part of it.
+    const selection: ElementRef | null = label === 'section' ? { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: section.id } : label === 'part' ? { owner: { kind: 'page', id: home.id }, instancePath: [section.id], nodeId: def.parts.heading.nodeId, partId: 'heading' } : null;
+    server.script(envelopeReply('finish', { message: 'Done.' }));
+    await run('Hello', selection, selection ? 'Hero' : null, label.startsWith('ask') ? 'ask' : undefined);
+    const body = server.requests.find((r) => r.method === 'POST')!.body;
+    const sent = { messages: bytes(body.messages), response_format: bytes(body.response_format) };
+    expect(sent.messages + sent.response_format, JSON.stringify(sent)).toBeLessThanOrEqual(budget);
+    expect(1 - budget / baseline).toBeGreaterThan(0.23);
+    // Still the strict grammar, in its compact form, and the context unindented.
+    expect(body.response_format.type).toBe('json_schema');
+    expect(findForbiddenShapes(body.response_format.json_schema.schema)).toEqual([]);
+    expect(body.messages.at(-1).content).toMatch(/<editor_context>\n\{"currentPage":/);
+  });
+
+  it('makes the same change from a constrained reply as from a native call', async () => {
+    const results: unknown[] = [];
+    for (const toolMode of ['constrained-json', 'native'] as const) {
+      const { session, run } = await setup({ toolMode });
+      const home = session.state.pages[session.state.site.homePageId];
+      const ref: ElementRef = { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] };
+      const args = { props: { heading: 'Sharper', image: { assetId: null, alt: 'A calm room' } }, variants: { tone: 'muted' } };
+      server.script(...(toolMode === 'native' ? [toolCallReply('update_selected_props', args), textReply('Done.')] : [envelopeReply('update_selected_props', args), envelopeReply('finish', { message: 'Done.' })]));
+      const { result } = await run('Tighten this headline', ref, 'Hero');
+      expect(result?.status, toolMode).toBe('completed');
+      const node = session.state.pages[home.id].nodes[home.rootIds[0]] as { props: Record<string, unknown>; variants?: Record<string, string> };
+      results.push({ heading: node.props.heading, image: node.props.image, tone: node.variants?.tone });
+    }
+    expect(results[0]).toEqual({ heading: 'Sharper', image: { assetId: null, alt: 'A calm room' }, tone: 'muted' });
+    expect(results[1]).toEqual(results[0]);
+  });
+});

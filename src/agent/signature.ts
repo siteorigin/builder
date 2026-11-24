@@ -264,7 +264,8 @@ function dependencyOrder(lines: Array<{ name: string; text: string }>): string[]
   const uses = (text: string, name: string) => new RegExp(`(?<![\\w.-])${name}(?![\\w-])`).test(text);
   const place = (line: { name: string; text: string }, path: string[]) => {
     if (placed.has(line.name) || path.includes(line.name)) return;
-    const body = line.text.slice(line.name.length + 1);
+    // `...Name` uses Name too; a dot inside a value (hero.split) does not.
+    const body = line.text.slice(line.name.length + 1).replace(/\.\.\.(?=\w)/g, ' ');
     for (const other of lines) if (other.name !== line.name && uses(body, other.name)) place(other, [...path, line.name]);
     placed.add(line.name);
     out.push(line.text);
