@@ -1154,7 +1154,7 @@ export function styleDeclOrder(prop: string): number {
 type CascadeDecl = { prop: string; value: StyleValue; bucket: Bucket; strength: number; index: number; seq: number };
 
 /** Every declaration layers of rules write for one element, and how they rank, as the generated CSS cascades them. */
-function cascadeOf(layers: StyleLayer[], { inertShows = true } = {}) {
+function cascadeOf(layers: StyleLayer[], { inertShows = true, allShows = false } = {}) {
   const decls: CascadeDecl[] = [];
   layers.forEach((layer, index) => {
     const raw = layer.styles;
@@ -1172,10 +1172,11 @@ function cascadeOf(layers: StyleLayer[], { inertShows = true } = {}) {
         push(prop, value, scope === 'base' && wideOnlyStyle(prop, value, layer.wideColumns) ? 'wide' : scope);
       }
       // A size shown again (the folding removed the value): a display that undoes a weaker hide there.
-      if (scope !== 'base' && raw[scope]?.hidden === false && weakerHides(scope)) push('hidden', false, scope);
+      // `allShows`: every show counts, for a reader that takes it as a marker (a code component), not a display.
+      if (scope !== 'base' && raw[scope]?.hidden === false && (weakerHides(scope) || allShows)) push('hidden', false, scope);
     }
     // Shown at every size: in each size it does not set itself, a display that undoes a weaker hide there.
-    if (raw.base?.hidden === false) for (const size of CASCADE_SIZES) if (raw[size]?.hidden === undefined && weakerHides(size)) push('hidden', false, size);
+    if (raw.base?.hidden === false) for (const size of CASCADE_SIZES) if (raw[size]?.hidden === undefined && (weakerHides(size) || allShows)) push('hidden', false, size);
   });
   // Within one rule, declarations are written in the generator's order, so the later one wins a shared CSS property.
   const inRule = (a: CascadeDecl, b: CascadeDecl) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop);
@@ -1275,32 +1276,38 @@ const overlap = (a: string[], b: string[]) => a.some((x) => b.some((y) => x === 
 export interface FlattenOptions {
   /** The single rule the result is written as: a placement's override (`true`) keeps multi-column values off phones. */
   wideColumns?: boolean;
+  /** The result styles a link, whose background goes through the button's own variable, not `background`. */
+  link?: boolean;
   /**
    * The first layers stay in force beneath the result (a placed component's own design): what they win is left to
-   * them, except where the result would now override them, and a `hidden: false` that undoes one of their hides is kept.
+   * them, except where the result would now override them.
    */
   beneath?: number;
-  /** Beneath is not known (a code component's own styles): every `hidden: false` is kept for it to read. */
+  /** A code component reads the result: every `hidden: false` is kept, as the marker that shows its root again. */
   keepShown?: boolean;
   /**
-   * The display the stylesheet gives an element shown again over a weaker hide, where no layout of its own sets one
-   * (see the generator's `unhider`): written as custom CSS, since the element the result lands on hides nothing.
+   * The display the stylesheet gives an element shown again over a weaker hide, where no layout sets one (see the
+   * generator's `unhider`).
    */
   shownDisplay?: (size: Size) => string | null;
+  /** Called when the custom CSS of every layer together is more than one element's custom CSS can hold. */
+  tooMuch?: () => never;
 }
 
 /**
  * Layers of rules on one element folded into the one set of styles that renders the same as a single rule: what an
  * element detached from its component keeps. At each size the cascade's winner stays, except a property its
  * shorthand beats (the shorthand alone sets it then), and every layer's custom CSS applies in cascade order minus what
- * a stronger property sets.
+ * a stronger property sets. Display is decided once: the declaration that sets it last, across every layer (a hide, a
+ * layout, custom CSS, or the display a show writes), is the only one written.
  */
 export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): ResponsiveStyles {
   // A `hidden: false` that undoes nothing writes nothing, unless a code component reads it (as a marker).
-  const { decls, beats, winners } = cascadeOf(layers, { inertShows: !!opts.keepShown });
+  const { decls, beats, winners } = cascadeOf(layers, { inertShows: !!opts.keepShown, allShows: !!opts.keepShown });
   const beneath = opts.beneath ?? 0;
   const own = (d: CascadeDecl) => d.index >= beneath;
-  const names = (d: CascadeDecl) => cssNames(d.prop, d.value);
+  // What a declaration sets besides display, which is decided on its own below.
+  const names = (d: CascadeDecl) => (opts.link && d.prop === 'background' ? [] : cssNames(d.prop, d.value)).filter((n) => n !== 'display');
   const bySize = {} as Record<Size, StyleProps>;
   for (const size of CASCADE_SIZES) {
     const applies = appliesAt(size);
@@ -1310,27 +1317,29 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
       if (s) for (const l of longs) if (best.has(l) && beats(s, best.get(l))) best.delete(l);
     }
     best.delete('customCss');
+    best.delete('hidden');
     const named = [...best.values()];
-    // Custom CSS from every layer applies, the stronger written later. A declaration a stronger property also sets
-    // goes; one that sets more than a stronger property (a shorthand) stays, with that property's own after it.
-    // A layer that keeps a value off phones writes its custom CSS again in that tablet-and-up rule, after it.
-    const wideAgain = (d: CascadeDecl): CascadeDecl => (size !== 'phone' && d.bucket === 'base' && decls.some((x) => x.index === d.index && x.bucket === 'wide') ? { ...d, bucket: 'wide' } : d);
+    // A layer with a value kept off phones writes its custom CSS again in that tablet-and-up rule, after it.
+    const wideAgain = (d: CascadeDecl): CascadeDecl =>
+      size !== 'phone' && d.bucket === 'base' && decls.some((x) => x.index === d.index && x.bucket === 'wide' && styleToCss(x.prop, x.value).length) ? { ...d, bucket: 'wide' } : d;
     const custom = decls
       .filter((d) => d.prop === 'customCss' && applies(d.bucket) && typeof d.value === 'string')
       .map(wideAgain)
       .sort((a, b) => (a === b ? 0 : beats(a, b) ? 1 : -1));
+    // Custom CSS from every layer applies, the stronger written later. A declaration a stronger property also sets
+    // goes; one that sets more than a stronger property (a shorthand) stays, with that property's own after it.
     const written: string[] = [];
     for (const c of custom) {
       if (!own(c)) continue;
-      const stronger = named.filter((n) => n.prop !== 'hidden' && beats(n, c));
+      const stronger = named.filter((n) => beats(n, c));
       for (const decl of parseCustomCss(String(c.value)).decls) {
         const p = decl.slice(0, decl.indexOf(':'));
-        if (stronger.some((n) => names(n).some((q) => q === p || covers(q, p)))) continue;
+        if (p === 'display' || stronger.some((n) => names(n).some((q) => q === p || covers(q, p)))) continue;
         // Written again in the order one rule writes them, so a shorthand among them comes before its own longhands.
         const under = stronger.filter((n) => names(n).some((q) => covers(p, q))).sort((a, b) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop));
-        const again = under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !parseCustomCss(d).error);
+        const again = under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display') && !parseCustomCss(d).error);
         // What the stronger property writes cannot go in custom CSS: it keeps its value, and the shorthand goes.
-        if (again.length < under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--')).length) continue;
+        if (again.length < under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display')).length) continue;
         written.push(decl, ...again);
       }
     }
@@ -1344,25 +1353,54 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
       if ([...ownWins, ...ownCustom].some((r) => overlap(names(r), names(q)) && beats(r, q))) continue;
       best.set(q.prop, { ...q, index: beneath });
     }
-    const hide = best.get('hidden');
-    if (hide?.value === false && !opts.keepShown) {
-      // Shown again over a hide that stays beneath: the result undoes it too. With none beneath, there is nothing to
-      // undo, but the display the stylesheet wrote to show it still decides how it lays out.
-      const under = decls.some((d) => !own(d) && d.prop === 'hidden' && d.value === true && applies(d.bucket));
-      if (!under) {
-        best.delete('hidden');
-        // Every show left undoes a hide (an option's, chosen or not), so the stylesheet wrote a display for it.
-        const display = !best.has('layout') ? (opts.shownDisplay?.(size) ?? null) : null;
-        if (display) written.push(`display: ${display}`);
+    // Display: every declaration that sets it at this size, ranked as the stylesheets rank them. A show writes its
+    // display first in its rule, before the rule's own declarations.
+    type Display = { d: CascadeDecl; order: number; value: string };
+    const displayOf = (decl: string[]) => decl.filter((x) => x.startsWith('display:')).map((x) => x.slice(8).trim()).at(-1);
+    const candidates: Display[] = [];
+    for (const d of decls) {
+      if (!applies(d.bucket)) continue;
+      if (d.prop === 'hidden' && d.value === true) candidates.push({ d, order: styleDeclOrder('hidden'), value: 'none' });
+      else if (d.prop === 'layout') {
+        const v = displayOf(styleToCss('layout', d.value));
+        if (v) candidates.push({ d, order: styleDeclOrder('layout'), value: v });
+      } else if (d.prop === 'customCss' && typeof d.value === 'string') {
+        const v = displayOf(parseCustomCss(d.value).decls);
+        if (v) candidates.push({ d: wideAgain(d), order: styleDeclOrder('customCss'), value: v });
+      } else if (d.prop === 'hidden' && d.value === false) {
+        // The display a show writes: the layout the layers give it, or what the theme gives its kind of element.
+        const layout = decls.filter((x) => x.prop === 'layout' && (x.bucket === 'base' || x.bucket === size)).at(-1);
+        const v = (layout && displayOf(styleToCss('layout', layout.value))) || opts.shownDisplay?.(size) || '';
+        candidates.push({ d, order: -1, value: opts.keepShown ? 'shown' : v });
       }
     }
+    const rank = (c: Display) => [c.d.strength, BUCKET_ORDER[c.d.bucket], c.d.index, c.order];
+    const later = (a: Display, b: Display) => {
+      const [x, y] = [rank(a), rank(b)];
+      for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] > y[i];
+      return true;
+    };
+    const shown = candidates.reduce<Display | undefined>((w, c) => (!w || later(c, w) ? c : w), undefined);
     const props: StyleProps = {};
     for (const d of best.values()) if (own(d)) props[d.prop] = d.value;
+    const ownLayout = best.has('layout') && own(best.get('layout')!);
+    // Written only where the result's own rule decides it: the winner is its own, or its own layout would override one beneath.
+    if (shown && (own(shown.d) || ownLayout)) {
+      if (shown.value === 'none') props.hidden = true;
+      else if (shown.value === 'shown') props.hidden = false;
+      else if (!(shown.d.prop === 'layout' && own(shown.d) && ownLayout)) {
+        if (shown.value) written.push(`display: ${shown.value}`);
+      }
+    }
     if (written.length) {
-      // Kept within the limits custom CSS has: the declarations written last win, so the earliest go first.
-      while (written.length > 1 && parseCustomCss(written.join('; ')).error) written.shift();
       const text = written.join('; ');
-      if (!parseCustomCss(text).error) props.customCss = text;
+      if (parseCustomCss(text).error) {
+        opts.tooMuch?.();
+        // Without a refusal, the declarations written last win, so the earliest go first.
+        while (written.length > 1 && parseCustomCss(written.join('; ')).error) written.shift();
+      }
+      const kept = written.join('; ');
+      if (!parseCustomCss(kept).error) props.customCss = kept;
     }
     bySize[size] = props;
   }

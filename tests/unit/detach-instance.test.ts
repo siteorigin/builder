@@ -519,6 +519,33 @@ describe('component.detachInstance (#373)', () => {
     expect(pill.overrides?.root).toEqual({ base: { fontSize: '14px' } });
   });
 
+  it('fills an object field the placement and the object leave out from the field’s own default', () => {
+    const { s } = project();
+    const def = s.components[DEF];
+    def.properties.box = { type: 'object', label: 'Box', fields: { label: { type: 'string', label: 'Label', default: 'Field default' } }, default: {} } as never;
+    (def.tree!.nodes.root as GraphNode & { kind: 'element' }).children = ['guarded', 'extra'];
+    def.tree!.nodes.guarded = { id: 'guarded', kind: 'text', tag: 'p', text: { $prop: 'box', field: 'label' }, when: { $prop: 'box', field: 'label' } } as unknown as GraphNode;
+    (home(s).nodes.n_target as InstanceNode).props.box = {};
+    const r = detach(s);
+    expect(descendants(r.state, r.results[0].nodeId as string).some((n) => n.kind === 'text' && n.text === 'Field default')).toBe(true);
+  });
+
+  it('keeps a page duplicate’s copy of a detached gallery one viewer group across its sections', () => {
+    const { s } = project();
+    const page = home(s);
+    const card = (id: string) => ({ id, kind: 'element', tag: 'figure', action: 'image', children: [], detachedFrom: { component: 'x', node: 'photo', group: 'g_one|photos' } }) as unknown as GraphNode;
+    page.nodes.n_c1 = card('n_c1');
+    page.nodes.n_c2 = card('n_c2');
+    page.rootIds.push('n_c1', 'n_c2');
+    const r = applyOperations(s, [{ type: 'page.duplicate', pageId: page.id }]);
+    const copy = r.state.pages[r.results[0].pageId as string];
+    const groups = copy.rootIds.map((id) => copy.nodes[id].detachedFrom?.group).filter(Boolean);
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toBe(groups[1]);
+    expect(groups[0]).not.toBe('g_one|photos');
+    expect(groups[0]).toMatch(/\|photos$/);
+  });
+
   it('keeps a code component’s shown marker when a design shows its root again', () => {
     const { s } = project();
     s.components['proj.code-dd1dd'] = { ...showcase(), id: 'proj.code-dd1dd', name: 'Code', kind: 'code', properties: {}, parts: { root: { nodeId: 'root', label: 'Root' } }, slots: undefined, variantAxes: undefined, tree: undefined, source: '<div class={className}></div>' } as unknown as ComponentDefinition;
@@ -528,6 +555,11 @@ describe('component.detachInstance (#373)', () => {
     const r = detach(s);
     const coded = descendants(r.state, r.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
     expect(coded.overrides?.root?.base?.hidden).toBe(false);
+    // Shown again on phones only: the marker for phones stays too.
+    (s.components[DEF].tree!.nodes.coded as InstanceNode).overrides = { root: { phone: { hidden: false } } };
+    const phone = detach(s);
+    const codedPhone = descendants(phone.state, phone.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
+    expect(codedPhone.overrides?.root?.phone?.hidden).toBe(false);
   });
 
   it('is offered to the AI for the placement it may change', async () => {
@@ -586,6 +618,37 @@ describe('flattenStyles', () => {
       { styles: { base: { customCss: 'display: block' } }, strength: 4, wideColumns: true }
     ];
     expect(flattenStyles(layers, { beneath: 1, wideColumns: true })).toEqual({ base: { layout: 'row', customCss: 'display: block' } });
+  });
+
+  it('decides display once, by the declaration that sets it last across every layer', () => {
+    // A stronger hide beneath beats the result's own custom display: nothing of its own shows it.
+    expect(flattenStyles([{ styles: { base: { hidden: true } }, strength: 2 }, { styles: { base: { customCss: 'display: grid' } }, strength: 1 }], { beneath: 1, wideColumns: true })).toEqual({});
+    // The placement's custom display after the show's restoring display, in the same rule: it stays hidden on phones.
+    const hiddenAgain = flattenStyles([{ styles: { base: { hidden: true } }, strength: 1 }, { styles: { phone: { hidden: false, customCss: 'display: none' } }, strength: 3, wideColumns: true, unhides: [{ base: { hidden: true } }] }], { shownDisplay: () => 'revert' });
+    for (const sz of SIZES) expect(perSize(hiddenAgain)[sz].hidden, sz).toBe(true);
+    // A stronger custom display beats a weaker hide: shown, with that display.
+    const block = flattenStyles([{ styles: { base: { hidden: true } }, strength: 1 }, { styles: { base: { customCss: 'display: block' } }, strength: 3, wideColumns: true }]);
+    expect(block).toEqual({ base: { customCss: 'display: block' } });
+    // A template the stylesheet does not write makes no tablet-and-up rule: the later layout still shows it.
+    const invalid = flattenStyles([{ styles: { base: { gridTemplate: 'garbage', customCss: 'display: none' } }, strength: 2, wideColumns: true }, { styles: { base: { layout: 'block' } }, strength: 2, wideColumns: true }]);
+    for (const sz of SIZES) expect(perSize(invalid)[sz].hidden, sz).toBeUndefined();
+  });
+
+  it('refuses custom CSS that one element cannot hold, rather than dropping some of it', () => {
+    const many = (prefix: string) => Array.from({ length: 13 }, (_, i) => `${prefix}: ${i + 1}px`).join('; ');
+    const layers: StyleLayer[] = [
+      { styles: { base: { customCss: many('outline-width') } }, strength: 1 },
+      { styles: { base: { customCss: many('outline-offset') } }, strength: 3, wideColumns: true }
+    ];
+    expect(() => flattenStyles(layers, { tooMuch: () => { throw new Error('too much'); } })).toThrow('too much');
+  });
+
+  it('leaves a link’s custom background colour to it, as its background goes through the button variable', () => {
+    const layers: StyleLayer[] = [
+      { styles: { base: { customCss: 'background-color: red' } }, strength: 1 },
+      { styles: { base: { background: '#0000ff' } }, strength: 3, wideColumns: true }
+    ];
+    expect(flattenStyles(layers, { link: true })).toEqual({ base: { background: '#0000ff', customCss: 'background-color: red' } });
   });
 
   it('writes the display a show wrote, even over a hide of an option not chosen', () => {

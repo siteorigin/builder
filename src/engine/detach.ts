@@ -25,6 +25,22 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
 const ELEMENT_TAG_SET = new Set<string>(ELEMENT_TAGS);
 
+/**
+ * A design's property values with each object's fields filled as the generator fills them: the stored field, else
+ * the object's default for it, else the field's own default.
+ */
+function withObjectFields(def: ComponentDefinition, props: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...props };
+  for (const [name, schema] of Object.entries(def.properties)) {
+    const v = out[name];
+    if (schema.type !== 'object' || !v || typeof v !== 'object' || Array.isArray(v)) continue;
+    const stored = v as Record<string, unknown>;
+    const fallback = schema.default && typeof schema.default === 'object' ? schema.default : {};
+    out[name] = { ...stored, ...Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(stored, k) ? stored[k] : Object.hasOwn(fallback, k) ? fallback[k] : f.default])) };
+  }
+  return out;
+}
+
 /** Where the walk is inside the design: the values in scope, the item of each list it is inside, and those lists. */
 interface At {
   scope: Scope;
@@ -64,6 +80,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const rootAnchor = inst.anchor ?? (designAnchor && !anchors.has(designAnchor) ? designAnchor : undefined);
   if (rootAnchor) anchors.add(rootAnchor);
   const slotUses = new Map<string, number>();
+  const tooMuch = (): never => fail(`“${label}” has more custom CSS on one element, across its design, options and placement, than one element can hold. Shorten some of it first.`);
   const added: GraphNode[] = [];
   // Names the galleries this detach makes, so each stays its own viewer group, apart from any other on the page.
   const groups = newId('g');
@@ -213,7 +230,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         if (n.ariaLabel !== undefined) setOptional(n, 'ariaLabel', text(value(n.ariaLabel, at)));
         break;
     }
-    const styles = flattenStyles(layersFor(src.id, at, 0), { shownDisplay: () => naturalDisplay(src) });
+    const styles = flattenStyles(layersFor(src.id, at, 0), { link: src.kind === 'link', shownDisplay: () => naturalDisplay(src), tooMuch });
     if (Object.keys(styles).length) n.styles = styles;
     const from = provenance(src);
     // An action repeated in a list moved through the viewer with the list's other items (in each outer item apart).
@@ -267,7 +284,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       const level: StyleLayer[] = designLayers(d, r, chosen).map((l) => ({ ...l, strength: l.strength + tie(d.id) }));
       levels.push(level);
       if (next?.kind === 'instance' && next.overrides?.root) level.push({ styles: next.overrides.root, strength: 3 + tie(d.id), wideColumns: true, unhides: [] });
-      scope = { props: effectiveProps(state, d, placed, scope, op.owner.id) };
+      scope = { props: withObjectFields(d, effectiveProps(state, d, placed, scope, op.owner.id)) };
       node = next;
     }
     // The deepest design first: its layers are what each design above it shows again.
@@ -312,6 +329,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     const root = flattenStyles(layers, {
       beneath: beneath.length,
       wideColumns: true,
+      link: !!innerRoot && inner?.tree?.nodes[innerRoot]?.kind === 'link',
+      tooMuch,
       // A code component shows a root it hides again only through the marker a `hidden: false` gives it.
       keepShown: chain.code,
       shownDisplay: () => (innerRoot && inner ? naturalDisplay(inner.tree!.nodes[innerRoot]) : null)
@@ -366,12 +385,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     }
   };
 
-  const props = effectiveProps(state, def, inst, { props: {} }, op.owner.id);
-  // An object shows its default for a field the placement stores none for, in what it renders and what it decides.
-  for (const [name, schema] of Object.entries(def.properties)) {
-    const v = props[name];
-    if (schema.type === 'object' && v && typeof v === 'object' && !Array.isArray(v)) props[name] = { ...schema.default, ...(v as Record<string, unknown>) };
-  }
+  // An object shows its defaults for fields the placement stores none for, in what it renders and what it decides.
+  const props = withObjectFields(def, effectiveProps(state, def, inst, { props: {} }, op.owner.id));
   const roots = emit(rootId, { scope: { props }, items: {}, repeats: [] });
   if (!roots.length) fail(`“${label}” shows nothing with its current settings, so there is nothing to detach. Delete it instead, or change its settings first.`);
   for (const slot of Object.keys(inst.slots ?? {})) {

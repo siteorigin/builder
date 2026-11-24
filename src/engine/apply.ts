@@ -874,11 +874,11 @@ function applyArticle(page: PageDoc, op: ArticleFields) {
 }
 
 /** Copy a node subtree from one tree into another, allocating new IDs. Returns the new root ID. */
-function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: ProjectState): string {
+function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: ProjectState, groups = new Map<string, string>()): string {
   const idMap = new Map<string, string>();
   for (const id of subtreeIds(from, nodeId)) idMap.set(id, newId('n'));
-  // A copied detached gallery is a gallery of its own: its images move through the viewer together, apart.
-  const groups = new Map<string, string>();
+  // A copied detached gallery is a gallery of its own: its images move through the viewer together, apart. Copies made
+  // together (a page's sections) share one map, so a gallery spread over them stays one.
   for (const [oldId, nid] of idMap) {
     const n = clone(from.nodes[oldId]);
     n.id = nid;
@@ -947,7 +947,8 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
   const page: PageDoc = { ...clone(src), id, title, route: autoRoute(state, title, 'page', undefined, routeFolder(src.route) ?? '/'), rootIds: [], nodes: {} };
   // A copy is in the same language until it is translated: it is nobody's translation yet.
   delete page.translationGroup;
-  for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state));
+  const groups = new Map<string, string>();
+  for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state, groups));
   state.pages[id] = page;
   keepSectionLinksOnCopy(state, src.id, page);
   state.site.pageOrder.splice(state.site.pageOrder.indexOf(src.id) + 1, 0, id);
