@@ -312,6 +312,12 @@ describe('page languages in the website', () => {
       expect(render('/fr/a-propos', ["<!doctype html>\n<html class='site' lang='en' data-x>"])[0]).toBe("<!doctype html>\n<html class='site' lang=\"fr\" data-x>");
       expect(render('/fr/a-propos', ['<!-- mine -->\n<!DOCTYPE html><HTML class="site">'])[0]).toBe('<!-- mine -->\n<!DOCTYPE html><HTML class="site" lang="fr">');
       expect(render('/fr/a-propos', ['<html xml:lang="en" lang="fr">'])[0]).toBe('<html xml:lang="en" lang="fr">');
+      // A page far longer than the part read keeps everything after it as it was.
+      const long = '<!doctype html><html lang="en"><body>' + 'x'.repeat(200000) + '<html lang="en"></body></html>';
+      expect(render('/fr/a-propos', [long])[0]).toBe(long.replace('<html lang="en"><body>', '<html lang="fr"><body>'));
+      // A comment of megabytes before the tag is passed over, never read to its end.
+      const huge = '<!--' + 'x'.repeat(8 * 1024 * 1024) + '--><!doctype html><html lang="en">';
+      expect(render('/fr/a-propos', [huge])[0]).toBe(huge);
       // Only the attribute itself: not text inside another attribute's value, nor a tag inside a comment before it.
       for (const [template, rewritten] of [
         [`<!doctype html><html data-label='a lang="en" b' lang="en">`, `<!doctype html><html data-label='a lang="en" b' lang="fr">`],
@@ -455,13 +461,19 @@ describe('page languages in the website', () => {
     const dir = tempDir();
     mkdirSync(join(dir, 'src', 'hooks.server'), { recursive: true });
     // A folder without an index is no hook: SvelteKit passes it by.
-    expect(await rivalHookStop(dir, s)).toBeNull();
+    expect(await rivalHookStop(dir, s)).not.toMatch(/of its own/);
     writeFileSync(join(dir, 'src', 'hooks.server', 'index.ts'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
     expect(await rivalHookStop(dir, s)).toMatch(/server hook of its own \(src\/hooks\.server\/index\.ts\): SvelteKit runs only one/);
     rmSync(join(dir, 'src', 'hooks.server'), { recursive: true });
     writeFileSync(join(dir, 'src', 'hooks.server.ts'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
     expect(await rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\.ts\)/);
     rmSync(join(dir, 'src', 'hooks.server.ts'));
+    // SvelteKit also takes a file of that name without an extension.
+    writeFileSync(join(dir, 'src', 'hooks.server'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
+    expect(await rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\)/);
+    rmSync(join(dir, 'src', 'hooks.server'));
+    // Without any hook at all, the generated one has not been written yet: exporting would leave the languages out.
+    expect(await rivalHookStop(dir, s)).toMatch(/has not been written yet/);
     // A hook at the generated path is the project's own unless SiteOrigin Builder wrote it there.
     writeFileSync(join(dir, HOOKS_SERVER_FILE), 'export const handle = ({ event, resolve }) => resolve(event);\n');
     expect(await rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\.js\)/);

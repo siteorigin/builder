@@ -1908,11 +1908,13 @@ export function handle({ event, resolve }) {
 			// The opening tag comes first: its lang is replaced, or added when it has none.
 			if (!first) return html;
 			first = false;
-			return html.replace(START, (_, before, tag, attrs, end) => {
+			// Only the start of the document is read, however long the page.
+			const start = html.slice(0, 65536).replace(START, (_, before, tag, attrs, end) => {
 				let found = false;
 				const own = attrs.replace(ATTR, (attr, space, name) => (name.toLowerCase() === 'lang' ? ((found = true), \`\${space}lang="\${lang}"\`) : attr));
 				return \`\${before}<\${tag}\${found ? own : \`\${own} lang="\${lang}"\`}\${end}\`;
 			});
+			return start + html.slice(65536);
 		}
 	});
 }

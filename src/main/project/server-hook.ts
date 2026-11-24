@@ -2,10 +2,10 @@ import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { HOOKS_SERVER_FILE } from '@generator/index';
 
-/** Server hooks SvelteKit finds under other names: a TypeScript file, or a folder with an index. */
-const OTHER_HOOKS = ['src/hooks.server.ts', 'src/hooks.server/index.js', 'src/hooks.server/index.ts'];
+/** Server hooks SvelteKit finds under other names: a file without an extension, a TypeScript file, or a folder with an index. */
+const OTHER_HOOKS = ['src/hooks.server', 'src/hooks.server.ts', 'src/hooks.server/index.js', 'src/hooks.server/index.ts'];
 
-const isFile = (path: string) => {
+export const isFile = (path: string) => {
   try {
     return statSync(path).isFile();
   } catch {

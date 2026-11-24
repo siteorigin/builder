@@ -19,7 +19,7 @@ import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } fro
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
-import { ownServerHook } from './project/server-hook';
+import { isFile, ownServerHook } from './project/server-hook';
 import type { MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
@@ -777,7 +777,10 @@ export async function rivalHookStop(dir: string, state: ProjectState): Promise<s
   const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
   const claimed = Object.hasOwn(manifest.files ?? {}, HOOKS_SERVER_FILE) || Object.hasOwn(manifest.pending ?? {}, HOOKS_SERVER_FILE);
   const own = ownServerHook(dir, claimed);
-  return own ? `Pages written in another language need SiteOrigin Builder's ${HOOKS_SERVER_FILE}, and this project has a server hook of its own (${own}): SvelteKit runs only one of them. Rename or remove yours, then export again.` : null;
+  if (own) return `Pages written in another language need SiteOrigin Builder's ${HOOKS_SERVER_FILE}, and this project has a server hook of its own (${own}): SvelteKit runs only one of them. Rename or remove yours, then export again.`;
+  // Held back while the project had a hook of its own, it is written again at the next change.
+  if (!isFile(join(dir, ...HOOKS_SERVER_FILE.split('/')))) return `Pages written in another language need ${HOOKS_SERVER_FILE}, which has not been written yet. Make a change to the project, or reopen it, then export again.`;
+  return null;
 }
 
 export function pageLanguageWarning(state: ProjectState, page: PageDoc, html: string): string | null {
