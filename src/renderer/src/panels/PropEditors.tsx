@@ -17,7 +17,7 @@ import { applyChoiceAction, choiceText, sameChoice, staleRename, type ChoiceActi
 
 const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
-import { pickAnnouncement, pickRoom, sampleRows, startingSamples } from '../lib/gallery-picks';
+import { emptyPickNote, pickAnnouncement, pickRoom, sampleRows, startingSamples } from '../lib/gallery-picks';
 import { importAndPlace } from '../lib/place';
 import { AssetImage } from '../components/AssetImage';
 import { fitFor } from '../components/AssetPicture';
@@ -1948,7 +1948,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
       <div className="list-editor">
         {pickImages && (
           <>
-            {!picking && (items.length === 0 || samplesOnly) && <p className="insp-note muted">{items.length ? `These are sample ${schema.itemLabel.toLowerCase()}s. Choose images from Assets to replace them.` : 'Choose the images for this gallery from Assets.'}</p>}
+            {!picking && (items.length === 0 || samplesOnly) && <p className="insp-note muted">{items.length ? `These are sample ${schema.itemLabel.toLowerCase()}s. Choose images from Assets to replace them.` : emptyPickNote(schema)}</p>}
             {/* Stays while the picker is open, as the disclosure that shows and hides it. */}
             <button
               ref={pickBtn}

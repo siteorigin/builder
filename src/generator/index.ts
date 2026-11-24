@@ -65,6 +65,7 @@ import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, 
 import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
 import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
+import { pickImagesField } from '@shared/image-lists';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
 import { pageSharing } from '@shared/sharing';
@@ -1525,7 +1526,10 @@ function emitNode(ctx: EmitCtx, id: string): string {
   const children = node.kind === 'element' && node.collapseEmpty && ctx.def ? childrenCondition(ctx, node, new Set(), true) : null;
   if (children) {
     useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
-    out = `${p}{#if ${children}}\n${indentBlock(out)}\n${p}{/if}`;
+    // An empty list of images (a Gallery's, a Carousel's) shows the author where they will go, only while editing.
+    const marker = node.kind === 'element' ? emptyImageListMarker(ctx, node) : '';
+    if (marker) ctx.usesEditing = true;
+    out = `${p}{#if ${children}}\n${indentBlock(out)}\n${p}${marker ? `{:else if so_editing}\n${p}\t${marker}\n${p}` : ''}{/if}`;
   }
   // A panel kept in the page shows and hides by its condition through a class instead (see stateWidgets).
   if (ctx.widgets?.panels.has(node.id)) return out;
@@ -2385,6 +2389,26 @@ function emptySlotMarker(decl: SlotDef | undefined, slotName: string): string {
   const description = typeof decl.description === 'string' ? decl.description.trim() : '';
   // Phrasing content only, so it is valid wherever the slot sits (a paragraph included); the bridge lays it out as a box.
   return `<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={${js(slotName)}}><strong>{${js(label)}}</strong>${description ? `<span>{${js(description)}}</span>` : ''}</span>`;
+}
+
+/** The tags a hiding list may have for its placeholder to stand in its place: block content, valid where a list is. */
+const LIST_PLACEHOLDER_TAGS = new Set(['ul', 'ol', 'div']);
+
+/**
+ * The placeholder that stands in for a hiding element (`collapseEmpty`) while its list of images is empty: a Gallery's
+ * grid, a Carousel's track. It names the list, says where its images come from and that visitors never see it. Only
+ * for a list that takes several images from Assets (see pickImagesField), repeated as the element's one child with no
+ * condition of its own, so the element hides exactly while the list is empty. Editor variants only (rendered only
+ * while editing, styled by the bridge); a clean file never has one.
+ */
+function emptyImageListMarker(ctx: EmitCtx, node: GraphNode & { kind: 'element' }): string {
+  if (!ctx.instrument || !ctx.def || typeof node.tag !== 'string' || !LIST_PLACEHOLDER_TAGS.has(node.tag) || node.children.length !== 1) return '';
+  const child = ctx.tree.nodes[node.children[0]];
+  if (child?.kind !== 'repeat' || child.when || child.unless) return '';
+  const schema = propSchemaFor(ctx, child.list);
+  if (schema?.type !== 'list' || !pickImagesField(ctx.def, child.list.$prop, schema)) return '';
+  const label = (schema.label.trim() || 'Images').toLowerCase();
+  return `<div class="so-list-empty" data-so-editor-only="" data-so-list-empty={${js(child.list.$prop)}}><strong>{${js(`No ${label} yet`)}}</strong><span>{${js('Choose images from Assets in the inspector. Visitors won’t see this box.')}}</span></div>`;
 }
 
 /**

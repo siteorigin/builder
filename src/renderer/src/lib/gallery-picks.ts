@@ -1,21 +1,10 @@
 // Choosing several library images for a gallery in one pass (issue #60). Plain functions, so which rows count as
 // samples, how much room the choice has and the order the edits are made in are tested without a renderer.
 import type { EditOperation } from '@shared/ops';
-import type { AssetRecord, ComponentDefinition, ImageValue, ListItem, ListProp, OwnerRef, PropSchema } from '@shared/types';
+import type { AssetRecord, ImageValue, ListItem, ListProp, OwnerRef } from '@shared/types';
 import type { MoveDirection } from './list-editor';
 
-/** The lists that take several library images at once, by component: the list and the item field the image goes in.
- *  Only a Gallery's and a Carousel's: a team member, testimonial or logo needs more than a picture to be worth a row. */
-const PICK_MANY: Record<string, { prop: string; field: string }> = { 'media.gallery': { prop: 'images', field: 'image' }, 'media.carousel': { prop: 'slides', field: 'image' } };
-
-/** The item field chosen images go in, for a list that takes several at once; otherwise null. A component made
- *  unique from a Gallery keeps the action while its list still holds images. */
-export function pickImagesField(def: Pick<ComponentDefinition, 'componentId' | 'provenance'> | undefined, prop: string, schema: PropSchema): string | null {
-  const from = def ? [def.componentId, def.provenance?.componentId] : [];
-  const at = from.map((id) => (id && Object.hasOwn(PICK_MANY, id) ? PICK_MANY[id] : undefined)).find(Boolean);
-  if (!at || at.prop !== prop || schema.type !== 'list') return null;
-  return schema.fields[at.field]?.type === 'image' ? at.field : null;
-}
+export { pickImagesField } from '@shared/image-lists';
 
 /**
  * The six invented rows a Gallery started with before it started empty. A project made then still has them, in its
@@ -77,6 +66,11 @@ export function sampleRows(schema: Pick<ListProp, 'fields' | 'default'>, items: 
 export function startingSamples(schema: Pick<ListProp, 'fields' | 'default'>, items: ListItem[]): boolean {
   if (!items.length || !items.every((it) => noImage(schema, it))) return false;
   return [schema.default ?? [], EARLIER_SAMPLES].some((rows) => rows.length === items.length && rows.every((row, i) => sameRow(schema, items[i], row)));
+}
+
+/** What an empty list that takes several images says, in its own words: a Gallery's "No images yet", a Carousel's "No slides yet". */
+export function emptyPickNote(schema: Pick<ListProp, 'label'>): string {
+  return `No ${schema.label.trim().toLowerCase() || 'images'} yet. Choose images from Assets.`;
 }
 
 /** How many images can be added: the list's room once the `replacing` rows are gone. */
