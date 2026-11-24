@@ -3,8 +3,8 @@
  * for the frame the preview draws while editing, a click on that frame selects it, and nothing of either reaches an
  * exported file. An empty slot's placeholder is rendered only while editing, so Preview has none of it.
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, promises as fsp, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { compile } from 'svelte/compiler';
@@ -227,6 +227,30 @@ describe('a change only the editor’s variant shows, in a project the preview r
     const token = await session.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Teal', value: '#008080' }] }, { label: 'Add style' });
     expect(token.ok).toBe(true);
     expect(statSync(file).mtimeMs).toBe(long.getTime());
+    await session.close();
+  });
+
+  it('tries the touch again at the next save when it could not be made, and never fails the save for it', async () => {
+    const { s: start, owner, ids } = site();
+    const dir = mkdtempSync(join(tmpdir(), 'so-frames-'));
+    dirs.push(dir);
+    const session = await ProjectSession.create(dir, start);
+    const file = join(dir, HOME);
+    const long = new Date('2001-01-01T00:00:00Z');
+    utimesSync(file, long, long);
+    const refused = vi.spyOn(fsp, 'utimes').mockRejectedValueOnce(Object.assign(new Error('not permitted'), { code: 'EPERM' }));
+    try {
+      const r = await session.apply({ operations: [{ type: 'node.setStyle', owner, nodeId: ids.grid, scope: 'base', property: 'layout', value: 'row' }] }, { label: 'Arrange' });
+      expect(r.ok).toBe(true);
+      expect(refused).toHaveBeenCalledTimes(1);
+      expect(statSync(file).mtimeMs).toBe(long.getTime());
+    } finally {
+      refused.mockRestore();
+    }
+    // The next save (one the variant does not show) touches it after all.
+    const token = await session.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Teal', value: '#008080' }] }, { label: 'Add style' });
+    expect(token.ok).toBe(true);
+    expect(statSync(file).mtimeMs).toBeGreaterThan(long.getTime());
     await session.close();
   });
 });
