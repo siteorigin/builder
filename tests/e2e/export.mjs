@@ -304,17 +304,38 @@ await win.getByTestId('edit-layout-posts').click();
 await eventually(async () => assert.equal(await framePath(), '/blog/secret-plans/', 'the layout opens on the collection\'s first post'), 30000);
 await win.getByTestId('template-strip').waitFor();
 // Switching the post it is shown on keeps the layout open, on that post's own words.
+/** The strip has the post open: the frame has reported landing on it. */
+const settled = () => eventually(async () => assert.equal(await win.getByTestId('template-strip').getAttribute('aria-busy'), null, 'the post has opened'), 30000);
+await settled();
 await win.getByTestId('template-sample').selectOption('en_hours01');
 await eventually(async () => assert.equal(await framePath(), '/blog/opening-times/', 'the layout is shown on the chosen post'), 30000);
 await eventually(async () => assert.equal((await frame.locator('h1').first().innerText()).trim(), 'Opening hours'), 30000);
+await settled();
 await win.getByTestId('template-sample').selectOption('en_spring01');
 await eventually(async () => assert.equal((await frame.locator('h1').first().innerText()).trim(), 'Spring open studio', 'another post shows its own title in the same layout'), 30000);
+await settled();
 // Layers show the layout between the shared header and footer.
 await eventually(async () => assert.match(await win.locator('.layers-tree').innerText(), /Layout of every entry/), 10000);
 // Its title picked on the canvas is the layout's, showing each post's own title.
 await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 30000 });
-await frame.locator('h1').first().click();
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
+{
+  // Plain clicks on the title, through the window's pointer as the author clicks (the canvas is zoomed to fit, so the
+  // point inside the frame is scaled to the window), each a level further in, until the title itself is selected.
+  const at = await frame.locator('h1').first().evaluate((el) => {
+    el.scrollIntoView({ block: 'center' });
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, width: innerWidth };
+  });
+  const box = await win.locator('.frame-box iframe').boundingBox();
+  const scale = box.width / at.width;
+  const named = () => win.locator('#dock-panel-inspect .insp-name h3').first().innerText().catch(() => '');
+  for (let i = 0; i < 6 && (await named()) !== 'Title'; i++) {
+    await win.mouse.click(box.x + at.x * scale, box.y + at.y * scale);
+    await win.waitForTimeout(400);
+  }
+  assert.equal(await named(), 'Title', 'the layout\'s title is selected on the canvas');
+}
 await eventually(async () => assert.match(await win.locator('#dock-panel-inspect').innerText(), /Posts layout\./, 'the inspector says the title belongs to the layout of every post'), 10000);
 assert.equal(await win.getByTestId('entry-field-text').inputValue(), 'title', 'the title shows each post\'s own title');
 const layout = (await win.evaluate(() => window.builder.project.snapshot())).state.collections.posts.settings.template;

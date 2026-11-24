@@ -1737,13 +1737,14 @@ export function Canvas() {
         {url && initialSrc && (
           <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: 14, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
             {/* The strip above the page: what the page is doing on the left, its screen size on the right. */}
-            {opening && !resizing && (
+            {opening && !resizing && !templateMode && (
               <div className="frame-status" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
                 <Spinner decorative />
                 <span>Opening {view?.title ?? 'the page'}…</span>
               </div>
             )}
-            {templateMode && mode === 'edit' && state && !opening && !resizing && !insertDrop && !reorder && <TemplateStrip state={state} mode={templateMode} maxWidth={stripRoom} />}
+            {/* Stays while another entry opens, so the entry picker keeps focus as the author steps through entries. */}
+            {templateMode && mode === 'edit' && state && !resizing && !insertDrop && !reorder && <TemplateStrip state={state} mode={templateMode} maxWidth={stripRoom} opening={opening} />}
             {templateMode && state && !view?.route && <TemplateNoEntries state={state} mode={templateMode} />}
             <div className={`frame-width-label${labelMode === 'gone' ? ' gone' : ''}${resizing ? ' live' : ''}`} title={scalePct !== 100 ? `${viewport} px wide, shown at ${scalePct}%` : `${viewport} px wide, shown at actual size`}>
               <b>{viewport}</b>&nbsp;px
@@ -2242,13 +2243,13 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
  * The strip above the page while a collection's layout is edited: whose layout it is, the entry it is shown on (any
  * of the collection's, to see the layout with other words and pictures), and the way back to the page.
  */
-function TemplateStrip({ state, mode, maxWidth }: { state: ProjectState; mode: TemplateMode; maxWidth: number }) {
+function TemplateStrip({ state, mode, maxWidth, opening }: { state: ProjectState; mode: TemplateMode; maxWidth: number; opening: boolean }) {
   const collection = state.collections[mode.collectionId];
   const samples = sampleEntries(state, mode.collectionId);
   if (!collection) return null;
   return (
-    <div className="frame-status template-strip" style={{ maxWidth }} role="group" aria-label={`${collection.settings.name} layout`} data-testid="template-strip">
-      <LayoutTemplate aria-hidden="true" />
+    <div className="frame-status template-strip" style={{ maxWidth }} role="group" aria-label={`${collection.settings.name} layout`} aria-busy={opening || undefined} data-testid="template-strip">
+      {opening ? <Spinner decorative /> : <LayoutTemplate aria-hidden="true" />}
       <span className="template-strip-name">{collection.settings.name} layout</span>
       {samples.length > 0 && (
         <label className="template-strip-sample">

@@ -917,7 +917,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       <Header
         title={title}
         kind={`${what} · ${origin.toLowerCase()}`}
-        tone={shell ? 'shared' : 'local'}
+        tone={shell || owner.kind === 'template' ? 'shared' : 'local'}
         icon={shell ? owner.id === 'footer' ? <PanelBottom /> : <PanelTop /> : <Component />}
         actions={<SelectionActions title={title} selection={selection} items={items} group={plan?.several ? groupCount(plan.group) : undefined} />}
       >
@@ -1318,7 +1318,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
       <Header
         title={title}
         kind={parentLink}
-        tone={everywhere ? 'definition' : owner.kind === 'shell' ? 'shared' : 'local'}
+        tone={everywhere ? 'definition' : owner.kind === 'shell' || owner.kind === 'template' ? 'shared' : 'local'}
         icon={kind.icon}
         actions={everywhere ? <DoneButton /> : <SelectionActions title={title} selection={selection} items={[{ label: `Select ${parentName}`, icon: <Component />, shortcut: 'Esc', onSelect: () => selectAndFocus(parent) }, ...(styleItems.length ? [{ separator: true }, ...styleItems] : [])]} />}
       >
@@ -1598,7 +1598,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
   );
   return (
     <>
-      <Header title={title} kind={title.toLowerCase().startsWith(kind.name.toLowerCase()) ? 'Basic element' : `${kind.name} · basic element`} tone={owner.kind === 'shell' ? 'shared' : owner.kind === 'component' ? 'definition' : 'local'} icon={kind.icon} actions={<SelectionActions title={title} selection={selection} items={items} group={plan?.several ? groupCount(plan.group) : undefined} />}>
+      <Header title={title} kind={title.toLowerCase().startsWith(kind.name.toLowerCase()) ? 'Basic element' : `${kind.name} · basic element`} tone={owner.kind === 'shell' || owner.kind === 'template' ? 'shared' : owner.kind === 'component' ? 'definition' : 'local'} icon={kind.icon} actions={<SelectionActions title={title} selection={selection} items={items} group={plan?.several ? groupCount(plan.group) : undefined} />}>
         <GroupScope plan={plan} title={title} />
         <OwnerScope owner={owner} state={state} />
       </Header>

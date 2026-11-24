@@ -99,6 +99,8 @@ describe('loading a theme pack release', () => {
     ['a manifest that is not JSON', (d) => writeFileSync(join(d, 'pack.json'), '{ "id": '), /pack\.json is not valid JSON/],
     ['a newer release format', (d) => edit(d, (m) => (m.format = 2)), /release format 2; this app reads format 1/],
     ['a missing name', (d) => edit(d, (m) => delete (m as Partial<PackManifest>).name), /malformed at name/],
+    // A pack's article layout is elements and text only: a placed component could be one the project lacks.
+    ['an article layout that places a component', (d) => edit(d, (m) => (m.articleTemplate = { rootIds: ['a'], nodes: { a: { id: 'a', kind: 'instance', definitionId: 'x', props: {} } } })), /malformed at articleTemplate\.nodes\.a\.kind/],
     ['an unknown top-level field (an install hook)', (d) => edit(d, (m) => Object.assign(m, { postinstall: 'node evil.js' })), /malformed at the top level/],
     ['a folder named for another pack', (d) => edit(d, (m) => (m.id = 'other')), /folder is named "studio" but holds the pack "other"/],
     ['a component under another pack ID', (d) => edit(d, (m) => (m.components[2].id = 'foundation.hero.centered')), /must be "studio\.hero\.centered"/],
