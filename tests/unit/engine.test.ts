@@ -17,6 +17,11 @@ const firstInstance = (s: ProjectState, componentId: string) => {
   return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!;
 };
 const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
+/** A blank site with one empty layout section placed on Home, for the tests that build inside a section. */
+const blankWithSection = () => {
+  const s = createStarterState('blank', 'Blank', false);
+  return applyOperations(s, [{ type: 'node.insert', owner: owner(s), componentId: 'layout.section' }]).state;
+};
 
 describe('starter and generator', () => {
   it('creates a valid business starter', () => {
@@ -192,7 +197,7 @@ describe('components', () => {
   });
 
   it('creates a component from a subtree with generated properties (3.4)', () => {
-    let s = createStarterState('blank', 'Blank', false);
+    let s = blankWithSection();
     const page = home(s);
     const section = page.nodes[page.rootIds[0]] as InstanceNode;
     s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section.id, slot: 'content', primitive: 'stack' }]).state;
@@ -705,7 +710,7 @@ describe('renaming code component properties', () => {
 
 describe('create component from a selection (§2.3)', () => {
   it('turns icons into properties, keeps the anchor on the placement and records dependencies', () => {
-    let s = createStarterState('blank', 'Blank', false);
+    let s = blankWithSection();
     const section = home(s).rootIds[0];
     s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'stack' }]).state;
     const stackId = (home(s).nodes[section] as InstanceNode).slots!.content.at(-1)!;
@@ -751,7 +756,7 @@ describe('create component from a selection (§2.3)', () => {
     expect(errors(s)).toEqual([]);
     for (const [path, src] of generateProject(s)) if (path.endsWith('.svelte')) await compiles(path, src);
 
-    const sec = fork(createStarterState('blank', 'Blank', false), 'layout.section');
+    const sec = fork(blankWithSection(), 'layout.section');
     const w = applyOperations(sec.state, [{ type: 'component.createFromNode', owner: { kind: 'component', id: sec.id }, nodeId: 'inner', name: 'Inner' }]);
     const inner = w.state.components[w.results[0].definitionId as string];
     expect(inner.slots).toEqual({ content: { label: 'Content' } });
@@ -826,7 +831,7 @@ describe('definition editing operations (§2.5)', () => {
   });
 
   it('refuses to remove a slot that holds content', () => {
-    const f = fork(createStarterState('blank', 'Blank', false), 'layout.section');
+    const f = fork(blankWithSection(), 'layout.section');
     let s = f.state;
     const section = home(s).rootIds[0];
     s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'heading' }]).state;
@@ -1197,7 +1202,7 @@ describe('review follow-ups for definition editing', () => {
   });
 
   it('keeps managed dependencies current and blocks removing what code imports or names', () => {
-    let s = createStarterState('blank', 'Blank', false);
+    let s = blankWithSection();
     const section = home(s).rootIds[0];
     s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'stack' }]).state;
     const stackId = (home(s).nodes[section] as InstanceNode).slots!.content.at(-1)!;

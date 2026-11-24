@@ -933,9 +933,13 @@ describe('selection tools', () => {
   });
 
   it('edits a plain text element through the same tool', async () => {
-    const { session, run } = await setup([() => [call('t1', 'update_selected_props', { props: { text: 'Hello there' } })], () => finish()], focused, 'blank');
+    const { session, run } = await setup([() => [call('t1', 'update_selected_props', { props: { text: 'Hello there' } })], () => finish()], focused, 'blank', (s) => {
+      const home = s.pages[s.site.homePageId];
+      home.nodes.n_text = { id: 'n_text', kind: 'text', tag: 'p', text: 'Opening soon' };
+      home.rootIds.push('n_text');
+    });
     const home = pageAt(session.state, '/')!;
-    const textId = Object.values(home.nodes).find((n) => n.kind === 'text')!.id;
+    const textId = 'n_text';
     await run('Change this', { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: textId });
     expect((pageAt(session.state, '/')!.nodes[textId] as { text: string }).text).toBe('Hello there');
   });
@@ -961,8 +965,9 @@ describe('selection tools', () => {
       'blank',
       (s) => {
         const home = s.pages[s.site.homePageId];
+        home.nodes.n_title = { id: 'n_title', kind: 'text', tag: 'h1', text: 'Welcome' };
         home.nodes.n_btn = { id: 'n_btn', kind: 'link', link: { type: 'none', target: '' }, label: 'Button', appearance: 'primary' };
-        home.rootIds.push('n_btn');
+        home.rootIds.push('n_title', 'n_btn');
       }
     );
     const home = pageAt(session.state, '/')!;

@@ -13,9 +13,21 @@ import { chatSuggestions, type ChatSuggestion, type SuggestionInput } from '../.
 
 const ALL = { page: true, selection: true };
 
+/** A Blank site as the starter made it before #15: Home holds one section with a title and a line of text. */
+function blankWithWelcome(name: string): ProjectState {
+  const s = createStarterState('blank', name, false);
+  const home = s.site.homePageId;
+  const placed = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'layout.section' }]);
+  const page = placed.state.pages[home];
+  page.nodes.n_welcome = { id: 'n_welcome', kind: 'text', tag: 'h1', text: `Welcome to ${name}` };
+  page.nodes.n_line = { id: 'n_line', kind: 'text', tag: 'p', text: 'Select this text to edit it, or add sections from the Insert panel.' };
+  (page.nodes[placed.results[0].nodeId as string] as InstanceNode).slots = { content: ['n_welcome', 'n_line'] };
+  return placed.state;
+}
+
 /** The report's site: a Blank site named 灯台 whose second page, お問い合わせ, was just added. */
 function lighthouse() {
-  const s = createStarterState('blank', '灯台', false);
+  const s = blankWithWelcome('灯台');
   const r = applyOperations(s, [{ type: 'page.create', title: 'お問い合わせ', starter: 'intro', addToNavigation: true }]);
   return { state: r.state, home: r.state.site.homePageId, second: r.results[0].pageId as string };
 }
@@ -116,9 +128,11 @@ describe('starters for the page being edited', () => {
     expect(texts(starters(rich, home))).toContain('Rewrite the opening of the “Home” page to sound warmer and more confident');
     // Its hero has an empty image, which no library image fills.
     expect(starters(rich, home)[0].text).toBe('Suggest what kind of photo suits the empty image on the “Home” page');
-    // Blank's Home has a title and one line: still mostly empty.
+    // A Home with a title and one line is still mostly empty; Blank's Home starts with nothing on it.
+    const welcome = blankWithWelcome('Test');
+    expect(starters(welcome, welcome.site.homePageId)[0].text).toMatch(/^Build out the “Home” page/);
     const blank = createStarterState('blank', 'Test', false);
-    expect(starters(blank, blank.site.homePageId)[0].text).toMatch(/^Build out the “Home” page/);
+    expect(starters(blank, blank.site.homePageId)[0].text).toMatch(/^Start the “Home” page/);
     // A long piece of copy in one text node is content, however few nodes it is in.
     const long = lighthouse();
     const text: GraphNode = { id: 'n_long', kind: 'text', tag: 'p', text: 'Lighthouse keepers wrote their days down in logbooks. '.repeat(8) };

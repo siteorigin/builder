@@ -13,6 +13,11 @@ import { captureStyle, planStylePaste, styleSelection, type StyleCopy } from '..
 const fresh = () => createStarterState('business', 'Test Studio', true);
 const homeId = (s: ProjectState) => s.site.homePageId;
 const owner = (s: ProjectState) => ({ kind: 'page' as const, id: homeId(s) });
+/** A blank site with one empty layout section placed on Home, to hold the elements a test places. */
+const blankWithSection = () => {
+  const s = createStarterState('blank', 'Blank', false);
+  return applyOperations(s, [{ type: 'node.insert', owner: owner(s), componentId: 'layout.section' }]).state;
+};
 const placed = (s: ProjectState, componentId: string) => {
   const p = s.pages[homeId(s)];
   return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!;
@@ -83,7 +88,7 @@ describe('copy style', () => {
   });
 
   it('keeps a part picked by name on its component’s root element as that part, and drops a part that moved', () => {
-    let s = createStarterState('blank', 'Blank', false);
+    let s = blankWithSection();
     const page = s.pages[homeId(s)];
     const holder = page.nodes[page.rootIds[0]] as InstanceNode;
     const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: holder.id, slot: 'content', primitive: 'heading', text: 'Hello' }]);
@@ -283,7 +288,7 @@ describe('paste style', () => {
   });
 
   it('pastes between elements placed on a page, within what the destination offers', () => {
-    let s = createStarterState('blank', 'Blank', false);
+    let s = blankWithSection();
     const page = s.pages[homeId(s)];
     const holder = page.nodes[page.rootIds[0]] as InstanceNode;
     const ins = applyOperations(s, [
