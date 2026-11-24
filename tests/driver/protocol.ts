@@ -22,6 +22,11 @@
  * Every operation has a kind, so a record of a run tells what a person could have done from how the test got there:
  * `session` manages the run itself, `observe` only reads, `fixture` prepares state no person made through the UI, and
  * `act` does what a person could (none yet; later issues add them).
+ *
+ * Observations (`ui.snapshot`, `ui.locate`) return refs: opaque strings that name one element in one document of one
+ * window of this session. A ref stays the same while that element keeps its role and name in that document; anything
+ * else (a reload, another page or project, a replaced window, a renamed element) makes it STALE_REF, never a
+ * different element.
  */
 
 export const PROTOCOL_VERSION = 1;
@@ -91,7 +96,16 @@ export const ERROR_CODES = [
   /** The operation ran and failed. */
   'OP_FAILED',
   /** Teardown could not prove every owned process ended, or found data it does not own where it expected its own. */
-  'CLEANUP_FAILED'
+  'CLEANUP_FAILED',
+  /**
+   * A ref no longer names what it was given for: another window, project or document, an element gone or renamed, or
+   * a ref this session never gave out. `details.reason` says which and `details.hint` how to get a fresh one.
+   */
+  'STALE_REF',
+  /** More than one element fits the target. `details.candidates` lists them with refs and regions to choose by. */
+  'AMBIGUOUS_TARGET',
+  /** Nothing fits the target. */
+  'TARGET_NOT_FOUND'
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -244,4 +258,47 @@ export interface CloseResult {
   processes: number[];
   /** Whether the app quit on its own before the deadline, or had to be killed. */
   ended: 'quit' | 'killed' | 'not-started' | 'already-exited';
+}
+
+// ---------------------------------------------------------------------------
+// UI observations (issue #492)
+// ---------------------------------------------------------------------------
+
+/** Where an observation looks: the editor's own UI, the live preview of the site, or both. */
+export type UiScope = 'editor' | 'preview' | 'all';
+
+/** What `ui.snapshot` accepts. */
+export interface SnapshotArgs {
+  /** Default `all`. */
+  scope?: UiScope;
+  /** A ref from an earlier observation: show what is inside it (drill-down). Its scope is the ref's own. */
+  within?: string;
+  /**
+   * Continue after this ref among its siblings (a continuation's `after`): inside `within`, or at the top of one
+   * `scope`. Siblings added or removed meanwhile do not shift it; a ref that is gone is STALE_REF.
+   */
+  after?: string;
+  /** Continue from this index among the siblings (a continuation's `offset`, for a last child without a ref). */
+  offset?: number;
+  /** The most nodes to return (default 200, at most 1000), shared between the scopes. */
+  maxNodes?: number;
+  /** Levels below the roots to return; unbounded unless given (the node budget still applies). */
+  depth?: number;
+  /** Save PNGs of the editor window and of the preview as it shows in it, in the session's artifacts. */
+  screenshot?: boolean;
+}
+
+/** What `ui.locate` accepts: a ref to look at again, or a role (and name) to find. */
+export interface LocateArgs {
+  ref?: string;
+  role?: string;
+  name?: string;
+  /** Name matching: exact (default, after whitespace is collapsed) or a case-insensitive substring. */
+  exact?: boolean;
+  /** Only inside a region: its role, its name or `role "name"`, as region paths show them. */
+  region?: string;
+  /** Only inside the element a ref names. */
+  within?: string;
+  /** Default `all`. */
+  scope?: UiScope;
 }

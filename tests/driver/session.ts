@@ -22,14 +22,17 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
-import type { ElectronApplication, Page } from 'playwright';
+import type { ElectronApplication, ElementHandle, Page } from 'playwright';
 import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
 import { desktopInMain, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, stageImport } from './desktop.ts';
 import type { Area } from './desktop.ts';
+import { SECRET_INPUTS, elementFor, frameSecrets, parseLocateArgs, parseSnapshotArgs, uiLocate, uiSnapshot } from './observe.ts';
+import type { ObserveEnv } from './observe.ts';
 import { killTree, killTreeSync, ownedEntries, processTable } from './processes.ts';
 import type { ProcessEntry } from './processes.ts';
 import { DriverError, PROTOCOL_VERSION, failure, frameIdentity, parseRequest, success } from './protocol.ts';
 import type { Capability, CloseArgs, CloseResult, FixtureName, KeepArtifacts, OpKind, Reply, ReplyContext, Request, SessionEvent, StartArgs, WindowRef } from './protocol.ts';
+import { RefRegistry, scrubDeep } from './snapshot.ts';
 
 export const REPO_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 
@@ -147,6 +150,21 @@ export const OPERATIONS: Record<string, OpSpec> = {
     needsApp: true,
     usesWindow: false,
     summary: 'One level of a session folder (default exports/): each entry’s name, path, type and size.'
+  },
+  'ui.snapshot': {
+    kind: 'observe',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary:
+      'The accessibility tree of the editor and of its live preview, bounded (maxNodes, depth) with refs to drill into (within, offset), plus the context: screen, mode, dialog, focus, preview state and the selection. Optionally saves screenshots of both.'
+  },
+  'ui.locate': {
+    kind: 'observe',
+    defaultTimeoutMs: 15_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'One element, by role and name (in a region or within a ref) or by a ref seen before, as it is now: its ref, states, box, regions and page ids. Several matches answer AMBIGUOUS_TARGET with candidates; an outdated ref, STALE_REF.'
   },
   'session.close': {
     kind: 'session',
@@ -636,6 +654,13 @@ export class Session {
   /** Whether closing keeps the artifacts: settled by the first close, so a later one cannot change it. */
   private keeping: boolean | null = null;
   private abortStart: ((e: DriverError) => void) | null = null;
+  /** The refs observations gave out, and how many observations there have been. */
+  private readonly refs = new RefRegistry();
+  private observations = 0;
+  /** Operations that ran out of time and may still be running. */
+  private readonly lingering = new Set<Promise<unknown>>();
+  /** Every credential the session's observations have seen: kept out of everything else it reports. */
+  private readonly secrets = new Set<string>();
   private starting: Promise<unknown> | null = null;
   private launching: Promise<unknown> | null = null;
   private closing: Promise<CloseResult> | null = null;
@@ -664,7 +689,7 @@ export class Session {
           raw = null;
         }
       }
-      return failure(frameIdentity(raw), e, this.context(began));
+      return failure(frameIdentity(raw), e, await this.replyContext(began));
     }
     const spec = OPERATIONS[request.op];
     try {
@@ -673,7 +698,7 @@ export class Session {
       if (request.op !== 'session.close' && request.op !== 'session.describe' && (this.state === 'closing' || this.state === 'closed')) throw new DriverError('CLOSED', 'The session is closed.');
       if (spec.needsApp && this.state !== 'ready') throw new DriverError('NOT_STARTED', 'Start the session first (session.start).');
     } catch (e) {
-      return failure(request, e, this.context(began));
+      return failure(request, e, await this.replyContext(began));
     }
     if (request.op !== 'session.close') this.inFlight = request.id;
     try {
@@ -682,9 +707,9 @@ export class Session {
       if (request.op === 'session.start') result = await this.start(parseStartArgs(request.args), { timeoutMs });
       else if (request.op === 'session.close') result = await this.close(parseCloseArgs(request.args));
       else result = await this.withDeadline(request, spec, timeoutMs);
-      return success(request, result, this.context(began));
+      return success(request, result, await this.replyContext(began));
     } catch (e) {
-      return failure(request, e, this.context(began));
+      return failure(request, e, await this.replyContext(began));
     } finally {
       if (this.inFlight === request.id) this.inFlight = null;
     }
@@ -692,10 +717,16 @@ export class Session {
 
   private async withDeadline(request: Request, spec: OpSpec, timeoutMs: number): Promise<unknown> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const work = this.run(request);
+    // Work that outlives its deadline is told to stop, so a late observation publishes no refs and saves no files.
+    const abort = new AbortController();
+    const work = this.run(request, abort.signal);
     work.catch(() => undefined);
     const expired = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
+        abort.abort();
+        // Until it has stopped, it may still take Playwright snapshots that the next request's refs resolve against.
+        const settling: Promise<unknown> = work.catch(() => undefined).finally(() => this.lingering.delete(settling));
+        this.lingering.add(settling);
         // Reading leaves nothing half-done, so the session goes on; anything else may still be changing the app.
         const terminal = spec.kind !== 'observe' && spec.kind !== 'session';
         if (terminal) {
@@ -712,7 +743,7 @@ export class Session {
     }
   }
 
-  private async run(request: Request): Promise<unknown> {
+  private async run(request: Request, signal: AbortSignal): Promise<unknown> {
     switch (request.op) {
       case 'session.describe':
         return this.describe();
@@ -735,13 +766,85 @@ export class Session {
         for (const k of Object.keys(a)) if (k !== 'path') throw new DriverError('BAD_REQUEST', `files.list does not take "${k}".`);
         return listSessionFolder(this.areas(), a.path);
       }
+      case 'ui.snapshot': {
+        const args = parseSnapshotArgs(request.args);
+        await this.settled();
+        return uiSnapshot(this.observer(this.windowFor(request), signal), args, ++this.observations);
+      }
+      case 'ui.locate': {
+        const args = parseLocateArgs(request.args);
+        await this.settled();
+        return uiLocate(this.observer(this.windowFor(request), signal), args);
+      }
       default:
         throw new DriverError('UNKNOWN_OP', `There is no operation "${request.op}".`);
     }
   }
 
+  private observer(page: Page, signal: AbortSignal): ObserveEnv {
+    return {
+      page,
+      generation: this.bound!.ref.generation,
+      registry: this.refs,
+      artifacts: this.paths?.artifacts ?? null,
+      signal,
+      storedSecrets: (strict) => this.storedSecrets(strict),
+      remember: (secrets) => {
+        for (const x of secrets) if (x) this.secrets.add(x);
+      },
+      remembered: () => [...this.secrets]
+    };
+  }
+
+  /**
+   * The element a ref from `ui.snapshot` or `ui.locate` names, for acting on it in-process (issue #493 builds its
+   * actions on this): checked as `ui.locate` checks a ref, and bound to the document it was seen in, so it can never
+   * reach an element of a page that has since replaced it. The caller disposes of the handle.
+   */
+  async elementFor(ref: string, request: Pick<Request, 'expectWindow'> = {}): Promise<ElementHandle> {
+    if (this.state !== 'ready') throw new DriverError('NOT_STARTED', 'Start the session first (session.start).');
+    await this.settled();
+    const page = this.windowFor(request);
+    return elementFor(this.observer(page, new AbortController().signal), ref);
+  }
+
+  /** Wait (a bounded time) for operations that ran out of time to stop before observing again; BUSY if they will not. */
+  private async settled() {
+    if (!this.lingering.size) return;
+    const done = await bounded(Promise.all([...this.lingering]).then(() => true), 10_000, false);
+    if (!done) throw new DriverError('BUSY', 'An earlier request that ran out of time is still stopping; try again shortly.', { retryable: true });
+  }
+
+  /**
+   * The provider keys the app saved in the profile this session made (the app is started with it as its user data;
+   * a profile the app reports elsewhere fails isolation and is never read).
+   */
+  private async storedSecrets(strict = false): Promise<string[]> {
+    const dir = this.paths?.profile;
+    if (!dir) return [];
+    const keys = await readFile(join(dir, 'api-keys.json'), 'utf8').then(
+      (t) => JSON.parse(t) as Record<string, unknown>,
+      (e: NodeJS.ErrnoException) => {
+        // No file is no keys; a file that cannot be read is, strictly, keys unknown.
+        if (strict && e.code !== 'ENOENT') throw e;
+        return {};
+      }
+    );
+    const found = Object.values(keys).filter((v): v is string => typeof v === 'string' && !!v);
+    for (const x of found) this.secrets.add(x);
+    return found;
+  }
+
+  /** The reply's context: with a page error waiting, once the saved keys it could quote are known (bounded). */
+  private async replyContext(began: number): Promise<ReplyContext> {
+    if (this.events.some((e) => e.type === 'page.error')) await bounded(this.storedSecrets().catch(() => undefined), 2000, undefined);
+    return this.context(began);
+  }
+
   private context(began: number): ReplyContext {
-    const events = this.events;
+    // A page's own error can quote what was on it, a credential included: scrubbed whole, then cut to length.
+    const scrubbed = this.secrets.size ? scrubDeep(this.events, [...this.secrets]) : this.events;
+    const events = scrubbed.map((e) => (e.type === 'page.error' ? { ...e, message: e.message.slice(0, 2000) } : e));
     this.events = [];
     if (this.droppedEvents) {
       events.unshift({ type: 'events.dropped', at: now(), count: this.droppedEvents });
@@ -865,7 +968,8 @@ export class Session {
     this.bound = bound;
     page.on('pageerror', (e) => {
       this.pageErrors.push(String(e));
-      this.event({ type: 'page.error', at: now(), generation: ref.generation, message: String(e).slice(0, 2000) });
+      // Kept whole: the reply that carries it is scrubbed of credentials first, then cuts it to length.
+      this.event({ type: 'page.error', at: now(), generation: ref.generation, message: String(e) });
     });
     page.on('close', () => {
       bound.closed = true;
@@ -1060,6 +1164,8 @@ export class Session {
     await frame.locator(spec.starter === 'blank' ? 'body *' : 'h1').first().waitFor({ timeout: left() });
     // The selection bridge loads after hydration; until then the preview is not ready to work with.
     await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: left() });
+    // And the page has taken the editor's mode: from here, observations call the preview ready.
+    await frame.locator('html[data-so-bridge]').waitFor({ state: 'attached', timeout: left() });
     await reach('fixture.ready');
   }
 
@@ -1166,8 +1272,18 @@ export class Session {
     this.state = 'closing';
     this.keeping = this.keepsArtifacts(args);
     this.abortStart?.(new DriverError('CLOSED', 'The session was closed while it started.'));
-    if (this.keeping && this.bound && !this.bound.closed && !this.appExited)
-      await this.bound.page.screenshot({ path: join(this.paths!.artifacts, 'final.png'), timeout: 5000 }).catch(() => undefined);
+    this.refs.clear();
+    if (this.keeping && this.bound && !this.bound.closed && !this.appExited) {
+      const page = this.bound.page;
+      // As with every screenshot the session takes, none while any credential is known (or that cannot be told in
+      // time), and credential fields masked in every frame.
+      const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
+      const clear = async () => !this.secrets.size && !(await this.storedSecrets(true)).length && !(await frameSecrets(page, { strict: true })).length;
+      if (await bounded(clear().catch(() => false), 3000, false)) {
+        const png = await page.screenshot({ timeout: 5000, mask }).catch(() => null);
+        if (png && (await bounded(clear().catch(() => false), 3000, false))) await writeFile(join(this.paths!.artifacts, 'final.png'), png).catch(() => undefined);
+      }
+    }
     let ended: CloseResult['ended'] = !wasStarted || !this.pid ? 'not-started' : this.appExited ? 'already-exited' : 'quit';
     // Whatever the session cannot account for once it is done (a process table it could not read, a start that would
     // not settle, a process that would not end) keeps the run folder in place rather than delete it under something
@@ -1274,7 +1390,9 @@ export class Session {
   private async writeEvidence(error: DriverError) {
     if (!this.paths) return;
     const description = await this.describe().catch(() => null);
-    await writeFile(join(this.paths.artifacts, 'session.json'), JSON.stringify({ error: { code: error.code, message: error.message, details: error.details }, description, pageErrors: this.pageErrors }, null, 2));
+    const evidence = { error: { code: error.code, message: error.message, details: error.details }, description, pageErrors: this.pageErrors };
+    const secrets = [...this.secrets, ...(await this.storedSecrets().catch((): string[] => []))];
+    await writeFile(join(this.paths.artifacts, 'session.json'), JSON.stringify(scrubDeep(evidence, secrets), null, 2));
   }
 
   /**

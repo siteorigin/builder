@@ -1612,7 +1612,19 @@ export function Canvas() {
   };
 
   return (
-    <main ref={canvasRef} tabIndex={-1} className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`} aria-label="Website preview">
+    <main
+      ref={canvasRef}
+      tabIndex={-1}
+      className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`}
+      aria-label="Website preview"
+      // Read by the test driver's UI snapshots (tests/driver): which opening of a project this is, whether the frame's
+      // page is ready, the selection as the editor holds it, and where it shows on the page as the page's own element
+      // ids (absent: nothing selected; empty: a selection with no place on this page).
+      data-opening={workspaceKey}
+      data-frame={frameReady ? 'ready' : 'loading'}
+      data-selected-ref={selection ? JSON.stringify(selection) : undefined}
+      data-selection={selection ? (spaceDesc ? JSON.stringify(spaceDesc) : '') : undefined}
+    >
       {runtimeCard && <div className="canvas-state">{runtimeCard}</div>}
       {/* Said in the strip above the page (see frame-status below), and here for screen readers. */}
       <p className="sr-only" role="status">
