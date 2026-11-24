@@ -53,7 +53,50 @@ async function run(body: string, preview: object) {
   }
 }
 
+/**
+ * Open the preview page on its own, as the editor's thumbnail window does (#370), and call what the bridge offers it
+ * there; also whether the page shows as visitors see it.
+ */
+async function alone(body: string, preview: object) {
+  const browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
+  try {
+    const page = await browser.newPage({ viewport: { width: 640, height: 400 } });
+    const origin = 'http://preview.test';
+    await page.route(`${origin}/**`, (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/bridge.js') return route.fulfill({ contentType: 'text/javascript', body: bridge });
+      return route.fulfill({
+        contentType: 'text/html',
+        body: `<!doctype html><html><head><style>body{margin:0}</style></head><body>${body}<script>window.__siteoriginPreview = ${JSON.stringify(preview)};</script><script type="module" src="/bridge.js"></script></body></html>`
+      });
+    });
+    await page.goto(`${origin}/__siteorigin/component/abcdefabcdefabcdef/`);
+    await page.waitForFunction('typeof window.__siteoriginThumb === "function"', null, { timeout: 8000 });
+    return await page.evaluate<{ measured: Preview; editing: boolean; unlinked: string }>(`(async () => ({
+      measured: await window.__siteoriginThumb(),
+      editing: document.documentElement.hasAttribute('data-so-editing'),
+      unlinked: getComputedStyle(document.querySelector('[data-so-unlinked]')).display
+    }))()`);
+  } finally {
+    await browser.close();
+  }
+}
+
 describe('the bridge in an isolated component preview', () => {
+  it.skipIf(!browserInstalled)('opened on its own, shows the component as visitors see it and measures it for its thumbnail', async () => {
+    const body = `<main id="main"><div data-so-ctx="preview:c1" data-so-node="preview" style="margin:12px 0 0 30px;width:300px;height:150px;background:red"><a data-so-unlinked href="#">Nowhere</a></div></main>`;
+    const { measured, editing, unlinked } = await alone(body, { key: 'abcdefabcdefabcdef', mounted: true });
+    expect(editing).toBe(false);
+    // A button with nowhere to go is left out, as on the site.
+    expect(unlinked).toBe('none');
+    expect(measured).toMatchObject({ key: 'abcdefabcdefabcdef', mounted: true, bounds: { x: 30, y: 12, width: 300, height: 150 } });
+  }, 20000);
+
+  it.skipIf(!browserInstalled)('opened on its own, says why a component did not mount', async () => {
+    const { measured } = await alone('<main id="main"><p data-so-unlinked>x</p></main>', { key: 'abcdefabcdefabcdef', mounted: false, error: 'boom' });
+    expect(measured).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '' });
+  }, 20000);
+
   it.skipIf(!browserInstalled)('reports the box a code component fills through its wrapper, and no page heading check', async () => {
     const body = `<main id="main"><div style="display: contents" data-so-ctx="preview:c1" data-so-node="preview" data-so-code="true"><p style="margin:10px 20px;height:40px">One</p><p style="margin:0 20px;height:30px">Two</p></div></main>`;
     const { ready, report } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true });
