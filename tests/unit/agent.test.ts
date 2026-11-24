@@ -1463,8 +1463,8 @@ describe('Edit everywhere without Developer mode (#191)', () => {
               expectedRevision: 1,
               operations: [
                 { type: 'component.setPropSchema', definitionId: def.id, prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: 'Made by hand' } },
-                // A new top-level node: a design can have more than one.
-                { type: 'node.insert', owner: def.owner, primitive: 'paragraph', text: 'Made by hand' }
+                // Inside the component's root, its one top-level node (#205).
+                { type: 'node.insert', owner: def.owner, parentId: def.root, primitive: 'paragraph', text: 'Made by hand' }
               ]
             })
           ];
@@ -1495,8 +1495,10 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     expect(result?.status).toBe('completed');
     const after = env.session.state.components[def.id];
     expect(after.properties.tagline).toMatchObject({ type: 'string', label: 'Tagline' });
-    expect(after.tree!.rootIds).toHaveLength(2);
-    const tagline = after.tree!.nodes[after.tree!.rootIds[1]];
+    expect(after.tree!.rootIds).toEqual([def.root]);
+    const taglineId = inserted.results!.find((x) => x?.nodeId)!.nodeId!;
+    expect(after.tree!.nodes[def.root]).toMatchObject({ children: expect.arrayContaining([taglineId]) });
+    const tagline = after.tree!.nodes[taglineId];
     expect(JSON.stringify(tagline)).toContain('"$prop":"tagline"');
     // Nothing on the page behind the component changed.
     expect(env.session.state.pages[env.session.state.site.homePageId]).toEqual(page);
@@ -1564,8 +1566,11 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     const hero = base.pages[homeId].nodes[base.pages[homeId].rootIds[0]] as InstanceNode;
     const forked = applyOperations(base, [{ type: 'component.fork', definitionId: hero.definitionId }]);
     const id = (forked.results[0] as { definitionId: string }).definitionId;
-    // A second top-level node, as an insert without a parent makes.
-    const { state } = applyOperations(forked.state, [{ type: 'node.insert', owner: { kind: 'component', id }, primitive: 'paragraph', text: 'Second' }]);
+    // A second top-level node, as a design from an older version can have (an insert without a parent no longer makes
+    // one, #205); the request's reach still covers every top-level node.
+    const state = structuredClone(forked.state);
+    state.components[id].tree!.nodes.n_second = { id: 'n_second', kind: 'text', tag: 'p', text: 'Second' };
+    state.components[id].tree!.rootIds.push('n_second');
     const def = state.components[id];
     const [root, second] = def.tree!.rootIds;
     const owner = { kind: 'component' as const, id };
@@ -1622,10 +1627,10 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     // The component has gone (its copy was undone): nothing may change.
     expect(checkAuthority(base, [{ type: 'node.setStyle', owner, nodeId: 'heading', scope: 'base', style: 'color', value: '#000' } as unknown as EditOperation], authority)).toMatch(/no longer in the site/);
     // Removing a slot whose placeholder is the root would make the next node the root.
-    const slotFirst = applyOperations(state, [
-      { type: 'component.setSlot', definitionId: id, slot: 'lead', label: 'Lead' },
-      { type: 'node.insert', owner, parentId: null, index: 0, primitive: 'slot', bind: 'lead' }
-    ]).state;
+    // (A design from an older version: a slot can no longer be inserted at the top level, #205.)
+    const slotFirst = applyOperations(state, [{ type: 'component.setSlot', definitionId: id, slot: 'lead', label: 'Lead' }]).state;
+    slotFirst.components[id].tree!.nodes.n_lead = { id: 'n_lead', kind: 'slot', slot: 'lead' };
+    slotFirst.components[id].tree!.rootIds.unshift('n_lead');
     expect(checkAuthority(slotFirst, [{ type: 'component.removeSlot', definitionId: id, slot: 'lead' }], authority)).toMatch(/keep it first/);
     // A selection inside the design cannot make a placement in it a component of its own either.
     const inner: Authority = { kind: 'selection', owner, nodeId: placed, label: 'Banner' };

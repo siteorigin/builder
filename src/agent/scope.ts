@@ -156,10 +156,11 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
   if (!def?.tree) return `${authority.label} is no longer in the site.`;
   const nodes = def.tree.nodes;
   // The first top-level node is the component's own root: placements' classes and variants style it, so it stays
-  // first. Other top-level nodes go after it.
+  // first. The engine keeps anything else from joining it at the top level (a design from an older version may still
+  // have other top-level nodes after it).
   const root = def.tree.rootIds[0];
   const beforeRoot = (parentId: string | null | undefined, index: number | undefined) => !parentId && !!root && index === 0;
-  const rootFirst = `The first top-level node of ${authority.label} is its root, which every placement and variant styles: keep it first, and add other top-level nodes after it.`;
+  const rootFirst = `The first top-level node of ${authority.label} is its root, which every placement and variant styles: keep it first, and put new content inside it.`;
   const mine = (o: OwnerRef) => o.kind === 'component' && o.id === def.id;
   /** A node of the design, or its top level (null). */
   const inside = (id: string | null | undefined) => !id || Object.hasOwn(nodes, id);

@@ -126,7 +126,8 @@ function editingComponent(state: ProjectState, component: { id: string; name: st
   return {
     id: component.id,
     name: def?.name ?? component.name,
-    // Every top-level node: a design can have more than one.
+    // Its top-level node, the component's root, which new content goes inside (a design from an older version may
+    // still have more than one).
     rootIds: def?.tree?.rootIds ?? [],
     note: 'Edit everywhere: every change applies to every placement of this component. Its nodes are owned by { kind: "component", id }; read_component shows its contract.'
   };
@@ -251,7 +252,7 @@ How the website is modelled:
 
 Scope:
 - When the user sends a request with a selected element, this run may only change that element and the content inside it. The app rejects other changes with SCOPE_MISMATCH.
-- When <editor_context> has editingComponent, the user is editing that component everywhere: this run may change only its own design (nodes owned by { kind: "component", id }, including new top-level nodes) and its contract (component.setPropSchema, setPropDefault, setPart, setVariant, setSlot and their removals, node.setBinding). Every change applies to every placement. To make content editable per placement, add a property and bind a node to it.
+- When <editor_context> has editingComponent, the user is editing that component everywhere: this run may change only its own design (nodes owned by { kind: "component", id }; new content goes inside its root, its one top-level node) and its contract (component.setPropSchema, setPropDefault, setPart, setVariant, setSlot and their removals, node.setBinding). Every change applies to every placement. To make content editable per placement, add a property and bind a node to it.
 - If the request clearly needs wider changes (other sections, other pages, site styles, navigation), call request_clarification with widenScope: true and a short question explaining what else you need to change. Continue only within what the user allows.
 - Without a selection or editingComponent, the run may change the whole site.
 
