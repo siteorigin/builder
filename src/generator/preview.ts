@@ -5,22 +5,18 @@
  */
 import type { ComponentDefinition, InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
-import { PREVIEW_COMPONENT_STYLES, PREVIEW_META, PREVIEW_MODULE, type ComponentPreviewSpec } from '@shared/component-preview';
+import { PREVIEW_COMPONENT_STYLES, PREVIEW_META, PREVIEW_MODULE, PREVIEW_NODE_ID, previewCtx, type ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
 import { siteDirection, siteLanguage } from '@shared/languages';
 import { catalogueComponent } from '@catalogue/index';
 import { namesFormFields } from '@catalogue/foundation/form';
-import { installComponent, makeInstance } from '@engine/install';
+import { defaultProps, installComponent } from '@engine/install';
 import { normalizeProp } from '@engine/values';
 import { formDefaults, settleFormKeys } from '@engine/form-keys';
 import { RUNTIME_DIR, STYLES_DIR, FONTS_DIR, generateIsolatedInstance, generateLibrary, type FileMap } from './index';
 import { iconsJs } from './runtime-files';
 
-/** The ID of the one instance a preview shows. */
-export const PREVIEW_NODE_ID = 'preview';
-
-/** The identity context of a preview's markup (`data-so-ctx`), told apart from a page's ("page:…") and the shell's. */
-export const previewCtx = (definitionId: string) => `preview:${definitionId}`;
+export { PREVIEW_NODE_ID, previewCtx };
 
 export type ComponentPreview = { files: FileMap; definitionId: string; name: string } | { error: string };
 
@@ -62,9 +58,10 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
     variants[axis] = option;
   }
 
-  // Made as inserting it on a page makes a placement: the defaults with list items of their own, then the sample
-  // values checked and stored as an edit stores them, and the fields of a new form given keys of their own.
-  const node: InstanceNode = { ...makeInstance(def, {}, variants), id: PREVIEW_NODE_ID };
+  // Made as inserting it on a page makes a placement, but with the design's own list items, under their own IDs: the
+  // same in every preview of it, so an item picked in Component Studio is still there after the next edit. Then the
+  // sample values checked and stored as an edit stores them, and the fields of a new form given keys of their own.
+  const node: InstanceNode = { id: PREVIEW_NODE_ID, kind: 'instance', definitionId: def.id, props: defaultProps(def), ...(Object.keys(variants).length ? { variants } : {}) };
   for (const [name, value] of Object.entries(spec.props ?? {})) {
     const schema = Object.hasOwn(def.properties, name) ? def.properties[name] : undefined;
     if (!schema) return { error: `"${def.name}" has no property "${name}".` };

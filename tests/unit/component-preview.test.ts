@@ -60,6 +60,20 @@ describe('isolated component preview files', () => {
     for (const path of out.files.keys()) expect(path).not.toMatch(/styles\/(tokens|theme|site)\.css$|\/fonts\//);
   });
 
+  it('shows the design’s own list items under their own IDs, the same in every preview of it', () => {
+    const state = starter();
+    const id = installComponent(state, 'features.grid');
+    const def = state.components[id];
+    const list = Object.entries(def.properties).find(([, s]) => s.type === 'list' && !s.feed && s.default.length);
+    expect(list).toBeDefined();
+    const ids = (list![1].default as Array<{ id: string }>).map((it) => it.id);
+    const first = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
+    const second = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
+    // Component Studio keeps an item picked across edits only while the next preview names it the same way.
+    expect(second).toBe(first);
+    for (const itemId of ids) expect(first).toContain(JSON.stringify(itemId).slice(1, -1));
+  });
+
   it('renders each variant choice, and an axis left out keeps its default', () => {
     const state = starter();
     const id = installComponent(state, 'features.grid');

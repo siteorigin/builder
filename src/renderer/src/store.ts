@@ -14,6 +14,7 @@ import type { LayerSet } from './lib/layer-set';
 import type { PostRef } from './lib/posts';
 import { notePlace, type PagePlaces } from './lib/page-place';
 import type { TemplateMode } from './lib/template-view';
+import type { DefinitionMode } from './lib/studio';
 
 export const api = window.builder;
 
@@ -186,8 +187,8 @@ export interface State {
   pendingSave: number;
   modal: Modal;
   toasts: Toast[];
-  /** Definition editing mode: the project-owned definition being edited. */
-  definitionMode: { definitionId: string; returnPageId: string } | null;
+  /** Definition editing mode: the project-owned definition being edited, and in Component Studio how it is shown. */
+  definitionMode: DefinitionMode;
   /**
    * A collection's layout being edited on the canvas, shown on one of its entries (lib/template-view). The page that
    * was open stays `pageId`, shown again when the layout is closed; opening a page closes it.

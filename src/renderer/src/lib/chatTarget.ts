@@ -7,8 +7,7 @@
 import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { inDefinition, placementsOn, refExists, refLabel } from './model';
-
-type DefinitionMode = { definitionId: string; returnPageId: string } | null;
+import { NEW_STUDIO, type DefinitionMode } from './studio';
 
 export interface ComposerScope {
   /** The page the editor shows; while a component is edited everywhere, the page it is shown on. */
@@ -118,13 +117,16 @@ export function retryView(
     if (!def) return { ...leave, definitionMode: null, selection: null, scope, missing: ctx.component?.name ?? ctx.selectionLabel ?? 'The component' };
     const selOk = !!ctx.selection && inDefinition(ctx.selection, def.id) && resolves(state, ctx.selection);
     // The canvas shows the design through a placement: on the request's page, else the one open now, else the first
-    // page that has one. A design placed nowhere stays on the request's page, editable through Layers.
+    // page that has one. A design placed nowhere opens in Component Studio, which shows it on its own; so does one
+    // the author is looking at there already, as they were looking at it.
     const shows = (id: string | null | undefined): id is string => !!id && Object.hasOwn(state.pages, id) && placementsOn(state, def.id, id).length > 0;
     const fallback = pageOk ? ctx.pageId : (now.pageId ?? state.site.homePageId);
-    const pageId = [ctx.pageId, now.pageId, ...state.site.pageOrder].find(shows) ?? fallback;
+    const placed = [ctx.pageId, now.pageId, ...state.site.pageOrder].find(shows);
+    const pageId = placed ?? fallback;
+    const studio = (now.definitionMode?.definitionId === def.id ? now.definitionMode.studio : undefined) ?? (placed ? undefined : NEW_STUDIO);
     return {
       pageId,
-      definitionMode: { definitionId: def.id, returnPageId: now.definitionMode?.returnPageId ?? now.pageId ?? pageId },
+      definitionMode: { definitionId: def.id, returnPageId: now.definitionMode?.returnPageId ?? now.pageId ?? pageId, ...(studio ? { studio } : {}) },
       selection: selOk ? ctx.selection : null,
       scope,
       missing: ctx.selection && !selOk ? (ctx.selectionLabel ?? 'The selected element') : null
