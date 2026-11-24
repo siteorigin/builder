@@ -5,7 +5,7 @@
  */
 import type { ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, NodeTree, OwnerRef, ProjectState, RichListType, RichSpan, RichText } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { cleanBlocks, cleanSpans, isListBlock, toRichText } from '@shared/richtext';
+import { cleanBlocks, cleanSpans, isImageBlock, isListBlock, toRichText } from '@shared/richtext';
 import { renderedContent, type ContentSource, type RenderedContent } from '@generator/checks';
 import { applyOperations } from '@engine/apply';
 import { normalizeLink } from '@engine/values';
@@ -260,7 +260,8 @@ function partsOf(state: ProjectState, f: ContentField): Part[] {
   if (!f.rich) return typeof f.value === 'string' ? [{ path: 't', kind: 'text', text: f.value }] : [];
   const parts: Part[] = [];
   richOf(f).forEach((b, block) => {
-    const runs = isListBlock(b) ? b.items.map((spans, item) => ({ spans, item })) : [{ spans: b.spans, item: undefined }];
+    // A picture between paragraphs (an article's) holds no words of its own to find.
+    const runs: Array<{ spans: RichSpan[]; item: number | undefined }> = isListBlock(b) ? b.items.map((spans, item) => ({ spans, item })) : isImageBlock(b) ? [] : [{ spans: b.spans, item: undefined }];
     for (const { spans, item } of runs) {
       const path = item === undefined ? `b${block}` : `b${block}.${item}`;
       parts.push({ path, kind: 'text', text: spans.map((s) => s.text).join(''), block, item, spans });
@@ -562,7 +563,7 @@ function replaceIn(state: ProjectState, f: ContentField, matches: ContentMatch[]
   const blocks = structuredClone(richOf(f));
   const spansAt = (p: Part): RichSpan[] => {
     const b = blocks[p.block!];
-    return isListBlock(b) ? b.items[p.item!] : b.spans;
+    return isListBlock(b) ? b.items[p.item!] : isImageBlock(b) ? [] : b.spans;
   };
   const changes: ContentChange[] = [];
   // Destinations first, each over the spans its run covered before any change: they keep every span's words, so

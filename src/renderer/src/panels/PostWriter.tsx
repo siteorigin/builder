@@ -107,7 +107,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       new PostDraft({
         read: () => (root.current ? readArticle(root.current, getState().snapshot?.state ?? state) : agreed.current),
         save: async (body) => {
-          let from = base.current;
+          let from: typeof base.current | null = base.current;
           // After a save of its own, the writer's starting point is the project from that save on.
           if (landedAt.current) {
             const now = getState().snapshot;

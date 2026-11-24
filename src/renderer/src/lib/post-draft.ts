@@ -157,7 +157,7 @@ export class PostDraft {
         this.close();
         return false;
       }
-      this.problemNow = outcome;
+      this.problemNow = outcome as DraftProblem;
       this.emit();
       return false;
     }

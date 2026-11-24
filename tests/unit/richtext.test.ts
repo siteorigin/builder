@@ -644,9 +644,11 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
     const build = (source: string, name: string) =>
       compile(source, { filename: `${name}.svelte`, generate: 'server', runes: true })
         .js.code.replace(/'\.\/Link\.svelte'|"\.\/Link\.svelte"/g, "'./Link.js'")
+        .replace(/'\.\/Image\.svelte'|"\.\/Image\.svelte"/g, "'./Image.js'")
         .replace(/'\$app\/paths'|"\$app\/paths"/g, "'./paths.js'");
     writeFileSync(join(dir, 'paths.js'), 'export const resolve = (p) => p; export const asset = (p) => p;\n');
     writeFileSync(join(dir, 'Link.js'), build(LINK_SVELTE, 'Link'));
+    writeFileSync(join(dir, 'Image.js'), build(IMAGE_SVELTE, 'Image'));
     writeFileSync(join(dir, 'RichText.js'), build(RICHTEXT_SVELTE, 'RichText'));
     RichTextView = (await import(/* @vite-ignore */ join(dir, 'RichText.js'))).default;
   });
@@ -683,6 +685,22 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
       s,
       'Body'
     );
+
+  it('renders an article\'s section headings, and its pictures as figures with their captions (#395)', () => {
+    const t = fresh();
+    t.assets.assets.img_a = { id: 'img_a', name: 'Kiln', file: 'static/assets/img_a-1a2b3c4d.png', mime: 'image/png', bytes: 10, hash: 'h', kind: 'image', createdAt: '2026-01-01T00:00:00.000Z', width: 800, height: 600 };
+    const value: RichText = [
+      { type: 'h2', spans: [{ text: 'Firing' }] },
+      { type: 'image', assetId: 'img_a', alt: 'The kiln at night', caption: 'Cone 6 & <hot>' },
+      { type: 'image', assetId: 'img_a', alt: 'Unseen', decorative: true }
+    ];
+    const out = render(RichTextView, { props: { value: resolveRichText(value, { state: t }) } }).body.replace(/<!--[\s\S]*?-->/g, '');
+    expect(out).toContain('<h2>Firing</h2>');
+    expect(out).toMatch(/<figure class="so-rich__figure"><img[^>]*alt="The kiln at night"/);
+    expect(out).toContain('<figcaption>Cone 6 &amp; &lt;hot></figcaption>');
+    // A decorative picture is described as nothing, and has no caption to show.
+    expect(out).toMatch(/<figure class="so-rich__figure"><img[^>]*alt=""[^>]*\/>\s*<\/figure>/);
+  });
 
   it('renders clean semantic HTML', () => {
     const out = html(everything()).replace(/<!--[\s\S]*?-->/g, '');

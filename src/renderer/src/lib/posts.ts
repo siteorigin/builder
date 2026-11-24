@@ -2,7 +2,8 @@
  * The Posts workspace: a collection's entries listed for finding and sorting, and the operations its buttons send.
  * Plain functions over the project, tested without a renderer; the panel and the writer call them.
  */
-import type { Collection, EditOperation, EntryDoc, ProjectState } from '@shared/types';
+import type { Collection, EntryDoc, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, orderedEntries } from '@shared/collections';
 import { newId } from '@shared/ids';
 import type { PostRef } from '../store';

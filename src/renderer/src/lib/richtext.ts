@@ -7,7 +7,7 @@
  * at once, and an asterisk is just a character. Links are read back by destination, so a page link keeps its ID.
  */
 import type { GraphNode, LinkValue, RichBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
-import { asParagraphList, cleanBlocks, isListBlock, linkFromTarget, mergeLists, sameRichText, toRichText, type RichPages } from '@shared/richtext';
+import { asParagraphList, cleanBlocks, isImageBlock, isListBlock, linkFromTarget, mergeLists, sameRichText, toRichText, type RichPages } from '@shared/richtext';
 
 /** A text node, or an element by tag name with its children. `b` and `i` carry an inline style's bold or
  *  italic (true) or its explicit removal (false), as the browser's own commands can leave them. `check` marks a
@@ -177,7 +177,7 @@ export function storedEdit(node: GraphNode | undefined, current: unknown, next: 
   if (sameRichText(asParagraphList(shown, kind), shown)) return next;
   if (!next.length || !next.every((b) => b.type === kind && isListBlock(b))) return next;
   const items = next.flatMap((b) => (b as RichListBlock).items);
-  const before = shown.flatMap((b) => (isListBlock(b) ? b.items.map((spans) => ({ spans, item: true })) : [{ spans: b.spans, item: false }]));
+  const before = shown.flatMap((b) => (isListBlock(b) ? b.items.map((spans) => ({ spans, item: true })) : isImageBlock(b) ? [] : [{ spans: b.spans, item: false }]));
   const keys = before.map((b) => JSON.stringify(b.spans));
   const itemKeys = items.map((spans) => JSON.stringify(spans));
   const matched = alignItems(keys, itemKeys);
