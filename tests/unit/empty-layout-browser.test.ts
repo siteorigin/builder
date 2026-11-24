@@ -3,7 +3,8 @@
  * site with an empty Grid, an empty Row and an empty Section, as the editor's variant, mounted in a frame of a
  * stand-in editor with the real preview bridge. In Edit the Grid shows a labelled frame tall enough to pick, its
  * columns ruled where its gaps are, and a click on it reports the Grid; Preview shows the page as visitors get it:
- * the Grid with no height, no frame, and no placeholder in the empty slot at all.
+ * the Grid with no height, no frame, and no placeholder in the empty slot at all. An empty Gallery and Carousel
+ * (issue #577) show a box where their images will go in Edit, and nothing at all in Preview.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { posix, resolve } from 'node:path';
@@ -25,7 +26,7 @@ const HOME = 'src/routes/+page.svelte';
 
 /**
  * A blank site whose Home has a Section holding an empty Grid and an empty Row, then a component of the site's own
- * (with a property called "document") holding an empty Section, and a Section left empty.
+ * (with a property called "document") holding an empty Section, a Section left empty, and an empty Gallery and Carousel.
  */
 function site() {
   let s: ProjectState = createStarterState('blank', 'Frames', false);
@@ -47,7 +48,9 @@ function site() {
   r = applyOperations(r.state, [{ type: 'component.createFromNode', owner, nodeId: stack, name: 'Holder' }]);
   s = applyOperations(r.state, [
     { type: 'component.setPropSchema', definitionId: r.results[0].definitionId as string, prop: 'document', schema: { type: 'string', label: 'Document', default: 'Brochure' } },
-    { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }
+    { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' },
+    { type: 'node.insert', owner, parentId: null, componentId: 'media.gallery' },
+    { type: 'node.insert', owner, parentId: null, componentId: 'media.carousel' }
   ]).state;
   return { s, grid, row };
 }
@@ -100,6 +103,8 @@ type Box = { width: number; height: number; label: string; outline: string; rule
 const BOX = (id: string) =>
   `(() => { const e = ${el(id)}; const r = e.getBoundingClientRect(); const cs = getComputedStyle(e); return { width: r.width, height: r.height, label: getComputedStyle(e, '::before').content, outline: cs.outlineStyle, rule: cs.columnRuleStyle, tracks: cs.gridTemplateColumns === 'none' ? [] : cs.gridTemplateColumns.split(' ').map(parseFloat), gap: parseFloat(cs.columnGap) || 0, padLeft: parseFloat(cs.paddingLeft) || 0 }; })()`;
 const MARKERS = `document.querySelectorAll('[data-so-slot-empty], [data-so-editor-only]').length`;
+/** Each empty list of images' placeholder: what it says, and how big it is drawn. */
+const LISTS = `[...document.querySelectorAll('[data-so-list-empty]')].map((m) => { const r = m.getBoundingClientRect(); return { list: m.getAttribute('data-so-list-empty'), text: m.textContent, height: r.height, width: r.width, border: getComputedStyle(m).borderTopStyle }; })`;
 /**
  * Run in a blank page on [png, the content box's left offset, height]: the x offsets inside the content box where a
  * row across the middle of the picture differs from the page behind (read just inside the first column).
@@ -246,8 +251,9 @@ describe.skipIf(!browserInstalled)('empty containers and slots in the editor pre
   it('shows the page as visitors get it in Preview, and the frames and slot placeholders again back in Edit', async () => {
     const { page, site, close } = await open();
     try {
-      // The page's empty Section, and the one in the component (placed there, whatever its own properties are called).
-      await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(2);
+      // The page's empty Section, the one in the component (placed there, whatever its own properties are called), and
+      // the empty Gallery's and Carousel's lists.
+      await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(4);
       const heights = await site.evaluate<number[]>(`[...document.querySelectorAll('[data-so-slot-empty]')].map((m) => m.getBoundingClientRect().height)`);
       expect(heights.length === 2 && heights.every((h) => h >= 72), JSON.stringify(heights)).toBe(true);
 
@@ -261,7 +267,34 @@ describe.skipIf(!browserInstalled)('empty containers and slots in the editor pre
 
       await mode(page, site, 'edit');
       expect((await box(site, ids.grid)).height).toBeGreaterThanOrEqual(72);
-      await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(2);
+      await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(4);
+    } finally {
+      await close();
+    }
+  });
+
+  it('shows where an empty Gallery’s and Carousel’s images will go in Edit, and nothing of it in Preview', async () => {
+    const { page, site, close } = await open();
+    try {
+      type List = { list: string; text: string; height: number; width: number; border: string };
+      await expect.poll(() => site.evaluate<number>(`document.querySelectorAll('[data-so-list-empty]').length`)).toBe(2);
+      const lists = await site.evaluate<List[]>(LISTS);
+      expect(lists.map((l) => l.list)).toEqual(['images', 'slides']);
+      expect(lists[0].text).toContain('No images yet');
+      expect(lists[1].text).toContain('No slides yet');
+      // A dashed box tall enough to see, across the section's column, that says visitors never see it.
+      for (const l of lists) {
+        expect(l.height, JSON.stringify(l)).toBeGreaterThanOrEqual(160);
+        expect(l.width, JSON.stringify(l)).toBeGreaterThan(300);
+        expect(l.border).toBe('dashed');
+        expect(l.text).toContain('Visitors won’t see this box.');
+      }
+
+      await mode(page, site, 'preview');
+      await expect.poll(() => site.evaluate<number>(`document.querySelectorAll('[data-so-list-empty]').length`)).toBe(0);
+
+      await mode(page, site, 'edit');
+      await expect.poll(() => site.evaluate<number>(`document.querySelectorAll('[data-so-list-empty]').length`)).toBe(2);
     } finally {
       await close();
     }
