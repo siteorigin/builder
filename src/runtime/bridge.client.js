@@ -154,9 +154,8 @@ function holdSelection(widthChanged, before) {
     return;
   }
   const now = performance.now();
-  // Still settling from the last width (a drag through many): the same point is kept. What the browser does to the
-  // scroll position for the new width is not the author scrolling.
-  if (keepHold && now <= keepHold.until) Object.assign(keepHold, { until: now + KEEP_MS, last: null });
+  // Still settling from the last width (a drag through many): the same point is kept.
+  if (keepHold && now <= keepHold.until) keepHold.until = now + KEEP_MS;
   else if (keepSample && keepSample.width === before && sameDesc(keepSample.desc, selected)) keepHold = { ...keepSample, until: now + KEEP_MS, last: null };
   else keepHold = null;
 }
@@ -165,16 +164,16 @@ function heldElement(k) {
   if (k.el.isConnected && findAll(selected).includes(k.el)) return k.el;
   return findAll(selected).filter((e) => itemsOf(e) === k.items)[k.nth] || null;
 }
-/** Where the held point is in the frame now, or null when it cannot be found. */
+/** Where the held point is in the frame now (`y`) and through what (`via`: its landmark or the element), or null. */
 function heldPoint(k, el) {
   if (k.landmark) {
     const l = k.landmark;
     const mark = l.el.isConnected && el.contains(l.el) ? l.el : findAll(l.desc).find((m) => el.contains(m));
     const mb = mark && rectOf(mark);
-    if (mb) return mb.y + l.depth * mb.height;
+    if (mb) return { y: mb.y + l.depth * mb.height, via: 'landmark' };
   }
   const b = rectOf(el);
-  return b ? b.y + k.depth * b.height : null;
+  return b ? { y: b.y + k.depth * b.height, via: 'element' } : null;
 }
 /** Puts the held point back where it showed, before the outlines are measured. */
 function keepInView() {
@@ -186,17 +185,20 @@ function keepInView() {
     return;
   }
   const el = heldElement(k);
-  const y = el && heldPoint(k, el);
-  if (y === null || y === undefined) return;
+  const p = el && heldPoint(k, el);
+  if (!p) return;
+  const y = p.y;
   // Since the last pass the page was scrolled and nothing else moved (a scrollbar dragged, the site's own code): that
-  // has the last word. A scroll that came with a change of layout (the browser keeping its place) is corrected.
-  const scrolled = k.last ? scrollY - k.last.scrollY : 0;
-  if (Math.abs(scrolled) > 1 && Math.abs(y - (k.last.y - scrolled)) <= 1) {
+  // has the last word. A scroll that came with a change of layout (the browser keeping its place), or that only took
+  // the page back up to its new end (content below it gone for a moment), is corrected.
+  const scrolled = k.last && k.last.via === p.via ? scrollY - k.last.scrollY : 0;
+  const end = (document.scrollingElement || document.documentElement).scrollHeight - innerHeight;
+  if (Math.abs(scrolled) > 1 && Math.abs(y - (k.last.y - scrolled)) <= 1 && !(scrolled < 0 && scrollY >= end - 1)) {
     keepHold = null;
     return;
   }
   const delta = y - k.at * innerHeight;
-  let now = y;
+  let now = p;
   if (Math.abs(delta) > 1) {
     const from = scrollY;
     // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
@@ -205,22 +207,29 @@ function keepInView() {
     const after = heldPoint(k, el);
     // A point that does not move with the page (something sticky or fixed) cannot be put back: it is left alone. One
     // the page could not scroll far enough for (its end) is tried again as the page settles.
-    if (after === null || (Math.abs(moved) > 1 && Math.abs(after - (y - moved)) > Math.abs(moved) / 2)) {
+    if (!after || (Math.abs(moved) > 1 && Math.abs(after.y - (y - moved)) > Math.abs(moved) / 2)) {
       keepHold = null;
       return;
     }
     now = after;
   }
-  k.last = { scrollY, y: now };
+  k.last = { scrollY, y: now.y, via: now.via };
 }
 /** Another page or a scroll the editor asked for: what showed before is no longer there to keep. */
 function stopKeeping() {
   keepHold = null;
   keepSample = null;
 }
-// The author's own scrolling (or a click, a key) just after a change of width is never undone. What shows is measured
-// again as the page scrolls.
-for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => (keepHold = null), { capture: true, passive: true });
+// The author's own scrolling (or a click, a key) just after a change of width is never undone. A wheel, a touch or a
+// press (a scrollbar) also means what showed before may be gone by the next change of width: it is measured afresh.
+// A key alone (a shortcut to the command menu, then a width from it) leaves what shows as it is.
+for (const type of ['wheel', 'touchstart', 'pointerdown']) {
+  window.addEventListener(type, () => {
+    stopKeeping();
+    if (selected) scheduleRects();
+  }, { capture: true, passive: true });
+}
+window.addEventListener('keydown', () => (keepHold = null), { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
 // The list item open in the editor's inspector, revealed while it is edited

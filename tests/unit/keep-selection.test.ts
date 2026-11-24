@@ -130,7 +130,7 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
   };
 
   beforeEach(async () => {
-    await inFrame(`win.remount = false; for (const id of ['hero', 'footer']) doc.getElementById(id).style.height = '';`);
+    await inFrame(`win.remount = false; for (const id of ['hero', 'footer']) Object.assign(doc.getElementById(id).style, { height: '', display: '' });`);
     await send('reveal', { target: null });
     await send('mode', { mode: 'edit' });
     await send('track', { selected: null, hovered: null });
@@ -259,6 +259,20 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     await resize(PHONE);
     await settled();
     expect(Math.abs((await share('gallery')) - at) * PHONE.height).toBeLessThan(2);
+  });
+
+  it('puts it back after content below it goes for a moment and the page’s end pulls the page up', async () => {
+    await send('track', { selected: sel('plain'), hovered: null });
+    // Only the bottom 300px of the section shows, the footer below it: the point kept is 150px down the frame.
+    await placeAt('plain', -1100);
+    const b = await box('plain');
+    const depth = (150 - b.top) / (b.bottom - b.top);
+    // Two frames into the new width, the footer goes, so the page ends above the frame's bottom, then comes back.
+    await afterNextResize(`doc.getElementById('footer').style.display = 'none'; win.setTimeout(() => { doc.getElementById('footer').style.display = ''; }, 50);`);
+    await resize(PHONE);
+    await settled();
+    const a = await box('plain');
+    expect(Math.abs(a.top + depth * (a.bottom - a.top) - (150 / DESKTOP.height) * PHONE.height)).toBeLessThan(2);
   });
 
   it('leaves free scrolling alone when nothing is selected', async () => {
