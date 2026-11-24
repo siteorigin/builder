@@ -810,6 +810,8 @@ describe('constrained JSON', () => {
     ];
     await run(adapter(), { items });
     expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_schema', 'json_object', undefined]);
+    expect(posts()[0].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS, { compact: true }));
+    expect(posts()[1].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS));
     for (const post of posts()) {
       const messages = post.body.messages as Array<{ role: string; content: string }>;
       expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
@@ -890,6 +892,27 @@ describe('constrained JSON', () => {
     expect(doneOf(await run(adapter())).toolCalls).toHaveLength(1);
     // A refusal of the schema's content gets the schema written out in full, still as a grammar.
     expect(posts().at(-1)?.body.response_format).toMatchObject({ type: 'json_schema', json_schema: { schema: envelopeSchema(TOOLS) } });
+  });
+
+  it('takes a structured parameter over wording that would otherwise step down, inside or beside the error', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar for model', param: 'model' } }) }, { status: 400, body: JSON.stringify({ object: 'error', message: 'JSON schema conversion failed', param: 'model', code: 400 }) });
+    expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    expect(posts()).toHaveLength(2);
+  });
+
+  it('never steps down for a model whose name merely contains a word', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'Invalid model name: schema-demo' } }) }, envelopeReply('read_page', { pageId: 'p' }));
+    expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    expect(posts()).toHaveLength(1);
+    await run(adapter());
+    expect(posts()[1].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS, { compact: true }));
+  });
+
+  it('skips the full schema when the wording refuses the format itself', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'response_format of type json_schema is not supported' } }) }, envelopeReply('read_page', { pageId: 'p' }));
+    expect(doneOf(await run(adapter())).toolCalls[0].name).toBe('read_page');
+    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_object']);
   });
 
   it('gives up the grammar at once when the server refuses the format itself', async () => {
@@ -1287,10 +1310,40 @@ describe('compact schemas on the wire (#364)', () => {
   });
 
   it('keeps the compact schema when a refusal is about something else', async () => {
-    server.script({ status: 400, body: JSON.stringify({ error: { code: 400, message: 'request (9000 tokens) exceeds the available context size (4096 tokens), try increasing it', type: 'exceed_context_size_error', n_prompt_tokens: 9000, n_ctx: 4096 } }) });
-    expect(errorOf(await run(adapter(), { tools: SHARED }))).toMatchObject({ code: 'invalid_request', context: { windowTokens: 4096, promptTokens: 9000 } });
-    expect(posts()).toHaveLength(1);
+    server.script(
+      { status: 400, body: JSON.stringify({ error: { code: 400, message: 'request (9000 tokens) exceeds the available context size (4096 tokens), try increasing it', type: 'exceed_context_size_error', n_prompt_tokens: 9000, n_ctx: 4096 } }) },
+      // Worded so it would also read as a schema refusal: the context check comes first.
+      { status: 400, body: JSON.stringify({ error: { message: 'Context length exceeded after JSON schema conversion' } }) },
+      envelopeReply('set_logo', logo)
+    );
+    const a = adapter();
+    expect(errorOf(await run(a, { tools: SHARED }))).toMatchObject({ code: 'invalid_request', context: { windowTokens: 4096, promptTokens: 9000 } });
+    expect(errorOf(await run(a, { tools: SHARED })).code).toBe('invalid_request');
+    expect(posts()).toHaveLength(2);
+    // The same adapter still sends the compact form.
+    await run(a, { tools: SHARED });
+    expect(posts().map((_, i) => !!schemaAt(i).$defs)).toEqual([true, true, true]);
+  });
+
+  it.each([400, 422])('steps on to JSON mode when the full schema is refused the same way (%i)', async (status) => {
+    const refusal = { status, body: JSON.stringify({ error: 'invalid JSON schema in format' }) };
+    server.script(refusal, refusal, envelopeReply('set_logo', logo));
+    expect(doneOf(await run(adapter(), { tools: SHARED })).toolCalls[0].name).toBe('set_logo');
+    expect(posts().map((p) => p.body.response_format?.type)).toEqual(['json_schema', 'json_schema', 'json_object']);
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED));
+  });
+
+  it('writes the schema out in full when the stream reports it could not build the compact grammar', async () => {
+    server.script({ frames: [`data: ${JSON.stringify({ error: { code: 500, message: 'Failed to compile grammar: unresolved $ref #/$defs/d0' } })}\n\n`] }, envelopeReply('set_logo', logo));
+    expect(doneOf(await run(adapter(), { tools: SHARED })).toolCalls[0].name).toBe('set_logo');
     expect(schemaAt(0).$defs).toBeDefined();
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED));
+  });
+
+  it('reports a stream error that is not about the schema as it is', async () => {
+    server.script({ frames: [`data: ${JSON.stringify({ error: { code: 500, message: 'Model crashed' } })}\n\n`] });
+    expect(errorOf(await run(adapter(), { tools: SHARED })).message).toMatch(/crashed/);
+    expect(posts()).toHaveLength(1);
   });
 
   it('steps through every level, stream options included, within one turn', async () => {
@@ -1309,6 +1362,8 @@ describe('compact schemas on the wire (#364)', () => {
       ['json_object', false, false],
       [undefined, false, false]
     ]);
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED, { compact: true }));
+    expect(schemaAt(2)).toEqual(envelopeSchema(SHARED));
   });
 
   describe('reads the same tool call whatever the server enforces', () => {

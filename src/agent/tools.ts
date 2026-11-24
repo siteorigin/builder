@@ -104,18 +104,18 @@ const DESCRIPTIONS: Record<ToolName, string> = {
  * the name and signature say it all. A tool missing here keeps its description.
  */
 const BRIEFS: Partial<Record<ToolName, string>> = {
-  read_project: 'Pages, header/footer and project components. sections adds site tokens, or the catalogue: every component with its properties, parts and variants, and the icon names.',
-  read_page: 'Its sections with props (and list item IDs), variants and styles.',
-  inspect_element: 'One node: props, property schema, style parts, variants and slots. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
-  search_components: '',
-  read_component: "A component's property schema, parts, variants, slots and examples.",
+  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds site tokens, or the catalogue: every component with its properties, parts and variants, and the icon names.',
+  read_page: 'Its sections with props (and list item IDs), variants, styles and nested content.',
+  inspect_element: 'One node: props, property schema, parts with their style controls, variants, slots and place in the tree. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
+  search_components: 'Theme components by keywords, with their componentIds.',
+  read_component: "A component's property schema, parts, variants, slots and examples. Read it before using an unfamiliar component.",
   search_assets: 'Images by name and description, each with its assetId (names can repeat). You cannot see images.',
   read_source: "A component's Svelte source. Only project code components can be patched.",
   apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the hash from read_source.',
-  inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, images that failed to load (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors.',
+  inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.',
   validate_project: '"schema" checks references, routes and structure; "component" also compiles every component.',
   request_clarification:
-    'Ask the user one question and wait for the answer: when they ask to be interviewed or to choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
+    'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
@@ -220,7 +220,7 @@ function askTools(codeEnabled: boolean): ToolDefinition[] {
     const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
     delete schema.$schema;
     // A question asks back only when it is ambiguous, which the question's own instructions say.
-    return { name, ...describe(name), ...(name === 'request_clarification' ? { brief: 'Ask the author one short question and wait for the answer.' } : {}), parameters: schema };
+    return { name, ...describe(name), ...(name === 'request_clarification' ? { brief: 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' } : {}), parameters: schema };
   });
 }
 

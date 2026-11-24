@@ -473,7 +473,12 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
     ...(inst?.kind === 'instance' ? { currentProps: selectedProps(def, inst.props, state.pages) } : {}),
     ...(itemReach ? { styleReach: itemReach } : {}),
     ...(feed
-      ? { note: `This shows a page's article details, filled in from that page: change its title, articleDate, byline or excerpt with page.update on pageId ${itemId ?? '(the article)'}, never instance.setProp. Style the part with node.setStyle using partId.` }
+      ? {
+          note:
+            opts.operations === false
+              ? `This shows a page's article details, filled in from that page: they change on page ${itemId ?? '(the article)'}, not here. Style the part with style_selected_element.`
+              : `This shows a page's article details, filled in from that page: change its title, articleDate, byline or excerpt with page.update on pageId ${itemId ?? '(the article)'}, never instance.setProp. Style the part with node.setStyle using partId.`
+        }
       : opts.operations === false
         ? itemReach
           ? { note: 'Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem.' }

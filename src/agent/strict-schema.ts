@@ -273,10 +273,14 @@ export function dropEnumTypes(schema: JsonSchema): JsonSchema {
  */
 export function shareDefinitions(schema: JsonSchema): JsonSchema {
   if (DEFS_KEY in schema) return schema;
+  // Older llama.cpp names a root property's rule after the property, and resolves a reference by its last segment:
+  // a definition named like one would silently take that rule instead of its own.
+  const rootKeys = new Set(isRecord(schema.properties) ? Object.keys(schema.properties).map((k) => k.replace(/[^A-Za-z0-9-]+/g, '-')) : []);
   let root = schema;
   const defs: Record<string, JsonSchema> = {};
-  for (let n = 0; ; n++) {
-    const name = `d${n}`;
+  for (let next = 0; ; ) {
+    while (rootKeys.has(`d${next}`)) next++;
+    const name = `d${next++}`;
     const ref = JSON.stringify({ $ref: `${DEF_PREFIX}${name}` }).length;
     const seen = new Map<string, number>();
     const count = (node: JsonSchema) => {
@@ -301,7 +305,11 @@ export function shareDefinitions(schema: JsonSchema): JsonSchema {
     for (const [k, def] of Object.entries(defs)) if (k !== name) defs[k] = mapChildren(def, replace);
     root = replace(root);
   }
-  return Object.keys(defs).length ? { ...root, [DEFS_KEY]: defs } : root;
+  if (!Object.keys(defs).length) return schema;
+  const shared = { ...root, [DEFS_KEY]: defs };
+  // The `$defs` wrapper itself is not in the sums above: keep the shared form only when it is actually smaller.
+  const size = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).length;
+  return size(shared) < size(schema) ? shared : schema;
 }
 
 /** The schema with every shared definition written out in place again, and no `$defs`. */
@@ -324,8 +332,12 @@ export function findForbiddenShapes(schema: unknown, path = '$'): string[] {
   const { [DEFS_KEY]: defs, ...rest } = schema;
   if (!isRecord(defs)) return [`${path}: ${DEFS_KEY} is not a set of definitions`, ...shapes(rest, path, null)];
   const problems: string[] = [];
+  // Only what shareDefinitions writes: definitions that are schemas of their own, used from inside the root.
+  // Older llama.cpp loses a definition that is only a reference, or one reached from a root that is one.
+  if (sharedName(rest) !== null) problems.push(`${path}: the root is only a reference`);
   for (const [name, def] of Object.entries(defs)) {
     if (!DEF_NAME.test(name)) problems.push(`${path}.${DEFS_KEY}.${name}: definition name is not plain`);
+    if (isRecord(def) && sharedName(def) !== null) problems.push(`${path}.${DEFS_KEY}.${name}: definition is only a reference`);
     problems.push(...shapes(def, `${path}.${DEFS_KEY}.${name}`, defs));
     if (reaches(defs, name, name, new Set())) problems.push(`${path}.${DEFS_KEY}.${name}: definition refers to itself`);
   }

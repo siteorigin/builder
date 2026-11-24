@@ -569,12 +569,12 @@ describe('what a constrained local run sends first (#364)', () => {
    * one should be a deliberate decision.
    */
   const BUDGETS = {
-    site: { code: false, baseline: 42_388, budget: 30_000 },
-    'site (code)': { code: true, baseline: 43_774, budget: 31_500 },
+    site: { code: false, baseline: 42_388, budget: 30_500 },
+    'site (code)': { code: true, baseline: 43_774, budget: 31_800 },
     section: { code: false, baseline: 12_245, budget: 9_400 },
     part: { code: false, baseline: 9_523, budget: 7_300 },
-    ask: { code: false, baseline: 13_138, budget: 9_400 },
-    'ask (code)': { code: true, baseline: 13_736, budget: 9_900 }
+    ask: { code: false, baseline: 13_138, budget: 9_600 },
+    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 }
   } as const;
   const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
 
@@ -589,17 +589,24 @@ describe('what a constrained local run sends first (#364)', () => {
     await run('Hello', selection, selection ? 'Hero' : null, label.startsWith('ask') ? 'ask' : undefined);
     const body = server.requests.find((r) => r.method === 'POST')!.body;
     const sent = { messages: bytes(body.messages), response_format: bytes(body.response_format) };
-    expect(sent.messages + sent.response_format, JSON.stringify(sent)).toBeLessThanOrEqual(budget);
-    expect(1 - budget / baseline).toBeGreaterThan(0.23);
-    // Still the strict grammar, in its compact form, and the context unindented.
+    const total = sent.messages + sent.response_format;
+    expect(total, JSON.stringify(sent)).toBeLessThanOrEqual(budget);
+    expect(1 - total / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
+    // Still the strict grammar, in its compact form, and the context unindented, with all it said before.
     expect(body.response_format.type).toBe('json_schema');
+    expect(JSON.stringify(body.response_format.json_schema.schema)).not.toContain('"type":"string","enum"');
     expect(findForbiddenShapes(body.response_format.json_schema.schema)).toEqual([]);
-    expect(body.messages.at(-1).content).toMatch(/<editor_context>\n\{"currentPage":/);
+    const context = JSON.parse(/<editor_context>\n(\{.*\})\n<\/editor_context>/s.exec(body.messages.at(-1).content)![1]);
+    expect(context.selection === null, label).toBe(!selection);
+    if (selection) expect(context.selection.currentProps ?? context.selection.node.props).toHaveProperty('heading');
+    // A question can still be about code; an edit run without code has no code tool to explain.
+    expect('customCode' in context, label).toBe(code || label.startsWith('ask'));
   });
 
   it('makes the same change from a constrained reply as from a native call', async () => {
     const results: unknown[] = [];
     for (const toolMode of ['constrained-json', 'native'] as const) {
+      const sentBefore = server.requests.length;
       const { session, run } = await setup({ toolMode });
       const home = session.state.pages[session.state.site.homePageId];
       const ref: ElementRef = { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] };
@@ -607,6 +614,10 @@ describe('what a constrained local run sends first (#364)', () => {
       server.script(...(toolMode === 'native' ? [toolCallReply('update_selected_props', args), textReply('Done.')] : [envelopeReply('update_selected_props', args), envelopeReply('finish', { message: 'Done.' })]));
       const { result } = await run('Tighten this headline', ref, 'Hero');
       expect(result?.status, toolMode).toBe('completed');
+      // Each in its own form: signatures in the prompt and a grammar, or native tools and the toured prompt.
+      const first = server.requests.slice(sentBefore).find((r) => r.method === 'POST')!.body;
+      if (toolMode === 'native') expect([first.tools?.length > 0, first.messages[0].content.includes('- update_selected_props changes its content')]).toEqual([true, true]);
+      else expect([first.tools, first.response_format.type, first.messages[0].content.includes('\n- update_selected_props {props:')]).toEqual([undefined, 'json_schema', true]);
       const node = session.state.pages[home.id].nodes[home.rootIds[0]] as { props: Record<string, unknown>; variants?: Record<string, string> };
       results.push({ heading: node.props.heading, image: node.props.image, tone: node.variants?.tone });
     }

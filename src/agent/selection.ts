@@ -66,7 +66,7 @@ export const SELECTION_BRIEFS: Record<keyof typeof SELECTION_ARGS, string> = {
   edit_selected_list: 'Update, insert, remove or move one item of a list.',
   edit_selected_table: 'Set a cell, rename a column, or insert, remove or move a row or column, by the IDs in its content.',
   style_selected_element:
-    'scope phone, tablet or desktop styles one screen size, base all. Prefer tokens such as {"token":"space.lg"}. objectPosition is a focal point "X% Y%" (each 0 to 100, one decimal). translateX/Y take a length ("-4px"), scale a factor (1.03), rotate degrees, transformOrigin center or an edge or corner ("top left"), transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration ms, transitionEasing ease, ease-out, linear or smooth. A repeated part (a card) is styled for every item unless itemId names one; null values return it to the shared style.',
+    'scope phone, tablet or desktop styles one screen size, base all. Prefer tokens such as {"token":"space.lg"}. objectPosition is a focal point "X% Y%" across and down (each 0 to 100, at most one decimal, such as "50% 20%"). translateX/Y take a length ("-4px"), scale a factor (1.03), rotate degrees, transformOrigin center or an edge or corner ("top left"), transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration ms, transitionEasing ease, ease-out, linear or smooth. A repeated part (a card) is styled for every item unless itemId names one; null values return it to the shared style.',
   request_wider_scope: 'Ask permission to change more than the selected element.'
 };
 

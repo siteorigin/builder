@@ -20,15 +20,22 @@ const BARE_FIELD = /^[A-Za-z_][\w-]*$/;
 const MIN_TABLE_ROWS = 3;
 
 const key = (schema: JsonSchema) => JSON.stringify(schema);
-const isPlainString = (schema: JsonSchema) => schema.type === 'string' && !Array.isArray(schema.enum);
-
-export function isOpenObject(schema: JsonSchema): boolean {
-  const props = schema.properties as Record<string, unknown> | undefined;
-  return schema.type === 'object' && !!props && Object.keys(props).length === 1 && OPEN_VALUE_KEY in props;
-}
-
 const fieldsOf = (schema: JsonSchema) => Object.entries(schema.properties as Record<string, JsonSchema>);
 const requiredOf = (schema: JsonSchema) => new Set((schema.required as string[] | undefined) ?? []);
+const isPlainString = (schema: JsonSchema) => schema.type === 'string' && !Array.isArray(schema.enum);
+
+/** The one-key object `toStrictSchema` carries an open value in: `{ "$json": "<JSON text>" }`. */
+export function isOpenObject(schema: JsonSchema): boolean {
+  const props = schema.properties as Record<string, JsonSchema> | undefined;
+  return schema.type === 'object' && !!props && Object.keys(props).length === 1 && (props[OPEN_VALUE_KEY] as JsonSchema | undefined)?.type === 'string' && requiredOf(schema).has(OPEN_VALUE_KEY);
+}
+
+/** The whole open value: any scalar as it is, or anything structured in the one-key object. */
+function isOpenValue(schema: JsonSchema): boolean {
+  const b = schema.anyOf;
+  return Array.isArray(b) && b.length === 5 && ['string', 'number', 'boolean', 'null'].every((t, i) => key(b[i] as JsonSchema) === key({ type: t })) && isOpenObject(b[4] as JsonSchema);
+}
+
 
 /** The field every branch of a union starts with, required, holding one word that tells the branches apart. */
 function discriminator(schema: JsonSchema): string | null {
@@ -37,6 +44,8 @@ function discriminator(schema: JsonSchema): string | null {
   const objects = branches as JsonSchema[];
   if (!objects.every((b) => b.type === 'object' && !isOpenObject(b) && fieldsOf(b).length > 0)) return null;
   const field = fieldsOf(objects[0])[0][0];
+  // The table's heading names the field as it is.
+  if (!BARE_FIELD.test(field)) return null;
   const values = new Set<string>();
   for (const b of objects) {
     const [name, value] = fieldsOf(b)[0];
@@ -70,10 +79,21 @@ class Renderer {
   /** The names in the order they were chosen, with what each stands for. */
   readonly order: Array<{ name: string; schema: JsonSchema }> = [];
   private taken = new Set<string>();
+  /** Every string value the schemas allow: no name may be spelled like one. */
+  private literals: Set<string>;
   /** Runs of fields written as `...Name`, in the order they were chosen. */
   readonly groups: Array<{ name: string; fields: string[]; defined: boolean }> = [];
   /** Every field list written, after the groups so far, while choosing the next group. */
   recorded: string[][] | null = null;
+
+  constructor(schemas: JsonSchema[]) {
+    this.literals = new Set();
+    const collect = (node: JsonSchema) => {
+      if (Array.isArray(node.enum)) for (const v of node.enum) if (typeof v === 'string') this.literals.add(v);
+      for (const [child] of parts(node, '')) collect(child);
+    };
+    schemas.forEach(collect);
+  }
 
   add(name: string, schema: JsonSchema) {
     this.names.set(key(schema), name);
@@ -83,11 +103,13 @@ class Renderer {
 
   freeName(base: string): string {
     let name = base;
-    for (let n = 2; this.taken.has(name) || RESERVED.has(name.toLowerCase()); n++) name = `${base}${n}`;
+    for (let n = 2; this.taken.has(name) || this.literals.has(name) || RESERVED.has(name.toLowerCase()); n++) name = `${base}${n}`;
     return name;
   }
 
+  /** A value as a bare word when it can be, else as JSON; an object or a list in backticks, so it never reads as a type. */
   private value(v: unknown): string {
+    if (v !== null && typeof v === 'object') return `\`${JSON.stringify(v)}\``;
     return typeof v === 'string' && BARE_VALUE.test(v) && !RESERVED.has(v) && !this.taken.has(v) ? v : JSON.stringify(v);
   }
 
@@ -136,11 +158,8 @@ class Renderer {
     const named = top ? undefined : this.names.get(key(schema));
     if (named) return named;
     if (Array.isArray(schema.enum)) return this.choices(schema.enum);
-    if (Array.isArray(schema.anyOf)) {
-      const branches = schema.anyOf as JsonSchema[];
-      if (branches.some(isOpenObject)) return 'json';
-      return branches.map((b) => this.render(b)).join('|');
-    }
+    if (isOpenValue(schema)) return 'json';
+    if (Array.isArray(schema.anyOf)) return (schema.anyOf as JsonSchema[]).map((b) => this.render(b)).join('|');
     if (isOpenObject(schema)) return 'json-object';
     if (schema.type === 'array') {
       const inner = this.render(schema.items as JsonSchema);
@@ -176,6 +195,7 @@ function indexOfRun(list: string[], run: string[]): number {
 
 /** The schemas directly inside a node, each with the field it describes. */
 function parts(schema: JsonSchema, field: string): Array<[JsonSchema, string]> {
+  if (isOpenValue(schema)) return [];
   if (Array.isArray(schema.anyOf)) return (schema.anyOf as JsonSchema[]).map((b) => [b, field]);
   if (schema.type === 'array') return [[schema.items as JsonSchema, field]];
   if (schema.type === 'object' && !isOpenObject(schema)) return fieldsOf(schema).map(([k, v]) => [v, k]);
@@ -202,7 +222,7 @@ function nameFor(fields: string[], fallback: string): string {
  * always named, so it can be written as a table.
  */
 export function signatures(schemas: JsonSchema[]): { types: string[]; tools: string[] } {
-  const r = new Renderer();
+  const r = new Renderer(schemas);
   // Tables first, from the outside in: their rows are what the other names are counted within.
   const findTables = (node: JsonSchema, field: string) => {
     if (r.names.has(key(node))) return;
@@ -264,8 +284,11 @@ function dependencyOrder(lines: Array<{ name: string; text: string }>): string[]
   const uses = (text: string, name: string) => new RegExp(`(?<![\\w.-])${name}(?![\\w-])`).test(text);
   const place = (line: { name: string; text: string }, path: string[]) => {
     if (placed.has(line.name) || path.includes(line.name)) return;
-    // `...Name` uses Name too; a dot inside a value (hero.split) does not.
-    const body = line.text.slice(line.name.length + 1).replace(/\.\.\.(?=\w)/g, ' ');
+    // `...Name` uses Name too; a dot inside a value (hero.split) does not, and nor does a quoted value.
+    const body = line.text
+      .slice(line.name.length + 1)
+      .replace(/"(?:[^"\\]|\\.)*"|`[^`]*`/g, ' ')
+      .replace(/\.\.\.(?=\w)/g, ' ');
     for (const other of lines) if (other.name !== line.name && uses(body, other.name)) place(other, [...path, line.name]);
     placed.add(line.name);
     out.push(line.text);
@@ -317,5 +340,5 @@ function chooseGroups(r: Renderer, schemas: JsonSchema[]) {
 
 /** The signature of one strict schema on its own, with nothing named. */
 export function signature(schema: JsonSchema): string {
-  return new Renderer().render(schema, true);
+  return new Renderer([schema]).render(schema, true);
 }

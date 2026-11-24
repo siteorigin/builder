@@ -26,11 +26,13 @@ function union(members: Shape[]): Shape {
   return out.length === 1 ? out[0] : { kind: 'union', members: out };
 }
 
-const isOpen = (s: JsonSchema) => s.type === 'object' && Object.keys((s.properties as object) ?? {}).join() === OPEN_VALUE_KEY;
+const isOpen = (s: JsonSchema) => s.type === 'object' && Object.keys((s.properties as object) ?? {}).join() === OPEN_VALUE_KEY && (s.properties as Record<string, JsonSchema>)[OPEN_VALUE_KEY].type === 'string' && ((s.required as string[]) ?? []).includes(OPEN_VALUE_KEY);
+const OPEN_VALUE = toStrictSchema({ type: 'object', properties: { v: {} } }).properties as { v: JsonSchema };
 
 function fromSchema(s: JsonSchema): Shape {
   if (Array.isArray(s.enum)) return { kind: 'values', values: s.enum };
-  if (Array.isArray(s.anyOf)) return (s.anyOf as JsonSchema[]).some(isOpen) ? { kind: 'prim', name: 'json' } : union((s.anyOf as JsonSchema[]).map(fromSchema));
+  if (JSON.stringify(s) === JSON.stringify(OPEN_VALUE.v)) return { kind: 'prim', name: 'json' };
+  if (Array.isArray(s.anyOf)) return union((s.anyOf as JsonSchema[]).map(fromSchema));
   if (isOpen(s)) return { kind: 'prim', name: 'json-object' };
   if (s.type === 'array') return { kind: 'array', items: fromSchema(s.items as JsonSchema) };
   if (s.type === 'object') {
@@ -109,6 +111,12 @@ class Reader {
     }
     if (c === '{') return this.object();
     if (c === '"') return { kind: 'values', values: [this.quoted()] };
+    if (c === '`') {
+      const end = this.text.indexOf('`', this.at + 1);
+      const value = JSON.parse(this.text.slice(this.at + 1, end));
+      this.at = end + 1;
+      return { kind: 'values', values: [value] };
+    }
     const word = this.word();
     if (PRIMS.has(word)) return { kind: 'prim', name: word };
     if (this.defs.has(word)) return this.defs.get(word)!();
@@ -184,12 +192,12 @@ describe('signatures (#364)', () => {
     expect(tools).toEqual(['{headingFont:Font,bodyFont:Font,a:bool,b:bool,c:bool}', '{titleFont:Font}']);
   });
 
-  it('quotes a value spelled like a type name, so it is never read as the type', () => {
+  it('never names a type like an allowed value, so the value reads as itself', () => {
     const tone = { enum: ['default', 'muted', 'inverse'] };
     const s = obj({ tone, other: tone, pick: { enum: ['Tone', 'x'] } });
     const { types, tools } = signatures([s]);
-    expect(types).toEqual(['Tone=default|muted|inverse']);
-    expect(tools[0]).toBe('{tone:Tone,other:Tone,pick:"Tone"|x}');
+    expect(types).toEqual(['Tone2=default|muted|inverse']);
+    expect(tools[0]).toBe('{tone:Tone2,other:Tone2,pick:Tone|x}');
     expectFaithful([s]);
   });
 
@@ -238,5 +246,72 @@ describe('signatures (#364)', () => {
     expect(text).not.toContain('Long A.');
     expect(text).toContain('{"$json":"<its JSON text>"}');
     expect(envelopeInstructions([{ name: 'a', description: 'A.', parameters: { type: 'object', properties: { s: { type: 'string' } } } }])).not.toContain('$json');
+    expect(envelopeInstructions([{ name: 'a', description: 'A.', parameters: { type: 'object', properties: { o: { type: 'object', additionalProperties: true } } } }])).toContain('{"$json":"<its JSON text>"}');
+  });
+
+  it('writes a lone primitive, and an open value only when it is the whole open value', () => {
+    expect(signature(toStrictSchema({ type: 'string' }))).toBe('string');
+    expect(signature(toStrictSchema({ type: 'integer' }))).toBe('int');
+    const nullableRecord = obj({ meta: { anyOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] } });
+    expect(signature(nullableRecord)).toBe('{meta:json-object|null}');
+    // A field named like the open value's key is an ordinary field.
+    const named = obj({ w: { type: 'object', properties: { [OPEN_VALUE_KEY]: { type: 'integer' } }, required: [OPEN_VALUE_KEY] } });
+    expect(signature(named)).toBe('{w:{"$json"!:int}}');
+    expectFaithful([nullableRecord, named, obj({ v: {} })]);
+  });
+
+  it('writes an object or list value in backticks, so it never reads as a type', () => {
+    const literal = toStrictSchema({ type: 'object', properties: { pick: { const: { 'odd key': 1 } }, list: { enum: [[1, 2], 'x'] } } });
+    const typed = obj({ pick: { type: 'object', properties: { 'odd key': { enum: [1] } } } });
+    expect(signature(literal)).toBe('{pick:`{"odd key":1}`,list:`[1,2]`|x}');
+    expect(signature(typed)).toBe('{pick:{"odd key":1}}');
+    expectFaithful([literal, typed]);
+  });
+
+  it('escapes quotes and backslashes in values and field names', () => {
+    const s = obj({ 'say "hi"\\': { enum: ['a "b"', 'c\\d'] } }, ['say "hi"\\']);
+    expect(signature(s)).toBe('{"say \\"hi\\"\\\\"!:"a \\"b\\""|"c\\\\d"}');
+    expectFaithful([s]);
+  });
+
+  it('names a repeated object, and never with a name an allowed value already has', () => {
+    const image = { type: 'object', properties: { assetId: { type: ['string', 'null'] }, alt: { type: 'string' } }, required: ['assetId', 'alt'] };
+    const s = obj({ image, logo: image, portrait: image, kind: { enum: ['Image', 'Logo'] } });
+    const { types, tools } = signatures([s]);
+    expect(types).toEqual(['Image2={assetId!:string|null,alt!}']);
+    expect(tools[0]).toBe('{image:Image2,logo:Image2,portrait:Image2,kind:Image|Logo}');
+    expectFaithful([s]);
+  });
+
+  it('extends the longest named enum that starts the list', () => {
+    const short = { enum: ['alpha', 'beta'] };
+    const long = { enum: ['alpha', 'beta', 'gamma'] };
+    const s = obj({ aTone: short, bTone: short, cTone: short, aShade: long, bShade: long, cShade: long, z: { enum: ['alpha', 'beta', 'gamma', 'delta'] } });
+    const { types, tools } = signatures([s]);
+    expect(types).toEqual(['Tone=alpha|beta', 'Shade=Tone|gamma']);
+    expect(tools[0]).toContain(',z:Shade|delta}');
+    expectFaithful([s]);
+  });
+
+  it('writes a union as a table only when every branch starts with a required, plainly named field', () => {
+    const branch = (field: string, id: string, required = true) => ({ type: 'object', properties: { [field]: { const: id }, body: { type: 'string' } }, ...(required ? { required: [field] } : {}) });
+    const optional = obj({ s: { anyOf: [branch('kind', 'a'), branch('kind', 'b'), branch('kind', 'c', false)] } });
+    const odd = obj({ s: { anyOf: [branch('kind!id', 'a'), branch('kind!id', 'b'), branch('kind!id', 'c')] } });
+    for (const schema of [optional, odd]) {
+      const { types, tools } = signatures([schema]);
+      expect(types.join('\n')).not.toContain('one of these');
+      expect(tools[0]).toContain('|');
+      expectFaithful([schema]);
+    }
+  });
+
+  it('puts a type before the type that uses it, and ignores a value that merely spells its name', () => {
+    const base = { enum: ['Extended', 'ordinary-value', 'another-value'] };
+    const extended = { enum: ['Extended', 'ordinary-value', 'another-value', 'extra-large-brand-value'] };
+    const schemas = [obj({ base }), obj({ base }), obj({ base }), obj({ base }), obj({ extended }), obj({ extended }), obj({ extended })];
+    const { types } = signatures(schemas);
+    expect(types.map((t) => t.split('=')[0])).toEqual(['Base', 'Extended2']);
+    expect(types[1]).toBe('Extended2=Base|extra-large-brand-value');
+    expectFaithful(schemas);
   });
 });

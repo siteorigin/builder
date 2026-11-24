@@ -94,7 +94,8 @@ type LocalError = { code: ModelErrorCode; message: string; retryAfterMs?: number
 type TurnResult =
   | { kind: 'done'; event: Extract<ModelEvent, { type: 'done' }> }
   /** `streamed`: part of the reply had already arrived, so asking again would show it twice. */
-  | { kind: 'error'; error: LocalError; streamed?: boolean }
+  /** `errorBody`: an error the server sent inside the stream, as it sent it. */
+  | { kind: 'error'; error: LocalError; streamed?: boolean; errorBody?: string }
   | { kind: 'http'; status: number; body: string; retryAfterMs?: number }
   | { kind: 'unusable'; problem: string; raw: string };
 type ChatMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
@@ -119,21 +120,25 @@ function serverMessage(body: string, apiKey?: string | null): string {
   return redact(clean).trim().slice(0, 300);
 }
 
-/** The request parameter a server's error names, when it names one. */
+/** The request parameter a server's error names, when it names one: inside `error`, or beside it (vLLM). */
 function serverParam(body: string): string {
-  const param = (safeJson(body) as { error?: { param?: unknown } } | undefined)?.error?.param;
+  const v = safeJson(body) as { error?: { param?: unknown }; param?: unknown } | undefined;
+  const param = (v?.error && typeof v.error === 'object' ? v.error.param : undefined) ?? v?.param;
   return typeof param === 'string' ? param : '';
 }
 
 /** A refusal of the structured response format, or of the grammar the server builds from it. */
 const FORMAT_REFUSED =
   /(?:unknown|unsupported|unrecognized|invalid|extra)[^.]*(?:response_format|json_schema)|(?:response_format|json_schema)[^.]*(?:not supported|unsupported|unknown|invalid|not permitted|failed)|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
+/** A refusal of the structured format itself, which no form of the schema would get past. */
+const FORMAT_TYPE_REFUSED = /response_format[^.]*type|type[^.]*json_(?:schema|object)[^.]*(?:not supported|unsupported|not permitted)|(?:unsupported|unknown|unrecognized)[^.]*response_format/i;
 /**
  * A refusal of what a schema contains, such as a `$ref` or `$defs` the server cannot follow, or the grammar it
- * failed to build (llama.cpp, vLLM, Ollama and LM Studio wordings).
+ * failed to build (llama.cpp, vLLM, Ollama and LM Studio wordings). Only wording that blames the schema or its
+ * grammar counts, so a model named after one is not taken for it.
  */
 const SCHEMA_REFUSED =
-  /\$ref|\$defs|resolv\w* ref|json schema|schema[^.]*(?:not supported|unsupported|unrecognized|invalid|conver|compil)|(?:unsupported|unrecognized|invalid)[^.]*schema|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
+  /\$ref|\$defs|resolv\w* ref|unrecognized schema|json[ _]schema[^.]*(?:conver|compil|pars|not supported|unsupported|invalid)|(?:unsupported|unrecognized|invalid)[^.]*json[ _]schema|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
 
 const CONTEXT_FULL = /context (size|length|window)|exceeds? .*context|n_ctx|too many tokens|prompt is too long/i;
 
@@ -548,17 +553,22 @@ export class LocalAdapter implements AgentModelAdapter {
       this.usageOption = false;
       return true;
     }
-    if (!constrained || this.responseFormat === 'none') return false;
-    // A refusal of the schema's content (not of the format itself) gets the full schema before the format goes.
-    if (this.responseFormat === 'json_schema' && this.compactSchema && this.envelope(tools).compact && names('response_format.json_schema', SCHEMA_REFUSED)) {
-      this.compactSchema = false;
-      return true;
-    }
-    if (names('response_format', FORMAT_REFUSED)) {
+    // A request too long for the model is not a refusal of any option.
+    if (!constrained || this.responseFormat === 'none' || CONTEXT_FULL.test(text)) return false;
+    const schemaRefused = this.responseFormat === 'json_schema' && (param ? param.startsWith('response_format.json_schema') : !FORMAT_TYPE_REFUSED.test(text) && SCHEMA_REFUSED.test(text));
+    if (schemaRefused && this.dropCompact(tools)) return true;
+    if (schemaRefused || names('response_format', FORMAT_REFUSED)) {
       this.responseFormat = this.responseFormat === 'json_schema' ? 'json_object' : 'none';
       return true;
     }
     return false;
+  }
+
+  /** A schema refusal gets the schema written out in full before the grammar goes. False when that was already sent. */
+  private dropCompact(tools: ToolDefinition[]): boolean {
+    if (this.responseFormat !== 'json_schema' || !this.compactSchema || !this.envelope(tools).compact) return false;
+    this.compactSchema = false;
+    return true;
   }
 
   async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
@@ -591,6 +601,11 @@ export class LocalAdapter implements AgentModelAdapter {
         return;
       }
       if (result.kind === 'error') {
+        // A server may only find out it cannot build the compact grammar once the stream has opened.
+        if (!result.streamed && constrained && fallbacks < MAX_FALLBACKS && !signal.aborted && result.errorBody && SCHEMA_REFUSED.test(serverMessage(result.errorBody)) && this.dropCompact(req.tools)) {
+          fallbacks++;
+          continue;
+        }
         if (!result.streamed && replyCap === Infinity && !corrections.length && !signal.aborted) {
           const room = this.shorterReply(result.error, Number(body.max_tokens));
           if (room) {
@@ -731,7 +746,7 @@ export class LocalAdapter implements AgentModelAdapter {
             corrupt = true;
             continue;
           }
-          if (chunk.error) return { kind: 'error', error: this.streamError(chunk.error, model), streamed: !!raw };
+          if (chunk.error) return { kind: 'error', error: this.streamError(chunk.error, model), streamed: !!raw, errorBody: JSON.stringify({ error: chunk.error }) };
           if (typeof chunk.usage?.prompt_tokens === 'number' && typeof chunk.usage?.completion_tokens === 'number') usage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens };
           const choice = chunk.choices?.[0];
           if (!choice) continue;

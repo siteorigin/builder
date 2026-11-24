@@ -746,9 +746,12 @@ describe('asking the user (#22)', () => {
     const { system, tools } = adapter.requests[0];
     // What the local model reads: the instructions, then each tool's signature and brief.
     const prompt = system + envelopeInstructions(tools);
-    expect(prompt).toMatch(/\n- request_clarification [^\n]*\n  Ask the user one question[^\n]*interviewed[^\n]*One question per call; then act on the answer\./);
+    expect(prompt).toMatch(/\n- request_clarification [^\n]*\n  Ask the user one question[^\n]*interview them, ask them something or let them choose[^\n]*short, concrete choices[^\n]*One question per call; then act on the answer\./);
     expect(prompt).toContain('what changed, or the answer or advice asked for');
+    expect(prompt).toContain('When the user wants advice or ideas in chat only, give them and change nothing.');
+    // Said once, beside the tool, not again in the instructions above it.
     expect(system).not.toContain('request_clarification asks the user one question');
+    expect(prompt.match(/interview them/g)).toHaveLength(1);
   });
 });
 
@@ -872,6 +875,25 @@ describe('selection tools', () => {
     await run('Tighten this headline', heroRef(session.state));
     expect(adapter.requests[0].system).toContain('request_clarification with assetIds lets the user choose between images by sight');
     expect(adapter.requests[0].system).toContain('- update_selected_props changes its content; send only what changes.');
+    // The context is as it was for a native model: indented, with the code setting.
+    const text = (adapter.requests[0].items.at(-1) as { text: string }).text;
+    expect(text).toContain('<editor_context>\n{\n "currentPage"');
+    expect(text).toContain('"customCode"');
+  });
+
+  it('keeps the operations note for a model with the general tools, and names the selection tools for a constrained one', async () => {
+    const part = (s: ProjectState): ElementRef => {
+      const inst = nodeAt(s, 0);
+      return { owner: { kind: 'page', id: s.site.homePageId }, instancePath: [inst.id], nodeId: s.components[inst.definitionId].parts.heading.nodeId, partId: 'heading' };
+    };
+    const noteOf = (req: CanonicalModelRequest) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((req.items.at(-1) as { text: string }).text)![1]).selection;
+    const cloud = await setup([() => finish()]);
+    await cloud.run('Tighten this', part(cloud.session.state));
+    expect(noteOf(cloud.adapter.requests[0]).note).toMatch(/instance\.setProp/);
+    const local = await setup([() => finish()], focused);
+    await local.run('Tighten this', part(local.session.state));
+    expect(noteOf(local.adapter.requests[0])).not.toHaveProperty('note');
+    expect(noteOf(local.adapter.requests[0]).scope).toMatch(/Only this part/);
   });
 
   it('lets a focused run on the hero offer same-named photos and set the one the author picks (#12)', async () => {

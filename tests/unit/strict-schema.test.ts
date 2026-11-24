@@ -211,6 +211,8 @@ describe('the compact wire schema (#364)', () => {
     const schema = closed({ a: { type: 'string', enum: ['x', 'y'] }, b: { type: 'integer', enum: [1, 2] }, c: { type: 'string', maxLength: 5 }, d: { type: 'array', items: { type: 'string', enum: ['z'] }, maxItems: 2 }, e: { enum: ['a', null] } });
     expect(dropEnumTypes(schema)).toEqual(closed({ a: { enum: ['x', 'y'] }, b: { type: 'integer', enum: [1, 2] }, c: { type: 'string', maxLength: 5 }, d: { type: 'array', items: { enum: ['z'] }, maxItems: 2 }, e: { enum: ['a', null] } }));
     expect(schema.properties.a).toEqual({ type: 'string', enum: ['x', 'y'] });
+    // Only an enum of strings: a string type beside a mixed list stays.
+    expect(dropEnumTypes({ type: 'string', enum: ['a', 1] })).toEqual({ type: 'string', enum: ['a', 1] });
   });
 
   it('writes a repeated subtree once and refers to it, and gives back exactly the input', () => {
@@ -225,6 +227,17 @@ describe('the compact wire schema (#364)', () => {
     // A small subtree costs more as a reference than written out.
     const small = closed({ a: { type: 'string' }, b: { type: 'string' }, c: { type: 'string' } });
     expect(shareDefinitions(small)).toEqual(small);
+    // Nor is it shared when the `$defs` wrapper would make the whole larger.
+    const bounded = { type: 'string', maxLength: 1 };
+    const four = closed({ a: bounded, b: bounded, c: bounded, d: bounded });
+    expect(shareDefinitions(four)).toBe(four);
+  });
+
+  it('never names a definition like a root property, whose rule older llama.cpp would use instead', () => {
+    const long = { enum: ['x'.repeat(80)] };
+    const shared = shareDefinitions(closed({ d0: { enum: ['wrong'] }, x: long, y: long }));
+    expect(Object.keys(shared.$defs as object)).toEqual(['d1']);
+    expect((shared.properties as JsonSchema).x).toEqual({ $ref: '#/$defs/d1' });
   });
 
   it('shares nested repeats inside a shared subtree only when they still repeat', () => {
@@ -232,12 +245,21 @@ describe('the compact wire schema (#364)', () => {
     const shared = shareDefinitions(closed({ a: card, b: card, c: image }));
     expect(inlineDefinitions(shared)).toEqual(closed({ a: card, b: card, c: image }));
     expect(findForbiddenShapes(shared)).toEqual([]);
+    // The image repeats once the card is shared (inside the card's definition, and on its own), so both are shared.
+    const defs = Object.values(shared.$defs as Record<string, JsonSchema>).map((d) => JSON.stringify(d));
+    expect(defs).toContain(JSON.stringify(image));
+    expect(defs.some((d) => d.includes('"caption"'))).toBe(true);
+    // Without the lone image, only the card is.
+    const cardsOnly = shareDefinitions(closed({ a: card, b: card }));
+    expect(Object.values(cardsOnly.$defs as Record<string, JsonSchema>).map((d) => JSON.stringify(d))).toEqual([JSON.stringify(card)]);
   });
 
   it('keeps a __proto__ property as data when sharing and inlining', () => {
     const odd = JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string","maxLength":300},"x":{"type":"string","maxLength":300}},"additionalProperties":false}');
     const schema = closed({ a: odd, b: odd, c: odd });
-    const back = inlineDefinitions(shareDefinitions(schema));
+    const shared = shareDefinitions(schema);
+    expect(Object.keys(((shared.$defs as Record<string, JsonSchema>).d0.properties as object))).toEqual(['__proto__', 'x']);
+    const back = inlineDefinitions(shared);
     expect(back).toEqual(schema);
     expect(Object.keys(((back.properties as JsonSchema).a as JsonSchema).properties as object)).toEqual(['__proto__', 'x']);
   });
@@ -260,6 +282,10 @@ describe('the compact wire schema (#364)', () => {
     expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0', type: 'string' } }), $defs: { d0: { type: 'string' } } })).toContain('$.a: forbidden keyword $ref');
     expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/definitions/d0' } }), $defs: { d0: { type: 'string' } } })).toContain('$.a: forbidden keyword $ref');
     expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/name' } }), $defs: { name: { type: 'string' } } })).toContain('$.$defs.name: definition name is not plain');
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0extra' } }), $defs: { d0extra: { type: 'string' } } })).toContain('$.$defs.d0extra: definition name is not plain');
+    // Only what shareDefinitions writes: no definition that is only a reference, and no root that is one.
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0' } }), $defs: { d0: { $ref: '#/$defs/d1' }, d1: { enum: ['yes'] } } })).toEqual(['$.$defs.d0: definition is only a reference']);
+    expect(findForbiddenShapes({ $ref: '#/$defs/d0', $defs: { d0: { enum: ['yes'] } } })).toEqual(['$: the root is only a reference']);
     expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0' } }), $defs: { d0: closed({ b: { $ref: '#/$defs/d1' } }), d1: closed({ c: { $ref: '#/$defs/d0' } }) } })).toEqual(['$.$defs.d0: definition refers to itself', '$.$defs.d1: definition refers to itself']);
     expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0' } }), $defs: { d0: { type: 'object', properties: {} } } })).toEqual(['$.$defs.d0: object is not closed']);
     expect(findForbiddenShapes({ ...closed({ a: { type: 'string' } }), $defs: [] })[0]).toMatch(/not a set of definitions/);
