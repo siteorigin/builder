@@ -257,11 +257,11 @@ describe('workspace state per project', () => {
     const r = await c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
     await c.close();
     expect(await c.open(a)).toEqual({ ok: true });
-    expect(await c.stepHistory(r.entryId!, 'undo', first)).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.' } });
+    expect(await c.stepHistory(r.entryId!, 'undo', undefined, first)).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.' } });
     expect(c.session!.state.site.name).toBe('Renamed');
-    expect((await c.stepHistory(r.entryId!, 'undo', opening(c))).ok).toBe(true);
+    expect((await c.stepHistory(r.entryId!, 'undo', c.session!.revision, opening(c))).ok).toBe(true);
     expect(c.session!.state.site.name).toBe('Alpha');
-    expect((await c.stepHistory(r.entryId!, 'redo', opening(c))).ok).toBe(true);
+    expect((await c.stepHistory(r.entryId!, 'redo', c.session!.revision, opening(c))).ok).toBe(true);
     expect(c.session!.state.site.name).toBe('Renamed');
   });
 

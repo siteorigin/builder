@@ -772,9 +772,10 @@ export interface BuilderApi {
     /**
      * Step History of the opening `workspaceKey` to an entry chosen in it, in one change: `undo` undoes that entry and
      * every applied one after it, `redo` redoes every undone entry up to and including it. Refused with CONFLICT when
-     * the entry has gone or History already stands past it that way.
+     * the entry has gone or History already stands past it that way, and with STALE_REVISION once the project has
+     * moved on from `expectedRevision`, the revision History was shown at.
      */
-    stepHistory(entryId: string, direction: 'undo' | 'redo', workspaceKey: string): Promise<ApplyResult>;
+    stepHistory(entryId: string, direction: 'undo' | 'redo', expectedRevision: number | undefined, workspaceKey: string): Promise<ApplyResult>;
     /**
      * Choose files to import (the file chooser, unless `paths` are given) and say what importing each would produce,
      * without writing anything. Null when the chooser was closed or no project is open.

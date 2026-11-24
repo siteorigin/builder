@@ -363,9 +363,9 @@ function registerIpc() {
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } }
   );
   handle('project:redo', () => controller.session?.redo());
-  handle('project:stepHistory', (entryId: unknown, direction: unknown, key: unknown) =>
-    typeof entryId === 'string' && (direction === 'undo' || direction === 'redo') && typeof key === 'string'
-      ? controller.stepHistory(entryId, direction, key)
+  handle('project:stepHistory', (entryId: unknown, direction: unknown, rev: unknown, key: unknown) =>
+    typeof entryId === 'string' && (direction === 'undo' || direction === 'redo') && (rev === undefined || typeof rev === 'number') && typeof key === 'string'
+      ? controller.stepHistory(entryId, direction, rev, key)
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to step to.', recoverable: false } }
   );
   const kindOf = (only: unknown) => (only === 'image' || only === 'font' || only === 'document' ? only : undefined);
