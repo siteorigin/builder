@@ -918,7 +918,7 @@ describe('media.video (issue #73)', () => {
 
 describe('media.carousel (issue #381)', () => {
   const bare = (out: string) => out.replace(/ class="svelte-[a-z0-9]+"/g, '').replace(/ svelte-[a-z0-9]+(?=")/g, '');
-  const slide = (id: string, caption: string, link = { type: 'none', target: '' }, alt = '') => ({ id, image: { assetId: null, alt }, caption, link });
+  const slide = (id: string, caption: string, link = { type: 'none', target: '' }, alt = '') => ({ id, image: { assetId: null as string | null, alt, decorative: false }, caption, link });
   const SLIDES = [slide('a', 'Measuring the room'), slide('b', 'Choosing the finishes', { type: 'url', target: 'https://example.com/finishes' }), slide('c', '')];
   const rendered = (props: Record<string, unknown>) => bare(authoredHtml('media.carousel', props));
   const list = (out: string) => out.match(/<ul\b([^>]*)>([\s\S]*)<\/ul>/);
