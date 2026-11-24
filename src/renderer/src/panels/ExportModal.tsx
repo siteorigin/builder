@@ -1,11 +1,11 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ChevronRight, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
-import { describeDraftLink, publicationPlan } from '@generator/checks';
+import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
+import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
+import { describeDraftLink, publicationPlan, type DraftLink } from '@generator/checks';
 import type { PageDoc } from '@shared/types';
 import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
-import { api, editRunStatus, getState, saveLocal, setState, useStore } from '../store';
-import { Modal, Segmented, Spinner } from '../components/ui';
-import { openAsset } from '../lib/actions';
+import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
+import { Modal, Segmented, Spinner, openSection } from '../components/ui';
+import { goToShellPart, openAsset, selectPage } from '../lib/actions';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
 import { openContentMatch } from './FindReplace';
 
@@ -14,11 +14,42 @@ type ExportKind = 'static' | 'source';
 const NO_EXPORTS: RecentExport[] = [];
 /** More pages than this are counted, with the full lists one click away, so they never push the export choices out of view. */
 const LONG_PAGE_LIST = 6;
+/** Page titles longer than this in all are counted too, however few pages there are. */
+const LONG_TITLES = 110;
 /** More links to drafts than this are counted, with the list one click away. */
 const LONG_LINK_LIST = 3;
 /** More notes than this fold into the export's own row, so a success keeps its next step in view. */
 const MANY_NOTES = 2;
 const UNEXPECTED_FAILURE = 'The export could not be completed.';
+
+/** A window too short to spare the room folds even a short list of links to drafts, so the choices stay in view. */
+const SHORT_WINDOW = '(max-height: 720px)';
+const watchShortWindow = (change: () => void) => {
+  const query = window.matchMedia(SHORT_WINDOW);
+  query.addEventListener('change', change);
+  return () => query.removeEventListener('change', change);
+};
+const useShortWindow = () => useSyncExternalStore(watchShortWindow, () => window.matchMedia(SHORT_WINDOW).matches);
+
+/** Close the dialog on the page a failed build was working on, ready to edit. */
+function openFailedPage(pageId: string) {
+  const s = getState();
+  if (s.pageId !== pageId || s.definitionMode) selectPage(pageId);
+  setState({ modal: null, mode: 'edit', rightTab: 'inspect', dockOpen: true });
+}
+
+/** Select the element that holds a link to a draft, on the page or shared part it is in, so the link can be changed. */
+function openDraftLink(l: DraftLink) {
+  const s = getState();
+  const st = s.snapshot?.state;
+  const tree = st && (l.owner.kind === 'shell' ? st.site.shell[l.owner.id as 'header' | 'footer'] : st.pages[l.owner.id]);
+  if (!tree?.nodes[l.nodeId]) return toast('That link is no longer on the site.', 'info');
+  if (l.owner.kind === 'shell') {
+    if (!goToShellPart(l.owner.id)) return toast(`No page shows the shared ${l.owner.id}, so the link is not on any page.`, 'info');
+  } else if (s.pageId !== l.owner.id || s.definitionMode) selectPage(l.owner.id);
+  setState({ modal: null, mode: 'edit', selection: { owner: l.owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true, definitionMode: null });
+  setTimeout(() => openSection('content'), 50);
+}
 
 /** "Home", "Home and About", "Home, About and Contact". Pages that share a title are told apart by their address. */
 function listTitles(pages: PageDoc[], all: PageDoc[]): string {
@@ -34,9 +65,24 @@ function finishedAt(iso: string): string {
   return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
 }
 
-/** A full path that wraps at its separators, with the file or folder it ends in standing out. */
-function ExportPath({ path, id }: { path: string; id?: string }) {
+/**
+ * A full path that wraps at its separators, with the file or folder it ends in standing out. `compact` keeps it to one
+ * line for an earlier export: the folder gives way from its start, the name always shows whole, and the text (selected,
+ * copied, or read aloud) is still the full path.
+ */
+function ExportPath({ path, id, compact }: { path: string; id?: string; compact?: boolean }) {
   const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1;
+  if (compact)
+    return (
+      <span className="export-path is-compact" id={id} title={path} style={{ '--name': `${path.length - cut + 0.5}ch` } as CSSProperties}>
+        {cut > 0 && (
+          <span className="export-path-dir">
+            <bdi dir="ltr">{path.slice(0, cut)}</bdi>
+          </span>
+        )}
+        <strong>{path.slice(cut)}</strong>
+      </span>
+    );
   return (
     <span className="export-path" id={id}>
       {path
@@ -73,7 +119,8 @@ function PagesSummary({ published, drafts }: { published: PageDoc[]; drafts: Pag
   const listId = useId();
   const [open, setOpen] = useState(false);
   const all = [...published, ...drafts];
-  const long = all.length > LONG_PAGE_LIST;
+  // Counted, not named, when there are many pages or their titles would run long.
+  const long = all.length > LONG_PAGE_LIST || all.reduce((n, p) => n + p.title.length, 0) > LONG_TITLES;
   return (
     <div className="export-pages" data-testid="export-pages">
       <p>
@@ -84,7 +131,7 @@ function PagesSummary({ published, drafts }: { published: PageDoc[]; drafts: Pag
       {drafts.length > 0 && (
         <p data-testid="export-drafts">
           <FilePen size={14} aria-hidden /> <span>
-            <strong>{drafts.length === 1 ? '1 draft is' : `${drafts.length} drafts are`} left out{long ? '.' : ':'}</strong>{!long && ` ${listTitles(drafts, all)}.`} Drafts stay in the editable project. A page hidden from search engines is still published.
+            <strong>{drafts.length === 1 ? '1 draft is' : `${drafts.length} drafts are`} left out{long ? '.' : ':'}</strong>{!long && ` ${listTitles(drafts, all)}.`} Drafts stay in the editable project; hiding a page from search engines doesn’t leave it out.
           </span>
         </p>
       )}
@@ -122,81 +169,116 @@ function keepSamples(values: string[], keep: boolean) {
  * are reviewed before the website goes out, but never stop it: an author may mean to publish one. Each detail can be
  * opened where it is, replaced everywhere at once, or kept, which this project remembers.
  */
-function SampleContactReview({ groups, kept, disabled, readOnly, onSettle }: { groups: SampleContactGroup[]; kept: SampleContactGroup[]; disabled: boolean; readOnly: boolean; onSettle: () => void }) {
+function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettle }: { groups: SampleContactGroup[]; kept: SampleContactGroup[]; disabled: boolean; readOnly: boolean; folded: boolean; onSettle: () => void }) {
   const baseId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState<string | null>(null);
+  // Folded to its counted heading while something more urgent needs the room; the rows are one click away.
+  const [listOpen, setListOpen] = useState(false);
+  const listHidden = folded && !listOpen;
+  // A job that starts folds the rows away again: their actions wait for it.
+  useEffect(() => {
+    if (disabled) setListOpen(false);
+  }, [disabled]);
   if (!groups.length && !kept.length) return null;
   // The control pressed goes away with its group: focus moves to what took its place, here or in the dialog.
-  const settle = (next: string) =>
+  // Only a control that is shown and usable can take focus.
+  const usable = (selector: string) => [...(rootRef.current?.querySelectorAll<HTMLElement>(selector) ?? [])].filter((c) => c.offsetParent !== null && !(c as HTMLButtonElement).disabled);
+  const settle = (pick: () => HTMLElement | undefined) =>
     requestAnimationFrame(() => {
       if (document.activeElement && document.activeElement !== document.body) return;
-      const el = rootRef.current?.querySelector<HTMLElement>(next);
+      const el = pick();
       if (el) el.focus();
       else onSettle();
     });
+  // A kept row goes away: focus moves to the same decision on the row that took its place, else the one above it,
+  // else the way to review the kept details again.
+  const keepAt = (i: number) => {
+    const keeps = usable('.export-review-list > li .export-review-keep');
+    return keeps[i] ?? keeps[i - 1] ?? usable('.export-samples-kept button')[0];
+  };
   const keptLine = kept.length > 0 && (
-    <p className="export-samples-kept faint" data-testid="export-samples-kept">
-      {kept.length === 1 ? `${kept[0].value} is kept as you chose.` : `${kept.length} sample contact details are kept as you chose.`}{' '}
-      <button className="link-btn" disabled={disabled || readOnly} onClick={() => (keepSamples(kept.map((g) => g.value), false), settle('.export-samples-head .btn'))}>
-        Review {kept.length === 1 ? 'it' : 'them'} again
-      </button>
+    <p className="export-samples-kept" data-testid="export-samples-kept">
+      <CircleCheck aria-hidden />
+      <span>
+        {kept.length === 1 ? `${kept[0].value} is kept as you chose.` : `${kept.length} sample contact details are kept as you chose.`}{' '}
+        <button className="link-btn" disabled={disabled || readOnly} onClick={() => (keepSamples(kept.map((g) => g.value), false), setListOpen(true), settle(() => usable('.export-review-actions .btn')[0]))}>
+          Review {kept.length === 1 ? 'it' : 'them'} again
+        </button>
+      </span>
     </p>
   );
+  const headId = `${baseId}-head`;
+  const rowsId = `${baseId}-rows`;
   return (
     <div ref={rootRef} className="export-samples-review">
       {groups.length > 0 && (
-        <div className="scope-note site export-samples" data-testid="export-sample-contacts">
-          <TriangleAlert />
-          <div className="export-note-body">
-            <strong>The website still shows sample contact details from the starter.</strong>
-            <span>Visitors who use them won’t reach you. Replace them with your own, or keep any you mean to publish.</span>
-            <ul className="export-samples-list">
-              {groups.map((g) => {
-                const listId = `${baseId}-${g.kind}`;
-                const nameId = `${listId}-name`;
-                const shown = open === g.kind;
-                return (
-                  <li key={g.kind} data-testid={`export-sample-${g.kind}`}>
-                    <div className="export-samples-head">
-                      <span className="grow" id={nameId}>
+        <section className="export-review" data-testid="export-sample-contacts" aria-labelledby={headId}>
+          <div className="export-review-head">
+            <TriangleAlert aria-hidden />
+            <div className="grow">
+              <strong id={headId}>{groups.length === 1 ? 'A sample contact detail from the starter is still on the website.' : `${groups.length} sample contact details from the starter are still on the website.`}</strong>
+              <span>Visitors who use {groups.length === 1 ? 'it' : 'them'} won’t reach you. This won’t stop the export.</span>
+            </div>
+            {/* While a job runs the rows' actions wait, so there is nothing to open. */}
+            {folded && !disabled && (
+              <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
+                <ChevronRight size={14} aria-hidden style={{ transform: listOpen ? 'rotate(90deg)' : undefined }} />
+                {listOpen ? 'Hide' : 'Review'}
+              </button>
+            )}
+          </div>
+          <ul className="export-review-list" id={rowsId} hidden={listHidden}>
+            {groups.map((g, row) => {
+              const listId = `${baseId}-${g.kind}`;
+              const nameId = `${listId}-name`;
+              const shown = open === g.kind;
+              return (
+                <li key={g.kind} data-testid={`export-sample-${g.kind}`}>
+                  <div className="export-review-row">
+                    <div className="export-review-what">
+                      <span id={nameId}>
                         <strong>{g.value}</strong>{' '}
-                        <span className="faint">
-                          · {g.matches.length === 1 ? '1 place' : `${g.matches.length} places`} on {placesOf(g.matches.map((m) => m.field))}
+                        <span className="export-review-where">
+                          · {g.matches.length === 1 ? '1 place' : `${g.matches.length} places`} on {placesOf(g.matches.map((m) => m.field))}.
                         </span>
-                      </span>
+                      </span>{' '}
+                      {/* Beside the places it reveals, so the row stays one decision wide. */}
+                      <button type="button" className="export-inline-toggle" aria-expanded={shown} aria-controls={listId} aria-describedby={nameId} onClick={() => setOpen(shown ? null : g.kind)}>
+                        Show where
+                        <ChevronRight size={13} aria-hidden style={{ transform: shown ? 'rotate(90deg)' : undefined }} />
+                      </button>
+                    </div>
+                    <div className="export-review-actions">
                       <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
                         Replace everywhere…
                       </button>
                       {/* A read-only project keeps nothing, and exports nothing either. */}
-                      <button className="btn btn-sm btn-ghost" disabled={disabled || readOnly} aria-describedby={nameId} onClick={() => (keepSamples([g.value], true), settle('.export-samples-head .btn, .export-samples-kept button'))}>
+                      <button className="btn btn-sm btn-ghost export-review-keep" disabled={disabled || readOnly} aria-describedby={nameId} onClick={() => (keepSamples([g.value], true), settle(() => keepAt(row)))}>
                         Keep it
                       </button>
                     </div>
-                    <button type="button" className="btn btn-sm btn-ghost export-note-toggle" aria-expanded={shown} aria-controls={listId} aria-describedby={nameId} onClick={() => setOpen(shown ? null : g.kind)}>
-                      <ChevronRight size={14} style={{ transform: shown ? 'rotate(90deg)' : undefined }} /> Show where
-                    </button>
-                    <ul className="export-samples-places" id={listId} hidden={!shown}>
-                      {g.matches.map((m) => {
-                        const f = m.field;
-                        const path = f.section === f.where || f.label === f.section || f.label.startsWith(`${f.section} › `) ? f.label : `${f.section} › ${f.label}`;
-                        const name = `${f.owner.kind === 'shell' ? `Shared ${f.owner.id}` : f.where} › ${path}`;
-                        return (
-                          <li key={m.id}>
-                            <span className="grow">{name}</span>
-                            <button className="btn btn-sm btn-ghost" disabled={disabled} aria-label={`Open ${name} in the inspector`} onClick={() => openContentMatch(f)}>
-                              Open
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        </div>
+                  </div>
+                  <ul className="export-samples-places" id={listId} hidden={!shown}>
+                    {g.matches.map((m) => {
+                      const f = m.field;
+                      const path = f.section === f.where || f.label === f.section || f.label.startsWith(`${f.section} › `) ? f.label : `${f.section} › ${f.label}`;
+                      const name = `${f.owner.kind === 'shell' ? `Shared ${f.owner.id}` : f.where} › ${path}`;
+                      return (
+                        <li key={m.id}>
+                          <span className="grow">{name}</span>
+                          <button className="btn btn-sm btn-ghost" disabled={disabled} aria-label={`Open ${name} in the inspector`} onClick={() => openContentMatch(f)}>
+                            Open
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
       {keptLine}
     </div>
@@ -207,7 +289,7 @@ function SampleContactReview({ groups, kept, disabled, readOnly, onSettle }: { g
  * What a failed build said, for the author to read and copy into a support request. Copying works with the details
  * closed; a clipboard that is unavailable or refuses says so, and the text can still be selected.
  */
-function BuildDetails({ text }: { text: string }) {
+function BuildDetails({ text, fix }: { text: string; fix?: ReactNode }) {
   const bodyId = useId();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<'copied' | 'failed' | null>(null);
@@ -223,7 +305,8 @@ function BuildDetails({ text }: { text: string }) {
   return (
     <div className="build-details" data-testid="export-build-details">
       <div className="row wrap" style={{ gap: 6 }}>
-        <button type="button" className="btn btn-sm btn-ghost" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
+        {fix}
+        <button type="button" className="btn btn-sm btn-ghost export-details-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
           <ChevronRight size={14} style={{ transform: open ? 'rotate(90deg)' : undefined }} /> Technical details
         </button>
         <button type="button" className="btn btn-sm" onClick={() => void copy()}>
@@ -264,17 +347,37 @@ export function ExportModal() {
   const [format, setFormat] = useState<ExportFormat>('folder');
   const linksId = useId();
   const [linksOpen, setLinksOpen] = useState(false);
-  const longLinks = draftLinks.length > LONG_LINK_LIST;
+  // A long list, or a window too short to spare the room, folds behind a disclosure; otherwise there is none to focus.
+  const shortWindow = useShortWindow();
+  const longLinks = draftLinks.length > LONG_LINK_LIST || shortWindow;
   const close = () => !busy && setState({ modal: null });
   const blocked = aiBusy || conflicts > 0;
   // The last report stays until a new one replaces it, so cancelling the save picker on a retry keeps it to copy.
   const shown = !busy && result?.message ? result : null;
   const succeeded = !!shown?.ok;
-  const foldNotes = succeeded && shown!.warnings.length > MANY_NOTES && recent[0]?.path === shown!.path;
+  // A success's notes go with the export they describe, under its actions, so the result stays a short verdict.
+  const notesInRow = succeeded && shown!.warnings.length > 0 && recent[0]?.path === shown!.path;
+  const foldNotes = notesInRow && shown!.warnings.length > MANY_NOTES;
   const notesId = useId();
+  // The page a failed build names by its address, when exactly one page has it: the author's way back to fix it.
+  const failedPage = useMemo(() => {
+    if (!shown || shown.ok || !state) return null;
+    const named = Object.values(state.pages).filter((p) => shown.message.includes(`(${p.route})`));
+    return named.length === 1 ? named[0] : null;
+  }, [shown, state]);
+  const fix = failedPage ? (
+    <button className="btn btn-sm btn-primary export-fix" onClick={() => openFailedPage(failedPage.id)}>
+      Open the {failedPage.title} page
+    </button>
+  ) : shown && !shown.ok && shown.assetId ? (
+    <button className="btn btn-sm btn-primary export-fix" onClick={() => openAsset(shown.assetId!)}>
+      Open in Assets
+    </button>
+  ) : null;
   const [notesOpen, setNotesOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const firstControl = () => rootRef.current?.querySelector<HTMLElement>('button:not(:disabled):not([aria-disabled="true"])');
+  // The first control the author can see and use: never one folded away or unavailable.
+  const firstControl = () => [...(rootRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled):not([aria-disabled="true"])') ?? [])].find((b) => b.offsetParent !== null);
   // Said once when it changes: a note that simply appears or disappears is not reliably announced.
   const availability = aiBusy ? 'Wait for the AI to finish before exporting.' : conflicts > 0 ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : draftLinks.length ? 'The website cannot be exported until its links to drafts are changed. The editable project can still be exported.' : 'Both exports are available.';
   const [announced, setAnnounced] = useState('');
@@ -322,51 +425,76 @@ export function ExportModal() {
   const websiteBlockedBy = [...blockedBy, ...(draftLinks.length ? ['export-draft-links-summary'] : [])];
   const cardState = (kind: ExportKind) => (busy === kind ? ' is-running' : '');
   const formatWords = format === 'zip' ? 'in one ZIP file' : 'as a folder';
+  /** What the end of a card says it will do: start, work, or nothing until its blocker is cleared. Its name says the rest. */
+  const cardEnd = (kind: ExportKind, unavailable: boolean) => (
+    <span className={`export-card-end${!busy && !unavailable ? ' is-ready' : ''}`} aria-hidden>
+      {busy === kind ? (
+        kind === 'static' ? 'Building…' : 'Copying…'
+      ) : busy ? null : unavailable ? (
+        'Unavailable'
+      ) : (
+        <>
+          Export <ChevronRight size={14} />
+        </>
+      )}
+    </span>
+  );
 
   const history = recent.length > 0 && (
     <section className="export-history" aria-labelledby="export-history-title">
-      <h3 id="export-history-title">Recent exports</h3>
-      {recent.some((e) => e.previewUrl) && <p className="faint">Website folder previews keep running until you close this project.</p>}
+      <div className="export-history-title">
+        <h3 id="export-history-title">Recent exports</h3>
+      </div>
       <ul>
         {recent.map((e, i) => {
           const latest = succeeded && i === 0 && e.path === shown?.path;
           return (
-          <li key={`${e.path}\n${e.exportedAt}`} className={latest ? 'is-latest' : undefined}>
-            <div className="row export-history-head">
-              <strong className="grow">
-                {e.kind === 'site' ? 'Website' : 'Editable project'}
-                {e.format === 'zip' ? ' (ZIP file)' : ''}
-              </strong>
-              <span className="faint">
-                <time dateTime={e.exportedAt}>{finishedAt(e.exportedAt)}</time> · revision {e.revision}
-              </span>
-            </div>
-            <ExportPath path={e.path} id={`export-history-path-${i}`} />
-            <div className="row">
-              <button className={`btn btn-sm${latest ? ' btn-primary' : ''}`} aria-describedby={`export-history-path-${i}`} onClick={() => void api.projects.reveal(e.path)}>
-                Show in folder
-              </button>
-              {e.previewUrl && (
-                <button className="btn btn-sm" aria-describedby={`export-history-path-${i}`} title={e.previewUrl} onClick={() => void api.app.openExternal(e.previewUrl!)}>
-                  Preview in browser
+            <li key={`${e.path}\n${e.exportedAt}`} className={latest ? 'is-latest' : undefined}>
+              <div className="export-history-head">
+                <strong>
+                  {e.kind === 'site' ? 'Website' : 'Editable project'}
+                  {e.format === 'zip' ? ' (ZIP file)' : ''}
+                </strong>
+                <span>
+                  <time dateTime={e.exportedAt}>{finishedAt(e.exportedAt)}</time> · revision {e.revision}
+                </span>
+              </div>
+              <ExportPath path={e.path} id={`export-history-path-${i}`} compact={!latest} />
+              <div className="export-history-actions">
+                <button className={`btn btn-sm${latest ? ' btn-primary' : ''}`} aria-describedby={`export-history-path-${i}`} onClick={() => void api.projects.reveal(e.path)}>
+                  Show in folder
                 </button>
-              )}
-            </div>
-            {latest && foldNotes && (
-              <>
-                <button type="button" className="btn btn-sm btn-ghost export-note-toggle" aria-expanded={notesOpen} aria-controls={notesId} onClick={() => setNotesOpen(!notesOpen)}>
-                  <ChevronRight size={14} style={{ transform: notesOpen ? 'rotate(90deg)' : undefined }} /> Review {shown!.warnings.length} export notes
-                </button>
-                <div className="export-row-notes" id={notesId} hidden={!notesOpen}>
-                  {shown!.warnings.map((w, n) => (
-                    <span className="export-note-line" key={n}>
-                      • {w}
+                {e.previewUrl && (
+                  <>
+                    <button className="btn btn-sm" aria-describedby={`export-history-path-${i} export-history-preview-${i}`} title={e.previewUrl} onClick={() => void api.app.openExternal(e.previewUrl!)}>
+                      Preview in browser
+                    </button>
+                    <span className="export-history-hint" id={`export-history-preview-${i}`}>
+                      Runs until you close this project.
                     </span>
-                  ))}
+                  </>
+                )}
+              </div>
+              {latest && notesInRow && (
+                <div className="export-row-notes-wrap">
+                  {foldNotes ? (
+                    <button type="button" className="btn btn-sm btn-ghost export-note-toggle" aria-expanded={notesOpen} aria-controls={notesId} onClick={() => setNotesOpen(!notesOpen)}>
+                      <ChevronRight size={14} style={{ transform: notesOpen ? 'rotate(90deg)' : undefined }} /> Review {shown!.warnings.length} export notes
+                    </button>
+                  ) : (
+                    <h4 className="export-row-notes-title">{shown!.warnings.length === 1 ? 'A note about this export' : 'Notes about this export'}</h4>
+                  )}
+                  {/* Not a list: the history's list items are its exports, one each. */}
+                  <div className="export-row-notes" id={notesId} hidden={foldNotes && !notesOpen}>
+                    {shown!.warnings.map((w, n) => (
+                      <p className="export-note-line" key={n}>
+                        {w}
+                      </p>
+                    ))}
+                  </div>
                 </div>
-              </>
-            )}
-          </li>
+              )}
+            </li>
           );
         })}
       </ul>
@@ -377,6 +505,7 @@ export function ExportModal() {
     <Modal
       title="Export your website"
       icon={<Upload />}
+      describedBy={succeeded ? undefined : aiBusy ? 'export-blocked-ai' : conflicts > 0 ? 'export-blocked-conflict' : draftLinks.length ? 'export-draft-links-summary' : undefined}
       onClose={close}
       busy={!!busy}
       footer={
@@ -398,7 +527,8 @@ export function ExportModal() {
         </>
       }
     >
-      <div className="export-dialog" ref={rootRef}>
+      {/* With a fix to make first, the website card's export is no longer the primary action. */}
+      <div className={`export-dialog${fix ? ' has-fix' : ''}`} ref={rootRef}>
         {/* Always mounted, so the start of a job is announced. It stays in view while the body scrolls. */}
         <div className="sr-only" role="status">
           {announced}
@@ -409,21 +539,22 @@ export function ExportModal() {
               <Spinner decorative />
               <span>
                 <strong>{busy === 'static' ? 'Building your website and checking every page…' : 'Copying the editable project…'}</strong>
-                {busy === 'static' && <span>This can take a few minutes.</span>}
+                <span>{busy === 'static' ? 'This can take a few minutes. The dialog stays open until it finishes.' : 'The dialog stays open until it finishes.'}</span>
               </span>
             </>
           )}
         </div>
         {shown && (
-          <>
+          // A failure and its report read as one card; the report stays outside the alert itself.
+          <div className={shown.ok ? 'export-outcome' : 'export-outcome export-failure'}>
             <div ref={resultRef} tabIndex={-1} className={`scope-note export-result ${shown.ok ? 'shared' : 'danger'}`} role={shown.ok ? 'status' : 'alert'}>
-              {shown.ok ? <CircleCheck /> : <TriangleAlert />}
+              {shown.ok ? <CircleCheck /> : <CircleAlert />}
               <div className="export-note-body">
                 <strong>{shown.message}</strong>
                 {/* On success the newest recent export, directly below, already shows this path. */}
                 {shown.path && recent[0]?.path !== shown.path && <ExportPath path={shown.path} />}
-                {foldNotes ? (
-                  <span>This export has {shown.warnings.length} notes to review.</span>
+                {notesInRow ? (
+                  <span>{shown.warnings.length === 1 ? '1 note to review below.' : `${shown.warnings.length} notes to review below.`}</span>
                 ) : (
                   shown.warnings.map((w, i) => (
                     <span className="export-note-line" key={i}>
@@ -431,17 +562,17 @@ export function ExportModal() {
                     </span>
                   ))
                 )}
-                {!shown.ok && shown.assetId && (
-                  <button className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => openAsset(shown.assetId!)}>
-                    Open in Assets
-                  </button>
-                )}
                 {!shown.ok && shown.details && <span className="export-note-next">{shown.message === UNEXPECTED_FAILURE ? 'Try exporting again. If it keeps failing, use Copy details and send the report to your developer or support.' : 'Check the page or component named above in the editor, then export again. If you can’t fix it, use Copy details and send the report to your developer or support.'}</span>}
               </div>
             </div>
-            {/* Outside the alert: opening the report or copying it must not make the result announce itself again. */}
-            {!shown.ok && shown.details && <BuildDetails text={shown.details} />}
-          </>
+            {/* Outside the alert: opening the report or copying it must not make the result announce itself again. The fix,
+                when there is one, leads the row as the dialog's primary action, and is the next stop after the result. */}
+            {!shown.ok && (shown.details ? <BuildDetails text={shown.details} fix={fix} /> : fix && (
+                  <div className="build-details">
+                    <div className="row wrap">{fix}</div>
+                  </div>
+                ))}
+          </div>
         )}
         {succeeded ? (
           history
@@ -449,81 +580,111 @@ export function ExportModal() {
           <>
             {!shown && !busy && <p className="export-intro">Host it anywhere or hand it to a developer. It runs without SiteOrigin Builder.</p>}
             {aiBusy && (
-              <div className="scope-note site">
-                <TriangleAlert />
-                <span className="grow" id="export-blocked-ai">
-                  Wait for the AI to finish before exporting.
+              // A wait, not a fault: it clears itself, so it is drawn as work in progress rather than an error.
+              <div className="scope-note info export-blocker">
+                <Spinner decorative />
+                <span className="export-note-body export-blocker-text" id="export-blocked-ai">
+                  <strong>Both exports wait for the AI to finish.</strong>
+                  <span>They become available as soon as it’s done.</span>
                 </span>
               </div>
             )}
             {conflicts > 0 && (
-              <div className="scope-note site">
-                <TriangleAlert />
-                <span className="grow" id="export-blocked-conflict">
-                  A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.{aiBusy && ' You can open Project health once the AI finishes.'}
+              <div className="scope-note danger export-blocker">
+                <CircleAlert />
+                <span className="export-note-body export-blocker-text" id="export-blocked-conflict">
+                  <strong>Both exports are unavailable.</strong>
+                  <span>A project file changed outside SiteOrigin Builder. Resolve it in Project health first.{aiBusy && ' You can open Project health once the AI finishes.'}</span>
                 </span>
                 {!aiBusy && !busy && (
-                  <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'health' } })}>
+                  <button className="btn btn-sm btn-primary" aria-describedby="export-blocked-conflict" onClick={() => setState({ modal: { kind: 'health' } })}>
                     Open project health
                   </button>
                 )}
               </div>
             )}
             {state && draftLinks.length > 0 && (
-              <div className="scope-note danger" data-testid="export-draft-links">
-                <TriangleAlert />
-                {/* A short list is shown outright unless the window is too short to spare the room (styles.css). */}
-                <div className={`export-note-body${longLinks ? '' : ' export-links-short'}`}>
-                  <strong id="export-draft-links-summary">
-                    {draftLinks.length === 1 ? 'A published page links to a draft.' : `Published pages have ${draftLinks.length} links to ${draftTargets === 1 ? 'a draft' : 'drafts'}.`} Change {draftLinks.length === 1 ? 'it' : 'them'} or publish {draftTargets === 1 ? 'the draft' : 'those drafts'} before exporting the website.
-                  </strong>
-                  {!blocked && <span>The editable project can still be exported.</span>}
-                  <button type="button" className="btn btn-sm btn-ghost export-note-toggle" aria-expanded={linksOpen} aria-controls={linksId} onClick={() => setLinksOpen(!linksOpen)}>
-                    <ChevronRight size={14} style={{ transform: linksOpen ? 'rotate(90deg)' : undefined }} /> Review links to drafts
-                  </button>
-                  <ul className="export-draft-links" id={linksId} hidden={!linksOpen}>
-                    {draftLinks.map((l, i) => (
-                      <li key={i}>{describeDraftLink(state, l)}</li>
-                    ))}
+              <div className="scope-note danger export-blocker" data-testid="export-draft-links">
+                <CircleAlert />
+                <div className="export-note-body">
+                  <div className="export-blocker-head">
+                    <span className="export-blocker-text" id="export-draft-links-summary">
+                      <strong>{draftLinks.length === 1 ? 'A link to a draft stops the website export.' : `${draftLinks.length} links to ${draftTargets === 1 ? 'a draft' : 'drafts'} stop the website export.`}</strong>{' '}
+                      <span>
+                        Change {draftLinks.length === 1 ? 'it' : 'them'}, or publish {draftTargets === 1 ? 'the draft' : 'those drafts'}.{!blocked && ' The editable project can still be exported.'}
+                      </span>
+                    </span>
+                    {/* Only a folded list has a disclosure, so nothing hidden can take focus. It sits before the list it opens. */}
+                    {longLinks && (
+                      <button type="button" className="btn btn-sm export-blocker-toggle" aria-expanded={linksOpen} aria-controls={linksId} aria-describedby="export-draft-links-summary" onClick={() => setLinksOpen(!linksOpen)}>
+                        <ChevronRight size={14} aria-hidden style={{ transform: linksOpen ? 'rotate(90deg)' : undefined }} /> Review links to drafts
+                      </button>
+                    )}
+                  </div>
+                  <ul className="export-draft-links" id={linksId} hidden={longLinks && !linksOpen}>
+                    {draftLinks.map((l, i) => {
+                      const said = describeDraftLink(state, l);
+                      return (
+                        <li key={i}>
+                          <span className="grow">{said}</span>
+                          <button className="btn btn-sm" disabled={!!busy} aria-label={`Open ${said} in the inspector`} aria-describedby="export-draft-links-summary" onClick={() => openDraftLink(l)}>
+                            Open
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               </div>
             )}
-            {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} onSettle={() => firstControl()?.focus()} />}
+            {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
             {plan && <PagesSummary published={plan.published} drafts={plan.drafts} />}
-            <div className="export-format">
-              <span className="muted">Save as</span>
-              {/* A fieldset locks both format buttons during a build, and while a conflict stops both exports. */}
-              <fieldset className="export-format-control" role="presentation" disabled={!!busy || conflicts > 0}>
-                <Segmented
-                  label="Save as"
-                  value={format}
-                  onChange={(v) => !busy && setFormat(v)}
-                  options={[
-                    { value: 'folder', label: 'Folder' },
-                    { value: 'zip', label: 'ZIP file' }
-                  ]}
-                />
-              </fieldset>
+            <div className="export-choice" role="group" aria-labelledby="export-choice-title">
+              <div className="export-choice-head">
+                <h3 id="export-choice-title">Choose an export</h3>
+                <div className="export-format">
+                  <span>Save as</span>
+                  {/* A fieldset locks both format buttons during a build, and while a conflict stops both exports. */}
+                  <fieldset className="export-format-control" role="presentation" disabled={!!busy || conflicts > 0}>
+                    <Segmented
+                      label="Save as"
+                      value={format}
+                      onChange={(v) => !busy && setFormat(v)}
+                      options={[
+                        { value: 'folder', label: 'Folder' },
+                        { value: 'zip', label: 'ZIP file' }
+                      ]}
+                    />
+                  </fieldset>
+                </div>
+              </div>
+              <button ref={(el) => void (buttons.current.static = el)} className={`welcome-action export-card${cardState('static')}`} aria-disabled={!!busy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
+                <span className="ico"><Globe size={18} /></span>
+                <span className="grow">
+                  <span className="export-card-title">
+                    <strong>Website files, ready to upload</strong>
+                    {cardEnd('static', blocked || draftLinks.length > 0)}
+                  </span>
+                  <span className="export-card-line">{format === 'zip' ? 'Every published page as a finished website, in one ZIP file.' : 'Every published page as a finished website folder, for any web host.'}</span>
+                  <span className="export-card-line export-card-photos" data-testid="export-photo-privacy">
+                    <MapPinOff aria-hidden /> <span>Removes where each photo was taken and the camera details. Credits, copyright, orientation and colour stay.</span>
+                  </span>
+                </span>
+              </button>
+              <button ref={(el) => void (buttons.current.source = el)} className={`welcome-action export-card secondary${cardState('source')}`} aria-disabled={!!busy || blocked || undefined} aria-describedby={blockedBy.join(' ') || undefined} onClick={() => void run('source')}>
+                <span className="ico"><FolderCode size={18} /></span>
+                <span className="grow">
+                  <span className="export-card-title">
+                    <strong>Editable project, for a developer</strong>
+                    {cardEnd('source', blocked)}
+                  </span>
+                  <span className="export-card-line">The complete project {formatWords}, so a developer can keep building it with standard tools.</span>
+                  <span className="export-card-line export-card-photos">
+                    <MapPin aria-hidden /> <span>Photos stay exactly as imported, including any location they record.</span>
+                  </span>
+                </span>
+              </button>
             </div>
-            <button ref={(el) => void (buttons.current.static = el)} className={`welcome-action${cardState('static')}`} aria-disabled={!!busy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
-              <span className="ico"><Globe size={18} /></span>
-              <span className="grow">
-                <strong>Website files, ready to upload</strong>
-                <span className="export-card-line">{format === 'zip' ? 'Every published page as a finished website, in one ZIP file.' : 'Every published page as a finished website folder, for any web host.'}</span>
-                <span className="export-card-line" data-testid="export-photo-privacy">Photos leave out where they were taken and the camera details. Credits, copyright, orientation and colour stay.</span>
-              </span>
-              <ChevronRight className="chev" />
-            </button>
-            <button ref={(el) => void (buttons.current.source = el)} className={`welcome-action secondary${cardState('source')}`} aria-disabled={!!busy || blocked || undefined} aria-describedby={blockedBy.join(' ') || undefined} onClick={() => void run('source')}>
-              <span className="ico"><FolderCode size={18} /></span>
-              <span className="grow">
-                <strong>Editable project, for a developer</strong>
-                <span className="export-card-line">The complete project {formatWords}, so a developer can keep building it with standard tools.</span>
-                <span className="export-card-line">Photos stay exactly as imported, including any location they record.</span>
-              </span>
-              <ChevronRight className="chev" />
-            </button>
             {history}
           </>
         )}

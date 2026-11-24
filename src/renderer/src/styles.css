@@ -934,75 +934,200 @@ iframe { color-scheme: light dark; }
 .version-pane .code-view { height: auto; max-height: 240px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .scope-note.instance { background: var(--panel-2); }
 
-/* Export dialog: the pages the website publishes and the drafts it leaves out. */
-.export-pages { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); color: var(--text-2); font-size: 12.5px; }
-.export-pages p { display: flex; gap: 6px; align-items: flex-start; margin: 0; overflow-wrap: anywhere; }
-.export-pages p svg { flex: none; margin-top: 2px; }
+/* Export dialog. Order of the setup: what stops an export, what to look at before the public does, the choice, then
+   what the website includes and what was exported before. Red is a blocker or a failure (CircleAlert), amber is an
+   advisory (TriangleAlert), neutral is information. Wide enough that a reviewed detail and its actions share a row. */
+.modal:has(> .modal-body > .export-dialog) { width: min(600px, calc(100vw - 48px)); }
+/* The title glyph names the dialog quietly; accent is for selection, focus and the primary action. */
+.modal:has(> .modal-body > .export-dialog) > .modal-head > svg { color: var(--text-2); }
+/* A short window keeps both choices in view: the intro goes, and the cards sit side by side where there is width. */
+@media (max-height: 720px) {
+  .export-intro { display: none; }
+}
+@media (max-height: 720px) and (min-width: 880px) {
+  .modal:has(> .modal-body > .export-dialog) { width: min(800px, calc(100vw - 48px)); }
+  .export-dialog .export-choice .export-card { padding: 12px; gap: 10px; }
+  .export-dialog .export-choice { display: grid; grid-template-columns: 1fr 1fr; }
+  .export-dialog .export-choice-head { grid-column: 1 / -1; }
+}
+.export-dialog { display: flex; flex-direction: column; gap: 12px; }
+.export-intro { margin: 0; color: var(--text-2); }
+.export-note-body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.export-note-line { display: block; margin: 0; padding-left: 0.8em; text-indent: -0.8em; overflow-wrap: anywhere; text-wrap: pretty; }
+.export-note-next { margin-top: 2px; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--red) 18%, transparent); }
+/* A disclosure inside a note or row: its chevron sits on the text edge above it. */
+.export-note-toggle { align-self: flex-start; margin-left: -6px; padding-left: 4px; padding-right: 8px; gap: 4px; }
+
+/* Blockers: one bold sentence saying what is stopped, then why and how to clear it. */
+.export-blocker { align-items: flex-start; padding: 10px 12px; }
+.export-blocker > svg, .export-blocker > .spinner { margin-top: 2px; }
+.export-blocker-text { display: flex; flex-direction: column; gap: 2px; text-wrap: pretty; }
+.export-blocker-text > span { color: var(--text-2); }
+.export-blocker > .btn { flex: none; align-self: flex-start; margin: -2px 0 0 8px; }
+/* A blocker's text and its disclosure share a row; the list it opens takes the full width below, after it in Tab order. */
+.export-blocker-head { display: flex; align-items: flex-start; gap: 12px; }
+.export-blocker-head > .export-blocker-text { flex: 1; min-width: 0; }
+.export-blocker-toggle { flex: none; gap: 4px; margin-top: -2px; padding-left: 6px; }
+.scope-note.danger.export-blocker, .export-failure { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 22%, transparent); }
+.scope-note.info.export-blocker { background: var(--panel-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.export-draft-links { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; }
+.export-draft-links[hidden] { display: none; }
+.export-draft-links li { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; color: var(--text); text-wrap: pretty; }
+.export-draft-links li + li { border-top: 1px solid color-mix(in srgb, var(--red) 16%, transparent); }
+.export-draft-links li > .btn { flex: none; }
+.export-draft-links li:last-child { padding-bottom: 0; }
+
+/* Advisory: the starter's sample contact details. A counted amber head, then one neutral row per detail. */
+.export-samples-review { display: flex; flex-direction: column; gap: 8px; }
+.export-review { display: flex; flex-direction: column; border-radius: var(--r-sm); background: var(--panel); box-shadow: inset 0 0 0 1px var(--border); overflow: hidden; }
+.export-review-head { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; background: var(--amber-soft); line-height: 1.45; }
+.export-review-head > svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--amber); }
+.export-review-head strong { display: block; font-weight: 600; color: var(--text); }
+.export-review-head span { display: block; color: var(--text-2); text-wrap: pretty; }
+/* An in-place disclosure, not a call to act: an amber-tinted outline with no lift, quieter than the exports. */
+.export-review-toggle { flex: none; align-self: center; gap: 4px; padding: 0 9px 0 6px; background: transparent; border-color: color-mix(in srgb, var(--amber) 35%, var(--border-control)); box-shadow: none; }
+.export-review-toggle:hover:not(:disabled) { background: var(--hover); border-color: var(--border-control); }
+.export-review-list[hidden] { display: none; }
+.export-review-list { list-style: none; margin: 0; padding: 0 12px 0 34px; }
+.export-review-list > li { padding: 8px 0; }
+.export-review-list > li + li { border-top: 1px solid var(--border); }
+.export-review-row { display: flex; align-items: center; gap: 12px; }
+.export-review-what { flex: 1; min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.export-review-what strong { font-weight: 600; }
+.export-review-where { color: var(--text-2); }
+.export-review-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.export-review-actions .btn-ghost { margin-right: -6px; }
+/* Quieter than the export itself: an outline without the lift, still a full 26px target. */
+.export-review-actions .btn:not(.btn-ghost) { background: transparent; border-color: var(--border-control); box-shadow: none; }
+.export-review-actions .btn:not(.btn-ghost):hover:not(:disabled) { background: var(--hover); border-color: var(--border-control); }
+/* Inline in the sentence it ends, so it keeps the line's own height (WCAG 2.5.8's inline exception). */
+.export-inline-toggle { display: inline-flex; align-items: center; gap: 1px; padding: 0 1px; border: 0; border-radius: var(--r-xs); background: none; color: var(--text); font-size: 12.5px; font-weight: 500; line-height: inherit; vertical-align: baseline; white-space: nowrap; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 2px; }
+.export-inline-toggle svg { color: var(--text-2); align-self: center; }
+.export-inline-toggle:hover { text-decoration-color: currentColor; }
+.export-samples-places { list-style: none; margin: 6px 0 0; padding: 0 0 0 10px; display: flex; flex-direction: column; border-left: 2px solid var(--border); font-size: 12.5px; }
+.export-samples-places[hidden] { display: none; }
+.export-samples-places li { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; color: var(--text-2); }
+.export-samples-places li .btn { margin-right: -6px; }
+.export-samples-kept { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 0 2px; font-size: 12.5px; color: var(--text-2); }
+.export-review + .export-samples-kept { padding: 0 12px; }
+.export-samples-kept > svg { width: 14px; height: 14px; flex: none; margin-top: 4px; color: var(--green); }
+/* A secondary way back, so neutral: accent stays for selection, focus and the primary action. */
+.export-samples-kept .link-btn { min-height: 24px; color: var(--text-2); }
+.export-samples-kept .link-btn:hover { color: var(--text); }
+
+/* The choice: its heading and the format it applies to, then the two exports, each starting on click. */
+.export-choice { display: flex; flex-direction: column; gap: 8px; }
+.export-choice-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.export-choice-head h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.export-format { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+.export-format-control { display: inline-flex; min-width: 0; margin: 0; padding: 0; border: 0; }
+.export-dialog .export-card { align-items: flex-start; padding: 14px 12px 14px 14px; }
+.export-dialog .export-card .ico { background: var(--active); color: var(--text-2); }
+.export-dialog .export-card .grow { padding-top: 1px; }
+/* The card's status sits on its title row, so a change of status never re-wraps the copy below it. */
+.export-card-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-height: 24px; margin: -2px 0 2px; }
+.export-card-title > strong { padding-top: 3px; }
+.export-card-line { display: block; line-height: 1.45; text-wrap: pretty; }
+.export-card-line + .export-card-line { margin-top: 4px; }
+.export-card-photos { display: flex; align-items: flex-start; gap: 6px; }
+.export-dialog .export-card-photos > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+.export-dialog .export-card-end { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 24px; padding: 0 2px; border-radius: var(--r-sm); font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.export-dialog .export-card-end.is-ready { padding: 0 4px 0 9px; background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+.export-dialog .export-card:hover:not(:disabled, [aria-disabled='true']) .export-card-end.is-ready { background: var(--panel-2); }
+/* The website is the dialog's one primary action, so only its ready end takes the accent fill: unless a failure has a
+   fix to make first, which then holds the accent while the retry waits, neutral. */
+.export-dialog:not(.has-fix) .export-card:not(.secondary) .export-card-end.is-ready { background: var(--accent-fill); color: var(--on-accent); box-shadow: none; }
+.export-dialog:not(.has-fix) .export-card:not(.secondary):hover:not(:disabled, [aria-disabled='true']) .export-card-end.is-ready { background: var(--accent-fill-hover); }
+.export-card-end svg { width: 14px; height: 14px; }
+/* An export that cannot start stays readable: its photo note still informs the choice. */
+.export-dialog .export-card[aria-disabled='true'] { opacity: 1; background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
+.export-dialog .export-card[aria-disabled='true'] strong { color: var(--text-2); }
+.export-dialog .export-card[aria-disabled='true'] .ico { color: var(--text-3); }
+.export-dialog .export-card[aria-disabled='true'] .export-card-end { font-weight: 500; color: var(--text-3); }
+.export-dialog .export-card.is-running[aria-disabled='true'] { background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); }
+.export-dialog .export-card.is-running[aria-disabled='true'] strong { color: var(--text); }
+.export-dialog .export-card.is-running[aria-disabled='true'] .export-card-end { font-weight: 600; color: var(--text); }
+
+/* What the website includes: published pages and the drafts it leaves out. */
+.export-pages { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 4px; padding: 0 2px; color: var(--text-2); font-size: 12.5px; text-wrap: pretty; }
+.export-pages > p { grid-column: 1; }
+.export-pages > p + p { grid-column: 1 / -1; }
+/* The disclosure sits beside the counts it opens, not on a row of its own. */
+.export-pages > .export-pages-toggle { grid-column: 2; grid-row: 1; align-self: start; margin: -3px -6px 0 0; }
+.export-pages > .export-pages-all { grid-column: 1 / -1; }
+.export-pages p { display: flex; gap: 8px; align-items: flex-start; margin: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.export-pages p svg { flex: none; margin-top: 2px; color: var(--text-3); }
 .export-pages strong { color: var(--text); font-weight: 600; }
-.export-pages-toggle { align-self: flex-start; margin-left: 11px; padding-left: 5px; }
-.export-pages-all { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; padding: 2px 0 2px 20px; }
+.export-pages-toggle { gap: 4px; padding-left: 4px; }
+.export-pages-all { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; padding: 2px 0 2px 22px; }
 .export-pages-all[hidden] { display: none; }
 .export-pages-all h3 { margin: 0 0 3px; font-size: 12px; font-weight: 600; color: var(--text); }
 .export-pages-all ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .export-pages-all li { overflow-wrap: anywhere; color: var(--text); }
 .export-pages-all li span { color: var(--text-3); }
-.export-draft-links { margin: 0; padding-left: 0.8em; overflow-wrap: anywhere; }
-.export-samples-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.export-samples-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.export-samples-head > span { min-width: 12em; overflow-wrap: anywhere; }
-.export-samples-places { list-style: none; margin: 0; padding: 0 0 0 20px; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
-.export-samples-places[hidden] { display: none; }
-.export-samples-places li { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
-.export-samples-review { display: flex; flex-direction: column; gap: 6px; }
-.export-samples-kept { margin: 0; font-size: 12.5px; }
-.export-note-toggle { align-self: flex-start; margin-left: -9px; padding-left: 5px; }
-@media (min-height: 721px) {
-  .export-links-short .export-draft-links[hidden] { display: block; }
-  .export-links-short .export-note-toggle { display: none; }
-}
-/* Export dialog: the current blocker, job or result comes first, then the choices. */
-.export-dialog { display: flex; flex-direction: column; gap: 10px; }
-.export-intro { margin: 0; color: var(--text-2); }
-.export-progress { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-sm); background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-strong); font-size: 13px; }
-/* Keyboard focus scrolled into view stops below the banner rather than behind it. */
-.modal-body:has(.export-progress:not(:empty)) { scroll-padding-top: 72px; }
+
+/* The job: always mounted so its start is announced, and in view while the body scrolls. */
+.export-progress { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-strong), 0 6px 14px -10px rgb(28 39 66 / 0.45); font-size: 13px; }
+:where(:root[data-appearance='dark']) { .export-progress { box-shadow: inset 0 0 0 1px var(--border-strong), 0 8px 16px -8px rgb(0 0 0 / 0.6); } }
+/* While a job runs, scrolling to a focused control keeps it clear of the banner (WCAG 2.4.11). */
+.modal-body:has(.export-progress:not(:empty)) { scroll-padding-top: 76px; }
 .export-progress:empty { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); box-shadow: none; }
 .export-progress .spinner { width: 16px; height: 16px; }
 .export-progress strong { display: block; font-weight: 600; color: var(--text); }
 .export-progress span span { display: block; font-size: 12px; color: var(--text-2); }
-.export-note-body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
-.export-note-line { display: block; padding-left: 0.8em; text-indent: -0.8em; overflow-wrap: anywhere; }
-.export-note-next { margin-top: 2px; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--red) 18%, transparent); }
-.export-row-notes .export-note-line + .export-note-line { margin-top: 3px; }
-.export-path { display: block; overflow-wrap: anywhere; user-select: text; color: var(--text-2); }
+
+/* The result. A failure and its report share one red card; the report sits outside the alert node. */
+.export-outcome { display: flex; flex-direction: column; }
+.export-result { padding: 10px 12px; }
+.export-result > svg { margin-top: 2px; }
+.scope-note.shared.export-result { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 22%, transparent); }
+.scope-note.shared.export-result .export-note-body { gap: 2px; }
+.scope-note.shared.export-result .export-note-body > span:not(.export-path) { color: var(--text-2); }
+.export-failure { border-radius: var(--r-sm); background: var(--red-soft); }
+.export-failure > .scope-note.export-result { background: none; }
+.export-failure > .build-details { padding-top: 2px; }
+.export-path { display: block; overflow-wrap: anywhere; user-select: text; font-family: var(--mono); font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
 .export-path strong { display: inline-block; max-width: 100%; font-weight: 600; color: var(--text); }
-.export-format { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
-.export-format-control { display: inline-flex; min-width: 0; margin: 0; padding: 0; border: 0; }
-.export-card-line { display: block; }
-.export-card-line + .export-card-line { margin-top: 3px; }
-/* An export that cannot start stays readable: its privacy note still informs the choice. */
-.export-dialog .welcome-action[aria-disabled='true'] { opacity: 1; background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
-.export-dialog .welcome-action[aria-disabled='true'] strong { color: var(--text-2); }
-.export-dialog .welcome-action[aria-disabled='true'] .ico { background: var(--active); color: var(--text-3); }
-.export-dialog .welcome-action[aria-disabled='true'] > .chev { visibility: hidden; }
-.export-dialog .welcome-action.is-running[aria-disabled='true'] { background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); }
-.export-dialog .welcome-action.is-running[aria-disabled='true'] strong { color: var(--text); }
-.export-dialog .welcome-action.is-running[aria-disabled='true'] .ico { background: var(--accent-soft); color: var(--accent-text); }
+/* One line: the folder gives way from its start (an ellipsis on the left), the name stays whole. */
+.export-path.is-compact { white-space: nowrap; overflow: hidden; }
+.export-path-dir { display: inline-block; vertical-align: top; max-width: max(0px, calc(100% - var(--name, 0ch))); overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.export-path-dir bdi { unicode-bidi: isolate; }
+.export-path.is-compact strong { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 .export-hosting { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-3); }
 .export-hosting svg { flex: none; }
-/* Export dialog: what this opening of the project exported, newest first. */
-.export-history { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
-.welcome-action + .export-history { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
-.export-history h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
-.export-history > p { margin: 0; font-size: 12px; }
+
+/* What this opening of the project exported, newest first; the newest is raised after a success. */
+.export-history { display: flex; flex-direction: column; gap: 8px; }
+.export-choice ~ .export-history { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--border); }
+.export-history-title { display: flex; flex-direction: column; gap: 1px; }
+.export-history-title h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.export-history-title span { font-size: 12px; color: var(--text-2); }
 .export-history ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.export-history li { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; }
-.export-history li.is-latest { background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); }
-.export-history-head strong { font-size: 13px; font-weight: 600; }
+.export-history li { display: flex; flex-direction: column; gap: 4px; padding: 9px 12px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.45; }
+.export-history li.is-latest:not(:last-child) { margin-bottom: 8px; }
+.export-history li.is-latest { gap: 6px; padding: 12px; background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-sm); }
+.export-history-head { display: flex; align-items: baseline; gap: 8px; }
+.export-history-head strong { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.export-history-head span { flex: none; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.export-history-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.export-history-hint { margin-left: 2px; color: var(--text-2); }
+.export-row-notes-wrap { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.export-row-notes-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+.export-row-notes { display: flex; flex-direction: column; gap: 6px; color: var(--text-2); }
+.export-row-notes[hidden] { display: none; }
+.export-row-notes .export-note-line { position: relative; padding-left: 14px; text-indent: 0; }
+.export-row-notes .export-note-line::before { content: ''; position: absolute; left: 3px; top: 0.62em; width: 4px; height: 4px; border-radius: 50%; background: var(--text-3); }
+/* Folded notes open under their disclosure's label. */
+.export-note-toggle + .export-row-notes { padding-left: 14px; }
+
 /* A failed build's report: closed until asked for, copyable either way. */
-.build-details { display: flex; flex-direction: column; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-.export-result + .build-details { margin-top: -4px; }
-.build-details pre { max-height: 220px; overflow: auto; margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; user-select: text; color: var(--text-2); }
+.build-details { display: flex; flex-direction: column; gap: 6px; padding: 0 12px 10px 34px; }
+.build-details .export-details-toggle { gap: 4px; padding-left: 6px; }
+/* The fix names a page, and a long title wraps inside the button rather than pushing past the card. */
+.build-details .export-fix { max-width: 100%; height: auto; min-height: 26px; padding-block: 4px; white-space: normal; text-align: left; }
+.build-details .row > .export-details-toggle:first-child { margin-left: -6px; padding-left: 4px; }
+.export-failure .build-details [role='status'] { color: var(--text-2); }
+.build-details pre { max-height: 220px; overflow: auto; margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel); box-shadow: inset 0 0 0 1px var(--border); font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; user-select: text; color: var(--text-2); }
 .scope-note.instance > svg { color: var(--text-2); }
 .scope-note.shared { background: var(--green-soft); }
 .scope-note.shared > svg { color: var(--green); }
