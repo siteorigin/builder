@@ -12,6 +12,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
 import { useKey } from '@engine/image-uses';
 import { altChecks } from '../../src/renderer/src/lib/alt-review';
+import { defaultEditorNode } from '../../src/renderer/src/lib/design-content';
 
 /**
  * Issue #228: Portrait 1 shows in five places. The author replaces it on Home (the hero, two gallery rows) and on
@@ -168,6 +169,85 @@ describe('the uses of an image, one row each', () => {
     // Replace everywhere still reaches them.
     const all = applyOperations(s, [{ type: 'asset.replace', assetId: 'a_person1', withAssetId: 'a_publicity' }]).state;
     expect(((all.pages[home.id].nodes[galleryId] as InstanceNode).props.images as ListItem[]).map((i) => (i.image as ImageValue).assetId)).toEqual(['a_publicity', 'a_publicity', 'a_other']);
+  });
+
+  it('shows an image in a project component’s design at its element there, for Component Studio to open (#209)', () => {
+    const { state, work } = studio();
+    const sectionId = state.pages[work.id].rootIds[0];
+    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: work, nodeId: sectionId, name: 'Portrait band' }]);
+    const definitionId = made.results[0].definitionId as string;
+    const s = structuredClone(made.state);
+    const def = s.components[definitionId];
+    expect(def.owner).toBe('project');
+    // A picture fixed in the design, the same on every placement, rather than one each placement fills in.
+    const designImage = Object.values(def.tree!.nodes).find((n) => n.kind === 'image') as ImageNode;
+    designImage.image = { assetId: 'a_person1', alt: '' };
+    const row = imageUseRows(s, 'a_person1').find((r) => r.where === 'Portrait band design')!;
+    expect(row).toMatchObject({ icon: 'component', what: 'Image', definitionId, at: { owner: { kind: 'component', id: definitionId }, nodeId: designImage.id } });
+  });
+
+  it('names the property of a project component’s starting image, and the element of its design that changes it (#209)', () => {
+    const { state, work, home, galleryId } = studio();
+    const sectionId = state.pages[work.id].rootIds[0];
+    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: work, nodeId: sectionId, name: 'Portrait band' }]);
+    const definitionId = made.results[0].definitionId as string;
+    const def = made.state.components[definitionId];
+    // Making the component let each placement fill in its picture: the one it had is now the starting image.
+    const start = imageUseRows(made.state, 'a_person1').find((r) => r.where === 'Portrait band default')!;
+    expect(start).toMatchObject({ icon: 'component', definitionId });
+    expect(start.at).toBeUndefined();
+    expect(def.properties[start.prop!]?.type).toBe('image');
+    const designImage = Object.values(def.tree!.nodes).find((n) => n.kind === 'image')!;
+    expect(defaultEditorNode(def, start.prop!, 'image')).toBe(designImage.id);
+    // Only the element that shows it as an image: none shows this property as a link.
+    expect(defaultEditorNode(def, start.prop!, 'link')).toBeNull();
+    expect(defaultEditorNode(def, 'no-such-property', 'image')).toBeNull();
+    // A list's starting rows show in no one element.
+    const gallery = made.state.components[(made.state.pages[home.id].nodes[galleryId] as InstanceNode).definitionId];
+    expect(defaultEditorNode(gallery, 'images', 'image')).toBeNull();
+  });
+
+  it('opens the element showing the very field of an object property a starting image is in (#209)', () => {
+    const { state, work } = studio();
+    const sectionId = state.pages[work.id].rootIds[0];
+    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: work, nodeId: sectionId, name: 'Portrait band' }]);
+    const definitionId = made.results[0].definitionId as string;
+    const s = structuredClone(made.state);
+    const def = s.components[definitionId];
+    // Two pictures from one object property: the first starts as Other, the second as the portrait.
+    const first = Object.values(def.tree!.nodes).find((n) => n.kind === 'image') as ImageNode;
+    const second = { ...structuredClone(first), id: `${first.id}-2` };
+    def.tree!.nodes[second.id] = second;
+    const other: ImageValue = { assetId: 'a_other', alt: '' };
+    def.properties.pair = { type: 'object', label: 'Pair', fields: { a: { type: 'image', label: 'A', default: other }, b: { type: 'image', label: 'B', default: other } }, default: { a: other, b: { assetId: 'a_person1', alt: '' } } };
+    first.image = { $prop: 'pair', field: 'a' };
+    second.image = { $prop: 'pair', field: 'b' };
+    const start = imageUseRows(s, 'a_person1').find((r) => r.definitionId === definitionId && r.prop === 'pair')!;
+    expect(start.part).toBe('b');
+    expect(defaultEditorNode(def, 'pair', 'image', 'b')).toBe(second.id);
+    expect(defaultEditorNode(def, 'pair', 'image', 'a')).toBe(first.id);
+    // Without the field, either picture could be meant: neither is opened.
+    expect(defaultEditorNode(def, 'pair', 'image')).toBeNull();
+  });
+
+  it('shows a component’s starting image by the component alone, and a theme component’s design nowhere (#209)', () => {
+    const { state, work } = studio();
+    const sectionId = state.pages[work.id].rootIds[0];
+    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: work, nodeId: sectionId, name: 'Portrait band' }]);
+    const definitionId = made.results[0].definitionId as string;
+    const s = structuredClone(made.state);
+    // The same design, owned by the theme: it can't be changed in Component Studio, so it has no element to show.
+    s.components[definitionId].owner = 'theme';
+    (Object.values(s.components[definitionId].tree!.nodes).find((n) => n.kind === 'image') as ImageNode).image = { assetId: 'a_person1', alt: '' };
+    const theme = imageUseRows(s, 'a_person1').find((r) => r.where === 'Portrait band design')!;
+    expect(theme.definitionId).toBe(definitionId);
+    expect(theme.at).toBeUndefined();
+    // A starting image belongs to the component, not to one element of its design.
+    const hero = (s.pages[s.site.homePageId].nodes[Object.keys(s.pages[s.site.homePageId].nodes).find((id) => s.components[(s.pages[s.site.homePageId].nodes[id] as InstanceNode).definitionId]?.componentId === 'hero.split')!] as InstanceNode).definitionId;
+    s.components[hero].properties.image.default = { assetId: 'a_person1', alt: '' };
+    const start = imageUseRows(s, 'a_person1').find((r) => r.definitionId === hero)!;
+    expect(start).toMatchObject({ icon: 'component', where: `${s.components[hero].name} default`, definitionId: hero });
+    expect(start.at).toBeUndefined();
   });
 });
 

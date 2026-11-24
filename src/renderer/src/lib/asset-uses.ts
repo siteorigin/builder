@@ -20,12 +20,16 @@ export interface PlaceLabel {
   where: string;
   /** The element, and the list row when it is in one ("Gallery · Image 2: Studio front"). */
   what: string;
-  /** The element to show it at: none in a component's design or starting value, which no page shows as such. */
+  /** The element to show it at: in a project component's design, in Component Studio. None in a component's starting
+   *  value, which belongs to no one element, nor in a theme component's design, which can't be changed. */
   at?: { owner: OwnerRef; nodeId: string };
   /** The field the inspector opens there, when the image is a placed component's property or a field of its list. */
   field?: UseField;
-  /** The component whose design or starting value it is in: no page shows it as such. */
+  /** The component whose design or starting value it is in: no page shows it as such, Component Studio does. */
   definitionId?: string;
+  /** For a starting value: the property it is the starting value of, and for an object property, which field. */
+  prop?: string;
+  part?: string;
 }
 
 /** The row of a list property an image is in ("Image 3: Custom"): its position, and its title when it has one. */
@@ -59,17 +63,24 @@ export function describePlace(state: ProjectState, place: ValuePlace, trees = ne
   if ('definitionId' in place) {
     const def = Object.hasOwn(state.components, place.definitionId) ? state.components[place.definitionId] : undefined;
     if (!def) return null;
-    const label = typeof place.path[0] === 'string' ? def.properties[place.path[0]]?.label : undefined;
-    return { icon: 'component', where: `${def.name} default`, what: label ? `${label}: starting image for new copies` : 'Starting image for new copies', definitionId: def.id };
+    const prop = typeof place.path[0] === 'string' ? place.path[0] : undefined;
+    const schema = prop ? def.properties[prop] : undefined;
+    const label = schema?.label;
+    // One field of an object property: its value (['hero', 'default', 'image']) or that field's own ('fields', 'image').
+    const part = schema?.type === 'object' && (place.path[1] === 'default' || place.path[1] === 'fields') && typeof place.path[2] === 'string' ? place.path[2] : undefined;
+    return { icon: 'component', where: `${def.name} default`, what: label ? `${label}: starting image for new copies` : 'Starting image for new copies', definitionId: def.id, ...(prop ? { prop } : {}), ...(part ? { part } : {}) };
   }
   const t = trees.get(`${place.owner.kind}/${place.owner.id}`);
   const node = placeRoot(state, place) as GraphNode | undefined;
   if (!t || !node) return null;
   const row = rowLabel(state, node, place.path);
   const what = row ? `${displayName(state, node)} · ${row}` : displayName(state, node);
-  if (t.owner.kind === 'component') return { icon: 'component', where: `${t.label} design`, what, definitionId: t.owner.id };
   const field = fieldOf(node, place.path);
   const at = { owner: t.owner, nodeId: node.id };
+  if (t.owner.kind === 'component') {
+    const design = { icon: 'component' as const, where: `${t.label} design`, what, definitionId: t.owner.id };
+    return state.components[t.owner.id]?.owner === 'project' ? { ...design, at, ...(field ? { field } : {}) } : design;
+  }
   const shown = { what, at, ...(field ? { field } : {}) };
   return t.owner.kind === 'page' ? { icon: 'page', where: t.label, ...shown } : { icon: 'shell', where: `Shared ${t.label.toLowerCase()}`, ...shown };
 }

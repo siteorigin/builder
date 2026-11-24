@@ -39,6 +39,8 @@ import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
 import { sampleEntries, shownView, templateOwner, viewAt, viewKey, type TemplateMode } from '../lib/template-view';
 import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type FrameEntry, type VisitorHistory } from '../lib/preview-history';
+import { shortcutLabel } from '../lib/shortcut-keys';
+import { settlePageClick } from '../lib/page-clicks';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -47,8 +49,20 @@ export const frameTextFocus = { active: false };
 
 /** Shortcuts as this platform writes them: ⌘ and Meta on macOS, Ctrl and Control elsewhere. */
 const isMac = api.platform === 'darwin';
-const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
+const keys = (k: string) => shortcutLabel(k, api.platform);
 const ariaKeys = (k: string) => (isMac ? k : k.replace('Meta', 'Control'));
+
+/**
+ * Open a page chosen in Pages a moment ago that is still waiting to (see settlePageClick): true when that takes the
+ * canvas somewhere else, so a pick made meanwhile was on what is leaving and selects nothing. The page already shown,
+ * opened again, leaves the pick to land as it would have.
+ */
+function leavingForPage(): boolean {
+  const before = getState();
+  if (!settlePageClick()) return false;
+  const now = getState();
+  return now.pageId !== before.pageId || now.definitionMode !== before.definitionMode || now.templateMode !== before.templateMode;
+}
 
 /** The site's page addresses as they are now (see siteAddresses). */
 const siteNow = () => siteAddresses(Object.values(getState().snapshot?.state.pages ?? {}).map((pg) => pg.route));
@@ -728,8 +742,9 @@ export function Canvas() {
           break;
         }
         case 'select': {
-          // A pick on a page the editor has not yet confirmed (one leaving) selects nothing.
-          if (!st || !s.frameReady) return;
+          // A pick on a page the editor has not yet confirmed (one leaving) selects nothing: also one made while another
+          // page chosen in Pages a moment ago waits to open, which then opens.
+          if (!st || !s.frameReady || leavingForPage()) return;
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
@@ -738,7 +753,7 @@ export function Canvas() {
           break;
         }
         case 'dblclick': {
-          if (!st || !s.frameReady) return;
+          if (!st || !s.frameReady || leavingForPage()) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
           // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
@@ -847,7 +862,7 @@ export function Canvas() {
           frameTextFocus.active = p.on === true;
           break;
         case 'contextmenu': {
-          if (!st || !s.frameReady) return;
+          if (!st || !s.frameReady || leavingForPage()) return;
           pagePick();
           const chain = chainOf(p.chain);
           const ref = pick(chain, false);

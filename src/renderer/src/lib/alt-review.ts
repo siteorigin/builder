@@ -14,10 +14,14 @@ export interface AltCheck {
   where: string;
   /** The element, and the list row when it is in one. */
   what: string;
-  /** The element to show it at: none in a component's design or starting value, which no page shows as such. */
+  /** The element to show it at (see PlaceLabel): in Component Studio for a project component's design. */
   at?: { owner: OwnerRef; nodeId: string };
   /** The field the inspector opens there (see UseField). */
   field?: UseField;
+  /** The component whose design or starting value it is in, and for a starting value, its property. */
+  definitionId?: string;
+  prop?: string;
+  part?: string;
 }
 
 /** The uses still to check after a replacement with `withId` (see altStillToCheck), named as the Assets panel lists them. */

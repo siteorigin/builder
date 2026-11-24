@@ -1,11 +1,12 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, CornerDownRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';
+import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
 import { DraftInput, Field, FieldHome, openSection, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -922,6 +923,43 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
 }
 
 /**
+ * A number property's field. Text that is not a number in range ("12px") is never sent: it stays in the field with
+ * the reason under it until it is corrected or put back with Escape. An emptied field sends nothing, and the saved
+ * value comes back. The reason belongs to this field alone, so it goes with it.
+ */
+function NumberInput({ schema, value, onChange, id, describedBy, invalid, ariaLabel }: { schema: NumberProp; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; id?: string; describedBy?: string; invalid?: boolean; ariaLabel?: string }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const problemId = `${useId()}-problem`;
+  return (
+    <>
+      <DraftInput
+        id={id}
+        aria-describedby={[problem ? problemId : '', describedBy ?? ''].filter(Boolean).join(' ') || undefined}
+        aria-invalid={invalid || !!problem || undefined}
+        value={String(value ?? schema.default)}
+        check={(t) => {
+          const read = readNumberDraft(t, schema);
+          return 'problem' in read ? { message: read.problem } : null;
+        }}
+        onProblem={(p) => setProblem(p?.message ?? null)}
+        // Checked against the property as it is when the field is left (see check); here only that it is a number,
+        // since a commit made after the AI ran is the one built when typing began, and the engine checks the range.
+        onCommit={(t, edit) => {
+          const read = readNumberDraft(t);
+          return 'value' in read ? onChange(read.value, edit) : 'empty' in read ? undefined : false;
+        }}
+        ariaLabel={ariaLabel}
+      />
+      {problem && (
+        <div className="field-error" id={problemId} role="alert">
+          {problem}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
  * its hint; without, it names itself with aria-label.
  */
@@ -946,7 +984,7 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
         />
       );
     case 'number':
-      return <DraftInput {...wired} value={String(value ?? schema.default)} onCommit={(t) => onChange(Number(t))} ariaLabel={name} />;
+      return <NumberInput schema={schema} value={value} onChange={onChange} id={id} describedBy={describedBy} invalid={invalid} ariaLabel={name} />;
     case 'boolean':
       return <Switch id={id} describedBy={describedBy} checked={!!value} onChange={onChange} label={name ?? schema.label} />;
     case 'enum':

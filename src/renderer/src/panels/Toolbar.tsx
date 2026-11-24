@@ -12,6 +12,7 @@ import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
 import { runPhase, settledState } from '../lib/savestate';
 import { postShown, postWorkspace } from '../lib/posts';
+import { shortcutLabel } from '../lib/shortcut-keys';
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
@@ -122,7 +123,7 @@ export function Toolbar() {
   const page = pageId ? state.pages[pageId] : null;
   const preset = viewport === VIEWPORT_PRESETS.desktop ? 'desktop' : viewport === VIEWPORT_PRESETS.tablet ? 'tablet' : viewport === VIEWPORT_PRESETS.phone ? 'phone' : null;
   // Shortcut hints name the keys of this platform.
-  const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
+  const keys = (k: string) => shortcutLabel(k, api.platform);
   const conflicts = snap.conflicts.length > 0;
   const phase = runPhase(runStatus);
   const spin = <LoaderCircle className="spin" />;

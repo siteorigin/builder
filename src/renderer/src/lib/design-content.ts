@@ -63,6 +63,23 @@ export function designContent(def: ComponentDefinition, node: GraphNode): Design
   return out;
 }
 
+/**
+ * The element of a design whose `field` (its image, its link) shows a property's starting value, so its Content is
+ * where that value is changed; for an object property, the one showing its field `part`. Null when no one element
+ * shows it that way: a list's or a table's starting rows, a property nothing shows, one shown only as another field
+ * (a button's text, from the same property as its link), or an object property's value with no field named.
+ */
+export function defaultEditorNode(def: ComponentDefinition, prop: string, field: ContentField, part?: string): string | null {
+  const object = def.properties[prop]?.type === 'object';
+  for (const node of Object.values(def.tree?.nodes ?? {})) {
+    if (!designContent(def, node).some((f) => f.source === 'default' && f.prop === prop && f.field === field)) continue;
+    const raw = (node as unknown as Record<string, unknown>)[field];
+    if (object && !(isBinding(raw) && '$prop' in raw && raw.field !== undefined && raw.field === part)) continue;
+    return node.id;
+  }
+  return null;
+}
+
 /** The edit that changes one content field of a design's node: the value fixed in it, or its property's default. */
 export function designContentOp(def: ComponentDefinition, nodeId: string, field: ContentField, value: unknown): EditOperation {
   return { type: 'node.setContent', owner: { kind: 'component', id: def.id }, nodeId, field, value };

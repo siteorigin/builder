@@ -535,7 +535,7 @@ export function CommandMenu() {
                     {!stacked && address}
                     {/* Drawn, not written: the option's text stays "Go to {title} {address}" and the description says it. */}
                     {current && <span className="hint cmdk-current" aria-hidden="true" />}
-                    {reason ? <span className="hint">{reason}</span> : c.kbd && <kbd className="kbd">{c.kbd}</kbd>}
+                    {reason ? <span className="hint">{reason}</span> : c.kbd && <kbd className="kbd">{platformKeys(c.kbd)}</kbd>}
                   </div>
                 );
               })}
@@ -551,7 +551,7 @@ export function CommandMenu() {
         <div className="cmdk-foot" aria-hidden="true">
           {activeCmd && !unavailable(activeCmd) && (
             <span className="cmdk-foot-enter">
-              <kbd className="kbd">↵</kbd>
+              <kbd className="kbd">{platformKeys('↵')}</kbd>
               {actionOf(activeCmd)}
             </span>
           )}
