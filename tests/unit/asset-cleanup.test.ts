@@ -159,7 +159,7 @@ describe('removing many assets in one batch', () => {
     rejects(() => applyOperations(s, [remove('img10'), { type: 'page.duplicate', pageId: aboutId }, remove('img01')]), /^Operation 3 \(asset\.remove\): This image is used 2 times\. /);
   });
 
-  it('keeps a font family protected until its last face goes, whatever case the faces name it in', () => {
+  it('keeps every face of a family in use until the author chooses for its uses, whatever case the faces name it in', () => {
     const base = site().s;
     const s = applyOperations(base, [
       { type: 'asset.add', asset: face('f1', 'Brand Sans') },
@@ -167,11 +167,15 @@ describe('removing many assets in one batch', () => {
       { type: 'asset.add', asset: face('f3', 'Other') },
       { type: 'token.set', tokenId: 'font.display', value: fonts.importedFontStack('Brand Sans') }
     ]).state;
-    // One face can go while the other still provides the family; the last one cannot.
-    expect(applyOperations(s, [remove('img10'), remove('f1'), remove('f3')]).state.assets.assets.f2).toBeDefined();
-    rejects(() => applyOperations(s, [remove('img10'), remove('f1'), remove('f2')]), /^Operation 3 \(asset\.remove\): This font is used 1 time\. /);
+    // Even with another face left, a face of the family in use goes only with a choice; an unused family's goes freely.
+    rejects(() => applyOperations(s, [remove('img10'), remove('f3'), remove('f1')]), /^Operation 3 \(asset\.remove\): This font is used 1 time\. /);
+    const kept = applyOperations(s, [remove('img10'), { ...remove('f1'), fontUses: 'keep' }, remove('f3')]).state;
+    expect(kept.assets.assets.f2).toBeDefined();
+    expect(kept.assets.assets.f1 ?? kept.assets.assets.f3).toBeUndefined();
+    // The last one cannot be kept on no files.
+    rejects(() => applyOperations(s, [remove('img10'), { ...remove('f1'), fontUses: 'keep' }, { ...remove('f2'), fontUses: 'keep' }]), /^Operation 3 \(asset\.remove\): This font is used 1 time, and it is the last file of brand sans\./);
     // Once the style stops naming the family, both faces can go.
-    const done = applyOperations(s, [remove('f1'), { type: 'token.set', tokenId: 'font.display', value: 'system-ui, sans-serif' }, remove('f2'), remove('img10')]).state;
+    const done = applyOperations(s, [{ type: 'token.set', tokenId: 'font.display', value: 'system-ui, sans-serif' }, remove('f1'), remove('f2'), remove('img10')]).state;
     expect(done.assets.assets.f1 ?? done.assets.assets.f2).toBeUndefined();
   });
 
@@ -204,7 +208,7 @@ describe('removing many assets in one batch', () => {
     const s = applyOperations(base, [{ type: 'token.set', tokenId: 'font.display', value: fonts.importedFontStack('Brand Sans') }]).state;
     expect(assetUsages(s).target).toBe(1);
     scans.mockClear();
-    const r = applyOperations(s, [remove('img10'), remove('miskeyed'), remove('target'), remove('img11')]).state;
+    const r = applyOperations(s, [remove('img10'), { ...remove('miskeyed'), fontUses: 'fallback' }, remove('target'), remove('img11')]).state;
     expect(r.assets.assets.target ?? r.assets.assets.miskeyed).toBeUndefined();
     expect(scans).toHaveBeenCalledTimes(2);
   });

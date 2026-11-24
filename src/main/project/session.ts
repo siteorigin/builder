@@ -1841,6 +1841,9 @@ export class ProjectSession extends EventEmitter {
       // A library image's file is only ever one the importer checked and wrote.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };
+      // Removing a file of a font the site uses changes how its text is drawn: the author decides, having seen what changes.
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.remove' && o.fontUses !== undefined))
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can remove a file of a font the site uses. Change the styles that use the font first, or ask the user to remove the file in Assets, where they see what changes.', recoverable: true } };
       let next: ProjectState;
       let results;
       try {

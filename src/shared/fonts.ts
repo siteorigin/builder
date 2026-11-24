@@ -2,7 +2,7 @@
  * Web fonts imported into a project. Each imported file is a font asset with a family, weight and style;
  * the generator turns them into @font-face rules, and a font token uses one by naming its family.
  */
-import type { AssetRecord, ProjectState } from './types';
+import type { AssetRecord, OwnerRef, ProjectState } from './types';
 
 /** A family becomes a quoted CSS name, so only plain characters are allowed. */
 export const FONT_FAMILY_RE = /^[\p{L}\p{N}][\p{L}\p{N} _-]{0,59}$/u;
@@ -68,38 +68,53 @@ export function stackUsesFamily(stack: string, family: string): boolean {
 }
 
 /**
+ * One place the site uses a font family: a site style (a font token, or a text style naming it directly), the font
+ * of elements on a page, the shared header or footer or a component, or a project code component whose source
+ * names it.
+ */
+export type FontUse = { kind: 'token'; tokenId: string } | { kind: 'element'; owner: OwnerRef } | { kind: 'code'; componentId: string };
+
+interface FontSlot {
+  get: () => string;
+  set: (v: string) => void;
+  use: FontUse;
+}
+
+/**
  * Every place a font family is written: font tokens, text styles, and `fontFamily` styles on elements, overrides
  * and variants. Page titles and other text that merely match a font's name are not font uses.
  */
-function fontSlots(state: ProjectState, components: unknown = state.components, fontTokens: ReadonlySet<string> = new Set()): Array<{ get: () => string; set: (v: string) => void }> {
-  const slots: Array<{ get: () => string; set: (v: string) => void }> = [];
-  const add = (holder: Record<string, unknown>, key: string) => {
-    if (typeof holder[key] === 'string') slots.push({ get: () => holder[key] as string, set: (v) => (holder[key] = v) });
+function fontSlots(state: ProjectState, components: unknown = state.components, fontTokens: ReadonlySet<string> = new Set()): FontSlot[] {
+  const slots: FontSlot[] = [];
+  const add = (holder: Record<string, unknown>, key: string, use: FontUse) => {
+    if (typeof holder[key] === 'string') slots.push({ get: () => holder[key] as string, set: (v) => (holder[key] = v), use });
   };
-  const token = (holder: Record<string, unknown>, key: string, isFont: boolean) => {
+  const token = (holder: Record<string, unknown>, key: string, tokenId: string, isFont: boolean) => {
     const v = holder[key];
+    const use: FontUse = { kind: 'token', tokenId };
     if (typeof v === 'string') {
-      if (isFont) add(holder, key);
-    } else if (v && typeof v === 'object' && 'family' in v) add(v as Record<string, unknown>, 'family');
+      if (isFont) add(holder, key, use);
+    } else if (v && typeof v === 'object' && 'family' in v) add(v as Record<string, unknown>, 'family', use);
   };
   const customGroup = new Map(state.tokens.custom.map((t) => [t.id, t.group]));
   const overrides = state.tokens.overrides as unknown as Record<string, unknown>;
-  for (const id of Object.keys(overrides)) token(overrides, id, customGroup.get(id) === 'font' || id.startsWith('font.') || fontTokens.has(id));
-  for (const t of state.tokens.custom) token(t as unknown as Record<string, unknown>, 'value', t.group === 'font');
-  const walk = (v: unknown) => {
-    if (Array.isArray(v)) v.forEach(walk);
+  for (const id of Object.keys(overrides)) token(overrides, id, id, customGroup.get(id) === 'font' || id.startsWith('font.') || fontTokens.has(id));
+  for (const t of state.tokens.custom) token(t as unknown as Record<string, unknown>, 'value', t.id, t.group === 'font');
+  const walk = (v: unknown, use: FontUse) => {
+    if (Array.isArray(v)) v.forEach((x) => walk(x, use));
     else if (v && typeof v === 'object') {
       const o = v as Record<string, unknown>;
       for (const k of Object.keys(o)) {
         // Only a string is a family: item styles are keyed by item ID, which can be any word, even this one.
-        if (k === 'fontFamily' && typeof o[k] === 'string') add(o, k);
-        else walk(o[k]);
+        if (k === 'fontFamily' && typeof o[k] === 'string') add(o, k, use);
+        else walk(o[k], use);
       }
     }
   };
-  walk(state.pages);
-  walk(components);
-  walk(state.site.shell);
+  const element = (kind: OwnerRef['kind'], id: string): FontUse => ({ kind: 'element', owner: { kind, id } });
+  for (const [id, page] of Object.entries(state.pages ?? {})) walk(page, element('page', (page as { id?: string })?.id ?? id));
+  for (const [id, def] of Object.entries((components ?? {}) as Record<string, unknown>)) walk(def, element('component', (def as { id?: string })?.id ?? id));
+  for (const [part, tree] of Object.entries(state.site.shell ?? {})) walk(tree, element('shell', part));
   return slots;
 }
 
@@ -139,6 +154,41 @@ export function renameFontFamily(state: ProjectState, from: string, to: string) 
     const stack = slot.get();
     if (!stackUsesFamily(stack, from)) continue;
     slot.set(stack.split(',').map((part) => (entryName(part) === name ? `${part.startsWith(' ') ? ' ' : ''}'${to}'` : part)).join(','));
+  }
+}
+
+/**
+ * Every place the site uses a family, by the same rules as `fontAssetUsages`: font tokens and text styles, element
+ * fonts, and project code components that name it (each once).
+ */
+export function familyUses(state: ProjectState, family: string): FontUse[] {
+  const uses = fontSlots(state)
+    .filter((s) => stackUsesFamily(s.get(), family))
+    .map((s) => s.use);
+  const named = namedIn(family);
+  for (const d of projectDefinitions(state)) if (d.kind === 'code' && typeof d.source === 'string' && named(searchText(d.source))) uses.push({ kind: 'code', componentId: d.id });
+  return uses;
+}
+
+/** What a stack falls back to once nothing is left in it. */
+export const FALLBACK_STACK = 'system-ui, sans-serif';
+
+/**
+ * Stop using a family wherever the site's own styles name it. A stack it leads becomes `replaceWith` when one is
+ * given; anywhere else it is taken out of the stack, which then falls back to its next font (or FALLBACK_STACK once
+ * nothing is left). A theme's locked definitions and code are never rewritten.
+ */
+export function dropFontFamily(state: ProjectState, family: string, replaceWith: string | null) {
+  const name = searchText(unquote(family));
+  for (const slot of fontSlots(state, projectDefinitions(state))) {
+    const parts = slot.get().split(',');
+    if (!parts.some((part) => entryName(part) === name)) continue;
+    if (replaceWith && entryName(parts[0]) === name) {
+      slot.set(replaceWith);
+      continue;
+    }
+    const rest = parts.filter((part) => entryName(part) !== name).join(',').trim();
+    slot.set(rest || FALLBACK_STACK);
   }
 }
 

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { brotliCompressSync, constants as zlib, deflateSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng } from '../../src/main/project/media';
+import { cmapLookup, fontCoverage, fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng } from '../../src/main/project/media';
+import { scriptLabels } from '@shared/font-scripts';
 
 const u16 = (n: number) => Buffer.from([n >> 8, n & 255]);
 const u32 = (n: number) => Buffer.from([n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255]);
@@ -206,6 +207,94 @@ describe('web font metadata', async () => {
 
   it('keeps only characters that are safe in a CSS family name', async () => {
     await expect(fontInfo(woff([['name', nameTable("Evil'; } body{x")]]))).resolves.toMatchObject({ family: 'Evil bodyx' });
+  });
+});
+
+/** A cmap table holding the given subtables, each under (platform, encoding). */
+function cmapTable(subtables: Array<[number, number, Buffer]>): Buffer {
+  let offset = 4 + subtables.length * 8;
+  const records: Buffer[] = [];
+  for (const [platform, encoding, t] of subtables) {
+    records.push(Buffer.concat([u16(platform), u16(encoding), u32(offset)]));
+    offset += t.length;
+  }
+  return Buffer.concat([u16(0), u16(subtables.length), ...records, ...subtables.map(([, , t]) => t)]);
+}
+/** Format 4: each segment maps by `delta`, or through its own `glyphs` (a 0 there is a missing character). */
+function cmap4(segments: Array<{ start: number; end: number; delta?: number; glyphs?: number[] }>): Buffer {
+  const all = [...segments, { start: 0xffff, end: 0xffff, delta: 1 }];
+  const n = all.length;
+  const glyphArray: number[] = [];
+  const rangeOffsets = all.map((seg, i) => {
+    if (!seg.glyphs) return 0;
+    const at = (n - i) * 2 + glyphArray.length * 2;
+    glyphArray.push(...seg.glyphs);
+    return at;
+  });
+  const body = Buffer.concat([
+    ...all.map((x) => u16(x.end)),
+    u16(0),
+    ...all.map((x) => u16(x.start)),
+    ...all.map((x) => u16((x.delta ?? 0) & 0xffff)),
+    ...rangeOffsets.map(u16),
+    ...glyphArray.map(u16)
+  ]);
+  return Buffer.concat([u16(4), u16(14 + body.length), u16(0), u16(n * 2), u16(0), u16(0), u16(0), body]);
+}
+/** Format 12: groups of consecutive code points mapped to consecutive glyphs. */
+function cmap12(groups: Array<[number, number, number]>): Buffer {
+  const body = Buffer.concat(groups.map(([a, b, g]) => Buffer.concat([u32(a), u32(b), u32(g)])));
+  return Buffer.concat([u16(12), u16(0), u32(16 + body.length), u32(0), u32(groups.length), body]);
+}
+
+describe('web font character coverage', () => {
+  const lora = (file: string) => readFileSync(join(__dirname, '../../node_modules/@fontsource-variable/lora/files', file));
+
+  it('reads format 4, honouring glyph-array holes and a delta that lands on no glyph', async () => {
+    const cmap = cmapTable([[3, 1, cmap4([{ start: 0x21, end: 0x21, delta: 0x10000 - 0x21 }, { start: 0x41, end: 0x5a, delta: 3 }, { start: 0x61, end: 0x63, glyphs: [40, 0, 42] }])]]);
+    const has = cmapLookup(cmap)!;
+    expect(['!', 'A', 'Z', 'a', 'b', 'c', 'd'].map((c) => has(c.codePointAt(0)!))).toEqual([false, true, true, true, false, true, false]);
+    // Capitals alone are no alphabet: the file is shown in characters it has.
+    const font = woff([['name', nameTable('Brand Caps')], ['OS/2', os2Table(400, false)], ['cmap', cmap]]);
+    await expect(fontCoverage(font)).resolves.toEqual({ scripts: [], sample: 'A B C D E F G H' });
+    await expect(fontInfo(font)).resolves.toEqual({ family: 'Brand Caps', weight: '400', style: 'normal' });
+  });
+
+  it('reads format 12 in a WOFF2 font, beyond the Basic Multilingual Plane', async () => {
+    const cmap = cmapTable([[3, 10, cmap12([[0x410, 0x44f, 1], [0x1f600, 0x1f600, 70]])]]);
+    expect(cmapLookup(cmap)!(0x1f600)).toBe(true);
+    expect(cmapLookup(cmap)!(0x1f601)).toBe(false);
+    await expect(fontCoverage(woff2([[0, cmap], [5, nameTable('Brand Cyr')], [6, os2Table(400, false)]]))).resolves.toEqual({ scripts: ['cyrillic'], sample: 'Аа Бб Жж' });
+  });
+
+  it('never refuses a font over a character map it cannot read', async () => {
+    const broken = cmapTable([[3, 1, cmap4([{ start: 0x41, end: 0x5a, delta: 3 }])]]);
+    broken.writeUInt32BE(0xfff0, 8);
+    const font = woff([['name', nameTable('Brand')], ['OS/2', os2Table(700, false)], ['cmap', broken]]);
+    await expect(fontInfo(font)).resolves.toEqual({ family: 'Brand', weight: '700', style: 'normal' });
+    await expect(fontCoverage(font)).resolves.toBeNull();
+    // Nor over one that will not unpack, or one only a Mac subtable describes.
+    const packed = woff([['name', nameTable('Brand')], ['cmap', Buffer.alloc(400)]]);
+    // Its directory entry (the second) claims twice the size it unpacks to.
+    packed.writeUInt32BE(800, 44 + 20 + 12);
+    await expect(fontInfo(packed)).resolves.toMatchObject({ family: 'Brand' });
+    await expect(fontCoverage(woff([['name', nameTable('Brand')], ['cmap', cmapTable([[1, 0, cmap4([{ start: 0x41, end: 0x5a, delta: 3 }])]])]]))).resolves.toBeNull();
+    await expect(fontCoverage(woff([['name', nameTable('Brand')]]))).resolves.toBeNull();
+  });
+
+  it('tells apart the files of one face split by alphabet, as web fonts often are', async () => {
+    const cases: Array<[string, string[]]> = [
+      ['lora-latin-wght-normal.woff2', ['Latin']],
+      ['lora-latin-wght-italic.woff2', ['Latin']],
+      ['lora-cyrillic-wght-normal.woff2', ['Cyrillic']],
+      ['lora-latin-ext-wght-normal.woff2', ['Latin Extended']],
+      ['lora-vietnamese-wght-normal.woff2', ['Vietnamese']]
+    ];
+    for (const [file, labels] of cases) expect(scriptLabels((await fontCoverage(lora(file)))?.scripts), file).toEqual(labels);
+    // The two upright files declare the same face: only what they cover tells them apart.
+    await expect(fontInfo(lora('lora-cyrillic-wght-normal.woff2'))).resolves.toEqual({ family: 'Lora', weight: '400 700', style: 'normal' });
+    await expect(fontInfo(lora('lora-latin-wght-normal.woff2'))).resolves.toEqual({ family: 'Lora', weight: '400 700', style: 'normal' });
+    await expect(fontInfo(lora('lora-latin-wght-italic.woff2'))).resolves.toEqual({ family: 'Lora', weight: '400 700', style: 'italic' });
   });
 });
 
