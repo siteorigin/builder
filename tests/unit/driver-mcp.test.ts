@@ -1004,7 +1004,7 @@ describe('evidence.read\'s file check', () => {
     expect(Math.ceil(MAX_EVIDENCE_BYTES / 3) * 4).toBeLessThan(10 * 1024 * 1024 - 64 * 1024);
   });
 
-  it('is not held up by something put in a screenshot\'s place that is not a file', async () => {
+  it.skipIf(process.platform === 'win32')('is not held up by something put in a screenshot\'s place that is not a file', async () => {
     const fifo = join(scratch, 'fifo-artifacts');
     mkdirSync(join(fifo, 'snapshots'), { recursive: true });
     expect(spawnSync('mkfifo', [join(fifo, 'snapshots', '0008-editor.png')]).status).toBe(0);

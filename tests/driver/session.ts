@@ -1002,8 +1002,13 @@ export class Session {
     // A credential seen here is remembered, frame by frame as each is read, as one an observation sees is: later replies
     // scrub it too, even when another frame could not be read. Saved keys are read whatever the frames do.
     const remember = (values: string[]) => values.forEach((x) => x && this.secrets.add(x));
-    // One already known settles it at once: nothing else need be read first.
-    if (this.secrets.size) return { ...out, withheld: 'A credential is known in this session, and the image could show it.' };
+    // One already known settles it: the frames are still read, briefly and as far as they can be, so a credential shown
+    // there now is learned before this reply (and any page error it carries) is scrubbed.
+    if (this.secrets.size) {
+      if (page) await bounded(frameSecrets(page, { found: remember }).catch((): string[] => []), 1000, []);
+      if (this.state !== 'ready') throw new DriverError('CLOSED', 'The session closed while the screenshot was read.');
+      return { ...out, withheld: 'A credential is known in this session, and the image could show it.' };
+    }
     const clear = async () => {
       const [shown, stored] = await Promise.all([page ? frameSecrets(page, { strict: true, found: remember }) : Promise.resolve([]), this.storedSecrets(true)]);
       return !this.secrets.size && !stored.length && !shown.length;

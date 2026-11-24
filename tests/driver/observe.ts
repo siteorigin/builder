@@ -15,7 +15,7 @@
  * at all: pixels cannot be scrubbed, and a credential can be painted where no text check sees it.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ElementHandle, Frame, Locator, Page } from 'playwright';
 import { DriverError } from './protocol.ts';
@@ -794,7 +794,8 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number, seen: 
       env.remember?.(v);
       seen.push(...v.filter(Boolean));
     };
-    const known = await Promise.all([frameSecrets(page, { strict: true, found }), env.storedSecrets?.(true) ?? Promise.resolve([])]).catch(() => null);
+    const stored = (env.storedSecrets?.(true) ?? Promise.resolve([])).then((v) => (found(v), v));
+    const known = await Promise.all([frameSecrets(page, { strict: true, found }), stored]).catch(() => null);
     return !!known && !known.flat().length && !env.remembered?.().length;
   };
   if (obs.secrets.length || obs.echoes || !(await clear())) return withheld;
@@ -837,8 +838,13 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number, seen: 
   // Each image is a new file ('wx'): never through a link, nor over a file, already at its name. Only what this capture
   // made is taken back if it fails.
   const create = async (path: string, png: Buffer) => {
-    await writeFile(path, png, { flag: 'wx' });
+    const file = await open(path, 'wx');
     written.push(path);
+    try {
+      await file.writeFile(png);
+    } finally {
+      await file.close();
+    }
   };
   try {
     aborted(signal);
