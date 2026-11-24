@@ -8,8 +8,8 @@ import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolDefinition } from '@agent/types';
-import { toolsForRun } from '@agent/tools';
-import { checkProps, newMacroMemory, runUpsert, upsertToolSchema, withStoredFields } from '@agent/macros';
+import { FOCUSED_PAGE_OPERATIONS, PAGE_OPERATIONS, toolsForRun } from '@agent/tools';
+import { checkProps, connectPendingLinks, newMacroMemory, runUpsert, upsertToolSchema, withStoredFields } from '@agent/macros';
 import { checkAuthority, type Authority } from '@agent/scope';
 import type { ToolHost } from '@agent/tools';
 import { applyOperations } from '@engine/apply';
@@ -2351,7 +2351,7 @@ describe('validate_project and components that are not reusable yet (#363)', () 
 describe('a run limited to one page (#513)', () => {
   const names = (t: ToolDefinition[]) => t.map((x) => x.name);
 
-  it("offers the page tool for that page, without the site's brand, code or wider operations", () => {
+  it("offers the page tool for that page, without the site's brand, code edits or wider operations", () => {
     const state = createStarterState('business', 'Test', false);
     const base = { state, selection: null, codeEnabled: true, definitionOps: false, page: { route: '/about/' } };
     const cloud = toolsForRun({ ...base, capabilities: { toolCalling: 'native', contextWindowTokens: 400000 } });
@@ -2359,33 +2359,49 @@ describe('a run limited to one page (#513)', () => {
     expect(names(cloud.tools)).toEqual(expect.arrayContaining(['upsert_page_with_sections', 'apply_operations', 'read_page', 'inspect_layout', 'request_clarification']));
     expect(names(cloud.tools)).not.toEqual(expect.arrayContaining(['update_site_brand']));
     expect(names(cloud.tools)).not.toContain('apply_source_patch');
-    // Operations for the page's sections and its own settings only.
-    const ops = JSON.stringify(cloud.tools.find((t) => t.name === 'apply_operations')!.parameters);
-    for (const t of ['node.insert', 'node.move', 'node.copy', 'instance.setProp', 'page.update', 'component.detachInstance']) expect(ops, t).toContain(`"${t}"`);
-    for (const t of ['token.set', 'site.update', 'page.create', 'page.remove', 'component.makeUnique', 'component.setPropSchema', 'theme.apply']) expect(ops, t).not.toContain(`"${t}"`);
+    // Operations for the page's sections and its own settings only, and the settings without a new route or translation.
+    const offered = (tools: ToolDefinition[]) => {
+      const params = tools.find((t) => t.name === 'apply_operations')!.parameters as { properties: { operations: { items: { oneOf?: JsonSchemaLike[]; anyOf?: JsonSchemaLike[] } } } };
+      const items = params.properties.operations.items;
+      return (items.oneOf ?? items.anyOf ?? []).map((o) => o.properties as Record<string, JsonSchemaLike>);
+    };
+    const types = (tools: ToolDefinition[]) => offered(tools).map((o) => (o.type as { const: string }).const).sort();
+    // Nothing beyond the page's own (the editor's clipboard, UI state and bindings are never offered here).
+    expect(types(cloud.tools).filter((t) => !PAGE_OPERATIONS.has(t as never))).toEqual([]);
+    for (const t of ['node.insert', 'node.move', 'node.remove', 'node.copy', 'node.setStyle', 'instance.setProp', 'instance.listInsert', 'page.update', 'component.detachInstance']) expect(types(cloud.tools), t).toContain(t);
+    const pageUpdate = offered(cloud.tools).find((o) => (o.type as { const: string }).const === 'page.update')!;
+    expect(Object.keys(pageUpdate)).toEqual(expect.arrayContaining(['title', 'navLabel', 'description', 'showHeader', 'showFooter', 'draft']));
+    expect(Object.keys(pageUpdate)).not.toContain('route');
+    expect(Object.keys(pageUpdate)).not.toContain('linkTranslationTo');
     // The page tool names the page it may build, and cannot join it to a translation.
     const upsert = cloud.tools.find((t) => t.name === 'upsert_page_with_sections')!.parameters as { properties: Record<string, { description?: string }> };
     expect(upsert.properties.slug.description).toBe('This request may build only the page at /about/: use "/about/".');
     expect(upsert.properties).not.toHaveProperty('translationOf');
-    // A small model gets the page tool and its reads, as a site run gets its own.
+    // A small model gets the page tool, its reads, and the few operations that address one section by its ID.
     const local = toolsForRun({ ...base, capabilities: { toolCalling: 'constrained-json', contextWindowTokens: 8000 } });
     expect([local.mode, local.focused]).toEqual(['page', true]);
-    expect(names(local.tools)).toContain('upsert_page_with_sections');
-    expect(names(local.tools)).not.toContain('apply_operations');
+    expect(names(local.tools)).toEqual(expect.arrayContaining(['upsert_page_with_sections', 'apply_operations', 'read_page']));
     expect(names(local.tools)).not.toContain('update_site_brand');
+    expect(types(local.tools)).toEqual([...FOCUSED_PAGE_OPERATIONS].sort());
+    expect(Object.keys(offered(local.tools).find((o) => (o.type as { const: string }).const === 'page.update')!)).not.toContain('route');
     // Once widened, the run is a site run again.
     expect(toolsForRun({ ...base, page: null, definitionOps: true, capabilities: { toolCalling: 'native', contextWindowTokens: 400000 } }).mode).toBe('site');
   });
 
   it('adds the menu link it asked for, and refuses the same link sent as a raw operation', async () => {
     const team = 'pg_team0001';
+    const rawLink = (shell: 'header' | 'footer') => ({ type: 'instance.listInsert', owner: { kind: 'shell', id: shell }, nodeId: session.state.site.shell[shell].rootIds[0], prop: 'links', item: { label: 'Team', link: { type: 'page', target: team } } });
     const { session, adapter, run } = await setup(
       [
-        () => [call('t1', 'upsert_page_with_sections', { slug: '/team/', addToHeaderNav: true, sections: [{ componentId: 'intro.page', props: { heading: 'Our team' } }] })],
+        // The header link the page tool would add, sent by hand.
+        () => [call('t0', 'apply_operations', { expectedRevision: session.revision, operations: [rawLink('header')] })],
+        (req) => {
+          expect(JSON.stringify(req.items.at(-1))).toMatch(/SCOPE_MISMATCH.*instance\.listInsert changes something outside the Team page/);
+          return [call('t1', 'upsert_page_with_sections', { slug: '/team/', addToHeaderNav: true, sections: [{ componentId: 'intro.page', props: { heading: 'Our team' } }] })];
+        },
         (req) => {
           expect(lastResult(req)).toMatchObject({ ok: true, navigation: { header: 'added' } });
-          const footer = session.state.site.shell.footer;
-          return [call('t2', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.listInsert', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.rootIds[0], prop: 'links', item: { label: 'Team', link: { type: 'page', target: team } } }] })];
+          return [call('t2', 'apply_operations', { expectedRevision: session.revision, operations: [rawLink('footer')] })];
         },
         () => finish()
       ],
@@ -2400,7 +2416,7 @@ describe('a run limited to one page (#513)', () => {
     expect(result?.status).toBe('completed');
     expect(toTeam(links('header'))).toBe(true);
     expect(toTeam(links('footer'))).toBe(false);
-    expect(JSON.stringify(adapter.requests[2].items.at(-1))).toMatch(/SCOPE_MISMATCH.*instance\.listInsert changes something outside the Team page/);
+    expect(JSON.stringify(adapter.requests[3].items.at(-1))).toMatch(/SCOPE_MISMATCH.*instance\.listInsert changes something outside the Team page/);
   });
 
   /** A project session's apply, for one authority, without the rest of a run. */
@@ -2449,14 +2465,26 @@ describe('a run limited to one page (#513)', () => {
     expect(pageAt(now(), '/pricing/')).toBeUndefined();
   });
 
-  it('empties a page when asked to remove its other sections with none to keep', async () => {
-    const state = createStarterState('business', 'Test', false);
+  it('leaves a link waiting on another page at the finish too, without calling its page missing', async () => {
+    let state = createStarterState('business', 'Test', false);
+    state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_services1', title: 'Services', route: '/services/' }]).state;
     const about = pageAt(state, '/about/')!;
-    const { host, state: now } = hostFor(state, { kind: 'page', pageId: about.id, label: 'the About page' });
-    expect((await runUpsert({ slug: '/about/', sections: [], removeOtherSections: true }, host, 'e1', newMacroMemory())).ok).toBe(true);
-    expect(now().pages[about.id].rootIds).toEqual([]);
-    // A new page still needs a section.
-    const site = hostFor(state, { kind: 'site' });
-    expect((await runUpsert({ slug: '/team/', sections: [] }, site.host, 'e2', newMacroMemory())).content).toMatchObject({ fields: [{ field: 'sections', message: 'a new page needs at least one section' }] });
+    const services = pageAt(state, '/services/')!;
+    const aboutBanner = about.rootIds.at(-1)!;
+    state = applyOperations(state, [
+      { type: 'instance.setProp', owner: { kind: 'page', id: about.id }, nodeId: aboutBanner, prop: 'primaryLink', value: { type: 'none', target: '' } },
+      { type: 'node.insert', owner: { kind: 'page', id: services.id }, newNodeId: 'n_cta00001', componentId: 'cta.banner', props: { primaryLink: { type: 'none', target: '' } } }
+    ]).state;
+    const memory = newMacroMemory();
+    // Carried from an earlier request: About's button and the Services banner both wait for /contact/, which exists.
+    memory.pendingLinks.push({ route: '/contact/', pageId: about.id, nodeId: aboutBanner, prop: 'primaryLink' }, { route: '/contact/', pageId: services.id, nodeId: 'n_cta00001', prop: 'primaryLink' });
+    const { host, state: now } = hostFor(state, { kind: 'page', pageId: services.id, label: 'the Services page' });
+    const done = await connectPendingLinks(host, memory, 'k1');
+    const contact = pageAt(state, '/contact/')!.id;
+    // The link on the page is connected; the one on About keeps waiting, and /contact/ is not missing.
+    expect((now().pages[services.id].nodes['n_cta00001'] as InstanceNode).props.primaryLink).toEqual({ type: 'page', target: contact });
+    expect((now().pages[about.id].nodes[aboutBanner] as InstanceNode).props.primaryLink).toEqual({ type: 'none', target: '' });
+    expect(done.missing).toEqual([]);
+    expect(memory.pendingLinks).toEqual([{ route: '/contact/', pageId: about.id, nodeId: aboutBanner, prop: 'primaryLink' }]);
   });
 });

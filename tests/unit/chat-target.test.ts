@@ -63,6 +63,7 @@ describe('the composer while a component is edited everywhere (#191)', () => {
     heading.instancePath.pop();
     const whole = chatContextFor(state, scope, { enabled: { page: true, scope: 'site' }, viewport: 390 });
     expect(whole).toMatchObject({ selection: null, selectionLabel: null, component: { id: hero, name: 'Split hero' } });
+    expect(whole).not.toHaveProperty('scope');
   });
 
   it('keeps a part of a component placed in the design, and drops a pick from outside it', () => {
@@ -138,7 +139,7 @@ describe('trying a request about a component again (#191)', () => {
     expect(state.components[theme].owner).toBe('theme');
     expect(retryView(state, { ...ctx, component: { id: theme, name: 'Logo strip' } }, { pageId: home, definitionMode: null })).toMatchObject({ definitionMode: null, missing: 'Logo strip' });
     const { state: noHeading } = applyOperations(state, [{ type: 'node.remove', owner, nodeId: 'heading' }]);
-    expect(retryView(noHeading, { ...ctx, selection: { owner, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading' }, { pageId: home, definitionMode: null })).toMatchObject({ definitionMode: { definitionId: hero }, selection: null, missing: 'Heading' });
+    expect(retryView(noHeading, { ...ctx, selection: { owner, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading' }, { pageId: home, definitionMode: null })).toMatchObject({ definitionMode: { definitionId: hero }, selection: null, scope: 'selection', missing: 'Heading' });
     // The page it was shown on has gone, and with it the only placement: it opens on the page open now.
     const { state: noHome } = applyOperations(state, [{ type: 'page.setHome', pageId: about }]);
     const { state: removed } = applyOperations(noHome, [{ type: 'page.remove', pageId: home, replacementPageId: about }]);
@@ -203,6 +204,7 @@ describe('the composer on a page: selection, this page or the whole site (#513)'
     const asked = chatContextFor(state, picked, { enabled, viewport: 1280, ask: true });
     expect(asked).not.toHaveProperty('scope');
     expect(asked.selection).toEqual(sel);
+    for (const scope of ['page', 'site'] as const) expect(chatContextFor(state, picked, { enabled: { page: true, scope }, viewport: 1280, ask: true })).not.toHaveProperty('scope');
     // A question about the page leaves the selection out, as a page edit does.
     expect(chatContextFor(state, picked, { enabled: { page: true, scope: 'page' }, viewport: 1280, ask: true })).toMatchObject({ selection: null, mode: 'ask' });
     const design = composerScope(state, { pageId: home, selection: { owner, instancePath: [], nodeId: 'heading' }, definitionMode: { definitionId: hero, returnPageId: home } });
@@ -217,6 +219,11 @@ describe('the composer on a page: selection, this page or the whole site (#513)'
     expect(retryView(state, { ...base, scope: 'page' }, { pageId: home, definitionMode: null })).toEqual({ pageId: about, definitionMode: null, selection: null, scope: 'page', missing: null });
     expect(retryView(state, { ...base, scope: 'site' }, { pageId: home, definitionMode: null })).toMatchObject({ scope: 'site' });
     expect(retryView(state, base, { pageId: home, definitionMode: null })).toMatchObject({ scope: 'site' });
+    // Read back damaged: its page, never the whole site.
+    expect(retryView(state, { ...base, scope: 'everything' as never }, { pageId: home, definitionMode: null })).toMatchObject({ scope: 'page' });
+    // Its page has gone: the author is told, and the scope stays the page's (the one open now), never wider.
+    const { state: noAbout } = applyOperations(state, [{ type: 'page.remove', pageId: about, replacementPageId: home }]);
+    expect(retryView(noAbout, { ...base, scope: 'page' }, { pageId: home, definitionMode: null })).toMatchObject({ scope: 'page', missing: 'About' });
     // Continue carries the scope it was sent with.
     expect(continueContext(user('u', { ...base, scope: 'page' }), state, 1280)).toEqual({ ctx: { ...base, scope: 'page' } });
   });

@@ -577,8 +577,9 @@ describe('what a constrained local run sends first (#364)', () => {
     // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.
     site: { code: false, baseline: 42_641, budget: 32_400 },
     'site (code)': { code: true, baseline: 44_027, budget: 33_700 },
-    // A page run (#513) is measured against the site run it was before it had a scope of its own.
-    page: { code: false, baseline: 42_641, budget: 28_700 },
+    // A page run (#513) is measured against the site run it was before it had a scope of its own. It offers the page
+    // tool and the few operations that remove, move or set the page's own settings, but nothing site-wide.
+    page: { code: false, baseline: 42_641, budget: 31_700 },
     section: { code: false, baseline: 12_723, budget: 9_700 },
     part: { code: false, baseline: 10_001, budget: 7_550 },
     ask: { code: false, baseline: 13_138, budget: 9_600 },
@@ -709,8 +710,8 @@ describe('the open page in the first request (#513)', () => {
   it("fits a long page's sections into an eighth of the window, and lists each one it shows whole", () => {
     let state = createStarterState('business', 'Test', false);
     const home = state.site.homePageId;
-    // Thirty sections, most with headings in a script that costs about a token a character.
-    const heading = '長い見出しの文章'.repeat(8);
+    // Thirty sections, most with headings longer than a glance shows, in a script that costs about a token a character.
+    const heading = '長い見出しの文章'.repeat(10);
     state = applyOperations(state, Array.from({ length: 22 }, () => ({ type: 'node.insert' as const, owner: { kind: 'page' as const, id: home }, componentId: 'intro.page', props: { heading } }))).state;
     const roots = state.pages[home].rootIds;
     expect(roots).toHaveLength(30);
@@ -729,10 +730,25 @@ describe('the open page in the first request (#513)', () => {
         expect(shown.length, label).toBeLessThanOrEqual(12);
         for (const x of shown) if (x.text) expect(x.text.length, label).toBeLessThanOrEqual(64);
       }
-    // Texts go before sections do: the larger window lists twelve, with their words.
+    // Texts go before sections do: the larger window lists twelve, with their words, each cut to 64 characters.
     const wide = pageGlance(state, home, pageGlanceChars(32_768))!;
-    expect([(wide.sections as unknown[]).length, wide.omittedSections]).toEqual([12, 18]);
-    expect((wide.sections as Array<{ text?: string }>)[0].text).toBe('Calm, considered spaces for everyday life');
+    const listed = wide.sections as Array<{ text?: string; lists?: Array<{ prop: string; items: number }> }>;
+    expect([listed.length, wide.omittedSections]).toEqual([12, 18]);
+    expect(listed[0].text).toBe('Calm, considered spaces for everyday life');
+    expect(listed[2].lists).toEqual([{ prop: 'items', items: 3 }]);
+    const cut = pageGlance(applyOperations(state, [{ type: 'node.move', owner: { kind: 'page', id: home }, nodeId: roots.at(-1)!, parentId: null, index: 0 }]).state, home, 4096)!;
+    expect((cut.sections as Array<{ text: string }>)[0].text).toBe(`${heading.slice(0, 63)}…`);
+    // Short of room even without words: fewer sections, still in order, and the rest counted.
+    const tight = pageGlance(state, home, 400)!;
+    expect(JSON.stringify(tight).length).toBeLessThanOrEqual(400);
+    expect((tight.sections as unknown[]).length).toBeGreaterThan(0);
+    expect((tight.sections as unknown[]).length).toBeLessThan(8);
+    expect((tight.sections as Array<{ id: string; text?: string }>).every((x, i) => x.id === roots[i] && x.text === undefined)).toBe(true);
+    expect(tight.omittedSections).toBe(30 - (tight.sections as unknown[]).length);
+    // A News list fills itself from the site's articles: what it stores counts for nothing.
+    const news = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: home }, index: 0, componentId: 'content.news' }]).state;
+    expect((pageGlance(news, home, 4096)!.sections as Array<{ componentId: string; lists?: unknown }>)[0]).toMatchObject({ componentId: 'content.news' });
+    expect((pageGlance(news, home, 4096)!.sections as Array<{ lists?: unknown }>)[0].lists).toBeUndefined();
     // An empty page says so in a few bytes, and a page that has gone gives nothing.
     const empty = applyOperations(state, [{ type: 'page.create', pageId: 'pg_empty001', title: 'Empty', route: '/empty/' }]).state;
     expect(pageGlance(empty, 'pg_empty001', 1024)).toEqual({ id: 'pg_empty001', title: 'Empty', route: '/empty/', sections: [] });
@@ -758,7 +774,9 @@ describe('the open page in the first request (#513)', () => {
       expect(posts, String(window)).toHaveLength(1);
       const body = posts[0].body;
       expect(estimateOf(body) + body.max_tokens, String(window)).toBeLessThanOrEqual(window);
+      expect(body.max_tokens, String(window)).toBeGreaterThanOrEqual(1024);
       const context = JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec(body.messages.at(-1).content)![1]);
+      expect(context.allowedScope, String(window)).toMatch(/^only the Home page/);
       expect(context.currentPage.sections.map((x: { id: string }) => x.id), String(window)).toEqual(session.state.pages[session.state.site.homePageId].rootIds);
     }
   });

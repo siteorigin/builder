@@ -394,6 +394,7 @@ try {
   step('once the model answers, Try again lands the same request');
   second.script(envelopeReply('update_site_brand', { siteName: 'Harbor Tea' }, 'Renaming the site'), envelopeReply('finish', { message: 'Renamed the site to Harbor Tea.' }));
   const userMessages = await win.locator('.msg-user').count();
+  const beforeRetry = second.requests.filter((r) => r.method === 'POST').length;
   // Something the author is writing meanwhile stays where it is.
   await message.fill('A note for later');
   await rejected.getByRole('button', { name: 'Try again', exact: true }).click();
@@ -403,6 +404,7 @@ try {
   assert.deepEqual(new Set(second.requests.filter((r) => r.method === 'POST').map((p) => p.body.model)), new Set(['studio-b']));
   assert.equal(await win.locator('.msg-user').count(), userMessages + 1);
   assert.equal(await win.locator('.msg-user').last().innerText(), sent, 'it was the original request, about the same page');
+  assert.equal(sentContext(second.requests.filter((r) => r.method === 'POST')[beforeRetry].body).allowedScope, 'whole site', 'and as far as it reached');
   assert.equal(await message.inputValue(), 'A note for later', 'the draft was kept');
 
   step('with This page chosen, an edit keeps to the open page and starts from its sections');

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { AiEvent, AppSettings, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
-import type { ElementRef, OwnerRef, ResponsiveScope } from '@shared/types';
+import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
@@ -317,7 +317,25 @@ export const inspectorFocusRequest = (f: Omit<InspectorFocus, 'seq' | 'at'>): In
 export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
 
 export const getState = () => useStore.getState();
-export const setState = (p: Partial<State>) => useStore.setState(oneSelection(p));
+export const setState = (p: Partial<State>) => useStore.setState(oneSelection(scopeFollows(p)));
+
+/**
+ * What the next AI message may change starts again from the selected element (or, with none, the page) whenever what
+ * the editor shows changes: another page, a component edited everywhere or not, another element or none. A choice
+ * made for one view never carries into the next. An update that says its own scope ("Edit and try again", Ask AI
+ * about this) keeps it.
+ */
+function scopeFollows(p: Partial<State>): Partial<State> {
+  if (p.chatContextEnabled) return p;
+  const s = useStore.getState();
+  if (s.chatContextEnabled.scope === 'selection') return p;
+  const key = (r: ElementRef | null | undefined) => (r ? refKey(r) : null);
+  const moved =
+    ('pageId' in p && p.pageId !== s.pageId) ||
+    ('definitionMode' in p && (p.definitionMode?.definitionId ?? null) !== (s.definitionMode?.definitionId ?? null)) ||
+    ('selection' in p && key(p.selection) !== key(s.selection));
+  return moved ? { ...p, chatContextEnabled: { ...s.chatContextEnabled, scope: 'selection' } } : p;
+}
 
 /** Selects one layer from Layers and scrolls the page to it, also when it is selected already and has scrolled away. */
 export function showLayer(ref: ElementRef) {

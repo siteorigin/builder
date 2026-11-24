@@ -4,7 +4,7 @@
  * nodes, never the page the canvas happens to show it on. The chips show it and the message is sent with it, from one
  * place.
  */
-import type { ChatContext, ChatEditScope } from '@shared/api';
+import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { inDefinition, placementsOn, refExists, refLabel } from './model';
 
@@ -106,8 +106,10 @@ export function retryView(
   now: { pageId: string | null; definitionMode: DefinitionMode }
 ): { pageId?: string; definitionMode: DefinitionMode; selection: ElementRef | null; scope: ChatEditScope; missing: string | null } {
   const pageOk = !!ctx?.pageId && Object.hasOwn(state.pages, ctx.pageId);
-  // The scope it was sent with; one sent before the scope could be chosen kept to its selection, or reached the whole site.
-  const scope: ChatEditScope = ctx?.scope ?? (ctx?.selection ? 'selection' : 'site');
+  // The scope it was sent with. One sent before the scope could be chosen kept to its selection, or reached the whole
+  // site; one read back damaged keeps to its selection, or its page.
+  const saved = ctx?.scope as unknown;
+  const scope: ChatEditScope = CHAT_EDIT_SCOPES.includes(saved as ChatEditScope) ? (saved as ChatEditScope) : ctx?.selection ? 'selection' : saved === undefined ? 'site' : 'page';
   // Leaving a component edited everywhere goes back to the page it was entered from.
   const leave = now.definitionMode ? { pageId: now.definitionMode.returnPageId } : {};
   const componentId = requestComponentId(ctx);

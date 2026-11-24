@@ -179,6 +179,8 @@ export const PAGE_OPERATIONS = new Set<OperationType>([
   ...(Object.keys(OP_REACH) as OperationType[]).filter((t) => ['node', 'insert', 'copy'].includes(OP_REACH[t]) && t !== 'component.makeUnique' && t !== 'component.convertToCode'),
   'page.update'
 ]);
+/** A small model's page run: the page tool builds sections, and these remove or reorder one by its ID and set the page's own settings. */
+export const FOCUSED_PAGE_OPERATIONS = new Set<OperationType>(['node.remove', 'node.move', 'page.update']);
 
 /** The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it. */
 function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: Set<OperationType>) {
@@ -193,6 +195,9 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
             ? OPERATION_SCHEMAS[t].omit({ index: true })
             : t === 'asset.replace'
               ? OPERATION_SCHEMAS[t].omit({ keepAlt: true, uses: true })
+              : t === 'page.update' && only
+                ? // A run limited to a page changes its own settings: a new route or translation reaches other pages.
+                  OPERATION_SCHEMAS[t].omit({ route: true, linkTranslationTo: true })
               : t === 'node.setBinding'
                 ? OPERATION_SCHEMAS[t].extend({ binding: PROP_OR_ITEM_BINDING })
                 : OPERATION_SCHEMAS[t]
@@ -297,10 +302,11 @@ export function toolsForRun(opts: {
   }
   if (opts.definition) return { tools: general, mode: 'general', focused: false };
   if (opts.page) {
-    // Operations only for the page's own sections and settings, and no code: a component's source shows on every page.
-    const own = toolDefinitions({ codeEnabled, definitionOps: false, operations: PAGE_OPERATIONS }).filter((t) => t.name !== 'apply_source_patch');
+    // Operations only for the page's own sections and settings, and no code edits: a component's source shows on every
+    // page. A small model gets the few that address one section by its ID, which the page tool cannot.
+    const own = toolDefinitions({ codeEnabled, definitionOps: false, operations: focused ? FOCUSED_PAGE_OPERATIONS : PAGE_OPERATIONS }).filter((t) => t.name !== 'apply_source_patch');
     const upsert: ToolDefinition = { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, opts.page.route) };
-    return { tools: [upsert, ...(focused ? own.filter((t) => t.name !== 'apply_operations') : own)], mode: 'page', focused };
+    return { tools: [upsert, ...own], mode: 'page', focused };
   }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state) },

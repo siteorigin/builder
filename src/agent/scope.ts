@@ -42,7 +42,7 @@ export type Authority =
   | { kind: 'component'; definitionId: string; label: string };
 
 /** How a page is named where a run's limit is said: "the About page". */
-export const pageLabel = (title: string) => `the ${title.trim() || 'current'} page`;
+export const pageLabel = (title: unknown) => `the ${(typeof title === 'string' && title.trim()) || 'current'} page`;
 
 /**
  * What a request may change as it starts, from what it was sent with. A request that chose its scope says so; one

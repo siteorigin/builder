@@ -237,6 +237,7 @@ ${rules} Mention anything a tool found that the user needs to act on.`;
     if (mode === 'page')
       return `You build and edit one page of a small business website, made of ready-made section components.
 - This request may change only the page in <editor_context> currentPage, which lists its sections. Build or rewrite it with upsert_page_with_sections and its route: an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there. Internal links use routes such as /contact/.
+- apply_operations removes (node.remove) or moves (node.move) one section by its ID, and changes the page's own settings (page.update).
 - Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or the shared header and footer.
 - When the user wants advice or ideas in chat only, give them and change nothing.
 - When the user asks for checks at screen sizes, run inspect_layout on this page at each of those sizes, after its last change.
@@ -269,6 +270,7 @@ ${shared}`;
   if (mode === 'page')
     return `You build and edit one page of a small business website, made of ready-made section components.
 - This request may change only the page in <editor_context> currentPage, which lists its sections with their IDs; read_page shows their full content. upsert_page_with_sections builds or rewrites it in one call, with all its sections, by its route: an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there, and addToHeaderNav / addToFooterNav add a menu link to it.
+- apply_operations removes or moves one section by its ID (node.remove, node.move) and changes the page's own settings (page.update).
 - read_project with sections ["catalogue"] lists every component with its properties.
 - Internal links use routes such as /contact/.
 - request_clarification asks the user one question and waits for the answer. ${ASKING} Ask with widenScope: true before changing other pages, the site's brand or the shared header and footer: the app rejects those until the user allows it.
@@ -561,9 +563,20 @@ export class Orchestrator {
       return { ok: false, message: 'Your message could not be read. Try sending it again.' };
     // A chosen scope is one the composer offers an edit on a page: a selection request has its selection, a page or
     // site request has none, and a page request is about a page the project still has (never another in its place).
+    // An element chosen on a page is that page's own, or the shared header's or footer's: never another page, nor a
+    // component's design (which is edited everywhere, with its own context).
     if (context.scope !== undefined) {
       const scope = context.scope as unknown;
-      if (!CHAT_EDIT_SCOPES.includes(scope as never) || context.component || context.mode === 'ask' || (scope === 'selection') !== !!context.selection || typeof context.pageId !== 'string')
+      const selected = context.selection?.owner;
+      if (
+        !CHAT_EDIT_SCOPES.includes(scope as never) ||
+        context.component ||
+        (context.mode !== undefined && context.mode !== 'edit') ||
+        (scope === 'selection') !== !!context.selection ||
+        typeof context.pageId !== 'string' ||
+        typeof context.pageTitle !== 'string' ||
+        (selected && !(selected.kind === 'shell' || (selected.kind === 'page' && selected.id === context.pageId)))
+      )
         return { ok: false, message: 'Your message could not be read. Try sending it again.' };
       if (scope === 'page' && !Object.hasOwn(session.state.pages, context.pageId)) return { ok: false, message: `${context.pageTitle || 'That page'} is no longer in the site. Choose what to change, then send again.` };
     }
@@ -747,6 +760,11 @@ export class Orchestrator {
     /** Working time the run may use, not counting time spent waiting for the user's answers. */
     const limitMs = ad.provider === 'local' ? LIMITS.localActiveMs : LIMITS.activeMs;
     const timeLimit = `the ${Math.round(limitMs / 60_000)}-minute time limit`;
+    // A page removed since the request was sent leaves nothing it may change: it ends before anything is held or sent.
+    if (!ask && userMsg.context?.scope === 'page' && !Object.hasOwn(session.state.pages, userMsg.context.pageId)) {
+      await finish('failed', `${userMsg.context.pageTitle || 'That page'} is no longer in the site. ${UNCHANGED}`, { error: 'page removed' });
+      return;
+    }
     const lockErr = ask ? null : await session.beginRun(runId);
     if (lockErr) {
       await finish('failed', lockErr, { error: lockErr });
@@ -884,7 +902,8 @@ export class Orchestrator {
      * An edit that may change the page it was sent from starts with that page's sections, so it need not read the page
      * first: bounded by the model's window. A question, a selection and a component's design start from what they are about.
      */
-    let glance = !ask && ctx && (authority.kind === 'page' || authority.kind === 'site') ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, pageGlanceChars(capabilities.contextWindowTokens), indent) : null;
+    const glanceChars = pageGlanceChars(capabilities.contextWindowTokens);
+    let glance = !ask && ctx && (authority.kind === 'page' || authority.kind === 'site') ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, glanceChars, indent) : null;
     /** This request's own message: what a new conversation would still have to send. */
     const requestMessage = () => `${userMsg.text}\n\n<editor_context>\n${JSON.stringify(
         {
@@ -1219,19 +1238,20 @@ export class Orchestrator {
         const caps = ad.adapter.capabilities();
         const fit = () => applyContextBudget(items, { system, tools, capabilities: caps, isMutation: (n) => MUTATING_TOOLS.has(n as never), revision: readRevision() });
         let budget = fit();
+        // Too long before the first call: the page's sections are a convenience, one read_page away, so fewer of them
+        // go (their words first, then sections from the end), then none, before any tool is given up.
+        for (const share of [2, 4, 0]) {
+          if (!budget.overflow || turns !== 1 || !caps.contextWindowKnown || !glance || ask || !ctx) break;
+          glance = share ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, Math.floor(glanceChars / share), indent) : null;
+          requestItem.text = requestMessage();
+          budget = fit();
+        }
         // A known window that cannot hold the general tools may still hold the small set. Only before this run's
         // first call, so no call in the history names a tool that is no longer offered.
         if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused && narrowTools()) {
           current = runTools();
           tools = current.tools;
           system = systemPrompt(readState(), current, constrainedJson);
-          budget = fit();
-        }
-        // Still too long before the first call: the page's sections are a convenience, one read_page away, so the
-        // request goes without them rather than not at all.
-        if (budget.overflow && turns === 1 && caps.contextWindowKnown && glance?.sections) {
-          glance = null;
-          requestItem.text = requestMessage();
           budget = fit();
         }
         // With only a guessed window the first request goes out regardless: only the server knows its exact count.
@@ -1417,7 +1437,9 @@ export class Orchestrator {
             }
             v.status = 'done';
             // A run may not call itself finished with requested pages left as stubs. It is told once.
-            const stubs = authority.kind === 'site' ? findStubPages(startState, session.state, requestText) : [];
+            // A run limited to one page is held to that page.
+            const limitedTo = authority.kind === 'page' ? authority.pageId : null;
+            const stubs = authority.kind === 'site' || limitedTo ? findStubPages(startState, session.state, requestText).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
             const rejected = [...macros.drafts.keys()];
             const absent = missing();
             if ((stubs.length || links.missing.length || rejected.length || absent.length) && !nudged) {

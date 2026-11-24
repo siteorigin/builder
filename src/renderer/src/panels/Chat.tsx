@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type FieldLocation } from '@shared/api';
-import { refKey, type ElementRef, type ProjectState } from '@shared/types';
+import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
@@ -167,15 +167,6 @@ export function Chat() {
   const shownConversation = useRef<string | null>(null);
   const history = useStore((s) => s.snapshot?.history);
   const rightTab = useStore((s) => s.rightTab);
-  // Choosing a different element scopes the next message to it again; otherwise the choice made with the
-  // scope toggle stays, message after message. With nothing selected, keeping to the selection keeps to the page.
-  const selectionKey = selection ? refKey(selection) : null;
-  const lastSelection = useRef(selectionKey);
-  useEffect(() => {
-    if (selectionKey === lastSelection.current) return;
-    lastSelection.current = selectionKey;
-    if (selectionKey && getState().chatContextEnabled.scope !== 'selection') setState({ chatContextEnabled: { ...getState().chatContextEnabled, scope: 'selection' } });
-  }, [selectionKey]);
 
   const provider = providers.find((p) => p.id === settings?.ai.provider);
   const configured = !!provider?.configured;
@@ -632,8 +623,6 @@ export function Chat() {
                       data-kind={s.kind}
                       onClick={() => {
                         setChatDraft(conversation.id, s.text);
-                        // A starter about other pages or the whole site goes to the whole site, as the scope then shows.
-                        if (!component && (s.kind === 'cross-page' || s.kind === 'create-page' || s.kind === 'site')) setState({ chatContextEnabled: { ...getState().chatContextEnabled, scope: 'site' } });
                         requestAnimationFrame(() => {
                           sizeToFit(taRef.current);
                           taRef.current?.focus();

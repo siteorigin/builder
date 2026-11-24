@@ -555,6 +555,11 @@ describe('page scope (#513)', () => {
     const { state, home, about, first, own } = starter();
     expect(requestAuthority(pageCtx(about, 'Old title'), state)).toEqual({ kind: 'page', pageId: about, label: 'the About page' });
     expect(requestAuthority({ ...pageCtx(about, 'About'), scope: 'site' }, state)).toEqual({ kind: 'site' });
+    // The chosen scope decides, whatever else the request carries.
+    expect(requestAuthority({ ...pageCtx(about, 'About'), scope: 'site', selection: { owner: own, instancePath: [], nodeId: first }, selectionLabel: 'Intro' }, state)).toEqual({ kind: 'site' });
+    expect(requestAuthority({ ...pageCtx(about, 'About'), selection: { owner: own, instancePath: [], nodeId: first }, selectionLabel: 'Intro' }, state)).toEqual({ kind: 'page', pageId: about, label: 'the About page' });
+    // A title read back damaged still names a page.
+    expect(requestAuthority({ ...pageCtx('pg_gone', 7 as unknown as string) }, state)).toEqual({ kind: 'page', pageId: 'pg_gone', label: 'the current page' });
     // Sent before the scope could be chosen: the whole site with nothing selected, the selection with something.
     expect(requestAuthority({ ...pageCtx(home, 'Home'), scope: undefined }, state)).toEqual({ kind: 'site' });
     expect(requestAuthority({ ...pageCtx(about, 'About'), scope: undefined, selection: { owner: own, instancePath: [], nodeId: first }, selectionLabel: 'Intro' }, state)).toMatchObject({ kind: 'selection', nodeId: first });
@@ -573,7 +578,7 @@ describe('page scope (#513)', () => {
     allow({ type: 'node.insert', owner: own, parentId: null, index: 0, componentId: 'cta.banner' });
     allow({ type: 'node.move', owner: own, nodeId: first, parentId: null, index: 2 });
     allow({ type: 'instance.setProp', owner: own, nodeId: first, prop: 'heading', value: 'Hello' });
-    allow({ type: 'node.setStyle', owner: own, nodeId: first, scope: 'base', style: 'paddingTop', value: { token: 'space.lg' } });
+    allow({ type: 'node.setStyle', owner: own, nodeId: first, scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } });
     allow({ type: 'node.remove', owner: own, nodeId: first });
     allow({ type: 'component.detachInstance', owner: own, nodeId: first });
     allow({ type: 'node.insert', owner: own, newNodeId: 'n_fresh1', componentId: 'cta.banner' }, { type: 'instance.setProp', owner: own, nodeId: 'n_fresh1', prop: 'heading', value: 'New' });
@@ -605,11 +610,13 @@ describe('page scope (#513)', () => {
   it('adds only the menu link the page tool asked for to the shared menus', () => {
     const { state, about } = starter();
     const authority: Authority = { kind: 'page', pageId: about, label: 'the About page' };
-    const link = (shell: 'header' | 'footer', label = 'About') => ({ type: 'instance.listInsert', owner: { kind: 'shell', id: shell }, nodeId: state.site.shell[shell].rootIds[0], prop: 'links', item: { label, link: { type: 'page', target: about } } }) as EditOperation;
+    const link = (shell: 'header' | 'footer', label = 'About', target = about) => ({ type: 'instance.listInsert', owner: { kind: 'shell', id: shell }, nodeId: state.site.shell[shell].rootIds[0], prop: 'links', item: { label, link: { type: 'page', target } } }) as EditOperation;
     expect(checkAuthority(state, [link('header')], authority)).toMatch(/outside the About page/);
     expect(checkAuthority(state, [link('header')], authority, { navigation: [link('header')] })).toBeNull();
-    // Not another link, nor the same link in the other menu.
+    expect(checkAuthority(state, [link('footer')], authority, { navigation: [link('footer')] })).toBeNull();
+    // Not another link (another label, or the same label to another page), nor the same link in the other menu.
     expect(checkAuthority(state, [link('header', 'Elsewhere')], authority, { navigation: [link('header')] })).toMatch(/outside the About page/);
+    expect(checkAuthority(state, [link('header', 'About', state.site.homePageId)], authority, { navigation: [link('header')] })).toMatch(/outside the About page/);
     expect(checkAuthority(state, [link('footer')], authority, { navigation: [link('header')] })).toMatch(/outside the About page/);
   });
 
@@ -643,6 +650,7 @@ describe('page scope (#513)', () => {
     expect(Object.values(env.session.state.pages).some((p) => p.route === '/services/')).toBe(false);
     const page = env.session.state.pages[about];
     expect(page.rootIds.map((id) => (env.session.state.components[(page.nodes[id] as InstanceNode).definitionId]?.componentId))).toEqual(['intro.page', 'cta.banner']);
+    expect((page.nodes[page.rootIds[0]] as InstanceNode).props.heading).toBe('Who we are');
   });
 
   it('widens a page run to the whole site only when the user says yes', async () => {
@@ -682,6 +690,48 @@ describe('page scope (#513)', () => {
     expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'everything' as never })).toEqual({ ok: false, message: unreadable });
     expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), mode: 'ask' })).toEqual({ ok: false, message: unreadable });
     expect(await env.orch.send('Hi', pageCtx('pg_gone', 'Prices'))).toEqual({ ok: false, message: 'Prices is no longer in the site. Choose what to change, then send again.' });
+    // An element chosen on another page, or in a component's design, is never this page's selection.
+    const about = Object.values(env.session.state.pages).find((p) => p.route === '/about/')!.id;
+    expect(await env.orch.send('Hi', { ...pageCtx(about, 'About'), scope: 'selection', selection: sel, selectionLabel: 'Hero' })).toEqual({ ok: false, message: unreadable });
+    const design = Object.values(env.session.state.components).find((d) => d.tree)!;
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection', selection: { owner: { kind: 'component', id: design.id }, instancePath: [], nodeId: design.tree!.rootIds[0] }, selectionLabel: 'Root' })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), component: { id: design.id, name: design.name } })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), mode: 'review' as never })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 7 as unknown as string) })).toEqual({ ok: false, message: unreadable });
+    // The header, chosen on this page, is.
+    const header = env.session.state.site.shell.header.rootIds[0];
+    const fine = await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection', selection: { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: header }, selectionLabel: 'Header' });
+    expect(fine.ok).toBe(true);
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+  });
+
+  it('ends a request whose page was removed before it started, without holding the project', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-agent-'));
+    dirs.push(dir);
+    const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
+    const adapter = new FakeAdapter([() => finish('Done.')]);
+    let open!: () => void;
+    const gate = new Promise<void>((res) => (open = res));
+    const events: AiEvent[] = [];
+    const orch = new Orchestrator({
+      session: () => session,
+      // The adapter is prepared while the author goes on editing.
+      adapter: async () => (await gate, { adapter, model: 'fake', provider: 'openai' }),
+      emit: (e) => events.push(e),
+      compileAll: async () => [],
+      inspectLayout: async () => ({ issues: [] }),
+      onBusyChange: () => undefined
+    });
+    const about = Object.values(session.state.pages).find((p) => p.route === '/about/')!.id;
+    expect((await orch.send('Tidy this page', pageCtx(about, 'About'))).ok).toBe(true);
+    expect((await session.apply({ operations: [{ type: 'page.remove', pageId: about, replacementPageId: session.state.site.homePageId }], expectedRevision: session.revision }, { label: 'Remove About', source: 'user' })).ok).toBe(true);
+    open();
+    while (orch.busy) await new Promise((res) => setTimeout(res, 10));
+    const result = [...events].reverse().find((e) => e.message?.result)?.message?.result;
+    expect(result).toMatchObject({ status: 'failed', summary: 'About is no longer in the site. Nothing in the site was changed.' });
+    expect(adapter.requests).toHaveLength(0);
+    // Nothing is held: the author's next change goes straight in.
+    expect((await session.apply({ operations: [{ type: 'site.update', name: 'Still mine' }], expectedRevision: session.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
   });
 
   it('sends the request without the page glance when only that keeps it inside a known window', async () => {
@@ -695,13 +745,15 @@ describe('page scope (#513)', () => {
     expect(editorContext(req).currentPage.sections).toHaveLength(8);
     const needed = estimateRequestTokens(req.system, req.tools, req.items);
     expect(pageGlanceChars(needed)).toBeGreaterThan(JSON.stringify(editorContext(req).currentPage, null, 1).length);
-    for (const [window, glance] of [[needed + 1024, true], [needed + 1023, false]] as const) {
+    // One token short of room for the reply: the sections go without their words, every one still listed by ID.
+    for (const [window, words] of [[needed + 1024, true], [needed + 1023, false]] as const) {
       const env = await setup([() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: window } });
       const { result } = await env.run(text, pageCtx(env.session.state.site.homePageId, 'Home'));
       expect(result?.error, String(window)).toBeUndefined();
       const sent = editorContext(env.adapter.requests[0]).currentPage;
-      expect(Array.isArray(sent.sections), String(window)).toBe(glance);
       expect(sent).toMatchObject({ id: env.session.state.site.homePageId, title: 'Home' });
+      expect(sent.sections.map((x: { id: string }) => x.id), String(window)).toEqual(env.session.state.pages[env.session.state.site.homePageId].rootIds);
+      expect(sent.sections.some((x: { text?: string }) => x.text), String(window)).toBe(words);
     }
   });
 });

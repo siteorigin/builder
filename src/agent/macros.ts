@@ -65,8 +65,11 @@ export function isArticleHeader(state: ProjectState, def: ComponentDefinition, p
   );
 }
 
+/** Long enough for any valid route: four levels of 60 characters and their slashes. */
+const SLUG_CHARS = 250;
+
 export const UPSERT_ARGS = z.object({
-  slug: z.string().min(1).max(120).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
+  slug: z.string().min(1).max(SLUG_CHARS).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
   title: z.string().min(1).max(80).optional().describe('Page title. Defaults to one made from the slug for a new page.'),
   navLabel: z.string().max(40).optional(),
   description: z.string().max(320).optional().describe('Search engine description.'),
@@ -80,8 +83,7 @@ export const UPSERT_ARGS = z.object({
   addToHeaderNav: z.boolean().optional(),
   addToFooterNav: z.boolean().optional(),
   removeOtherSections: z.boolean().optional(),
-  // Empty only to clear an existing page, with removeOtherSections: a new page needs a section.
-  sections: z.array(SECTION_ARGS).max(MAX_SECTIONS).optional(),
+  sections: z.array(SECTION_ARGS).min(1).max(MAX_SECTIONS).optional(),
   repair: z.boolean().optional().describe('After an error: sections holds only the failed sections, each with its index.')
 });
 export type UpsertArgs = z.infer<typeof UPSERT_ARGS>;
@@ -464,7 +466,8 @@ export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, k
     outcome = { ok: true, mutated: true, ops, results: res.results, content: { ok: true } };
   }
   memory.pendingLinks = memory.pendingLinks.filter((p) => !filled.includes(p));
-  return { outcome, missing: [...new Set(memory.pendingLinks.map((p) => p.route))] };
+  // Only a route no page has is missing: a link on another page that a run limited to one page leaves waiting is not.
+  return { outcome, missing: [...new Set(memory.pendingLinks.map((p) => p.route))].filter((r) => !pageAtRoute(state, r)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -696,7 +699,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     const { pageId: _p, ...held } = draft;
     args = { ...held, ...Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined)), sections: merged };
   }
-  if (!args.sections?.length && !page) return fieldError([{ field: 'sections', message: 'a new page needs at least one section' }], 'Nothing was applied.');
+  if (!args.sections && !page) return fieldError([{ field: 'sections', message: 'a new page needs at least one section' }], 'Nothing was applied.');
   if (args.language?.trim() && !isLanguageCode(args.language.trim())) return fieldError([{ field: 'language', message: 'use a language code such as "fr" or "en-GB"' }], 'Nothing was applied.');
   let linkTranslationTo: string | null | undefined;
   if (args.translationOf !== undefined) {
@@ -909,7 +912,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   });
   memory.drafts.delete(route);
 
-  const waiting = [...new Set(memory.pendingLinks.map((p) => p.route))];
+  const waiting = [...new Set(memory.pendingLinks.map((p) => p.route))].filter((r) => !pageAtRoute(after, r));
   const fullNav = Object.entries(nav).filter(([, s]) => s === 'full').map(([k]) => k);
   const content = {
     ok: true,
@@ -960,7 +963,7 @@ export function upsertToolSchema(state: ProjectState, only?: string): JsonSchema
     type: 'object',
     $defs: { image: IMAGE_SCHEMA },
     properties: {
-      slug: { type: 'string', maxLength: 120, description: only ? `This request may build only the page at ${only}: use "${only}".` : 'Page path such as "services". "home" is the home page.' },
+      slug: { type: 'string', maxLength: SLUG_CHARS, description: only ? `This request may build only the page at ${only}: use "${only}".` : 'Page path such as "services". "home" is the home page.' },
       title: { type: 'string', maxLength: 80 },
       navLabel: { type: 'string', maxLength: 40 },
       description: { type: 'string', maxLength: 320, description: 'Search engine description.' },
@@ -973,9 +976,10 @@ export function upsertToolSchema(state: ProjectState, only?: string): JsonSchema
       newsHidden: { type: 'boolean' },
       addToHeaderNav: { type: 'boolean', description: 'true adds a header link if missing (a child page\'s goes under its parent\'s). false or omitted leaves navigation as it is.' },
       addToFooterNav: { type: 'boolean', description: 'true adds a footer link if missing. false or omitted leaves navigation as it is.' },
-      removeOtherSections: { type: 'boolean', description: 'Remove existing sections (theme or project components) that are not in this list; with an empty list, all of them. Hand-built layout stays.' },
+      removeOtherSections: { type: 'boolean', description: 'Remove existing sections (theme or project components) that are not in this list. Hand-built layout stays.' },
       sections: {
         type: 'array',
+        minItems: 1,
         maxItems: MAX_SECTIONS,
         items: section,
         description:

@@ -268,8 +268,9 @@ function sectionGlance(state: ProjectState, tree: NodeTree, id: string, texts: b
     .filter((p) => def.properties[p].type === 'string')
     .map((p) => value(p))
     .find((v): v is string => typeof v === 'string' && !!v.trim());
+  // A computed list (a News feed, say) fills itself from the site: what it stores says nothing of what it shows.
   const lists = props
-    .filter((p) => def.properties[p].type === 'list' && Array.isArray(value(p)))
+    .filter((p) => { const schema = def.properties[p]; return schema.type === 'list' && !schema.feed && Array.isArray(value(p)); })
     .slice(0, 2)
     .map((p) => ({ prop: p, items: (value(p) as unknown[]).length }));
   return { ...out, ...(words ? { text: clip(words.trim().replace(/\s+/g, ' '), GLANCE_TEXT_CHARS) } : {}), ...(lists.length ? { lists } : {}) };
