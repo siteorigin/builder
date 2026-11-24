@@ -20,6 +20,7 @@ export function Toolbar() {
   const leftTab = useStore((s) => s.leftTab);
   const pending = useStore((s) => s.pendingSave);
   const drafting = useStore((s) => s.drafting > 0);
+  const refused = useStore((s) => s.refusedDrafts > 0);
   // The save state is about the author's work and the AI's changes; a read-only question has none.
   const runStatus = useStore(editRunStatus);
   const definitionMode = useStore((s) => s.definitionMode);
@@ -131,11 +132,13 @@ export function Toolbar() {
               ? { kind: 'ai', icon: ai, text: 'AI is working', title: 'The AI is editing this site, and its changes are saved once they pass checks. Open the AI panel' }
               : held
                 ? { kind: 'wait', icon: <Pencil />, text: 'Edit on hold', title: 'An edit you made is waiting for you. Review it below' }
-                : drafting
-                  ? { kind: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
-                  : pending
-                    ? { kind: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
-                    : { kind: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
+                : refused
+                  ? { kind: 'pending', icon: <Pencil />, text: 'Not saved', title: 'Some text is too long to save. Shorten it where it is marked, or press Escape there to put back the saved text.' }
+                  : drafting
+                    ? { kind: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
+                    : pending
+                      ? { kind: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
+                      : { kind: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
   // The AI's question goes straight to the answer field; the other AI states land on the AI panel's tab, so a click
   // shows where it went even when the panel was already open.
   const openAi = () => {

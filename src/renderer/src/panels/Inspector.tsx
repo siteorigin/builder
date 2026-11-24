@@ -50,7 +50,8 @@ import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetu
 import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { applyOps, applyWith, commitOps, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
-import { DraftInput, Field, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, placedOnPage, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
@@ -128,6 +129,29 @@ function readProp(owner: OwnerRef, nodeId: string, prop: string): { value: unkno
   const schema = snap.state.components[node.definitionId]?.properties[prop];
   return { value: node.props[prop] ?? schema?.default, revision: snap.revision };
 }
+
+/** Whether a page, a node, or a list row is still in the project: text kept for a field that belongs to one that
+ *  goes is dropped and offered to copy (see DraftInput's keepWhile and FieldHome). */
+const pageAlive = (id: string) => () => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id);
+const nodeAlive = (owner: OwnerRef, id: string) => () => {
+  const s = getState().snapshot?.state;
+  return !!s && Object.hasOwn(treeFor(s, owner)?.nodes ?? {}, id);
+};
+/** An article's own fields go when the page stops being an article. */
+const articleAlive = (id: string) => () => {
+  const pages = getState().snapshot?.state.pages ?? {};
+  return Object.hasOwn(pages, id) && !!pageArticle(pages[id]);
+};
+/** A placement's property goes when its component no longer has it. */
+const propAlive = (owner: OwnerRef, nodeId: string, prop: string) => () => {
+  const s = getState().snapshot?.state;
+  const node = s ? treeFor(s, owner)?.nodes[nodeId] : undefined;
+  return node?.kind !== 'instance' || Object.hasOwn(s!.components[node.definitionId]?.properties ?? {}, prop);
+};
+const rowAlive = (owner: OwnerRef, nodeId: string, prop: string, itemId: string) => () => {
+  const list = readProp(owner, nodeId, prop)?.value;
+  return !Array.isArray(list) || list.some((x) => (x as ListItem | null)?.id === itemId);
+};
 
 /**
  * Add library images to a list in the order chosen, replacing the sample rows the author was shown, as one undo
@@ -395,6 +419,8 @@ function useFocusRecovery() {
 
 function InspectorBody() {
   const snap = useStore((s) => s.snapshot);
+  // Text handed to a page's settings from elsewhere (an inline rename too long to save) is shown by them afresh.
+  const handoff = useStore((s) => s.keptHandoff);
   const selection = useStore((s) => s.selection);
   const pageId = useStore((s) => s.pageId);
   const definitionMode = useStore((s) => s.definitionMode);
@@ -424,7 +450,7 @@ function InspectorBody() {
     );
   }
   // Keyed by page: fields being typed in belong to their page, never to the one shown after it.
-  if (!selection) return pageId ? <PageSettings key={pageId} page={st.pages[pageId]} state={st} /> : null;
+  if (!selection) return pageId ? <PageSettings key={`${pageId}:${handoff}`} page={st.pages[pageId]} state={st} /> : null;
   const r = resolveRef(st, selection);
   if (!r.node)
     return (
@@ -885,38 +911,41 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       </Problems>
       <Section title="Content" id="content" level={LEVEL} remember={fields.length > 0}>
         {fields.length === 0 && <p className="faint insp-note">This section has no content of its own. Add elements inside it from Insert.</p>}
-        <FieldGroups
-          groups={fields}
-          render={({ key, schema, label }) => {
-            // An object's button is flagged at the object, whichever of its fields holds the missing link.
-            const found = schema.type === 'object' ? unlinked.find((b) => b.link?.prop === key && b.link.itemId === undefined) : unlinkedField(unlinked, key);
-            const own = hideAt(found);
-            return (
-              <PropField
-                key={key}
-                name={key}
-                schema={isHeadingLevel(schema) ? { ...schema, description: HEADING_LEVEL_HINT } : schema}
-                label={label}
-                hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : videoHint(videoNote(key))}
-                value={node.props[key] ?? schema.default}
-                onChange={(v, edit) => set(key, v, edit)}
-                onField={(field, v, edit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label}`, `${node.id}:${key}:${field}`)}
-                onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
-                read={() => readProp(owner, node.id, key)}
-                onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label}`)}
-                state={state}
-                openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
-                annotate={notes(key)}
-                hiddenFields={key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden : undefined}
-                linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
-                error={found ? unlinkedNote({ hide: own?.hide }) : videoNote(key)?.error}
-                action={hideAction(own)}
-                place={schema.type === 'list' ? { ref: selection, list: key } : undefined}
-                pickImages={pickImagesField(def, key, schema)}
-              />
-            );
-          }}
-        />
+        <FieldHome root={`${owner.kind}:${owner.id}:${node.id}`} alive={nodeAlive(owner, node.id)}>
+          <FieldGroups
+            groups={fields}
+            render={({ key, schema, label }) => {
+              // An object's button is flagged at the object, whichever of its fields holds the missing link.
+              const found = schema.type === 'object' ? unlinked.find((b) => b.link?.prop === key && b.link.itemId === undefined) : unlinkedField(unlinked, key);
+              const own = hideAt(found);
+              return (
+                <PropField
+                  key={key}
+                  name={key}
+                  schema={isHeadingLevel(schema) ? { ...schema, description: HEADING_LEVEL_HINT } : schema}
+                  label={label}
+                  hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : videoHint(videoNote(key))}
+                  value={node.props[key] ?? schema.default}
+                  onChange={(v, edit) => set(key, v, edit)}
+                  onField={(field, v, edit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label}`, `${node.id}:${key}:${field}`)}
+                  onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+                  read={() => readProp(owner, node.id, key)}
+                  alive={propAlive(owner, node.id, key)}
+                  onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label}`)}
+                  state={state}
+                  openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
+                  annotate={notes(key)}
+                  hiddenFields={key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden : undefined}
+                  linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
+                  error={found ? unlinkedNote({ hide: own?.hide }) : videoNote(key)?.error}
+                  action={hideAction(own)}
+                  place={schema.type === 'list' ? { ref: selection, list: key } : undefined}
+                  pickImages={pickImagesField(def, key, schema)}
+                />
+              );
+            }}
+          />
+        </FieldHome>
       </Section>
       {axes.length > 0 && (
         <Section title="Design" id="design" level={LEVEL}>
@@ -1263,61 +1292,68 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
       ) : bindings.length ? (
         // When some of this part's words are the card's own and some every card shares, each field says which instead.
         <Section title="Content" id="part-content" level={LEVEL} scope={mixedReach ? undefined : listSchema ? (perItem ? (itemId ? `This ${itemLabel} only` : `Each ${itemLabel}`) : `Every ${itemLabel}`) : everywhere ? 'Same in every placement' : undefined}>
-          {bindings.map((b, i) => {
-            if (b.prop) {
-              const schema = def.properties[b.prop];
-              if (!schema) return null;
-              // Filled in from a property of the design this component sits in: that property's default.
-              const forwarded = everywhere ? forwardedBinding(inst.props[b.prop]) : null;
-              if (forwarded) return <ForwardedDefault key={i} state={state} def={everywhere!} binding={forwarded} />;
-              // Filled in from each item of a list the design repeats it over.
-              if (isBinding(inst.props[b.prop]))
+          {/* The placement this part belongs to: the same place its whole-section fields have. */}
+          <FieldHome root={`${instOwner.kind}:${instOwner.id}:${instNodeId}`} alive={nodeAlive(instOwner, instNodeId)}>
+            {bindings.map((b, i) => {
+              if (b.prop) {
+                const schema = def.properties[b.prop];
+                if (!schema) return null;
+                // Filled in from a property of the design this component sits in: that property's default.
+                const forwarded = everywhere ? forwardedBinding(inst.props[b.prop]) : null;
+                if (forwarded) return <ForwardedDefault key={i} state={state} def={everywhere!} binding={forwarded} />;
+                // Filled in from each item of a list the design repeats it over.
+                if (isBinding(inst.props[b.prop]))
+                  return (
+                    <p key={i} className="muted insp-note">
+                      {schema.label}: each item of the list it repeats over has its own.
+                    </p>
+                  );
                 return (
-                  <p key={i} className="muted insp-note">
-                    {schema.label}: each item of the list it repeats over has its own.
-                  </p>
+                  <div key={i} data-field={b.prop} style={{ display: 'contents' }}>
+                  <PropField
+                    name={b.prop}
+                    schema={schema}
+                    value={inst.props[b.prop] ?? schema.default}
+                    state={state}
+                    hint={mixedReach ? `Same in every ${itemLabel}.` : undefined}
+                    everywhere={!!everywhere}
+                    onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}`)}
+                    onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}:${field}`)}
+                    onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
+                    read={() => readProp(instOwner, instNodeId, b.prop!)}
+                    alive={propAlive(instOwner, instNodeId, b.prop!)}
+                    onTable={(edit) => applyTableEdit(instOwner, instNodeId, b.prop!, edit, `Edit ${schema.label}`)}
+                    linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
+                    {...flagged(b.kind)}
+                    place={schema.type === 'list' ? { ref: parent, list: b.prop! } : undefined}
+                    pickImages={pickImagesField(def, b.prop, schema)}
+                  />
+                  </div>
                 );
-              return (
-                <div key={i} data-field={b.prop} style={{ display: 'contents' }}>
-                <PropField
-                  name={b.prop}
-                  schema={schema}
-                  value={inst.props[b.prop] ?? schema.default}
-                  state={state}
-                  hint={mixedReach ? `Same in every ${itemLabel}.` : undefined}
-                  everywhere={!!everywhere}
-                  onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}`)}
-                  onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}:${field}`)}
-                  onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
-                  read={() => readProp(instOwner, instNodeId, b.prop!)}
-                  onTable={(edit) => applyTableEdit(instOwner, instNodeId, b.prop!, edit, `Edit ${schema.label}`)}
-                  linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
-                  {...flagged(b.kind)}
-                  place={schema.type === 'list' ? { ref: parent, list: b.prop! } : undefined}
-                  pickImages={pickImagesField(def, b.prop, schema)}
-                />
-                </div>
-              );
-            }
-            // A computed row's fields come from its page: said once, below.
-            if (feedRows) return null;
-            if (listProp && listSchema && itemId) {
-              const field = listSchema.fields[b.item!];
-              const item = listItems.find((x) => x.id === itemId);
-              if (!field || !item) return null;
-              const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${keyAt}:${listProp}:${itemId}:${b.item}`);
-              // A page list's card says where an empty field's text comes from.
-              const teaser = teaserFieldNote(state, listSchema, item, b.item!);
-              // An item without its own value for the field shows the field's default, on the site and here.
-              const value = Object.hasOwn(item, b.item!) ? item[b.item!] : field.default;
-              return (
-                <div key={`${itemId}:${b.item}`} data-field={b.item} style={{ display: 'contents' }} {...reveal.handlers}>
-                  <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint ?? (mixedReach ? `This ${itemLabel} only.` : undefined)} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
-                </div>
-              );
-            }
-            return null;
-          })}
+              }
+              // A computed row's fields come from its page: said once, below.
+              if (feedRows) return null;
+              if (listProp && listSchema && itemId) {
+                const field = listSchema.fields[b.item!];
+                const item = listItems.find((x) => x.id === itemId);
+                if (!field || !item) return null;
+                const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${keyAt}:${listProp}:${itemId}:${b.item}`);
+                // A page list's card says where an empty field's text comes from.
+                const teaser = teaserFieldNote(state, listSchema, item, b.item!);
+                // An item without its own value for the field shows the field's default, on the site and here.
+                const value = Object.hasOwn(item, b.item!) ? item[b.item!] : field.default;
+                return (
+                  <div key={`${itemId}:${b.item}`} data-field={b.item} style={{ display: 'contents' }} {...reveal.handlers}>
+                    {/* The same place as this row's field in the section's own list, so text kept there is found here too. */}
+                    <FieldHome part={`prop:${listProp}|item:${itemId}:${b.item}`} alive={rowAlive(instOwner, instNodeId, listProp, itemId)}>
+                      <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint ?? (mixedReach ? `This ${itemLabel} only.` : undefined)} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
+                    </FieldHome>
+                  </div>
+                );
+              }
+              return null;
+            })}
+          </FieldHome>
           {linkPair && pairedItem && itemId && (
             <ContactMismatch text={pairedItem[linkPair.text]} link={pairedItem[linkPair.link]} onRepair={(link, label, revision) => applyListOp(instOwner, instNodeId, listProp!, { kind: 'repair', itemId, field: linkPair.link, value: link, label, revision }, label)} />
           )}
@@ -1528,7 +1564,9 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
         )}
         {node.kind === 'image' && !isBinding(node.image) && (
           <div className="field" role="group" aria-label="Image">
-            <ImageEditor value={node.image} onChange={(v) => content('image', v)} state={state} />
+            <FieldHome root={`${owner.kind}:${owner.id}:${node.id}:image`} alive={nodeAlive(owner, node.id)}>
+              <ImageEditor value={node.image} onChange={(v) => content('image', v)} state={state} />
+            </FieldHome>
           </div>
         )}
         {node.kind === 'link' && (
@@ -1655,7 +1693,9 @@ const FIELD_NAME: Record<ContentField, string> = { text: 'text', label: 'button 
 function DefaultField({ state, def, prop, schema, onChange, label }: { state: ProjectState; def: ComponentDefinition; prop: string; schema: ScalarPropSchema; onChange: (v: unknown, edit?: PendingEdit) => void; label?: string }) {
   return (
     <div data-field={prop} style={{ display: 'contents' }}>
-      <ScalarField schema={schema} value={schema.default} state={state} label={label ?? schema.label} hint={`Each placement fills this in. ${reachText(defaultReach(state, def.id, prop))}`} onChange={onChange} everywhere />
+      <FieldHome root={`default:${def.id}:${prop}`} alive={() => Object.hasOwn(getState().snapshot?.state.components[def.id]?.properties ?? {}, prop)}>
+        <ScalarField schema={schema} value={schema.default} state={state} label={label ?? schema.label} hint={`Each placement fills this in. ${reachText(defaultReach(state, def.id, prop))}`} onChange={onChange} everywhere />
+      </FieldHome>
     </div>
   );
 }
@@ -1724,7 +1764,9 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
           case 'image':
             return (
               <div key={f.field} className="field" data-field="image" role="group" aria-label="Image">
-                <ImageEditor value={f.value as ImageValue} onChange={set(f, 'Edit image everywhere')} state={state} />
+                <FieldHome root={`component:${def.id}:${node.id}:image`} alive={nodeAlive({ kind: 'component', id: def.id }, node.id)}>
+                  <ImageEditor value={f.value as ImageValue} onChange={set(f, 'Edit image everywhere')} state={state} />
+                </FieldHome>
                 {hint && <div className="field-hint">{hint}</div>}
               </div>
             );
@@ -1754,38 +1796,41 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
   if (!fields.length) return null;
   return (
     <Section title="Content" id="content" level={LEVEL} scope="Same in every placement">
-      <FieldGroups
-        groups={fields}
-        render={({ key, schema, label }) => {
-          const raw = node.props[key];
-          const forwarded = forwardedBinding(raw);
-          if (forwarded) return <ForwardedDefault key={key} state={state} def={def} binding={forwarded} />;
-          if (isBinding(raw))
+      <FieldHome root={`${owner.kind}:${owner.id}:${node.id}`} alive={nodeAlive(owner, node.id)}>
+        <FieldGroups
+          groups={fields}
+          render={({ key, schema, label }) => {
+            const raw = node.props[key];
+            const forwarded = forwardedBinding(raw);
+            if (forwarded) return <ForwardedDefault key={key} state={state} def={def} binding={forwarded} />;
+            if (isBinding(raw))
+              return (
+                <p key={key} className="muted insp-note">
+                  {label ?? schema.label}: each item of the list has its own.
+                </p>
+              );
             return (
-              <p key={key} className="muted insp-note">
-                {label ?? schema.label}: each item of the list has its own.
-              </p>
+              <PropField
+                key={key}
+                name={key}
+                schema={schema}
+                label={label}
+                value={raw ?? schema.default}
+                onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}`)}
+                onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}:${field}`)}
+                onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label} everywhere`, op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+                read={() => readProp(owner, node.id, key)}
+                alive={propAlive(owner, node.id, key)}
+                onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label} everywhere`)}
+                state={state}
+                linkPairs={schema.type === 'list' ? itemLinkPairs(placedDef, key) : undefined}
+                everywhere
+                pickImages={pickImagesField(placedDef, key, schema)}
+              />
             );
-          return (
-            <PropField
-              key={key}
-              name={key}
-              schema={schema}
-              label={label}
-              value={raw ?? schema.default}
-              onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}`)}
-              onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}:${field}`)}
-              onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label} everywhere`, op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
-              read={() => readProp(owner, node.id, key)}
-              onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label} everywhere`)}
-              state={state}
-              linkPairs={schema.type === 'list' ? itemLinkPairs(placedDef, key) : undefined}
-              everywhere
-              pickImages={pickImagesField(placedDef, key, schema)}
-            />
-          );
-        }}
-      />
+          }}
+        />
+      </FieldHome>
     </Section>
   );
 }
@@ -2095,10 +2140,10 @@ function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; 
             <DraftInput type="date" value={article.date} onCommit={(v) => (isArticleDate(v) && v !== article.date ? upd({ articleDate: v }, 'Change publication date') : undefined)} />
           </Field>
           <Field label="Byline" hint="Optional. Shown as written.">
-            <DraftInput maxLength={80} placeholder="By Ana Ruiz" value={typeof article.byline === 'string' ? article.byline : ''} onCommit={(v) => upd({ byline: v }, 'Change byline')} />
+            <DraftInput limit={TEXT_LIMITS.byline} keep={`page:${page.id}:byline`} keepWhile={articleAlive(page.id)} placeholder="By Ana Ruiz" value={typeof article.byline === 'string' ? article.byline : ''} onCommit={(v) => upd({ byline: v }, 'Change byline')} />
           </Field>
           <Field label="Excerpt" hint="A sentence or two for News lists and the Article header, under the title.">
-            <DraftInput multiline maxLength={320} value={typeof article.excerpt === 'string' ? article.excerpt : ''} onCommit={(v) => upd({ excerpt: v }, 'Change excerpt')} />
+            <DraftInput multiline limit={TEXT_LIMITS.excerpt} keep={`page:${page.id}:excerpt`} keepWhile={articleAlive(page.id)} value={typeof article.excerpt === 'string' ? article.excerpt : ''} onCommit={(v) => upd({ excerpt: v }, 'Change excerpt')} />
           </Field>
           <SwitchRow
             checked={article.hidden !== true}
@@ -2241,6 +2286,9 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <Field label="Title" error={titleError}>
           <DraftInput
             value={page.title}
+            limit={TEXT_LIMITS.pageTitle}
+            keep={`page:${page.id}:title`}
+            keepWhile={pageAlive(page.id)}
             onCommit={(v) => {
               if (!v.trim()) {
                 setTitleError(`A page needs a title. Kept “${page.title}”.`);
@@ -2279,10 +2327,10 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(!!page.seo.noindex, !!page.seo.searchHidden)}>
         <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
-          <DraftInput value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
+          <DraftInput limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
         </Field>
         <Field label="Description" hint="Shown by search engines. About 150 characters.">
-          <DraftInput multiline value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
+          <DraftInput multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
         </Field>
         <Field label="Sharing image" hint="Shown when the page is shared, and on its card in page lists.">
           <select className="select" value={page.seo.socialImage ?? ''} onChange={(e) => upd({ socialImage: e.target.value || null }, 'Change sharing image')}>

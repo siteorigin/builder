@@ -5,6 +5,7 @@ import { isDocumentLink } from '@engine/apply';
 import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, attachToChat, commitOps, getState, inspectorFocusRequest, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
 import { Field, DraftInput, Segmented, Spinner, Tabs } from '../components/ui';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { inSeries, sortAssets } from '@shared/asset-order';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
@@ -18,6 +19,9 @@ import { documentDetails, documentLabels, documentName, libraryDocuments } from 
 import { altChecks } from '../lib/alt-review';
 import { imageUseRows, type ImageUseRow, type UseField } from '../lib/asset-uses';
 import type { MissingAssetFiles } from '@shared/api';
+
+/** Whether a library file is still in the project, for text kept for its fields (see DraftInput's keepWhile). */
+const assetAlive = (id: string) => () => Object.hasOwn(getState().snapshot?.state.assets.assets ?? {}, id);
 
 /** Above this an image is worth flagging: pages load smaller copies, but the original still ships with the site. */
 const LARGE = 1_500_000;
@@ -1481,10 +1485,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             />
           </Field>
           <Field label="Description" hint="Note what’s in it and where it fits. It helps you and the AI pick images; the AI never sees the picture.">
-            <DraftInput multiline rows={2} placeholder="For example: team photo outside the studio, summer" value={sel.description ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, description: v }], 'Describe image')} />
+            <DraftInput multiline rows={2} limit={TEXT_LIMITS.assetDescription} keep={`asset:${sel.id}:description`} keepWhile={assetAlive(sel.id)} placeholder="For example: team photo outside the studio, summer" value={sel.description ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, description: v }], 'Describe image')} />
           </Field>
           <Field label="Suggested alt text" hint="Filled in when you place the image, for people who can’t see it. Describe what matters, without “image of”. If it’s only decoration, mark it decorative where you place it.">
-            <DraftInput multiline rows={2} value={sel.altSuggestion ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, altSuggestion: v }], 'Edit alt suggestion')} />
+            <DraftInput multiline rows={2} limit={TEXT_LIMITS.altSuggestion} keep={`asset:${sel.id}:altSuggestion`} keepWhile={assetAlive(sel.id)} value={sel.altSuggestion ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, altSuggestion: v }], 'Edit alt suggestion')} />
           </Field>
         </div>
       </div>

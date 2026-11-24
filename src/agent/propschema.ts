@@ -7,6 +7,7 @@ import type { ComponentDefinition, PropSchema, ScalarPropSchema } from '@shared/
 import { teaserFields } from '@shared/page-teasers';
 import { MAX_CHOICES } from '@engine/values';
 import { TABLE_LIMITS } from '@engine/table';
+import { TEXT_LIMITS } from '@shared/text-limits';
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -15,7 +16,7 @@ const LINK_HELP = 'An internal route such as /about/, an https:// URL, mailto:, 
 /** The same image shape, shared by reference where one schema covers many components. */
 export const IMAGE_SCHEMA: JsonSchema = {
   type: 'object',
-  properties: { assetId: { type: ['string', 'null'], description: 'An ID from search_assets, or null.' }, alt: { type: 'string', maxLength: 300 } },
+  properties: { assetId: { type: ['string', 'null'], description: 'An ID from search_assets, or null.' }, alt: { type: 'string', maxLength: TEXT_LIMITS.imageAlt } },
   required: ['assetId', 'alt'],
   additionalProperties: false
 };

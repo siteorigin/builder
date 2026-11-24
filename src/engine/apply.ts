@@ -1652,7 +1652,7 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
     }
     case 'image': {
       if (node.kind !== 'image') fail('Only image nodes have an image.');
-      const val = normalizeImage(v, state, label);
+      const val = normalizeImage(v, state, label, isBinding(node.image) ? undefined : node.image?.alt);
       if (!setBound(node.image, () => val)) node.image = val;
       return {};
     }

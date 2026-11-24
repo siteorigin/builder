@@ -1,5 +1,6 @@
 import { savesInFlight, settle, type Settled } from './pending';
-import { api, confirmDialog, editRunStatus, getConfirm, getState, pendingConfirms, setState, toast } from '../store';
+import { api, confirmDialog, editRunStatus, getConfirm, getState, markDraft, pendingConfirms, setState, toast, useStore } from '../store';
+import { clearKeptDrafts, goneReport, keptDraftKey, pruneKeptDrafts } from './kept-drafts';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -57,9 +58,28 @@ let closedCount = 0;
 export function projectClosed() {
   closedCount++;
   endEditingHold();
+  forgetKeptDrafts();
   // A question about the project that just went away has nothing left to decide.
   for (const q of [...pendingConfirms()]) if (q.title === LEAVE_QUESTION) q.resolve(null);
 }
+
+/** Text kept for being too long belongs to the opening it was typed in: once that has gone (leaving it was agreed,
+ *  or another opening replaced it), the text goes, and so does what it held open. */
+export function forgetKeptDrafts() {
+  for (const field of clearKeptDrafts()) markDraft(keptDraftKey(field), false);
+}
+
+// Text kept for a page, image or row the project no longer has (removed here, by the AI, or by an Undo) goes, and
+// is offered to copy: no field can show it again, so nothing should stay open for it. Not while the AI runs: what
+// it removes comes back if it is stopped, so the check waits for the run to end.
+useStore.subscribe((s, prev) => {
+  if (!s.snapshot || s.snapshot.aiBusy) return;
+  if (s.snapshot.state === prev.snapshot?.state && !prev.snapshot?.aiBusy) return;
+  for (const [field, draft] of pruneKeptDrafts()) {
+    markDraft(keptDraftKey(field), false);
+    toast(goneReport(draft.name ?? ''), 'error', { label: 'Copy text', run: () => void navigator.clipboard?.writeText(draft.text).catch(() => undefined) });
+  }
+});
 
 /** Close the project from the editor (Close Project, New project, a project to trust). The main process asks
  *  prepareToLeave first. A close that fails gives the editor back, and says why. */

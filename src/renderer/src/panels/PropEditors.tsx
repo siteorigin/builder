@@ -6,7 +6,8 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
 import type { ListPlace } from '../lib/reveal';
-import { DraftInput, Field, openSection, Switch, SwitchRow } from '../components/ui';
+import { DraftInput, Field, FieldHome, openSection, Switch, SwitchRow, useFieldHome } from '../components/ui';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { isSettling, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
 import { MAX_CHOICES as MAX_CHOICE_ROWS } from '@engine/values';
@@ -450,6 +451,8 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
   const snapshot = useStore((s) => s.snapshot);
   const altId = useId();
   const titleId = useId();
+  // Where this image sits in the project, so a description refused for being too long waits for it there.
+  const home = useFieldHome();
   const v = value ?? { assetId: null, alt: '' };
   const asset = v.assetId ? state.assets.assets[v.assetId] : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
@@ -697,6 +700,9 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
             value={v.alt}
             placeholder="What the image shows"
             aria-describedby={`${altId}-h`}
+            limit={TEXT_LIMITS.imageAlt}
+            keep={home ? `${home.key}|alt` : undefined}
+            keepWhile={home?.alive}
             onCommit={(alt) => (setCarried(false), onChange({ ...v, alt }))}
           />
           {carried ? (
@@ -1269,6 +1275,9 @@ export interface ReadValue {
   revision: number;
 }
 
+/** Whether a list read as the project holds it now still has a row (an unreadable list says nothing about it). */
+const rowIn = (list: unknown, itemId: string) => !Array.isArray(list) || list.some((x) => (x as ListItem | null)?.id === itemId);
+
 /** One field of one list item, from a list read as the project holds it now. */
 function readItemField(list: ReadValue | undefined, itemId: string, field: string): ReadValue | undefined {
   const item = list && Array.isArray(list.value) ? (list.value as ListItem[]).find((x) => x?.id === itemId) : undefined;
@@ -1365,7 +1374,7 @@ export interface ListReveal {
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages }: {
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -1377,6 +1386,8 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   onTable: (edit: TableEdit) => Promise<boolean>;
   /** The value as the project holds it now and its revision, for an edit built after earlier ones land. */
   read?: () => ReadValue | undefined;
+  /** Whether the property is still the node's: text kept for its fields goes with it (see FieldHome). */
+  alive?: () => boolean;
   state: ProjectState;
   focusItem?: string;
   /** For a list: open this item, once per request ("Open in inspector"); the author can close it again. */
@@ -1401,11 +1412,25 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   pickImages?: string | null;
 }) {
   if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} pageId={placedOnPage(place?.ref)} />;
-  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} />;
+  // Fields inside belong to this property of the node around them (see FieldHome).
+  if (schema.type === 'list')
+    return (
+      <FieldHome part={`prop:${name}`} alive={alive}>
+        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} />
+      </FieldHome>
+    );
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
-  if (schema.type === 'object') return <ObjectEditor name={name} schema={schema} value={value} onField={onField ?? ((f, v, edit) => onChange({ [f]: v }, edit))} state={state} label={label} everywhere={everywhere} error={error} action={action} />;
-  return <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} everywhere={everywhere} />;
-  void name;
+  if (schema.type === 'object')
+    return (
+      <FieldHome part={`prop:${name}`} alive={alive}>
+        <ObjectEditor name={name} schema={schema} value={value} onField={onField ?? ((f, v, edit) => onChange({ [f]: v }, edit))} state={state} label={label} everywhere={everywhere} error={error} action={action} />
+      </FieldHome>
+    );
+  return (
+    <FieldHome part={`prop:${name}`} alive={alive}>
+      <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} everywhere={everywhere} />
+    </FieldHome>
+  );
 }
 
 /** An object property: its fields under its name, each edited on its own. */
@@ -1417,7 +1442,10 @@ function ObjectEditor({ name, schema, value, onField, state, label, everywhere, 
       {schema.description && <div className="field-hint">{schema.description}</div>}
       {Object.entries(schema.fields).map(([key, f]) => (
         <div key={key} data-object-field={key} style={{ display: 'contents' }}>
-          <ScalarField schema={f} value={Object.hasOwn(v, key) ? v[key] : Object.hasOwn(schema.default, key) ? schema.default[key] : f.default} onChange={(x, edit) => onField(key, x, edit)} state={state} everywhere={everywhere} />
+          {/* Each field is its own place within the object's (see FieldHome). */}
+          <FieldHome part={`field:${key}`}>
+            <ScalarField schema={f} value={Object.hasOwn(v, key) ? v[key] : Object.hasOwn(schema.default, key) ? schema.default[key] : f.default} onChange={(x, edit) => onField(key, x, edit)} state={state} everywhere={everywhere} />
+          </FieldHome>
         </div>
       ))}
       {/* A problem with the object as a whole, such as a button whose link is missing, and its fix. */}
@@ -1909,22 +1937,23 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
                     render={({ key, schema: fs, label }) => {
                       const teaser = teaserFieldNote(state, schema, it, key);
                       return (
-                        <ScalarField
-                          key={key}
-                          schema={fs as ScalarPropSchema}
-                          label={label}
-                          value={Object.hasOwn(it, key) ? it[key] : (fs as { default?: unknown }).default}
-                          onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
-                          read={read && (() => readItemField(read(), it.id, key))}
-                          state={state}
-                          hint={note?.field === key ? note.hint : teaser?.hint}
-                          placeholder={teaser?.placeholder}
-                          error={note?.field === key ? note.error : undefined}
-                          action={note?.field === key ? note.action : undefined}
-                          onLive={fs.type === 'string' ? reveal.typed(key) : undefined}
-                          notedBy={linkPairs?.some((p) => p.link === key && contactMismatch(it[p.text], it[p.link])) ? `contact-${it.id}-${key}` : undefined}
-                          everywhere={everywhere}
-                        />
+                        <FieldHome key={key} part={`item:${it.id}:${key}`} alive={read && (() => rowIn(read()?.value, it.id))}>
+                          <ScalarField
+                            schema={fs as ScalarPropSchema}
+                            label={label}
+                            value={Object.hasOwn(it, key) ? it[key] : (fs as { default?: unknown }).default}
+                            onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
+                            read={read && (() => readItemField(read(), it.id, key))}
+                            state={state}
+                            hint={note?.field === key ? note.hint : teaser?.hint}
+                            placeholder={teaser?.placeholder}
+                            error={note?.field === key ? note.error : undefined}
+                            action={note?.field === key ? note.action : undefined}
+                            onLive={fs.type === 'string' ? reveal.typed(key) : undefined}
+                            notedBy={linkPairs?.some((p) => p.link === key && contactMismatch(it[p.text], it[p.link])) ? `contact-${it.id}-${key}` : undefined}
+                            everywhere={everywhere}
+                          />
+                        </FieldHome>
                       );
                     }}
                   />
