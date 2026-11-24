@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, History, House, LogOut, MessageCircleQuestionMark, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Sparkles, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { api, editRunStatus, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
 import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
@@ -50,7 +50,8 @@ export function Toolbar() {
   useEffect(() => setWidthDraft(String(viewport)), [viewport]);
   // An invalid entry explained after Enter is not explained again when the field is left; any edit resets it.
   const reported = useRef<string | null>(null);
-  const [widthError, setWidthError] = useState(false);
+  // How many times Enter has been refused in a row, so the message is announced again on each try.
+  const [widthError, setWidthError] = useState(0);
   const isMac = api.platform === 'darwin';
   // In a narrow window the Edit and Preview labels go first, then Zoom and Settings move into a More menu,
   // so the page switcher, Undo, Redo, the panel toggles and Export always fit.
@@ -62,6 +63,20 @@ export function Toolbar() {
   const focused = useRef<HTMLElement | null>(null);
   const focusAfterMenu = useRef(false);
   const closeIfTriggerGone = menu.closeIfTriggerGone;
+  // Only a control that still owned focus is recovered: a click or focus anywhere outside the toolbar (and its
+  // menus) forgets it, so a control vanishing later never pulls focus back from the page.
+  useEffect(() => {
+    const away = (e: Event) => {
+      const t = e.target instanceof Element ? e.target : null;
+      if (t && !header.current?.contains(t) && !t.closest('[role="menu"]')) focused.current = null;
+    };
+    document.addEventListener('focusin', away);
+    document.addEventListener('pointerdown', away, true);
+    return () => {
+      document.removeEventListener('focusin', away);
+      document.removeEventListener('pointerdown', away, true);
+    };
+  }, []);
   const replacement = () => header.current?.querySelector<HTMLElement>(tier === 'overflow' ? '.toolbar-more' : '.toolbar-settings');
   useLayoutEffect(() => {
     const was = focused.current;
@@ -78,6 +93,15 @@ export function Toolbar() {
     focusAfterMenu.current = false;
     replacement()?.focus();
   }, [menu.isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The status is a button while it leads somewhere (the AI panel, held edits, Project health). When it settles
+  // back to plain text a keyboard user on it lands on the page switcher beside it, not on the page body.
+  const runNow = runPhase(runStatus);
+  const statusActs = hasConflict || runNow === 'stopping' || stoppingForEdit || runNow === 'asking' || (!handoff && (!!runNow || held));
+  useLayoutEffect(() => {
+    const was = focused.current;
+    const active = document.activeElement;
+    if (was?.classList.contains('save-state') && !was.isConnected && (!active || active === document.body)) header.current?.querySelector<HTMLElement>('.project-title')?.focus();
+  }, [statusActs]);
   if (!snap) return null;
   const state = snap.state;
   const page = pageId ? state.pages[pageId] : null;
@@ -86,26 +110,45 @@ export function Toolbar() {
   const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
   const conflicts = snap.conflicts.length > 0;
   const phase = runPhase(runStatus);
-  const spin = <LoaderCircle style={{ animation: 'spin 1s linear infinite' }} />;
-  const save = conflicts
-    ? { cls: 'error', icon: <CircleAlert />, text: 'File conflict', title: 'A project file was changed outside SiteOrigin Builder. Review it in Project health.' }
+  const spin = <LoaderCircle className="spin" />;
+  // Each state names itself in words and a glyph, never by hue alone. `kind` sets its weight: quiet (saved), pending
+  // (on its way), ai (the AI at work: its Sparkles in the accent, which is the AI's colour), ask (the AI is waiting
+  // on the author), wait (an edit of the author's on hold) and error. Every AI state opens the AI panel, an edit on
+  // hold goes to its row in the held-edits tray, and a conflict opens Project health.
+  type Save = { kind: 'saved' | 'pending' | 'ai' | 'ask' | 'wait' | 'error'; icon: ReactNode; text: string; title: string };
+  const ai = <Sparkles className="ai-glyph" />;
+  const save: Save = conflicts
+    ? { kind: 'error', icon: <CircleAlert />, text: 'File conflict', title: 'A project file was changed outside SiteOrigin Builder. Review it in Project health' }
     : phase === 'stopping' || stoppingForEdit
-      ? { cls: 'pending', icon: spin, text: 'Stopping AI…', title: stoppingForEdit ? 'Your edit is applied once the AI’s changes are undone.' : 'Anything the AI changed in this request is undone.' }
+      ? { kind: 'ai', icon: ai, text: 'Stopping AI…', title: stoppingForEdit ? 'Your edit is applied once the AI’s changes are undone. Open the AI panel' : 'Anything the AI changed in this request is undone. Open the AI panel' }
       : phase === 'asking'
-        ? { cls: 'pending', icon: <MessageCircleQuestionMark />, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel.' }
+        ? { kind: 'ask', icon: ai, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel' }
         : handoff
-          ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
+          ? { kind: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
           : phase === 'checking'
-            ? { cls: 'pending', icon: spin, text: 'AI is checking', title: 'The AI’s changes are saved once they pass checks.' }
+            ? { kind: 'ai', icon: ai, text: 'AI is checking', title: 'The AI’s changes are saved once they pass checks. Open the AI panel' }
             : phase
-              ? { cls: 'pending', icon: spin, text: 'AI is working', title: 'The AI is editing this site. Its changes are saved once they pass checks.' }
+              ? { kind: 'ai', icon: ai, text: 'AI is working', title: 'The AI is editing this site, and its changes are saved once they pass checks. Open the AI panel' }
               : held
-                ? { cls: 'pending', icon: <Pencil />, text: 'Edit not saved', title: 'An edit you made is waiting for you. Review it below.' }
+                ? { kind: 'wait', icon: <Pencil />, text: 'Edit on hold', title: 'An edit you made is waiting for you. Review it below' }
                 : drafting
-                  ? { cls: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
+                  ? { kind: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
                   : pending
-                    ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
-                    : { cls: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
+                    ? { kind: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
+                    : { kind: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
+  // The AI's question goes straight to the answer field; the other AI states land on the AI panel's tab, so a click
+  // shows where it went even when the panel was already open.
+  const openAi = () => {
+    setState({ dockOpen: true, rightTab: 'chat' });
+    requestAnimationFrame(() => (save.kind === 'ask' ? document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus() : document.getElementById('dock-tab-chat')?.focus({ focusVisible: true })));
+  };
+  // An edit on hold: its row's first choice, with a visible ring even after a click.
+  const goToHeld = () => {
+    const first = document.querySelector<HTMLElement>('.toast-group[aria-label="Edits not saved yet"] button');
+    first?.scrollIntoView({ block: 'nearest' });
+    first?.focus({ focusVisible: true });
+  };
+  const act = save.kind === 'error' ? () => setState({ modal: { kind: 'health' } }) : save.kind === 'wait' ? goToHeld : openAi;
   const siteName = state.site.name;
   const defName = definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
   const placeName = defName ?? page?.title ?? '';
@@ -125,22 +168,22 @@ export function Toolbar() {
     const v = validWidth(widthDraft);
     if (v !== null) {
       reported.current = null;
-      setWidthError(false);
+      setWidthError(0);
       setWidthDraft(String(v));
       if (v !== viewport) setViewport(v);
       if (fromEnter) el.blur();
       return;
     }
-    if (reported.current !== widthDraft) {
-      reported.current = widthDraft;
-      toast(`Enter a whole number from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} px.`, 'error');
-    }
+    // After Enter the field keeps focus and says why beside itself. Leaving it puts the width back, so a toast
+    // says the entry was not applied.
     if (fromEnter) {
-      setWidthError(true);
+      reported.current = widthDraft;
+      setWidthError((n) => n + 1);
       el.select();
     } else {
+      if (reported.current !== widthDraft) toast(`Width not changed: enter a whole number from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} px.`, 'error');
       reported.current = null;
-      setWidthError(false);
+      setWidthError(0);
       setWidthDraft(String(viewport));
     }
   };
@@ -149,7 +192,7 @@ export function Toolbar() {
     <header ref={header} className={`toolbar drag${isMac ? ' mac' : ''}`} data-tier={tier} onFocus={(e) => e.currentTarget.contains(e.target) && (focused.current = e.target)}>
       <div className="toolbar-start">
         <span className="toolbar-mark" title="SiteOrigin Builder">
-          <AppMark size={26} />
+          <AppMark size={22} />
         </span>
         <div className="toolbar-group">
           <button className="icon-btn" aria-pressed={!!leftTab} title={`Show or hide the sidebar (${keys('⌘\\')})`} aria-label="Sidebar" onClick={() => setState({ leftTab: leftTab ? null : 'pages' })}>
@@ -159,7 +202,7 @@ export function Toolbar() {
             className="project-title"
             aria-haspopup="menu"
             aria-expanded={false}
-            title={`${siteName} / ${placeName}: switch page, or open project options`}
+            title={defName ? `Editing ${defName} everywhere, in ${siteName}: switch page, or open project options` : `${siteName} / ${placeName}: switch page, or open project options`}
             onClick={(e) =>
               menu.openAt(
                 e.currentTarget,
@@ -175,7 +218,7 @@ export function Toolbar() {
                   { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
                   { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
                   { separator: true },
-                  { label: 'Show project folder', icon: <FolderOpen />, onSelect: () => void api.projects.reveal() },
+                  { label: 'Show project folder', icon: <FolderSearch />, onSelect: () => void api.projects.reveal() },
                   { label: 'Duplicate project…', icon: <Copy />, onSelect: () => void api.projects.duplicate().then((r) => r.ok && toast(`Duplicated to ${r.dir}`)) },
                   { label: 'History…', icon: <History />, onSelect: () => setState({ modal: { kind: 'history' } }) },
                   { label: 'Save version…', icon: <BookmarkPlus />, onSelect: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
@@ -189,23 +232,27 @@ export function Toolbar() {
             <strong className="site ellipsis">{siteName}</strong>
             <span className="sep" aria-hidden="true">/</span>
             <span className={`page${defName ? ' def' : ''}`}>
-              {defName ? <Component aria-label="Component" /> : isHome ? <House aria-label="Home page" /> : null}
+              {/* The house names the home page, unless the page's own name already says so. */}
+              {defName ? <Component role="img" aria-label="Component" /> : isHome ? /\bhome\b/i.test(placeName) ? <House aria-hidden="true" /> : <House role="img" aria-label="Home page" /> : null}
               <span className="ellipsis">{placeName}</span>
             </span>
             <ChevronDown className="chev" aria-hidden="true" />
           </button>
-          {conflicts ? (
-            <button className="save-state error" title={save.title} onClick={() => setState({ modal: { kind: 'health' } })}>
-              {save.icon}
-              {save.text}
-              <ChevronRight className="go" aria-hidden="true" />
-            </button>
-          ) : (
-            <span className={`save-state ${save.cls}`} title={save.title}>
-              {save.icon}
-              {save.text}
-            </span>
-          )}
+          {/* The slot keeps the quiet states' width (see .save-slot); its blank end still drags the window. */}
+          <span className="save-slot">
+            {save.kind !== 'saved' && save.kind !== 'pending' ? (
+              <button className={`save-state ${save.kind}`} title={save.title} onClick={act}>
+                {save.icon}
+                {save.text}
+                <ChevronRight className="go" aria-hidden="true" />
+              </button>
+            ) : (
+              <span className={`save-state ${save.kind}`} title={save.title}>
+                {save.icon}
+                {save.text}
+              </span>
+            )}
+          </span>
           <span className="sr-only" role="status">
             {announce}
           </span>
@@ -224,17 +271,17 @@ export function Toolbar() {
             if (e.button === 0 && e.target !== e.currentTarget && (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) && at.closest('#dock-panel-inspect')) e.preventDefault();
           }}
         >
-          <button aria-pressed={preset === 'desktop'} title="Desktop (1280px)" aria-label="Desktop" onClick={() => setViewport(VIEWPORT_PRESETS.desktop)}>
+          <button aria-pressed={preset === 'desktop'} title="Desktop, 1280 px" aria-label="Desktop" onClick={() => setViewport(VIEWPORT_PRESETS.desktop)}>
             <Monitor />
           </button>
-          <button aria-pressed={preset === 'tablet'} title="Tablet (834px)" aria-label="Tablet" onClick={() => setViewport(VIEWPORT_PRESETS.tablet)}>
+          <button aria-pressed={preset === 'tablet'} title="Tablet, 834 px" aria-label="Tablet" onClick={() => setViewport(VIEWPORT_PRESETS.tablet)}>
             <Tablet />
           </button>
-          <button aria-pressed={preset === 'phone'} title="Phone (390px)" aria-label="Phone" onClick={() => setViewport(VIEWPORT_PRESETS.phone)}>
+          <button aria-pressed={preset === 'phone'} title="Phone, 390 px" aria-label="Phone" onClick={() => setViewport(VIEWPORT_PRESETS.phone)}>
             <Smartphone />
           </button>
         </div>
-        <label className="width-field" title={`Preview width, from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} pixels`}>
+        <label className="width-field" title={`Preview width, from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} px`}>
           <input
             className="width-input"
             aria-label="Preview width in pixels"
@@ -242,11 +289,11 @@ export function Toolbar() {
             min={VIEWPORT_LIMITS.min}
             max={VIEWPORT_LIMITS.max}
             value={widthDraft}
-            aria-invalid={widthError || undefined}
-            aria-describedby={widthError ? 'width-error' : undefined}
+            aria-invalid={widthError > 0 || undefined}
+            aria-describedby={widthError > 0 ? 'width-error' : undefined}
             onChange={(e) => {
               reported.current = null;
-              setWidthError(false);
+              setWidthError(0);
               setWidthDraft(e.target.value);
             }}
             onBlur={(e) => commitWidth(false, e.currentTarget)}
@@ -254,7 +301,7 @@ export function Toolbar() {
               if (e.key === 'Enter') commitWidth(true, e.currentTarget);
               if (e.key === 'Escape') {
                 reported.current = null;
-                setWidthError(false);
+                setWidthError(0);
                 setWidthDraft(String(viewport));
                 requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
               }
@@ -263,9 +310,10 @@ export function Toolbar() {
           <span className="unit" aria-hidden="true">
             px
           </span>
-          {widthError && (
-            <span id="width-error" className="sr-only">
-              Enter a whole number from {VIEWPORT_LIMITS.min} to {VIEWPORT_LIMITS.max} px.
+          {widthError > 0 && (
+            <span key={widthError} id="width-error" className="width-error" role="alert">
+              <CircleAlert aria-hidden="true" />
+              Enter a whole number from {VIEWPORT_LIMITS.min} to {VIEWPORT_LIMITS.max}
             </span>
           )}
         </label>
@@ -297,6 +345,7 @@ export function Toolbar() {
       </div>
 
       <div className="toolbar-end">
+        {tier !== 'full' && <div className="toolbar-divider" role="presentation" />}
         <button className="icon-btn" disabled={!snap.history.canUndo} title={`${snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} (${keys('⌘Z')})`} aria-label={snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} onClick={() => projectHistory('undo')}>
           <Undo2 />
         </button>
@@ -313,7 +362,7 @@ export function Toolbar() {
             className="icon-btn toolbar-more"
             aria-haspopup="menu"
             aria-expanded={false}
-            title="More: zoom and settings"
+            title={`More: zoom (${zoom === 'fit' ? 'fit to window' : `${Math.round(zoom * 100)}%`}) and settings`}
             aria-label="More"
             onClick={(e) => menu.openAt(e.currentTarget, [{ heading: 'Zoom' }, ...zoomItems, { separator: true }, { label: 'Settings…', icon: <Settings />, onSelect: openSettings }], 'More')}
           >
