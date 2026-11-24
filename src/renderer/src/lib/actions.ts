@@ -161,6 +161,18 @@ function resultSelection(plan: LayersPlan, ids: string[], owner: OwnerRef = plan
   return { selection: layerRef(owner, ids[at(plan.selection?.nodeId)]), layerSet: ids.length > 1 ? { owner, ids, anchor: ids[at(plan.anchor)] } : null };
 }
 
+/**
+ * A menu command for the layers the menu was built for, planned again as it is chosen (a typed field saved while the
+ * menu was open changes nothing it acts on). If the layers selected together changed meanwhile, it says so instead.
+ */
+export const asPlanned = (shown: LayersPlan | null, act: (plan: LayersPlan | null) => Promise<void>) => (): Promise<void> | void => {
+  if (!shown?.several) return act(shown);
+  const now = planLayers();
+  const same = !!now?.several && now.snap.workspaceKey === shown.snap.workspaceKey && now.group.owner.id === shown.group.owner.id && now.group.ids.join() === shown.group.ids.join();
+  if (!same) return toast('The layers selected changed while the menu was open. Choose again.', 'error');
+  return act(now);
+};
+
 /** Move the layers selected together one place up or down, in one change (the selection alone: moveSelection). */
 export async function moveLayers(dir: -1 | 1, plan = planLayers()) {
   if (!plan?.several) return moveSelection(dir);

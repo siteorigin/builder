@@ -51,7 +51,7 @@ import { StyleControls } from './StyleControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, definitionView, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
-import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, structuralTarget } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, structuralTarget } from '../lib/actions';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -567,8 +567,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       ? [
           { separator: true },
           // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
-          { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateLayers(plan) },
-          { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteLayers(plan) }
+          { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
+          { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: asPlanned(plan, deleteLayers) }
         ]
       : [])
   ];
@@ -1128,8 +1128,8 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
       ? [
           ...(styleItems.length ? [{ separator: true }] : []),
           // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
-          { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateLayers(plan) },
-          { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteLayers(plan) }
+          { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
+          { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: asPlanned(plan, deleteLayers) }
         ]
       : [])
   ];

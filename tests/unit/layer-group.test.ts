@@ -57,6 +57,7 @@ const actions = (await load('../../src/renderer/src/lib/actions')) as {
   deleteLayers: (plan?: Plan | null) => Promise<void>;
   moveLayers: (dir: -1 | 1, plan?: Plan | null) => Promise<void>;
   moveToPage: (pageId: string, plan?: Plan | null) => Promise<string[] | null>;
+  asPlanned: (shown: Plan | null, act: (plan: Plan | null) => Promise<void>) => () => Promise<void> | void;
 };
 const { getState, setState } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void };
 const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: (plan?: Plan | null) => boolean; pasteCopy: () => boolean; forgetCopy: () => void };
@@ -370,6 +371,23 @@ describe('copying several selected together, as Layers and ⌘C/⌘V do', () => 
     void bridge.project.apply({ operations: [{ type: 'node.move', owner: home(), nodeId: h3, parentId: 'n_holder', slot: 'content', index: 0 }] }, { label: 'Move' });
     await vi.waitFor(() => expect(getState().toasts.at(-1)?.text).toBe('The project changed while you were choosing. Choose again.'));
     expect(slotIds()).toEqual([h3, h1, h2]);
+  });
+
+  it('a menu built for two sections still acts on them after a field is saved, and says so if they changed', async () => {
+    const { gallery, testimonials } = pickGalleryAndTestimonials();
+    const shown = actions.planLayers();
+    // A field saved while the menu is open: the project moves on, the layers selected do not.
+    await bridge.project.apply({ operations: [{ type: 'page.update', pageId: homeId(), seoTitle: 'Saved meanwhile' }] }, { label: 'Edit browser title' });
+    await actions.asPlanned(shown, actions.duplicateLayers)();
+    expect(roots()).toHaveLength(10);
+    expect(getState().layerSet?.ids).toHaveLength(2);
+    expect(getState().layerSet?.ids).not.toContain(gallery);
+    // Different layers selected by the time it is chosen: nothing changes, and it says why.
+    const again = actions.planLayers();
+    setState({ selection: ref(home(), testimonials), layerSet: { owner: home(), ids: [gallery, testimonials], anchor: gallery } });
+    await actions.asPlanned(again, actions.deleteLayers)();
+    expect(roots()).toHaveLength(10);
+    expect(getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: 'The layers selected changed while the menu was open. Choose again.' });
   });
 
   it('a range whose anchor has gone starts again at the selection', () => {
