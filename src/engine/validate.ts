@@ -2,7 +2,7 @@ import type { ExportNote } from '@shared/api';
 import { isArticleDate, pageArticle } from '@shared/articles';
 import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
-import type { ComponentDefinition, GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import type { GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { STYLE_PROP_MAP, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
@@ -18,7 +18,7 @@ import { nestingChecker } from './semantic-tags';
 import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
-import { effectiveProps, filterShowsAt, missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
+import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
 import { entryInstanceProps } from '@generator/entry-template';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
@@ -237,11 +237,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         const problem = n.kind !== 'link' ? 'changes UI state, which only a button can.' : stateActionProblem(def, action);
         if (problem) out.push({ severity: 'error', code: 'STATE_ACTION_INVALID', message: `${def.name}: ${nodeLabel(n)} ${problem}`, owner, nodeId: id, site: `${id}|stateAction` });
       }
-      // A filter that does not work leaves the items as a plain list, every one showing. It blocks saving only where a
-      // placement on a page shows its pills, so an edit cannot take them away unnoticed; a design keeps its filter while
-      // no placement shows it, and an edit to it there (a card made a component of its own) still saves.
+      // A filter that does not work leaves the items as a plain list, every one showing. Reported, never blocking: a
+      // design keeps its filter while it is off, and an edit to it (a card made a component of its own) still saves.
       const filter = Object.hasOwn(n, 'filter') && n.kind !== 'repeat' ? 'has a category filter, which only a repeat can.' : repeatFilterProblem(def, n);
-      if (filter) out.push({ severity: filterShown(state, def, n) ? 'error' : 'warning', code: 'FILTER_INVALID', message: `${def.name}: ${nodeLabel(n)} ${filter} Its items all show, without category buttons.`, owner, nodeId: id, site: `${id}|filter` });
+      if (filter) out.push({ severity: 'warning', code: 'FILTER_INVALID', message: `${def.name}: ${nodeLabel(n)} ${filter} Its items all show, without category buttons.`, owner, nodeId: id, site: `${id}|filter` });
       for (const cl of childLists(n)) cl.ids.forEach((c) => check(c, inRepeat || n.kind === 'repeat'));
     };
     tree.rootIds.forEach((r) => check(r, false));
@@ -1010,10 +1009,4 @@ function linksOf(schema: PropSchema | undefined, v: unknown): Array<{ type: unkn
     default:
       return [];
   }
-}
-
-/** Whether a repeat's category filter shows its pills in any placement on a page or in the shared shell. */
-function filterShown(state: ProjectState, def: ComponentDefinition, n: GraphNode): boolean {
-  if (n.kind !== 'repeat') return false;
-  return instancesOf(state, def.id).some(({ owner, node }) => (owner.kind === 'page' || owner.kind === 'shell') && filterShowsAt(state, def, n, { props: effectiveProps(state, def, node, { props: {} }, owner.kind === 'page' ? owner.id : undefined) }));
 }

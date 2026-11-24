@@ -409,23 +409,19 @@ describe('editing designs that filter', () => {
     expect(() => apply(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'filterable', schema: { type: 'string', label: 'Filter', default: '' } } as EditOperation])).toThrow(/needs a boolean/);
   });
 
-  it('refuses a change that takes away pills a page shows, and reports one where no placement shows them', () => {
+  it('reports a change that breaks a filter without refusing it, as Create component from a card is', () => {
     // The card becomes a component of its own: the list's item is no longer one element the filter can hide.
     const makeCard = (s: ProjectState, def: ComponentDefinition) => applyOperations(s, [{ type: 'component.createFromNode', owner: { kind: 'component', id: def.id }, nodeId: 'card', name: 'Project card' }]).state;
     const introduced = (before: ProjectState, after: ProjectState) => introducedDiagnostics(validateState(before).filter(blocksSaving), validateState(after).filter(blocksSaving)).map((d) => d.code);
-    const shown = fresh();
-    const def = gridDef(shown);
-    place(shown, def, { items: items('A', 'B') });
-    expect(introduced(shown, makeCard(shown, def))).toEqual(['FILTER_INVALID']);
-    // Switched off everywhere it is placed: the design keeps its filter, and the edit saves with a warning.
-    const off = fresh();
-    const quiet = gridDef(off);
-    place(off, quiet, { filterable: false, items: items('A', 'B') });
-    place(off, quiet, { items: items('A', 'a') });
-    const next = makeCard(off, quiet);
-    expect(introduced(off, next)).toEqual([]);
-    expect(filterProblems(next).map((d) => [d.severity, d.message])).toEqual([['warning', expect.stringMatching(/shows items that are not one element each.*Its items all show, without category buttons\./)]]);
-    expect(generateProject(next).get(defFile(next.components[quiet.id]))).not.toContain('so_filter_0');
+    for (const filterable of [true, false]) {
+      const s = fresh();
+      const def = gridDef(s);
+      place(s, def, { filterable, items: items('A', 'B') });
+      const next = makeCard(s, def);
+      expect(introduced(s, next)).toEqual([]);
+      expect(filterProblems(next).map((d) => [d.severity, d.message])).toEqual([['warning', expect.stringMatching(/shows items that are not one element each.*Its items all show, without category buttons\./)]]);
+      expect(generateProject(next).get(defFile(next.components[def.id]))).not.toContain('so_filter_0');
+    }
   });
 
   it('copies a filter with a design built whole, and refuses one that would not work', () => {
