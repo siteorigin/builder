@@ -10,7 +10,7 @@
  * content the page itself renders (never the shared header and footer, which every page has). Old addresses kept for
  * renamed pages only send visitors on, so they are never results; a page found always links to where it is now.
  */
-import type { NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { ComponentDefinition, NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
 import { slotChildren } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { renderedContent } from './checks';
@@ -130,6 +130,14 @@ const NAMES_HELPER = /['"`][^'"`\n]*site-search(?:\.js)?['"`]/;
  */
 export function usesSiteSearch(state: ProjectState): boolean {
   return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source));
+}
+
+/**
+ * Whether a component runs a search of the site from its page's address (`?q=` in the URL), as the theme's Site search
+ * does for a link to a search: its code names the search code and reads the `q` parameter.
+ */
+export function searchesFromAddress(def: ComponentDefinition | undefined): boolean {
+  return !!def && def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source) && /\.get\(\s*['"`]q['"`]\s*\)/.test(def.source);
 }
 
 /** The index as a module: the same pages always give the same bytes. */

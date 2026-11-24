@@ -27,7 +27,7 @@ const isContactForm = (def: ComponentDefinition | undefined) => !!def && def.kin
  */
 export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): EditorDestination | null {
   // The site's icon and sharing image are set in Site details, not on any page.
-  if (!d.owner && (d.site === 'favicon' || d.site === 'socialImage')) return { kind: 'site', field: d.site };
+  if (!d.owner && (d.site === 'favicon' || d.site === 'socialImage' || d.site === 'logo')) return { kind: 'site', field: d.site };
   const setting = Object.hasOwn(FORM_SETTINGS, d.code) ? FORM_SETTINGS[d.code] : null;
   if (!setting || !d.owner || !d.nodeId || !['page', 'shell', 'template', 'component'].includes(d.owner.kind)) return null;
   // A field finding names its row (`${nodeId}|fields|${itemId}`): each finding leads to its own.
@@ -105,7 +105,7 @@ export function destinationLabel(dest: EditorDestination): string {
     case 'form':
       return 'Go to form';
     case 'site':
-      return dest.field === 'baseUrl' ? 'Go to Public URL' : dest.field === 'favicon' ? 'Go to site icon' : 'Go to sharing image';
+      return { baseUrl: 'Go to Public URL', favicon: 'Go to site icon', socialImage: 'Go to sharing image', identity: 'Go to Published by', logo: 'Go to logo', sameAs: 'Go to profiles' }[dest.field];
     case 'pageSeo':
       return 'Go to Search & sharing';
     case 'entry':

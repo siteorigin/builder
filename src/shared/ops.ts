@@ -6,6 +6,7 @@ import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from './types';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
+import { IDENTITY_LIMITS } from './site-identity';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -39,7 +40,7 @@ const IMAGE_USE = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('node'), owner, nodeId: z.string(), path: USE_PATH }),
   z.object({ kind: z.literal('default'), definitionId: z.string(), path: USE_PATH }),
   z.object({ kind: z.literal('pageSharing'), pageId: z.string() }),
-  z.object({ kind: z.literal('site'), field: z.enum(['favicon', 'socialImage']) })
+  z.object({ kind: z.literal('site'), field: z.enum(['favicon', 'socialImage', 'logo']) })
 ]);
 
 const scope = z.enum(['base', 'phone', 'tablet', 'desktop']).describe('Responsive scope. "base" applies at all sizes.');
@@ -463,7 +464,25 @@ export const OPERATION_SCHEMAS = {
         text: z.record(z.string(), z.string().max(VISITOR_TEXT_LIMIT)).describe(`Wording by key (${VISITOR_TEXT_KEYS.join(', ')}). "" goes back to the wording used without it. {braced} names are filled in.`)
       })
       .optional()
-      .describe('What the site says on its own (skip link, menu button, form progress, search, image viewer) in one language. Built in for en, ar, he.')
+      .describe('What the site says on its own (skip link, menu button, form progress, search, image viewer) in one language. Built in for en, ar, he.'),
+    identity: z
+      .object({
+        kind: z.enum(['Organization', 'LocalBusiness', 'Person']).nullable().optional().describe('Who publishes the site. Unset: described as an organization named after the site.'),
+        name: z.string().max(IDENTITY_LIMITS.name).nullable().optional().describe('Legal or brand name, when it is not the site name.'),
+        url: z.string().max(IDENTITY_LIMITS.url).nullable().optional().describe('The publisher\'s own home page, when it is not this site (https://…).'),
+        logo: z.string().nullable().optional().describe('Asset ID of an image: the logo, or a person\'s photo.'),
+        sameAs: z.array(z.string().max(IDENTITY_LIMITS.url)).max(IDENTITY_LIMITS.profiles).nullable().optional().describe('Every https:// address of a profile that says who the publisher is (Wikidata, LinkedIn, GitHub, X, YouTube). Replaces the list.'),
+        twitterSite: z.string().max(IDENTITY_LIMITS.twitterSite).nullable().optional().describe('X (Twitter) handle, e.g. "@riverside".'),
+        address: z.string().max(IDENTITY_LIMITS.address).nullable().optional().describe('Postal address on one line.'),
+        telephone: z.string().max(IDENTITY_LIMITS.telephone).nullable().optional(),
+        email: z.string().max(IDENTITY_LIMITS.email).nullable().optional(),
+        openingHours: z.array(z.string().max(IDENTITY_LIMITS.hoursLine)).max(IDENTITY_LIMITS.hours).nullable().optional().describe('Local business only: periods such as "Mo-Fr 09:00-17:00". Replaces the list.'),
+        priceRange: z.string().max(IDENTITY_LIMITS.priceRange).nullable().optional().describe('Local business only, e.g. "$$".'),
+        geo: z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180) }).nullable().optional().describe('Local business only: its map position.')
+      })
+      .nullable()
+      .optional()
+      .describe('Who publishes the site, for search engines and AI answer engines. Only the fields given change; null or "" clears one, and identity: null clears all of it.')
   }),
 
   'component.create': z

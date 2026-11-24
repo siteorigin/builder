@@ -78,6 +78,7 @@ export function imageUses(state: ProjectState, assetId: string): ImageUse[] {
   for (const pg of Object.values(state.pages)) if (pg.seo.socialImage === assetId) out.push({ target: { kind: 'pageSharing', pageId: pg.id } });
   if (state.site.favicon === assetId) out.push({ target: { kind: 'site', field: 'favicon' } });
   if (state.site.socialImage === assetId) out.push({ target: { kind: 'site', field: 'socialImage' } });
+  if (state.site.identity?.logo === assetId) out.push({ target: { kind: 'site', field: 'logo' } });
   out.push(...entryImageUses(state, assetId));
   return out;
 }

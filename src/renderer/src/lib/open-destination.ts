@@ -12,7 +12,10 @@ import { treeFor } from './model';
 const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'], string> = {
   baseUrl: '#site-public-url',
   favicon: '#site-favicon button',
-  socialImage: '#site-social-image button'
+  socialImage: '#site-social-image button',
+  identity: '#site-identity-kind',
+  logo: '#site-identity-logo button',
+  sameAs: '#site-identity-profiles'
 };
 
 /** The control each Search & sharing field of a page is reached by (see the page Inspector). */

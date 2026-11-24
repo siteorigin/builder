@@ -72,6 +72,18 @@ function visitorTextRead(state: ProjectState, language: string, keys: string[]):
   return keys.length === 1 ? value(keys[0]) : Object.fromEntries(keys.map((k) => [k, value(k)]));
 }
 
+/** The identity fields a `site.update` writes. */
+const identityKeys = (patch: Record<string, unknown>) => Object.keys(patch).filter((k) => patch[k] !== undefined).sort();
+
+/** The identity fields an edit writes, as stored: the one field's value, each field's, or the whole identity when it clears it. */
+function identityRead(state: ProjectState, patch: Record<string, unknown> | null): unknown {
+  const stored: unknown = state.site.identity;
+  if (!patch) return stored;
+  const own = (k: string) => (stored && typeof stored === 'object' && Object.hasOwn(stored, k) ? (stored as Record<string, unknown>)[k] : undefined);
+  const keys = identityKeys(patch);
+  return keys.length === 1 ? own(keys[0]) : Object.fromEntries(keys.map((k) => [k, own(k)]));
+}
+
 function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   if (owner.kind === 'page') return has(state.pages, owner.id);
   if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
@@ -139,6 +151,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const fields: Record<string, unknown> = Object.fromEntries(keys.map((k) => [k, (state.site as unknown as Record<string, unknown>)[k]]));
       // Visitor text is read piece by piece, so wording typed for one piece never waits on a change to another.
       if (op.visitorText) fields.visitorText = visitorTextRead(state, op.visitorText.language, Object.keys(op.visitorText.text));
+      // So is who publishes it: a held name waits on no change to the profiles.
+      if (op.identity !== undefined) fields.identity = identityRead(state, op.identity);
       return found(fields);
     }
     case 'node.rename': {
@@ -342,12 +356,17 @@ export function fieldKey(operations: EditOperation[]): string {
           if (op.type === 'token.set' && k === 'value' && v && typeof v === 'object' && !Array.isArray(v) && !('token' in v)) return [k, Object.keys(v).sort()];
           // Visitor text is set piece by piece, in one language at a time: each piece in each language is its own field.
           if (op.type === 'site.update' && k === 'visitorText' && op.visitorText) return [k, op.visitorText.language.toLowerCase(), Object.keys(op.visitorText.text).sort()];
+          // Who publishes the site is set field by field: each is its own; clearing it all writes every one.
+          if (op.type === 'site.update' && k === 'identity') return [k, op.identity ? identityKeys(op.identity) : null];
           return [k];
         })
         .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
     })
   );
 }
+
+/** A list of lines (profile addresses, opening hours) as the field it was typed in shows it. */
+const listText = (v: unknown) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v.join('\n') : v);
 
 /** Text for a value a field holds or will hold, to show the author; null for structured values. */
 export function shownValue(v: unknown): string | null {
@@ -366,6 +385,10 @@ export function typedText(op: EditOperation): string | null {
       const text = Object.values((o.visitorText as { text?: Record<string, unknown> } | undefined)?.text ?? {});
       return text.length === 1 ? shownValue(text[0]) : null;
     }
+    if (key === 'identity') {
+      const given = Object.values((o.identity ?? {}) as Record<string, unknown>).filter((v) => v !== undefined);
+      return given.length === 1 ? shownValue(listText(given[0])) : null;
+    }
     return key ? shownValue(o[key]) : null;
   }
   if (op.type === 'node.rename' || op.type === 'component.rename') return shownValue(op.name);
@@ -378,7 +401,8 @@ export function typedText(op: EditOperation): string | null {
 export function shownField(op: EditOperation, read: unknown): string | null {
   const o = (read && typeof read === 'object' ? read : {}) as Record<string, unknown>;
   let v: unknown = read;
-  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'entry.update' || op.type === 'component.rename') v = Object.values(o)[0];
+  if (op.type === 'entry.update') v = Object.values(o)[0];
+  else if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename') v = listText(Object.values(o)[0]);
   else if (op.type === 'asset.update') {
     const asset = (o.asset ?? {}) as Record<string, unknown>;
     const key = Object.keys(op).find((k) => k !== 'type' && k !== 'assetId');
