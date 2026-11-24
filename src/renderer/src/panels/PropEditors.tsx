@@ -1,5 +1,5 @@
 import { createElement, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChoiceOption, ChoicesProp, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -26,6 +26,8 @@ import { groupFields, listRowTitle, type PropGroup } from '@shared/fields';
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
 import { isShellPart, type ShellPart } from '@shared/page-shell';
+import { documentDetails, documentLabels, isLibraryDocument, libraryDocuments } from '../lib/documents';
+import { assetArrived } from '../lib/import-review';
 
 export { groupFields };
 
@@ -120,6 +122,69 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { s
  * has no ID yet passes the edit that gives it one, to be saved with the link.
  */
 /**
+ * A link's document: one from the library, or one imported here, which the link then goes to. An import that
+ * finishes after the link moved on (another selection, an undo, another project) changes nothing.
+ */
+function DocumentPicker({ state, value, label, onPick }: { state: ProjectState; value: string; label: string; onPick: (id: string) => void }) {
+  const docs = libraryDocuments(state);
+  const labels = documentLabels(docs);
+  const [importing, setImporting] = useState(false);
+  const turn = useRef(0);
+  useEffect(() => () => void turn.current++, []);
+  useEffect(() => void turn.current++, [value]);
+  const chosen = value && Object.hasOwn(state.assets.assets, value) && isLibraryDocument(state.assets.assets[value]) ? state.assets.assets[value] : undefined;
+  const importOne = async () => {
+    if (importing) return;
+    const mine = ++turn.current;
+    const at = getState();
+    const opening = at.snapshot?.workspaceKey;
+    const selection = JSON.stringify(at.selection ?? null);
+    setImporting(true);
+    try {
+      const r = await api.project.importAssets(undefined, 'document').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The document couldn’t be added: ${e.message}` }));
+      if (r.message) toast(r.message, r.ok ? 'info' : 'error');
+      const id = r.assetIds[0];
+      // The new record reaches this window with the next snapshot, which may come after the reply.
+      if (!id || !opening || !(await assetArrived(id, opening))) return;
+      const now = getState();
+      if (mine !== turn.current || now.snapshot?.workspaceKey !== opening || JSON.stringify(now.selection ?? null) !== selection) return;
+      if (isLibraryDocument(now.snapshot?.state.assets.assets[id])) onPick(id);
+    } finally {
+      setImporting(false);
+    }
+  };
+  return (
+    <>
+      <select
+        className="select sm grow"
+        value={chosen ? value : ''}
+        aria-label={label}
+        onChange={(e) => {
+          if (!e.target.value) return;
+          // A document chosen here wins over an import still on its way.
+          turn.current++;
+          onPick(e.target.value);
+        }}
+      >
+        {!chosen && (
+          <option value="" disabled>
+            {value ? 'Missing document' : docs.length ? 'Choose a document…' : 'No documents yet'}
+          </option>
+        )}
+        {docs.map((d) => (
+          <option key={d.id} value={d.id}>
+            {labels.get(d.id)}
+          </option>
+        ))}
+      </select>
+      <button type="button" className="btn btn-sm btn-ghost" disabled={importing} aria-label={`Import a document for ${label.toLowerCase()}`} title="Import a document (PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP)" onClick={() => void importOne()}>
+        <FilePlus />
+      </button>
+    </>
+  );
+}
+
+/**
  * A link's kind and destination. `everywhere` is for a link in a component's design, which shows on every page that
  * places it: it offers no section "on this page", since one page's section is not on the others.
  */
@@ -149,9 +214,14 @@ export function LinkEditor({ value, onChange, state, label, everywhere }: { valu
   // The page a link last pointed at, so a trip through another link type comes back to it.
   const lastPage = useRef<string | null>(null);
   if (v.type === 'page' && state.pages[v.target]) lastPage.current = v.target;
+  // Likewise the document it last went to.
+  const lastDocument = useRef<string | null>(null);
+  const linkedDocument = v.type === 'document' && Object.hasOwn(state.assets.assets, v.target) && isLibraryDocument(state.assets.assets[v.target]) ? state.assets.assets[v.target] : undefined;
+  if (linkedDocument) lastDocument.current = v.target;
   const pickType = (t: LinkValue['type']) => {
     if (t === v.type) return setPending(null);
     if (t === 'none') onChange({ type: 'none', target: '' });
+    else if (t === 'document' && lastDocument.current && Object.hasOwn(state.assets.assets, lastDocument.current) && isLibraryDocument(state.assets.assets[lastDocument.current])) onChange({ type: t, target: lastDocument.current });
     else if (t === 'page') {
       // Back to the page it pointed at before; else the page being edited, where a carried section lives; else Home.
       const page = lastPage.current && state.pages[lastPage.current] ? lastPage.current : anchor && currentPageId && state.pages[currentPageId] ? currentPageId : state.site.homePageId;
@@ -168,6 +238,7 @@ export function LinkEditor({ value, onChange, state, label, everywhere }: { valu
           <option value="none">No link</option>
           <option value="page">Page</option>
           <option value="url">Web address</option>
+          <option value="document">Document</option>
           <option value="email">Email</option>
           <option value="tel">Phone</option>
           {(!everywhere || type === 'anchor') && <option value="anchor">On this page</option>}
@@ -180,6 +251,8 @@ export function LinkEditor({ value, onChange, state, label, everywhere }: { valu
               </option>
             ))}
           </select>
+        ) : type === 'document' ? (
+          <DocumentPicker state={state} value={target} label={named('Document')} onPick={(id) => onChange({ type: 'document', target: id })} />
         ) : type === 'anchor' && everywhere ? (
           // A design's section "on this page" is one every page placing it must have: shown, not re-picked here.
           <span className="faint ellipsis grow">#{target}</span>
@@ -200,6 +273,7 @@ export function LinkEditor({ value, onChange, state, label, everywhere }: { valu
           />
         ) : null}
       </div>
+      {type === 'document' && !pending && linkedDocument && <p className="faint insp-link-file">{documentDetails(linkedDocument)}. Visitors download it.</p>}
       {type === 'page' && (
         <div className="insp-link-row">
           <span className="insp-link-type faint insp-link-sub">Section</span>

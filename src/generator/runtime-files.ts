@@ -23,12 +23,14 @@ export function linkSvelte(instrument = false): string {
 	 * works when it is published under a sub-path. A button without a destination but with a click handler
 	 * (from your own code) is a real button; one with neither is left out (keeping only its id, so links to
 	 * it still land). Other links without a destination render as their text. With \`card\` (a tag), the link is a
-	 * whole container: an anchor around everything inside it, or that tag when there is nowhere to go.
+	 * whole container: an anchor around everything inside it, or that tag when there is nowhere to go. A link to one
+	 * of the site's documents downloads it under its own file name.
 	 */
 	import { resolve } from '$app/paths';
 	let { link = null, appearance = '', card = '', class: className = '', children, ...rest } = $props();
 	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
 	const href = $derived(safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
+	const download = $derived(href && safe.startsWith('/') && typeof link?.download === 'string' && link.download ? link.download : undefined);
 	const BUTTONS = ['primary', 'secondary', 'text', 'light'];
 	const button = $derived(BUTTONS.includes(appearance));
 	const kind = $derived(button ? \`so-btn so-btn--\${appearance}\` : appearance === 'plain' ? 'so-plain-link' : 'so-link');
@@ -38,6 +40,7 @@ export function linkSvelte(instrument = false): string {
 	{#if href}
 		<a
 			{href}
+			{download}
 			class={['so-card-link', className]}
 			target={link?.newTab ? '_blank' : undefined}
 			rel={link?.newTab ? 'noopener noreferrer' : undefined}
@@ -49,6 +52,7 @@ export function linkSvelte(instrument = false): string {
 {:else if href}
 	<a
 		{href}
+		{download}
 		class={[kind, className]}
 		target={link?.newTab ? '_blank' : undefined}
 		rel={link?.newTab ? 'noopener noreferrer' : undefined}

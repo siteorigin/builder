@@ -5,6 +5,8 @@ import { fail } from './tree';
 import { ICONS } from '@catalogue/foundation/icons';
 import { normalizeTable } from './table';
 
+const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
+
 export function normalizeLink(v: unknown, state: ProjectState, label: string): LinkValue {
   if (v === null || v === undefined || v === '') return { type: 'none', target: '' };
   if (typeof v === 'string') {
@@ -40,6 +42,10 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string): L
     case 'anchor':
       if (!/^[A-Za-z][\w-]*$/.test(target.replace(/^#/, ''))) fail(`${label}: "${target}" is not a valid anchor.`);
       break;
+    case 'document':
+      if (own(state.assets.assets, target)?.kind !== 'document') fail(`${label}: document "${target.slice(0, 60)}" is not in the library.`);
+      // A download goes nowhere else: it has no section and opens no tab of its own.
+      return { type, target };
     default:
       fail(`${label}: unknown link type "${type}".`);
   }
@@ -54,12 +60,18 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string): L
 
 export function normalizeImage(v: unknown, state: ProjectState, label: string): ImageValue {
   if (v === null || v === undefined) return { assetId: null, alt: '' };
+  // A document or a font in the library is no picture to show.
+  const notImage = (id: string) => {
+    const a = own(state.assets.assets, id);
+    if (!a) fail(`${label}: asset "${id}" does not exist.`);
+    if (a!.kind !== 'image') fail(`${label}: "${a!.name}" is not an image.`);
+  };
   if (typeof v === 'string') {
-    if (!state.assets.assets[v]) fail(`${label}: asset "${v}" does not exist.`);
+    notImage(v);
     return { assetId: v, alt: state.assets.assets[v].altSuggestion ?? '' };
   }
   const i = v as Partial<ImageValue>;
-  if (i.assetId && !state.assets.assets[i.assetId]) fail(`${label}: asset "${i.assetId}" does not exist.`);
+  if (i.assetId) notImage(i.assetId);
   const out: ImageValue = { assetId: i.assetId ?? null, alt: String(i.alt ?? '').slice(0, 300) };
   if (i.decorative) out.decorative = true;
   return out;
@@ -89,6 +101,8 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     if (s.em) out.em = true;
     if (s.link) {
       const l = normalizeLink(s.link, state, label);
+      // Text is edited on the page, where a link is only its address: a download could not survive that edit.
+      if (l.type === 'document') fail(`${label}: a link in text cannot go to a document yet. Use a button for the download.`);
       if (l.type !== 'none') out.link = l;
     }
     return out;

@@ -19,7 +19,7 @@ import { StaticPreviews } from './static-preview';
 import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
@@ -1214,14 +1214,13 @@ export class Controller {
     return buf ? photoMetadata(buf) : null;
   }
 
-  /** The file chooser for importing: images (HEIC photos included), fonts, or both. Null when it was closed. */
-  private async chooseImportFiles(only?: 'image' | 'font'): Promise<string[] | null> {
-    const images = { name: 'Images', extensions: IMPORT_IMAGE_EXTENSIONS };
-    const fonts = { name: 'Fonts', extensions: FONT_EXTENSIONS };
+  /** The file chooser for importing: images (HEIC photos included), fonts, documents, or all of them. Null when it was closed. */
+  private async chooseImportFiles(only?: 'image' | 'font' | 'document'): Promise<string[] | null> {
+    const groups = { image: { name: 'Images', extensions: IMPORT_IMAGE_EXTENSIONS }, font: { name: 'Fonts', extensions: FONT_EXTENSIONS }, document: { name: 'Documents', extensions: DOCUMENT_EXTENSIONS } };
     const r = await dialog.showOpenDialog(this.getWindow()!, {
-      title: only === 'font' ? 'Import fonts' : only === 'image' ? 'Import images' : 'Import images or fonts',
+      title: only === 'font' ? 'Import fonts' : only === 'image' ? 'Import images' : only === 'document' ? 'Import documents' : 'Import images, fonts or documents',
       properties: ['openFile', 'multiSelections'],
-      filters: only === 'font' ? [fonts] : only === 'image' ? [images] : [{ name: 'Images and fonts', extensions: [...IMPORT_IMAGE_EXTENSIONS, ...FONT_EXTENSIONS] }, images, fonts]
+      filters: only ? [groups[only]] : [{ name: 'Images, fonts and documents', extensions: [...IMPORT_IMAGE_EXTENSIONS, ...FONT_EXTENSIONS, ...DOCUMENT_EXTENSIONS] }, groups.image, groups.font, groups.document]
     });
     return r.canceled ? null : r.filePaths;
   }
@@ -1245,7 +1244,7 @@ export class Controller {
    * Choose files to import (the chooser, unless `paths` are given) and say what each would become, writing nothing:
    * which HEIC photos are converted, which large photos could be added as web-sized copies, which can't be added.
    */
-  async reviewImport(paths?: string[], only?: 'image' | 'font'): Promise<ImportReview | null> {
+  async reviewImport(paths?: string[], only?: 'image' | 'font' | 'document'): Promise<ImportReview | null> {
     const s = this.session;
     if (!s) return null;
     // A read-only project imports nothing: the import that follows says why.
@@ -1255,10 +1254,10 @@ export class Controller {
     const rows: ImportReviewRow[] = [];
     for (const f of files) {
       const name = basename(f);
-      if (only !== 'font' && isAssetOfKind(f, 'image')) rows.push(await reviewImportFile(f, { converter: !!this.photoDecoder, opaque: isOpaquePicture }));
-      else if (only ? isAssetOfKind(f, only) : isAssetOfKind(f, 'font')) rows.push({ path: f, name, bytes: 0, action: 'import' });
+      if ((!only || only === 'image') && isAssetOfKind(f, 'image')) rows.push(await reviewImportFile(f, { converter: !!this.photoDecoder, opaque: isOpaquePicture }));
+      else if (only ? isAssetOfKind(f, only) : isAssetOfKind(f, 'font') || isAssetOfKind(f, 'document')) rows.push({ path: f, name, bytes: 0, action: 'import' });
       // What the import would skip or refuse, the review names, so it is never counted among the files added.
-      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, and WOFF2 or WOFF fonts, can be added.' });
+      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2 or WOFF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be added.' });
     }
     return { paths: files, rows };
   }
@@ -1267,7 +1266,7 @@ export class Controller {
    * Import files. `only` limits a picker that can only use one kind, before anything is written to the project.
    * `choices` is what the author confirmed in a review (see reviewImport): it holds for the opening it was made in.
    */
-  async importAssets(paths?: string[], only?: 'image' | 'font', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }> {
+  async importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }> {
     const s = this.session;
     if (!s) return { ok: false, assetIds: [] };
     if (s.readOnly) return { ok: false, assetIds: [], message: s.readOnly.reason };
@@ -1282,9 +1281,9 @@ export class Controller {
     // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile.
     return this.serialImport(() => s.withImport(async () => {
       const ids: string[] = [];
-      const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : 'an image'}.`] : [];
+      const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
       const notes: string[] = [];
-      const ops = [];
+      const ops: Array<{ type: 'asset.add'; asset: AssetRecord }> = [];
       const backfills = [];
       // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
       const known = Object.values(s.state.assets.assets);
@@ -1317,7 +1316,9 @@ export class Controller {
         if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
       }
       if (ops.length) {
-        const noun = ops.every((o) => o.asset.kind === 'font') ? ['font', 'fonts'] : ops.every((o) => o.asset.kind === 'image') ? ['image', 'images'] : ['file', 'files'];
+        const kinds = ['font', 'image', 'document'] as const;
+        const one = kinds.find((k) => ops.every((o) => o.asset.kind === k));
+        const noun = one ? [one, `${one}s`] : ['file', 'files'];
         const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
         if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
       }
@@ -1393,46 +1394,56 @@ export class Controller {
     const s = this.session;
     if (!s) return { ok: false };
     if (s.readOnly) return { ok: false, message: s.readOnly.reason };
-    const gone = { ok: false, message: 'That image is no longer in the library.' };
     const before = s.state.assets.assets[assetId];
-    if (before?.kind !== 'image') return gone;
+    // A document's file can be swapped for a new version whenever the author likes: its links follow.
+    const document = before?.kind === 'document';
+    const what = document ? 'document' : 'image';
+    const gone = { ok: false, message: `That ${what} is no longer in the library.` };
+    if (before?.kind !== 'image' && !document) return gone;
     let file = path;
     if (!file) {
-      const r = await dialog.showOpenDialog(this.getWindow()!, { title: `Locate ${before.name || 'the image'}`, buttonLabel: 'Use this file', properties: ['openFile'], filters: [{ name: 'Images', extensions: IMAGE_EXTENSIONS }] });
+      const r = await dialog.showOpenDialog(this.getWindow()!, {
+        title: document ? `Choose a file for ${before.name || 'the document'}` : `Locate ${before.name || 'the image'}`,
+        buttonLabel: 'Use this file',
+        properties: ['openFile'],
+        filters: [document ? { name: 'Documents', extensions: DOCUMENT_EXTENSIONS } : { name: 'Images', extensions: IMAGE_EXTENSIONS }]
+      });
       if (r.canceled || !r.filePaths[0]) return { ok: false };
       file = r.filePaths[0];
     }
-    const closed = { ok: false, message: 'The project was closed, or another app took it over, before the image could be located.' };
+    const closed = { ok: false, message: `The project was closed, or another app took it over, before the ${what} could be ${document ? 'given its file' : 'located'}.` };
     if (this.session !== s) return closed;
-    // A new file is written before the record names it, so the session holds off sweeping assets meanwhile.
-    return s.withImport(async () => {
+    // A new file is written before the record names it, so the session holds off sweeping assets meanwhile. It waits
+    // for imports in progress too, so a batch's duplicate check never meets a record whose file changed under it.
+    return this.serialImport(() => s.withImport(async () => {
       // The dialog gave the library time to change: a file chosen for what the image was then is not used for what it is now.
       const record = s.state.assets.assets[assetId];
-      if (record?.kind !== 'image') return gone;
-      if (record.file !== before.file || record.hash !== before.hash) return { ok: false, message: `${record.name.trim() || 'The image'} changed while the file was being chosen. Look at it again in Assets.` };
-      const name = record.name.trim() || 'The image';
+      if (record?.kind !== before.kind) return gone;
+      const name = record.name.trim() || (document ? 'The document' : 'The image');
+      if (record.file !== before.file || record.hash !== before.hash) return { ok: false, message: `${name} changed while the file was being chosen. Look at it again in Assets.` };
       try {
         const at = { revision: -1 };
-        const found = await locateAssetFile(s.dir, record, file, this.assetFence(s, record, at));
+        const found = await locateAssetFile(s.dir, record, file, this.assetFence(s, record, at), Object.values(s.state.assets.assets));
         if (found.same) {
           await this.checkAssetFiles(s);
+          if (document) return { ok: true, message: found.written.length ? `${name} is back in the project folder.` : `${name} already has that file.` };
           if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
           return { ok: true, message: `${name} is back in the project folder.` };
         }
         // Only on top of the project as it was when the files were written: a relink that landed meanwhile wins.
-        const relink = (expectedRevision: number) => s.apply({ operations: [{ type: 'asset.relink', assetId, ...found.stored }], expectedRevision }, { label: `Relink ${name}`, source: 'user' });
+        const relink = (expectedRevision: number) => s.apply({ operations: [{ type: 'asset.relink', assetId, ...found.stored }], expectedRevision }, { label: document ? `Replace the file of ${name}` : `Relink ${name}`, source: 'user' });
         let r = await relink(at.revision);
         // An unrelated change that landed meanwhile is no reason to fail, as long as the image itself is as it was.
         const still = s.state.assets.assets[assetId];
         if (r.error?.code === 'STALE_REVISION' && still?.file === record.file && still.hash === record.hash) r = await relink(s.revision);
         if (r.error?.code === 'STALE_REVISION') return { ok: false, message: `The project changed while ${basename(file)} was being stored, so ${name} was left as it is. Locate the file again.` };
         if (!r.ok) return { ok: false, message: r.error?.message ?? `${name} could not be given the new file.` };
-        return { ok: true, message: `${basename(file)} now shows wherever ${name} is used.` };
+        return { ok: true, message: document ? `Every link to ${name} now downloads ${basename(file)}.` : `${basename(file)} now shows wherever ${name} is used.` };
       } catch (e) {
         if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while the file was being chosen. Look at it again in Assets.` };
         return { ok: false, message: (e as Error).message };
       }
-    });
+    }));
   }
 
   /**

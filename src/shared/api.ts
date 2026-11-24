@@ -453,13 +453,13 @@ export interface BuilderApi {
      * Choose files to import (the file chooser, unless `paths` are given) and say what importing each would produce,
      * without writing anything. Null when the chooser was closed or no project is open.
      */
-    reviewImport(paths?: string[], only?: 'image' | 'font'): Promise<ImportReview | null>;
+    reviewImport(paths?: string[], only?: 'image' | 'font' | 'document'): Promise<ImportReview | null>;
     /**
      * Import files (the file chooser, unless `paths` are given). `choices` carries what the author confirmed in a
      * review: which photos become web-sized copies, and the opening the review was made in. `note` says what was
      * done differently from what was asked (a copy that would be no smaller), without anything having failed.
      */
-    importAssets(paths?: string[], only?: 'image' | 'font', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }>;
+    importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }>;
     /** What a web-sized copy of a large library image would be, or null when none can be made from it. */
     webCopyPlan(assetId: string): Promise<{ format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number } | null>;
     /**

@@ -21,10 +21,10 @@ export type StyleValue = string | number | boolean | { token: string };
 export type StyleProps = Record<string, StyleValue>;
 export type ResponsiveStyles = Partial<Record<ResponsiveScope, StyleProps>>;
 
-export type LinkType = 'none' | 'page' | 'url' | 'email' | 'tel' | 'anchor';
+export type LinkType = 'none' | 'page' | 'url' | 'email' | 'tel' | 'anchor' | 'document';
 export interface LinkValue {
   type: LinkType;
-  /** Page ID, URL, email address, telephone number or anchor ID depending on `type`. */
+  /** Page ID, URL, email address, telephone number, anchor ID or a document's asset ID, depending on `type`. */
   target: string;
   /** Optional in-page anchor for page links. */
   anchor?: string;
@@ -487,13 +487,16 @@ export interface AssetRecord {
   width?: number;
   height?: number;
   hash: string;
-  kind: 'image' | 'font';
+  /** A document is a file visitors download (a PDF, a spreadsheet), linked to rather than shown. */
+  kind: 'image' | 'font' | 'document';
   /** Smaller generated copies for responsive srcset, narrowest first. Originals are always kept. */
   variants?: Array<{ width: number; file: string }>;
   description?: string;
   altSuggestion?: string;
   /** For a font: the family it provides and the weight (or variable range, "100 900") and style of this file. */
   font?: FontFace;
+  /** For a document: the name of the file it came from ("Exhibitor guide.pdf"), which visitors' downloads keep. */
+  originalName?: string;
   createdAt: string;
 }
 

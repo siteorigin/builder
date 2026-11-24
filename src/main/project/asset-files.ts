@@ -8,7 +8,7 @@ import type { Diagnostic, MissingAssetFiles } from '@shared/api';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { assetUsages } from '@engine/apply';
 
-/** What each library image is missing: its original, and which of the smaller copies it lists. Fonts are not checked. */
+/** What each library image or document is missing: its original, and which of the smaller copies it lists. Fonts are not checked. */
 export async function findMissingAssetFiles(projectDir: string, assets: Record<string, AssetRecord>): Promise<MissingAssetFiles[]> {
   // Two images may list the same file: each path is looked at once.
   const seen = new Map<string, Promise<boolean>>();
@@ -27,7 +27,7 @@ export async function findMissingAssetFiles(projectDir: string, assets: Record<s
   };
   const out: MissingAssetFiles[] = [];
   for (const a of Object.values(assets)) {
-    if (a?.kind !== 'image' || typeof a.file !== 'string') continue;
+    if ((a?.kind !== 'image' && a?.kind !== 'document') || typeof a.file !== 'string') continue;
     const original = !(await present(a.file));
     const variants: string[] = [];
     for (const v of a.variants ?? []) if (typeof v?.file === 'string' && !(await present(v.file))) variants.push(v.file);
@@ -55,8 +55,9 @@ export function missingFileDiagnostics(state: ProjectState, missing: MissingAsse
   for (const m of missing) {
     const a = state.assets.assets[m.assetId];
     if (!a) continue;
-    const name = (typeof a.name === 'string' ? a.name.trim() : '') || 'An image';
-    const fix = m.original ? 'Locate the file or choose another image in Assets.' : 'Make the copies again in Assets.';
+    const document = a.kind === 'document';
+    const name = (typeof a.name === 'string' ? a.name.trim() : '') || (document ? 'A document' : 'An image');
+    const fix = document ? 'Locate its file in Assets, or link to something else.' : m.original ? 'Locate the file or choose another image in Assets.' : 'Make the copies again in Assets.';
     out.push({
       severity: used[a.id] ? 'error' : 'warning',
       code: 'ASSET_FILE_MISSING',

@@ -16,6 +16,7 @@ import { findRemoval, restoreRemoval } from '@engine/restore';
 import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
+import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
@@ -118,8 +119,15 @@ const HISTORY_LIMIT = 100;
 /** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */
 export const LOCK_HEARTBEAT_MS = 30_000;
 export const LOCK_STALE_MS = 2 * 60_000;
-/** Files written by the asset importer: name-hash8.ext, plus -480w style responsive copies. */
+/**
+ * Files written by the asset importer: name-hash8.ext, plus -480w style responsive copies. Documents (PDFs and the
+ * like) are left out on purpose: authors placed such files in static/assets/ by hand before the library took them,
+ * often with dated names ("rates-20240131.pdf") that look imported, and a sweep must never delete one of those. A
+ * removed document's file stays in the folder; exports leave it out.
+ */
 const IMPORTED_ASSET_RE = /^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}(-\d+w)?\.(jpg|png|webp|gif|avif|svg|woff2?)$/;
+/** Documents the importer named: never swept (see above), and never searched for the names of other files. */
+const IMPORTED_DOCUMENT_RE = new RegExp(`^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}\\.(${DOCUMENT_EXTENSIONS.join('|')})$`);
 /** An imported file is never collected this soon after it was written (its asset may still be on its way in). */
 const ASSET_GRACE_MS = 10 * 60_000;
 const ASSETS_DOC = `${DOC_DIR}/assets.json`;
@@ -1854,7 +1862,7 @@ export class ProjectSession extends EventEmitter {
         const child = rel ? `${rel}/${e.name}` : e.name;
         if (e.isDirectory() || (!rel && e.isSymbolicLink() && OWN_FOLDERS.has(e.name))) {
           if (!NEVER_SEARCHED.has(e.name) && !(!rel && NOT_SEARCHED.has(e.name))) await walk(child);
-        } else if (e.isFile() && !(rel === 'static/assets' && IMPORTED_ASSET_RE.test(e.name))) {
+        } else if (e.isFile() && !(rel === 'static/assets' && (IMPORTED_ASSET_RE.test(e.name) || IMPORTED_DOCUMENT_RE.test(e.name)))) {
           const hits = await this.namedInFile(child, open);
           if (hits) hits.forEach((t) => found.add(t));
           else complete = false;

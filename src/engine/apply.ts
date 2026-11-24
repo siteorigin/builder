@@ -24,6 +24,7 @@ import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
 import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily } from '@shared/fonts';
+import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
@@ -75,6 +76,8 @@ export interface Clipboard {
   components: Record<string, { name: string; contract: string }>;
   pages: Record<string, string>;
   assets: Record<string, string>;
+  /** Library documents its links go to, by name. */
+  documents?: Record<string, string>;
 }
 
 /** State an operation can read that is not part of the project: what the editor has recently copied. */
@@ -262,6 +265,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return themeRefresh(state, op);
     case 'asset.add': {
       if (state.assets.assets[op.asset.id]) fail(`Asset "${op.asset.id}" already exists.`);
+      if (op.asset.kind === 'document' ? !isDocumentFile(op.asset.file, op.asset.mime) : isDocumentMime(op.asset.mime) || !!documentFormat(op.asset.file)) fail(`"${op.asset.name}" is not ${op.asset.kind === 'document' ? 'a document the library takes' : `an ${op.asset.kind}`}.`);
       state.assets.assets[op.asset.id] = clone(op.asset);
       return { assetId: op.asset.id };
     }
@@ -285,7 +289,9 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       // One face of a family can go while another still provides the family its styles name.
       const otherFace = removing!.kind === 'font' && Object.values(state.assets.assets).some((x) => x?.id !== op.assetId && sameFontFamily(x, removing!));
       const uses = otherFace ? 0 : (batchAssetUsages(state, ctx)[op.assetId] ?? 0);
-      if (uses) fail(`This ${state.assets.assets[op.assetId].kind === 'font' ? 'font' : 'image'} is used ${uses} time${uses === 1 ? '' : 's'}. Replace or remove those uses first.`);
+      const times = `${uses} time${uses === 1 ? '' : 's'}`;
+      if (uses && removing!.kind === 'document') fail(`This document is linked ${times}. Point those links somewhere else first, or give the document a new file instead.`);
+      if (uses) fail(`This ${removing!.kind === 'font' ? 'font' : 'image'} is used ${times}. Replace or remove those uses first.`);
       delete state.assets.assets[op.assetId];
       // Fonts are counted by family, from the records themselves: count again once one has gone.
       if (removing!.kind === 'font' && ctx.assetUses) ctx.assetUses.counts = undefined;
@@ -293,7 +299,16 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     }
     case 'asset.replace': {
       if (!own(state.assets.assets, op.assetId) || !own(state.assets.assets, op.withAssetId)) fail('Both assets must exist.');
-      if (state.assets.assets[op.assetId].kind !== 'image' || state.assets.assets[op.withAssetId].kind !== 'image') fail('Only an image can replace an image.');
+      const kind = state.assets.assets[op.assetId].kind;
+      if (kind === 'document') {
+        if (state.assets.assets[op.withAssetId].kind !== 'document') fail('Only a document can replace a document.');
+        // Every link to the document goes to the other one instead.
+        walkValues(state, (v) => {
+          if (isDocumentLink(v) && v.target === op.assetId) v.target = op.withAssetId;
+        });
+        return {};
+      }
+      if (kind !== 'image' || state.assets.assets[op.withAssetId].kind !== 'image') fail('Only an image can replace an image.');
       walkValues(state, (v) => {
         if (v && typeof v === 'object' && (v as { assetId?: string }).assetId === op.assetId) (v as { assetId: string }).assetId = op.withAssetId;
       });
@@ -304,16 +319,20 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     }
     case 'asset.relink': {
       const a = own(state.assets.assets, op.assetId) ?? fail(`Asset "${op.assetId}" does not exist.`);
-      if (a.kind !== 'image') fail(`"${a.name}" is not an image.`);
+      if (a.kind === 'document') {
+        // A document's new file is any document the library takes; it has no picture details.
+        if (!isDocumentFile(op.file, op.mime) || op.width !== undefined || op.height !== undefined || op.variants?.length) fail(`The new file for "${a.name}" is not a document the library takes.`);
+      } else if (a.kind !== 'image' || !op.mime.startsWith('image/') || documentFormat(op.file)) fail(`"${a.name}" is not an image.`);
       a.file = op.file;
       a.mime = op.mime;
       a.bytes = op.bytes;
       a.hash = op.hash;
       // Details the new file does not have are dropped, never left over from the old one.
-      for (const k of ['width', 'height', 'variants'] as const) delete a[k];
+      for (const k of ['width', 'height', 'variants', 'originalName'] as const) delete a[k];
       if (op.width !== undefined) a.width = op.width;
       if (op.height !== undefined) a.height = op.height;
       if (op.variants?.length) a.variants = clone(op.variants);
+      if (a.kind === 'document' && op.originalName) a.originalName = op.originalName;
       return {};
     }
   }
@@ -390,11 +409,21 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   for (const p of Object.values(state.pages)) walk(p.seo);
 }
 
+/** A stored link to a library document (see LinkValue). */
+export function isDocumentLink(v: unknown): v is LinkValue & { type: 'document' } {
+  return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'document' && typeof (v as { target?: unknown }).target === 'string';
+}
+
+/** Whether a file is one of the document formats, its name and MIME type agreeing. */
+const isDocumentFile = (file: string, mime: string) => isDocumentMime(mime) && documentFormat(file)?.mime === mime;
+
 export function assetUsages(state: ProjectState): Record<string, number> {
   const out: Record<string, number> = {};
   walkValues(state, (v) => {
     const id = (v as { assetId?: unknown }).assetId;
     if (typeof id === 'string') out[id] = (out[id] ?? 0) + 1;
+    // A document is in use while a link goes to it.
+    if (isDocumentLink(v)) out[v.target] = (out[v.target] ?? 0) + 1;
   });
   for (const k of [state.site.favicon, state.site.socialImage]) if (k) out[k] = (out[k] ?? 0) + 1;
   for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
@@ -893,6 +922,7 @@ export function captureClipboard(state: ProjectState, pageId: string, nodeId: st
     const o = v as Record<string, unknown>;
     if (o.type === 'page' && typeof o.target === 'string') clip.pages[o.target] = own(state.pages, o.target)?.title ?? o.target;
     if (typeof o.assetId === 'string') clip.assets[o.assetId] = own(state.assets.assets, o.assetId)?.name ?? o.assetId;
+    if (isDocumentLink(o)) (clip.documents ??= {})[o.target] = own(state.assets.assets, o.target)?.name ?? o.target;
     Object.values(o).forEach(walk);
   };
   walk(clip.tree.nodes);
@@ -915,6 +945,7 @@ function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | 
   }
   for (const [id, title] of Object.entries(clip.pages)) if (!own(state.pages, id)) gone(`links to the "${title}" page`);
   for (const [id, name] of Object.entries(clip.assets)) if (!own(state.assets.assets, id)) gone(`shows the image "${name}"`);
+  for (const [id, name] of Object.entries(clip.documents ?? {})) if (own(state.assets.assets, id)?.kind !== 'document') gone(`links to the document "${name}"`);
   // Variant options and parts removed since copying are dropped, as they were from every live placement;
   // only then is what remains checked for site styles.
   const tree = clone(clip.tree);
@@ -1525,11 +1556,11 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     s.baseUrl = b || undefined;
   }
   if (op.favicon !== undefined) {
-    if (op.favicon && !state.assets.assets[op.favicon]) fail('Favicon asset not found.');
+    if (op.favicon && own(state.assets.assets, op.favicon)?.kind !== 'image') fail('Favicon asset not found.');
     s.favicon = op.favicon;
   }
   if (op.socialImage !== undefined) {
-    if (op.socialImage && !state.assets.assets[op.socialImage]) fail('Social image asset not found.');
+    if (op.socialImage && own(state.assets.assets, op.socialImage)?.kind !== 'image') fail('Social image asset not found.');
     s.socialImage = op.socialImage;
   }
   return {};

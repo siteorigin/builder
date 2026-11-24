@@ -369,6 +369,12 @@ export function Canvas() {
           openContextMenu(fr.left + at(p.x) * z, fr.top + at(p.y) * z, ref);
           break;
         }
+        case 'download': {
+          // Previewing: a link to one of the site's documents. Visitors download it; the preview does not.
+          const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : 'the document';
+          toast(`Visitors download ${name} from this link. The preview doesn’t download files; export the website to try it.`, 'info');
+          break;
+        }
         case 'externalLink': {
           // Previewing: a link that leaves the site opens outside the app, after the visitor's-eye check here.
           const link = externalLink(p.href);

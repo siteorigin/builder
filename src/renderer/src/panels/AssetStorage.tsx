@@ -64,7 +64,7 @@ export function StorageSummary({ info, onFree }: { info: StorageInfo; onFree: ()
           </div>
         )}
       </dl>
-      {info.kept.files > 0 && <p>Removed images and fonts stay in the project folder while Undo can still bring them back.</p>}
+      {info.kept.files > 0 && <p>Removed images, fonts and documents stay in the project folder while Undo can still bring them back.</p>}
       {info.reclaim && (
         <button className="btn btn-sm" onClick={onFree}>
           <HardDrive /> Free up space…
@@ -170,7 +170,7 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
           <>
             <p>
               Deletes {plural(plan.files.files, 'removed file', 'removed files')} ({formatBytes(plan.files.bytes)}) that nothing in the project names
-              {plan.historyBytes ? `, and ${formatBytes(plan.historyBytes)} of saved history` : ''}. Your site doesn’t change: every page, image and font in use stays as it is.
+              {plan.historyBytes ? `, and ${formatBytes(plan.historyBytes)} of saved history` : ''}. Your site doesn’t change: every page, image, font and document in use stays as it is.
             </p>
             {trim.undo && <Trimmed side={trim.undo} />}
             {trim.redo && <Trimmed side={trim.redo} />}

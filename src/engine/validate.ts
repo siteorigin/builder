@@ -162,6 +162,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a page that no longer exists.`, owner, nodeId });
       if (typeof o.assetId === 'string' && !state.assets.assets[o.assetId])
         out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: an image references a missing asset.`, owner, nodeId });
+      if (o.type === 'document' && typeof o.target === 'string' && (Object.hasOwn(state.assets.assets, o.target) ? state.assets.assets[o.target] : undefined)?.kind !== 'document')
+        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to a document that is no longer in Assets. Choose another destination for it.`, owner, nodeId });
       if ('assetId' in o && o.assetId && !o.decorative && !String(o.alt ?? '').trim() && owner.kind !== 'component')
         out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: an image has no alternative text.`, owner, nodeId });
       Object.values(o).forEach((x) => walk(x, nodeId));
@@ -235,7 +237,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   if (opts.sectionLinks !== false) out.push(...headingDiagnostics(state));
   out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {
-    if (a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
+    // A download is the size it is; only what pages load and show is worth making smaller.
+    if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
   }
   return out;
 }
