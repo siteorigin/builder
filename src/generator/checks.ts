@@ -10,7 +10,7 @@ import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
 import { anchorCapable, anchorsInUse, displayName, findParent } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
-import { codeTakesBlocks, isDraftPage, liveRedirects, resolveLink } from './index';
+import { codeTakesBlocks, isDraftPage, liveRedirects, resolveLink, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
@@ -26,6 +26,8 @@ export interface Scope {
   props: Record<string, unknown>;
   /** The UI state of the definition being walked, at the values every placement starts with. */
   ui?: Record<string, unknown>;
+  /** Every value the UI state can take, not only the one it starts at: a condition on it lets content render. */
+  everyState?: boolean;
   /** The placement's variant choices, with axes bound to the enclosing design's UI state at the option it starts at. */
   chosen?: InstanceNode['variants'];
   /** The placements this scope sits in, from the page down, to tell their links apart. */
@@ -83,13 +85,18 @@ export function shown(v: unknown, state: ProjectState): boolean {
 }
 
 interface Visit {
+  /**
+   * Walk what a visitor can reach by changing a component's UI state too (a tab not chosen at first, a closed
+   * disclosure), not only what shows at first.
+   */
+  everyState?: boolean;
   /** Every node about to render, before its kind's own callback; `def` is the definition it belongs to, for a component's node. */
   node?: (n: GraphNode, scope: Scope, reportId: string, inDef: boolean, def?: ComponentDefinition) => void;
   /**
    * A link node about to render; `inDef` when it is a component definition's node rather than the tree's own, and
    * `ownId` the id its markup carries.
    */
-  link?: (n: GraphNode & { kind: 'link' }, scope: Scope, reportId: string, inDef: boolean, ownId: string | undefined) => void;
+  link?: (n: GraphNode & { kind: 'link' }, scope: Scope, reportId: string, inDef: boolean, ownId: string | undefined, def: ComponentDefinition | undefined) => void;
   /** Content of the slot named (as in `Scope.slots`) is shown again, by another slot of the same name. */
   again?: (slot: string) => void;
   /** An image node about to render. */
@@ -170,10 +177,16 @@ function holds(c: Condition, scope: Scope, state: ProjectState): boolean {
   return conditionHolds(c, evaluate(conditionRef(c), scope), (v) => shown(v, state));
 }
 
+/** Whether a node's `when` (or, `negate`d, its `unless`) lets it render; on UI state, with `everyState`, it always may. */
+function lets(c: Condition, negate: boolean, scope: Scope, state: ProjectState): boolean {
+  if (scope.everyState && isStateRef(conditionRef(c))) return true;
+  return holds(c, scope, state) !== negate;
+}
+
 /** Mirrors the generator's render conditions inside a definition: a node's own conditions, a repeat's list, a collapsing element's children. */
 function nodeRenders(state: ProjectState, frame: Frame, n: GraphNode, seen: Set<string>): boolean {
-  if (n.when && !holds(n.when, frame.scope, state)) return false;
-  if (n.unless && holds(n.unless, frame.scope, state)) return false;
+  if (n.when && !lets(n.when, false, frame.scope, state)) return false;
+  if (n.unless && !lets(n.unless, true, frame.scope, state)) return false;
   if (n.kind === 'repeat') return shown(evaluate(n.list, frame.scope), state);
   return n.kind !== 'element' || !n.collapseEmpty || childRenders(state, frame, n, seen);
 }
@@ -204,8 +217,8 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     const n = frame.tree.nodes[id];
     const key = `${frame.n}:${id}`;
     if (!n || path.has(key)) return;
-    if (frame.def && n.when && !holds(n.when, frame.scope, state)) return;
-    if (frame.def && n.unless && holds(n.unless, frame.scope, state)) return;
+    if (frame.def && n.when && !lets(n.when, false, frame.scope, state)) return;
+    if (frame.def && n.unless && !lets(n.unless, true, frame.scope, state)) return;
     if (frame.def && n.kind === 'element' && n.collapseEmpty && !childRenders(state, frame, n, new Set())) return;
     const inner = new Set(path).add(key);
     const reportId = frame.reportId ?? n.id;
@@ -216,7 +229,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     visit.node?.(n, frame.scope, reportId, !!frame.def, frame.def);
     switch (n.kind) {
       case 'link':
-        visit.link?.(n, frame.scope, reportId, !!frame.def, ownId);
+        visit.link?.(n, frame.scope, reportId, !!frame.def, ownId, frame.def);
         break;
       case 'image':
         visit.image?.(n, frame.scope, reportId);
@@ -292,7 +305,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
           const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, stateInitial(def, k)])) : undefined;
           const chosen = startingVariants(n.variants, frame.def);
-          const child: Frame = { tree: def.tree, def, scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const child: Frame = { tree: def.tree, def, scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);
@@ -592,11 +605,12 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
       const fields = new Set([...read, ...whole].map((f) => key(f, reportId)));
       for (const f of fields) uses.set(f, (uses.get(f) ?? 0) + (scope.multiple ? 2 : 1));
     },
-    link: (n, scope, reportId, inDef, ownId) => {
+    link: (n, scope, reportId, inDef, ownId, def) => {
       const appearance = String(evaluate(n.appearance, scope) ?? '');
       const label = String(evaluate(n.label, scope) ?? '').trim();
       const link = evaluate(n.link, scope) as LinkValue | undefined;
-      if (!BUTTONS.has(appearance) || !label || resolveLink(link, { state })) return;
+      // A button that changes its component's state is a real button with nowhere to go.
+      if (!BUTTONS.has(appearance) || !label || resolveLink(link, { state }) || stateActionWorks(def, n.stateAction)) return;
       if (!inDef) return void out.push({ nodeId: reportId, label });
       const found: UnlinkedButton = { nodeId: reportId, label, defNodeId: n.id };
       if (scope.placement && scope.path?.length) found.itemPath = scope.path;
@@ -737,12 +751,13 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
       const value = evaluate(n.text, scope);
       push({ nodeId: reportId, kind: 'text', value, ...from(n.text, 'text', scope, n.id, inDef), ...(n.rich ? { rich: true, richLinks: true } : {}), ...(fromRow(n.text, scope) ? { computed: true } : {}) });
     },
-    link: (n, scope, reportId, inDef) => {
+    link: (n, scope, reportId, inDef, _ownId, def) => {
       const link = evaluate(n.link, scope) as LinkValue | undefined;
       const label = evaluate(n.label, scope);
       const goes = !!resolveLink(link, { state });
-      // A styled button with nowhere to go is left out of the site; a plain link still shows its words.
-      if (!goes && BUTTONS.has(String(evaluate(n.appearance, scope) ?? ''))) return;
+      // A styled button with nowhere to go is left out of the site, unless it changes its component's state; a plain
+      // link still shows its words.
+      if (!goes && BUTTONS.has(String(evaluate(n.appearance, scope) ?? '')) && !stateActionWorks(def, n.stateAction)) return;
       push({ nodeId: reportId, kind: 'text', value: label, ...from(n.label, 'label', scope, n.id, inDef), ...(fromRow(n.label, scope) ? { computed: true } : {}) });
       if (goes && isLinkValue(link)) push({ nodeId: reportId, kind: 'link', value: link, ...from(n.link, 'link', scope, n.id, inDef), ...(fromRow(n.link, scope) ? { computed: true } : {}) });
     },
@@ -974,10 +989,11 @@ function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, rep
 }
 
 /** Every link a page or shell tree renders: buttons, links inside rich text, and the links code components receive. */
-function renderedLinks(state: ProjectState, tree: NodeTree): RenderedLink[] {
+function renderedLinks(state: ProjectState, tree: NodeTree, everyState = false): RenderedLink[] {
   const out: RenderedLink[] = [];
   const at = (n: GraphNode, scope: Scope) => `${scope.trail ?? ''}:${n.id}:${String(scope.item?.id ?? '')}`;
   walkRendered(state, tree, {
+    everyState,
     link: (n, scope, reportId) => {
       const link = evaluate(n.link, scope);
       if (isLinkValue(link)) out.push({ link, label: String(evaluate(n.label, scope) ?? '').trim(), reportId, key: at(n, scope), inText: false });
@@ -1187,8 +1203,9 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     ...SHELL_PARTS.filter((part) => published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
   ];
   const seen = new Set<string>();
+  // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
   for (const src of sources)
-    for (const { link, label, reportId, key, inText } of renderedLinks(state, src.tree)) {
+    for (const { link, label, reportId, key, inText } of renderedLinks(state, src.tree, true)) {
       const to =
         link.type === 'page' && draftIds.has(link.target)
           ? { pageId: link.target, ...(link.anchor ? { anchor: link.anchor } : {}) }

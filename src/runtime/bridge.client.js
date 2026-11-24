@@ -668,6 +668,12 @@ for (const t of ['pointerdown', 'mousedown', 'touchstart']) {
 document.addEventListener('keydown', (e) => {
   if (editing) return;
   if (mode !== 'edit') return;
+  // A component's tabs choose their panel from the keyboard in Preview only. In Edit a click on one selects it, and the
+  // arrows, Home and End would otherwise change what the canvas shows behind the author's back.
+  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) && e.target instanceof Element && e.target.closest('[role="tab"]')) {
+    e.stopPropagation();
+    return;
+  }
   // Forward editor shortcuts so they work while the preview has focus.
   if (e.metaKey || e.ctrlKey || e.key === 'Escape' || e.key === 'Delete' || e.key === 'Backspace') {
     if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable))) {
