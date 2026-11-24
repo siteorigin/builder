@@ -14,7 +14,8 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
-import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
+import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
+import { REUSABILITY_CODES } from '@engine/reusability';
 import { generateProject, nodeClass } from '@generator/index';
 import { P, eq, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
@@ -521,7 +522,9 @@ describe('state buttons inside cards that link', () => {
     delete tree.nodes['card-b'];
     delete tree.nodes['card-b-btn'];
     const one = validateState(s);
-    expect(introducedDiagnostics(one, both).map((d) => [d.code, d.nodeId])).toEqual([['CARD_LINK_INTERACTIVE', 'card-b']]);
+    // The cards' fixed label and link are also flagged as design content every placement shares; that is not this test's subject.
+    const cardProblems = (before: Diagnostic[], after: Diagnostic[]) => introducedDiagnostics(before, after).filter((d) => !REUSABILITY_CODES.has(d.code));
+    expect(cardProblems(one, both).map((d) => [d.code, d.nodeId])).toEqual([['CARD_LINK_INTERACTIVE', 'card-b']]);
     // Without its action the button is still a control in the card: the same problem, not a new one.
     delete (tree.nodes['card-a-btn'] as LinkNode).stateAction;
     expect(introducedDiagnostics(one, validateState(s))).toEqual([]);
@@ -750,7 +753,7 @@ describe('the document format and the assistant', () => {
     const s = fresh();
     const { def } = billingDef(s);
     let applied = 0;
-    const host = { state: () => s, revision: () => 1, apply: async () => ((applied += 1), { ok: true, revision: 2, results: [] }) } as unknown as Parameters<typeof executeTool>[2];
+    const host = { state: () => s, revision: () => 1, diagnostics: () => validateState(s), apply: async () => ((applied += 1), { ok: true, revision: 2, results: [] }) } as unknown as Parameters<typeof executeTool>[2];
     const send = (operations: unknown[]) => executeTool('apply_operations', JSON.stringify({ expectedRevision: 1, operations }), host, 'c1');
     for (const op of [
       { type: 'component.setState', definitionId: def.id, state: 'tab', schema: { type: 'boolean' } },

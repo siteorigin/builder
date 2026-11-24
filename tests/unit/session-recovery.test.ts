@@ -626,7 +626,7 @@ describe('external edits against problems the project already has (#205)', () =>
     write(dir, pagePath, page);
     const r = await s.reloadFromDisk();
     expect(r.ok).toBe(false);
-    expect(r.message).toMatch(/component property or list item field/);
+    expect(r.message).toMatch(/component property, list item field or UI state/);
     expect(s.state.pages[s.state.site.homePageId].nodes.n_new).toBeUndefined();
   });
 
