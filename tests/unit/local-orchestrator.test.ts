@@ -7,16 +7,17 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, ProviderId } from '@shared/api';
-import type { ElementRef } from '@shared/types';
+import type { ElementRef, InstanceNode } from '@shared/types';
 import { createStarterState, type StarterId } from '@catalogue/starters';
 import { LIMITS, Orchestrator } from '@agent/orchestrator';
 import { LocalAdapter, openLocalAdapter, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { DEFAULT_LOCAL_PROFILE, type LocalModelProfile } from '@agent/models';
 import { findForbiddenShapes } from '@agent/strict-schema';
-import { FOCUSED_WINDOW_TOKENS } from '@agent/tools';
-import { contextVerdict, estimateRequestTokens } from '@agent/budget';
+import { FOCUSED_WINDOW_TOKENS, toolsForRun } from '@agent/tools';
+import { contextVerdict, estimateRequestTokens, estimateTokens } from '@agent/budget';
 import { pageGlance, pageGlanceChars } from '@agent/context';
 import { applyOperations } from '@engine/apply';
+import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import type { CanonicalItem, ToolDefinition } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { closedPort, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
@@ -104,6 +105,94 @@ describe('orchestrator with constrained JSON', () => {
     expect(result?.status).toBe('completed');
     const def = session.state.components[id].properties.items as unknown as { default: Array<Record<string, unknown>> };
     expect(def.default).toEqual([expect.objectContaining({ icon: 'leaf', title: 'Services', description: 'What we do.' })]);
+  });
+
+  it('builds a rich component and places it in one call without Developer mode, repairs it from the path it was refused with, and undoes it in one step (#359)', async () => {
+    const { session, run } = await setup({}, {}, false);
+    const home = session.state.site.homePageId;
+    const blueprint = COMPONENT_BLUEPRINTS.find((b) => b.id === 'card-grid')!.args;
+    const title = blueprint.nodes!.findIndex((n) => n.id === 'title');
+    // The first call binds each card's title to a field the list does not have.
+    const nodes = blueprint.nodes!.map((n, i) => (i === title ? { ...n, text: { $item: 'heading' } } : n));
+    server.script(
+      envelopeReply('upsert_managed_component', { ...blueprint, name: 'Studio cards', nodes, placeOnPage: { pageId: '/', index: 0 } }, 'Building the cards'),
+      envelopeReply('upsert_managed_component', { name: 'Studio cards', repair: true, nodes: [blueprint.nodes![title]] }, 'Fixing the card title'),
+      envelopeReply('finish', { message: 'Made Studio cards and put it first on the home page.' })
+    );
+    const before = session.historyInfo().entries.length;
+    const { runId, result } = await run('Create a component of service cards and put it on the home page');
+    expect(result).toMatchObject({ status: 'completed', canUndo: true });
+    // The grammar holds the tool, with nothing it would have to send as encoded JSON, and the request carries a worked
+    // call of it to follow.
+    const first = server.requests.find((r) => r.method === 'POST')!.body;
+    expect(findForbiddenShapes(first.response_format.json_schema.schema)).toEqual([]);
+    expect(JSON.stringify(first.response_format)).toContain('"upsert_managed_component"');
+    expect(first.messages[0].content).toContain('- upsert_managed_component {');
+    expect(JSON.stringify(first.messages)).toContain('componentBlueprints');
+    // Refused with the path of the one bad binding, and repaired from that node alone.
+    expect(toolResults().some((m) => m.content.includes(`nodes[${title}].text`) && m.content.includes('no field \\"heading\\"'))).toBe(true);
+    const def = Object.values(session.state.components).find((d) => d.name === 'Studio cards')!;
+    expect(def).toMatchObject({ kind: 'managed', owner: 'project' });
+    expect(def.tree!.nodes.title).toMatchObject({ text: { $item: 'title' } });
+    expect(Object.keys(def.properties)).toEqual(['heading', 'headingLevel', 'cards']);
+    expect(Object.keys(def.parts)).toEqual(expect.arrayContaining(['root', 'card']));
+    expect(Object.keys(def.variantAxes!.tone.options)).toEqual(['default', 'muted', 'inverse']);
+    expect(session.state.pages[home].nodes[session.state.pages[home].rootIds[0]]).toMatchObject({ kind: 'instance', definitionId: def.id });
+    expect(session.historyInfo().entries.length).toBe(before + 1);
+    expect((await session.undoGroup(runId)).ok).toBe(true);
+    expect(session.state.components[def.id]).toBeUndefined();
+  });
+
+  it('rebuilds a component it reads whole, without Developer mode, keeping what its placement holds (#359)', async () => {
+    const { session, run } = await setup({}, {}, false);
+    const home = session.state.site.homePageId;
+    const blueprint = COMPONENT_BLUEPRINTS.find((b) => b.id === 'card-grid')!.args;
+    server.script(envelopeReply('upsert_managed_component', { ...blueprint, name: 'Studio cards', placeOnPage: { pageId: home } }), envelopeReply('finish', { message: 'Made Studio cards.' }));
+    await run('Create a component of service cards on the home page');
+    const def = Object.values(session.state.components).find((d) => d.name === 'Studio cards')!;
+    const placed = session.state.pages[home].rootIds.at(-1)!;
+    const edit = await session.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home }, nodeId: placed, prop: 'heading', value: 'How we help' }] }, { label: 'Edit', source: 'user' });
+    expect(edit.ok).toBe(true);
+    server.requests.length = 0;
+    // The rebuild adds a short label under each title.
+    const fields = [...(blueprint.properties![2] as { fields: unknown[] }).fields, { type: 'string', name: 'label', label: 'Label', default: '' }];
+    const nodes = blueprint.nodes!.map((n) => (n.id === 'card' ? { ...n, children: ['icon', 'title', 'label', 'text'] } : n));
+    nodes.push({ kind: 'text', id: 'label', tag: 'p', text: { $item: 'label' }, when: { $item: 'label' } } as never);
+    const properties = blueprint.properties!.map((p) => (p.name === 'cards' ? { ...p, fields } : p));
+    server.script(
+      envelopeReply('read_component', { definitionId: def.id, structure: true }, 'Reading the design'),
+      envelopeReply('upsert_managed_component', { ...blueprint, definitionId: def.id, name: 'Studio cards', properties, nodes }, 'Adding a label'),
+      envelopeReply('finish', { message: 'Added a label to each card.' })
+    );
+    const { runId, result } = await run('Update the Studio cards component: add a short label under each card title');
+    expect(result?.status).toBe('completed');
+    // The design was read whole: its structure, with the node IDs the rebuild names again.
+    const first = server.requests.find((r) => r.method === 'POST')!.body;
+    expect(JSON.stringify(first.response_format)).toContain('"structure"');
+    expect(toolResults().some((m) => m.content.startsWith('Result of read_component') && m.content.includes('"card"'))).toBe(true);
+    const rebuilt = session.state.components[def.id];
+    expect(rebuilt.tree!.nodes.label).toMatchObject({ text: { $item: 'label' } });
+    expect((rebuilt.properties.cards as { fields: Record<string, unknown> }).fields).toHaveProperty('label');
+    // The placement keeps its own heading through the rebuild, and one undo takes the rebuild back.
+    expect((session.state.pages[home].nodes[placed] as InstanceNode).props.heading).toBe('How we help');
+    expect((await session.undoGroup(runId)).ok).toBe(true);
+    expect(session.state.components[def.id].tree!.nodes.label).toBeUndefined();
+    expect((session.state.pages[home].nodes[placed] as InstanceNode).props.heading).toBe('How we help');
+  });
+
+  it('sends a component request to a model whose known window holds it as it is sent: tools as signatures, not schemas (#359)', async () => {
+    const window = 12_288;
+    const { run } = await setup({}, { context: { windowTokens: window, server: 'ollama' } }, false);
+    server.script(envelopeReply('finish', { message: 'Which content should each card hold?' }));
+    const { result } = await run('Create a component of service cards');
+    expect(result?.status).toBe('no-changes');
+    const body = server.requests.find((r) => r.method === 'POST')!.body;
+    expect(JSON.stringify(body.response_format)).toContain('"upsert_managed_component"');
+    // What the model reads, with its reply, fits the window; the schemas alone, counted as a native request's, would not.
+    const tools = toolsForRun({ state: createStarterState('business', 'Test', false), selection: null, capabilities: { toolCalling: 'constrained-json', contextWindowTokens: window }, codeEnabled: false, definitionOps: true, componentRequest: true }).tools;
+    const prompt = estimateTokens((body.messages as Array<{ content: string }>).map((m) => m.content).join(''));
+    expect(prompt + body.max_tokens).toBeLessThanOrEqual(window);
+    expect(estimateRequestTokens(body.messages[0].content, tools, [])).toBeGreaterThan(window - body.max_tokens);
   });
 
   it('still enforces the selection scope', async () => {
@@ -346,11 +435,12 @@ describe('the loaded context window', () => {
   });
 
   it("reads the server's loaded size in the app's own factory, and refuses before sending", async () => {
-    server.routes['/api/ps'] = { body: { models: [{ name: 'test-model', model: 'test-model', context_length: 4096 }] } };
+    // A constrained request is counted as it is sent, its tools as signatures: a blank site's "Hi" needs about 4,096.
+    server.routes['/api/ps'] = { body: { models: [{ name: 'test-model', model: 'test-model', context_length: 2048 }] } };
     const { run } = await setup({}, {}, true, 'local', 'blank', true);
     const { result } = await run('Hi');
     expect(result?.status).toBe('failed');
-    expect(result?.summary).toMatch(/4,096-token context/);
+    expect(result?.summary).toMatch(/2,048-token context/);
     expect(result?.summary).toMatch(/OLLAMA_CONTEXT_LENGTH/);
     expect(chatPosts()).toHaveLength(0);
   });
@@ -372,12 +462,12 @@ describe('the loaded context window', () => {
   });
 
   it('refuses a blank-site "Hi" before sending it when the known window cannot hold it', async () => {
-    const { session, run } = await setup({}, { context: { windowTokens: 4096, server: 'ollama' } }, true, 'local', 'blank');
+    const { session, run } = await setup({}, { context: { windowTokens: 2048, server: 'ollama' } }, true, 'local', 'blank');
     const { result } = await run('Hi');
     expect(result?.status).toBe('failed');
-    expect(result?.summary).toMatch(/4,096-token context/);
+    expect(result?.summary).toMatch(/2,048-token context/);
     const minimum = Number(/at least ([\d,]+) tokens \(an estimate\)/.exec(result?.summary ?? '')?.[1].replace(/,/g, ''));
-    expect(minimum).toBeGreaterThan(4096);
+    expect(minimum).toBeGreaterThan(2048);
     expect(minimum % 1024).toBe(0);
     expect(result?.summary).toMatch(/OLLAMA_CONTEXT_LENGTH/);
     expect(result?.summary).not.toMatch(/start a new conversation/i);

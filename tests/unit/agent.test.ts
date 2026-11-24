@@ -2355,7 +2355,7 @@ describe('building a new component from Create component (#172)', () => {
     );
     await env.run('Create a component called "Price tag".', task);
     const names = seen[0].tools.map((t) => t.name).sort();
-    expect(names).toEqual(['apply_operations', 'inspect_component', 'read_component', 'read_page', 'read_project', 'request_clarification', 'search_assets', 'search_components', 'validate_project']);
+    expect(names).toEqual(['apply_operations', 'inspect_component', 'read_component', 'read_page', 'read_project', 'request_clarification', 'search_assets', 'search_components', 'upsert_managed_component', 'validate_project']);
     const ops = offeredOps(seen[0]).map((v) => v.properties.type.const);
     expect(ops).toEqual(expect.arrayContaining(['component.create', 'node.insert', 'node.setBinding', 'component.setPropSchema', 'component.setVariant', 'node.setStyle']));
     for (const op of ['page.create', 'token.set', 'instance.setProp', 'component.createCode']) expect(ops).not.toContain(op);
@@ -2364,10 +2364,90 @@ describe('building a new component from Create component (#172)', () => {
     // request itself has left the history the model is shown.
     for (let i = 0; i < 7; i++) await env.run('continue');
     for (const req of seen.slice(1)) expect(req.tools.map((t) => t.name).sort()).toEqual(names);
-    // The same request typed straight into the chat keeps the small site tools.
+    // The same request typed straight into the chat keeps the small site tools, which build a component whole too.
     await env.run('Create a component called "Price tag".');
     expect(seen[8].tools.map((t) => t.name)).toContain('upsert_page_with_sections');
+    expect(seen[8].tools.map((t) => t.name)).toContain('upsert_managed_component');
     expect(seen[8].tools.map((t) => t.name)).not.toContain('apply_operations');
+  });
+
+  it('builds a rich component and places it in one call without Developer mode, repairs a rejected one, and undoes it in one step (#359)', async () => {
+    const tok = (token: string) => ({ token });
+    const build = {
+      name: 'Team cards',
+      description: 'The people behind the studio.',
+      properties: [
+        { type: 'string', name: 'heading', label: 'Heading', default: 'Meet the team' },
+        {
+          type: 'list',
+          name: 'people',
+          label: 'People',
+          itemLabel: 'Person',
+          titleField: 'name',
+          fields: [
+            { type: 'string', name: 'name', label: 'Name', default: 'Name' },
+            { type: 'string', name: 'role', label: 'Role', default: '' },
+            { type: 'image', name: 'photo', label: 'Photo' }
+          ],
+          default: [{ values: [{ field: 'name', value: 'Ana Ruiz' }, { field: 'role', value: 'Founder' }] }, { values: [{ field: 'name', value: 'Sam Lee' }, { field: 'role', value: 'Designer' }] }]
+        }
+      ],
+      nodes: [
+        { kind: 'element', id: 'root', tag: 'section', children: ['heading', 'grid'], styles: [{ property: 'paddingBlock', value: tok('space.section') }] },
+        { kind: 'text', id: 'heading', tag: 'h2', text: { $prop: 'heading' } },
+        { kind: 'element', id: 'grid', tag: 'ul', children: ['people'], styles: [{ property: 'layout', value: 'grid' }, { property: 'columns', value: 1 }, { property: 'columns', value: 3, scope: 'desktop' }] },
+        { kind: 'repeat', id: 'people', list: 'people', children: ['card'] },
+        { kind: 'element', id: 'card', tag: 'li', children: ['photo', 'name', 'role'], styles: [{ property: 'layout', value: 'stack' }, { property: 'gap', value: tok('space.xs') }] },
+        { kind: 'image', id: 'photo', image: { $item: 'photo' }, when: { $item: 'photo' } },
+        { kind: 'text', id: 'name', tag: 'h3', text: { $item: 'title' } },
+        { kind: 'text', id: 'role', tag: 'p', text: { $item: 'role' }, when: { $item: 'role' } }
+      ],
+      parts: [
+        { id: 'card', nodeId: 'card', label: 'Card' },
+        { id: 'photo', nodeId: 'photo', label: 'Photo' }
+      ],
+      variantAxes: [{ name: 'tone', label: 'Tone', options: [{ id: 'light', label: 'Light' }, { id: 'dark', label: 'Dark', styles: [{ nodeId: 'root', property: 'background', value: tok('color.inverse') }] }] }],
+      placeOnPage: { pageId: '/' }
+    };
+    const env = await setup(
+      [
+        () => [call('m1', 'upsert_managed_component', build)],
+        () => [call('m2', 'upsert_managed_component', { name: 'Team cards', repair: true, nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }] })],
+        () => finish('Made Team cards and put it at the end of the home page.')
+      ],
+      { codeEnabled: false }
+    );
+    const home = env.session.state.site.homePageId;
+    const before = env.session.historyInfo().entries.length;
+    const { runId, result } = await env.run('Create a component called "Team cards" with a card per person and put it on the home page.', task);
+    expect(result?.status).toBe('completed');
+    const requests = env.adapter.requests;
+    expect(requests).toHaveLength(3);
+    // Offered first, beside the operations, with a worked blueprint of its own call in the request.
+    expect(requests[0].tools[0].name).toBe('upsert_managed_component');
+    expect(requests[0].system).toContain('upsert_managed_component');
+    const context = JSON.stringify(requests[0].items[0]);
+    expect(context).toContain('componentBlueprints');
+    expect(context).toContain('Feature cards');
+    // The first call was refused with the path of the one bad binding; the repair sent only that node.
+    const refused = lastTool(requests[1]);
+    expect(refused.fields).toEqual([{ field: 'nodes[6].text', message: expect.stringMatching(/"people" items have no field "title"/) }]);
+    const made = lastTool(requests[2]);
+    expect(made.ok).toBe(true);
+    const def = env.session.state.components[made.definitionId];
+    expect(def).toMatchObject({ kind: 'managed', owner: 'project', name: 'Team cards' });
+    expect(Object.keys(def.properties)).toEqual(['heading', 'people']);
+    expect(def.tree!.nodes.name).toMatchObject({ text: { $item: 'name' } });
+    expect(Object.keys(def.parts)).toEqual(['root', 'card', 'photo']);
+    expect(Object.keys(def.variantAxes!.tone.options)).toEqual(['light', 'dark']);
+    const page = env.session.state.pages[home];
+    expect(page.nodes[page.rootIds.at(-1)!]).toMatchObject({ kind: 'instance', definitionId: made.definitionId });
+    expect(result!.changes.map((c) => c.label).join(' ')).toContain('Team cards');
+
+    expect(env.session.historyInfo().entries.length).toBe(before + 1);
+    expect((await env.session.undoGroup(runId)).ok).toBe(true);
+    expect(env.session.state.components[made.definitionId]).toBeUndefined();
+    expect(env.session.state.pages[home].rootIds).not.toContain(made.placed.nodeId);
   });
 });
 

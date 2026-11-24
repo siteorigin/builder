@@ -14,6 +14,7 @@ import { agentProps, catalogueIndex, compactNode, componentDetail, componentStru
 import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
+import { MANAGED_COMPONENT_ARGS, MANAGED_COMPONENT_BRIEF, MANAGED_COMPONENT_DESCRIPTION, managedComponentSchema, runManagedComponent } from './managed-component';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
 import { DEFINITION_ARGS, DEFINITION_BRIEFS, DEFINITION_DESCRIPTIONS, definitionAbridged, definitionTools, runDefinitionTool, type DefinitionTarget, type DefinitionToolName } from './definition';
 import { examplesFor, exampleSection } from './examples';
@@ -89,6 +90,7 @@ export const TOOL_ARGS = {
   }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
+  upsert_managed_component: MANAGED_COMPONENT_ARGS,
   ...SELECTION_ARGS,
   ...DEFINITION_ARGS
 } as const;
@@ -120,6 +122,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
+  upsert_managed_component: MANAGED_COMPONENT_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS,
   ...DEFINITION_DESCRIPTIONS
 };
@@ -145,6 +148,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
+  upsert_managed_component: MANAGED_COMPONENT_BRIEF,
   ...SELECTION_BRIEFS,
   ...DEFINITION_BRIEFS
 };
@@ -284,7 +288,7 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
 
 /** Tools that take a revision or hash the model read earlier: only one of these can run per turn. */
 export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
-const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand'];
+const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'upsert_managed_component'];
 const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
 const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
@@ -356,6 +360,9 @@ export function toolsForRun(opts: {
   page?: { route: string } | null;
   /** The request asks for a new component (the Create component dialog). */
   task?: 'component';
+  /** The request typed into the chat asks for a component (see asksForComponent): a small site run is offered the tool
+   *  that builds one whole, which it otherwise leaves out to keep its window for pages. */
+  componentRequest?: boolean;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
@@ -364,7 +371,8 @@ export function toolsForRun(opts: {
   // gets only what building one takes, so the request still fits beside them.
   if (opts.task === 'component') {
     const tools = focused ? toolDefinitions({ codeEnabled, definitionOps, operations: COMPONENT_BUILD_OPERATIONS }).filter((t) => COMPONENT_BUILD_TOOLS.has(t.name as ToolName)) : toolDefinitions({ codeEnabled, definitionOps });
-    return { tools, mode: 'general', focused, task: 'component' };
+    // The whole component in one call comes first: the operations stay for finer changes to what it built.
+    return { tools: [managedComponentTool(), ...tools], mode: 'general', focused, task: 'component' };
   }
   // A component's own design on a small model: tools built from that design as it is now, beside its contract and
   // design to read and the author to ask, so the general operations never crowd out the request (#360).
@@ -398,13 +406,25 @@ export function toolsForRun(opts: {
   }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state) },
-    { name: 'update_site_brand', ...describe('update_site_brand'), parameters: brandToolSchema(state) }
+    { name: 'update_site_brand', ...describe('update_site_brand'), parameters: brandToolSchema(state) },
+    ...(!focused || opts.componentRequest ? [managedComponentTool()] : [])
   ];
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
   // do (styling every card of a selected one, say).
   const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
-  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(contractRead) : general)], mode: 'site', focused };
+  // A small run asked for a component reads a design whole, which a rebuild has to describe again in full.
+  const reads = (t: ToolDefinition) => (opts.componentRequest && t.name === 'read_component' ? t : contractRead(t));
+  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
 }
+
+/**
+ * A whole managed component in one call (#359). It needs a run that may change the whole site (a rebuild moves every
+ * placement), and no Developer mode: a managed design is not code.
+ */
+/** Whether a request typed into the chat asks for a component, which a small site run then builds whole. */
+export const asksForComponent = (text: string): boolean => /\b(?:components?|reusable|re-usable)\b/i.test(text);
+
+const managedComponentTool = (): ToolDefinition => ({ name: 'upsert_managed_component', ...describe('upsert_managed_component'), parameters: managedComponentSchema() });
 
 /** How well a component matches a search: 3 for each word in its name, 1 for each found only in the rest. */
 function searchScore(query: string, name: string, rest: string): number {
@@ -599,6 +619,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
   } catch {
     return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Arguments were not valid JSON.' } };
   }
+  // Its own checks name each problem by its path, and keep the call for a repair that sends only what was wrong.
+  if (name === 'upsert_managed_component') return runManagedComponent(parsed, host, callId, (host.macros ??= newMacroMemory()));
   const schema = TOOL_ARGS[name as ToolName];
   // Checked before parsing, which drops fields the schema does not name.
   const raw = name === 'apply_operations' && parsed && typeof parsed === 'object' ? (parsed as { operations?: unknown }).operations : undefined;
@@ -716,7 +738,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       // So are new components' IDs: the result of each component.create names the component it made.
       if (ops.some((o) => o.type === 'component.create' && o.definitionId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.create does not take a definitionId.' } };
       // A whole design is built through a tool of its own; the raw operation is never offered.
-      if (ops.some((o) => o.type === 'component.upsert')) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.upsert is not available here. Build a component with component.create and the node and component operations.' } };
+      if (ops.some((o) => o.type === 'component.upsert'))
+        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.upsert is not available here. Build or rebuild a whole component with upsert_managed_component where it is offered, or with component.create and the node and component operations.' } };
       // The copy goes right after the original; placing it elsewhere is a node.move of the copy it returns.
       if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.duplicate does not take an index.' } };
       // UI state is not offered yet (NOT_YET_OFFERED), and a call naming it anyway is refused the same way.
@@ -848,6 +871,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'upsert_page_with_sections':
       return runUpsert(args as z.infer<typeof UPSERT_ARGS>, host, callId, (host.macros ??= newMacroMemory()));
+    case 'upsert_managed_component':
+      return runManagedComponent(args, host, callId, (host.macros ??= newMacroMemory()));
     case 'update_site_brand':
       return runBrand(args as z.infer<typeof BRAND_ARGS>, host, callId);
     case 'update_selected_props':

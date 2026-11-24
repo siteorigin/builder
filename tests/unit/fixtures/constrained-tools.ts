@@ -30,6 +30,9 @@ export function constrainedToolSets(starter: StarterId = 'business'): ToolSet[] 
       sets.push({ label: `${label}${codeEnabled ? ' (code)' : ''}`, mode: r.mode, tools: r.tools });
     };
     run('site', {});
+    run('site component', { componentRequest: true });
+    // A new component asked for from Create component (#172), with the tool that builds it whole (#359).
+    run('component', { task: 'component' });
     run('selection', { selection: selectionTarget(whole) });
     run('part', { selection: selectionTarget(part) });
     run('ask', { ask: true });

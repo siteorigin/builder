@@ -1549,6 +1549,20 @@ describe('compact schemas on the wire (#364)', () => {
     // A call per kind of run, with nested objects, lists, nulls, tokens and an encoded open value.
     const calls: Array<[string, string, Record<string, unknown>, Record<string, unknown>]> = [
       ['site', 'upsert_page_with_sections', { slug: 'services', sections: [{ componentId: 'hero.split', variants: { tone: 'muted' }, props: { heading: 'Hi', image: { assetId: null, alt: 'A room' } } }] }, {}],
+      // A whole component (#359): nested rows, unions of a literal or a binding, and a table property, none encoded.
+      [
+        'site component',
+        'upsert_managed_component',
+        {
+          name: 'Hours',
+          properties: [{ type: 'table', name: 'hours', label: 'Hours', default: { columns: ['Day', 'Open'], rows: [['Mon', '9–5']] } }, { type: 'list', name: 'notes', label: 'Notes', fields: [{ type: 'string', name: 'text', label: 'Text' }], default: [{ values: [{ field: 'text', value: 'Closed on holidays' }] }] }],
+          nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['title'], styles: [{ property: 'gap', value: { token: 'space.lg' } }, { property: 'gap', value: { token: 'space.xl' }, scope: 'desktop' }] }, { kind: 'text', id: 'title', tag: 'h2', text: 'Opening hours', when: { $prop: 'hours' } }],
+          variantAxes: [{ name: 'tone', label: 'Tone', options: [{ id: 'light', label: 'Light' }, { id: 'dark', label: 'Dark', styles: [{ nodeId: 'root', property: 'background', value: { token: 'color.inverse' } }] }] }],
+          placeOnPage: { pageId: '/' }
+        },
+        {}
+      ],
+      ['component', 'upsert_managed_component', { name: 'Badge', nodes: [{ kind: 'element', id: 'root', children: ['label'] }, { kind: 'text', id: 'label', tag: 'span', text: { $prop: 'label' } }], properties: [{ type: 'string', name: 'label', label: 'Label', default: 'New' }] }, {}],
       ['selection', 'update_selected_props', { props: { heading: 'Sharper' }, variant: 'muted' }, {}],
       ['part', 'style_selected_element', { scope: 'phone', styles: [{ property: 'paddingBlock', value: { token: 'space.lg' } }, { property: 'color', value: null }] }, {}],
       ['ask', 'locate_field', { owner: { kind: 'page', id: 'pg_1' }, nodeId: 'n_1', prop: 'items', itemId: 'i_1', field: 'value' }, {}],
