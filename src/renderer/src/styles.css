@@ -2618,6 +2618,12 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .insert-thumb .sketch .col-s.card { padding: 2px; }
 .insert-thumb .sketch.grid3 { gap: 2px; padding: 4px; }
 .insert-thumb .sketch.open { padding: 4px; }
+/* A project component's thumbnail: its picture, or a card sketch while it is drawn or when it cannot be. */
+.component-thumb { position: relative; background: var(--panel-2); }
+.component-thumb-mark { position: absolute; right: 2px; bottom: 2px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: var(--r-xs); background: var(--plum-soft); color: var(--plum); }
+.component-thumb-mark svg { width: 11px; height: 11px; }
+.component-thumb-mark.done { background: var(--accent-soft); color: var(--accent-text); }
+.insert-tile.project:is(:hover, :focus-visible) .component-thumb, .component-thumb.done { box-shadow: 0 0 0 1px var(--accent); }
 
 /* The larger look beside the panel, over the canvas: the thumbnail at its own size, what the section is for, and where
    it lands among the sections around it. The pointer can rest on it to read it; it adds nothing when clicked. */

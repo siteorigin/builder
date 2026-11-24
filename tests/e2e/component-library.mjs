@@ -2,8 +2,10 @@
 // never stacks "(unique)", each tile says how often it is used, and its menu renames it, lists and shows where it
 // is placed, and deletes it once unused, with Undo bringing it back. A component is also shown on its own, in an
 // isolated preview, whether or not any page places it (#347), and that preview never reaches the site's files.
+// Each component's tile shows a thumbnail photographed from that preview, drawn again when the component's style or
+// the site's brand changes and kept in the editor's cache, never in an export (#370).
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
@@ -263,8 +265,129 @@ assert.equal(failed.state, 'error', 'a component that throws while mounting is r
 assert.match(failed.error, /Boom while mounting/, 'with the reason it gave');
 await apply([{ type: 'component.remove', definitionId: broken }], 'Remove the broken component');
 
-step('a prepared preview never reaches the project source or its exports');
+step('each component in Your components shows a thumbnail, drawn again when its style changes (#370)');
 const projectDir = await win.evaluate(async () => (await window.builder.project.snapshot()).dir);
+const thumbsDir = join(projectDir, '.siteorigin/cache/thumbs');
+const captures = () => win.evaluate(() => window.builderTest.thumbCaptures());
+const thumb = (name) => tile(name).locator('.component-thumb');
+/** The picture a tile shows (a data URL), once it shows one. */
+const picture = async (name) => {
+  const img = thumb(name).locator('img.insert-shot');
+  await img.waitFor({ timeout: 90000 });
+  return img.getAttribute('src');
+};
+/** The colour at a point of a picture, as [r, g, b], decoded by the editor's own page. */
+const pixel = (src, x, y) =>
+  win.evaluate(
+    async ([src, x, y]) => {
+      const img = new Image();
+      img.src = src;
+      await img.decode();
+      const c = document.createElement('canvas');
+      [c.width, c.height] = [img.naturalWidth, img.naturalHeight];
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0);
+      return { size: [img.naturalWidth, img.naturalHeight], rgb: [...g.getImageData(x, y, 1, 1).data.slice(0, 3)] };
+    },
+    [src, x, y]
+  );
+/** The file in the editor's thumbnail cache whose bytes are the picture `src` shows. */
+const cachedAs = (src) => {
+  const bytes = Buffer.from(src.split(',')[1], 'base64');
+  const names = existsSync(thumbsDir) ? readdirSync(thumbsDir) : [];
+  return names.find((n) => /^[0-9a-f]{64}\.png$/.test(n) && readFileSync(join(thumbsDir, n)).equals(bytes)) ?? null;
+};
+const near = ([r, g, b], [er, eg, eb]) => Math.abs(r - er) + Math.abs(g - eg) + Math.abs(b - eb) < 60;
+const cardRoot = (await snapshot()).components[blueDef.id].tree.rootIds[0];
+const styleCard = (property, value, label) => apply([{ type: 'node.setStyle', owner: { kind: 'component', id: blueDef.id }, nodeId: cardRoot, scope: 'base', property, value }], label);
+// A tall red card, so the middle of its picture is the card itself.
+await apply(
+  [
+    { type: 'node.setStyle', owner: { kind: 'component', id: blueDef.id }, nodeId: cardRoot, scope: 'base', property: 'minHeight', value: '900px' },
+    { type: 'node.setStyle', owner: { kind: 'component', id: blueDef.id }, nodeId: cardRoot, scope: 'base', property: 'background', value: '#ff0000' }
+  ],
+  'Make the card red'
+);
+await openInsert();
+const showAll = panel.getByRole('button', { name: /^Show all \d+ components$/ });
+if (await showAll.isVisible()) await showAll.click();
+// Insert may have shown the card before it was red: its picture is drawn again.
+let redPic;
+let redShot;
+await eventually(async () => {
+  redPic = await picture('Exhibitor card blue');
+  redShot = await pixel(redPic, 160, 100);
+  writeFileSync(join(SHOTS, 'component-library-thumb.png'), Buffer.from(redPic.split(',')[1], 'base64'));
+  assert.ok(near(redShot.rgb, [255, 0, 0]), `the card is pictured red (${redShot.rgb})`);
+}, 90000);
+assert.deepEqual(redShot.size, [320, 200], 'a thumbnail is 320 × 200');
+const redFile = cachedAs(redPic);
+assert.ok(redFile, 'the thumbnail is kept in the editor’s cache, under .siteorigin/cache/thumbs');
+// Nothing of the thumbnails' window is ever shown or focused.
+const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => ({ editor: w.webContents.getURL().startsWith('app://'), visible: w.isVisible(), focused: w.isFocused() })));
+assert.ok(windows.length === 2, `the thumbnails have a window of their own (${JSON.stringify(windows)})`);
+assert.ok(windows.every((w) => !w.visible && (w.editor || !w.focused)), `no window is shown, and the thumbnails' never takes focus (${JSON.stringify(windows)})`);
+await styleCard('background', '#0000ff', 'Make the card blue');
+await eventually(async () => assert.notEqual(await picture('Exhibitor card blue'), redPic, 'the thumbnail is drawn again after a style change'), 90000);
+const bluePic = await picture('Exhibitor card blue');
+assert.ok(near((await pixel(bluePic, 160, 100)).rgb, [0, 0, 255]), 'and shows the new style');
+const blueFile = cachedAs(bluePic);
+assert.ok(blueFile && blueFile !== redFile, 'under a key of its own');
+assert.ok(existsSync(join(thumbsDir, redFile)), 'the earlier one stays cached, for an Undo');
+
+step('a brand colour change redraws thumbnails lazily, and an unchanged component is never drawn again');
+await win.screenshot({ path: join(SHOTS, 'component-library-thumbs.png'), clip: { x: 0, y: 0, width: 420, height: 900 } });
+await styleCard('background', { token: 'color.brand' }, 'Card on the brand colour');
+await eventually(async () => assert.notEqual(await picture('Exhibitor card blue'), bluePic, 'the card follows the brand colour'), 90000);
+// Insert closed: a brand change draws nothing until the tiles are shown again.
+await win.getByRole('button', { name: 'Insert', exact: true }).click();
+await panel.locator('.insert-group[data-kind="component"]').waitFor({ state: 'hidden' });
+// Photographs asked for before it closed may still finish: counted once they have.
+let closedAt = await captures();
+for (let settledFor = 0; settledFor < 3; ) {
+  await win.waitForTimeout(700);
+  const n = await captures();
+  settledFor = n === closedAt ? settledFor + 1 : 0;
+  closedAt = n;
+}
+await apply([{ type: 'token.set', tokenId: 'color.brand', value: '#00aa00' }], 'Green brand');
+await win.waitForTimeout(2000);
+assert.equal(await captures(), closedAt, 'nothing is drawn while Insert is closed');
+await openInsert();
+await eventually(async () => assert.ok(near((await pixel(await picture('Exhibitor card blue'), 160, 100)).rgb, [0, 170, 0]), 'reopened, the card shows the new brand colour'), 90000);
+assert.ok((await captures()) > closedAt, 'and is drawn once Insert is open');
+// Back to the blue card on the theme's own brand colour: that version was pictured already.
+await apply([{ type: 'token.set', tokenId: 'color.brand', value: null }], 'Theme brand');
+await styleCard('background', '#0000ff', 'Make the card blue again');
+const before370 = await captures();
+await eventually(async () => assert.equal(await picture('Exhibitor card blue'), bluePic, 'the earlier thumbnail is shown again'), 30000);
+await win.waitForTimeout(1000);
+assert.equal(await captures(), before370, 'without drawing it again');
+
+step('a code component is pictured too, and one that throws shows its sketch');
+// Code components are listed in Developer mode, which the editor learns of from its own Settings.
+await win.locator('[aria-label="Settings"]').click();
+const devSwitch = win.getByRole('switch', { name: 'Developer mode' });
+if ((await devSwitch.getAttribute('aria-checked')) !== 'true') await devSwitch.click();
+await eventually(async () => assert.equal(await devSwitch.getAttribute('aria-checked'), 'true'));
+await win.keyboard.press('Escape');
+await win.locator('.modal').waitFor({ state: 'detached' });
+await openInsert();
+if (await showAll.isVisible()) await showAll.click();
+const noteId = Object.values((await snapshot()).components).find((d) => d.name === 'Sample note').id;
+const opening = await win.evaluate(async () => (await window.builder.project.snapshot()).workspaceKey);
+await eventually(async () => {
+  const r = await win.evaluate(([id, o]) => window.builder.project.componentThumb(id, o), [noteId, opening]);
+  assert.equal(r.state, 'ready', `a code component is pictured (${JSON.stringify(r).slice(0, 300)})`);
+}, 90000);
+assert.match(await picture('Sample note'), /^data:image\/png;base64,/, 'and its tile shows it');
+const [{ definitionId: throwing }] = await apply([{ type: 'component.createCode', name: 'Throwing note', source: BROKEN }], 'Create a throwing component');
+await eventually(async () => assert.equal(await thumb('Throwing note').getAttribute('data-thumb'), 'failed', 'a component that throws keeps its sketch'), 90000);
+assert.equal(await thumb('Throwing note').locator('img').count(), 0);
+await apply([{ type: 'component.remove', definitionId: throwing }], 'Remove the throwing component');
+const thumbFiles = readdirSync(thumbsDir);
+
+step('a prepared preview never reaches the project source or its exports');
 const MARK = 'Isolated preview words 347';
 const prepared = await win.evaluate((heading) => window.builder.project.prepareComponentPreview({ componentId: 'features.grid', props: { heading } }), MARK);
 assert.equal(prepared.ok, true, prepared.message);
@@ -294,7 +417,12 @@ for (const [root, what] of [[sourceOut, 'the source export'], [staticOut, 'the s
     }
   }
 }
-for (const out of [sourceOut, staticOut]) assert.equal(existsSync(join(out, '.siteorigin', 'cache', 'dev', 'isolated')), false, `no preview cache in ${out}`);
+for (const out of [sourceOut, staticOut]) {
+  assert.equal(existsSync(join(out, '.siteorigin', 'cache', 'dev', 'isolated')), false, `no preview cache in ${out}`);
+  assert.equal(existsSync(join(out, '.siteorigin', 'cache', 'thumbs')), false, `no thumbnail cache in ${out}`);
+  const names = new Set(files(out).map((f) => f.split('/').pop()));
+  for (const f of thumbFiles) assert.ok(!names.has(f), `no thumbnail (${f}) in ${out}`);
+}
 await win.evaluate((key) => window.builder.project.releaseComponentPreview(key), prepared.key);
 assert.equal(existsSync(isolated), false, 'a released preview’s files are removed');
 

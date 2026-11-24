@@ -28,6 +28,8 @@ import { DevServer, buildProject, dependenciesReady, prepareDependencies, starte
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
+import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/component-thumbs';
+import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, trust, untrust } from './settings';
@@ -156,6 +158,9 @@ export async function readManifestSummary(dir: string): Promise<{ ok: true; name
   return { ok: true, name: typeof name === 'string' && name.trim() ? name : basename(dir) };
 }
 
+/** How long the preview server gets to notice files just written before a component is photographed. */
+const THUMB_SETTLE_MS = 400;
+
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -202,6 +207,36 @@ export class Controller {
   private pendingStatus: RuntimeState | null = null;
   /** Isolated component previews prepared for the preview server running now, by key, with the folder each is in. */
   private componentPreviews = new Map<string, string>();
+  /** When the files the preview server shows last changed: the project's own, or its private copy's. */
+  private filesChangedAt = 0;
+  /** Photographs a prepared component preview for Insert's thumbnails; set by the app (main/thumb-capture). */
+  thumbCapture: ((server: string, path: string) => Promise<CaptureResult>) | null = null;
+  /** Thumbnails of the project's components for Insert, kept in the project's editor cache. */
+  readonly thumbs = new ComponentThumbs({
+    current: () => {
+      const s = this.session;
+      // A project this app may not write to is read from, never written to: its new thumbnails stay in memory.
+      return s && this.workspaceKey ? { opening: this.workspaceKey, state: s.state, cacheRoot: s.readOnly ? null : s.dir, readRoot: s.dir } : null;
+    },
+    previewServer: () => (this.dev?.status.state === 'ready' ? (this.dev.status as { url: string }).url : null),
+    settle: async () => {
+      // Every write already queued (the generated tokens and styles the preview loads among them), then the private
+      // copy a read-only project is previewed from, then a moment for the preview server to notice the files changed
+      // (as the AI's page measurements allow).
+      await this.session?.exclusive(async () => undefined);
+      await this.stageSync;
+      const wait = this.filesChangedAt + THUMB_SETTLE_MS - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    },
+    prepare: (definitionId) => this.prepareComponentPreview({ definitionId }),
+    release: (key) => void this.releaseComponentPreview(key),
+    capture: (server, path) => (this.thumbCapture ? this.thumbCapture(server, path) : Promise.resolve({ ok: false, message: 'Thumbnails cannot be drawn here.', transient: true })),
+    persist: async (root, key, png) => {
+      const s = this.session;
+      if (!s || s.readOnly || s.dir !== root) return;
+      await s.whileOwner(() => writeThumb(root, key, png));
+    }
+  });
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
   private closing: Promise<void> | null = null;
@@ -759,6 +794,7 @@ export class Controller {
       void this.startRuntime().catch(() => undefined);
     });
     session.on('changed', (ev) => {
+      this.filesChangedAt = Date.now();
       if (this.stage) this.syncStage(session);
       else this.dev?.notifyRevision(ev.revision);
       this.broadcast();
@@ -899,6 +935,7 @@ export class Controller {
         if (!stage || this.stage !== stage || this.session !== session || this.stageTicket !== ticket) return;
         const revision = session.revision;
         await syncPreviewStage(session.dir, stage);
+        this.filesChangedAt = Date.now();
         if (this.stage === stage) this.dev?.notifyRevision(revision);
       })
       .catch(() => {
@@ -989,6 +1026,11 @@ export class Controller {
     }
     this.componentPreviews.set(written.key, root);
     return { ok: true, ...written, definitionId: made.definitionId };
+  }
+
+  /** The thumbnail of a project component for Insert, in the opening `opening` (see @shared/component-thumbs). */
+  componentThumb(definitionId: unknown, opening: unknown, have?: unknown): Promise<ComponentThumb> {
+    return this.thumbs.get(definitionId, opening, have);
   }
 
   /** Remove a prepared component preview's files. */
