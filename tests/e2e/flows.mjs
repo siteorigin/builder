@@ -60,6 +60,7 @@ await eventually(async () => assert.match(await frame.locator('#so-link-error').
 assert.equal(await linkField.inputValue(), '/abot/', 'the link field keeps what was typed');
 assert.equal(await rich.locator('a').count(), 0, 'nothing is linked');
 await linkField.fill('/about/');
+await win.keyboard.press('Enter');
 await eventually(async () => assert.equal(await rich.locator('a[href="/about/"]').count(), 1, 'the words are linked'));
 await win.keyboard.press(`${MOD}+Enter`);
 const richSpan = async () =>
@@ -185,6 +186,8 @@ for (const long of ['<p>' + 'x'.repeat(20001) + '</p>', '<p>' + 'x'.repeat(10001
   assert.equal(await win.evaluate(async () => (await window.builder.project.snapshot()).revision), before, 'nothing was stored');
   await eventually(async () => assert.ok((await win.locator('.toast').allInnerTexts()).some((t) => /could not be saved|too long/i.test(t)), 'the author is told why'));
 }
+// Those messages go in their own time, before the steps that check no error is shown.
+await eventually(async () => assert.equal(await win.locator('.toast.error').count(), 0, 'the refusals are no longer shown'), 20000);
 
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
