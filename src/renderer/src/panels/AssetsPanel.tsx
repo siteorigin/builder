@@ -11,7 +11,8 @@ import { FontList } from './FontFiles';
 import { inSeries, sortAssets } from '@shared/asset-order';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { Picture, Thumb } from '../components/AssetPicture';
-import { goToShellPart, imagePlacement, openComponentStudio, openPost, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
+import { assetDropRefusal, goToShellPart, imagePlacement, openComponentStudio, openPost, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
+import { beginAssetDrag } from '../lib/asset-drag';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
@@ -35,6 +36,8 @@ function formatType(mime: string): string {
 }
 
 const nameOf = (a: AssetRecord) => a.name.trim() || 'Untitled image';
+/** How far a pressed image tile moves before it is dragged onto the canvas rather than clicked (as Insert's tiles). */
+const DRAG_START = 5;
 
 /** The library's three kinds, each shown on its own: a long image grid never buries fonts or documents. */
 type Section = 'images' | 'fonts' | 'documents';
@@ -856,11 +859,53 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   };
 
   const roving = shown.some((a) => a.id === activeTile) ? activeTile : (shown[0]?.id ?? null);
+  // An image tile pressed and moved a few pixels is dragged onto the canvas, which outlines the image on the page it
+  // would fill or replace (#505); the click that ends a drag opens nothing. A click, Enter or Space still opens it.
+  const dragged = useRef(false);
+  const dragFrom = (a: AssetRecord) => ({
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+      dragged.current = false;
+      if (e.button !== 0 || !e.isPrimary || e.pointerType === 'touch') return;
+      const from = { x: e.clientX, y: e.clientY, pointer: e.pointerId };
+      const stop = () => {
+        window.removeEventListener('pointermove', move, true);
+        window.removeEventListener('pointerup', stop, true);
+        window.removeEventListener('pointercancel', stop, true);
+        window.removeEventListener('blur', stop);
+      };
+      const move = (ev: PointerEvent) => {
+        if (ev.pointerId !== from.pointer || Math.hypot(ev.clientX - from.x, ev.clientY - from.y) < DRAG_START) return;
+        stop();
+        // Refused for the reason Place on page gives (Preview, the AI working, the file missing...): said once, as the
+        // drag would have started.
+        const why = assetDropRefusal(a.id);
+        if (why) {
+          dragged.current = true;
+          return toast(why, 'error');
+        }
+        if (!beginAssetDrag({ assetId: a.id, name: nameOf(a) }, { x: ev.clientX, y: ev.clientY, pointerId: ev.pointerId })) return;
+        dragged.current = true;
+        window.getSelection()?.removeAllRanges();
+      };
+      window.addEventListener('pointermove', move, true);
+      window.addEventListener('pointerup', stop, true);
+      window.addEventListener('pointercancel', stop, true);
+      window.addEventListener('blur', stop);
+    },
+    onDragStart: (e: React.DragEvent<HTMLElement>) => e.preventDefault()
+  });
+  /** Whether a click ends a drag. A keyboard's click never does. */
+  const endsDrag = (e: React.MouseEvent<HTMLElement>) => {
+    if (e.detail === 0) return false;
+    const was = dragged.current;
+    dragged.current = false;
+    return was;
+  };
   /**
    * `blocked` gives the reason a tile can't be picked here, or null. `picked`: the tile chosen so far, when picking
-   * one is not yet acting on it (replacing in some places).
+   * one is not yet acting on it (replacing in some places). `drag`: a tile can be dragged onto the canvas.
    */
-  const grid = (onPick: (a: AssetRecord) => void, label: string, { blocked, picked }: { blocked?: (a: AssetRecord) => string | null; picked?: string | null } = {}) => (
+  const grid = (onPick: (a: AssetRecord) => void, label: string, { blocked, picked, drag }: { blocked?: (a: AssetRecord) => string | null; picked?: string | null; drag?: boolean } = {}) => (
     <div className={`asset-grid${compact ? ' compact' : ''}`} role="group" aria-label={label} aria-describedby="asset-grid-keys" onKeyDown={gridKeys}>
       <span className="sr-only" id="asset-grid-keys">
         Arrow keys move between images.
@@ -883,7 +928,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             className={`asset-tile${reason ? ' blocked' : ''}${picked === a.id ? ' picked' : ''}`}
             tabIndex={a.id === roving ? 0 : -1}
             onFocus={() => setActiveTile(a.id)}
-            onClick={() => !reason && onPick(a)}
+            onClick={(e) => !(drag && endsDrag(e)) && !reason && onPick(a)}
+            {...(drag ? dragFrom(a) : {})}
             aria-pressed={picked === undefined ? undefined : picked === a.id}
             aria-disabled={reason ? true : undefined}
             aria-label={`${gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}${reason ? `. ${reason}` : ''}`}
@@ -1484,7 +1530,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     tools = browseTools;
     body = (
       <>
-        {shown.length ? grid((a) => openDetails(a.id), 'Images') : noMatches}
+        {shown.length ? grid((a) => openDetails(a.id), 'Images', { drag: true }) : noMatches}
         {!filtering && mode === 'all' && <p className="asset-drop-hint">You can also drop files anywhere on this panel.</p>}
       </>
     );

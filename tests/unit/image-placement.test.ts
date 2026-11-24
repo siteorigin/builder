@@ -11,6 +11,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { resetPendingForTests, savesInFlight, settle, trackApply } from '../../src/renderer/src/lib/pending';
 import { BASICS, basicSpec } from '../../src/renderer/src/lib/insert-search';
 import { elementWhere, sectionWhere } from '../../src/renderer/src/lib/insert-at';
+import { imageDropTargets, type ImageTarget } from '../../src/renderer/src/lib/image-drop';
 
 /**
  * Choose image → Import on one section, then the author moves on before the import finishes (issue #262). The
@@ -37,6 +38,7 @@ interface StoreState {
   rightTab: string;
   dockOpen: boolean;
   modal: { kind: string; id?: number; opening?: string } | null;
+  inspectorFocus: { owner: OwnerRef; nodeId: string; prop: string; itemId?: string; field?: string; label: string } | null;
 }
 type Checked = { kind: string; where?: string; what?: string; message?: string };
 interface StoreModule {
@@ -59,6 +61,8 @@ interface ActionsModule {
   insert(spec: { primitive?: string; componentId?: string; definitionId?: string; text?: string; columns?: number }, label: string): Promise<void>;
   insertPlan(spec: { primitive?: string; componentId?: string; definitionId?: string }): { role: string; at: Placement['at'] };
   insertionPoint(kind: 'section' | 'element', from?: unknown): Placement['at'];
+  assetDropRefusal(assetId: string): string | null;
+  dropAsset(assetId: string, target: ImageTarget, revision: number): Promise<boolean>;
 }
 
 interface ReviewModule {
@@ -182,7 +186,7 @@ afterEach(async () => {
   applyCalls = 0;
   events.length = 0;
   resetPendingForTests();
-  store.setState({ snapshot: null, pendingSave: 0, toasts: [], selection: null, leftTab: 'pages', pageId: null, mode: 'edit', definitionMode: null, rightTab: 'inspect', dockOpen: false, modal: null, leaving: false } as Partial<StoreState>);
+  store.setState({ snapshot: null, pendingSave: 0, toasts: [], selection: null, leftTab: 'pages', pageId: null, mode: 'edit', definitionMode: null, rightTab: 'inspect', dockOpen: false, modal: null, leaving: false, inspectorFocus: null } as Partial<StoreState>);
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
@@ -1053,6 +1057,124 @@ describe('placing a library image from Assets (issue #13)', () => {
     expect(problems).toEqual([message]);
     expect(lastToast()).toMatchObject({ kind: 'error', text: message });
     expect(placed(page(), nook.id)).toEqual([]);
+  });
+
+  describe('dropped on an image on the canvas (#505)', () => {
+    /** Home's Split hero, with its image emptied, and the images a drag from Assets finds on Home now. */
+    async function onHome() {
+      const lib = await library();
+      const hero = Object.values(lib.page().nodes).find((n): n is InstanceNode => n.kind === 'instance' && session!.state.components[n.definitionId]?.componentId === 'hero.split')!;
+      expect(hero).toBeTruthy();
+      await write([{ type: 'instance.setProp', owner: lib.owner, nodeId: hero.id, prop: 'image', value: { assetId: null, alt: '' } }]);
+      const targets = () => imageDropTargets(store.getState().snapshot!.state, lib.home);
+      return { ...lib, hero: hero.id, targets };
+    }
+
+    it('fills an empty image with the suggested alt text, as one change one Undo takes back, and opens its field', async () => {
+      const { owner, page, hero, targets, entries, uses } = await onHome();
+      const target = targets().find((t) => t.field?.nodeId === hero && t.field.prop === 'image')!;
+      expect(target).toMatchObject({ unfilled: true });
+      const before = structuredClone(page().nodes[hero]);
+      const history = entries();
+      expect(await actions.dropAsset(photo.id, target, store.getState().snapshot!.revision)).toBe(true);
+      expect((page().nodes[hero] as InstanceNode).props.image).toEqual({ assetId: photo.id, alt: photo.altSuggestion });
+      expect(applyCalls).toBe(1);
+      expect(entries()).toBe(history + 1);
+      // The hero is selected, with its inspector open at the image field.
+      expect(store.getState()).toMatchObject({ selection: { owner, instancePath: [], nodeId: hero }, rightTab: 'inspect', dockOpen: true, inspectorFocus: { owner, nodeId: hero, prop: 'image' } });
+      const note = lastToast()!;
+      expect(note).toMatchObject({ kind: 'info', text: `Placed “${photo.name}” as Image in Split hero.` });
+      note.action!.run();
+      await vi.waitFor(() => expect(page().nodes[hero]).toEqual(before));
+      expect(uses(photo.id)).toBe(0);
+    });
+
+    it('replaces one Gallery picture for that use alone, opening that row', async () => {
+      const { owner, page, gallery, item, targets, uses } = await onHome();
+      const target = targets().find((t) => t.field?.nodeId === gallery && t.field.itemId === item)!;
+      expect(target).toMatchObject({ unfilled: false, field: { prop: 'images', field: 'image' } });
+      const rows = () => (page().nodes[gallery] as InstanceNode).props.images as Array<{ id: string; image: ImageValue }>;
+      const before = structuredClone(rows());
+      expect(await actions.dropAsset(photo.id, target, store.getState().snapshot!.revision)).toBe(true);
+      expect(rows().map((r) => r.image)).toEqual(before.map((r) => (r.id === item ? { assetId: photo.id, alt: photo.altSuggestion } : r.image)));
+      expect(uses(nook.id)).toBe(0);
+      expect(store.getState().inspectorFocus).toMatchObject({ owner, nodeId: gallery, prop: 'images', itemId: item, field: 'image' });
+      expect(lastToast()!.text).toBe(`Replaced ${target.label} with “${photo.name}”.`);
+      lastToast()!.action!.run();
+      await vi.waitFor(() => expect(rows()).toEqual(before));
+      expect(uses(nook.id)).toBe(1);
+    });
+
+    it('is refused for the reasons Place on page gives, and changes nothing', async () => {
+      const { page, hero, targets } = await onHome();
+      const target = targets().find((t) => t.field?.nodeId === hero)!;
+      const revision = store.getState().snapshot!.revision;
+      const refused = async (text: string) => {
+        expect(actions.assetDropRefusal(photo.id)).toBe(text);
+        expect(await actions.dropAsset(photo.id, target, revision)).toBe(false);
+        expect(lastToast()).toMatchObject({ kind: 'error', text });
+      };
+      store.setState({ mode: 'preview' });
+      await refused('Switch to Edit to place the image on a page.');
+      store.setState({ mode: 'edit', definitionMode: { definitionId: (page().nodes[hero] as InstanceNode).definitionId, returnPageId: page().id } });
+      await refused('Finish editing this component to place the image on a page.');
+      store.setState({ definitionMode: null, snapshot: { ...snapshot()!, aiBusy: true } });
+      await refused('The AI is making changes. Stop it to place the image.');
+      store.setState({ snapshot: { ...snapshot()!, readOnly: { reason: 'Made by a newer version.' } } as unknown as ProjectSnapshot });
+      await refused('This project is open read-only, so the image can’t be placed.');
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
+      await refused('Locate the file to place this image.');
+      // Smaller copies missing: the page shows those, so they are made again first, as the Place on page button says.
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: false, variants: [640] }] } as unknown as ProjectSnapshot });
+      await refused('Make the missing copy again to place this image.');
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: false, variants: [640, 1280] }] } as unknown as ProjectSnapshot });
+      await refused('Make the missing copies again to place this image.');
+      expect(applyCalls).toBe(0);
+      expect((page().nodes[hero] as InstanceNode).props.image).toEqual({ assetId: null, alt: '' });
+      // Another picture's missing file is no reason.
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: nook.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
+      expect(actions.assetDropRefusal(photo.id)).toBeNull();
+      expect(await actions.dropAsset(photo.id, target, revision)).toBe(true);
+    });
+
+    it('opens the Inspector from another tab, but leaves a selection or dock the author changed while it saved', async () => {
+      const { owner, page, hero, gallery, targets } = await onHome();
+      const target = targets().find((t) => t.field?.nodeId === hero)!;
+      // Dropped while the AI tab is open: the hero's field opens in the Inspector.
+      store.setState({ rightTab: 'chat', dockOpen: true });
+      expect(await actions.dropAsset(photo.id, target, store.getState().snapshot!.revision)).toBe(true);
+      expect(store.getState()).toMatchObject({ selection: { owner, nodeId: hero }, rightTab: 'inspect', dockOpen: true, inspectorFocus: { nodeId: hero, prop: 'image' } });
+      // The author moves to the AI tab while the next drop saves: it stays there, with nothing asked of the Inspector.
+      store.setState({ inspectorFocus: null });
+      const next = targets().find((t) => t.field?.nodeId === hero)!;
+      beforeApply = async () => store.setState({ rightTab: 'chat' });
+      expect(await actions.dropAsset(nook.id, next, store.getState().snapshot!.revision)).toBe(true);
+      expect(store.getState()).toMatchObject({ selection: { owner, nodeId: hero }, rightTab: 'chat', inspectorFocus: null });
+      // Or closes the dock: it stays closed.
+      store.setState({ rightTab: 'inspect', dockOpen: true });
+      const closed = targets().find((t) => t.field?.nodeId === hero)!;
+      beforeApply = async () => store.setState({ dockOpen: false });
+      expect(await actions.dropAsset(photo.id, closed, store.getState().snapshot!.revision)).toBe(true);
+      expect(store.getState()).toMatchObject({ dockOpen: false, inspectorFocus: null });
+      // And selects the Gallery meanwhile: the Gallery stays selected.
+      const third = targets().find((t) => t.field?.nodeId === hero)!;
+      const picked = { owner, instancePath: [], nodeId: gallery };
+      beforeApply = async () => store.setState({ selection: picked });
+      expect(await actions.dropAsset(photo.id, third, store.getState().snapshot!.revision)).toBe(true);
+      expect(store.getState().selection).toBe(picked);
+      expect((page().nodes[hero] as InstanceNode).props.image).toMatchObject({ assetId: photo.id });
+    });
+
+    it('writes nothing when the project changed while the image was dragged', async () => {
+      const { owner, page, hero, targets } = await onHome();
+      const target = targets().find((t) => t.field?.nodeId === hero)!;
+      const revision = store.getState().snapshot!.revision;
+      // The hero's image is chosen elsewhere (another window) before the drop lands.
+      await write([{ type: 'instance.setProp', owner, nodeId: hero, prop: 'image', value: nook.id }]);
+      expect(await actions.dropAsset(photo.id, target, revision)).toBe(false);
+      expect(lastToast()).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
+      expect((page().nodes[hero] as InstanceNode).props.image).toEqual({ assetId: nook.id, alt: nook.altSuggestion });
+    });
   });
 });
 

@@ -4539,6 +4539,10 @@ button.asset-use:hover svg.go { color: var(--text); }
 .ov-drop-target { outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 6%, transparent); }
 .ov-drop-target.refused { outline-color: var(--red); background: var(--red-soft); }
 .ov-moving.ov-placing.refused { background: var(--red); }
+/* The image a drop from Assets would change: filled in, so it stands out from the outlines around it. */
+.ov-image-drop { outline: 3px solid var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 22%, transparent); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.7) inset; }
+/* Over the page with nothing there to take the image: the strip says so, quieter. */
+.ov-moving.ov-placing.idle { background: #4a5670; }
 .insert-ghost { position: fixed; z-index: 1000; display: inline-flex; align-items: center; gap: 6px; max-width: 240px; height: 26px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 4px 10px -2px rgb(16 24 40 / 0.35); }
 .insert-ghost span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .insert-ghost svg { flex: none; width: 14px; height: 14px; }
