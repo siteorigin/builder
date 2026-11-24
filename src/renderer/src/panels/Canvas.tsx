@@ -435,7 +435,15 @@ export function Canvas() {
               : link.kind === 'phone'
                 ? { title: 'Call this number?', confirmLabel: 'Open phone app' }
                 : { title: 'Open this link in your browser?', confirmLabel: 'Open in browser' };
-          void confirmDialog({ ...ask, body: link.target }).then((ok) => ok === true && void api.app.openExternal(link.href));
+          void confirmDialog({
+            ...ask,
+            // The button opens the phone app; it never places the call itself.
+            title: link.kind === 'phone' ? 'Open this number in your phone app?' : ask.title,
+            body: link.kind === 'email' ? 'A new email to this address opens in your email app.' : link.kind === 'phone' ? 'Your phone app opens, ready to call this number.' : 'It opens in your web browser, outside SiteOrigin Builder.',
+            subject: link.target,
+            subjectKind: link.kind,
+            icon: link.kind
+          }).then((ok) => ok === true && void api.app.openExternal(link.href));
           break;
         }
         case 'runtimeError':

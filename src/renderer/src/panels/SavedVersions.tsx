@@ -131,9 +131,17 @@ export function SavedVersionsModal() {
     if (!key || busy) return;
     const yes = await confirmDialog({
       title: 'Delete saved version?',
-      body: `“${version.name}” will be deleted for good${version.bytes ? `, freeing up to ${formatBytes(version.bytes)}` : ''}. Your site and its undo history stay as they are.`,
+      body: 'This saved version is deleted from the project.',
+      subject: version.name,
+      subjectKind: 'version',
+      subjectNote: version.bytes ? `Frees up to ${formatBytes(version.bytes)}` : undefined,
+      details: [
+        { kind: 'keep', text: 'Your site and its undo history stay as they are.' },
+        { kind: 'final', text: 'A deleted version can’t be brought back.' }
+      ],
       confirmLabel: 'Delete version',
-      danger: true
+      tone: 'danger',
+      icon: 'delete'
     });
     if (!yes || getState().snapshot?.workspaceKey !== key) return;
     setBusy(true);

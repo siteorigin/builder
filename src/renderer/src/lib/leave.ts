@@ -106,10 +106,15 @@ export async function prepareToLeave(asking: () => void): Promise<boolean> {
   asking();
   const choice = await confirmDialog({
     title: LEAVE_QUESTION,
-    body: `${problems.join(' ')} Keep editing to fix it, or leave without it.`,
+    body: problems.join(' '),
+    details: [
+      { kind: 'keep', text: 'Everything else you changed is saved.' },
+      { kind: 'final', text: 'Leaving now discards that text for good.' }
+    ],
     confirmLabel: 'Leave without it',
     cancelLabel: 'Keep editing',
-    danger: true
+    tone: 'caution',
+    icon: 'leave'
   });
   if (!current()) {
     finish();

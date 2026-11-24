@@ -299,7 +299,7 @@ export function Chat() {
         ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: day(c.createdAt), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
         // Unsent drafts belong to the conversations being removed, so they go with them.
-        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => ({ chatDrafts: {}, chatImages: {} }))) }
+        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => ({ chatDrafts: {}, chatImages: {} }))) }
       ],
       'Conversations'
     );
@@ -831,7 +831,17 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
     const otherImages = attached.length > 0 && attached.join('\n') !== originalImages.join('\n');
     // Never discard something the user is writing without asking.
     if ((typed && typed !== original?.trim()) || otherImages) {
-      const ok = await confirmDialog({ title: 'Replace your draft?', body: 'The message you are writing will be replaced by the original request, so you can edit it and try again.', confirmLabel: 'Replace draft' });
+      const ok = await confirmDialog({
+        title: 'Replace your draft?',
+        body: 'The original request goes back into the message box, so you can edit it and try again.',
+        details: [
+          { kind: 'lose', text: typed && typed !== original?.trim() ? (otherImages ? 'The message you’re writing now, and its images, are replaced.' : 'The message you’re writing now is replaced.') : 'The images attached to your message now are replaced.' },
+          { kind: 'final', text: 'What’s replaced can’t be brought back.' }
+        ],
+        confirmLabel: 'Replace draft',
+        tone: 'caution',
+        icon: 'replace'
+      });
       // The request goes back into the conversation it came from, and only while that one is still open.
       if (ok !== true || getState().conversation?.id !== conv.id) return;
     }
