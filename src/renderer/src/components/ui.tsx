@@ -3,7 +3,7 @@ import { Children, cloneElement, createContext, isValidElement, useCallback, use
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit } from '../store';
+import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
 import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, keepDraft, keptDraft, keptDraftKey, keptField, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
@@ -682,10 +682,12 @@ export interface DraftProblem {
   fix?: string;
 }
 
-/** What a control beside a checked field can do with it. */
+/** What a control beside a field built on DraftInput can do with it beyond typing. */
 export interface DraftHandle {
-  /** Put this text in the field and save it, as typing it and leaving the field would. */
+  /** Put this text in the field and save it, as typing it and leaving the field would (a checked field's fix). */
   commit: (text: string) => void;
+  /** Commit `text` now as its own undo step (a formatting command's result), checked as typing is when the AI ran. */
+  commitNow: (text: string) => unknown;
 }
 
 /** Where the fields inside belong in the project, joined to the place around them: a `root` (a node) starts a
@@ -731,7 +733,11 @@ interface DraftInputProps {
   'aria-describedby'?: string;
   'aria-invalid'?: boolean;
   value: string;
-  onCommit: (v: string) => unknown;
+  onCommit: (v: string, edit?: PendingEdit) => unknown;
+  /** Filled in with the field's DraftHandle. */
+  handle?: RefObject<DraftHandle | null>;
+  /** The input or textarea itself. */
+  inputRef?: RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
   onLive?: (v: string) => void;
   multiline?: boolean;
   className?: string;
@@ -745,7 +751,6 @@ interface DraftInputProps {
   onDirty?: (dirty: boolean) => void;
   /** Shows the field (its panel may be closed) before leaving the project's Keep editing returns to it. */
   reveal?: () => void;
-  handle?: RefObject<DraftHandle | null>;
 }
 
 /** Text input that commits on blur/Enter and keeps a local draft while focused. `onCommit` returns false when
@@ -762,7 +767,7 @@ export function DraftInput(props: DraftInputProps) {
 interface DraftStart {
   base: ProjectSnapshot | null;
   value: string;
-  commit: (v: string) => unknown;
+  commit: (v: string, edit?: PendingEdit) => unknown;
   ai: number;
 }
 
@@ -797,7 +802,8 @@ function DraftField({
   onProblem,
   onDirty,
   reveal,
-  handle
+  handle,
+  inputRef
 }: DraftInputProps) {
   // Text this field refused for being too long, kept while it was off screen (another page was open).
   const [field] = useState(() => (keep ? keptField(useStore.getState().snapshot?.workspaceKey, keep) : null));
@@ -813,6 +819,14 @@ function DraftField({
     if (!on && field) dropKeptDraft(field);
   };
   const input = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
+  // The field itself, kept here and handed to a parent that asked for it (`inputRef`).
+  const setInput = useCallback(
+    (el: HTMLInputElement | HTMLTextAreaElement | null) => {
+      input.current = el as (HTMLInputElement & HTMLTextAreaElement) | null;
+      if (inputRef) inputRef.current = el;
+    },
+    [inputRef]
+  );
   const focused = useRef(false);
   const cancelled = useRef(false);
   // A field that has gone never puts a saved value back, nor clears a mark another control of its place now holds.
@@ -1018,12 +1032,23 @@ function DraftField({
         leave(text, el);
         // The button that did this goes with the problem it fixed: focus stays with the field.
         el.focus();
+      },
+      commitNow: (text) => {
+        const from = startedAt.current ?? { base: useStore.getState().snapshot, value: valueRef.current, commit: onCommit, ai: aiActivity() };
+        if (text === from.value) return forget();
+        const edit: PendingEdit = { operations: [], separate: true };
+        const result = aiRan(from) ? commitDraft(from.base, () => from.commit(text, edit), text, { check: true }) : commitDraft(from.base, () => onCommit(text, edit), text);
+        if (result !== false) {
+          forget();
+          mark(false);
+        }
+        return result;
       }
     };
   const note = limit !== undefined ? limitNote(draft.length, limit, tooLong) : null;
   const noteId = `${generatedKey}-limit`;
   const common = {
-    ref: input,
+    ref: setInput,
     value: draft,
     placeholder,
     'aria-label': ariaLabel,

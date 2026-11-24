@@ -460,6 +460,8 @@ export interface PendingEdit {
   operations: EditOperation[];
   /** The project revision the edits were planned against: the batch is refused if the project has moved on. */
   expectedRevision?: number;
+  /** Its own undo step, never joined to the field's last edit: a formatting command, as opposed to typing. */
+  separate?: boolean;
 }
 
 /**
@@ -828,7 +830,7 @@ export function renamePage(pageId: string, from: string, title: string): Promise
  */
 export function applyWith(edit: PendingEdit | undefined, operations: EditOperation[], label: string, coalesceKey?: string) {
   if (!edit) return applyOps(operations, label, coalesceKey);
-  return applyOps([...edit.operations, ...operations], label, edit.operations.length ? undefined : coalesceKey, edit.expectedRevision);
+  return applyOps([...edit.operations, ...operations], label, edit.operations.length || edit.separate ? undefined : coalesceKey, edit.expectedRevision);
 }
 
 /**

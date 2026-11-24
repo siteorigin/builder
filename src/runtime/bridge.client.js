@@ -14,6 +14,9 @@ let pointerAt = null;
 let pointerEl = null;
 let editing = null; // { el, desc, editId, original, rich }
 let linkEditor = null; // { host, input, range }
+let toolbar = null; // { host, root, buttons, range, backward }
+/** The editor's own controls on the page (the link field, the formatting toolbar): presses there are for them. */
+const ownUi = (t) => !!t && ((linkEditor && t === linkEditor.host) || (toolbar && t === toolbar.host));
 /** Larger commits than this would be dropped by the editor's message size check, or refused by the editor. */
 const MAX_COMMIT_CHARS = 150000;
 const MAX_TEXT_CHARS = 20000;
@@ -455,7 +458,7 @@ document.documentElement.addEventListener('mouseleave', () => {
 document.addEventListener(
   'click',
   (e) => {
-    if (linkEditor && e.target === linkEditor.host) return;
+    if (ownUi(e.target)) return;
     if (editing && editing.el.contains(e.target)) {
       // Clicks place the caret in the text being edited; they never follow a link or toggle a disclosure.
       if (e.target.closest && e.target.closest('a[href], summary')) e.preventDefault();
@@ -507,7 +510,7 @@ document.addEventListener(
 document.addEventListener(
   'contextmenu',
   (e) => {
-    if (mode !== 'edit' || (linkEditor && e.target === linkEditor.host)) return;
+    if (mode !== 'edit' || ownUi(e.target)) return;
     // A right-click in the text being edited is for that text: the app's writing menu (spelling, cut, copy,
     // paste) opens for the word under the pointer, and the selection stays where it is.
     if (editing && editing.el.contains(e.target)) return;
@@ -546,6 +549,7 @@ if (typeof window.__siteoriginHold === 'function') {
 }
 for (const t of ['pointerdown', 'mousedown', 'touchstart']) {
   document.addEventListener(t, (e) => {
+    // The link field takes focus from a press. A press on the toolbar keeps it in the text, where its command acts.
     if (linkEditor && e.target === linkEditor.host) return;
     if (mode === 'edit' && !(editing && editing.el.contains(e.target))) e.preventDefault();
   }, { capture: true, passive: false });
@@ -1058,6 +1062,7 @@ function beginTextEdit(desc, editId, hitId) {
   el.addEventListener('input', scheduleRects);
   el.addEventListener('paste', onEditPaste);
   el.addEventListener('drop', onEditDrop);
+  if (rich) openToolbar();
   send('textEditStarted', { desc });
 }
 function onEditKey(e) {
@@ -1076,6 +1081,12 @@ function onEditKey(e) {
     openLinkEditor();
     return;
   }
+  // The formatting toolbar is the next stop after the text; Tab from there leaves the edit.
+  if (e.key === 'Tab' && !e.shiftKey && !mod && !e.altKey && toolbar) {
+    e.preventDefault();
+    focusToolbar();
+    return;
+  }
   if (e.key === 'Escape') {
     e.preventDefault();
     cancelEdit();
@@ -1087,9 +1098,9 @@ function onEditKey(e) {
     commitEdit();
   }
 }
-function onEditBlur() {
-  // Moving into the link editor is still the same edit.
-  if (editing && !linkEditor) commitEdit();
+function onEditBlur(e) {
+  // Moving into the link editor or the toolbar is still the same edit.
+  if (editing && !linkEditor && !(toolbar && e.relatedTarget === toolbar.host)) commitEdit();
 }
 
 const LINK_EDITOR_CSS = `
@@ -1101,6 +1112,27 @@ const LINK_EDITOR_CSS = `
   button:hover, button:focus-visible { background: #40444d; outline: none; }
 `;
 
+/**
+ * The anchors that make up one link: words with different marks are saved as one link each, shown as neighbouring
+ * anchors to the same place with only spaces between them. Changing or removing the link takes all of them.
+ */
+function linkRun(anchor) {
+  // Which marks an anchor's words carry: one link over words with the same marks is a single anchor, so two
+  // neighbouring anchors with the same marks are two links.
+  const marks = (a) => [...a.querySelectorAll('*')].map((e) => e.tagName).join();
+  const same = (n, beside) => n && n.nodeType === 1 && n.tagName === 'A' && n.getAttribute('href') === anchor.getAttribute('href') && n.getAttribute('target') === anchor.getAttribute('target') && marks(n) !== marks(beside);
+  const next = (n, dir) => {
+    let m = dir < 0 ? n.previousSibling : n.nextSibling;
+    // The page's own markers (comments) and spaces sit between the parts of one link.
+    while (m && (m.nodeType === 8 || (m.nodeType === 3 && !m.nodeValue.trim()))) m = dir < 0 ? m.previousSibling : m.nextSibling;
+    return same(m, n) ? m : null;
+  };
+  let first = anchor;
+  let last = anchor;
+  for (let m = next(first, -1); m; m = next(first, -1)) first = m;
+  for (let m = next(last, 1); m; m = next(last, 1)) last = m;
+  return [first, last];
+}
 /** ⌘K while editing rich text: a small field for the selected words' link, or the link under the caret. */
 function openLinkEditor() {
   if (!editing || !editing.rich || linkEditor) return;
@@ -1111,8 +1143,11 @@ function openLinkEditor() {
   const at = range.commonAncestorContainer;
   const found = (at.nodeType === 1 ? at : at.parentElement).closest('a');
   const anchor = found && editing.el.contains(found) ? found : null;
-  if (anchor) range.selectNodeContents(anchor);
-  else if (range.collapsed) return;
+  if (anchor) {
+    const [first, last] = linkRun(anchor);
+    range.setStart(first, 0);
+    range.setEnd(last, last.childNodes.length);
+  } else if (range.collapsed) return;
   const box = range.getBoundingClientRect();
   const host = document.createElement('div');
   const top = box.bottom + 50 > innerHeight ? Math.max(8, box.top - 44) : box.bottom + 6;
@@ -1141,6 +1176,8 @@ function openLinkEditor() {
   root.addEventListener('focusout', (e) => {
     if (!linkEditor || linkEditor.input !== input || root.contains(e.relatedTarget)) return;
     closeLinkEditor(false);
+    // Back to the text or on to the toolbar: the edit goes on without the link still being typed.
+    if (editing && (e.relatedTarget === editing.el || (toolbar && e.relatedTarget === toolbar.host))) return updateToolbar();
     commitEdit();
   });
   linkEditor = { host, input, range };
@@ -1159,6 +1196,7 @@ function closeLinkEditor(restore) {
     s.removeAllRanges();
     s.addRange(range);
   }
+  updateToolbar();
 }
 /** Only destinations the editor can store are written; it checks them again when the edit is committed. */
 function applyLink(raw) {
@@ -1168,7 +1206,7 @@ function applyLink(raw) {
     document.execCommand('unlink');
     return;
   }
-  const href = /^[^\s@/:]+@[^\s@/]+\.[^\s@/]+$/.test(text) ? `mailto:${text}` : /^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(text) ? `https://${text}` : text;
+  const href = /^[^\s@/:]+@[^\s@/]+\.[^\s@/]+$/.test(text) ? `mailto:${text}` : /^\+?\(?\d[\d ().-]{5,}$/.test(text) && !/^\d{1,3}(\.\d{1,3}){3}$/.test(text) ? `tel:${text}` : /^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(text) ? `https://${text}` : text;
   if (!/^(https?:\/\/\S|mailto:\S|tel:\S|#\S|\/)/i.test(href)) {
     linkEditor.input.setAttribute('aria-invalid', 'true');
     return;
@@ -1182,6 +1220,384 @@ function applyLink(raw) {
   closeLinkEditor(true);
   document.execCommand('createLink', false, href);
 }
+// ---------------------------------------------------------------------------
+// Formatting toolbar: visible link and list controls while rich text is edited
+// ---------------------------------------------------------------------------
+
+const TOOLBAR_CSS = `
+  [role='toolbar'] { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 8px; background: #1b1d21; box-shadow: 0 6px 24px rgb(0 0 0 / 0.32); }
+  button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #f4f5f7; cursor: pointer; }
+  button:hover:not([aria-disabled='true']), button:focus-visible { background: #40444d; outline: none; }
+  button:focus-visible { box-shadow: 0 0 0 2px #7aa7ff; }
+  button[aria-pressed='true'] { background: #2f4a7a; }
+  button[aria-disabled='true'] { opacity: 0.4; cursor: default; }
+  svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+  i { width: 1px; height: 18px; margin: 0 3px; background: #4a4e57; }
+`;
+const TOOLBAR_BUTTONS = [
+  { cmd: 'link', label: 'Link', icon: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>' },
+  { cmd: 'ul', label: 'Bulleted list', icon: '<path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/>', gap: true },
+  { cmd: 'ol', label: 'Numbered list', icon: '<path d="M10 6h11M10 12h11M10 18h11M4 6h1v4M4 10h2M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>' },
+  { cmd: 'add', label: 'Add item', icon: '<path d="M5 12h14M12 5v14"/>', gap: true },
+  { cmd: 'remove', label: 'Remove item', icon: '<path d="M5 12h14"/>' },
+  { cmd: 'up', label: 'Move item up', icon: '<path d="m5 12 7-7 7 7M12 19V5"/>' },
+  { cmd: 'down', label: 'Move item down', icon: '<path d="M12 5v14m7-7-7 7-7-7"/>' }
+];
+const NEW_ITEM = 'New item';
+
+/** Shown while rich text is edited: link and list commands, reached with a press or with Tab from the text. */
+function openToolbar() {
+  closeToolbar();
+  const host = document.createElement('div');
+  host.style.cssText = 'position: fixed; z-index: 2147483646; left: 0; top: 0;';
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = `<style>${TOOLBAR_CSS}</style><div role="toolbar" aria-label="Text formatting">${TOOLBAR_BUTTONS.map(
+    (b, i) => `${b.gap ? '<i aria-hidden="true"></i>' : ''}<button type="button" data-cmd="${b.cmd}" aria-label="${b.label}" title="${b.label}" tabindex="${i ? -1 : 0}"><svg viewBox="0 0 24 24" aria-hidden="true">${b.icon}</svg></button>`
+  ).join('')}</div>`;
+  const buttons = [...root.querySelectorAll('button')];
+  root.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('button');
+    if (b && toolbar && toolbar.root === root) runToolbarCommand(b.dataset.cmd);
+  });
+  root.addEventListener('keydown', onToolbarKey);
+  root.addEventListener('focusout', (e) => {
+    if (!editing || !toolbar || toolbar.root !== root) return;
+    const to = e.relatedTarget;
+    // Within the toolbar, back to the text, or into the link field: still the same edit.
+    if (to && (root.contains(to) || to === editing.el || (linkEditor && to === linkEditor.host))) return;
+    commitEdit();
+  });
+  toolbar = { host, root, buttons, range: null, backward: false };
+  document.documentElement.appendChild(host);
+  addEventListener('scroll', placeToolbar, { capture: true, passive: true });
+  addEventListener('resize', placeToolbar);
+  editing.el.addEventListener('input', onToolbarInput);
+  rememberRange();
+  updateToolbar();
+}
+function closeToolbar() {
+  if (!toolbar) return;
+  const { host } = toolbar;
+  toolbar = null;
+  removeEventListener('scroll', placeToolbar, { capture: true });
+  removeEventListener('resize', placeToolbar);
+  if (editing) editing.el.removeEventListener('input', onToolbarInput);
+  host.remove();
+}
+function onToolbarInput() {
+  rememberRange();
+  updateToolbar();
+}
+/**
+ * Below the text, or at the foot of the window when that is off screen; always inside it. Never above the text:
+ * the editor's selection chip sits there (or inside its top edge), over the page, where it would take the presses.
+ */
+function placeToolbar() {
+  if (!toolbar || !editing) return;
+  const r = editing.el.getBoundingClientRect();
+  const bar = toolbar.host.getBoundingClientRect();
+  const h = bar.height || 34;
+  // No room below: the end of the window away from the text's top, where the chip is.
+  const top = r.bottom + 6 + h <= innerHeight - 4 ? r.bottom + 6 : r.top > innerHeight / 2 ? 4 : Math.max(4, innerHeight - h - 4);
+  const left = Math.max(4, Math.min(r.left, innerWidth - (bar.width || 260) - 4));
+  toolbar.host.style.top = `${Math.round(top)}px`;
+  toolbar.host.style.left = `${Math.round(left)}px`;
+}
+/** The author's selection in the text, kept while the toolbar or the link field has focus. */
+function rememberRange() {
+  if (!toolbar || !editing) return;
+  const s = getSelection();
+  if (!s.rangeCount) return;
+  const r = s.getRangeAt(0);
+  if (!editing.el.contains(r.startContainer) || !editing.el.contains(r.endContainer)) return;
+  toolbar.range = r.cloneRange();
+  toolbar.backward = !r.collapsed && s.anchorNode === r.endContainer && s.anchorOffset === r.endOffset;
+}
+document.addEventListener('selectionchange', () => {
+  if (!toolbar || !editing || linkEditor) return;
+  rememberRange();
+  updateToolbar();
+});
+const elementOf = (n) => (n && n.nodeType === 1 ? n : n ? n.parentElement : null);
+/** The list item the selection starts in, inside the text being edited. */
+function currentItem() {
+  const r = toolbar && toolbar.range;
+  const at = r && elementOf(r.startContainer);
+  const li = at && at.closest('li');
+  return li && editing && editing.el.contains(li) ? li : null;
+}
+const siblingItem = (li, dir) => {
+  const n = dir < 0 ? li.previousElementSibling : li.nextElementSibling;
+  return n && n.tagName === 'LI' ? n : null;
+};
+function toolbarState() {
+  const r = toolbar.range;
+  const at = r && elementOf(r.commonAncestorContainer);
+  const a = at && at.closest('a');
+  const inLink = !!a && editing.el.contains(a);
+  const li = currentItem();
+  const list = li && li.parentElement;
+  // Text whose own element is the list (an older code component's) is always that list.
+  const rootList = editing.el.tagName === 'UL' || editing.el.tagName === 'OL';
+  return {
+    link: { disabled: !inLink && (!r || r.collapsed), label: inLink ? 'Edit link' : 'Link' },
+    // A check list shows check marks, not bullets: Bulleted list turns it into one.
+    ul: { disabled: rootList, pressed: !!list && list.tagName === 'UL' && !list.classList.contains('so-rich--check') },
+    ol: { disabled: rootList, pressed: !!list && list.tagName === 'OL' },
+    add: { disabled: !li },
+    remove: { disabled: !li },
+    up: { disabled: !li || !siblingItem(li, -1) },
+    down: { disabled: !li || !siblingItem(li, 1) }
+  };
+}
+function updateToolbar() {
+  if (!toolbar || !editing) return;
+  const state = toolbarState();
+  for (const b of toolbar.buttons) {
+    const st = state[b.dataset.cmd];
+    if (st.label) {
+      b.setAttribute('aria-label', st.label);
+      b.title = st.label;
+    }
+    if (st.pressed !== undefined) b.setAttribute('aria-pressed', String(st.pressed));
+    if (st.disabled) b.setAttribute('aria-disabled', 'true');
+    else b.removeAttribute('aria-disabled');
+  }
+  placeToolbar();
+}
+function focusToolbar() {
+  if (!toolbar) return;
+  rememberRange();
+  updateToolbar();
+  const b = toolbar.buttons.find((x) => x.tabIndex === 0) || toolbar.buttons[0];
+  b.focus();
+}
+/** Focus back in the text, with the selection it had. */
+function restoreText() {
+  if (!editing) return;
+  const range = toolbar && toolbar.range;
+  if (editing.el !== document.activeElement) editing.el.focus();
+  if (!range || !editing.el.contains(range.startContainer)) return;
+  const s = getSelection();
+  if (toolbar.backward) s.setBaseAndExtent(range.endContainer, range.endOffset, range.startContainer, range.startOffset);
+  else {
+    s.removeAllRanges();
+    s.addRange(range);
+  }
+}
+/** One Tab stop: the arrow keys, Home and End move between buttons; Escape and Shift+Tab go back to the text. */
+function onToolbarKey(e) {
+  e.stopPropagation();
+  if (e.isComposing || e.keyCode === 229 || !toolbar) return;
+  const list = toolbar.buttons;
+  const from = list.indexOf(toolbar.root.activeElement);
+  const to = e.key === 'ArrowRight' ? from + 1 : e.key === 'ArrowLeft' ? from - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? list.length - 1 : null;
+  if (to !== null) {
+    e.preventDefault();
+    const next = list[(to + list.length) % list.length];
+    for (const b of list) b.tabIndex = b === next ? 0 : -1;
+    next.focus();
+  } else if (e.key === 'Escape' || (e.key === 'Tab' && e.shiftKey)) {
+    e.preventDefault();
+    restoreText();
+  } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    commitEdit();
+  }
+}
+/** Each command is one step of the text's own Undo while editing; the whole edit is one step once it is done. */
+function runToolbarCommand(cmd) {
+  if (!editing || !toolbar) return;
+  const b = toolbar.buttons.find((x) => x.dataset.cmd === cmd);
+  if (!b || b.getAttribute('aria-disabled') === 'true') return;
+  for (const x of toolbar.buttons) x.tabIndex = x === b ? 0 : -1;
+  if (linkEditor) {
+    const open = cmd === 'link';
+    closeLinkEditor(true);
+    if (open) return;
+  }
+  restoreText();
+  if (cmd === 'link') return openLinkEditor();
+  if (cmd === 'ul' || cmd === 'ol') toggleList(cmd);
+  else {
+    const li = currentItem();
+    if (!li) return;
+    if (cmd === 'add') addItem(li);
+    else if (cmd === 'remove') removeItem(li);
+    else moveItem(li, cmd === 'up' ? -1 : 1);
+  }
+  markLists();
+  rememberRange();
+  updateToolbar();
+  scheduleRects();
+}
+/**
+ * Lists the browser's commands make have no class, and the site draws list markers from the class (its reset
+ * takes the browser's own away): give each the class its kind has, so it shows as a list while it is edited.
+ */
+function markLists() {
+  if (!editing) return;
+  for (const list of editing.el.querySelectorAll('ul, ol')) {
+    if (/\bso-rich--/.test(list.className)) continue;
+    list.classList.add(list.tagName === 'OL' ? 'so-rich--number' : 'so-rich--bullet');
+  }
+}
+/**
+ * The browser's own list commands, which are one Undo step each. With the selection inside one list of the other
+ * kind, the whole list changes kind, as in a word processor, and the selection stays on the same words. A check
+ * list becomes a bulleted one the same way.
+ */
+function toggleList(cmd) {
+  const tag = cmd === 'ol' ? 'OL' : 'UL';
+  const command = cmd === 'ol' ? 'insertOrderedList' : 'insertUnorderedList';
+  const r = toolbar.range;
+  const li = currentItem();
+  const list = li && li.parentElement;
+  const endLi = r && elementOf(r.endContainer) && elementOf(r.endContainer).closest('li');
+  const check = !!list && list.tagName === 'UL' && list.classList.contains('so-rich--check');
+  if (!li || (list.tagName === tag && !(check && cmd === 'ul')) || !endLi || endLi.parentElement !== list) return document.execCommand(command);
+  const items = [...list.children].filter((c) => c.tagName === 'LI');
+  const point = (node, offset) => {
+    const at = elementOf(node).closest('li');
+    return { i: items.indexOf(at), n: offsetIn(at, node, offset) };
+  };
+  const from = point(r.startContainer, r.startOffset);
+  const to = point(r.endContainer, r.endOffset);
+  const backward = toolbar.backward;
+  const s = getSelection();
+  let first;
+  if (check && cmd === 'ul') {
+    // No command turns a check list into a bulleted one, and replacing only the list joins it to the block after
+    // it: the whole text is put back with that one list changed, still one Undo step.
+    const at = [...editing.el.querySelectorAll('ul, ol')].indexOf(list);
+    const copy = editing.el.cloneNode(true);
+    const twin = copy.querySelectorAll('ul, ol')[at];
+    twin.classList.remove('so-rich--check');
+    twin.classList.add('so-rich--bullet');
+    const all = document.createRange();
+    all.selectNodeContents(editing.el);
+    s.removeAllRanges();
+    s.addRange(all);
+    document.execCommand('insertHTML', false, copy.innerHTML);
+    const now = editing.el.querySelectorAll('ul, ol')[at];
+    first = now && [...now.children].find((c) => c.tagName === 'LI');
+  } else {
+    const whole = document.createRange();
+    whole.setStart(items[0], 0);
+    whole.setEnd(items[items.length - 1], items[items.length - 1].childNodes.length);
+    s.removeAllRanges();
+    s.addRange(whole);
+    document.execCommand(command);
+    // The changed items are selected; a list of the new kind next to them may have joined them, so they are
+    // found from where the selection starts, not from the start of their list.
+    first = s.rangeCount ? elementOf(s.getRangeAt(0).startContainer).closest('li') : null;
+  }
+  if (!first || !editing.el.contains(first)) return;
+  const next = [...first.parentElement.children].filter((c) => c.tagName === 'LI');
+  const base = next.indexOf(first);
+  const a = next[base + from.i];
+  const b = next[base + to.i];
+  if (!a || !b) return;
+  caretAt(a, from.n);
+  const start = s.getRangeAt(0);
+  caretAt(b, to.n);
+  const end = s.getRangeAt(0);
+  // The selection keeps its direction, so Shift and an arrow key go on moving the same end.
+  if (backward) s.setBaseAndExtent(end.startContainer, end.startOffset, start.startContainer, start.startOffset);
+  else s.setBaseAndExtent(start.startContainer, start.startOffset, end.startContainer, end.startOffset);
+}
+/** Characters from the start of `el` to a point inside it. */
+function offsetIn(el, node, offset) {
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  r.setEnd(node, offset);
+  return r.toString().length;
+}
+/** A caret `n` characters into `el`, or at its end. */
+function caretAt(el, n) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  r.collapse(false);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (n <= t.nodeValue.length) {
+      r.setStart(t, n);
+      r.collapse(true);
+      break;
+    }
+    n -= t.nodeValue.length;
+  }
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+}
+function selectRange(start, end) {
+  const r = document.createRange();
+  r.setStartBefore(start);
+  r.setEndAfter(end);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+}
+const itemIndex = (li) => [...li.parentElement.children].indexOf(li);
+/** Items are replaced as items, inside their list, so the list itself (and its kind) stays as it is. */
+function replaceItems(first, last, html) {
+  selectRange(first, last);
+  document.execCommand('insertHTML', false, html);
+}
+function addItem(li) {
+  const list = li.parentElement;
+  const at = itemIndex(li) + 1;
+  replaceItems(li, li, `${li.outerHTML}<li>${NEW_ITEM}</li>`);
+  const added = list.children[at];
+  if (!added) return;
+  // The new item's words are selected, so typing replaces them.
+  const r = document.createRange();
+  r.selectNodeContents(added);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+}
+function removeItem(li) {
+  const list = li.parentElement;
+  const prev = siblingItem(li, -1);
+  const next = siblingItem(li, 1);
+  if (!prev && !next) {
+    // The only item: its words go and the caret stays in it, ready for new ones. An item left empty is dropped
+    // when the edit is saved.
+    const r = document.createRange();
+    r.selectNodeContents(li);
+    const s = getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    if (!r.collapsed) document.execCommand('delete');
+    // A selection set again closes the browser's typing step, so typing after this is an Undo step of its own.
+    const caret = s.rangeCount ? s.getRangeAt(0).cloneRange() : null;
+    if (caret) {
+      s.removeAllRanges();
+      s.addRange(caret);
+    }
+    return;
+  }
+  const keep = prev ? itemIndex(prev) : itemIndex(li);
+  selectRange(li, li);
+  document.execCommand('delete');
+  const target = list.children[keep];
+  if (target) caretAt(target, prev ? Infinity : 0);
+}
+function moveItem(li, dir) {
+  const other = siblingItem(li, dir);
+  if (!other) return;
+  const list = li.parentElement;
+  const r = toolbar.range;
+  const caret = r && li.contains(r.startContainer) ? offsetIn(li, r.startContainer, r.startOffset) : 0;
+  const to = itemIndex(other);
+  if (dir < 0) replaceItems(other, li, li.outerHTML + other.outerHTML);
+  else replaceItems(li, other, other.outerHTML + li.outerHTML);
+  const moved = list.children[to];
+  if (moved) caretAt(moved, caret);
+}
+
 /**
  * Paste. Into rich text, formatting copied from elsewhere comes in as far as the text can hold it: paragraphs,
  * headings, quotes, lists, bold, italic, links and line breaks, rebuilt from scratch so nothing else gets in
@@ -1363,16 +1779,19 @@ function onEditDrop(e) {
 }
 function endEdit() {
   closeLinkEditor(false);
+  closeToolbar();
   const { el } = editing;
-  el.removeAttribute('contenteditable');
-  el.removeAttribute('spellcheck');
-  el.style.outline = '';
-  el.style.cursor = '';
+  // Listeners go first: the element stops taking typing below, which blurs it, and that blur must not commit the
+  // edit a second time.
   el.removeEventListener('keydown', onEditKey);
   el.removeEventListener('blur', onEditBlur);
   el.removeEventListener('input', scheduleRects);
   el.removeEventListener('paste', onEditPaste);
   el.removeEventListener('drop', onEditDrop);
+  el.removeAttribute('contenteditable');
+  el.removeAttribute('spellcheck');
+  el.style.outline = '';
+  el.style.cursor = '';
   editing = null;
   getSelection()?.removeAllRanges();
   // The edited element no longer takes typing, but keeps focus without a focus event.

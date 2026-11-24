@@ -933,8 +933,9 @@ export function Canvas() {
       const now = getState().snapshot?.state;
       if (now && refExists(now, target)) void fn();
     };
-    // Text that can be edited on the page can be reached without a double-click: the keyboard's way in.
-    const editable = canInlineEdit(ref) && !!descFor(ref);
+    // Text that can be edited on the page can be reached without a double-click: the keyboard's way in. Focus goes
+    // into the page with the text, where Tab reaches its formatting toolbar.
+    const editable = mode === 'edit' && canInlineEdit(ref) && !!descFor(ref);
     const editText = live(ref, () => startTextEditFromChrome(ref));
     const items = [
         { heading: name },

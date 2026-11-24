@@ -12,11 +12,12 @@ import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAct
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
+import type { InsertSpec, Primitive } from './insert-search';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 
-export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
+export type { InsertSpec, Primitive } from './insert-search';
 
 export function currentOwner(): OwnerRef | null {
   const s = getState();
@@ -373,7 +374,7 @@ function insideComponent(state: ProjectState, at: InsertAt | null): InsertAt | n
  * goes into a new Section made for it. The element is the last one inserted; `nodeId` names it, for operations in
  * the same batch that fill it.
  */
-function elementOps(at: InsertAt, spec: { primitive: Primitive }, nodeId?: string): EditOperation[] {
+function elementOps(at: InsertAt, spec: { primitive: Primitive; text?: string }, nodeId?: string): EditOperation[] {
   const named = nodeId ? { newNodeId: nodeId } : {};
   if (at.owner.kind === 'page' && !at.parentId) {
     const sectionId = newId('n');
@@ -385,11 +386,11 @@ function elementOps(at: InsertAt, spec: { primitive: Primitive }, nodeId?: strin
   return [{ type: 'node.insert', ...named, owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...spec }];
 }
 
-export async function insert(spec: { componentId?: string; definitionId?: string; primitive?: Primitive; variants?: Record<string, string> }, label: string) {
+export async function insert(spec: InsertSpec, label: string) {
   const isSection = !spec.primitive;
   const at = insertionPoint(isSection ? 'section' : 'element');
   if (!at) return;
-  const ops: EditOperation[] = spec.primitive ? elementOps(at, { primitive: spec.primitive }) : [{ type: 'node.insert', owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...spec }];
+  const ops: EditOperation[] = spec.primitive ? elementOps(at, { primitive: spec.primitive, ...(spec.text !== undefined ? { text: spec.text } : {}) }) : [{ type: 'node.insert', owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...spec }];
   const r = await applyOps(ops, `Insert ${label}`);
   const id = r?.at(-1)?.nodeId as string | undefined;
   if (id) setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });

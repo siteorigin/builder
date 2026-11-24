@@ -297,6 +297,8 @@ const LINE_MARKERS: Array<{ re: RegExp; type: RichBlock['type'] }> = [
 
 /** A line ending in an odd run of backslashes (the last one not escaped) goes on in the next, after a line break. */
 const BREAK_AT_END = /(?:^|[^\\])(?:\\\\)*\\$/;
+/** Whether a line of the text form goes on in the next one, after a line break (it ends in an unescaped backslash). */
+export const endsWithBreak = (line: string) => BREAK_AT_END.test(line.trimEnd());
 
 /**
  * The lines of one string. With `markdown`, a line ending in a backslash goes on in the next line of the same
@@ -320,6 +322,43 @@ function textLines(input: string, markdown: boolean): string[] {
   }
   // A break at the very end: the line it starts is empty.
   if (open !== null) out.push(`${open.join('\n')}\n`);
+  return out;
+}
+
+/** A link written in a line of the text form: `[label](target)`, with where its parts start and end. */
+export interface LinkToken {
+  start: number;
+  end: number;
+  labelStart: number;
+  labelEnd: number;
+  /** The destination as written, without angle brackets. */
+  target: string;
+  newTab: boolean;
+}
+
+/**
+ * The links in one line of the text form, read as parseRichText reads them: escaped characters are skipped, and
+ * `[label](target)` is a link only when `resolve` accepts its target (anything else stays text as written).
+ */
+export function linkTokens(line: string, resolve: (target: string, newTab: boolean) => LinkValue | null): LinkToken[] {
+  const out: LinkToken[] = [];
+  for (let i = 0; i < line.length; ) {
+    if (line[i] === '\\' && i + 1 < line.length && (ESCAPABLE.includes(line[i + 1]) || line[i + 1] === '|')) {
+      i += 2;
+      continue;
+    }
+    if (line[i] === '[') {
+      LINK_RE.lastIndex = i;
+      const m = LINK_RE.exec(line);
+      const target = m ? (m[2] ?? m[3]) : '';
+      if (m && resolve(target, !!m[4])) {
+        out.push({ start: i, end: i + m[0].length, labelStart: i + 1, labelEnd: i + 1 + m[1].length, target, newTab: !!m[4] });
+        i += m[0].length;
+        continue;
+      }
+    }
+    i++;
+  }
   return out;
 }
 
@@ -401,9 +440,12 @@ function escapeInline(text: string): string {
 }
 
 /** A line that would read as a block marker keeps its first character literal. */
-function escapeLineStart(line: string): string {
+export function escapeLineStart(line: string): string {
   return line.replace(/^(#{3,4}\s|>|[-+]\s)/, '\\$1').replace(/^(\d+)([.)]\s)/, '$1\\$2');
 }
+
+/** A link's destination as the text form writes it: in angle brackets when it holds a bracket or a space. */
+export const targetToMarkdown = (target: string) => (/[()\s]/.test(target) ? `<${target}>` : target);
 
 function spansToMarkdown(spans: RichSpan[], pages: RichPages): string {
   const marked = (s: RichSpan | undefined) => !!s && !s.link && !!(s.strong || s.em);
@@ -414,7 +456,7 @@ function spansToMarkdown(spans: RichSpan[], pages: RichPages): string {
       const gap = marked(s) && marked(spans[i - 1]) ? SEPARATOR : '';
       if (!s.link) return gap + body;
       const target = linkToTarget(s.link, pages);
-      return `[${body}](${/[()\s]/.test(target) ? `<${target}>` : target}${s.link.newTab ? ' "new tab"' : ''})`;
+      return `[${body}](${targetToMarkdown(target)}${s.link.newTab ? ' "new tab"' : ''})`;
     })
     .join('');
 }
