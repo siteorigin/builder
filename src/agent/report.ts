@@ -1,12 +1,13 @@
 import type { ChatChange, ChatCheck } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
-import type { GraphNode, ImageValue, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import type { AltReview, GraphNode, ImageValue, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { pageArticle } from '@shared/articles';
 import { STYLE_PROPS } from '@shared/styles';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import { declaredTokens } from '@engine/tokens';
 import { displayName, getTree } from '@engine/tree';
+import { altStillToCheck } from '@engine/alt-review';
 import type { HomeChange } from '@engine/apply';
 import { shellPageLinks } from '@generator/checks';
 
@@ -350,9 +351,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       case 'asset.remove':
         return plain(op, `Removed ${quoted(assetName(op.assetId))} from the library`);
       case 'asset.replace': {
-        // Uses whose alt text was the author's own, or went with no suggestion to replace it, are worth a look.
+        // Uses whose alt text was the author's own, or went with no suggestion to replace it, are worth a look: those
+        // the run has not changed or removed since.
         const review = (results[i] as { altReview?: unknown } | undefined)?.altReview;
-        const n = Array.isArray(review) ? review.length : 0;
+        const n = Array.isArray(review) ? altStillToCheck(after, op.withAssetId, review as AltReview[]).length : 0;
         const check = n ? `; check the alt text in ${n === 1 ? 'one place' : `${n} places`}` : '';
         return plain(op, `Replaced ${quoted(assetName(op.assetId))} with ${quoted(assetName(op.withAssetId))} wherever it was used${check}`);
       }

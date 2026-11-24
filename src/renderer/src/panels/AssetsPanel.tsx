@@ -417,6 +417,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [replacing, setReplacing] = useState(false);
   const replaceSession = useRef(0);
+  const replacingNow = useRef(false);
   const [q, setQ] = useState('');
   const [pickQ, setPickQ] = useState('');
   const [filter, setFilter] = useState<'all' | 'unused'>('all');
@@ -657,10 +658,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   };
 
   const replaceWith = async (withId: string) => {
-    if (!sel || withId === sel.id) return;
+    // A second choice while the first is on its way replaces nothing more.
+    if (!sel || withId === sel.id || replacingNow.current) return;
     const n = places.length || usage[sel.id] || 0;
     const target = getState().snapshot?.state.assets.assets[withId];
-    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], `Replace ${nameOf(sel)}`);
+    replacingNow.current = true;
+    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], `Replace ${nameOf(sel)}`).finally(() => (replacingNow.current = false));
     if (r) {
       replaceSession.current++;
       setReplacing(false);
@@ -948,7 +951,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             <TriangleAlert aria-hidden="true" />
             <div>
               <span>
-                <b id="asset-alt-review-title">Check the alt text in {altToCheck.length === 1 ? 'one place' : `${altToCheck.length} places`}.</b> {nameOf(snap.state.assets.assets[altReview!.withId] ?? sel)} shows there now. Places that had this image’s suggested alt text have the new image’s.
+                <b id="asset-alt-review-title">Check the alt text in {altToCheck.length === 1 ? 'one place' : `${altToCheck.length} places`}.</b> {nameOf(snap.state.assets.assets[altReview!.withId] ?? sel)} shows there now, but the alt text there was written for this image, or is empty.
               </span>
               <ul>
                 {altToCheck.map((c) => {
@@ -976,7 +979,13 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 })}
               </ul>
               <div className="asset-note-actions">
-                <button className="btn btn-sm btn-ghost" onClick={() => setAltReview(null)}>
+                <button
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => {
+                    setAltReview(null);
+                    requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
+                  }}
+                >
                   Done
                 </button>
               </div>

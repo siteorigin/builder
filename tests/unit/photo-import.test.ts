@@ -438,6 +438,34 @@ describe('making a web-sized copy of a large library image', () => {
     expect((await sharp(readFileSync(join(dir, copy.variants![0].file))).metadata()).width).toBe(copy.variants![0].width);
   });
 
+  it('keeps every use’s alt text when it uses a copy already in Assets, whatever that copy suggests', async () => {
+    const { c } = await openProject();
+    const bigId = (await c.importAssets([sourceFile('big.png', await noisy(3000, 2000, 'png'))])).assetIds[0];
+    const describe = (assetId: string, altSuggestion: string) => c.session!.apply({ operations: [{ type: 'asset.update', assetId, altSuggestion }] }, { label: 'Describe', source: 'user' });
+    expect((await describe(bigId, 'The front room at dusk')).ok).toBe(true);
+    const first = await c.makeWebCopy(bigId, { replace: false, opening: c.openingKey! });
+    expect((await describe(first.assetId!, 'Notes for the copy')).ok).toBe(true);
+    expect((await c.session!.apply({ operations: [{ type: 'asset.replace', assetId: STARTER_ASSETS[0].id, withAssetId: bigId }] }, { label: 'Use big', source: 'user' })).ok).toBe(true);
+    /** The alt text of every use of an image, in page order. */
+    const altsOf = (id: string) => {
+      const out: string[] = [];
+      const walk = (v: unknown) => {
+        if (Array.isArray(v)) return v.forEach(walk);
+        if (!v || typeof v !== 'object') return;
+        if ((v as { assetId?: unknown }).assetId === id) out.push(String((v as { alt?: unknown }).alt));
+        Object.values(v).forEach(walk);
+      };
+      walk(c.session!.state.site.shell);
+      walk(c.session!.state.pages);
+      return out;
+    };
+    const before = altsOf(bigId);
+    expect(before).toContain('The front room at dusk');
+    const r = await c.makeWebCopy(bigId, { replace: true, opening: c.openingKey! });
+    expect(r).toMatchObject({ ok: true, assetId: first.assetId });
+    expect(altsOf(first.assetId!)).toEqual(before);
+  });
+
   it('offers nothing for a picture it cannot copy, and leaves an image alone when a copy would be no smaller', async () => {
     const { c } = await openProject();
     const gif = await c.importAssets([sourceFile('moving.gif', await sharp({ create: { width: 64, height: 48, channels: 3, background: '#000' } }).gif().toBuffer())]);

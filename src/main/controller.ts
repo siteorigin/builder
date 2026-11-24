@@ -1468,7 +1468,8 @@ export class Controller {
           if ('smaller' in made) return { ok: false, message: `A web-sized copy of ${name} would be no smaller, so it was left as it is.` };
           const ops = [
             ...(made.existing ? [] : [{ type: 'asset.add' as const, asset: made.record }]),
-            ...(opts.replace ? [{ type: 'asset.replace' as const, assetId, withAssetId: made.record.id }] : [])
+            // The copy is the same picture: every use keeps its alt text, whatever the copy's own suggestion says.
+            ...(opts.replace ? [{ type: 'asset.replace' as const, assetId, withAssetId: made.record.id, keepAlt: true }] : [])
           ];
           const label = opts.replace ? `Use a web-sized copy of ${name}` : `Make a web-sized copy of ${name}`;
           // The image, and a library copy reused for it, must still be the pictures they were: a relink meanwhile would

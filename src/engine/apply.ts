@@ -18,6 +18,7 @@ import type {
   TokenValue,
   RichSpan,
   RichText,
+  ValuePlace,
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
@@ -330,13 +331,14 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       if (kind !== 'image' || state.assets.assets[op.withAssetId].kind !== 'image') fail('Only an image can replace an image.');
       if (op.assetId === op.withAssetId) return { altReview: [] };
       // A use that still has the old image's suggested description takes the new one's; a decorative use stays as it
-      // is; a description of the use's own is kept, for the author to check against the new picture.
+      // is; a description of the use's own is kept, for the author to check against the new picture. A copy of the
+      // same picture (`keepAlt`) leaves every description as it is.
       const was = state.assets.assets[op.assetId].altSuggestion?.trim() ?? '';
       const now = state.assets.assets[op.withAssetId].altSuggestion?.trim() ?? '';
       const altReview: AltReview[] = [];
       walkImageUses(state, op.assetId, (v, at) => {
         v.assetId = op.withAssetId;
-        if (v.decorative) return;
+        if (op.keepAlt || v.decorative) return;
         const alt = typeof v.alt === 'string' ? v.alt.trim() : '';
         if (alt === was) {
           v.alt = now;
@@ -448,8 +450,8 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   for (const p of Object.values(state.pages)) walk(p.seo);
 }
 
-/** Every image value showing a library image, in the site's trees and its components' starting values; `at` says where it is (see AltReview). */
-function walkImageUses(state: ProjectState, assetId: string, fn: (v: ImageValue, at: () => Omit<AltReview, 'reason' | 'alt'>) => void) {
+/** Every image value showing a library image, in the site's trees and its components' starting values; `at` says where it is. */
+function walkImageUses(state: ProjectState, assetId: string, fn: (v: ImageValue, at: () => ValuePlace) => void) {
   const walk = (v: unknown, place: { owner: OwnerRef; nodeId: string } | { definitionId: string }, path: Array<string | number>) => {
     if (Array.isArray(v)) v.forEach((x, i) => walk(x, place, [...path, x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' ? (x as { id: string }).id : i]));
     else if (v && typeof v === 'object') {

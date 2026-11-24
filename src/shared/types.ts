@@ -38,13 +38,17 @@ export interface ImageValue {
 }
 
 /**
+ * Where a value is: in an element (`owner`, `nodeId`) or in a component property's starting value (`definitionId`);
+ * `path` steps from there to it by key, and through list items by their ID (by position, for one without).
+ */
+export type ValuePlace = ({ owner: OwnerRef; nodeId: string } | { definitionId: string }) & { path: Array<string | number> };
+
+/**
  * A use of a library image whose alternative text a replacement left for the author to check: one that keeps a
  * description of its own (`custom`), or one whose inherited description went because the new image suggests none
- * (`missing`). It is in an element (`owner`, `nodeId`) or in a component property's starting value (`definitionId`);
- * `path` steps from there to the image by key, and through list items by their ID (by position, for one without).
- * `alt` is the text it was left with.
+ * (`missing`). `alt` is the text it was left with.
  */
-export type AltReview = { reason: 'custom' | 'missing'; alt: string; path: Array<string | number> } & ({ owner: OwnerRef; nodeId: string } | { definitionId: string });
+export type AltReview = ValuePlace & { reason: 'custom' | 'missing'; alt: string };
 
 /** Binding to a property of the enclosing component, or a field of the current repeated item. */
 export type Binding = { $prop: string } | { $item: string };
