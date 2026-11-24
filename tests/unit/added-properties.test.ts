@@ -192,7 +192,7 @@ describe('a list property added to a placed component', () => {
     // As a list filled in when the property was added holds it.
     node.props.items = placedDefaultItems(own, node, defaults);
     const copy = (node.props.items as ListItem[])[1].id;
-    const style = (value: unknown): EditOperation => ({ type: 'node.setStyle', owner: own, nodeId: node.id, partId: 'method', itemId: defaults[1].id as string, scope: 'base', property: 'background', value });
+    const style = (value: string): EditOperation => ({ type: 'node.setStyle', owner: own, nodeId: node.id, partId: 'method', itemId: defaults[1].id as string, scope: 'base', property: 'background', value });
     const s1 = applyOperations(s0, [style('#ff0000')]).state;
     expect(placement(s1, node.id).itemOverrides?.method?.items).toEqual({ [copy]: { base: { background: '#ff0000' } } });
     const s2 = applyOperations(s1, [{ type: 'node.resetStyles', owner: own, nodeId: node.id, partId: 'method', itemId: defaults[1].id as string }]).state;
