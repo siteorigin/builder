@@ -18,7 +18,7 @@ import type { EffectiveSeo, SeoSubject } from '@shared/seo';
 import { seoText } from '@shared/seo';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
-import { isLanguageCode, siteLanguage } from '@shared/languages';
+import { isLanguageCode, sameLanguage, siteLanguage } from '@shared/languages';
 import { sitePublisher } from '@shared/site-identity';
 import { siteArchives } from './archive';
 import type { SeoResolver } from './seo-metadata';
@@ -195,7 +195,8 @@ function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSe
     url: meta.url!,
     ...opt('name', seoText(meta.title)),
     ...opt('description', seoText(meta.description)),
-    ...opt('inLanguage', isLanguageCode(meta.language) ? meta.language : undefined),
+    // A page in the site's language says it as the site does, however the page spells it ("EN" on an "en" site).
+    ...opt('inLanguage', isLanguageCode(meta.language) ? (sameLanguage(meta.language, language) ? language : meta.language) : undefined),
     isPartOf: ref(ids.website),
     breadcrumb: ref(ids.breadcrumb),
     ...opt('primaryImageOfPage', meta.imageUrl ? { '@type': 'ImageObject', url: meta.imageUrl } : undefined)
