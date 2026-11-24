@@ -130,7 +130,7 @@ console.log(`Signal findings:\n${list(signal)}`);
 const added = [...signal].filter(([k, n]) => n > (baseline.get(k) ?? 0)).map(([k]) => k);
 assert.deepEqual(added, [], `Signal reports nothing Foundation's own pages do not:\n${list(signal)}`);
 
-step('a dark Services grid keeps its light cards' links in the theme’s own colours');
+step('a dark Services grid keeps its light cards’ links in the theme’s own colours');
 const home = onSignal.site.homePageId;
 const features = Object.values(onSignal.pages[home].nodes).find((n) => n.kind === 'instance' && onSignal.components[n.definitionId].componentId === 'features.grid');
 const firstCard = features.props.items[0].id;
