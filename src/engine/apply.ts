@@ -877,9 +877,16 @@ function applyArticle(page: PageDoc, op: ArticleFields) {
 function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: ProjectState): string {
   const idMap = new Map<string, string>();
   for (const id of subtreeIds(from, nodeId)) idMap.set(id, newId('n'));
+  // A copied detached gallery is a gallery of its own: its images move through the viewer together, apart.
+  const groups = new Map<string, string>();
   for (const [oldId, nid] of idMap) {
     const n = clone(from.nodes[oldId]);
     n.id = nid;
+    const group = n.detachedFrom?.group;
+    if (typeof group === 'string') {
+      if (!groups.has(group)) groups.set(group, `${newId('g')}${group.includes('|') ? group.slice(group.indexOf('|')) : ''}`);
+      n.detachedFrom!.group = groups.get(group);
+    }
     // Copies never reuse an anchor: HTML IDs must stay unique.
     if (from === to) delete n.anchor;
     if (n.kind === 'element' || n.kind === 'repeat') n.children = n.children.map((c) => idMap.get(c) ?? c);

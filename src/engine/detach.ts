@@ -5,12 +5,12 @@
  * set of styles per element that cascades the same. Slot content moves into place. Components placed inside the
  * design stay placements, given the values and styles they were shown with.
  */
-import type { DetachedFrom, GraphNode, InstanceNode, NodeTree, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, ProjectState, PropSchema } from '@shared/types';
 import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, slotChildren } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
-import { toRichText } from '@shared/richtext';
+import { richTextToPlain, toRichText } from '@shared/richtext';
 import { isArticleDate } from '@shared/articles';
 import { flattenStyles, type StyleLayer } from '@shared/styles';
 import { designLayers, selectedVariants } from '@shared/variants';
@@ -18,6 +18,7 @@ import { liveItemStyles } from '@shared/item-styles';
 import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/index';
 import { effectiveProps, evaluate, rendersIn, type Scope } from '@generator/checks';
 import { anchorsInUse, fail, findParent, getNode, getTree, settledRoot } from './tree';
+import { slotLandingProblem } from './slots';
 import { clone } from './install';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -35,7 +36,7 @@ interface At {
  * Replace a page's placement of a managed component with the elements it renders. `copy` copies a subtree of the page
  * under fresh IDs (for slot content the design shows more than once).
  */
-export function detachInstance(state: ProjectState, op: Op<'component.detachInstance'>, copy: (tree: NodeTree, nodeId: string) => string): { nodeId: string } {
+export function detachInstance(state: ProjectState, op: Op<'component.detachInstance'>, copy: (tree: NodeTree, nodeId: string) => string): { nodeId: string; label: string } {
   if (op.owner.kind === 'shell') fail('The header and footer are shared by every page, so their components cannot be detached. Use Make unique to change one on its own.');
   if (op.owner.kind !== 'page') fail('A component inside another component’s design cannot be detached. Detach the component that contains it where it is placed on a page.');
   const tree = getTree(state, op.owner);
@@ -66,12 +67,16 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const added: GraphNode[] = [];
   // Names the galleries this detach makes, so each stays its own viewer group, apart from any other on the page.
   const groups = newId('g');
+  // Rules of one class count from different components' designs: the one whose block comes later in the stylesheet
+  // wins at every size (the generator writes each design's rules, media blocks included, in turn, in ID order).
+  const defOrder = new Map(Object.values(state.components).sort((a, b) => a.id.localeCompare(b.id)).map((d, i) => [d.id, i]));
+  const tie = (defId: string) => (defOrder.get(defId) ?? 0) / (defOrder.size + 1) / 10;
 
   /** The layers of rules on one of the design's nodes for this placement, weakest first, as the stylesheets cascade them. */
   const layersFor = (nodeId: string, at: At, boost: number): StyleLayer[] => {
     const design = designLayers(def, nodeId, inst.variants);
     const designed = design.map((l) => l.styles);
-    const layers: StyleLayer[] = design.map((l) => ({ ...l }));
+    const layers: StyleLayer[] = design.map((l) => ({ ...l, strength: l.strength + (boost ? tie(def.id) : 0) }));
     // Each shared change is two override classes, in the site stylesheet after every component's: it beats any
     // option's rule at every size. One item's own styles carry one class more. A part that is a placed component
     // takes two classes more than either.
@@ -87,22 +92,50 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     return layers;
   };
 
-  /** A bound value as it renders here; literals stay as they are. */
-  const value = (v: unknown, at: At) => clone(evaluate(v, at.scope));
+  /**
+   * A bound value as it renders here; literals stay as they are. A field of an object property the placement stores
+   * without that field shows the object's default for it.
+   */
+  const value = (v: unknown, at: At) => {
+    const got = evaluate(v, at.scope);
+    if (got === undefined && isBinding(v) && '$prop' in v && v.field !== undefined) return clone(propBindingSchema(def.properties, v)?.default);
+    return clone(got);
+  };
 
-  /** The tag a node renders: its literal tag, or the bound choice's value when it is a tag of its kind, else the fallback. */
-  const tagOf = (n: GraphNode & { kind: 'text' | 'element' }, at: At): string => {
+  /** The tags a node can render (as the generator's `tagChoices`), and the one it renders here. */
+  const tagsOf = (n: GraphNode & { kind: 'text' | 'element' }, at: At): { tags: string[]; tag: string } => {
     const allowed = n.kind === 'text' ? TEXT_TAG_SET : ELEMENT_TAG_SET;
     const plain = n.kind === 'text' ? 'p' : 'div';
-    if (!isBinding(n.tag)) return allowed.has(n.tag) ? n.tag : plain;
+    if (!isBinding(n.tag)) {
+      const tag = allowed.has(n.tag) ? n.tag : plain;
+      return { tags: [tag], tag };
+    }
     const schema: PropSchema | undefined = '$prop' in n.tag ? propBindingSchema(def.properties, n.tag) : (own(at.scope.fields, n.tag.$item) as PropSchema | undefined);
     const options = schema?.type === 'enum' ? schema.options.map((o) => o.value).filter((o) => allowed.has(o)) : [];
     const fallback = schema?.type === 'enum' && options.includes(schema.default) ? schema.default : (options[0] ?? plain);
-    const v = evaluate(n.tag, at.scope);
-    return typeof v === 'string' && options.includes(v) ? v : fallback;
+    const v = value(n.tag, at);
+    return { tags: [...options.filter((o) => o !== fallback), fallback], tag: typeof v === 'string' && options.includes(v) ? v : fallback };
   };
+  const tagOf = (n: GraphNode & { kind: 'text' | 'element' }, at: At): string => tagsOf(n, at).tag;
 
-  const text = (v: unknown) => (typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '');
+  /** Words as a plain text node shows them: stored blocks as their plain text. */
+  const text = (v: unknown) => (typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : Array.isArray(v) ? richTextToPlain(toRichText(v)) : '');
+
+  /**
+   * The name a design's navigation landmark takes from its first child, a heading (the generator's
+   * `labellingHeading`): the heading's words, or while a heading shown only with its own text is hidden, that
+   * property's default. A page element has no such link, so it keeps the name as its own.
+   */
+  const landmarkName = (src: GraphNode & { kind: 'element' }, at: At): string => {
+    const first = own(design.nodes, src.children[0]);
+    if (at.repeats.length || first?.kind !== 'text' || first.rich || first.unless) return '';
+    if (!tagsOf(first, at).tags.every((t) => /^h[2-6]$/.test(t))) return '';
+    const guarded = !!first.when && isBinding(first.text) && JSON.stringify(first.when) === JSON.stringify(first.text);
+    if (first.when && !guarded) return '';
+    if (rendersIn(state, design, at.scope, first)) return text(value(first.text, at)).trim();
+    const fallback = isBinding(first.text) && '$prop' in first.text ? propBindingSchema(def.properties, first.text)?.default : undefined;
+    return typeof fallback === 'string' ? fallback.trim() : '';
+  };
   const setOptional = (n: Record<string, unknown>, k: string, v: string) => {
     if (v) n[k] = v;
     else delete n[k];
@@ -137,7 +170,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
             else delete n.action;
           }
         }
-        if (n.ariaLabel !== undefined) setOptional(n, 'ariaLabel', text(value(n.ariaLabel, at)));
+        if (n.ariaLabel !== undefined) setOptional(n, 'ariaLabel', text(value(n.ariaLabel, at)).trim());
+        if (n.tag === 'nav' && !n.ariaLabel && src.kind === 'element') setOptional(n, 'ariaLabel', landmarkName(src, at));
         n.children = [];
         break;
       }
@@ -163,7 +197,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         const link = value(n.link, at);
         n.link = link && typeof link === 'object' ? (link as typeof n.link) : { type: 'none', target: '' };
         n.label = text(value(n.label, at));
-        n.appearance = text(value(n.appearance, at)) || 'primary';
+        // An empty look shows the label as plain words, as it did.
+        n.appearance = text(value(n.appearance, at));
         if (n.icon !== undefined) setOptional(n, 'icon', text(value(n.icon, at)));
         if (n.iconPosition !== undefined) {
           const pos = value(n.iconPosition, at);
@@ -180,18 +215,59 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     }
     const styles = flattenStyles(layersFor(src.id, at, 0), { shownDisplay: () => naturalDisplay(src) });
     if (Object.keys(styles).length) n.styles = styles;
-    // The classes it had in the design, inert, for the theme's hooks: each axis whose option class it carried.
-    const axes = src.id === rootId ? Object.keys(def.variantAxes ?? {}) : nodeAxes(def, src.id);
-    const from: DetachedFrom = { component: key, node: src.id };
-    if (axes.length) from.options = Object.fromEntries(axes.map((a) => [a, option(a)]));
+    const from = provenance(src);
     // An action repeated in a list moved through the viewer with the list's other items (in each outer item apart).
     const list = at.repeats.at(-1);
     if (n.kind === 'element' && n.action !== undefined && list) from.group = [groups, list.id, ...at.repeats.slice(0, -1).map((r) => r.item)].join('|');
+    else delete from.group;
     n.detachedFrom = from;
     keepAnchor(n, src);
     added.push(n);
     if (n.kind === 'element' && src.kind === 'element') n.children = src.children.flatMap((c) => emit(c, at));
     return n.id;
+  };
+
+  /**
+   * The classes a node had in the design, inert, for the theme's hooks: its node and each axis whose option class it
+   * carried. A node detached before (and made into this component since) keeps the hooks it already had.
+   */
+  const provenance = (src: GraphNode): DetachedFrom => {
+    if (src.detachedFrom && typeof src.detachedFrom === 'object') return clone(src.detachedFrom);
+    const axes = src.id === rootId ? Object.keys(def.variantAxes ?? {}) : nodeAxes(def, src.id);
+    const from: DetachedFrom = { component: key, node: src.id };
+    if (axes.length) from.options = Object.fromEntries(axes.map((a) => [a, option(a)]));
+    return from;
+  };
+
+  /**
+   * What styles the element a component placed in the design renders as its root, beneath what this design gives it:
+   * that component's own design, and through a root that is itself a placed component, the next design down, with
+   * the change each design makes to the component at its root (three classes). Ties between designs go by their order
+   * in the stylesheet. Undefined when a code component renders it: its own styles are not known here.
+   */
+  const rootChain = (first: InstanceNode, variants: InstanceNode['variants']): StyleLayer[] | undefined => {
+    const levels: StyleLayer[][] = [];
+    let node: GraphNode | undefined = first;
+    let chosen = variants;
+    const seen = new Set<string>();
+    while (node?.kind === 'instance') {
+      const d: ComponentDefinition | undefined = own(state.components, node.definitionId);
+      if (!d || seen.has(d.id)) break;
+      seen.add(d.id);
+      if (d.kind !== 'managed' || !d.tree) return undefined;
+      const r = d.tree.rootIds[0];
+      const next: GraphNode | undefined = own(d.tree.nodes, r);
+      const level: StyleLayer[] = designLayers(d, r, chosen).map((l) => ({ ...l, strength: l.strength + tie(d.id) }));
+      levels.push(level);
+      if (next?.kind === 'instance' && next.overrides?.root) level.push({ styles: next.overrides.root, strength: 3 + tie(d.id), wideColumns: true, unhides: [] });
+      // A design's option bound to its own property counts as its default here, as the stylesheet's static rules do.
+      chosen = next?.kind === 'instance' ? next.variants : undefined;
+      node = next;
+    }
+    // The deepest design first: its layers are what each design above it shows again.
+    const out = levels.reverse().flat();
+    for (const l of out) if (l.strength >= 3) l.unhides = out.filter((x) => x.strength < 3).map((x) => x.styles);
+    return out;
   };
 
   /** A component placed in the design: still a placement, given the values, options and styles it renders with. */
@@ -220,18 +296,28 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     if (src.slots) n.slots = Object.fromEntries(Object.keys(src.slots).map((slot) => [slot, slotChildren(src, slot).flatMap((c) => emit(c, at))]));
     // What the design and the placement give its root lands on its own placement now, where it beats its design: only
     // what beat that design before goes there, so an option of its own that won still wins.
-    const innerRoot = inner?.kind === 'managed' ? inner.tree?.rootIds[0] : undefined;
-    const beneath = innerRoot && inner ? designLayers(inner, innerRoot, n.variants) : [];
+    const chain = rootChain(n, n.variants);
+    const beneath = chain ?? [];
     // The design's own change to it is three classes: it beats every option, loses to the placement's four, and shows
     // again what the placed component's design hides.
-    const nested: StyleLayer[] = src.overrides?.root ? [{ styles: src.overrides.root, strength: 3, wideColumns: true, unhides: beneath.map((l) => l.styles) }] : [];
+    const nested: StyleLayer[] = src.overrides?.root ? [{ styles: src.overrides.root, strength: 3 + tie(def.id), wideColumns: true, unhides: beneath.map((l) => l.styles) }] : [];
     const layers = [...beneath, ...layersFor(src.id, at, 1), ...nested];
-    const root = flattenStyles(layers, { beneath: beneath.length, wideColumns: true, shownDisplay: () => (innerRoot && inner ? naturalDisplay(inner.tree!.nodes[innerRoot]) : null) });
+    const innerRoot = inner?.kind === 'managed' ? inner.tree?.rootIds[0] : undefined;
+    const root = flattenStyles(layers, {
+      beneath: beneath.length,
+      wideColumns: true,
+      // A code component shows a root it hides again only through the marker a `hidden: false` gives it.
+      keepShown: !chain,
+      shownDisplay: () => (innerRoot && inner ? naturalDisplay(inner.tree!.nodes[innerRoot]) : null)
+    });
     const overrides = { ...(src.overrides ?? {}) };
     delete overrides.root;
     if (Object.keys(root).length) overrides.root = root;
     if (Object.keys(overrides).length) n.overrides = clone(overrides);
     else delete n.overrides;
+    // The design's classes it carried (forwarded to its root), for the theme's hooks there.
+    n.detachedFrom = provenance(src);
+    delete n.detachedFrom.group;
     keepAnchor(n, src);
     added.push(n);
     return n.id;
@@ -288,6 +374,12 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   for (const n of added) tree.nodes[n.id] = n;
   delete tree.nodes[op.nodeId];
   parent.list.splice(parent.index, 1, ...roots);
-  return { nodeId: top.id };
+  // In another placement's slot, the elements must be what that slot takes.
+  const holder = parent.slot !== undefined && parent.parentId ? tree.nodes[parent.parentId] : undefined;
+  if (holder?.kind === 'instance') {
+    const problem = slotLandingProblem(state, tree, holder, parent.slot!, roots, slotChildren(holder, parent.slot!).length - roots.length + 1);
+    if (problem) fail(`${problem} Detaching “${label}” there would leave elements of its own. Move it out of that slot first.`);
+  }
+  return { nodeId: top.id, label };
 }
 

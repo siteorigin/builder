@@ -295,7 +295,7 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       case 'component.makeUnique':
         return plain(op, `Made ${name(op.owner, op.nodeId)} on ${where(op.owner)} a separate copy`, linkTo(op.owner, res.nodeId ?? op.nodeId));
       case 'component.detachInstance':
-        return plain(op, `Detached ${name(op.owner, op.nodeId)} on ${where(op.owner)} into its own elements`, linkTo(op.owner, res.nodeId ?? op.nodeId));
+        return plain(op, `Detached ${typeof res.label === 'string' ? res.label : name(op.owner, op.nodeId)} on ${where(op.owner)} into its own elements`, linkTo(op.owner, res.nodeId ?? op.nodeId));
       case 'component.duplicate':
         return plain(op, `Copied the ${quoted(componentName(op.definitionId))} component as ${quoted(op.name)}`);
       case 'component.rename':

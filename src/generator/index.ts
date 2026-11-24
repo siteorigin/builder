@@ -1749,6 +1749,9 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // definition shows its root again through the same markers a page's code placement takes (see shownClasses).
   const rootShown = shownClasses(def, node.overrides?.root).trim();
   if (ctx.def) attrs.push(`class=${classExpr(ctx, node, rootShown ? [js(rootShown)] : [])}`);
+  // A page placement kept from a detached design still hands its root the inert classes it had there, for the theme
+  // (with a code component's root override class, below). A code component with a property of that name takes none.
+  const pageClasses = ctx.def || (def.kind === 'code' && Object.hasOwn(def.properties, 'class')) ? [] : detachedClasses(node);
   for (const [propName, schema] of Object.entries(def.properties).sort(([a], [b]) => a.localeCompare(b))) {
     const raw = Object.hasOwn(node.props, propName) ? node.props[propName] : schema.default;
     const code = def.kind === 'code';
@@ -1821,8 +1824,9 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     // A code placement shows a part its code hides through classes, since its stylesheet cannot see those hides.
     for (const partId of Object.keys(node.overrides).sort()) map[partId] = overrideClass(node.id, partId) + shownClasses(def, node.overrides[partId]);
     attrs.push(`so_o={${js(map)}}`);
-    if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) attrs.push(`class=${attrJs(map.root)}`);
+    if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) pageClasses.unshift(map.root);
   }
+  if (pageClasses.length) attrs.push(`class=${attrJs(pageClasses.join(' '))}`);
   // Styles of single list items: each item's parts get a class of their own, looked up by the item's ID.
   if (!ctx.def && node.itemOverrides) {
     const byItem: Record<string, Record<string, string>> = {};

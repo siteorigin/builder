@@ -85,9 +85,10 @@ function showcase(): ComponentDefinition {
     tree: {
       rootIds: ['root'],
       nodes: Object.fromEntries([
-        n('root', { kind: 'element', tag: 'section', name: 'Showcase root', children: ['heading', 'lead', 'badge', 'grid', 'extra', 'actions'], styles: { base: { paddingBlock: '32px' } } }),
+        n('root', { kind: 'element', tag: 'section', name: 'Showcase root', children: ['heading', 'lead', 'nolead', 'badge', 'grid', 'extra', 'actions'], styles: { base: { paddingBlock: '32px' } } }),
         n('heading', { kind: 'text', tag: { $prop: 'level' }, text: { $prop: 'heading' }, styles: { base: { color: '#222222' }, phone: { color: '#333333' } } }),
         n('lead', { kind: 'text', tag: 'p', text: { $prop: 'lead' }, when: { $prop: 'lead' } }),
+        n('nolead', { kind: 'text', tag: 'p', text: 'No lead', unless: { $prop: 'lead' } }),
         n('badge', { kind: 'text', tag: 'span', text: 'New', when: { $prop: 'showBadge' } }),
         n('grid', { kind: 'element', tag: 'div', children: ['rep'], styles: { base: { layout: 'grid', columns: 1 } } }),
         n('rep', { kind: 'repeat', list: { $prop: 'items' }, children: ['card'] }),
@@ -225,6 +226,7 @@ describe('component.detachInstance (#373)', () => {
     expect(byText(after, rootId, 'Our work')).toMatchObject({ kind: 'text', tag: 'h3' });
     expect(byText(after, rootId, 'A short lead')).toMatchObject({ tag: 'p' });
     expect(byText(after, rootId, 'New')).toBeUndefined();
+    expect(byText(after, rootId, 'No lead')).toBeUndefined();
     // One card per item, in order, each with its own title, and the flag only where the item is featured.
     const cards = descendants(after, rootId).filter((n) => n.kind === 'element' && n.tag === 'article');
     expect(cards.map((c) => descendants(after, c.id).filter((n) => n.kind === 'text').map((t) => (t as TextNode).text))).toEqual([['One'], ['Two', 'Featured']]);
@@ -316,11 +318,73 @@ describe('component.detachInstance (#373)', () => {
     expect(home(session.state)).toEqual(home(detached));
   });
 
-  it('names what replaces an unnamed placement after its component', () => {
+  it('names what replaces an unnamed placement after its component, with the branches its defaults pick', () => {
     const { s } = project();
     const r = detach(s, 'n_other');
-    expect(home(r.state).nodes[r.results[0].nodeId as string]).toMatchObject({ name: 'Showcase', tag: 'section' });
-    expect(home(r.state).nodes[r.results[0].nodeId as string].anchor).toBeUndefined();
+    const rootId = r.results[0].nodeId as string;
+    expect(home(r.state).nodes[rootId]).toMatchObject({ name: 'Showcase', tag: 'section' });
+    expect(home(r.state).nodes[rootId].anchor).toBeUndefined();
+    // No lead: the lead goes and the words shown without one stay; the default tag and the default card.
+    expect(byText(r.state, rootId, 'Default heading')).toMatchObject({ tag: 'h2' });
+    expect(byText(r.state, rootId, 'No lead')).toBeDefined();
+    expect(byText(r.state, rootId, 'Default card')).toBeDefined();
+    // No button label: the button goes, and the container that holds only it collapses with it.
+    const nodes = descendants(r.state, rootId);
+    expect(nodes.some((n) => n.kind === 'link')).toBe(false);
+    // Heading, the words shown without a lead, and the grid: the empty slot adds nothing.
+    expect((home(r.state).nodes[rootId] as GraphNode & { kind: 'element' }).children).toHaveLength(3);
+  });
+
+  it('keeps words, looks and object fields as they rendered', () => {
+    const { s } = project();
+    const def = s.components[DEF];
+    def.properties.look2 = { type: 'string', label: 'Look 2', default: '' };
+    def.properties.box = { type: 'object', label: 'Box', fields: { label: { type: 'string', label: 'Label', default: '' } }, default: { label: 'From the object' } } as never;
+    const root = def.tree!.nodes.root as GraphNode & { kind: 'element' };
+    root.children = ['hours', 'plain', 'boxed', 'extra'];
+    def.tree!.nodes.hours = { id: 'hours', kind: 'text', tag: 'p', text: [{ type: 'p', spans: [{ text: 'Hours' }] }] } as unknown as GraphNode;
+    def.tree!.nodes.plain = { id: 'plain', kind: 'link', link: { type: 'url', target: 'https://example.com' }, label: 'Plain words', appearance: { $prop: 'look2' } } as unknown as GraphNode;
+    def.tree!.nodes.boxed = { id: 'boxed', kind: 'text', tag: 'p', text: { $prop: 'box', field: 'label' } } as unknown as GraphNode;
+    (home(s).nodes.n_target as InstanceNode).props.box = {};
+    const r = detach(s);
+    const nodes = descendants(r.state, r.results[0].nodeId as string);
+    expect(nodes.find((n) => n.kind === 'text' && n.text === 'Hours')).toBeDefined();
+    expect(nodes.find((n) => n.kind === 'link')).toMatchObject({ label: 'Plain words', appearance: '' });
+    expect(nodes.find((n) => n.kind === 'text' && n.text === 'From the object')).toBeDefined();
+  });
+
+  it('names a navigation landmark as its heading did', () => {
+    const { s } = project();
+    const def = s.components[DEF];
+    def.properties.navTitle = { type: 'string', label: 'Nav title', default: 'Sections' };
+    (def.tree!.nodes.root as GraphNode & { kind: 'element' }).children = ['nav', 'extra'];
+    def.tree!.nodes.nav = { id: 'nav', kind: 'element', tag: 'nav', children: ['navHeading', 'cta'] } as GraphNode;
+    def.tree!.nodes.navHeading = { id: 'navHeading', kind: 'text', tag: 'h2', text: { $prop: 'navTitle' }, when: { $prop: 'navTitle' } } as GraphNode;
+    (home(s).nodes.n_target as InstanceNode).props.navTitle = 'On this page';
+    let r = detach(s);
+    expect(descendants(r.state, r.results[0].nodeId as string).find((n) => n.kind === 'element' && n.tag === 'nav')).toMatchObject({ ariaLabel: 'On this page' });
+    // A hidden heading: the landmark keeps the heading's default name, as the generated page gives it.
+    (home(s).nodes.n_target as InstanceNode).props.navTitle = '';
+    r = detach(s);
+    expect(descendants(r.state, r.results[0].nodeId as string).find((n) => n.kind === 'element' && n.tag === 'nav')).toMatchObject({ ariaLabel: 'Sections' });
+  });
+
+  it('refuses to leave elements in a slot that takes only components', () => {
+    const { s } = project();
+    s.components['proj.holder-aa1aa'] = {
+      ...showcase(),
+      id: 'proj.holder-aa1aa',
+      name: 'Holder',
+      properties: {},
+      parts: { root: { nodeId: 'h', label: 'Holder' } },
+      variantAxes: undefined,
+      slots: { main: { label: 'Main', categories: ['custom'] } },
+      tree: { rootIds: ['h'], nodes: { h: { id: 'h', kind: 'element', tag: 'div', children: ['m'] }, m: { id: 'm', kind: 'slot', slot: 'main' } } as Record<string, GraphNode> }
+    } as unknown as ComponentDefinition;
+    const page = home(s);
+    page.nodes.n_holder = { id: 'n_holder', kind: 'instance', definitionId: 'proj.holder-aa1aa', props: {}, slots: { main: ['n_target'] } } as InstanceNode;
+    page.rootIds = page.rootIds.map((id) => (id === 'n_target' ? 'n_holder' : id));
+    expect(() => detach(s)).toThrow(/takes custom components, not a container\. Detaching “Our showcase” there/);
   });
 
   it('copies slot content the design shows more than once, and refuses to drop content it does not show', () => {
@@ -381,6 +445,18 @@ describe('component.detachInstance (#373)', () => {
     // Its own colour lost to the design's (one class each, the design's later) and the placement's phone colour beats
     // both; the large option's size (two classes) beat the design's one-class size, so it is left to that option.
     expect(pills[0].overrides).toEqual({ root: { base: { color: '#00aa00' }, phone: { color: '#0000ff' } } });
+    // Pills carry the design's classes for the theme, as the root it was forwarded to did.
+    expect(pills[0].detachedFrom).toEqual({ component: defKey(DEF), node: 'pill' });
+
+    // The same design, but the placed component's own block comes later in the stylesheet: its colour won, and stays its own.
+    const later = structuredClone(s);
+    const moved = { ...later.components[inner.id], id: 'proj.zz-badge-zz9zz' } as ComponentDefinition;
+    delete later.components[inner.id];
+    later.components[moved.id] = moved;
+    (later.components[DEF].tree!.nodes.pill as InstanceNode).definitionId = moved.id;
+    const r2 = detach(later);
+    const pills2 = descendants(r2.state, r2.results[0].nodeId as string).filter((n): n is InstanceNode => n.kind === 'instance');
+    expect(pills2[0].overrides).toEqual({ root: { phone: { color: '#0000ff' } } });
   });
 
   it('keeps a detached gallery one group in the image viewer, apart from another gallery', async () => {
@@ -402,12 +478,18 @@ describe('component.detachInstance (#373)', () => {
     /** Each viewer link's group, numbered in order of first appearance: which images move through together. */
     const grouping = (html: string) => {
       const seen: string[] = [];
-      return [...html.matchAll(/data-viewer-group="([^"]*)"/g)].map((m) => (seen.includes(m[1]) ? seen : seen.push(m[1]) && seen).indexOf(m[1]));
+      return [...html.matchAll(/data-viewer-group="([^"]*)"/g)].map((m) => {
+        if (!seen.includes(m[1])) seen.push(m[1]);
+        return seen.indexOf(m[1]);
+      });
     };
     const was = grouping(await renderHome(state));
     expect(was).toEqual([0, 0, 0, 1, 1, 1]);
-    const detached = applyOperations(state, [{ type: 'component.detachInstance', owner: owner(state), nodeId: first }]).state;
-    expect(grouping(await renderHome(detached))).toEqual(was);
+    const r = applyOperations(state, [{ type: 'component.detachInstance', owner: owner(state), nodeId: first }]);
+    expect(grouping(await renderHome(r.state))).toEqual(was);
+    // A copy of the detached gallery is a gallery of its own.
+    const copied = applyOperations(r.state, [{ type: 'node.duplicate', owner: owner(r.state), nodeId: r.results[0].nodeId as string }]).state;
+    expect(grouping(await renderHome(copied))).toEqual([0, 0, 0, 1, 1, 1, 2, 2, 2]);
   });
 
   it('is offered to the AI for the placement it may change', async () => {
@@ -439,6 +521,45 @@ describe('flattenStyles', () => {
       { styles: { base: { color: '#0000ff', customCss: 'outline-style: dashed' } }, strength: 3, wideColumns: true }
     ];
     expect(flattenStyles(layers)).toEqual({ base: { color: '#0000ff', customCss: 'outline-width: 2px; outline-style: dashed' } });
+  });
+
+  it('packs properties that set the same CSS property together, so one rule keeps their order', () => {
+    // A placement's hide beats the design's phone layout; written apart, the phone layout's display would show it.
+    const hide: StyleLayer[] = [
+      { styles: { phone: { layout: 'grid' } }, strength: 1 },
+      { styles: { base: { hidden: true } }, strength: 3, wideColumns: true }
+    ];
+    const hidden = flattenStyles(hide);
+    expect(hidden.base?.hidden).toBeUndefined();
+    for (const sz of SIZES) expect(perSize(hidden)[sz].hidden, sz).toBe(true);
+    // A placement's row gap beats the design's tablet gap; written apart, the tablet gap would set the rows again.
+    const gaps: StyleLayer[] = [
+      { styles: { base: { gap: '8px' }, tablet: { gap: '20px' } }, strength: 1 },
+      { styles: { base: { rowGap: '4px' } }, strength: 3, wideColumns: true }
+    ];
+    expect(flattenStyles(gaps)).toEqual({ phone: { gap: '8px', rowGap: '4px' }, tablet: { gap: '20px', rowGap: '4px' }, desktop: { gap: '8px', rowGap: '4px' } });
+  });
+
+  it('writes the most common value for all sizes and the others as exceptions', () => {
+    expect(flattenStyles([{ styles: { phone: { opacity: 0.5 }, tablet: { opacity: 1 }, desktop: { opacity: 1 } }, strength: 1 }])).toEqual({ base: { opacity: 1 }, phone: { opacity: 0.5 } });
+    expect(flattenStyles([{ styles: { phone: { opacity: 0.2 }, tablet: { opacity: 0.5 }, desktop: { opacity: 0.8 } }, strength: 1 }])).toEqual({ base: { opacity: 0.8 }, phone: { opacity: 0.2 }, tablet: { opacity: 0.5 } });
+  });
+
+  it('drops custom CSS a stronger shorthand sets, and keeps a custom shorthand a stronger property narrows', () => {
+    const background: StyleLayer[] = [
+      { styles: { base: { customCss: 'background-color: red' } }, strength: 1 },
+      { styles: { base: { background: '#0000ff' } }, strength: 3, wideColumns: true }
+    ];
+    expect(flattenStyles(background)).toEqual({ base: { background: '#0000ff' } });
+    const padding: StyleLayer[] = [
+      { styles: { base: { customCss: 'padding: 20px' } }, strength: 1 },
+      { styles: { base: { paddingInlineStart: '4px' } }, strength: 3, wideColumns: true }
+    ];
+    expect(flattenStyles(padding)).toEqual({ base: { paddingInlineStart: '4px', customCss: 'padding: 20px; padding-inline-start: 4px' } });
+  });
+
+  it('writes no display for a show that undid no hide', () => {
+    expect(flattenStyles([{ styles: { base: { padding: '4px' } }, strength: 1 }, { styles: { base: { hidden: false } }, strength: 3, wideColumns: true, unhides: [{ base: { padding: '4px' } }] }], { shownDisplay: () => 'revert' })).toEqual({ base: { padding: '4px' } });
   });
 
   it('keeps a grid template off phones, as a single rule would not', () => {
