@@ -178,10 +178,13 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
     deps.hold?.();
     if (!(await until(() => inflight.size === 0, deps.saveTimeoutMs ?? Infinity, deps.wait))) report('A change is still being saved.');
     else if (deps.barrier) {
-      const timeout = deps.barrierTimeoutMs ?? 10000;
-      const saved = await Promise.race([deps.barrier().catch(() => false), deps.wait(timeout).then(() => null)]);
-      if (saved === null) report('A change is still being saved.');
-      else if (!saved) report('A change could not be confirmed as saved.');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<null>((r) => (timer = setTimeout(() => r(null), deps.barrierTimeoutMs ?? 10000)));
+      const saved = await Promise.race([deps.barrier().catch(() => false), late]);
+      clearTimeout(timer);
+      // This settle's own answer: a Close running meanwhile is about its own changes, not this confirmation.
+      const unconfirmed = saved === null ? 'A change is still being saved.' : saved ? null : 'A change could not be confirmed as saved.';
+      if (unconfirmed && !s.problems.includes(unconfirmed)) s.problems.push(unconfirmed);
     }
     await deps.wait(0);
     // Whatever is still open was not saved: a titled Add page form, unsaved code, an edit the preview kept, or

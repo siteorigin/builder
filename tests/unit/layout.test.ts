@@ -167,6 +167,7 @@ describe('preview width and zoom', () => {
     expect(clampViewport(100)).toBe(240);
     expect(clampViewport(1280.4)).toBe(1280);
     expect(clampViewport(1280.6)).toBe(1281);
+    expect(clampViewport(1280.5)).toBe(1281);
   });
 
   it('resizes the frame from the keyboard, each handle in the direction it is dragged', () => {
@@ -179,6 +180,8 @@ describe('preview width and zoom', () => {
     // Up to each limit, then no further.
     expect(frameKeyResize('right', 'ArrowRight', 2550)).toBe(2560);
     expect(frameKeyResize('right', 'ArrowRight', 2560)).toBeNull();
+    expect(frameKeyResize('right', 'ArrowLeft', 245)).toBe(240);
+    expect(frameKeyResize('left', 'ArrowLeft', 2550)).toBe(2560);
     expect(frameKeyResize('left', 'ArrowRight', 245)).toBe(240);
     expect(frameKeyResize('left', 'ArrowRight', 240)).toBeNull();
     expect(frameKeyResize('right', 'ArrowUp', 1280)).toBeNull();
@@ -194,6 +197,6 @@ describe('preview width and zoom', () => {
     expect(ZOOM_LEVELS).toEqual([0.5, 0.75, 1, 1.25]);
     for (const z of [0.5, 0.75, 1, 1.25]) expect(restoreZoom(z)).toBe(z);
     // The canvas divides by the zoom: nothing else is restored, not even a level between the menu's.
-    for (const bad of [undefined, 0, -1, 0.6, 3, '0.5', Number.NaN]) expect(restoreZoom(bad)).toBe('fit');
+    for (const bad of [undefined, 0, -1, 0.6, 1.5, 3, '0.5', Number.NaN]) expect(restoreZoom(bad)).toBe('fit');
   });
 });

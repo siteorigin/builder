@@ -88,10 +88,18 @@ await win.addInitScript(() => {
     watch.disconnect();
   }).observe(document, { childList: true, subtree: true });
 });
-await win.reload();
-await win.waitForSelector('.welcome');
-assert.equal(await win.evaluate(() => window.appearanceAtFirstPaint), system, 'the reloaded page starts in the saved Appearance');
-await drawnIn(system, 'reloaded', { previewed: false });
+const reloadsIn = async (scheme, what) => {
+  await win.reload();
+  await win.waitForSelector('.welcome');
+  assert.equal(await win.evaluate(() => window.appearanceAtFirstPaint), scheme, `${what}: the reloaded page starts drawn ${scheme}`);
+  await drawnIn(scheme, what, { previewed: false });
+};
+// The window opened in the other scheme; System has been saved since.
+await reloadsIn(system, 'reloaded on System');
+await win.evaluate((a) => window.builder.app.setSettings({ appearance: a }), other);
+await reloadsIn(other, `reloaded on ${label(other)}`);
+await win.evaluate(() => window.builder.app.setSettings({ appearance: 'system' }));
+await drawnIn(system, 'System again', { previewed: false });
 
 step('on System the editor and its window follow this computer’s setting as it changes');
 // Electron's own theme stands in for this computer's setting changing.

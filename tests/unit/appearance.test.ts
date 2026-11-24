@@ -19,6 +19,7 @@ describe('editor appearance', () => {
     expect(knownAppearance('dark')).toBe('dark');
     for (const unknown of ['system', null, undefined, 'purple', 1]) expect(knownAppearance(unknown)).toBe('system');
     expect(editorScheme(null, false)).toBe('light');
+    expect(editorScheme(null, true)).toBe('dark');
     expect(editorScheme('purple', true)).toBe('dark');
   });
 

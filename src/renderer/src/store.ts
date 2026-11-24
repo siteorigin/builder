@@ -271,14 +271,18 @@ export function setViewport(width: number) {
   saveLocal({ viewport: width });
 }
 
-/** Undo or redo the project, from any button, shortcut or menu. Followed like an edit, so Save waits for it and
- *  hears if it failed; a failure is also said at once. */
+/** Follow an Undo or Redo like an edit, so Save (and leaving) waits for it and hears if it failed. One refused
+ *  before writing anything (nothing left to undo) is no failure. */
+export function trackHistory<T extends ApplyResult | null | undefined>(run: Promise<T>): Promise<T> {
+  trackApply(run.then((r) => ({ ok: !r || r.ok || r.error?.code === 'INVALID_ARGUMENT', message: r?.error?.message })));
+  return run;
+}
+
+/** Undo or redo the project, from any button, shortcut or menu. A failure is said at once. */
 export function projectHistory(action: 'undo' | 'redo') {
-  const run = action === 'redo' ? api.project.redo() : api.project.undo();
-  trackApply(run.then((r) => ({ ok: !r || r.ok, message: r?.error?.message })));
-  void run.then(
+  void trackHistory(action === 'redo' ? api.project.redo() : api.project.undo()).then(
     (r) => r && !r.ok && r.error && toast(r.error.message, 'error'),
-    () => undefined
+    (e: unknown) => toast(errorText(e), 'error')
   );
 }
 
@@ -615,7 +619,7 @@ export function undoAction(r: { entryId?: string; revision: number; workspaceKey
     label: 'Undo',
     undoes: { entryId, workspaceKey, revision: r.revision },
     run: () =>
-      void api.project.undoEntry(entryId, workspaceKey).then(
+      void trackHistory(api.project.undoEntry(entryId, workspaceKey)).then(
         (res) => {
           if (!res.ok) toast(res.error?.message ?? 'That change could not be undone.', 'error', res.error?.code === 'CONFLICT' ? history : undefined);
         },

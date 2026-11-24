@@ -259,6 +259,18 @@ describe('the save barrier', () => {
     expect(unsaved.problems).toEqual(['A change could not be confirmed as saved.']);
   });
 
+  it('keeps its answer to itself: a Close running meanwhile is not told about Save’s confirmation', async () => {
+    const save = settle({ blur: () => undefined, wait, barrier: () => new Promise<boolean>(() => undefined), barrierTimeoutMs: 80 });
+    await wait(20);
+    const close = settle({ blur: () => undefined, wait });
+    const closed = await close;
+    const saved = await save;
+    closed.finish();
+    saved.finish();
+    expect(saved.problems).toEqual(['A change is still being saved.']);
+    expect(closed.problems).toEqual([]);
+  });
+
   it('stops waiting for writes held up past its time, without confirming them', async () => {
     const started = Date.now();
     const { problems, finish } = await settle({ blur: () => undefined, wait, barrier: () => new Promise<boolean>(() => undefined), barrierTimeoutMs: 80 });

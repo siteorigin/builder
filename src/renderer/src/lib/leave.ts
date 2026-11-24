@@ -27,7 +27,7 @@ export async function saveNow() {
   const { problems, finish } = await settleEdits(undefined, () => api.project.flush(opening));
   finish();
   const s = getState();
-  if (!problems.length && !s.drafting && !savesInFlight() && !editRunStatus(s) && s.snapshot?.workspaceKey === opening) toast('All changes are saved on this computer.', 'success');
+  if (!problems.length && !s.drafting && !s.leaving && !savesInFlight() && !editRunStatus(s) && s.snapshot?.workspaceKey === opening) toast('All changes are saved on this computer.', 'success');
 }
 
 let holdTimer: ReturnType<typeof setTimeout> | null = null;

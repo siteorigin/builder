@@ -207,7 +207,25 @@ describe('workspace state per project', () => {
     } finally {
       release();
     }
+    // Nothing is confirmed while the AI is still making changes: Stop would take them back.
+    c.aiBusy = () => true;
+    expect(await c.flush(first)).toBe(false);
+    c.aiBusy = () => false;
+    // Nor for an opening that starts closing while the flush waits.
+    let reopen!: () => void;
+    await new Promise<void>((started) => {
+      void c.session!.exclusive(() => {
+        started();
+        return new Promise<void>((r) => (reopen = r));
+      });
+    });
+    const closingFlush = c.flush(first);
+    const closing = c.close();
+    reopen();
+    expect(await closingFlush).toBe(false);
+    await closing;
     // A Save from an earlier opening of the same project, or with none open, confirms nothing.
+    expect(await c.open(a)).toEqual({ ok: true });
     await c.close();
     expect(await c.flush(first)).toBe(false);
     expect(await c.flush()).toBe(false);
