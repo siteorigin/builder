@@ -599,7 +599,8 @@ function overrideOpts(def: ComponentDefinition, inst: InstanceNode, partId: stri
  */
 function keepWeakerHides(def: ComponentDefinition, inst: InstanceNode, partId: string, own: ResponsiveStyles): ResponsiveStyles {
   const nodeId = def.parts[partId].nodeId;
-  const layers = [def.tree?.nodes[nodeId]?.styles, ...selectedVariantStyles(def, inst.variants, nodeId), inst.overrides?.[partId]].filter(Boolean) as ResponsiveStyles[];
+  // Folded the way their rules are written (see resolveVisibility), so this reads what the stylesheet says.
+  const layers = ([def.tree?.nodes[nodeId]?.styles, ...selectedVariantStyles(def, inst.variants, nodeId), inst.overrides?.[partId]].filter(Boolean) as ResponsiveStyles[]).map(resolveVisibility);
   // What the weaker rules end on in a range, in cascade order: a hide, or a display that shows the part (a layout
   // also writes one). Within one rule visibility has the last word.
   const hiddenAt = (range: Exclude<ResponsiveScope, 'base'>) => {
@@ -748,7 +749,8 @@ export const slotIdent = (slot: string) => `slot_${safeIdent(slot)}`;
 
 function idAttrs(ctx: EmitCtx, nodeId: string): string {
   if (!ctx.instrument) return '';
-  const items = ctx.items.length ? ` data-so-items={[${ctx.items.map((i) => `${i}.id`).join(', ')}].join(',')}` : '';
+  // Each item ID is encoded, so an ID with a comma in it still reads back as one item (see model.ts refFromDesc).
+  const items = ctx.items.length ? ` data-so-items={[${ctx.items.map((i) => `encodeURIComponent(${i}.id)`).join(', ')}].join(',')}` : '';
   const c = ctx.def ? `data-so-ctx={__so}` : `data-so-ctx=${attrJs(ctx.ctxExpr)}`;
   return ` ${c} data-so-node="${nodeId}"${items}`;
 }

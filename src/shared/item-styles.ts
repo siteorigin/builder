@@ -8,17 +8,16 @@ import { sha256Hex } from './sha256';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
-/**
- * Each node's parent within a definition's tree: children of elements and repeats, and content placed in a nested
- * instance's slots, which renders where that instance does (inside the same repeats).
- */
+/** Each node's parent within a definition's tree (children of elements and repeats). */
 function parentsOf(def: ComponentDefinition): Map<string, string> {
   const out = new Map<string, string>();
-  for (const n of Object.values(def.tree?.nodes ?? {})) {
-    const kids = n.kind === 'element' || n.kind === 'repeat' ? n.children : n.kind === 'instance' ? Object.values(n.slots ?? {}).flat() : [];
-    for (const c of kids) if (!out.has(c)) out.set(c, n.id);
-  }
+  for (const n of Object.values(def.tree?.nodes ?? {})) if (n.kind === 'element' || n.kind === 'repeat') for (const c of n.children) if (!out.has(c)) out.set(c, n.id);
   return out;
+}
+
+/** Content placed in a nested instance's slots: rendered wherever, and however often, that component renders it. */
+function slotted(def: ComponentDefinition): Set<string> {
+  return new Set(Object.values(def.tree?.nodes ?? {}).flatMap((n) => (n.kind === 'instance' ? Object.values(n.slots ?? {}).flat() : [])));
 }
 
 /**
@@ -32,10 +31,15 @@ export function repeatedPartList(def: ComponentDefinition, partId: string): stri
   const node: GraphNode | undefined = part ? own(def.tree.nodes, part.nodeId) : undefined;
   if (!node || node.kind === 'repeat' || node.kind === 'slot') return undefined;
   const parents = parentsOf(def);
+  const inSlot = slotted(def);
   const seen = new Set<string>();
   let list: string | undefined;
   let repeats = 0;
+  // A part inside a nested component's slot may be rendered once per item of that component's own lists, which this
+  // definition cannot see: one item class would land on several copies, so such a part is styled for all items only.
+  if (inSlot.has(node.id)) return undefined;
   for (let id = parents.get(node.id); id && !seen.has(id); id = parents.get(id)) {
+    if (inSlot.has(id)) return undefined;
     seen.add(id);
     const n = def.tree.nodes[id];
     if (n?.kind !== 'repeat') continue;
@@ -57,7 +61,7 @@ export function placementItems(def: ComponentDefinition, node: InstanceNode, lis
 /** A part's item styles that apply now: the part still repeats over the list they were set for. */
 export function liveItemStyles(def: ComponentDefinition | undefined, node: InstanceNode, partId: string): ItemStyles | undefined {
   const entry = own(node.itemOverrides, partId);
-  if (!def || !entry || typeof entry !== 'object' || !entry.items || typeof entry.items !== 'object') return undefined;
+  if (!def || !entry || typeof entry !== 'object' || typeof entry.list !== 'string' || !entry.items || typeof entry.items !== 'object') return undefined;
   return repeatedPartList(def, partId) === entry.list ? entry : undefined;
 }
 

@@ -11,6 +11,7 @@ import type { ComponentDefinition } from '@shared/types';
 import { contractConflicts } from '@engine/theme-updates';
 import { SELECTION_ARGS } from '@agent/selection';
 import { describeSelection } from '@agent/context';
+import { descOf, selectionFromChain } from '../../src/renderer/src/lib/model';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
@@ -302,15 +303,21 @@ describe('styling one repeated item', () => {
     expect(grid(s).itemOverrides).toBeUndefined();
   });
 
-  it('gives a new item ID with a comma an ID of its own, so a click on it selects that item', () => {
+  it('selects the clicked item even when its ID holds a comma, and a sibling has the rest of it', () => {
     let s = fresh();
-    const list = cards(s).map((c, i) => (i === 0 ? { ...c, id: 'events,design' } : c));
+    const list = cards(s).map((c, i) => (i === 0 ? { ...c, id: 'events,design' } : i === 1 ? { ...c, id: 'design' } : c));
     s = apply(s, [{ type: 'instance.setProp', owner: owner(s), nodeId: grid(s).id, prop: 'items', value: list }]);
-    expect(cards(s)[0].id).not.toContain(',');
-    expect(cards(s).slice(1).map((c) => c.id)).toEqual(list.slice(1).map((c) => c.id));
+    expect(cards(s).slice(0, 2).map((c) => c.id)).toEqual(['events,design', 'design']);
+    const g = grid(s);
+    const def = s.components[g.definitionId];
+    // The preview writes each item ID encoded; the editor reads the same item back from what was clicked.
+    expect(generateProject(s, { instrument: true }).get(defFile(def))).toContain("data-so-items={[encodeURIComponent(item.id)].join(',')}");
+    const ref = { owner: owner(s), instancePath: [g.id], nodeId: def.parts.card.nodeId, partId: 'card', itemPath: ['events,design'] };
+    expect(descOf(s, ref).items).toBe('events%2Cdesign');
+    expect(selectionFromChain(s, [descOf(s, ref)], null, true)?.itemPath).toEqual(['events,design']);
   });
 
-  it('counts the repeats around a part placed in a nested component’s slot', () => {
+  it('styles a part in a nested component’s slot for every item only', () => {
     const def = {
       kind: 'managed',
       properties: { items: { type: 'list', label: 'Cards', itemLabel: 'Card', fields: {}, default: [] }, tags: { type: 'list', label: 'Tags', itemLabel: 'Tag', fields: {}, default: [] } },
@@ -327,9 +334,15 @@ describe('styling one repeated item', () => {
         }
       }
     } as unknown as ComponentDefinition;
-    // Once per card through the slot; the tag sits in two repeats, so one tag ID names one tag per card.
-    expect(repeatedPartList(def, 'card')).toBe('items');
+    // In a nested component's slot the card renders as often as that component renders the slot, which this
+    // definition cannot see, so it is styled for every item; the tag besides sits in two repeats.
+    expect(repeatedPartList(def, 'card')).toBeUndefined();
     expect(repeatedPartList(def, 'tag')).toBeUndefined();
+    // Outside the slot the same card is one per item.
+    const plain = structuredClone(def);
+    (plain.tree!.nodes.cards as { children: string[] }).children = ['card'];
+    delete (plain.tree!.nodes as Record<string, unknown>).wrap;
+    expect(repeatedPartList(plain, 'card')).toBe('items');
   });
 
   it('refuses a theme change that would stop showing an item’s own style', () => {
@@ -399,12 +412,30 @@ describe('styling one repeated item', () => {
     const phone = css.slice(at, css.indexOf('\n}', at));
     expect(phone).toContain(`.${overrideClass(g.id, 'card')}`);
     expect(phone).not.toMatch(new RegExp(`\\.${cls}[^{]*\\{\\s*display: none`));
-    expect(css).toMatch(new RegExp(`@media \\(min-width: 768px\\) and \\(max-width: 1023\\.98px\\) \\{[\\s\\S]*\\.${cls}[^{]*\\{\\s*display: none`));
+    const tabletAt = css.indexOf('@media (min-width: 768px) and (max-width: 1023.98px)');
+    expect(css.slice(tabletAt, css.indexOf('\n}', tabletAt))).toMatch(new RegExp(`\\.${cls}[^{]*\\{\\s*display: none`));
     // A record that is not styles generates nothing, and a placement-wide reset gets past it.
     (grid(s).itemOverrides!.card.items as Record<string, unknown>)['i_ghost'] = null;
     expect(() => generateProject(s)).not.toThrow();
     s = applyOperations(s, [{ type: 'node.resetStyles', owner: owner(s), nodeId: grid(s).id }]).state;
     expect(grid(s).itemOverrides).toBeUndefined();
+  });
+
+  it('reads the shared hide as the stylesheet writes it, folding all-sizes hidden with a size shown again', () => {
+    let s = fresh();
+    const g = grid(s);
+    const item = cards(s)[0].id;
+    // Hidden at all sizes but tablet: the phone rule hides too, whatever layout it also sets.
+    s = apply(s, [
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', scope: 'base', property: 'hidden', value: true },
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', scope: 'phone', property: 'layout', value: 'grid' },
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', scope: 'tablet', property: 'hidden', value: false },
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', itemId: item, scope: 'base', property: 'layout', value: 'row' }
+    ]);
+    const cls = itemOverrideClass(g.id, 'card', item);
+    const css = siteCss(s);
+    const at = css.indexOf('@media (max-width: 767.98px)');
+    expect(css.slice(at, css.indexOf('\n}', at))).toMatch(new RegExp(`\\.${cls}[^{]*\\{\\s*display: none`));
   });
 
   it('keeps a stored item ID with a comma, and its style, when the list schema is edited', () => {

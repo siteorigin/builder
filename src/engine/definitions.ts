@@ -172,8 +172,7 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
     try {
       // Rich text kept as a plain string keeps its words.
       const kept = retyped && prev!.type === 'richtext' && schema.type === 'string' ? richTextToPlain(toRichText(v)) : v;
-      // The stored value is passed as what was there, so items keep their IDs (and their own styles).
-      node.props[name] = normalizeProp(schema, kept, state, `${def.name} → ${schema.label}`, v);
+      node.props[name] = normalizeProp(schema, kept, state, `${def.name} → ${schema.label}`);
     } catch (e) {
       if (!(e instanceof EngineError)) throw e;
       fail(`${label}: ${e.message} Change that content first, or remove the property and add it again.`);
