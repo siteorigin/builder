@@ -433,6 +433,24 @@ describe('collections', () => {
     expect(run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { hero: { assetId: '', alt: '' } } }).collections.projects.entries.en_hall.values.hero).toEqual({ assetId: null, alt: '' });
   });
 
+  it('leaves collections showing the old image when only chosen places are replaced', () => {
+    const s = run(
+      site(),
+      { type: 'site.update', favicon: 'img_a' },
+      { type: 'collection.create', collectionId: 'projects', fields: { hero: { type: 'image', label: 'Hero', default: { assetId: 'img_a', alt: '' } } } },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_hall', title: 'Hall', featuredImage: 'img_a', values: { hero: { assetId: 'img_a', alt: '' } } }
+    );
+    // Collections' uses have no place a replacement can name, so they change only with every other use.
+    const some = run(s, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b', uses: [{ kind: 'site', field: 'favicon' }] });
+    expect(some.site.favicon).toBe('img_b');
+    expect(some.collections.projects.entries.en_hall).toMatchObject({ featuredImage: 'img_a', values: { hero: { assetId: 'img_a' } } });
+    expect(some.collections.projects.settings.fields.hero.default).toMatchObject({ assetId: 'img_a' });
+    const all = run(s, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b' });
+    expect(all.site.favicon).toBe('img_b');
+    expect(all.collections.projects.entries.en_hall).toMatchObject({ featuredImage: 'img_b', values: { hero: { assetId: 'img_b' } } });
+    expect(all.collections.projects.settings.fields.hero.default).toMatchObject({ assetId: 'img_b' });
+  });
+
   it('reports what hand edits break: shared addresses, damaged entries, missing pictures and broken links', () => {
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', featuredImage: 'img_a', body: ['[About](/about/)'] });
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
