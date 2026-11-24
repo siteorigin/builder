@@ -80,11 +80,16 @@ export const placementOf = (ref: ElementRef | null): ElementRef | null => (ref?.
  * design, whose slots the page does not fill.
  */
 export function heldSlot(state: ProjectState, ref: ElementRef | null): string | undefined {
-  if (ref?.instancePath.length !== 1) return undefined;
+  return heldSlots(state, ref)[0];
+}
+
+/** Every slot of its placement that a part holds, as heldSlot counts them, in the order the component declares them. */
+export function heldSlots(state: ProjectState, ref: ElementRef | null): string[] {
+  if (ref?.instancePath.length !== 1) return [];
   const inst = own(treeFor(state, ref.owner)?.nodes, ref.instancePath[0]);
   const def = inst?.kind === 'instance' ? own(state.components, inst.definitionId) : undefined;
   const tree = def?.tree;
-  if (!def || !tree || ref.nodeId === tree.rootIds[0]) return undefined;
+  if (!def || !tree || ref.nodeId === tree.rootIds[0]) return [];
   const held = new Set<string>();
   const seen = new Set<string>();
   const walk = (id: string) => {
@@ -95,7 +100,7 @@ export function heldSlot(state: ProjectState, ref: ElementRef | null): string | 
     else if (n.kind === 'element') n.children.forEach(walk);
   };
   walk(ref.nodeId);
-  return Object.keys(def.slots ?? {}).find((name) => held.has(name));
+  return Object.keys(def.slots ?? {}).filter((name) => held.has(name));
 }
 
 /**
