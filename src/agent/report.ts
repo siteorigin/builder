@@ -176,6 +176,15 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Removed ${name(op.owner, op.nodeId)} from ${where(op.owner)}`, linkTo(op.owner));
       case 'node.move':
         return plain(op, `Moved ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
+      case 'node.wrap': {
+        const what = op.nodeIds.length > 2 ? `${op.nodeIds.length} elements` : joinWords(op.nodeIds.map((id) => name(op.owner, id)));
+        return plain(op, `Wrapped ${what} in a ${op.primitive === 'grid' ? 'Grid' : op.primitive === 'row' ? 'Row' : 'Stack'} on ${where(op.owner)}`, linkTo(op.owner, res.nodeId));
+      }
+      case 'node.unwrap': {
+        const was = op.nodeIds.map((id) => nodeIn(before, op.owner, id));
+        const what = op.nodeIds.length > 2 ? `${op.nodeIds.length} containers` : joinWords(was.map((n) => (n ? displayName(before, n) : 'a container')));
+        return plain(op, `Ungrouped ${what} on ${where(op.owner)}`, linkTo(op.owner, res.nodeId));
+      }
       case 'node.duplicate':
         return plain(op, `Duplicated ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, res.nodeId));
       case 'node.copy': {

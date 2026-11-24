@@ -287,6 +287,9 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'node.insert': 'insert',
   'node.remove': 'node',
   'node.move': 'node',
+  // Several siblings of one list at once; checkOne and checkComponentAuthority check each one.
+  'node.wrap': 'node',
+  'node.unwrap': 'node',
   'node.duplicate': 'node',
   'node.copy': 'copy',
   // The editor's own clipboard; the session refuses it from an AI run.
@@ -440,6 +443,12 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
     }
     // Both add a new component to the site, for one placement inside the design.
     if (op.type === 'component.makeUnique' || op.type === 'component.convertToCode') return `${op.type} adds a new component to the site, which changes more than ${authority.label}.`;
+    // Siblings wrapped or ungrouped where they are: each one in the design, and never its root.
+    if (op.type === 'node.wrap' || op.type === 'node.unwrap') {
+      if (!mine(op.owner) || !op.nodeIds.every((id) => Object.hasOwn(nodes, id))) return outside(op);
+      if (root && op.nodeIds.includes(root)) return `${op.type}: ${rootFirst}`;
+      continue;
+    }
     switch (OP_REACH[op.type] ?? 'wider') {
       case 'node': {
         const o = op as unknown as { owner: OwnerRef; nodeId: string; parentId?: string | null; index?: number };
@@ -544,6 +553,17 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
   const part = selectedPart(state, authority);
   // Inside a component's design, a placement made unique or turned into code adds a new component to the site.
   if (authority.owner.kind === 'component' && (op.type === 'component.makeUnique' || op.type === 'component.convertToCode')) return `${op.type} adds a new component to the site, which changes more than ${authority.label}.`;
+  // Siblings wrapped or ungrouped where they are: every one inside the selection, never the selected element itself (a
+  // new container around it, or what it held put beside it, would be outside it), and inside the selected part.
+  if (op.type === 'node.wrap' || op.type === 'node.unwrap') {
+    if (!sameOwner(op.owner) || !op.nodeIds.every((id) => allowed.has(id))) return `${op.type} targets something outside ${authority.label}.`;
+    if (op.nodeIds.includes(authority.nodeId)) return `${op.type} would change what holds ${authority.label}, which is outside it.`;
+    if (part) {
+      const placed = slotContent(state, authority.owner, part);
+      if (!op.nodeIds.every((id) => placed.has(id))) return `${op.type} changes content of ${authority.label} outside the selected part.`;
+    }
+    return null;
+  }
   // Anything not classified (an operation from a newer document) is treated as the widest reach.
   switch (OP_REACH[op.type] ?? 'wider') {
     case 'node': {

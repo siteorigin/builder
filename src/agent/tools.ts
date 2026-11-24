@@ -237,6 +237,8 @@ const COMPONENT_BUILD_OPERATIONS = new Set<OperationType>([
   'node.insert',
   'node.remove',
   'node.move',
+  'node.wrap',
+  'node.unwrap',
   'node.duplicate',
   'node.rename',
   'node.setStyle',

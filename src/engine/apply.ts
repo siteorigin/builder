@@ -3,6 +3,7 @@ import type {
   AltReview,
   AssetRecord,
   ComponentDefinition,
+  ElementNode,
   GraphNode,
   ImageValue,
   InstanceNode,
@@ -192,6 +193,10 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     }
     case 'node.move':
       return nodeMove(state, op);
+    case 'node.wrap':
+      return nodeWrap(state, op);
+    case 'node.unwrap':
+      return nodeUnwrap(state, op);
     case 'node.duplicate':
       return nodeDuplicate(state, op);
     case 'node.copy':
@@ -1360,6 +1365,158 @@ function nodeMove(state: ProjectState, op: Op<'node.move'>): OpResult {
   if (def && listsBefore) checkMovedItemFields(state, def, listsBefore);
   if (def && !settled) followRoot(def);
   return {};
+}
+
+/** A run of side-by-side siblings named in any order: their list, where it starts, and the nodes in list order. */
+interface SiblingRun {
+  parentId: string | null;
+  list: string[];
+  start: number;
+  ids: string[];
+}
+
+/**
+ * The siblings a wrap or an ungroup acts on (`verb`: "wrapped", "ungrouped"): each named once, all in one list, with
+ * nothing between them. A page's (or layout's, or the shared header's) top level holds its sections, which are not
+ * wrapped or ungrouped there.
+ */
+function siblingRun(tree: NodeTree, owner: OwnerRef, ids: readonly string[], verb: string): SiblingRun {
+  if (new Set(ids).size !== ids.length) fail('Name each element once.');
+  const at = ids.map((id) => {
+    getNode(tree, id);
+    return findParent(tree, id) ?? fail(`Node "${id}" is not attached.`);
+  });
+  const { list, parentId } = at[0];
+  if (at.some((p) => p.list !== list)) fail(`Only elements side by side in one place can be ${verb} together. Pick elements that share a parent.`);
+  const indexes = at.map((p) => p.index).sort((a, b) => a - b);
+  if (indexes[indexes.length - 1] - indexes[0] + 1 !== indexes.length) fail(`Only elements next to each other can be ${verb} together. Pick a run of them with nothing between.`);
+  if (owner.kind !== 'component' && list === tree.rootIds) fail(`Sections at the top of a ${owner.kind === 'template' ? 'layout' : owner.kind === 'shell' ? 'header or footer' : 'page'} can’t be ${verb}. Pick elements inside a section.`);
+  return { parentId, list, start: indexes[0], ids: indexes.map((i) => list[i]) };
+}
+
+/**
+ * Wrap siblings in a new Stack, Row or Grid where they are, in one step: the container takes their place, so a slot
+ * that holds them holds it (what the slot showed is measured first, so replacing two with one never counts three), and
+ * what they show of a repeat's items stays in that repeat. A component's own root stays its root.
+ */
+function nodeWrap(state: ProjectState, op: Op<'node.wrap'>): OpResult {
+  const tree = editableTree(state, op.owner);
+  const def = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
+  const settled = settledRoot(tree);
+  const run = siblingRun(tree, op.owner, op.nodeIds, 'wrapped');
+  if (def && settled && run.list === tree.rootIds) fail(ROOT_IS_COMPONENT('wrapped'));
+  const parent = run.parentId !== null && Object.hasOwn(tree.nodes, run.parentId) ? tree.nodes[run.parentId] : undefined;
+  const hides = def && parent?.kind === 'element' && parent.collapseEmpty;
+  for (const id of run.ids) {
+    const n = tree.nodes[id];
+    const name = `“${displayName(state, n, def)}”`;
+    if (choosesState(n)) fail(`${name} is one of the buttons that choose what the component shows (its tabs), which are known by the list holding them, so it can’t be wrapped.`);
+    // Items enter in turn as the list's own children: one inside a container would enter on its own.
+    if (parent?.kind === 'repeat' && parent.appearStagger) fail(`${name} is an item of a list whose items enter in turn, which a container around it would stop, so it can’t be wrapped.`);
+    // A list, or what hides with it, is where the editor shows where its images go while it is empty: a container
+    // between it and a group that hides too would hide that.
+    const list = n.kind === 'repeat' || (n.kind === 'element' && n.collapseEmpty && n.children.some((c) => tree.nodes[c]?.kind === 'repeat'));
+    if (hides && list) fail(`${name} is a list, or hides while its list is empty, inside a group that hides when empty too, so it can’t be wrapped there.`);
+  }
+  const landed = slotLanding(state, op.owner, tree, run.parentId, run.list);
+  const wrapper = primitiveNode(state, op.primitive)[0] as ElementNode;
+  wrapper.children = run.ids;
+  // Inside a group that hides when everything in it is hidden, the new container hides with what it holds, so the group
+  // still hides (and a list's placeholder for its images moves to it).
+  if (def && parent?.kind === 'element' && parent.collapseEmpty) wrapper.collapseEmpty = true;
+  tree.nodes[wrapper.id] = wrapper;
+  run.list.splice(run.start, run.ids.length, wrapper.id);
+  landed([wrapper.id]);
+  // An older design's top level, wrapped whole, has its one root.
+  if (def && !settled) followRoot(def);
+  return { nodeId: wrapper.id };
+}
+
+/** A button that picks one option of a choice the component shows (a tab), known by the list that holds exactly those buttons. */
+const choosesState = (n: GraphNode | undefined) => n?.kind === 'link' && n.stateAction?.op === 'set' && typeof n.stateAction.value === 'string';
+
+/**
+ * Why a node can't be ungrouped, or null when it is a plain container: one that only lays out what it holds, so taking
+ * it away loses nothing but its own layout and styles (hiding when empty among them: what it held hides by itself). One
+ * that links, shows under a condition, has an entrance, is jumped to, is named for assistive technology, or gives its
+ * content meaning by its tag does more, and so does a component's part or a node its variants style (every placement
+ * styles those), one hiding while a list inside it is empty (the editor shows where the list's images go there), and a
+ * detached node that keeps its design's option classes (the theme colours what it holds by them).
+ */
+function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined, tree: NodeTree, n: GraphNode): string | null {
+  const name = `“${displayName(state, n, def)}”`;
+  if (n.kind === 'instance') return `${name} is a component. Use Detach component to turn it into elements first.`;
+  if (n.kind === 'repeat') return `${name} shows what it holds once per list item, so it can’t be ungrouped.`;
+  if (n.kind !== 'element') return `${name} holds nothing to ungroup. Pick a Stack, Row, Grid or Container.`;
+  if (!n.children.length) return `${name} is empty, so there is nothing to ungroup. Delete it instead.`;
+  if (isBinding(n.tag)) return `${name} takes its tag from a property, so it can’t be ungrouped.`;
+  if (n.tag !== 'div') return `${name} is a ${n.tag} element, which gives what it holds its meaning, so it can’t be ungrouped. Change its tag to div first.`;
+  if (n.link !== undefined || n.action !== undefined) return `${name} is a link or opens something when clicked, so it can’t be ungrouped. Remove its link first.`;
+  if (n.when !== undefined || n.unless !== undefined) return `${name} shows only under a condition, which what it holds would lose, so it can’t be ungrouped. Remove the condition first.`;
+  if (n.anchor) return `Links can jump to ${name} by its anchor “${n.anchor}”, so it can’t be ungrouped. Remove the anchor first.`;
+  if (n.ariaLabel !== undefined) return `${name} has an accessible name, so it can’t be ungrouped. Remove it first.`;
+  if (n.carousel) return `${name} is a carousel, so it can’t be ungrouped.`;
+  if (n.appear) return `${name} has an entrance effect, which what it holds would lose, so it can’t be ungrouped. Remove the effect first.`;
+  const held = n.children.map((c) => (Object.hasOwn(tree.nodes, c) ? tree.nodes[c] : undefined));
+  // Hiding while the list inside it is empty is what shows the author where a list's images go meanwhile.
+  if (n.collapseEmpty && held.some((c) => c?.kind === 'repeat')) return `${name} hides while the list inside it is empty, so it can’t be ungrouped. Turn off its hiding when empty first.`;
+  // A list's category pills go just above the element holding it alone.
+  if (held.some((c) => c?.kind === 'repeat' && !!c.filter)) return `${name} holds a list with category filter pills, which go just above it, so it can’t be ungrouped.`;
+  if (held.some(choosesState)) return `${name} holds the buttons that choose what the component shows (its tabs), which are known by this list, so it can’t be ungrouped.`;
+  // A detached design's option classes (its tone) are what the theme's colours inside it read, as variant styles are.
+  const axes = Object.keys(n.detachedFrom?.options ?? {});
+  if (axes.length) return `${name} keeps the “${axes[0]}” look of the component it was detached from, which what it holds takes its colours from, so it can’t be ungrouped.`;
+  if (def) {
+    const part = Object.values(def.parts).find((p) => p.nodeId === n.id);
+    if (part) return `${name} is the “${part.label}” part of this component, which placements can style, so it can’t be ungrouped. Remove the part first.`;
+    const variant = variantOptions(def).find(({ option }) => option.styles && Object.hasOwn(option.styles, n.id));
+    if (variant) return `The “${variant.option.label}” variant styles ${name}, so it can’t be ungrouped. Remove those variant styles first.`;
+  }
+  return null;
+}
+
+/** The run of containers `nodeIds` names, when each can be ungrouped where it is (see unwrapProblem); fails otherwise. */
+function ungroupable(state: ProjectState, owner: OwnerRef, tree: NodeTree, nodeIds: readonly string[]): SiblingRun {
+  const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
+  const run = siblingRun(tree, owner, nodeIds, 'ungrouped');
+  if (def && run.list === tree.rootIds) fail(settledRoot(tree) ? ROOT_IS_COMPONENT('ungrouped') : UNSETTLED);
+  for (const id of run.ids) {
+    const why = unwrapProblem(state, def, tree, tree.nodes[id]);
+    if (why) fail(why);
+  }
+  return run;
+}
+
+/**
+ * Why the containers `nodeIds` of `owner` can't be ungrouped, by what they are and where they sit, or null: what the
+ * editor's menus offer, read without copying the project. Where what they hold lands (a slot's contract, nesting) is
+ * checked by the edit itself.
+ */
+export function ungroupRefusal(state: ProjectState, owner: OwnerRef, nodeIds: readonly string[]): string | null {
+  try {
+    ungroupable(state, owner, getTree(state, owner), nodeIds);
+    return null;
+  } catch (e) {
+    if (e instanceof EngineError) return e.message;
+    throw e;
+  }
+}
+
+/**
+ * Ungroup plain containers side by side: what each holds takes its place, in order, and the container goes with its
+ * own layout and styles. What they hold keeps its IDs, styles, bindings and repeat (a plain container is never one).
+ * A slot that holds them must take what they held (measured as for a wrap). A component's own root is never ungrouped,
+ * and its top level gains nothing.
+ */
+function nodeUnwrap(state: ProjectState, op: Op<'node.unwrap'>): OpResult {
+  const tree = editableTree(state, op.owner);
+  const run = ungroupable(state, op.owner, tree, op.nodeIds);
+  const children = run.ids.flatMap((id) => (tree.nodes[id] as ElementNode).children);
+  const landed = slotLanding(state, op.owner, tree, run.parentId, run.list);
+  run.list.splice(run.start, run.ids.length, ...children);
+  for (const id of run.ids) delete tree.nodes[id];
+  landed(children);
+  return { nodeId: children[0], nodeIds: children };
 }
 
 /** The bindings a node holds, conditions included (the binding a comparison reads). */
@@ -3201,13 +3358,15 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     }
   }
   // Retagged nodes must fit where they render once the batch is done (a list item in a list, say), and so must every
-  // node of a design built whole.
+  // node of a design built whole, and what a wrap or an ungroup put in a new place (list items wrapped out of their list).
   const retagged = ops.flatMap((op, i): Array<{ owner: OwnerRef; nodeId?: string; i: number; type: string }> =>
     op.type === 'node.setContent' && op.field === 'tag'
       ? [{ owner: op.owner, nodeId: op.nodeId, i, type: op.type }]
       : op.type === 'component.upsert'
         ? [{ owner: { kind: 'component', id: String(results[i].definitionId) }, i, type: op.type }]
-        : []
+        : op.type === 'node.wrap' || op.type === 'node.unwrap'
+          ? [{ owner: op.owner, i, type: op.type }]
+          : []
   );
   if (retagged.length) {
     const problem = batchTagProblem(state, draft, retagged.map(({ owner }) => owner));

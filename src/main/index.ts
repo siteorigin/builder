@@ -665,6 +665,8 @@ async function createWindow() {
     // With Shift held, macOS reports the backslash key as "|".
     const relevant =
       (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', 'f', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) ||
+      // Wrap in Stack and Ungroup; with Alt it is another key (AltGr on some layouts).
+      (mod && !input.alt && k === 'g') ||
       (!mod && ['delete', 'backspace', 'escape'].includes(k)) ||
       // Back and Forward through a visitor's journey in Preview.
       !!visitorStepKey({ key: input.key, meta: input.meta, ctrl: input.control, alt: input.alt, shift: input.shift }, process.platform === 'darwin');

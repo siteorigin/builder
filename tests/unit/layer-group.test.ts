@@ -59,13 +59,21 @@ const actions = (await load('../../src/renderer/src/lib/actions')) as {
   deleteLayers: (plan?: Plan | null) => Promise<void>;
   moveLayers: (dir: -1 | 1, plan?: Plan | null) => Promise<void>;
   moveToPage: (pageId: string, plan?: Plan | null) => Promise<string[] | null>;
+  wrapLayers: (kind: 'stack' | 'row' | 'grid', plan?: Plan | null) => Promise<boolean>;
+  ungroupLayers: (plan?: Plan | null) => Promise<boolean>;
   asPlanned: (shown: Plan | null, act: (plan: Plan | null) => Promise<void>) => () => Promise<void> | void;
 };
 const { getState, setState, showLayer } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void; showLayer: (ref: ElementRef) => void };
 const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: (plan?: Plan | null) => boolean; pasteCopy: () => boolean; forgetCopy: () => void };
 
+/** Whether each change's snapshot also lets go of a selection that went with it, in the same update, as the app does
+ *  (App's keepViewValid) before the change's reply arrives. */
+let likeTheApp = false;
 function refresh<T>(r: T): T {
-  setState({ snapshot: { state: session.state, revision: session.revision, history: session.historyInfo(), workspaceKey: opening, aiBusy: false, dir: 'project' } as unknown as ProjectSnapshot });
+  const sel = getState().selection;
+  const tree = sel?.owner.kind === 'page' ? session.state.pages[sel.owner.id] : sel?.owner.kind === 'component' ? session.state.components[sel.owner.id]?.tree : undefined;
+  const gone = likeTheApp && !!sel && !tree?.nodes[sel.nodeId];
+  setState({ snapshot: { state: session.state, revision: session.revision, history: session.historyInfo(), workspaceKey: opening, aiBusy: false, dir: 'project' } as unknown as ProjectSnapshot, ...(gone ? { selection: null } : {}) });
   return r;
 }
 
@@ -74,6 +82,7 @@ beforeEach(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'so-layer-group-'));
   dirs.push(dir);
   session = await ProjectSession.create(dir, createStarterState('business', 'Studio', false));
+  likeTheApp = false;
   setState({ toasts: [], selection: null, layerSet: null, pageId: session.state.site.homePageId, definitionMode: null });
   clipboard.forgetCopy();
   refresh(null);
@@ -476,5 +485,130 @@ describe('copying several sections side by side', () => {
     const child = (id: string) => (session.state.pages[aboutId()].nodes[id] as InstanceNode).slots!.content[0];
     expect(ids.map((id) => textOf(child(id), aboutId()))).toEqual([JSON.stringify('Inside the second'), JSON.stringify('Inside the first')]);
     expect(ids.map(child)).not.toContain(slotIds('n_firstsec')[0]);
+  });
+});
+
+describe('Wrap in Stack, Row or Grid, and Ungroup (#386)', () => {
+  /** A Section at the top of Home holding a heading, two buttons and a paragraph, in that order. */
+  async function twoButtons() {
+    const r = await bridge.project.apply(
+      {
+        operations: [
+          { type: 'node.insert', newNodeId: 'n_holder', owner: home(), parentId: null, index: 0, componentId: 'layout.section' },
+          { type: 'node.insert', newNodeId: 'n_title', owner: home(), parentId: 'n_holder', slot: 'content', primitive: 'heading', text: 'Visit' },
+          { type: 'node.insert', newNodeId: 'n_book', owner: home(), parentId: 'n_holder', slot: 'content', primitive: 'button', text: 'Book' },
+          { type: 'node.insert', newNodeId: 'n_call', owner: home(), parentId: 'n_holder', slot: 'content', primitive: 'button', text: 'Call' },
+          { type: 'node.insert', newNodeId: 'n_note', owner: home(), parentId: 'n_holder', slot: 'content', primitive: 'paragraph', text: 'Open daily' }
+        ]
+      },
+      { label: 'Buttons' }
+    );
+    expect(r.ok).toBe(true);
+  }
+  const pickButtons = () => setState({ selection: ref(home(), 'n_call'), layerSet: { owner: home(), ids: ['n_book', 'n_call'], anchor: 'n_book' } });
+  const lastLabel = () => session.historyInfo().entries.filter((e) => e.applied).at(-1)?.label;
+
+  it('wraps two buttons in a Row as one change, selects the Row, and one Undo puts them back', async () => {
+    await twoButtons();
+    const before = JSON.stringify(session.state.pages[homeId()]);
+    pickButtons();
+    const n = entries();
+    expect(await actions.wrapLayers('row')).toBe(true);
+    expect(entries()).toBe(n + 1);
+    const [, row] = slotIds();
+    expect(slotIds()).toEqual(['n_title', row, 'n_note']);
+    expect(session.state.pages[homeId()].nodes[row]).toMatchObject({ kind: 'element', children: ['n_book', 'n_call'], styles: { base: { layout: 'row' } } });
+    expect(getState().selection).toEqual(ref(home(), row));
+    expect(getState().layerSet).toBeNull();
+    expect(lastLabel()).toBe('Wrap Button and Button in Row on Home');
+    const t = getState().toasts.at(-1)!;
+    expect(t).toMatchObject({ kind: 'info', text: 'Wrapped Button and Button in a Row.', action: { label: 'Undo' } });
+    await bridge.project.undo();
+    expect(JSON.stringify(session.state.pages[homeId()])).toBe(before);
+  });
+
+  it('ungroups the Row as one change and selects both buttons, though its snapshot lets go of the Row before the reply', async () => {
+    await twoButtons();
+    likeTheApp = true;
+    pickButtons();
+    await actions.wrapLayers('row');
+    const row = getState().selection!.nodeId;
+    const wrapped = JSON.stringify(session.state.pages[homeId()]);
+    const n = entries();
+    expect(await actions.ungroupLayers()).toBe(true);
+    expect(entries()).toBe(n + 1);
+    expect(slotIds()).toEqual(['n_title', 'n_book', 'n_call', 'n_note']);
+    expect(session.state.pages[homeId()].nodes[row]).toBeUndefined();
+    expect(getState().selection).toEqual(ref(home(), 'n_book'));
+    expect(getState().layerSet).toEqual({ owner: home(), ids: ['n_book', 'n_call'], anchor: 'n_book' });
+    expect(lastLabel()).toBe('Ungroup Row on Home');
+    await bridge.project.undo();
+    expect(JSON.stringify(session.state.pages[homeId()])).toBe(wrapped);
+  });
+
+  it('leaves a selection made while the ungroup lands where the author put it', async () => {
+    await twoButtons();
+    likeTheApp = true;
+    pickButtons();
+    await actions.wrapLayers('stack');
+    const ungrouping = actions.ungroupLayers();
+    setState({ selection: ref(home(), 'n_title') });
+    expect(await ungrouping).toBe(true);
+    expect(getState().selection).toEqual(ref(home(), 'n_title'));
+    expect(getState().layerSet).toBeNull();
+  });
+
+  it('selects nothing for an ungroup that lands after the author opened another page', async () => {
+    await twoButtons();
+    likeTheApp = true;
+    pickButtons();
+    await actions.wrapLayers('row');
+    const ungrouping = actions.ungroupLayers();
+    setState({ pageId: aboutId() });
+    expect(await ungrouping).toBe(true);
+    expect(slotIds()).toEqual(['n_title', 'n_book', 'n_call', 'n_note']);
+    expect(getState().selection).toBeNull();
+    expect(getState().layerSet).toBeNull();
+  });
+
+  it('refuses layers picked apart, a button to ungroup, and sections at the top of the page, saying why and changing nothing', async () => {
+    await twoButtons();
+    const pages = JSON.stringify(session.state.pages);
+    const n = entries();
+    setState({ selection: ref(home(), 'n_call'), layerSet: { owner: home(), ids: ['n_title', 'n_call'], anchor: 'n_title' } });
+    expect(await actions.wrapLayers('row')).toBe(false);
+    expect(getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: expect.stringMatching(/next to each other/) });
+    setState({ selection: ref(home(), 'n_book'), layerSet: null });
+    expect(await actions.ungroupLayers()).toBe(false);
+    expect(getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: expect.stringMatching(/holds nothing to ungroup/) });
+    pickGalleryAndTestimonials();
+    expect(await actions.wrapLayers('stack')).toBe(false);
+    expect(getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: 'Sections at the top of a page can’t be wrapped. Pick elements inside a section.' });
+    expect(JSON.stringify(session.state.pages)).toBe(pages);
+    expect(entries()).toBe(n);
+  });
+
+  it('says so when the component’s own root is asked to be wrapped', async () => {
+    const def = (session.state.pages[homeId()].nodes[sectionOf('media.gallery')] as InstanceNode).definitionId;
+    const r = await bridge.project.apply({ operations: [{ type: 'component.fork', definitionId: def }] }, { label: 'Fork' });
+    const id = r.results![0].definitionId as string;
+    const root = session.state.components[id].tree!.rootIds[0];
+    setState({ selection: ref({ kind: 'component', id }, root), layerSet: null });
+    const n = entries();
+    expect(await actions.wrapLayers('stack')).toBe(false);
+    expect(await actions.ungroupLayers()).toBe(false);
+    expect(getState().toasts.map((t) => t.text).slice(-2)).toEqual(['This is the component itself, so it can’t be wrapped. Select layers inside it.', 'This is the component itself, so it can’t be ungrouped. Select layers inside it.']);
+    expect(entries()).toBe(n);
+  });
+
+  it('a plan made before the project changed is refused whole', async () => {
+    await twoButtons();
+    pickButtons();
+    const plan = actions.planLayers();
+    await bridge.project.apply({ operations: [{ type: 'page.update', pageId: homeId(), seoTitle: 'Meanwhile' }] }, { label: 'Edit browser title' });
+    const before = JSON.stringify(session.state.pages[homeId()]);
+    expect(await actions.wrapLayers('grid', plan)).toBe(false);
+    expect(JSON.stringify(session.state.pages[homeId()])).toBe(before);
+    expect(getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
   });
 });

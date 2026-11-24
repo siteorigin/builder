@@ -295,6 +295,21 @@ export const OPERATION_SCHEMAS = {
     slot: z.string().optional(),
     index: z.number().int().min(0)
   }),
+  'node.wrap': z
+    .object({
+      type: z.literal('node.wrap'),
+      owner,
+      nodeIds: z.array(z.string()).min(1).max(200).describe('The elements to wrap: side by side in one list (the same parent, or the same slot of a component), with nothing between them.'),
+      primitive: z.enum(['stack', 'row', 'grid']).describe('The new container: "stack" (one above another), "row" (side by side) or "grid".')
+    })
+    .describe('Wrap elements where they are in a new Stack, Row or Grid: it takes their place and holds them, in their order. Not for sections at the top of a page, or a component\'s own root.'),
+  'node.unwrap': z
+    .object({
+      type: z.literal('node.unwrap'),
+      owner,
+      nodeIds: z.array(z.string()).min(1).max(200).describe('Plain containers (a Stack, Row, Grid or Container) side by side in one list.')
+    })
+    .describe('Ungroup containers: what each one holds takes its place, in order, and the container goes with its own layout and styles. Not for a container that links, shows under a condition, carries an anchor or accessible name, or has a tag other than div.'),
   'node.duplicate': z.object({
     type: z.literal('node.duplicate'),
     owner,

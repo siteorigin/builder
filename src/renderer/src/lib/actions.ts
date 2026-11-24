@@ -6,7 +6,7 @@ import { isBinding } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
 import { postWorkspace } from './posts';
@@ -271,6 +271,118 @@ export async function moveLayersInto(to: { parentId: string | null; slot?: strin
   const why = lockedGroup(plan.snap.state, plan.group);
   if (why) return (toast(why, 'error'), false);
   return !!(await applyOps(moveIntoOps(plan.group, to), groupLabel(plan.snap.state, 'Move', plan.group), undefined, plan.snap.revision));
+}
+
+// ---------------------------------------------------------------------------
+// Wrap in Stack, Row or Grid, and Ungroup (#386): one operation each, so one change and one Undo.
+// ---------------------------------------------------------------------------
+
+export type WrapKind = 'stack' | 'row' | 'grid';
+export const WRAP_NAMES: Record<WrapKind, string> = { stack: 'Stack', row: 'Row', grid: 'Grid' };
+
+/**
+ * What a menu naming `ref` acts on: the layers selected together when it is one of them (as the shortcuts do), else
+ * `ref` alone, whatever is selected (the Inspector of a design's node reached through its placement names the node).
+ */
+export function planFor(ref: ElementRef | null, s: EditorPlace = getState()): LayersPlan | null {
+  const live = planLayers(s);
+  if (live?.several && ref && !ref.instancePath.length && ref.owner.kind === live.group.owner.kind && ref.owner.id === live.group.owner.id && live.group.ids.includes(ref.nodeId)) return live;
+  return planOne(ref, s);
+}
+
+/** What a menu naming `ref` alone acts on (the canvas's: it lets go of the layers selected with it). */
+export const planOne = (ref: ElementRef | null, s: EditorPlace = getState()): LayersPlan | null => planLayers({ ...s, selection: ref, layerSet: null });
+
+/**
+ * Which of Wrap and Ungroup a menu offers for `plan`'s layers: Wrap for anything but a page's (or layout's) sections and
+ * a component's root, Ungroup for containers holding something, there too. What the project refuses beyond that (layers
+ * picked apart, a container that links) is said when chosen.
+ */
+export function wrapOffers(plan: LayersPlan | null): { wrap: boolean; ungroup: boolean } {
+  const none = { wrap: false, ungroup: false };
+  if (!plan || plan.snap.readOnly) return none;
+  const g = plan.group;
+  const st = plan.snap.state;
+  if (lockedGroup(st, g)) return none;
+  const wrap = g.parentId !== null || g.owner.kind === 'component';
+  // Only containers that can go (plain ones, not a component's root): one that links, say, is never offered.
+  return { wrap, ungroup: g.parentId !== null && !ungroupRefusal(st, g.owner, g.ids) };
+}
+
+/** Why there is nothing to wrap or ungroup with the selection, when a shortcut asks: the component's own root says so. */
+function nothingPlanned(verb: string) {
+  const s = getState();
+  const st = s.snapshot?.state;
+  const sel = s.selection;
+  if (st && sel && !sel.instancePath.length && sel.owner.kind === 'component' && treeFor(st, sel.owner)?.rootIds[0] === sel.nodeId) toast(`This is the component itself, so it can’t be ${verb}. Select layers inside it.`, 'error');
+}
+
+/**
+ * Follows whether the author stays where a change was asked for while it lands, to select what it made only then. The
+ * change's own snapshot can arrive before its reply and let go of a selection it took away (an ungrouped container):
+ * that is not the author moving on. Any other new selection, layers picked, page, component, layout, mode or opening is.
+ * (What is selected then is only ever what a change that landed made: one refused selects nothing.)
+ */
+function followChange(workspaceKey: string): { still: () => boolean; stop: () => void } {
+  const start = getState();
+  const view = (s: State) => [s.pageId, s.definitionMode?.definitionId ?? null, s.templateMode?.collectionId ?? null, s.mode, postWorkspace(s), s.snapshot?.workspaceKey].join('\n');
+  let follow = start.snapshot?.workspaceKey === workspaceKey;
+  const stop = useStore.subscribe((now, prev) => {
+    if (!follow) return;
+    if (view(now) !== view(start)) follow = false;
+    else if (now.selection !== prev.selection || now.layerSet !== prev.layerSet)
+      follow = now.snapshot !== prev.snapshot && prev.selection === start.selection && prev.layerSet === start.layerSet && !now.selection && !now.layerSet;
+  });
+  return { still: () => follow, stop };
+}
+
+/**
+ * Wrap the layers selected together (or the selection alone) in a new Stack, Row or Grid where they are, as one change,
+ * and select it (with keyboard focus on its row, when `follow`: asked for from Layers). Said with an Undo beside it.
+ */
+export async function wrapLayers(kind: WrapKind, plan = planLayers(), follow = focusInLayers()): Promise<boolean> {
+  if (!plan) return (nothingPlanned('wrapped'), false);
+  const g = plan.group;
+  const st = plan.snap.state;
+  const why = lockedGroup(st, g);
+  if (why) return (toast(why, 'error'), false);
+  // The project says why it refuses one (layers picked apart, a component's root), in the notice commitOps shows.
+  const op: EditOperation = { type: 'node.wrap', owner: g.owner, nodeIds: g.ids, primitive: kind };
+  const name = groupName(st, g);
+  const watch = followChange(plan.snap.workspaceKey);
+  const r = await commitOps([op], `Wrap ${name} in ${WRAP_NAMES[kind]} ${placeWords(st, g.owner)}`, undefined, plan.snap.revision).finally(watch.stop);
+  if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return false;
+  const id = r.results?.[0]?.nodeId;
+  if (typeof id === 'string' && watch.still()) {
+    setState({ selection: layerRef(g.owner, id), layerSet: null });
+    if (follow) focusSelectedRow();
+  }
+  toast(`Wrapped ${name} in a ${WRAP_NAMES[kind]}.`, 'info', undoAction(r));
+  return true;
+}
+
+/**
+ * Ungroup the containers selected together (or the selected one): what each holds takes its place, in order, as one
+ * change. What they held is selected, together when there are several. Said with an Undo beside it.
+ */
+export async function ungroupLayers(plan = planLayers(), follow = focusInLayers()): Promise<boolean> {
+  if (!plan) return (nothingPlanned('ungrouped'), false);
+  const g = plan.group;
+  const st = plan.snap.state;
+  const why = lockedGroup(st, g);
+  if (why) return (toast(why, 'error'), false);
+  const op: EditOperation = { type: 'node.unwrap', owner: g.owner, nodeIds: g.ids };
+  const name = groupName(st, g);
+  const watch = followChange(plan.snap.workspaceKey);
+  const r = await commitOps([op], `Ungroup ${name} ${placeWords(st, g.owner)}`, undefined, plan.snap.revision).finally(watch.stop);
+  if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return false;
+  const ids = r.results?.[0]?.nodeIds;
+  if (Array.isArray(ids) && ids.length && ids.every((id): id is string => typeof id === 'string') && watch.still()) {
+    setState({ selection: layerRef(g.owner, ids[0]), layerSet: ids.length > 1 ? { owner: g.owner, ids, anchor: ids[0] } : null });
+    if (follow) focusSelectedRow();
+  }
+  toast(`Ungrouped ${name}.`, 'info', undoAction(r));
+  return true;
 }
 
 /** The pages a page's sections can be moved to: every other page, in the site's order. */
