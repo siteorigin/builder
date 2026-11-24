@@ -160,7 +160,15 @@ await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 await meta.getByLabel('Theme').selectOption('foundation');
 await eventually(async () => assert.equal((await snapshot()).site.themeId, 'foundation'));
 await shows(/Fraunces Variable/);
-await eventually(async () => assert.equal(await shot.getAttribute('data-theme'), 'foundation', 'Site styles pictures Foundation again'), 15000);
+const foundationShot = () => {
+  const dir = join(root, 'resources', 'packs', 'foundation');
+  const file = JSON.parse(readFileSync(join(dir, 'pack.json'), 'utf8')).previews['hero.split'].default;
+  return `data:image/webp;base64,${readFileSync(join(dir, file)).toString('base64')}`;
+};
+await eventually(async () => {
+  assert.equal(await shot.getAttribute('data-theme'), 'foundation');
+  assert.equal(await shot.getAttribute('src'), foundationShot(), 'Site styles pictures Foundation again, from its own release');
+}, 15000);
 const after = await snapshot();
 assert.deepEqual(after.pages, before.pages, 'the pages are exactly as they were');
 assert.deepEqual(after.site.shell, before.site.shell, 'so are the header and footer');

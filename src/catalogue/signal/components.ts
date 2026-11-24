@@ -164,10 +164,16 @@ export const SIGNAL_RESTYLES: Record<string, Restyle> = {
   'cta.banner': { nodes: { panel: { base: { shadow: tok('shadow.lg') } } } }
 };
 
+/**
+ * On a brand ground the pill is outlined, not filled: the eyebrow there is already the ground's own ink at reduced
+ * opacity, and a tint of that ink under it would read below what the same eyebrow reads at in Foundation.
+ */
+const OUTLINED_PILL: StylePatch = { base: { background: 'transparent' } };
+
 /** Restyle an adopted definition with Signal's look: its pill eyebrow wherever it has one, then its own changes. */
 export function signalRestyle(def: ComponentDefinition): ComponentDefinition {
   if (def.kind !== 'managed') return def;
-  if (def.tree?.nodes.eyebrow) restyle(def, { nodes: { eyebrow: EYEBROW_PILL } });
+  if (def.tree?.nodes.eyebrow) restyle(def, { nodes: { eyebrow: EYEBROW_PILL }, ...(def.variantAxes?.tone?.options.brand ? { variants: { tone: { brand: { eyebrow: OUTLINED_PILL } } } } : {}) });
   const own = SIGNAL_RESTYLES[def.componentId ?? ''];
   return own ? restyle(def, own) : def;
 }

@@ -117,6 +117,10 @@ describe('the Signal pack', () => {
     const eyebrows = signal.components.filter((c) => c.tree?.nodes.eyebrow);
     expect(eyebrows.length).toBeGreaterThan(15);
     for (const c of eyebrows) expect(c.tree!.nodes.eyebrow.styles?.base, c.componentId).toMatchObject({ width: 'fit', radius: { token: 'radius.pill' }, background: 'color-mix(in srgb, currentColor 8%, transparent)' });
+    // On a brand ground the pill is only outlined, so the eyebrow reads there as Foundation's does.
+    const branded = eyebrows.filter((c) => c.variantAxes?.tone?.options.brand);
+    expect(branded.map((c) => c.componentId)).toContain('hero.centered');
+    for (const c of branded) expect(c.variantAxes!.tone.options.brand.styles!.eyebrow.base, c.componentId).toMatchObject({ background: 'transparent', opacity: 0.8 });
 
     const features = def(signal, 'features.grid');
     expect(features.tree!.nodes.card.styles).toMatchObject({
@@ -138,7 +142,8 @@ describe('the Signal pack', () => {
     expect(signal.baseCss).toContain(".so-btn--primary:where(:is(a, button):hover:not([aria-selected='true'], [aria-pressed='true'])) { box-shadow: var(--so-shadow-md); }");
     // The arrow travels further only for visitors who have not asked for less motion.
     expect(signal.baseCss).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\n {2}:is\(a, button\)\.so-btn--text:hover::after \{ transform: translateX\(5px\); \}/);
-    // Light tiles start afresh after the tone rules, so a dark section's ink never lands on them.
+    // Light tiles (cards, plans and contact methods) start afresh after the tone rules, so a dark section's ink never lands on them.
+    expect(signal.baseCss).toContain(":where(li[class^='so-']:is(:is([class$='__card'], [class*='__card ']), :is([class$='__plan'], [class*='__plan ']), :is([class$='__method'], [class*='__method ']))) { --so-surface-ink: initial;");
     expect(signal.baseCss.indexOf("--so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; }\n.so-btn {")).toBeGreaterThan(signal.baseCss.indexOf('--so-surface-ink: var(--so-color-on-inverse);'));
     // Lifts only play where a pointer hovers, for visitors who have not asked for less motion.
     expect(signal.baseCss).toContain('@media (hover: hover) and (prefers-reduced-motion: no-preference) {\n  :where(:is(a, button):is(.so-btn--primary, .so-btn--light):hover) { translate: 0 -2px; }');
@@ -191,6 +196,12 @@ describe("Signal's contrast pairs", () => {
     const signal = findTheme('signal')!;
     const ids = signal.contrastPairs!.map((p) => p.id);
     expect(ids).toEqual([...findTheme('foundation')!.contrastPairs!.map((p) => p.id), 'eyebrow-background', 'eyebrow-surface-alt', 'eyebrow-dark']);
+    // Each pill's ground is its own ink at 8% over the section it sits on.
+    expect(signal.contrastPairs!.slice(-3).map((p) => [p.fg, p.bg, p.group])).toEqual([
+      ['color.brand', { mix: ['color.brand', 8, 'color.background'] }, 'brand-text'],
+      ['color.brand', { mix: ['color.brand', 8, 'color.surface-alt'] }, 'brand-text'],
+      ['color.accent', { mix: ['color.accent', 8, 'color.inverse'] }, 'dark-accent']
+    ]);
     expect(evaluatePairs(signal.tokens, signal.contrastPairs!).filter((r) => r.status !== 'pass')).toEqual([]);
   });
 
@@ -327,7 +338,7 @@ describe('a Signal site as it is exported', () => {
       expect(text, path).not.toMatch(/@fontsource|fonts\.googleapis|fonts\.gstatic/);
     }
     // Every url() in the site's stylesheets is inline data or a file beside them; nothing from a server, not even its own root.
-    for (const css of [...files].filter(([p]) => p.endsWith('.css')).map(([, t]) => t)) for (const [, u] of css.matchAll(/url\(\s*['"]?([^'")]+)/g)) expect(u).toMatch(/^(data:|\.\.?\/)/);
+    for (const css of [...files].filter(([p]) => p.endsWith('.css')).map(([, t]) => t)) for (const [, u] of css.matchAll(/url\(\s*['"]?([^'")]+)/gi)) expect(u).toMatch(/^(data:|\.\.?\/)/);
     expect(files.get(`${STYLES_DIR}/theme.css`)).toContain('/* Signal theme base styles */');
   });
 
