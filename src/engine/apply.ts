@@ -1,6 +1,8 @@
 import type {
+  AltReview,
   ComponentDefinition,
   GraphNode,
+  ImageValue,
   InstanceNode,
   LinkValue,
   ListItem,
@@ -326,13 +328,25 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         return {};
       }
       if (kind !== 'image' || state.assets.assets[op.withAssetId].kind !== 'image') fail('Only an image can replace an image.');
-      walkValues(state, (v) => {
-        if (v && typeof v === 'object' && (v as { assetId?: string }).assetId === op.assetId) (v as { assetId: string }).assetId = op.withAssetId;
+      if (op.assetId === op.withAssetId) return { altReview: [] };
+      // A use that still has the old image's suggested description takes the new one's; a decorative use stays as it
+      // is; a description of the use's own is kept, for the author to check against the new picture.
+      const was = state.assets.assets[op.assetId].altSuggestion?.trim() ?? '';
+      const now = state.assets.assets[op.withAssetId].altSuggestion?.trim() ?? '';
+      const altReview: AltReview[] = [];
+      walkImageUses(state, op.assetId, (v, at) => {
+        v.assetId = op.withAssetId;
+        if (v.decorative) return;
+        const alt = typeof v.alt === 'string' ? v.alt.trim() : '';
+        if (alt === was) {
+          v.alt = now;
+          if (was && !now) altReview.push({ ...at(), reason: 'missing', alt: '' });
+        } else if (alt && alt !== now) altReview.push({ ...at(), reason: 'custom', alt: v.alt });
       });
       if (state.site.favicon === op.assetId) state.site.favicon = op.withAssetId;
       for (const pg of Object.values(state.pages)) if (pg.seo.socialImage === op.assetId) pg.seo.socialImage = op.withAssetId;
       if (state.site.socialImage === op.assetId) state.site.socialImage = op.withAssetId;
-      return {};
+      return { altReview };
     }
     case 'asset.relink': {
       const a = own(state.assets.assets, op.assetId) ?? fail(`Asset "${op.assetId}" does not exist.`);
@@ -432,6 +446,19 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   for (const t of allTrees(state)) walk(t.tree.nodes);
   for (const d of Object.values(state.components)) walk(d.properties);
   for (const p of Object.values(state.pages)) walk(p.seo);
+}
+
+/** Every image value showing a library image, in the site's trees and its components' starting values; `at` says where it is (see AltReview). */
+function walkImageUses(state: ProjectState, assetId: string, fn: (v: ImageValue, at: () => Omit<AltReview, 'reason' | 'alt'>) => void) {
+  const walk = (v: unknown, place: { owner: OwnerRef; nodeId: string } | { definitionId: string }, path: Array<string | number>) => {
+    if (Array.isArray(v)) v.forEach((x, i) => walk(x, place, [...path, x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' ? (x as { id: string }).id : i]));
+    else if (v && typeof v === 'object') {
+      if ((v as { assetId?: unknown }).assetId === assetId) fn(v as ImageValue, () => ({ ...place, path }));
+      for (const [k, x] of Object.entries(v)) walk(x, place, [...path, k]);
+    }
+  };
+  for (const t of allTrees(state)) for (const n of Object.values(t.tree.nodes)) walk(n, { owner: t.owner, nodeId: n.id }, []);
+  for (const d of Object.values(state.components)) for (const [prop, schema] of Object.entries(d.properties)) walk(schema, { definitionId: d.id }, [prop]);
 }
 
 /** A stored link to a library document (see LinkValue). */

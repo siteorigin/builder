@@ -349,8 +349,13 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Changed the details of ${quoted(assetName(op.assetId))} in the library`);
       case 'asset.remove':
         return plain(op, `Removed ${quoted(assetName(op.assetId))} from the library`);
-      case 'asset.replace':
-        return plain(op, `Replaced ${quoted(assetName(op.assetId))} with ${quoted(assetName(op.withAssetId))} wherever it was used`);
+      case 'asset.replace': {
+        // Uses whose alt text was the author's own, or went with no suggestion to replace it, are worth a look.
+        const review = (results[i] as { altReview?: unknown } | undefined)?.altReview;
+        const n = Array.isArray(review) ? review.length : 0;
+        const check = n ? `; check the alt text in ${n === 1 ? 'one place' : `${n} places`}` : '';
+        return plain(op, `Replaced ${quoted(assetName(op.assetId))} with ${quoted(assetName(op.withAssetId))} wherever it was used${check}`);
+      }
       case 'asset.relink':
         return plain(op, `Gave ${quoted(assetName(op.assetId))} a new image file`);
       default: {
