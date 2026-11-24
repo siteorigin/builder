@@ -102,6 +102,10 @@ const seeded = await win.evaluate(async () => {
   await one({ type: 'node.setStyle', nodeId: caption, scope: 'base', property: 'hidden', value: true }, 'Hide caption').catch(() => null);
   const second = await one({ type: 'node.insert', parentId: grid, primitive: 'stack' }, 'Seed stack 2');
   await one({ type: 'node.insert', parentId: second, primitive: 'image' }, 'Seed image 2');
+  // Visibility that differs by screen size: the grid goes on phones (so its contents are hidden by it there), and
+  // the second card goes on tablets.
+  await one({ type: 'node.setStyle', nodeId: grid, scope: 'phone', property: 'hidden', value: true }, 'Hide grid on phone');
+  await one({ type: 'node.setStyle', nodeId: second, scope: 'tablet', property: 'hidden', value: true }, 'Hide card on tablet');
   // A component made in this project ("Custom").
   const cta = await one({ type: 'node.insert', parentId: wrap, primitive: 'row' }, 'Seed cta');
   await one({ type: 'node.insert', parentId: cta, primitive: 'button', text: 'Book a consultation' }, 'Seed cta button');
@@ -111,8 +115,11 @@ const seeded = await win.evaluate(async () => {
   } catch (e) {
     custom = 'skipped: ' + String(e).slice(0, 120);
   }
-  return { home: home.id, section, wrap, row, grid, stack, caption, custom };
+  // The lists the multi-select states pick from, as the project has them after seeding.
+  const now = (await api.snapshot()).state.pages[home.id];
+  return { home: home.id, section, wrap, row, grid, stack, caption, custom, roots: now.rootIds, wrapKids: now.nodes[wrap].children };
 });
+if (seeded.roots.length < 5 || seeded.wrapKids.length < 3) throw new Error(`seed is too small for the multi-select states: ${seeded.roots.length} sections, ${seeded.wrapKids.length} children`);
 console.log('seeded', JSON.stringify(seeded));
 await pause(2500);
 
@@ -124,6 +131,25 @@ const openRail = async (name) => {
   await pause(300);
 };
 const row = (text) => win.locator('[role="tree"] [role="treeitem"]', { hasText: text }).first();
+const nodeRow = (id) => win.locator(`[role="tree"] [role="treeitem"][data-node="${id}"]`);
+const toastGone = () => win.locator('.toast').first().waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+const previewAt = async (size) => {
+  await win.getByRole('button', { name: size, exact: true }).first().click();
+  await win.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  await pause(500);
+};
+/** Drag the sidebar's edge by `dx` pixels (-60 takes the default width to its 200px minimum). */
+const resizeSidebar = async (dx) => {
+  const handle = win.locator('.side-panel .resizer');
+  const b = await handle.boundingBox();
+  if (!b) throw new Error('the sidebar resizer is not on screen');
+  await win.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await win.mouse.down();
+  await win.mouse.move(b.x + b.width / 2 + dx, b.y + b.height / 2, { steps: 6 });
+  await win.mouse.up();
+  await win.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  await pause(300);
+};
 const expand = async (text) => {
   const r = row(text);
   if ((await r.getAttribute('aria-expanded')) === 'false') await r.locator('.tree-toggle').click();
@@ -172,24 +198,9 @@ await pause(600);
 await shot('layers-deep', '[role="tree"] [aria-selected="true"]');
 
 // 4b. The same at the narrowest sidebar (200px): the resizer dragged 60px to the left, then back.
-{
-  const handle = win.locator('.side-panel .resizer');
-  const hb = await handle.boundingBox();
-  const resize = async (dx) => {
-    const b = await handle.boundingBox();
-    await win.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
-    await win.mouse.down();
-    await win.mouse.move(b.x + b.width / 2 + dx, b.y + b.height / 2, { steps: 6 });
-    await win.mouse.up();
-    await win.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
-    await pause(300);
-  };
-  if (hb) {
-    await resize(-60);
-    await shot('layers-deep-narrow', '[role="tree"] [aria-selected="true"]', { themes: ['light'] });
-    await resize(60);
-  } else console.log('skipped layers-deep-narrow: no sidebar resizer');
-}
+await resizeSidebar(-60);
+await shot('layers-deep-narrow', '[role="tree"] [aria-selected="true"]', { themes: ['light'] });
+await resizeSidebar(60);
 
 // 5. Keyboard focus moved off the selection (focus ring on a different row from the selected one).
 await shot('layers-keyboard-focus', '[role="tree"] [role="treeitem"]:focus-visible', {
@@ -233,9 +244,9 @@ await win.keyboard.press('Escape');
 await pause(300);
 
 // 9. Dragging: a section held over another, first between rows, then into a container.
-async function dragOver(sourceText, targetText, rel) {
-  const src = row(sourceText);
-  const dst = row(targetText);
+async function dragOver(source, target, rel) {
+  const src = typeof source === 'string' ? row(source) : source;
+  const dst = typeof target === 'string' ? row(target) : target;
   const dt = await win.evaluateHandle(() => new DataTransfer());
   await src.dispatchEvent('dragstart', { dataTransfer: dt });
   const b = await dst.boundingBox();
@@ -272,6 +283,124 @@ async function dragEnd({ src, dst, dt }) {
   });
   await dragEnd(d);
 }
+
+// 9b. Several layers selected together. Three sections by Shift-click, with the group's bar on show.
+const PICKED = '.layers-picked';
+// The bar's commands button: the labelled Actions button, or the bar's only button in older markup.
+const groupActions = () => win.locator(`${PICKED} .layers-picked-actions, ${PICKED} button[title^="Commands"]`).first();
+const pickSections = async () => {
+  await clearSelection();
+  await nodeRow(seeded.roots[2]).click();
+  await nodeRow(seeded.roots[4]).click({ modifiers: ['Shift'] });
+  await pause(400);
+  if ((await win.locator('[role="tree"] [aria-selected="true"]').count()) !== 3) throw new Error('three sections were not selected together');
+};
+await pickSections();
+await shot('layers-multi-sections', PICKED);
+
+// The group's commands, and its Move into… list (long, path-qualified destinations).
+await shot('layers-multi-menu', '.menu', {
+  themes: ['light', 'dark'],
+  prepare: async () => {
+    if (!(await win.locator('.menu').first().isVisible().catch(() => false))) await groupActions().click();
+    await pause(300);
+  }
+});
+await win.keyboard.press('Escape');
+await pause(200);
+await shot('layers-multi-move-into', '.menu', {
+  themes: ['light'],
+  prepare: async () => {
+    await groupActions().click();
+    await pause(250);
+    await win.getByRole('menuitem', { name: /Move into/ }).click();
+    await pause(400);
+  }
+});
+await win.keyboard.press('Escape');
+await pause(200);
+
+// The group's Move within list: every place in their own list they can be put together.
+await shot('layers-multi-within', '.menu', {
+  themes: ['light'],
+  prepare: async () => {
+    await groupActions().click();
+    await pause(250);
+    await win.getByRole('menuitem', { name: /Move within/ }).click();
+    await pause(400);
+  }
+});
+await win.keyboard.press('Escape');
+await pause(200);
+
+// Keyboard focus moved off the group without changing it (Cmd/Ctrl+↓), ready for Space. Checked with :focus, not
+// :focus-visible: after a mouse pick Chromium does not count a modified key as keyboard use, and the image must show
+// whether the row is marked anyway.
+await pickSections();
+await shot('layers-multi-focus', '[role="tree"] [role="treeitem"]:focus', {
+  themes: ['light'],
+  prepare: async () => {
+    await nodeRow(seeded.roots[4]).focus();
+    await win.keyboard.press('ControlOrMeta+ArrowDown');
+    await pause(200);
+  }
+});
+
+// The same group at the 200px minimum sidebar.
+await pickSections();
+await resizeSidebar(-60);
+await shot('layers-multi-narrow', PICKED, { themes: ['light'] });
+await resizeSidebar(60);
+
+// A group nested inside a container, with the deep branch open around it.
+await clearSelection();
+await nodeRow(seeded.wrapKids[0]).click();
+await nodeRow(seeded.wrapKids[seeded.wrapKids.length - 1]).click({ modifiers: ['Shift'] });
+await pause(400);
+await shot('layers-multi-nested', PICKED);
+
+// A pick that can't join the group (a layer from another list) says why.
+await toastGone();
+await shot('layers-multi-refused', '.toast', {
+  themes: ['light'],
+  prepare: async () => {
+    await nodeRow(seeded.roots[0]).click({ modifiers: ['ControlOrMeta'] });
+    await pause(300);
+  }
+});
+await toastGone();
+
+// Dragging one of the group: whatever the panel does with it (a moving group, or a notice).
+await pickSections();
+{
+  let d;
+  await shot('layers-multi-drag', '.toast, [role="tree"] .layer-row[data-dragging]', {
+    themes: ['light'],
+    prepare: async () => {
+      d = await dragOver(nodeRow(seeded.roots[3]), nodeRow(seeded.roots[0]), 0.1);
+    }
+  });
+  await dragEnd(d);
+  await toastGone();
+}
+
+// 9c. Visibility at a screen size: the preview at phone width, where the grid and everything in it are hidden.
+await clearSelection();
+await previewAt('Phone');
+await nodeRow(seeded.grid).scrollIntoViewIfNeeded();
+await shot('layers-visibility-phone', `[role="tree"] [data-node="${seeded.grid}"].is-hidden`);
+await shot('layers-visibility-menu', '.menu', {
+  themes: ['light'],
+  prepare: async () => {
+    const r = nodeRow(seeded.stack);
+    await r.hover();
+    await r.locator('.actions button').click();
+    await pause(300);
+  }
+});
+await win.keyboard.press('Escape');
+await pause(200);
+await previewAt('Desktop');
 
 // 10. Definition mode: editing a component everywhere (the panel lists the component's own layers).
 await clearSelection();
