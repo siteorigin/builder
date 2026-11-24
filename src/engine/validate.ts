@@ -427,11 +427,19 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     // the link has to name the page that has the section.
     const entries = i.entries ?? [];
     // An entry's own link is about its own page.
-    const lacking = entry && entries.length ? ['its page'] : [...(i.pages ?? []).map((id) => state.pages[id].title), ...(entries.length === 1 ? [`the entry “${findEntry(state, entries[0])?.entry.title ?? entries[0]}”`] : entries.length ? [`${entries.length} collection entries`] : [])];
-    const onEntries = entries.length ? ' Entries have none of a page’s sections: point the link at the page that has the section.' : '';
+    const archives = i.archives ?? [];
+    const lacking =
+      entry && entries.length
+        ? ['its page']
+        : [
+            ...(i.pages ?? []).map((id) => state.pages[id].title),
+            ...(entries.length === 1 ? [`the entry “${findEntry(state, entries[0])?.entry.title ?? entries[0]}”`] : entries.length ? [`${entries.length} collection entries`] : []),
+            ...(archives.length === 1 ? [`the collection index at ${archives[0]}`] : archives.length ? [`${archives.length} collection index and archive pages`] : [])
+          ];
+    const onEntries = entries.length || archives.length ? ` ${entries.length ? 'Entries' : 'Collection index pages'} have none of a page’s sections: point the link at the page that has the section.` : '';
     const message = i.pageId
       ? `${where}: ${what} goes to #${i.fragment} on ${state.pages[i.pageId].title}, but that page has no section with that ID. ${fix}`
-      : `${where}: ${what} goes to #${i.fragment}, but ${listed(lacking)} ${lacking.length > 1 || entries.length > 1 ? 'have' : 'has'} no section with that ID. ${fix}${onEntries}`;
+      : `${where}: ${what} goes to #${i.fragment}, but ${listed(lacking)} ${lacking.length > 1 || entries.length > 1 || archives.length > 1 ? 'have' : 'has'} no section with that ID. ${fix}${onEntries}`;
     // Which link it is, where one placement shows several with the same text (one per card, say).
     // Which link it is, and where it goes: a link in text by its text, since another link added before it renumbers it. The
     // pages missing the section are left out, so fixing one of them never makes the link look newly broken.

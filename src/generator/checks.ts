@@ -9,11 +9,12 @@ import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
 import { entryRoute, findEntry } from '@shared/collections';
+import { archivePages } from '@shared/archives';
+import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
 import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
-import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
@@ -153,17 +154,16 @@ interface Frame {
 }
 
 /** Each property's effective value for a placement: its own (evaluated where it is placed) or the default. */
-export function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope, pageId?: string): Record<string, unknown> {
+export function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope, pageId?: string, entry?: { collectionId: string; entryId: string }): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(def.properties)) {
     const own = Object.hasOwn(n.props, name);
-    // A computed list holds what the site's pages give it where it is placed, as the generator writes it: it is
-    // never bound or stored.
+    // A computed list holds what the site's pages (or a collection's entries) give it where it is placed, as the
+    // generator writes it: it is never bound or stored. An entry feed shows what the placement's own values chose.
     if (schema.type === 'list' && schema.feed) {
-      const limit = feedLimit(schema);
       // Shaped as the list's own items, as the generator writes them: its ID and declared fields only.
-      props[name] = articleRows(state, schema.feed, pageId, Number.isFinite(limit) ? limit : undefined).map((row) => ({
-        ...Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(row, k) ? (row as unknown as Record<string, unknown>)[k] : f.default])),
+      props[name] = feedRows(state, schema, { pageId, entry, query: entryQuery(def.properties, n.props) }).map((row) => ({
+        ...Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(row, k) ? row[k] : f.default])),
         id: row.id
       }));
       continue;
@@ -227,6 +227,8 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   // footer for none.
   const treeId = (tree as Partial<PageDoc>).id;
   const pageId = typeof treeId === 'string' && 'route' in tree && Object.hasOwn(state.pages, treeId) ? treeId : undefined;
+  // An entry's page: its feeds default to its collection and leave it out, as the generator writes them.
+  const entry = entryTrees.get(tree);
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
   // walked once per frame, which keeps nested placements of such a component from multiplying the walk.
   const slotsWalked = new WeakMap<Frame, Set<string>>();
@@ -309,7 +311,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const def = state.components[n.definitionId];
         if (!def || frame.defs.has(def.id)) break;
         // Designs placed from a page get that page's rows handed down (`so_pages`), as the generator writes them.
-        const props = effectiveProps(state, def, n, frame.scope, pageId);
+        const props = effectiveProps(state, def, n, frame.scope, pageId, entry);
         if (def.kind === 'managed' && def.tree) {
           const trail = `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`;
           // A component inside a design reads the placement's own fields only through the bindings it is given.
@@ -1000,9 +1002,12 @@ export function elementIds(state: ProjectState, pageId: string): Set<string> {
  */
 export function sharedPageIds(state: ProjectState, part: ShellPart): Set<string> {
   const pages = pagesShowing(state, part);
-  if (!pages.length) return new Set(LAYOUT_IDS);
+  // A collection's index and archive pages show the header and footer around a list of posts, and no page's sections.
+  const archived = archivePages(state).length > 0;
+  if (!pages.length && !archived) return new Set(LAYOUT_IDS);
   const shell = shellIds(state);
   const sets = pages.map((p) => pageIds(state, p.id, shell));
+  if (archived) sets.push(new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]));
   return new Set([...sets[0]].filter((id) => sets.every((x) => x.has(id))));
 }
 
@@ -1139,6 +1144,11 @@ export interface SectionLinkIssue {
    * an entry's page has none of a page's sections, only the layout's and the header and footer's.
    */
   entries?: string[];
+  /**
+   * The archive pages it shows on (see shared/archives.ts), by address, for a link in the shared header or footer to
+   * a section of the page it is on: they have none of a page's sections either.
+   */
+  archives?: string[];
 }
 
 /**
@@ -1184,6 +1194,8 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   // Only published entries are pages of the website a build has to follow links on.
   const published = siteEntries(state).filter((e) => !isDraftEntry(e.entry));
   const entries = published.map((e) => e.entry.id);
+  // Collections' index and archive pages show the header and footer around a list of entries, with no sections.
+  const archives = archivePages(state).map((p) => p.route);
   const entryIds = new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]);
   const ids = new Map<string, Set<string>>();
   // A link visitors see at first must find its section on screen. One in a panel kept in the page hidden shows with
@@ -1235,7 +1247,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   };
   // The header and footer are checked on the pages that show each: they can differ.
   const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[]; entry?: (typeof articles)[number] }> = [
-    ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0),
+    ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0 || archives.length > 0),
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] })),
     // A collection's layout, as each of its published entries shows it.
     ...articles.filter((a) => hasSectionLinks(a.collection.settings.id)).map((a) => ({ owner: { kind: 'template' as const, id: a.collection.settings.id }, tree: a.article(), on: [] as PageDoc[], entry: a }))
@@ -1255,7 +1267,9 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
         const fragment = link.target.replace(/^#/, '');
         const missing = src.on.filter((p) => !idsOf(p.id, hidden).has(fragment)).map((p) => p.id);
         const lacking = src.owner.kind === 'shell' ? lackingIn(fragment, hidden) : src.entry && lacks(src.entry, fragment, hidden) ? [src.entry.entry.id] : [];
-        if (missing.length || lacking.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}) };
+        const listing = src.owner.kind === 'shell' && !entryIdsOf(hidden).has(fragment) ? archives : [];
+        if (missing.length || lacking.length || listing.length)
+          issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}), ...(listing.length ? { archives: listing } : {}) };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once; one in a layout, once for all the
       // entries that lack its section.
@@ -1395,8 +1409,10 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
     )
   ]);
-  // An entry shows both shared parts, and its collection's layout.
-  const entryShown = entries.length > draftEntries.length;
+  // A typed address an archive page answers at (a draft's, made before archive pages) leads to the archive.
+  for (const p of archivePages(state)) withheld.delete(p.route.toLowerCase());
+  // An entry shows both shared parts, and its collection's layout; so does a collection's index (an archive page).
+  const entryShown = entries.length > draftEntries.length || archivePages(state).length > 0;
   const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
   // A layout's links go where the layout says, whatever the entry, apart from Previous and Next, which never lead to a
   // draft: one with no link to a page, an entry or an address has none to a draft on any entry's page.
@@ -1405,7 +1421,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     if (!mayLink.has(collectionId)) {
       const t = state.collections[collectionId]?.settings?.template;
       const placed = !!t?.nodes && Object.values(t.nodes).some((n) => n?.kind === 'instance');
-      mayLink.set(collectionId, !!t?.nodes && (draftIds.size > 0 || withheld.size > 0) && (placed || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes))));
+      mayLink.set(collectionId, !!t?.nodes && (draftIds.size > 0 || draftEntryIds.size > 0 || withheld.size > 0) && (placed || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes))));
     }
     return mayLink.get(collectionId)!;
   };
@@ -1858,12 +1874,20 @@ export function pageHeadings(state: ProjectState, pageId: string, opts: { shell?
  * itself is left out, since its links are checked as the entry's own.
  */
 function entryArticle(state: ProjectState, collection: Collection, entry: EntryDoc): NodeTree {
-  return materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
+  const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
+  entryTrees.set(tree, { collectionId: collection.settings.id, entryId: entry.id });
+  return tree;
 }
+
+/** The entry each entry's page read by these checks is for, so its feeds are worked out as that page has them. */
+const entryTrees = new WeakMap<NodeTree, { collectionId: string; entryId: string }>();
 
 /** A collection's layout as stored, when it is a tree at all (a damaged one is reported with its settings). */
 function storedLayout(state: ProjectState, collectionId: string): NodeTree | undefined {
   const t = state.collections[collectionId]?.settings?.template;
-  return t && typeof t === 'object' && Array.isArray(t.rootIds) && t.nodes && typeof t.nodes === 'object' ? t : undefined;
+  if (!(t && typeof t === 'object' && Array.isArray(t.rootIds) && t.nodes && typeof t.nodes === 'object')) return undefined;
+  // Read for no entry in particular: its feeds list its own collection's entries, leaving none out.
+  if (!entryTrees.has(t)) entryTrees.set(t, { collectionId, entryId: '' });
+  return t;
 }
 

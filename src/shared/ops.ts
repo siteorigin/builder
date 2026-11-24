@@ -178,7 +178,9 @@ const COLLECTION_SETTINGS = {
   fields: z
     .record(z.string(), z.record(z.string(), z.unknown()))
     .optional()
-    .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options) or image. Replaces the whole set: a field left out is removed from every entry.')
+    .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options) or image. Replaces the whole set: a field left out is removed from every entry.'),
+  pageSize: z.number().int().min(1).max(100).optional().describe('How many entries each page of the collection\'s index and category archives lists, newest first (later pages at page/2/, page/3/...). Default 10.'),
+  categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.')
 };
 
 /** An entry's details, as entry.create and entry.update take them. */

@@ -563,9 +563,9 @@ describe('header menu links without a destination (#208)', () => {
     expect(unlinkedMenuLinkWarnings(s)).toEqual(one);
     s.pages[first].showHeader = false;
     expect(unlinkedMenuLinkWarnings(s)).toEqual([]);
-    // A published collection entry shows the header too; a draft one does not.
+    // A collection's index (#397) shows the header too, before anything in it is published, and so does a published entry.
     const drafted = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_soon', title: 'Coming soon' }]).state;
-    expect(unlinkedMenuLinkWarnings(drafted)).toEqual([]);
+    expect(unlinkedMenuLinkWarnings(drafted)).toEqual(one);
     const published = applyOperations(drafted, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_soon', draft: false }]).state;
     expect(unlinkedMenuLinkWarnings(published)).toEqual(one);
   });

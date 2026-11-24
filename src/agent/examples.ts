@@ -5,6 +5,7 @@ import type { AiExample } from '@catalogue/foundation/ai-examples';
 import { declaredTokens } from '@engine/tokens';
 import { checkProps, chooseVariants, type FieldIssue } from './macros';
 import type { ManagedComponentArgs } from './managed-component';
+import { hasCollections, listsEntries } from '@shared/entry-feed';
 
 /**
  * Problems an example has against the component contract a section would be checked against: the project's installed
@@ -31,6 +32,8 @@ export function retrieveExamples(state: ProjectState, request: string, limit = 3
     .sort((a, b) => b.score - a.score || a.order - b.order)
     .filter((x, i, all) => all.findIndex((y) => y.ex.componentId === x.ex.componentId) === i)
     .filter((x) => !checkExample(state, x.ex).length)
+    // A section that lists posts is suggested once the project has a collection, as the page tool offers it.
+    .filter((x) => hasCollections(state) || !listsEntries(catalogueComponent(state.site.themeId, x.ex.componentId) ?? { properties: {} }))
     .slice(0, limit)
     .map((x) => x.ex);
 }

@@ -62,7 +62,14 @@ export const VISITOR_TEXT_KEYS = [
   'videoLoads',
   'tableRegion',
   'redirect',
-  'readingTime'
+  'readingTime',
+  'archiveNav',
+  'archivePrevious',
+  'archiveNext',
+  'archivePage',
+  'archivePageOf',
+  'archiveCategory',
+  'archiveEmpty'
 ] as const;
 
 export type VisitorTextKey = (typeof VISITOR_TEXT_KEYS)[number];
@@ -146,7 +153,16 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
   },
   {
     label: 'Posts',
-    fields: [{ key: 'readingTime', label: 'Reading time', hint: 'In a post’s layout, how long its text takes to read.', fills: ['count'] }]
+    fields: [
+      { key: 'readingTime', label: 'Reading time', hint: 'In a post’s layout, how long its text takes to read.', fills: ['count'] },
+      { key: 'archiveNav', label: 'Page links', hint: 'The name screen readers give the links between the pages of a blog’s index or category archive.' },
+      { key: 'archivePrevious', label: 'Previous page', hint: 'The link to the page of newer posts before it.' },
+      { key: 'archiveNext', label: 'Next page', hint: 'The link to the page of older posts after it.' },
+      { key: 'archivePage', label: 'Page link', hint: 'Read out on the link to one numbered page.', fills: ['page'] },
+      { key: 'archivePageOf', label: 'Page number', hint: 'Under the heading of every page after the first.', fills: ['page', 'count'] },
+      { key: 'archiveCategory', label: 'Category', hint: 'Above the category’s name on its archive page.' },
+      { key: 'archiveEmpty', label: 'Nothing published', hint: 'On a blog’s index before anything is published.' }
+    ]
   }
 ];
 
@@ -192,7 +208,14 @@ const EN: VisitorText = {
   videoLoads: 'Loads the player from {host}',
   tableRegion: 'Table',
   redirect: 'This page has moved. Continue to its new address.',
-  readingTime: '{count} min read'
+  readingTime: '{count} min read',
+  archiveNav: 'Pages',
+  archivePrevious: 'Previous page',
+  archiveNext: 'Next page',
+  archivePage: 'Page {page}',
+  archivePageOf: 'Page {page} of {count}',
+  archiveCategory: 'Category',
+  archiveEmpty: 'Nothing has been published here yet.'
 };
 
 const AR: VisitorText = {
@@ -237,7 +260,14 @@ const AR: VisitorText = {
   videoLoads: 'يُحمَّل المشغّل من {host}',
   tableRegion: 'جدول',
   redirect: 'نُقلت هذه الصفحة. تابع إلى عنوانها الجديد.',
-  readingTime: 'وقت القراءة: {count} دقيقة'
+  readingTime: 'وقت القراءة: {count} دقيقة',
+  archiveNav: 'الصفحات',
+  archivePrevious: 'الصفحة السابقة',
+  archiveNext: 'الصفحة التالية',
+  archivePage: 'الصفحة {page}',
+  archivePageOf: 'الصفحة {page} من {count}',
+  archiveCategory: 'التصنيف',
+  archiveEmpty: 'لم يُنشر شيء هنا بعد.'
 };
 
 const HE: VisitorText = {
@@ -282,7 +312,14 @@ const HE: VisitorText = {
   videoLoads: 'הנגן נטען מ-{host}',
   tableRegion: 'טבלה',
   redirect: 'הדף הזה הועבר. אפשר להמשיך לכתובת החדשה שלו.',
-  readingTime: '{count} דק׳ קריאה'
+  readingTime: '{count} דק׳ קריאה',
+  archiveNav: 'עמודים',
+  archivePrevious: 'העמוד הקודם',
+  archiveNext: 'העמוד הבא',
+  archivePage: 'עמוד {page}',
+  archivePageOf: 'עמוד {page} מתוך {count}',
+  archiveCategory: 'קטגוריה',
+  archiveEmpty: 'עדיין לא פורסם כאן דבר.'
 };
 
 /** Built-in wording by primary language subtag. Hebrew is also known by its old code. */

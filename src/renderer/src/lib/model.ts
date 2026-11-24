@@ -1,14 +1,16 @@
 /** Read-only helpers over the project state for the editor UI. */
-import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, ListProp, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { propBindingValue } from '@shared/bindings';
-import { articleRows, feedLimit } from '@shared/articles';
-import { isBinding, refKey } from '@shared/types';
+import { feedLimit } from '@shared/articles';
+import { entryQuery, feedRows } from '@shared/entry-feed';
+import { isBinding, isEntryBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent, isEmptyLayout } from '@engine/tree';
 import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
 import type { InspectionDesc, InspectionRef } from '@shared/inspection';
 import { placementItems, repeatedPartList } from '@shared/item-styles';
 import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
 import { isDraftPage } from '@generator/index';
+import { entryNeighbours, materializeTemplate } from '@generator/entry-template';
 import { PREVIEW_NODE_ID, previewCtx } from '@shared/component-preview';
 import { layerLabel } from './layers';
 import { keepTemplateValid, type TemplateMode } from './template-view';
@@ -92,6 +94,50 @@ export function resolveRef(state: ProjectState, ref: ElementRef): { tree?: NodeT
     tree = def?.tree;
   }
   return { tree, node: tree && own(tree.nodes, ref.nodeId), def, instance: inst };
+}
+
+/**
+ * The rows a computed list holds where a placement on `owner` shows it (see shared/entry-feed.ts): a page's articles or
+ * itself, or for an entry feed the entries the placement's own `properties` values chose. A collection's layout is
+ * shown on each of its entries' pages without that entry, so there an entry feed holds the rows any of them can show:
+ * the collection's, one more than it lists, none left out.
+ */
+export function placedFeedRows(
+  state: ProjectState,
+  schema: ListProp,
+  owner: OwnerRef | undefined,
+  properties: Record<string, PropSchema>,
+  props: Record<string, unknown>,
+  sample?: { entryId: string | null; nodeId: string }
+): Array<Record<string, unknown>> {
+  const query = entryQuery(properties, props);
+  if (schema.feed === 'entries' && owner?.kind === 'template') {
+    const entry = { collectionId: owner.id, entryId: '' };
+    // On the entry the canvas shows the layout on (`sample`, the placement's node there): exactly that page's rows,
+    // what the placement reads of the entry read for it.
+    const shown = sample?.entryId ? sampleQuery(state, owner.id, sample.entryId, sample.nodeId, properties) : undefined;
+    if (shown) return feedRows(state, schema, { entry: { ...entry, entryId: sample!.entryId! }, query: shown });
+    // A filter read from each entry can show any of the collection's entries on one page or another (and a collection
+    // read from each entry, any collection's).
+    const bound = (k: string) => isEntryBinding(props[k]);
+    if (['collection', 'category', 'tag', 'count'].some(bound)) {
+      const widened = { category: bound('category') ? '' : query.category, tag: bound('tag') ? '' : query.tag };
+      const ids = bound('collection') ? Object.keys(state.collections ?? {}).sort() : [query.collection];
+      return ids.flatMap((collection) => feedRows(state, { feed: 'entries' }, { entry, query: { collection, ...widened } }));
+    }
+    const limit = Math.min(feedLimit(schema), query.count ?? Infinity);
+    return feedRows(state, { feed: 'entries' }, { entry, query: { ...query, count: Number.isFinite(limit) ? limit + 1 : undefined } });
+  }
+  return feedRows(state, schema, { pageId: owner?.kind === 'page' ? owner.id : undefined, query });
+}
+
+/** What a layout's placement `nodeId` chose, as the layout is shown on entry `entryId`: its reads of the entry read for it. */
+function sampleQuery(state: ProjectState, collectionId: string, entryId: string, nodeId: string, properties: Record<string, PropSchema>) {
+  const collection = own(state.collections ?? {}, collectionId);
+  const entry = collection ? own(collection.entries, entryId) : undefined;
+  if (!collection || !entry) return undefined;
+  const n = own(materializeTemplate(state, collection, entry, entryNeighbours(state, collectionId, entryId)).nodes, nodeId);
+  return n?.kind === 'instance' ? entryQuery(properties, n.props as Record<string, unknown>) : undefined;
 }
 
 export function nodeAt(state: ProjectState, ref: ElementRef): GraphNode | undefined {
@@ -398,8 +444,7 @@ function selectableItemIds(state: ProjectState, ref: ElementRef, r: ReturnType<t
   if (!list || schema?.type !== 'list') return undefined;
   if (schema.feed) {
     if (design) return undefined;
-    const limit = feedLimit(schema);
-    return articleRows(state, schema.feed, ref.owner.kind === 'page' ? ref.owner.id : undefined, Number.isFinite(limit) ? limit : undefined).map((row) => row.id);
+    return placedFeedRows(state, schema, ref.owner, def.properties, r.instance!.props as Record<string, unknown>).map((row) => row.id as string);
   }
   const stored = (n: InstanceNode) => {
     const v = own(n.props as Record<string, unknown>, list);
@@ -828,9 +873,7 @@ export function shownValue(state: ProjectState, ref: ElementRef, bound: unknown)
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];
   // A computed list shows its page's row, where the placement sits directly on a page.
   if (schema?.type === 'list' && schema.feed) {
-    const pageId = ref.owner.kind === 'page' ? ref.owner.id : undefined;
-    const limit = feedLimit(schema);
-    const row = articleRows(state, schema.feed, pageId, Number.isFinite(limit) ? limit : undefined).find((x) => x.id === itemId) as Record<string, unknown> | undefined;
+    const row = placedFeedRows(state, schema, ref.owner, r.def!.properties, props).find((x) => x.id === itemId);
     return row?.[bound.$item];
   }
   const items = list ? (Object.hasOwn(props, list) ? props[list] : schema?.default) : undefined;

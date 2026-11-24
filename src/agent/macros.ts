@@ -14,6 +14,7 @@ import { normalizeRoute, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { isLanguageCode } from '@shared/languages';
 import { catalogueComponent, catalogueEntries } from '@catalogue/index';
+import { hasCollections, listsEntries } from '@shared/entry-feed';
 import { applyOperation } from '@engine/apply';
 import { headerMenuSlot, itemLinkPairs } from '@engine/tree';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -281,7 +282,13 @@ export function checkProps(
     if (schema.type === 'list' && schema.feed) {
       // Filled from the site's pages: an empty list is what it stores anyway, and items are never kept.
       if (Array.isArray(v) && !v.length) continue;
-      issues.push({ field: `${path}.${k}`, message: `"${k}" fills itself from the site's ${schema.feed === 'articles' ? 'dated articles' : 'page'}. Leave it out; set articleDate, byline and excerpt on the article pages instead.` });
+      issues.push({
+        field: `${path}.${k}`,
+        message:
+          schema.feed === 'entries'
+            ? `"${k}" fills itself from a collection's published entries. Leave it out; choose which with collection, category, tag and count instead.`
+            : `"${k}" fills itself from the site's ${schema.feed === 'articles' ? 'dated articles' : 'page'}. Leave it out; set articleDate, byline and excerpt on the article pages instead.`
+      });
       continue;
     }
     if (schema.type === 'link') {
@@ -945,12 +952,14 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
 /** Tool schema for one project: each section is typed by its component, with closed props. */
 /** `only`: the route of the one page a run may build; the call then cannot link the page to a translation either. */
 export function upsertToolSchema(state: ProjectState, only?: string): JsonSchema {
+  // A section that lists a collection's posts shows nothing until the project has a collection: it is offered from then.
+  const offered = (d: ComponentDefinition) => hasCollections(state) || !listsEntries(d);
   const defs: ComponentDefinition[] = [
     // A theme component already in the project is typed as installed, as the section check reads it: a newer
     // theme's properties (a heading level, say) are not there until Project health updates it.
     ...catalogueEntries(state.site.themeId).flatMap((e) => {
       const d = catalogueComponent(state.site.themeId, e.componentId);
-      return d ? [Object.hasOwn(state.components, d.id) ? state.components[d.id] : d] : [];
+      return d && offered(d) ? [Object.hasOwn(state.components, d.id) ? state.components[d.id] : d] : [];
     }),
     ...Object.values(state.components).filter((d) => d.owner === 'project' && d.category !== 'shell')
   ];

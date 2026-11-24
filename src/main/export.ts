@@ -14,6 +14,7 @@ import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@en
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, draftTarget, netlifyFormClashes, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
+import { archivePages } from '@shared/archives';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
@@ -604,15 +605,19 @@ export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ f
  * The addresses the website keeps back, each with the draft it would show: every draft page's and draft entry's own,
  * and each old address that leads to one. `live` is the published state of `state`.
  */
-export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string }> {
+export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string; archived?: true }> {
   if (live === state) return [];
   const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
   const shown = new Set(siteEntries(live).map((e) => e.route.toLowerCase()));
-  return [
+  // A collection's archive page shows at a draft's address made before archive pages: its own page there is the
+  // archive's, so only another file at that address (a copy of the draft as route.html) would publish the draft.
+  const archived = new Set(archivePages(live).map((p) => p.route.toLowerCase()));
+  const routes: Array<{ route: string; draft: string }> = [
     ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
     ...siteEntries(state).filter((e) => !shown.has(e.route.toLowerCase())).map((e) => ({ route: e.route, draft: e.entry.title })),
     ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.title }))
   ];
+  return routes.map((r) => (archived.has(r.route.toLowerCase()) ? { ...r, archived: true as const } : r));
 }
 
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */
@@ -863,7 +868,8 @@ const UNLINKED_LISTED = 6;
  */
 function siteTrees(state: ProjectState): Array<{ tree: NodeTree; label: string }> {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
-  const entryShown = siteEntries(state).some((e) => !isDraftEntry(e.entry));
+  // A collection's index (an archive page) shows both too.
+  const entryShown = siteEntries(state).some((e) => !isDraftEntry(e.entry)) || archivePages(state).length > 0;
   const shell = SHELL_PARTS.filter((part) => entryShown || pages.some((p) => showsPart(p, part))).map((part) => ({ tree: state.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' }));
   return [...pages.map((p) => ({ tree: p, label: p.title })), ...shell];
 }

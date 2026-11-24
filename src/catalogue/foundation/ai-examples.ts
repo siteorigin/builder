@@ -149,6 +149,27 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     props: { eyebrow: 'News', heading: 'Latest from the market' }
   },
   {
+    id: 'blog-featured',
+    componentId: 'blog.featured',
+    keywords: ['featured', 'blog', 'posts', 'lead', 'highlight', 'spotlight'],
+    description: "The newest blog post shown large. It fills itself from a collection's published entries: never send items. Choose which with collection, category and tag",
+    props: { heading: 'From the journal' }
+  },
+  {
+    id: 'blog-grid-latest',
+    componentId: 'blog.grid',
+    keywords: ['blog', 'posts', 'latest', 'related', 'articles', 'journal', 'studies', 'stories'],
+    description: "Cards for the newest blog posts. They fill themselves from a collection's published entries, newest first: never send items. Choose which with collection, category, tag and count; in a collection's layout it lists the other posts",
+    props: { heading: 'Latest articles', count: 3 }
+  },
+  {
+    id: 'blog-list-recent',
+    componentId: 'blog.list',
+    keywords: ['blog', 'posts', 'recent', 'headlines', 'archive', 'list'],
+    description: "A compact list of recent blog posts without pictures. It fills itself from a collection's published entries: never send items. Choose which with collection, category (a term ID or name), tag and count",
+    props: { heading: 'Recent posts', count: 5 }
+  },
+  {
     id: 'article-header',
     componentId: 'content.article',
     keywords: ['article', 'news', 'post', 'announcement', 'byline', 'date', 'published'],

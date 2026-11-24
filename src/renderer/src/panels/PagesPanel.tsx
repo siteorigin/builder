@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, LayoutTemplate, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';
-import { collectionRoutes } from '@shared/collections';
+import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasCategoryArchives } from '@shared/collections';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { aiActivity, applyOps, commitDraft, commitOps, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
@@ -9,7 +9,8 @@ import { limitNote } from '../lib/kept-drafts';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { goToShellPart, openLayout, selectPage } from '../lib/actions';
+import { goToShellPart, openLayout, selectPage, setMode } from '../lib/actions';
+import { visitAddress } from './Canvas';
 import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
@@ -1100,6 +1101,58 @@ export function PagesPanel() {
 }
 
 /**
+ * How a collection's index and category archives list its published entries: how many to a page, whether each
+ * category has an archive of its own, and a way to see the index in the preview, as visitors get it.
+ */
+/** The page sizes offered for a collection's index, besides its own (a size set in its settings file is kept). */
+const PAGE_SIZES = [1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 50, MAX_PAGE_SIZE];
+
+function CollectionArchive({ collectionId, name, route, pageSize, categories }: { collectionId: string; name: string; route: string; pageSize: number; categories: boolean }) {
+  const update = (patch: { pageSize?: number; categoryArchives?: boolean }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
+  const viewIndex = () => {
+    // The index is a page of the website: a layout being edited closes first, as opening a page closes it.
+    if (getState().templateMode) setState({ templateMode: null, ...(getState().selection?.owner.kind === 'template' ? { selection: null } : {}) });
+    setMode('preview');
+    // Once the canvas shows the preview; one still starting opens the index once it is ready.
+    requestAnimationFrame(() => {
+      if (!visitAddress(route)) toast(`The preview is starting: the ${name} index opens in it once it is ready.`, 'info');
+    });
+  };
+  return (
+    <div className="pages-collection-archive" role="group" aria-label={`The ${name} index`}>
+      <label className="pages-collection-size">
+        Per page
+        {/* A choice made at once, so no typed value is ever held while the project changes under it. */}
+        <select
+          className="select sm"
+          aria-label={`${name} entries per index page`}
+          value={String(pageSize)}
+          onChange={(e) => {
+            const n = Number(e.target.value);
+            if (Number.isInteger(n) && n !== pageSize) void update({ pageSize: n }, `Show ${n} per page on the ${name} index`);
+          }}
+        >
+          {[...new Set([...PAGE_SIZES, pageSize])]
+            .sort((a, b) => a - b)
+            .map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+        </select>
+      </label>
+      <label className="pages-collection-check">
+        <input type="checkbox" checked={categories} onChange={(e) => void update({ categoryArchives: e.target.checked }, e.target.checked ? 'Give categories their own pages' : 'Stop giving categories their own pages')} />
+        Category pages
+      </label>
+      <button className="btn btn-sm btn-ghost" onClick={viewIndex} aria-label={`View the ${name} index`} data-testid={`view-index-${collectionId}`}>
+        View index
+      </button>
+    </div>
+  );
+}
+
+/**
  * The site's collections, each with the layout its entries' pages share. Edit layout opens it on the canvas, shown on
  * the collection's first entry; a change there changes every entry's page.
  */
@@ -1126,6 +1179,7 @@ function CollectionLayouts({ state }: { state: ProjectState }) {
               <button className="btn btn-sm" aria-pressed={open === id} aria-label={`Edit the ${c.settings.name} layout`} data-testid={`edit-layout-${id}`} onClick={() => openLayout(id)}>
                 Edit layout
               </button>
+              <CollectionArchive collectionId={id} name={c.settings.name} route={c.settings.route} pageSize={archivePageSize(c.settings)} categories={hasCategoryArchives(c.settings)} />
             </li>
           );
         })}

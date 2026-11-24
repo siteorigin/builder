@@ -248,7 +248,8 @@ export function suggestRoute(title: string, taken: (route: string) => boolean, f
   if (reserved) slug = `${cutSegment(slug, SEGMENT_CHARS - 5, SEGMENT_BYTES - 5)}-page`;
   const base = `${folder}${slug}/`;
   let route = base;
-  for (let i = 2; taken(route); i++) route = `${folder}${numberedSlug(slug, i)}/`;
+  // Bounded, so a folder where every address is kept (a collection's archive pages) can never hang the caller.
+  for (let i = 2; taken(route) && i < 10000; i++) route = `${folder}${numberedSlug(slug, i)}/`;
   return reserved ? { route, base, reserved } : { route, base };
 }
 

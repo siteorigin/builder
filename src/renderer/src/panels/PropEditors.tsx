@@ -30,8 +30,11 @@ import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
 import type { PictureStandIn } from '../lib/sharing';
 import { effectiveItem } from '@shared/page-teasers';
-import { articleRows, feedLimit } from '@shared/articles';
-import { selectPage } from '../lib/actions';
+import { feedLimit } from '@shared/articles';
+import { entryQuery, feedCollection } from '@shared/entry-feed';
+import { findEntry } from '@shared/collections';
+import { openPost, selectPage } from '../lib/actions';
+import { placedFeedRows, resolveRef } from '../lib/model';
 import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
@@ -1459,7 +1462,7 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   /** For a list that takes several library images at once (a Gallery): the item field each image goes in. */
   pickImages?: string | null;
 }) {
-  if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} pageId={placedOnPage(place?.ref)} />;
+  if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} place={place} />;
   // Fields inside belong to this property of the node around them (see FieldHome).
   if (schema.type === 'list')
     return (
@@ -1524,11 +1527,58 @@ export function openPageSettings(pageId: string) {
  * A computed list (news, an article's header): what it shows where it is placed, and where each of those things is
  * changed. It holds nothing of its own to edit.
  */
-function ComputedList({ name, schema, state, pageId }: { name: string; schema: ListProp; state: ProjectState; pageId?: string }) {
+function ComputedList({ name, schema, state, place }: { name: string; schema: ListProp; state: ProjectState; place?: ListPlace }) {
+  const pageId = placedOnPage(place?.ref);
   const limit = feedLimit(schema);
-  const rows = articleRows(state, schema.feed!, pageId, Number.isFinite(limit) ? limit : undefined);
+  const node = place ? resolveRef(state, place.ref).node : undefined;
+  const instance = node?.kind === 'instance' ? node : undefined;
+  const properties = (instance && state.components[instance.definitionId]?.properties) || {};
+  // In a collection's layout, the rows of the entry the canvas shows it on.
+  const templateMode = useStore((s) => s.templateMode);
+  const sample = templateMode && place?.ref.owner.kind === 'template' && !place.ref.instancePath.length ? { entryId: templateMode.entryId, nodeId: place.ref.nodeId } : undefined;
+  const rows = placedFeedRows(state, schema, place?.ref.owner, properties, (instance?.props ?? {}) as Record<string, unknown>, sample) as unknown as Array<{ id: string; title: string; date?: string; dateLabel?: string }>;
   const page = pageId && Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
   const hintId = useId();
+  if (schema.feed === 'entries') {
+    const query = entryQuery(properties, (instance?.props ?? {}) as Record<string, unknown>);
+    const collection = feedCollection(state, query, place?.ref.owner.kind === 'template' ? { entry: { collectionId: place.ref.owner.id, entryId: '' } } : {});
+    const count = Math.min(limit, query.count ?? Infinity);
+    return (
+      <div className="field computed-list" data-list={name}>
+        <div className="field-label">
+          {schema.label} <span className="faint">· newest first</span>
+        </div>
+        {rows.length ? (
+          <ol className="computed-rows" aria-label={`${schema.label} shown here`}>
+            {rows.map((r) => (
+              <li key={r.id}>
+                <button
+                  className="link-btn"
+                  onClick={() => {
+                    // Each row's own collection: one read from the entry a layout is shown on can be another.
+                    const found = findEntry(state, r.id);
+                    if (found) void openPost(found.collection.settings.id, r.id);
+                  }}
+                  title={`Open ${r.title} in Posts`}
+                >
+                  {r.title}
+                </button>
+                {r.dateLabel && <span className="faint"> · {r.dateLabel}</span>}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="insp-note muted">{collection ? 'No published entries to show here yet.' : query.collection ? `This project has no collection “${query.collection}”.` : 'This project has no collection yet. Start a blog in Posts.'}</p>
+        )}
+        <p className="insp-note field-hint">
+          Filled in from {collection ? `${collection.settings.name}’s` : 'a collection’s'} published entries{query.category ? `, in ${query.category}` : ''}
+          {query.tag ? `, tagged ${query.tag}` : ''}
+          {Number.isFinite(count) ? `, up to ${count}` : ''}. Choose which with the settings above. Write, date and publish them in Posts; drafts are left out
+          {place?.ref.owner.kind === 'template' ? ', and so is the entry whose page shows the list' : ''}.
+        </p>
+      </div>
+    );
+  }
   if (schema.feed === 'currentPage')
     return (
       <div className="field computed-list" data-list={name}>

@@ -7,6 +7,7 @@ import { childLists, displayName, enclosingRepeatProp, getTree } from '@engine/t
 import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
+import { hasCollections } from '@shared/entry-feed';
 import { teaserFields } from '@shared/page-teasers';
 import { pageParents } from '@shared/page-tree';
 import { notFoundCopy } from '@shared/not-found';
@@ -153,8 +154,21 @@ export function projectSummary(state: ProjectState, revision: number) {
     projectComponents: Object.values(state.components)
       .filter((d) => d.owner === 'project')
       .map((d) => ({ definitionId: d.id, name: d.name, kind: d.kind, description: d.description })),
+    // What a post section's collection, category and tag can name.
+    ...(hasCollections(state) ? { collections: collectionsSummary(state) } : {}),
     assets: Object.keys(state.assets.assets).length
   };
+}
+
+/** Each collection by ID, with its address, how many entries it publishes, and its categories' and tags' IDs and names. */
+function collectionsSummary(state: ProjectState) {
+  return Object.keys(state.collections)
+    .sort()
+    .map((id) => {
+      const c = state.collections[id];
+      const terms = (t: string) => Object.fromEntries(Object.entries(c.settings?.taxonomies?.[t]?.terms ?? {}).map(([k, v]) => [k, v?.label]));
+      return { id, name: c.settings?.name, route: c.settings?.route, published: Object.values(c.entries ?? {}).filter((e) => e?.draft === false).length, categories: terms('categories'), tags: terms('tags') };
+    });
 }
 
 /** For a selection edit: what the run needs to know about the site, without the header and footer trees. */
@@ -310,7 +324,9 @@ export function propSchemaSummary(schema: Record<string, PropSchema>) {
         computed:
           s.feed === 'articles'
             ? "Filled automatically from the site's published dated articles, newest first. Never send it: make or change articles with page.create/page.update (articleDate, byline, excerpt, newsHidden)."
-            : "Filled automatically from the page it is on: its title, and its articleDate, byline and excerpt. Never send it: change them with page.update."
+            : s.feed === 'entries'
+              ? "Filled automatically from a collection's published entries (blog posts), newest first by publication date; drafts never show, and on an entry's own page that entry is left out. Never send it: choose what shows with the placement's collection (collection ID, empty for the blog), category and tag (term ID or name, empty for all) and count properties."
+              : "Filled automatically from the page it is on: its title, and its articleDate, byline and excerpt. Never send it: change them with page.update."
       };
     else if (s.type === 'list')
       out[k] = {
@@ -492,7 +508,7 @@ const TABLE_SIGNATURE = `table{columns:string[], rows:string[][]} max ${TABLE_LI
 function propSignature(s: PropSchema): string {
   if (s.type === 'enum') return `enum(${s.options.map((o) => o.value).join('|')})`;
   if (s.type === 'table') return TABLE_SIGNATURE;
-  if (s.type === 'list' && s.feed) return `computed from the site's ${s.feed === 'articles' ? 'dated articles' : 'page'}: never send`;
+  if (s.type === 'list' && s.feed) return `computed from ${s.feed === 'articles' ? "the site's dated articles" : s.feed === 'entries' ? "a collection's published entries, chosen by collection, category, tag and count" : "the site's page"}: never send`;
   if (s.type === 'list') return `list<${Object.entries(s.fields).map(([f, fs]) => `${f}:${propSignature(fs)}`).join(', ')}>${s.max ? ` max ${s.max}` : ''}`;
   if (s.type === 'object') return `object{${Object.entries(s.fields).map(([f, fs]) => `${f}:${propSignature(fs)}`).join(', ')}}`;
   if (s.type === 'token') return `token(${s.tokenGroup})`;
@@ -696,7 +712,11 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
     boundTo: binding,
     ...(inst?.kind === 'instance' ? { currentProps: selectedProps(def, inst.props, state.pages) } : {}),
     ...(itemReach ? { styleReach: itemReach } : {}),
-    ...(feed
+    ...(feed === 'entries'
+      ? {
+          note: `This shows a collection entry's details (a blog post's title, date, author, excerpt, picture or categories), filled in from entry ${itemId ?? '(the post)'}: they change in that entry, not here. Which entries show is chosen by the placement's collection, category, tag and count properties.${opts.operations === false ? ' Style the part with style_selected_element.' : ' Style the part with node.setStyle using partId.'}`
+        }
+      : feed
       ? {
           note:
             opts.operations === false

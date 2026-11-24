@@ -36,8 +36,9 @@ import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, 
 import { newId } from '@shared/ids';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { checkPublicUrl } from '@shared/public-url';
-import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
-import { collectionRouteOwner } from '@shared/collections';
+import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { feedRowFields } from '@shared/entry-feed';
+import { archiveRouteOwner, collectionRouteOwner } from '@shared/collections';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
 import { isListBlock, toRichText } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -528,6 +529,7 @@ function instanceTarget(state: ProjectState, owner: OwnerRef, nodeId: string): {
 /** A computed list's items are pages of the site: they change with those pages, never one at a time here. */
 function refuseFeed(schema: PropSchema) {
   if (schema.type !== 'list' || !schema.feed) return;
+  if (schema.feed === 'entries') fail(`${schema.label} shows a collection’s published entries, newest first, and changes with them. Edit a post in Posts, or choose which posts show with the section’s Collection, Category, Tag and Number of entries.`);
   const what = schema.feed === 'articles' ? 'the site’s dated articles, newest first' : 'the page it is on';
   fail(`${schema.label} shows ${what} and changes with them. Edit the article’s title, date, byline or excerpt in its page settings, or hide it from news lists there.`);
 }
@@ -700,7 +702,13 @@ function routeReserved(state: ProjectState, route: string, forPageId?: string): 
  * pages' routes the same way.
  */
 function autoRoute(state: ProjectState, title: string, fallback: string, forPageId?: string, folder = '/'): string {
-  return suggestRoute(title, (r) => routeReserved(state, r, forPageId), fallback, folder).route;
+  // Inside a collection's archive folders every address is kept for its archive pages: no number would free one.
+  const archive = folder !== '/' ? archiveRouteOwner(state, `${folder}${slugify(title) || fallback}/`) : undefined;
+  if (archive) fail(`Pages inside ${folder} would use addresses kept for ${archive.label}. Move the page there to another address first.`);
+  const route = suggestRoute(title, (r) => routeReserved(state, r, forPageId), fallback, folder).route;
+  // The search is bounded: where every numbered address is taken, none is given out twice.
+  if (routeReserved(state, route, forPageId)) fail(`Every address for “${title.slice(0, 80)}” in ${folder} is taken. Give the page an address of its own.`);
+  return route;
 }
 
 /** Refuses an address a collection or one of its entries holds: a page can never take it over. */
@@ -2813,7 +2821,7 @@ function promotePageLinks(state: ProjectState, def: ComponentDefinition) {
       for (const [k, schema] of Object.entries(nested.properties)) {
         // A list worked out from the site's pages takes no value, so its fields' defaults would be written into the code.
         // Fields every row supplies itself (a story's own page link) never show their default.
-        if (schema.type === 'list' && schema.feed && Object.entries(schema.fields).some(([f, fs]) => !Object.hasOwn(ARTICLE_ROW_FIELDS, f) && showsPageLink(fs, fs.default, code)))
+        if (schema.type === 'list' && schema.feed && Object.entries(schema.fields).some(([f, fs]) => !Object.hasOwn(feedRowFields(schema.feed), f) && showsPageLink(fs, fs.default, code)))
           fail(`"${def.name}" shows “${schema.label}”, a list filled in from pages, with a page link in a field's default. A code copy would keep that page's address of today: remove the link first.`);
         if (!Object.hasOwn(n.props, k) && showsPageLink(schema, schema.default, code)) n.props[k] = promote(schema, k, schema.default);
       }

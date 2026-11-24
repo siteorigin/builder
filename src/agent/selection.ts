@@ -393,7 +393,19 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     const a = args as z.infer<(typeof SELECTION_ARGS)['edit_selected_list']>;
     const schema = Object.hasOwn(r.properties, a.prop) ? r.properties[a.prop] : undefined;
     if (r.node.kind !== 'instance' || schema?.type !== 'list') return fieldError([{ field: 'prop', message: `"${a.prop}" is not a list here` }], note);
-    if (schema.feed) return fieldError([{ field: 'prop', message: `"${a.prop}" fills itself from the site's article pages; change those pages with page.update (articleDate, byline, excerpt, newsHidden) instead` }], note);
+    if (schema.feed)
+      return fieldError(
+        [
+          {
+            field: 'prop',
+            message:
+              schema.feed === 'entries'
+                ? `"${a.prop}" fills itself from a collection's published entries; choose which with the collection, category, tag and count properties instead`
+                : `"${a.prop}" fills itself from the site's article pages; change those pages with page.update (articleDate, byline, excerpt, newsHidden) instead`
+          }
+        ],
+        note
+      );
     // A placement without its own list shows (and edits) the definition's items.
     const own = r.node.props[a.prop];
     const items = (Array.isArray(own) ? own : own === undefined && Array.isArray(schema.default) ? schema.default : []) as Array<{ id: string }>;
