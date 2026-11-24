@@ -2,14 +2,19 @@
  * UI observations for the test driver (issue #492): the half that reads the app. One observation reads both documents'
  * state (the editor's, and the preview's when there is one), takes Playwright's accessibility snapshot of the editor's
  * whole page (it enters the preview's iframe), reads both documents again, and redacts the raw tree before shaping it
- * (snapshot.ts). Refs are minted only from an observation whose documents did not change while it was taken, and,
- * for the preview, only once its page is hydrated and the canvas calls it ready.
+ * (snapshot.ts). Refs are minted only from an observation whose documents and project did not change while it was
+ * taken, and, for the preview, only once its page is hydrated, the canvas calls it ready, and the page has taken the
+ * editor's current mode.
  *
  * Every lookup goes through a full snapshot because Playwright resolves its `aria-ref` selector against each frame's
  * last snapshot: observing everything each time keeps every element's ref resolvable, and Playwright keeps an
  * element's ref while its role and name stay the same, so the session's refs stay the same too.
+ *
+ * Credentials: every reply and every error an operation produces is scrubbed of every credential its observation
+ * knows (scrubDeep), on top of the raw tree's own redaction, and screenshots mask credential fields in every frame and
+ * are withheld when a credential shows anywhere else on screen.
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ElementHandle, Frame, Locator, Page } from 'playwright';
 import { DriverError } from './protocol.ts';
@@ -26,15 +31,17 @@ import {
   looksLikeRef,
   modeFrom,
   redact,
+  regionMatches,
   regionNodes,
   render,
   rootsLeft,
+  scrubDeep,
   selectionToolbar,
   shape,
   valueRefs,
   walk
 } from './snapshot.ts';
-import type { Binding, ElementFacts, RawNode, Scope, Semantic, Shaped, StaleReason, UiNode } from './snapshot.ts';
+import type { Binding, Continuation, ElementFacts, RawNode, Scope, Semantic, Shaped, StaleReason, UiNode } from './snapshot.ts';
 
 /**
  * The functions handed to `evaluate` run in the app's documents. This project is typed for Node, without the DOM's
@@ -55,8 +62,8 @@ export interface ObserveEnv {
 
 /** The canvas's iframe: the live preview. */
 const PREVIEW_IFRAME = '.frame-box iframe';
-/** Fields whose values are credentials, in any document. */
-const SECRET_INPUTS = 'input[type="password" i], input[autocomplete*="password" i]';
+/** Fields whose values are credentials, in any document. Playwright's CSS locators pierce open shadow roots too. */
+export const SECRET_INPUTS = 'input[type="password" i], input[autocomplete*="password" i]';
 
 interface EditorDoc {
   token: string;
@@ -67,6 +74,10 @@ interface EditorDoc {
   frame: 'ready' | 'loading' | null;
   /** The canvas's selection attribute: null for none, '' for one not on this page, else its element ids as JSON. */
   selection: string | null;
+  /** The selection itself, as the editor's store holds it (JSON), or null for none. */
+  selected: string | null;
+  /** Whether the canvas draws an outline around the selection now. */
+  outlined: boolean;
   secrets: string[];
   viewport: { width: number; height: number };
 }
@@ -75,8 +86,8 @@ interface PreviewDoc {
   frame: Frame;
   token: string;
   path: string;
-  /** The bridge has loaded in this document (it loads once the page is hydrated). */
-  bridge: boolean;
+  /** The mode this document's bridge last took from the editor (it loads once the page is hydrated), or null. */
+  bridge: string | null;
   editing: boolean;
   secrets: string[];
   viewport: { width: number; height: number };
@@ -94,34 +105,53 @@ interface Docs {
 
 export interface Observation {
   docs: Docs;
+  /** The documents as first read, before the snapshot. */
+  first: Docs;
   editor: Shaped[];
   /** The preview's tree, or null when there is none. */
   preview: Shaped[] | null;
   previewState: PreviewState;
   /** The preview iframe's node in the editor tree. */
   previewIframe: Shaped | null;
+  /** Every credential string the observation knows: every reply built from it is scrubbed of them. */
+  secrets: string[];
+  /** A credential showed somewhere other than its own field. */
+  echoes: number;
+}
+
+/** Runs in a document: the values of every credential field in it, open shadow roots included. */
+function secretsIn(secret: string): string[] {
+  const w = globalThis as Dom;
+  const out: string[] = [];
+  const visit = (root: Dom) => {
+    for (const el of root.querySelectorAll('*')) {
+      if (el.matches(secret) && el.value) out.push(String(el.value));
+      if (el.shadowRoot) visit(el.shadowRoot);
+    }
+  };
+  visit(w.document);
+  return out;
 }
 
 async function readEditor(page: Page): Promise<EditorDoc> {
-  return page.evaluate(
-    (secret): EditorDoc => {
-      const w = globalThis as Dom;
-      const canvas = w.document.querySelector('main.canvas');
-      const frame = canvas?.getAttribute('data-frame');
-      return {
-        // What tells this document apart from every other the window has shown (the same in every read below).
-        token: `${w.performance.timeOrigin}|${w.location.pathname}`,
-        screen: w.document.querySelector('.editor') ? 'editor' : w.document.querySelector('.welcome') ? 'welcome' : 'other',
-        title: w.document.title,
-        opening: canvas?.getAttribute('data-opening') ?? '',
-        frame: frame === 'ready' || frame === 'loading' ? frame : null,
-        selection: canvas ? canvas.getAttribute('data-selection') : null,
-        secrets: [...w.document.querySelectorAll(secret)].map((i: Dom) => String(i.value)).filter((v: string) => !!v),
-        viewport: { width: w.innerWidth, height: w.innerHeight }
-      };
-    },
-    SECRET_INPUTS
-  );
+  const read = await page.evaluate((): Omit<EditorDoc, 'secrets'> => {
+    const w = globalThis as Dom;
+    const canvas = w.document.querySelector('main.canvas');
+    const frame = canvas?.getAttribute('data-frame');
+    return {
+      // What tells this document apart from every other the window has shown (the same in every read below).
+      token: `${w.performance.timeOrigin}|${w.location.pathname}${w.location.search}`,
+      screen: w.document.querySelector('.editor') ? 'editor' : w.document.querySelector('.welcome') ? 'welcome' : 'other',
+      title: w.document.title,
+      opening: canvas?.getAttribute('data-opening') ?? '',
+      frame: frame === 'ready' || frame === 'loading' ? frame : null,
+      selection: canvas ? canvas.getAttribute('data-selection') : null,
+      selected: canvas ? canvas.getAttribute('data-selected-ref') : null,
+      outlined: !!canvas?.querySelector('.ov-selected'),
+      viewport: { width: w.innerWidth, height: w.innerHeight }
+    };
+  });
+  return { ...read, secrets: await page.evaluate(secretsIn, SECRET_INPUTS) };
 }
 
 async function readPreview(page: Page): Promise<{ iframe: boolean; doc: PreviewDoc | null }> {
@@ -130,23 +160,20 @@ async function readPreview(page: Page): Promise<{ iframe: boolean; doc: PreviewD
   try {
     const frame = await el.contentFrame();
     if (!frame) return { iframe: true, doc: null };
-    const read = await frame.evaluate(
-      (secret) => {
-        const w = globalThis as Dom;
-        const html = w.document.documentElement;
-        return {
-          // A reload, or a page the site went to without one, is another document.
-          token: `${w.performance.timeOrigin}|${w.location.pathname}` as string,
-          path: w.location.pathname as string,
-          bridge: html.hasAttribute('data-so-bridge') as boolean,
-          editing: html.hasAttribute('data-so-editing') as boolean,
-          secrets: [...w.document.querySelectorAll(secret)].map((i: Dom) => String(i.value)).filter((v: string) => !!v),
-          viewport: { width: w.innerWidth as number, height: w.innerHeight as number }
-        };
-      },
-      SECRET_INPUTS
-    );
-    return { iframe: true, doc: { frame, ...read } };
+    const read = await frame.evaluate(() => {
+      const w = globalThis as Dom;
+      const html = w.document.documentElement;
+      return {
+        // A reload, or a page the site went to without one, is another document.
+        token: `${w.performance.timeOrigin}|${w.location.pathname}${w.location.search}` as string,
+        path: w.location.pathname as string,
+        bridge: html.getAttribute('data-so-bridge') as string | null,
+        editing: html.hasAttribute('data-so-editing') as boolean,
+        viewport: { width: w.innerWidth as number, height: w.innerHeight as number }
+      };
+    });
+    const secrets = await frame.evaluate(secretsIn, SECRET_INPUTS);
+    return { iframe: true, doc: { frame, ...read, secrets } };
   } catch {
     // Between documents: the frame has no page to read yet.
     return { iframe: true, doc: null };
@@ -162,14 +189,35 @@ async function readDocs(page: Page): Promise<Docs> {
 
 /** Runs in the element's own document (Playwright sends its source, so it uses nothing from outside). */
 function factOf(el: Dom): ElementFacts {
+  const w = globalThis as Dom;
   const auto = el.getAttribute('autocomplete') ?? '';
   const secret = el.tagName === 'INPUT' && (el.type === 'password' || /password/i.test(auto));
   const node = el.getAttribute('data-so-node');
   const items = el.getAttribute('data-so-items');
+  // Scrolled out of a panel: entirely outside an ancestor that clips its overflow.
+  let clipped = false;
+  const r = el.getBoundingClientRect();
+  if (r.width || r.height) {
+    for (let p = el.parentElement; p && p !== w.document.documentElement && !clipped; p = p.parentElement) {
+      const o = w.getComputedStyle(p);
+      if (o.overflowX === 'visible' && o.overflowY === 'visible') continue;
+      const c = p.getBoundingClientRect();
+      clipped = r.right <= c.left || r.bottom <= c.top || r.left >= c.right || r.top >= c.bottom;
+    }
+  }
+  const num = (a: string) => {
+    const v = Number.parseInt(el.getAttribute(a) ?? '', 10);
+    return Number.isSafeInteger(v) ? v : undefined;
+  };
+  const setsize = num('aria-setsize');
+  const posinset = num('aria-posinset');
   return {
     secret,
     blocked: !!el.closest('[inert]'),
-    semantic: node !== null ? { ctx: el.getAttribute('data-so-ctx') ?? '', node, ...(items ? { items } : {}) } : null
+    clipped,
+    semantic: node !== null ? { ctx: el.getAttribute('data-so-ctx') ?? '', node, ...(items ? { items } : {}) } : null,
+    ...(setsize !== undefined ? { setsize } : {}),
+    ...(posinset !== undefined ? { posinset } : {})
   };
 }
 
@@ -199,6 +247,10 @@ function aborted(signal: AbortSignal) {
   if (signal.aborted) throw new DriverError('TIMEOUT', 'The observation ran out of time.');
 }
 
+function changing(what: string): DriverError {
+  return new DriverError('OP_FAILED', `${what} while it was observed; observe again.`, { retryable: true, details: { hint: REFRESH_HINT } });
+}
+
 /**
  * Observe the window. `before` runs after the documents are first read and before the snapshot: lookups that take
  * snapshots of their own (which replace a frame's last snapshot) go there, so the full snapshot is always the last.
@@ -211,27 +263,32 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   const raw = (await page.locator('body').ariaSnapshotJSON({ mode: 'ai', boxes: true, signal })) as unknown as (RawNode | string)[];
   aborted(signal);
   const docs = await readDocs(page);
-  if (docs.editor.token !== first.editor.token)
-    throw new DriverError('OP_FAILED', 'The editor reloaded while it was observed; observe again.', { retryable: true, details: { hint: REFRESH_HINT } });
+  if (docs.editor.token !== first.editor.token) throw changing('The editor reloaded');
+  // The editor's document stays the same when another project opens in it: refs would be bound to the wrong one.
+  if (docs.editor.opening !== first.editor.opening) throw changing('Another project opened');
   // Which iframe is the preview: the one the canvas shows.
   const iframes = [...walkRaw(raw)].filter((n) => n.role === 'iframe' && n.ref);
   const isPreview = await Promise.all(iframes.map((n) => onRef(page, n.ref!, (el, sel: string) => !!el.matches(sel), PREVIEW_IFRAME)));
   const previewRaw = iframes.find((_, i) => isPreview[i]) ?? null;
-  // Credentials leave nothing behind: values of secret fields, and of fields that could not be classified, go, and
-  // so does every echo of a secret anywhere.
+  // Credentials leave nothing behind: the values of secret fields, and of fields that could not be classified, go,
+  // and so does every echo of them anywhere.
   const valued = valueRefs(raw);
   const classified = await factsByRef(page, valued);
   const secretRefs = new Set(valued.filter((r) => classified.get(r)?.secret));
   const unknownRefs = new Set(valued.filter((r) => !classified.get(r)));
-  redact(raw, { secretRefs, unknownRefs, secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? [])] });
+  const redacted = redact(raw, { secretRefs, unknownRefs, secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? [])] });
   const editor = shape(raw, 'editor');
   // An iframe Playwright could not enter has no children: its page is not there to observe yet.
   const preview = previewRaw?.children?.length ? shape(previewRaw.children, 'preview') : null;
   const previewIframe = previewRaw?.ref ? findByPwRef(editor, previewRaw.ref) : null;
+  // Ready: the page is hydrated and has taken the editor's current mode, the canvas calls it ready, and it stayed the
+  // same document throughout.
+  const mode = modeFrom(editor);
   let previewState: PreviewState = 'ready';
   if (!docs.iframe) previewState = 'absent';
-  else if (!docs.preview || !first.preview || !docs.preview.bridge || docs.editor.frame !== 'ready' || first.preview.token !== docs.preview.token || !preview) previewState = 'loading';
-  return { docs, editor, preview, previewState, previewIframe };
+  else if (!docs.preview || !first.preview || !docs.preview.bridge || (mode && docs.preview.bridge !== mode) || docs.editor.frame !== 'ready' || first.preview.token !== docs.preview.token || !preview)
+    previewState = 'loading';
+  return { docs, first, editor, preview, previewState, previewIframe, secrets: redacted.secrets, echoes: redacted.echoes };
 }
 
 function* walkRaw(nodes: (RawNode | string)[] | undefined): Generator<RawNode> {
@@ -241,6 +298,27 @@ function* walkRaw(nodes: (RawNode | string)[] | undefined): Generator<RawNode> {
     // An iframe's children are another document; only the canvas's own iframes are looked at, at the top level.
     if (n.role !== 'iframe') yield* walkRaw(n.children);
   }
+}
+
+/**
+ * Run an operation so nothing it returns or throws carries a credential its observations saw. `seen` collects them as
+ * the operation observes; an error that is not the driver's own is reported by its first line only.
+ */
+async function sealed<T>(run: (seen: string[]) => Promise<T>, { result = true }: { result?: boolean } = {}): Promise<T> {
+  const seen: string[] = [];
+  try {
+    const out = await run(seen);
+    return result ? scrubDeep(out, seen) : out;
+  } catch (e) {
+    if (e instanceof DriverError) throw new DriverError(e.code, scrubDeep(e.message, seen), { retryable: e.retryable, ...(e.details ? { details: scrubDeep(e.details, seen) } : {}) });
+    throw new DriverError('OP_FAILED', scrubDeep(e instanceof Error ? e.message.split('\n')[0] : String(e), seen));
+  }
+}
+
+async function observeInto(env: ObserveEnv, seen: string[], before?: (docs: Docs) => Promise<void>): Promise<Observation> {
+  const obs = await observe(env, before);
+  seen.push(...obs.secrets);
+  return obs;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +333,8 @@ class Minter {
   readonly facts = new Map<Shaped, ElementFacts>();
   private readonly env: ObserveEnv;
   private readonly obs: Observation;
+  /** A modal dialog over the editor covers its preview too: the frame's own elements cannot tell. */
+  private previewBlocked: boolean | null = null;
   constructor(env: ObserveEnv, obs: Observation) {
     this.env = env;
     this.obs = obs;
@@ -262,20 +342,30 @@ class Minter {
 
   /** Read the facts of every node that may get a ref, or be described. */
   async read(nodes: Iterable<Shaped>) {
+    if (this.previewBlocked === null) {
+      const iframe = this.obs.previewIframe?.pwRef;
+      this.previewBlocked = iframe ? !!(await onRef(this.env.page, iframe, factOf, undefined))?.blocked : false;
+    }
     const want = [...new Set(nodes)].filter((n) => n.pwRef && !this.facts.has(n));
     const facts = await factsByRef(this.env.page, want.map((n) => n.pwRef!));
     for (const n of want) {
       const f = facts.get(n.pwRef!);
-      if (f) this.facts.set(n, f);
+      if (!f) continue;
+      if (n.scope === 'preview' && this.previewBlocked) f.blocked = true;
+      this.facts.set(n, f);
     }
   }
 
-  /** The node's ref; null for one that may not have one (a preview that is not ready, or no Playwright ref). */
+  /**
+   * The node's ref; null for one that may not have one: no Playwright ref, a preview that is not ready, or an element
+   * whose facts could not be read (its page ids would be unknown, and a ref must say what it stood for).
+   */
   ref(n: Shaped): string | null {
     if (!n.pwRef || this.env.signal.aborted) return null;
     const { docs, previewState } = this.obs;
     if (n.scope === 'preview' && (previewState !== 'ready' || !docs.preview)) return null;
-    const semantic = this.facts.get(n)?.semantic;
+    const facts = this.facts.get(n);
+    if (!facts) return null;
     return this.env.registry.mint({
       generation: this.env.generation,
       scope: n.scope,
@@ -284,7 +374,7 @@ class Minter {
       pwRef: n.pwRef,
       role: n.role,
       name: n.name ?? '',
-      semantic: semantic ? JSON.stringify(semantic) : null
+      semantic: facts.semantic ? JSON.stringify(facts.semantic) : null
     });
   }
 
@@ -309,17 +399,19 @@ async function checkRef(env: ObserveEnv, ref: string, obs: Observation, minter: 
       throw stale('loading', ref, `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}; "${ref}" cannot be checked until it is ready.`);
     if (obs.docs.preview.token !== b.doc) throw stale('document', ref, `"${ref}" was seen on a page the preview has since reloaded or left.`);
   } else if (obs.docs.editor.token !== b.doc) throw stale('document', ref, `"${ref}" was seen before the editor reloaded.`);
+  // Names are left out of these messages: a page can come to show a credential where a name was.
   const node = findByPwRef(b.scope === 'editor' ? obs.editor : obs.preview!, b.pwRef);
-  if (!node) throw stale('gone', ref, `"${ref}" (${b.role}${b.name ? ` "${b.name}"` : ''}) is no longer there, or its role or name changed.`);
-  if (node.role !== b.role || (node.name ?? '') !== b.name) throw stale('changed', ref, `"${ref}" is now ${node.role}${node.name ? ` "${node.name}"` : ''}, not ${b.role}${b.name ? ` "${b.name}"` : ''}.`);
+  if (!node) throw stale('gone', ref, `"${ref}" (a ${b.role}) is no longer there, or its role or name changed.`);
+  if (node.role !== b.role || (node.name ?? '') !== b.name) throw stale('changed', ref, `"${ref}" (a ${b.role}) has changed its role or name.`);
   await minter.read([node]);
-  const semantic = minter.facts.get(node)?.semantic;
-  if ((semantic ? JSON.stringify(semantic) : null) !== b.semantic) throw stale('changed', ref, `"${ref}" now shows another part of the page than it did.`);
+  const facts = minter.facts.get(node);
+  if (!facts) throw stale('gone', ref, `"${ref}" (a ${b.role}) could not be read on the page.`);
+  if ((facts.semantic ? JSON.stringify(facts.semantic) : null) !== b.semantic) throw stale('changed', ref, `"${ref}" now shows another part of the page than it did.`);
   return { binding: b, node };
 }
 
 function argRef(v: unknown, what: string): string {
-  if (!looksLikeRef(v)) throw new DriverError('BAD_REQUEST', `"${what}" is a ref from an observation, such as "a1b2:12".`);
+  if (!looksLikeRef(v)) throw new DriverError('BAD_REQUEST', `"${what}" is a ref from an observation, such as "a1b2c3:12".`);
   return v;
 }
 
@@ -344,12 +436,14 @@ function known(args: Record<string, unknown>, op: string, keys: string[]) {
 // ---------------------------------------------------------------------------
 
 export function parseSnapshotArgs(a: Record<string, unknown> = {}): SnapshotArgs {
-  known(a, 'ui.snapshot', ['scope', 'within', 'offset', 'maxNodes', 'depth', 'screenshot']);
+  known(a, 'ui.snapshot', ['scope', 'within', 'after', 'offset', 'maxNodes', 'depth', 'screenshot']);
   const out: SnapshotArgs = { scope: argScope(a.scope) };
   if (a.within !== undefined) out.within = argRef(a.within, 'within');
   if (a.scope !== undefined && a.within !== undefined) throw new DriverError('BAD_REQUEST', '"within" observes inside its ref\'s own scope: leave "scope" out.');
+  if (a.after !== undefined) out.after = argRef(a.after, 'after');
   out.offset = argInt(a.offset, 'offset', 0, 1_000_000);
-  if (out.offset !== undefined && !out.within) throw new DriverError('BAD_REQUEST', '"offset" continues inside a ref: give "within" too.');
+  // A continuation is inside a ref, or at the top of one scope.
+  if ((out.offset !== undefined || out.after) && !out.within && out.scope === 'all') throw new DriverError('BAD_REQUEST', '"after" and "offset" continue inside a ref ("within") or one scope ("scope": "editor" or "preview").');
   out.maxNodes = argInt(a.maxNodes, 'maxNodes', 1, LIMITS.maxNodes);
   out.depth = argInt(a.depth, 'depth', 0, LIMITS.maxDepth);
   if (a.screenshot !== undefined && typeof a.screenshot !== 'boolean') throw new DriverError('BAD_REQUEST', '"screenshot" is true or false.');
@@ -358,13 +452,17 @@ export function parseSnapshotArgs(a: Record<string, unknown> = {}): SnapshotArgs
 }
 
 export interface SelectionContext {
-  /** Whether the selection shows on the page in the canvas. */
+  /** Whether the selection has a place on the page the canvas shows. */
   shown: boolean;
-  /** The page's element ids for it. */
+  /** Whether the canvas draws its outline now (it does not while Site styles is open, or in Preview). */
+  outlined: boolean;
+  /** The selection as the editor holds it: owner, components entered, node, part and repeated item. */
+  element?: unknown;
+  /** The page's element ids for where it shows. */
   semantic?: Semantic;
   /** The canvas toolbar that acts on it ("Split hero actions"), when it is drawn. */
   toolbar?: string;
-  /** The preview's elements that show it (a repeated part shows several). */
+  /** The preview's elements that show it (a repeated part shows several; one with no role of its own, none). */
   refs?: string[];
 }
 
@@ -386,8 +484,8 @@ export interface ScopeTree {
   /** Nodes in the whole scope (or under `within`), and how many of them are shown. */
   total: number;
   shown: number;
-  /** Top-level nodes left out: continue with a larger maxNodes, or observe a region `within` its ref. */
-  more?: { children: number; nodes: number };
+  /** Top-level nodes left out, and how to continue with them. */
+  more?: { children: number; nodes: number; continue: Continuation };
 }
 
 export interface SnapshotResult {
@@ -398,7 +496,7 @@ export interface SnapshotResult {
   preview?: ScopeTree & { state: PreviewState; refs: boolean };
   /** With `within`: the node observed inside, and its scope. */
   within?: { ref: string; scope: Scope; node: UiNode };
-  screenshots?: { editor: Shot; preview: Shot | null };
+  screenshots?: { editor: Shot | null; preview: Shot | null; withheld?: string };
 }
 
 export interface Shot {
@@ -427,17 +525,27 @@ function parseSelection(attr: string | null): Semantic | null | undefined {
   }
 }
 
+function parseJson(attr: string | null): unknown {
+  if (!attr) return undefined;
+  try {
+    return JSON.parse(attr);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Playwright's ref for each element a locator matches, read by a snapshot of that element alone and checked to be the
  * element itself (a snapshot of an element the accessibility tree leaves out starts at its children). Each one
- * replaces its frame's last snapshot, so `aria-ref` lookups wait for the next full one.
+ * replaces its frame's last snapshot, so it runs only before an observation's full one.
  */
-async function refsOf(page: Page, locator: Locator, limit: number): Promise<string[]> {
+async function refsOf(page: Page, locator: Locator, limit: number, signal: AbortSignal): Promise<string[]> {
   const n = Math.min(await locator.count().catch(() => 0), limit);
   const out: string[] = [];
   for (let i = 0; i < n; i++) {
+    aborted(signal);
     const item = locator.nth(i);
-    const json = (await item.ariaSnapshotJSON({ mode: 'ai', depth: 1, timeout: 2000 }).catch(() => null)) as RawNode[] | null;
+    const json = (await item.ariaSnapshotJSON({ mode: 'ai', depth: 1, timeout: 2000, signal }).catch(() => null)) as RawNode[] | null;
     const ref = json?.[0] && typeof json[0] === 'object' ? json[0].ref : undefined;
     if (!ref) continue;
     const [a, b] = await Promise.all([item.elementHandle({ timeout: 1000 }).catch(() => null), page.locator(`aria-ref=${ref}`).elementHandle({ timeout: 1000 }).catch(() => null)]);
@@ -448,28 +556,53 @@ async function refsOf(page: Page, locator: Locator, limit: number): Promise<stri
   return out;
 }
 
-export async function uiSnapshot(env: ObserveEnv, args: SnapshotArgs, id: number): Promise<SnapshotResult> {
+/** Where a continuation resumes among `siblings`: after the node `after` names, else at `offset`. */
+async function resumeAt(env: ObserveEnv, obs: Observation, minter: Minter, siblings: Shaped[], args: SnapshotArgs): Promise<number> {
+  if (!args.after) return args.offset ?? 0;
+  const { node } = await checkRef(env, args.after, obs, minter);
+  const at = siblings.indexOf(node);
+  if (at < 0) throw stale('gone', args.after, `"${args.after}" is no longer where the continuation left off.`);
+  return at + 1;
+}
+
+export function uiSnapshot(env: ObserveEnv, args: SnapshotArgs, id: number): Promise<SnapshotResult> {
+  return sealed((seen) => snapshotOf(env, args, id, seen));
+}
+
+async function snapshotOf(env: ObserveEnv, args: SnapshotArgs, id: number, seen: string[]): Promise<SnapshotResult> {
   let selectionRefs: string[] = [];
-  let selected: Semantic | null | undefined;
-  const obs = await observe(env, async (docs) => {
-    selected = parseSelection(docs.editor.selection);
-    if (selected && docs.preview?.bridge) selectionRefs = await refsOf(env.page, docs.preview.frame.locator(semanticSelector(selected)), 5);
+  let looked: string | null = null;
+  const obs = await observeInto(env, seen, async (docs) => {
+    const selected = parseSelection(docs.editor.selection);
+    looked = docs.editor.selection;
+    if (selected && docs.preview?.bridge) selectionRefs = await refsOf(env.page, docs.preview.frame.locator(semanticSelector(selected)), 5, env.signal);
   });
+  // A selection that changed while it was looked up is reported as it is now, without elements to stand for it.
+  if (obs.docs.editor.selection !== looked) selectionRefs = [];
+  const selected = parseSelection(obs.docs.editor.selection);
   const minter = new Minter(env, obs);
   const max = args.maxNodes ?? LIMITS.defaultNodes;
   const result: SnapshotResult = { id, context: null as unknown as UiContext };
 
   // What to show.
-  const trees: { scope: Scope; roots: Shaped[]; budget: number }[] = [];
+  // Each tree's roots, and where they start among their siblings (for a continuation of a continuation).
+  const trees: { scope: Scope; roots: Shaped[]; budget: number; from: number }[] = [];
   if (args.within) {
     const { binding, node } = await checkRef(env, args.within, obs, minter);
-    trees.push({ scope: binding.scope, roots: node.children.slice(args.offset ?? 0), budget: max });
+    const from = await resumeAt(env, obs, minter, node.children, args);
+    trees.push({ scope: binding.scope, roots: node.children.slice(from), budget: max, from });
     result.within = { ref: args.within, scope: binding.scope, node: minter.describe(node) };
+  } else if (args.after || args.offset !== undefined) {
+    const scope = args.scope as Scope;
+    const roots = scope === 'editor' ? obs.editor : obs.preview;
+    if (!roots) throw new DriverError('TARGET_NOT_FOUND', 'The preview has no page to continue in.', { details: { preview: obs.previewState, hint: REFRESH_HINT } });
+    const from = await resumeAt(env, obs, minter, roots, args);
+    trees.push({ scope, roots: roots.slice(from), budget: max, from });
   } else {
     const wantEditor = args.scope !== 'preview';
     const wantPreview = args.scope !== 'editor' && !!obs.preview;
-    if (wantEditor) trees.push({ scope: 'editor', roots: obs.editor, budget: wantPreview ? Math.ceil(max / 2) : max });
-    if (wantPreview) trees.push({ scope: 'preview', roots: obs.preview!, budget: max });
+    if (wantEditor) trees.push({ scope: 'editor', roots: obs.editor, budget: wantPreview ? Math.ceil(max / 2) : max, from: 0 });
+    if (wantPreview) trees.push({ scope: 'preview', roots: obs.preview!, budget: max, from: 0 });
   }
   const chosen = new Map<Scope, Set<Shaped>>();
   let used = 0;
@@ -477,6 +610,13 @@ export async function uiSnapshot(env: ObserveEnv, args: SnapshotArgs, id: number
     const shown = choose(t.roots, { maxNodes: Math.max(0, Math.min(t.budget, max - used)), depth: args.depth });
     used += shown.size;
     chosen.set(t.scope, shown);
+  }
+  // What one scope left of its share goes to the other.
+  const first = trees[0];
+  if (trees.length > 1 && used < max && chosen.get(first.scope)!.size >= first.budget) {
+    const more = choose(first.roots, { maxNodes: first.budget + (max - used), depth: args.depth });
+    used += more.size - chosen.get(first.scope)!.size;
+    chosen.set(first.scope, more);
   }
 
   // The context, from the whole tree.
@@ -494,6 +634,7 @@ export async function uiSnapshot(env: ObserveEnv, args: SnapshotArgs, id: number
     return { scope: n.scope, role: n.role, ...(n.name ? { name: n.name } : {}), ...(ref ? { ref } : {}) };
   };
   const preview = obs.docs.preview;
+  const element = parseJson(obs.docs.editor.selected);
   result.context = {
     screen: obs.docs.editor.screen,
     title: obs.docs.editor.title,
@@ -504,41 +645,45 @@ export async function uiSnapshot(env: ObserveEnv, args: SnapshotArgs, id: number
     selection:
       selected === undefined
         ? null
-        : selected === null
-          ? { shown: false }
-          : {
-              shown: true,
-              semantic: selected,
-              ...(toolbar?.name ? { toolbar: toolbar.name } : {}),
-              refs: selectedNodes.map((n) => minter.ref(n)).filter((r): r is string => !!r)
-            }
+        : {
+            shown: !!selected,
+            outlined: obs.docs.editor.outlined,
+            ...(element !== undefined ? { element } : {}),
+            ...(selected ? { semantic: selected } : {}),
+            ...(toolbar?.name ? { toolbar: toolbar.name } : {}),
+            ...(selected ? { refs: selectedNodes.map((n) => minter.ref(n)).filter((r): r is string => !!r) } : {})
+          }
   };
 
   for (const t of trees) {
     const shown = chosen.get(t.scope)!;
-    const tree: ScopeTree = {
-      nodes: render(t.roots, { shown, refFor: (n) => minter.ref(n), facts: minter.facts, viewports: minter.viewports() }),
-      total: t.roots.reduce((s, n) => s + 1 + n.size, 0),
-      shown: shown.size
-    };
+    const nodes = render(t.roots, { shown, refFor: (n) => minter.ref(n), facts: minter.facts, viewports: minter.viewports() });
+    const tree: ScopeTree = { nodes, total: t.roots.reduce((s, n) => s + 1 + n.size, 0), shown: shown.size };
     const left = rootsLeft(t.roots, shown);
-    if (left) tree.more = left;
+    if (left) {
+      const after = nodes[nodes.length - 1]?.ref;
+      const base = args.within ? { within: args.within } : { scope: t.scope };
+      tree.more = { ...left, continue: { ...base, ...(after ? { after } : {}), offset: t.from + t.roots.length - left.children } };
+    }
     if (t.scope === 'editor') result.editor = tree;
     else result.preview = { ...tree, state: obs.previewState, refs: obs.previewState === 'ready' };
   }
 
-  if (args.screenshot) result.screenshots = await screenshots(env, id);
+  if (args.screenshot) result.screenshots = await screenshots(env, obs, id);
   aborted(env.signal);
   return result;
 }
 
-async function screenshots(env: ObserveEnv, id: number): Promise<{ editor: Shot; preview: Shot | null }> {
+async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promise<{ editor: Shot | null; preview: Shot | null; withheld?: string }> {
   const { page, signal } = env;
   if (!env.artifacts) throw new DriverError('OP_FAILED', 'This session has no artifacts folder to save screenshots in.');
+  // Masks cover credential fields; a credential showing anywhere else cannot be masked, so nothing is captured.
+  if (obs.echoes) return { editor: null, preview: null, withheld: 'A credential shows on screen outside its own field.' };
   const dir = join(env.artifacts, 'snapshots');
-  const mask = [page.locator(SECRET_INPUTS), page.frameLocator(PREVIEW_IFRAME).locator(SECRET_INPUTS)];
+  const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
   const vp = await page.evaluate(() => ({ width: (globalThis as Dom).innerWidth as number, height: (globalThis as Dom).innerHeight as number }));
   const editorPng = await page.screenshot({ mask, timeout: 10_000 });
+  aborted(signal);
   // The preview as it shows in the editor (zoomed, with the canvas's outlines over it), clipped to what is in view.
   const box = await page
     .locator(PREVIEW_IFRAME)
@@ -556,15 +701,23 @@ async function screenshots(env: ObserveEnv, id: number): Promise<{ editor: Shot;
   // A capture that outlived its request leaves nothing behind.
   aborted(signal);
   await mkdir(dir, { recursive: true });
-  const editorPath = join(dir, `${String(id).padStart(4, '0')}-editor.png`);
-  await writeFile(editorPath, editorPng);
-  let preview: Shot | null = null;
-  if (previewPng && clip) {
-    const path = join(dir, `${String(id).padStart(4, '0')}-preview.png`);
-    await writeFile(path, previewPng);
-    preview = { path, width: clip.width, height: clip.height, clip };
+  const stem = join(dir, String(id).padStart(4, '0'));
+  const written: string[] = [];
+  try {
+    aborted(signal);
+    await writeFile(`${stem}-editor.png`, editorPng);
+    written.push(`${stem}-editor.png`);
+    if (previewPng) {
+      aborted(signal);
+      await writeFile(`${stem}-preview.png`, previewPng);
+      written.push(`${stem}-preview.png`);
+    }
+    aborted(signal);
+  } catch (e) {
+    await Promise.all(written.map((f) => rm(f, { force: true }).catch(() => undefined)));
+    throw e;
   }
-  return { editor: { path: editorPath, width: vp.width, height: vp.height }, preview };
+  return { editor: { path: `${stem}-editor.png`, width: vp.width, height: vp.height }, preview: previewPng && clip ? { path: `${stem}-preview.png`, width: clip.width, height: clip.height, clip } : null };
 }
 
 // ---------------------------------------------------------------------------
@@ -604,13 +757,17 @@ export interface Located {
   node: UiNode;
 }
 
-/** The most elements a search follows up; past this it answers AMBIGUOUS_TARGET. */
-const MATCH_LIMIT = 50;
-/** The most observed nodes of one role a search pairs its matches with. */
-const CANDIDATE_LIMIT = 2000;
+/** The most elements one search follows up in a scope; past this it answers AMBIGUOUS_TARGET. */
+const MATCH_LIMIT = 300;
+/** The most observed nodes of one role a search pairs its matches with; past this the search is incomplete. */
+const CANDIDATE_LIMIT = 3000;
 
-export async function uiLocate(env: ObserveEnv, args: LocateArgs): Promise<Located> {
-  const obs = await observe(env);
+export function uiLocate(env: ObserveEnv, args: LocateArgs): Promise<Located> {
+  return sealed((seen) => locateIn(env, args, seen));
+}
+
+async function locateIn(env: ObserveEnv, args: LocateArgs, seen: string[]): Promise<Located> {
+  const obs = await observeInto(env, seen);
   const minter = new Minter(env, obs);
   if (args.ref) {
     const { node } = await checkRef(env, args.ref, obs, minter);
@@ -618,31 +775,33 @@ export async function uiLocate(env: ObserveEnv, args: LocateArgs): Promise<Locat
   }
   // Found through Playwright's own role matching (what acting by role and name uses), and placed in the observation
   // by element identity: an accessibility snapshot leaves out a name a child repeats, so its names are not matched.
-  const scopes: Scope[] = args.scope === 'editor' ? ['editor'] : args.scope === 'preview' ? ['preview'] : ['editor', 'preview'];
-  const roots: { scope: Scope; base: Page | Frame | Locator }[] = [];
+  // The whole scope is searched and the matches are kept by where the observation places them, so a region or a ref
+  // contains what the outline shows inside it (an aria-owns child included), not what the DOM nests in it.
+  let scopes: Scope[] = args.scope === 'editor' ? ['editor'] : args.scope === 'preview' ? ['preview'] : ['editor', 'preview'];
+  let inside: Set<Shaped> | null = null;
   if (args.within) {
-    const { binding } = await checkRef(env, args.within, obs, minter);
-    roots.push({ scope: binding.scope, base: env.page.locator(`aria-ref=${binding.pwRef}`) });
-  } else {
-    for (const scope of scopes) {
-      if (scope === 'preview' && (obs.previewState !== 'ready' || !obs.docs.preview || !obs.preview)) {
-        if (args.scope === 'preview')
-          throw new DriverError('TARGET_NOT_FOUND', `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}: nothing in it can be found yet.`, {
-            details: { preview: obs.previewState, hint: 'Wait for context.preview.state to be "ready" (ui.snapshot), then locate again.' }
-          });
-        continue;
-      }
-      const tree = scope === 'editor' ? obs.editor : obs.preview!;
-      if (args.region) for (const r of regionNodes(tree, args.region)) roots.push({ scope, base: env.page.locator(`aria-ref=${r.pwRef}`) });
-      else roots.push({ scope, base: scope === 'editor' ? env.page : obs.docs.preview!.frame });
-    }
+    const { binding, node } = await checkRef(env, args.within, obs, minter);
+    scopes = [binding.scope];
+    inside = new Set(walk(node.children));
   }
   const query = { role: args.role, ...(args.name !== undefined ? { name: args.name } : {}), ...(args.exact === false ? { exact: false } : {}), ...(args.region ? { region: args.region } : {}), ...(args.within ? { within: args.within } : {}), scope: args.scope ?? 'all' };
-  if (!roots.length) throw new DriverError('TARGET_NOT_FOUND', args.region ? `There is no region "${args.region}" to search.` : 'There is nothing to search.', { details: { query, hint: REFRESH_HINT } });
-  const found = await matchesIn(env, obs, roots, args);
+  const searchable = scopes.filter((scope) => {
+    if (scope === 'editor') return true;
+    if (obs.previewState === 'ready' && obs.docs.preview && obs.preview) return true;
+    if (args.scope === 'preview' || args.within)
+      throw new DriverError('TARGET_NOT_FOUND', `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}: nothing in it can be found yet.`, {
+        details: { query, preview: obs.previewState, hint: 'Wait for context.preview.state to be "ready" (ui.snapshot), then locate again.' }
+      });
+    return false;
+  });
+  if (args.region && !searchable.some((scope) => regionNodes(scope === 'editor' ? obs.editor : obs.preview!, args.region!).length))
+    throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, hint: 'Take a ui.snapshot to see the regions there are.' } });
+  const all = await matchesIn(env, obs, searchable, args);
   aborted(env.signal);
-  if (found === 'too-many') throw new DriverError('AMBIGUOUS_TARGET', `More than ${MATCH_LIMIT} elements are ${args.role}${args.name ? ` "${args.name}"` : ''}: name a region or a ref to search within.`, { details: { count: `>${MATCH_LIMIT}`, candidates: [], query, hint: 'Narrow it with "region" or "within" (a ref from ui.snapshot).' } });
-  if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see what there is.' } });
+  if (all === 'too-many') throw new DriverError('AMBIGUOUS_TARGET', `More than ${MATCH_LIMIT} elements are ${args.role}${args.name ? ` "${args.name}"` : ''}: name it, or a region or ref to search within.`, { details: { count: `>${MATCH_LIMIT}`, candidates: [], query, hint: 'Narrow it with "name", "region" or "within" (a ref from ui.snapshot).' } });
+  if (all === 'incomplete') throw new DriverError('OP_FAILED', 'Not every match could be placed in the observation (the page changed, or a match is outside the accessibility tree); locate again.', { retryable: true, details: { query, hint: REFRESH_HINT } });
+  const found = all.filter((n) => (!args.region || regionMatches(n.regions, args.region)) && (!inside || inside.has(n)));
+  if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}${args.within ? ' within that ref' : ''}.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see what there is.' } });
   if (found.length > 1) {
     const shown = found.slice(0, LIMITS.candidates);
     await minter.read(shown);
@@ -658,48 +817,50 @@ export async function uiLocate(env: ObserveEnv, args: LocateArgs): Promise<Locat
 }
 
 /**
- * The observed nodes Playwright's role matching finds under each root, in order and without repeats. Every element
- * is held as a handle and paired with the observed nodes of that role by identity in the page, all before anything
- * replaces the frames' last snapshot (which `aria-ref` resolves against).
+ * Every observed node Playwright's role matching finds in the scopes, in order. Each match is held as a handle and
+ * paired with the observed nodes of that role by identity in the page, all while the observation's snapshot is still
+ * each frame's last one (which `aria-ref` resolves against). A match that cannot be placed makes the search
+ * incomplete: it never reports a unique match, or none, without having placed every one.
  */
-async function matchesIn(env: ObserveEnv, obs: Observation, roots: { scope: Scope; base: Page | Frame | Locator }[], args: LocateArgs): Promise<Shaped[] | 'too-many'> {
+async function matchesIn(env: ObserveEnv, obs: Observation, scopes: Scope[], args: LocateArgs): Promise<Shaped[] | 'too-many' | 'incomplete'> {
   const held: ElementHandle[] = [];
   try {
-    const matches: { scope: Scope; handle: ElementHandle }[] = [];
-    for (const r of roots) {
-      const loc = r.base.getByRole(args.role as Parameters<Page['getByRole']>[0], args.name !== undefined ? { name: args.name, exact: args.exact !== false } : {});
-      const n = await loc.count().catch(() => 0);
-      if (matches.length + n > MATCH_LIMIT) return 'too-many';
+    const out: Shaped[] = [];
+    for (const scope of scopes) {
+      const base: Page | Frame = scope === 'editor' ? env.page : obs.docs.preview!.frame;
+      const tree = scope === 'editor' ? obs.editor : obs.preview!;
+      const loc = base.getByRole(args.role as Parameters<Page['getByRole']>[0], args.name !== undefined ? { name: args.name, exact: args.exact !== false } : {});
+      const n = await loc.count().catch(() => -1);
+      if (n < 0) return 'incomplete';
+      if (n > MATCH_LIMIT) return 'too-many';
+      if (!n) continue;
+      const matches: ElementHandle[] = [];
       for (let i = 0; i < n; i++) {
         const h = (await loc
           .nth(i)
           .elementHandle({ timeout: 1000 })
           .catch(() => null)) as ElementHandle | null;
-        if (!h) continue;
+        if (!h) return 'incomplete';
         held.push(h);
-        matches.push({ scope: r.scope, handle: h });
+        matches.push(h);
       }
-    }
-    const out: Shaped[] = [];
-    for (const scope of ['editor', 'preview'] as const) {
-      const mine = matches.filter((m) => m.scope === scope);
-      const tree = scope === 'editor' ? obs.editor : obs.preview;
-      if (!mine.length || !tree) continue;
-      const nodes = [...walk(tree)].filter((n) => n.pwRef && n.role === args.role).slice(0, CANDIDATE_LIMIT);
+      const nodes = [...walk(tree)].filter((x) => x.pwRef && x.role === args.role);
+      if (nodes.length > CANDIDATE_LIMIT) return 'incomplete';
       const handles = await Promise.all(
-        nodes.map(async (n) => {
-          const loc = env.page.locator(`aria-ref=${n.pwRef}`);
-          if ((await loc.count().catch(() => 0)) !== 1) return null;
-          return (await loc.elementHandle({ timeout: 1000 }).catch(() => null)) as ElementHandle | null;
+        nodes.map(async (x) => {
+          const l = env.page.locator(`aria-ref=${x.pwRef}`);
+          if ((await l.count().catch(() => 0)) !== 1) return null;
+          return (await l.elementHandle({ timeout: 1000 }).catch(() => null)) as ElementHandle | null;
         })
       );
       for (const h of handles) if (h) held.push(h);
       const present = handles.map((h, i) => (h ? i : -1)).filter((i) => i >= 0);
       const list = present.map((i) => handles[i]!);
-      for (const m of mine) {
-        const at = await m.handle.evaluate((x: Dom, all: Dom[]) => all.indexOf(x), list).catch(() => -1);
-        const node = at >= 0 ? nodes[present[at]] : null;
-        if (node && !out.includes(node)) out.push(node);
+      for (const m of matches) {
+        const at = await m.evaluate((x: Dom, everyone: Dom[]) => everyone.indexOf(x), list).catch(() => -1);
+        if (at < 0) return 'incomplete';
+        const node = nodes[present[at]];
+        if (!out.includes(node)) out.push(node);
       }
     }
     return out;
@@ -722,24 +883,39 @@ async function located(node: Shaped, minter: Minter, args: LocateArgs): Promise<
 // ---------------------------------------------------------------------------
 
 /**
- * The element a ref names, checked as `ui.locate` checks it, then checked again inside its own document: a handle
- * belongs to one document, so acting through it can never reach an element of a page that replaced it. The caller
- * disposes of it.
+ * The element a ref names, checked as `ui.locate` checks it, then checked again on the element itself: its document,
+ * its page ids and the project open around it. A handle belongs to one document, so acting through it can never reach
+ * an element of a page that replaced it. The caller disposes of it.
  */
-export async function elementFor(env: ObserveEnv, ref: string): Promise<ElementHandle> {
-  argRef(ref, 'ref');
-  const obs = await observe(env);
-  const minter = new Minter(env, obs);
-  const { binding } = await checkRef(env, ref, obs, minter);
-  const handle = (await env.page.locator(`aria-ref=${binding.pwRef}`).elementHandle({ timeout: 2000 }).catch(() => null)) as ElementHandle | null;
-  if (!handle) throw stale('gone', ref, `"${ref}" is no longer there.`);
-  // Evaluated in the element's own document, which a reload or another page replaces.
-  const doc = await handle.evaluate((el: Dom) => el.isConnected && `${(globalThis as Dom).performance.timeOrigin}|${(globalThis as Dom).location.pathname}`).catch(() => false);
-  if (doc !== binding.doc) {
-    await handle.dispose().catch(() => undefined);
-    throw stale('document', ref, `"${ref}" was seen on a page that has since been replaced.`);
-  }
-  return handle;
+export function elementFor(env: ObserveEnv, ref: string): Promise<ElementHandle> {
+  return sealed(async (seen) => {
+    argRef(ref, 'ref');
+    const obs = await observeInto(env, seen);
+    const minter = new Minter(env, obs);
+    const { binding } = await checkRef(env, ref, obs, minter);
+    const handle = (await env.page
+      .locator(`aria-ref=${binding.pwRef}`)
+      .elementHandle({ timeout: 2000 })
+      .catch(() => null)) as ElementHandle | null;
+    if (!handle) throw stale('gone', ref, `"${ref}" is no longer there.`);
+    try {
+      // Evaluated in the element's own document, which a reload or another page replaces.
+      const now = (await handle.evaluate((el: Dom) => (el.isConnected ? { doc: `${(globalThis as Dom).performance.timeOrigin}|${(globalThis as Dom).location.pathname}${(globalThis as Dom).location.search}`, node: el.getAttribute('data-so-node'), ctx: el.getAttribute('data-so-ctx'), items: el.getAttribute('data-so-items') } : null)).catch(() => null)) as {
+        doc: string;
+        node: string | null;
+        ctx: string | null;
+        items: string | null;
+      } | null;
+      if (!now || now.doc !== binding.doc) throw stale('document', ref, `"${ref}" was seen on a page that has since been replaced.`);
+      const semantic = now.node !== null ? JSON.stringify({ ctx: now.ctx ?? '', node: now.node, ...(now.items ? { items: now.items } : {}) }) : null;
+      if (semantic !== binding.semantic) throw stale('changed', ref, `"${ref}" now shows another part of the page than it did.`);
+      if ((await readEditor(env.page)).opening !== binding.opening) throw stale('project', ref, `"${ref}" was seen in another project, or another opening of this one.`);
+      return handle;
+    } catch (e) {
+      await handle.dispose().catch(() => undefined);
+      throw e;
+    }
+  }, { result: false });
 }
 
 /** Every node a tree shows, depth first. */

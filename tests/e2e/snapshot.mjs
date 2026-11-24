@@ -10,7 +10,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { flatten } from '../driver/observe.ts';
 import { Session } from '../driver/session.ts';
-import { eventually, scratch, step } from './harness.mjs';
+import { eventually, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('snapshot');
 const session = new Session({ parentDir: WORK });
@@ -38,6 +38,9 @@ const press = async (ref) => {
   }
 };
 const SECRET = 'sk-SENTINEL-4b8e2d19c07a';
+/** Pieces of the key, any of which in a reply would be a leak. */
+const FRAGMENTS = ['SENTINEL', '4b8e2d19c07a', 'SENTINEL-4b8e'];
+const leaks = (reply) => FRAGMENTS.filter((f) => JSON.stringify(reply).includes(f));
 const HEADING = 'Calm, considered spaces for everyday life';
 /** Every file under `dir`, skipping folders named in `skip`. */
 const files = (dir, skip) =>
@@ -51,6 +54,8 @@ try {
   await session.start({ fixture: 'business-v1' });
 
   step('one bounded observation covers the editor and the site in its preview, with context and screenshots');
+  // The fixture is ready once its page is hydrated; the editor's mode reaches the page a moment later.
+  await eventually(async () => assert.equal((await snapshot({ maxNodes: 1 })).context.preview.state, 'ready'), 30000);
   const first = await snapshot({ screenshot: true });
   assert.equal(first.context.screen, 'editor');
   assert.equal(first.context.mode, 'edit');
@@ -66,19 +71,31 @@ try {
   assert.ok(previewNodes.some((x) => x.role === 'heading' && x.level === 1 && x.semantic?.node === 'heading'), 'the preview is observed, not an iframe placeholder, with the page’s own element ids');
   assert.ok(previewNodes.some((x) => x.offscreen), 'mounted content below the fold is reported as out of view');
   assert.ok([...editorNodes, ...previewNodes].every((x) => x.role === 'text' || x.ref), 'every element observed has a ref');
+  assert.equal(first.screenshots.withheld, undefined);
   for (const shot of [first.screenshots.editor, first.screenshots.preview]) {
     assert.ok(shot && shot.path.startsWith(session.paths.artifacts), 'screenshots go in the session’s artifacts');
     assert.deepEqual([...readFileSync(shot.path).subarray(1, 4)], [...Buffer.from('PNG')], `${shot.path} is a PNG`);
   }
   assert.ok(first.screenshots.preview.clip.width > 100 && first.screenshots.preview.clip.height > 100, 'the preview is captured as it shows in the editor');
 
-  step('what the bounds left out is reached by drilling in with a ref');
-  const small = await snapshot({ maxNodes: 12 });
-  const cut = [...flatten(small.editor?.nodes ?? []), ...flatten(small.preview?.nodes ?? [])].find((x) => x.more?.continue);
-  assert.ok(cut, 'a truncated node says how to continue');
-  const inside = await snapshot(cut.more.continue);
-  assert.equal(inside.within.ref, cut.ref);
-  assert.ok((inside.editor ?? inside.preview).nodes.length > 0, 'its children are observed');
+  step('what the bounds left out is reached by drilling in with a ref, resuming exactly where it stopped');
+  const small = await snapshot({ scope: 'preview', maxNodes: 12 });
+  // A node some of whose children were shown: its continuation resumes after the last of them.
+  const cut = flatten(small.preview.nodes).find((x) => x.more?.continue?.after && x.children?.length);
+  assert.ok(cut, 'a node cut short says how to continue');
+  const all = await snapshot({ within: cut.ref, maxNodes: 1000, depth: 0 });
+  const everyChild = all.preview.nodes.map((x) => x.ref ?? x.text);
+  assert.deepEqual(everyChild.slice(0, cut.children.length), cut.children.map((x) => x.ref ?? x.text), 'the children shown come first');
+  const rest = await snapshot({ ...cut.more.continue, depth: 0 });
+  assert.equal(rest.within.ref, cut.ref);
+  assert.deepEqual(rest.preview.nodes.map((x) => x.ref ?? x.text), everyChild.slice(cut.children.length), 'the continuation is exactly the children left out');
+  assert.equal(rest.preview.nodes.length, cut.more.children);
+  // The top of a scope continues the same way.
+  const top = await snapshot({ scope: 'editor', maxNodes: 3, depth: 0 });
+  assert.ok(top.editor.more?.continue?.scope === 'editor', 'the scope’s own top level says how to continue');
+  const after = await snapshot({ ...top.editor.more.continue, maxNodes: 1000, depth: 0 });
+  assert.equal(after.editor.nodes.length, top.editor.more.children);
+  assert.ok(!after.editor.nodes.some((x) => top.editor.nodes.some((y) => y.ref && y.ref === x.ref)), 'nothing shown twice');
 
   step('two links named the same are told apart by region');
   const both = failed(await call('ui.locate', { role: 'link', name: 'About' }), 'AMBIGUOUS_TARGET', 'About is ambiguous');
@@ -88,11 +105,17 @@ try {
     ['banner', 'contentinfo'],
     'the candidates name their regions'
   );
+  assert.match(both.details.hint, /region/);
   const header = await locate({ role: 'link', name: 'About', region: 'banner' });
   const footer = await locate({ role: 'link', name: 'About', region: 'contentinfo' });
-  assert.notEqual(header.node.ref, footer.node.ref);
+  assert.equal(header.node.ref, both.details.candidates[0].ref, 'the header’s candidate is the header’s link');
+  assert.equal(footer.node.ref, both.details.candidates[1].ref, 'the footer’s candidate is the footer’s link');
   assert.deepEqual(header.region, both.details.candidates[0].region);
-  assert.ok(both.details.candidates.map((c) => c.ref).includes(footer.node.ref), 'a candidate’s ref is the element located by region');
+  assert.equal(footer.node.offscreen, true, 'the footer’s link is mounted but below the fold');
+  assert.equal(header.node.offscreen, undefined);
+  // A name matched in part, case aside, finds the same link; matched exactly, case counts.
+  assert.equal((await locate({ role: 'link', name: 'ABOU', exact: false, region: 'banner' })).node.ref, header.node.ref);
+  failed(await call('ui.locate', { role: 'link', name: 'about', region: 'banner' }), 'TARGET_NOT_FOUND', 'an exact name in the wrong case');
   // The editor's own controls are found the same way: the Panels rail's Pages button, not the sidebar's Pages list.
   const pages = await locate({ role: 'button', name: 'Pages', region: 'Panels' });
   assert.deepEqual(pages.region, ['toolbar "Panels"']);
@@ -107,23 +130,26 @@ try {
   // The first click on a section selects the section itself (Split hero); the next steps in to the heading.
   const section = await eventually(async () => {
     const s = (await snapshot()).context.selection;
-    assert.ok(s?.shown, 'something is selected');
-    assert.match(s.toolbar ?? '', / actions$/, 'the canvas toolbar for the selection is drawn');
+    assert.equal(s?.shown, true, 'something is selected');
+    assert.equal(s.toolbar, 'Split hero actions', 'the section is selected and its toolbar drawn');
+    assert.equal(s.outlined, true);
+    assert.equal(s.semantic.ctx, heading.node.semantic.ctx, 'the heading’s own section');
     return s;
   });
-  assert.equal(section.toolbar, 'Split hero actions');
-  assert.notDeepEqual(section.semantic, heading.node.semantic);
+  assert.notEqual(section.semantic.node, heading.node.semantic.node);
   // A section's own element has no role of its own, so no observed element stands for it.
   assert.deepEqual(section.refs, []);
-  await new Promise((r) => setTimeout(r, 700)); // Not a double-click: that would start editing the text.
+  await new Promise((r) => setTimeout(r, 700)); // Clear of any double-click, which would start editing the text.
   await press(heading.node.ref);
   const selected = await eventually(async () => {
     const s = (await snapshot()).context.selection;
     assert.deepEqual(s?.semantic, heading.node.semantic, 'the heading is the selection');
     assert.equal(s.toolbar, 'Heading actions');
+    assert.deepEqual(s.refs, [heading.node.ref], 'the selection names the heading’s own ref');
     return s;
   });
-  assert.deepEqual(selected.refs, [heading.node.ref], 'the selection names the heading’s own ref');
+  assert.equal(selected.outlined, true);
+  assert.equal(typeof selected.element?.nodeId, 'string', 'the selection as the editor holds it');
 
   step('a dialog over the editor, focus in it, and a credential that never comes back');
   const settings = await locate({ role: 'button', name: 'Settings', scope: 'editor' });
@@ -136,15 +162,30 @@ try {
   assert.ok(dialogOpen.context.dialog.ref, 'the dialog has a ref');
   const behind = await locate({ ref: settings.node.ref });
   assert.equal(behind.node.blocked, true, 'what the dialog covers is reported as blocked');
+  assert.equal((await locate({ ref: heading.node.ref })).node.blocked, true, 'the preview under it too');
   await press((await locate({ role: 'tab', name: 'AI assistant', within: dialogOpen.context.dialog.ref })).node.ref);
   const field = await eventually(() => locate({ role: 'textbox', name: 'API key (optional)', scope: 'editor' }));
   const input = await session.elementFor(field.node.ref);
   await input.fill(SECRET);
+  assert.equal(await input.evaluate((el) => el.value), SECRET, 'the key is really in the field');
   await input.dispose();
   const typed = await call('ui.snapshot', { scope: 'editor', maxNodes: 1000 });
   const again = await call('ui.locate', { ref: field.node.ref });
-  for (const reply of [typed, again]) assert.ok(!JSON.stringify(reply).includes(SECRET.slice(3)), 'the key is in no reply');
-  assert.equal(ok(again, 'the key field').node.redacted, true, 'the key field says its value was left out');
+  const byRole = await call('ui.locate', { role: 'textbox', name: 'API key (optional)' });
+  for (const [reply, what] of [
+    [typed, 'snapshot'],
+    [again, 'locate by ref'],
+    [byRole, 'locate by role']
+  ]) {
+    ok(reply, what);
+    assert.deepEqual(leaks(reply), [], `no piece of the key is in the ${what} reply`);
+  }
+  for (const node of [again.result.node, byRole.result.node, flatten(typed.result.editor.nodes).find((x) => x.ref === field.node.ref)]) {
+    assert.equal(node.redacted, true, 'the key field says its value was left out');
+    assert.equal(node.value, undefined);
+  }
+  // An ordinary field's value is still reported.
+  assert.ok(flatten(typed.result.editor.nodes).some((x) => x.role === 'spinbutton' && x.value === '1280'), 'other values are kept');
   assert.equal(typed.result.context.focus?.name, 'API key (optional)', 'focus is reported');
   assert.equal(typed.result.context.focus.ref, field.node.ref);
   // Closing with a key typed but not saved asks first: that question is now the topmost dialog.
@@ -154,7 +195,7 @@ try {
     assert.equal(d?.name, 'Save the API key you entered?');
     return d;
   });
-  assert.ok(!JSON.stringify(await call('ui.snapshot', { within: asked.ref })).includes(SECRET.slice(3)), 'nor in the question about it');
+  assert.deepEqual(leaks(ok(await call('ui.snapshot', { within: asked.ref }), 'the question')), [], 'nor in the question about it');
   await press((await locate({ role: 'button', name: 'Discard', within: asked.ref })).node.ref);
   await eventually(async () => assert.equal((await snapshot()).context.dialog, null, 'the dialogs closed'));
 
@@ -166,30 +207,44 @@ try {
     assert.deepEqual(c.preview, { state: 'ready', path: '/', editing: false });
   });
   await press((await locate({ role: 'button', name: 'Edit', region: 'Mode' })).node.ref);
-  await eventually(async () => assert.equal((await snapshot({ maxNodes: 20 })).context.preview.editing, true));
+  await eventually(async () => {
+    const c = (await snapshot({ maxNodes: 20 })).context;
+    assert.equal(c.mode, 'edit');
+    assert.deepEqual(c.preview, { state: 'ready', path: '/', editing: true });
+  });
 
   step('a preview reloading is loading until its page is hydrated, and its old refs are stale');
+  const previewFrame = await (await session.page.$('.frame-box iframe')).contentFrame();
+  const origin = new URL(previewFrame.url()).origin;
+  // Only this preview's bridge module is held, so its page renders but is not hydrated.
+  const hold = (url) => url.origin === origin && url.pathname.includes('virtual:siteorigin-bridge');
   let release;
   const held = new Promise((r) => (release = r));
-  const hold = (url) => /siteorigin-bridge/.test(url.href);
+  let caught;
+  const caughtIt = new Promise((r) => (caught = r));
   await session.app.context().route(hold, async (route) => {
+    caught();
     await held;
     await route.continue().catch(() => undefined);
   });
-  const previewFrame = await (await session.page.$('.frame-box iframe')).contentFrame();
-  await previewFrame.evaluate(() => location.reload()).catch(() => undefined);
-  const loading = await eventually(async () => {
-    const s = await snapshot({ scope: 'preview' });
-    assert.equal(s.context.preview.state, 'loading');
-    assert.ok(s.preview?.nodes.length, 'the page is there to see');
-    return s;
-  }, 30000);
-  assert.equal(loading.preview.refs, false, 'a page not yet hydrated gives no refs to act on');
-  assert.ok(flatten(loading.preview.nodes).every((x) => !x.ref));
-  const whileLoading = failed(await call('ui.locate', { ref: heading.node.ref }), 'STALE_REF', 'a ref while the page loads');
-  assert.ok(whileLoading.details.hint, 'a stale ref says how to get a fresh one');
-  release();
-  await session.app.context().unroute(hold);
+  try {
+    await previewFrame.evaluate(() => location.reload()).catch((e) => assert.match(String(e), /context was destroyed|navigat/i));
+    await withTimeout(caughtIt, 30000, 'holding the reloaded page’s bridge');
+    const loading = await eventually(async () => {
+      const s = await snapshot({ scope: 'preview' });
+      assert.equal(s.context.preview.state, 'loading');
+      assert.ok(s.preview?.nodes.length, 'the page is there to see');
+      return s;
+    }, 30000);
+    assert.equal(loading.preview.refs, false, 'a page not yet hydrated gives no refs to act on');
+    assert.ok(flatten(loading.preview.nodes).every((x) => !x.ref));
+    const whileLoading = failed(await call('ui.locate', { ref: heading.node.ref }), 'STALE_REF', 'a ref while the page loads');
+    assert.equal(whileLoading.details.reason, 'loading');
+    assert.match(whileLoading.details.hint, /ui\.snapshot/, 'a stale ref says how to get a fresh one');
+  } finally {
+    release();
+    await session.app.context().unroute(hold);
+  }
   await eventually(async () => assert.equal((await snapshot({ maxNodes: 20 })).context.preview.state, 'ready'), 60000);
   const reloaded = failed(await call('ui.locate', { ref: heading.node.ref }), 'STALE_REF', 'a ref from before the reload');
   assert.equal(reloaded.details.reason, 'document');
@@ -201,23 +256,38 @@ try {
 
   step('opening another project makes every ref from the last one stale');
   const settingsBefore = (await locate({ role: 'button', name: 'Settings', scope: 'editor' })).node.ref;
-  const created = await session.page.evaluate((parentDir) => window.builder.projects.create({ name: 'Second Business', starter: 'business', sampleImages: false, parentDir }), session.paths.projects);
+  const created = await withTimeout(
+    session.page.evaluate((parentDir) => window.builder.projects.create({ name: 'Second Business', starter: 'business', sampleImages: false, parentDir }), session.paths.projects),
+    120000,
+    'creating the second project'
+  );
   assert.equal(created.ok, true, `the second project was made: ${created.message ?? ''}`);
   await eventually(async () => {
     const s = await snapshot({ maxNodes: 20 });
     assert.equal(s.context.preview.state, 'ready');
-    const r = await call('ui.locate', { ref: settingsBefore });
-    assert.equal(r.ok ? 'ok' : r.error.details?.reason, 'project');
+    await locate({ role: 'button', name: 'Second Business Home', scope: 'editor' });
   }, 90000);
-  assert.equal(failed(await call('ui.locate', { ref: fresh.node.ref }), 'STALE_REF', 'a preview ref from the last project').details.reason, 'project');
+  for (const [ref, what] of [
+    [settingsBefore, 'an editor ref from the last project'],
+    [fresh.node.ref, 'a preview ref from the last project']
+  ]) {
+    const e = failed(await call('ui.locate', { ref }), 'STALE_REF', what);
+    assert.equal(e.details.reason, 'project', what);
+    assert.match(e.details.hint, /ui\.snapshot/);
+  }
   const now = await locate({ role: 'heading', name: HEADING, scope: 'preview' });
   assert.notEqual(now.node.ref, fresh.node.ref);
-  failed(await call('ui.locate', { ref: 'ffff:1' }), 'STALE_REF', 'a ref this session never gave out');
+  // A ref in the same form that this session never gave out.
+  const [tag] = now.node.ref.split(':');
+  const foreign = `${tag === 'ffffff' ? 'eeeeee' : 'ffffff'}:1`;
+  assert.equal(failed(await call('ui.locate', { ref: foreign }), 'STALE_REF', 'a ref this session never gave out').details.reason, 'unknown');
 
   step('the projects carry none of the editor’s markers');
-  for (const file of files(session.paths.projects, ['.siteorigin', 'node_modules'])) {
+  const projectFiles = files(session.paths.projects, ['.siteorigin', 'node_modules']);
+  assert.ok(projectFiles.filter((f) => /\.svelte$/.test(f)).length >= 4, `both projects generated their source (${projectFiles.length} files)`);
+  for (const file of projectFiles) {
     const text = readFileSync(file, 'utf8');
-    for (const marker of ['data-so-bridge', 'data-selection', 'data-opening']) assert.ok(!text.includes(marker), `${file} has no ${marker}`);
+    for (const marker of ['data-so-bridge', 'data-selection', 'data-selected-ref', 'data-opening', 'data-frame', 'siteorigin-bridge']) assert.ok(!text.includes(marker), `${file} has no ${marker}`);
   }
 
   passed = true;

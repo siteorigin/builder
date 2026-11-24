@@ -3340,6 +3340,10 @@ window.addEventListener('message', async (e) => {
       pendingHit = null;
       if (editing) commitEdit();
       document.documentElement.toggleAttribute('data-so-editing', mode === 'edit');
+      // The mode this document took from the editor: its page is hydrated, the bridge is listening and it shows what
+      // the editor asked for, in Edit and Preview alike (data-so-editing alone cannot tell a page previewed as visitors
+      // see it from one still loading). The editor sends it to every page that reports ready. The test driver reads it.
+      document.documentElement.setAttribute('data-so-bridge', mode);
       // A full-size image a visitor opened in Preview is a modal: it would cover the page being edited.
       if (mode === 'edit') for (const viewer of document.querySelectorAll('dialog.so-viewer[open]')) viewer.close();
       hovered = null;
@@ -3660,9 +3664,6 @@ style.textContent =
   ' html[data-so-editing] [data-appear-state]:not(#so-editor) { animation: none !important; }';
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);
-// This document's page is hydrated and its bridge is listening, in Edit and in Preview alike (data-so-editing alone
-// cannot tell a page previewed as visitors see it from one still loading). The test driver reads it.
-document.documentElement.toggleAttribute('data-so-bridge', true);
 const previewAtStart = previewState();
 // An isolated component preview opened on its own, with no editor frame around it: the editor photographs it for
 // the thumbnails in Insert (src/main/thumb-capture.ts). It shows as visitors see it, and offers one call that waits

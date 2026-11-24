@@ -61,7 +61,12 @@ export interface ElementFacts {
   secret: boolean;
   /** The element sits under an inert ancestor (a modal dialog covers it). */
   blocked: boolean;
+  /** A scrolling ancestor clips it entirely out of view. */
+  clipped: boolean;
   semantic: Semantic | null;
+  /** Its place in a set the page may not have mounted in full (aria-setsize, aria-posinset). */
+  setsize?: number;
+  posinset?: number;
 }
 
 /** A shaped node, before bounding: internal to the driver. */
@@ -113,14 +118,29 @@ export interface UiNode {
   placeholder?: string;
   /** In its own document's viewport, in CSS pixels (the preview's are the site's, before the canvas zoom). */
   box?: Box;
-  /** Mounted but outside its document's viewport: scrolled away, not hidden. */
+  /** Mounted but out of view: outside its document's viewport, or scrolled away inside a panel. */
   offscreen?: true;
+  /** Its place in a set that may hold more than is mounted (a virtualized list says so with these). */
+  setsize?: number;
+  posinset?: number;
   /** Covered by a modal dialog: a person cannot reach it until the dialog closes. */
   blocked?: true;
   semantic?: Semantic;
   children?: UiNode[];
   /** Children left out by the bounds: how many, how many nodes in all, and how to see them. */
-  more?: { children: number; nodes: number; continue?: { within: string; offset: number } };
+  more?: { children: number; nodes: number; continue?: Continuation };
+}
+
+/**
+ * How to see what the bounds left out: observe `within` the parent (or in the scope, at the top level), after the
+ * last child shown. `after` is that child's ref: siblings added or removed meanwhile do not shift where it resumes, and
+ * a child that is gone answers STALE_REF. `offset` is where it was, for a last child that has no ref.
+ */
+export interface Continuation {
+  within?: string;
+  scope?: Scope;
+  after?: string;
+  offset: number;
 }
 
 export const LIMITS = {
@@ -194,35 +214,79 @@ export function valueRefs(nodes: (RawNode | string)[]): string[] {
 export interface Redaction {
   /** Refs of fields that hold a credential. */
   secretRefs: Set<string>;
-  /** Refs whose element could not be read: their values are removed too. */
+  /** Refs whose element could not be read: their values are treated as credentials too. */
   unknownRefs: Set<string>;
   /** Credential values read from the page, scrubbed wherever they appear. */
   secrets: string[];
 }
 
+export interface Redacted {
+  nodes: (RawNode | string)[];
+  /** Every credential string known to this observation: what any reply built from it is scrubbed of. */
+  secrets: string[];
+  /** Strings other than a credential field's own value that held a credential (so it shows on screen elsewhere). */
+  echoes: number;
+}
+
 export const REDACTED = '[redacted]';
+
+/** Keys whose values the driver makes itself (refs, its own file paths), never page content: never scrubbed. */
+const DRIVER_KEYS = new Set(['ref', 'refs', 'within', 'after', 'token', 'pwRef', 'screenshots']);
+
+/**
+ * A function that replaces every known secret in a string. A secret of two or more characters goes wherever it
+ * appears; a one-character one only where it is the whole string, or it would take every such letter with it.
+ */
+export function scrubber(secrets: string[]): (s: string) => string {
+  const list = [...new Set(secrets.filter((x) => !!x))].sort((a, b) => b.length - a.length);
+  return (s: string) => {
+    if (!list.length) return s;
+    if (list.includes(s)) return REDACTED;
+    let out = s;
+    for (const secret of list) if (secret.length >= 2 && out.includes(secret)) out = out.split(secret).join(REDACTED);
+    return out;
+  };
+}
+
+/** A copy of any JSON value with every known secret scrubbed from its strings (the driver's own keys are kept). */
+export function scrubDeep<T>(value: T, secrets: string[]): T {
+  const scrub = scrubber(secrets);
+  if (!secrets.some((x) => !!x)) return value;
+  const visit = (v: unknown, key?: string): unknown => {
+    if (typeof v === 'string') return key && DRIVER_KEYS.has(key) ? v : scrub(v);
+    if (key && DRIVER_KEYS.has(key)) return v;
+    if (Array.isArray(v)) return v.map((x) => visit(x));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, visit(x, k)]));
+    return v;
+  };
+  return visit(value) as T;
+}
 
 /**
  * Remove credential values from a raw tree, in place. A value-bearing node without a ref, or whose ref is secret or
- * unknown, loses its value; every string anywhere that contains a known secret has it replaced. Secrets shorter than
- * four characters are only removed where they are a whole value, so a one-letter password does not mangle text.
+ * unknown, loses its value, and what it held is scrubbed from every other string: what such a field held at the
+ * moment of the snapshot is what any echo in the same snapshot shows, even if the field changed between the page
+ * reads either side of it.
  */
-export function redact(nodes: (RawNode | string)[], r: Redaction): (RawNode | string)[] {
-  // What a secret field held at the moment of the snapshot is what any echo in the same snapshot shows, even if the
-  // field changed between the page reads either side of it.
+export function redact(nodes: (RawNode | string)[], r: Redaction): Redacted {
   const captured: string[] = [];
-  for (const n of rawNodes(nodes)) if (holdsValue(n) && n.ref && r.secretRefs.has(n.ref)) captured.push(valueOf(n));
-  const secrets = [...new Set([...r.secrets, ...captured].filter((s) => !!s))].sort((a, b) => b.length - a.length);
-  const scrub = (s: string): string => {
-    if (secrets.includes(s)) return REDACTED;
-    let out = s;
-    for (const secret of secrets) if (secret.length >= 4 && out.includes(secret)) out = out.split(secret).join(REDACTED);
+  for (const n of rawNodes(nodes)) {
+    if (!holdsValue(n) || (n.ref && !r.secretRefs.has(n.ref) && !r.unknownRefs.has(n.ref))) continue;
+    // The value as a whole, and each piece Playwright gave it in (its text, and fragments under it).
+    captured.push(valueOf(n), n.text ?? '', ...(n.children ?? []).map((c) => (typeof c === 'string' ? c : c.role === 'text' ? (c.text ?? '') : '')));
+  }
+  const secrets = [...new Set([...r.secrets, ...captured].filter((x) => !!x))];
+  const scrub = scrubber(secrets);
+  let echoes = 0;
+  const clean = (v: string) => {
+    const out = scrub(v);
+    if (out !== v) echoes++;
     return out;
   };
   const visit = (list: (RawNode | string)[] | undefined): (RawNode | string)[] | undefined => {
     if (!list) return list;
     return list.map((n) => {
-      if (typeof n === 'string') return scrub(n);
+      if (typeof n === 'string') return clean(n);
       if (holdsValue(n) && (!n.ref || r.secretRefs.has(n.ref) || r.unknownRefs.has(n.ref))) {
         delete n.text;
         n.children = (n.children ?? []).filter((c) => typeof c !== 'string' && c.role !== 'text');
@@ -230,13 +294,13 @@ export function redact(nodes: (RawNode | string)[], r: Redaction): (RawNode | st
       }
       for (const key of Object.keys(n)) {
         const v = n[key];
-        if (typeof v === 'string' && key !== 'role' && key !== 'ref') n[key] = scrub(v);
+        if (typeof v === 'string' && key !== 'role' && key !== 'ref') n[key] = clean(v);
       }
       n.children = visit(n.children);
       return n;
     });
   };
-  return visit(nodes) ?? [];
+  return { nodes: visit(nodes) ?? [], secrets, echoes };
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +328,8 @@ export function shape(nodes: (RawNode | string)[] | undefined, scope: Scope, reg
     const isValue = VALUE_ROLES.has(n.role);
     // The editor's unnamed wrappers are layout only. The site's are its structure (a section is often a plain element
     // that carries the page's own ids), so the preview keeps them.
-    if (scope === 'editor' && n.role === 'generic' && !norm(n.name) && !norm(n.text) && !n.active) {
+    // A focused one too: focus on a plain wrapper (the page's body, with nothing else focused) says nothing.
+    if (scope === 'editor' && n.role === 'generic' && !norm(n.name) && !norm(n.text)) {
       out.push(...shape(n.children, scope, regions));
       continue;
     }
@@ -367,8 +432,11 @@ export function describe(n: Shaped, o: Pick<RenderOptions, 'refFor' | 'facts' | 
     if (vp && (n.box.width > 0 || n.box.height > 0) && offscreen(n.box, vp)) out.offscreen = true;
   }
   const f = o.facts.get(n);
+  if (f?.clipped) out.offscreen = true;
   if (f?.blocked) out.blocked = true;
   if (f?.semantic) out.semantic = f.semantic;
+  if (f?.setsize !== undefined) out.setsize = f.setsize;
+  if (f?.posinset !== undefined) out.posinset = f.posinset;
   return out;
 }
 
@@ -387,7 +455,8 @@ export function render(roots: Shaped[], o: RenderOptions): UiNode[] {
     if (kids.length < n.children.length) {
       const left = n.children.slice(kids.length);
       const ref = node.ref;
-      node.more = { children: left.length, nodes: left.reduce((s, c) => s + 1 + c.size, 0), ...(ref ? { continue: { within: ref, offset: kids.length } } : {}) };
+      const last = node.children?.[node.children.length - 1]?.ref;
+      node.more = { children: left.length, nodes: left.reduce((s, c) => s + 1 + c.size, 0), ...(ref ? { continue: { within: ref, ...(last ? { after: last } : {}), offset: kids.length } } : {}) };
     }
     out.push(node);
   }
@@ -512,9 +581,22 @@ export type StaleReason = 'unknown' | 'window' | 'project' | 'document' | 'loadi
 
 export const REFRESH_HINT = 'Take a new ui.snapshot (or ui.locate by role and name) and use the refs it returns.';
 
+/** The tags of every registry in this process, so two sessions never share one. */
+const tags = new Set<string>();
+
+function newTag(): string {
+  for (;;) {
+    const tag = randomBytes(3).toString('hex');
+    if (!tags.has(tag)) {
+      tags.add(tag);
+      return tag;
+    }
+  }
+}
+
 /** Mints and remembers refs for one session. The same element in the same document keeps the same ref. */
 export class RefRegistry {
-  private readonly tag = randomBytes(2).toString('hex');
+  private readonly tag = newTag();
   private next = 0;
   private readonly byToken = new Map<string, Binding>();
   private readonly byKey = new Map<string, string>();
@@ -555,5 +637,5 @@ export class RefRegistry {
 
 /** Whether a string could be a ref this module minted (any session's). */
 export function looksLikeRef(s: unknown): s is string {
-  return typeof s === 'string' && /^[0-9a-f]{4}:\d+$/.test(s);
+  return typeof s === 'string' && /^[0-9a-f]{6}:\d+$/.test(s);
 }

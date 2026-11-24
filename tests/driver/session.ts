@@ -26,7 +26,7 @@ import type { ElectronApplication, ElementHandle, Page } from 'playwright';
 import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
 import { desktopInMain, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, stageImport } from './desktop.ts';
 import type { Area } from './desktop.ts';
-import { elementFor, parseLocateArgs, parseSnapshotArgs, uiLocate, uiSnapshot } from './observe.ts';
+import { SECRET_INPUTS, elementFor, parseLocateArgs, parseSnapshotArgs, uiLocate, uiSnapshot } from './observe.ts';
 import type { ObserveEnv } from './observe.ts';
 import { killTree, killTreeSync, ownedEntries, processTable } from './processes.ts';
 import type { ProcessEntry } from './processes.ts';
@@ -40,8 +40,6 @@ export const REPO_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)
 export const OWNER_MARK = '.siteorigin-test-session.json';
 
 const DEFAULT_STARTUP_MS = 180_000;
-/** Fields whose values are credentials (see observe.ts). */
-const SECRET_FIELDS = 'input[type="password" i], input[autocomplete*="password" i]';
 const DEFAULT_CLOSE_MS = 15_000;
 /** How long a launch still in flight when the session closes gets to settle once its process is gone. */
 const SETTLE_MS = 30_000;
@@ -659,6 +657,8 @@ export class Session {
   /** The refs observations gave out, and how many observations there have been. */
   private readonly refs = new RefRegistry();
   private observations = 0;
+  /** An operation that ran out of time and may still be running. */
+  private lingering: Promise<unknown> | null = null;
   private starting: Promise<unknown> | null = null;
   private launching: Promise<unknown> | null = null;
   private closing: Promise<CloseResult> | null = null;
@@ -722,6 +722,8 @@ export class Session {
     const expired = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         abort.abort();
+        // Until it has stopped, it may still take Playwright snapshots that the next request's refs resolve against.
+        this.lingering = work.catch(() => undefined);
         // Reading leaves nothing half-done, so the session goes on; anything else may still be changing the app.
         const terminal = spec.kind !== 'observe' && spec.kind !== 'session';
         if (terminal) {
@@ -763,10 +765,12 @@ export class Session {
       }
       case 'ui.snapshot': {
         const args = parseSnapshotArgs(request.args);
+        await this.settled();
         return uiSnapshot(this.observer(this.windowFor(request), signal), args, ++this.observations);
       }
       case 'ui.locate': {
         const args = parseLocateArgs(request.args);
+        await this.settled();
         return uiLocate(this.observer(this.windowFor(request), signal), args);
       }
       default:
@@ -785,8 +789,16 @@ export class Session {
    */
   async elementFor(ref: string, request: Pick<Request, 'expectWindow'> = {}): Promise<ElementHandle> {
     if (this.state !== 'ready') throw new DriverError('NOT_STARTED', 'Start the session first (session.start).');
+    await this.settled();
     const page = this.windowFor(request);
     return elementFor(this.observer(page, new AbortController().signal), ref);
+  }
+
+  /** Wait (a bounded time) for an operation that ran out of time to stop before observing again. */
+  private async settled() {
+    if (!this.lingering) return;
+    await bounded(this.lingering, 10_000, undefined);
+    this.lingering = null;
   }
 
   private context(began: number): ReplyContext {
@@ -1218,8 +1230,8 @@ export class Session {
     this.refs.clear();
     if (this.keeping && this.bound && !this.bound.closed && !this.appExited) {
       const page = this.bound.page;
-      // Credential fields are masked, as in every screenshot the session takes.
-      const mask = [page.locator(SECRET_FIELDS), page.frameLocator('.frame-box iframe').locator(SECRET_FIELDS)];
+      // Credential fields are masked in every frame, as in every screenshot the session takes.
+      const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
       await page.screenshot({ path: join(this.paths!.artifacts, 'final.png'), timeout: 5000, mask }).catch(() => undefined);
     }
     let ended: CloseResult['ended'] = !wasStarted || !this.pid ? 'not-started' : this.appExited ? 'already-exited' : 'quit';

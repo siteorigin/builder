@@ -273,7 +273,12 @@ export interface SnapshotArgs {
   scope?: UiScope;
   /** A ref from an earlier observation: show what is inside it (drill-down). Its scope is the ref's own. */
   within?: string;
-  /** With `within`: skip this many of its children (a continuation's `offset`). */
+  /**
+   * Continue after this ref among its siblings (a continuation's `after`): inside `within`, or at the top of one
+   * `scope`. Siblings added or removed meanwhile do not shift it; a ref that is gone is STALE_REF.
+   */
+  after?: string;
+  /** Continue from this index among the siblings (a continuation's `offset`, for a last child without a ref). */
   offset?: number;
   /** The most nodes to return (default 200, at most 1000), shared between the scopes. */
   maxNodes?: number;
