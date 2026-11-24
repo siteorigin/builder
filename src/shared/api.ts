@@ -341,7 +341,7 @@ export type EditorDestination =
   | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
   | { kind: 'site'; field: 'baseUrl' | 'favicon' | 'socialImage' }
   | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' }
-  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'body'; picture?: number }
+  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string };
 
 /** One note about an export, in the order the export said it, with where to fix what it describes when it can be fixed. */

@@ -28,8 +28,16 @@ const has = <T,>(o: Record<string, T> | undefined, k: string): T | undefined => 
 const found = (value: unknown): FieldRead => ({ found: true, value });
 const gone = (what: string): FieldRead => ({ found: false, what });
 
-/** Entry fields `entry.update` can set: each is stored under its own name. */
-const ENTRY_FIELDS = ['title', 'slug', 'publishedAt', 'updatedAt', 'draft', 'author', 'excerpt', 'featuredImage', 'terms', 'values', 'body'] as const;
+/** Entry fields `entry.update` can set, and where each is stored: most under their own name, search settings in `seo`. */
+const ENTRY_FIELDS: Record<string, string[]> = {
+  ...Object.fromEntries(['title', 'slug', 'publishedAt', 'updatedAt', 'draft', 'author', 'excerpt', 'featuredImage', 'terms', 'values', 'body'].map((k) => [k, [k]])),
+  seoTitle: ['seo', 'title'],
+  description: ['seo', 'description'],
+  socialImage: ['seo', 'socialImage'],
+  canonical: ['seo', 'canonical'],
+  noindex: ['seo', 'noindex'],
+  searchHidden: ['seo', 'searchHidden']
+};
 
 /** Page fields `page.update` can set, and where each is stored. */
 const PAGE_FIELDS: Record<string, string[]> = {
@@ -44,6 +52,8 @@ const PAGE_FIELDS: Record<string, string[]> = {
   showHeader: ['showHeader'],
   showFooter: ['showFooter'],
   socialImage: ['seo', 'socialImage'],
+  canonical: ['seo', 'canonical'],
+  updatedAt: ['updatedAt'],
   language: ['language'],
   articleDate: ['article', 'date'],
   byline: ['article', 'byline'],
@@ -121,8 +131,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const c = has(state.collections, op.collectionId);
       const entry = c ? has(c.entries, op.entryId) : undefined;
       if (!entry) return gone('post');
-      const keys = ENTRY_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);
-      return found(Object.fromEntries(keys.map((k) => [k, (entry as unknown as Record<string, unknown>)[k]])));
+      const keys = Object.keys(ENTRY_FIELDS).filter((k) => (op as Record<string, unknown>)[k] !== undefined);
+      return found(Object.fromEntries(keys.map((k) => [k, at(entry, ENTRY_FIELDS[k])])));
     }
     case 'site.update': {
       const keys = SITE_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);
@@ -349,7 +359,7 @@ export function shownValue(v: unknown): string | null {
 /** What the author typed into a batch: the value its first operation writes, when that is plain text. */
 export function typedText(op: EditOperation): string | null {
   const o = op as Record<string, unknown>;
-  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'asset.update') {
+  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'asset.update' || op.type === 'entry.update') {
     const key = Object.keys(o).find((k) => k !== 'type' && !TARGET_KEYS.has(k) && o[k] !== undefined);
     if (key === 'font') return shownValue((o.font as { family?: unknown } | undefined)?.family);
     if (key === 'visitorText') {
@@ -368,7 +378,7 @@ export function typedText(op: EditOperation): string | null {
 export function shownField(op: EditOperation, read: unknown): string | null {
   const o = (read && typeof read === 'object' ? read : {}) as Record<string, unknown>;
   let v: unknown = read;
-  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename') v = Object.values(o)[0];
+  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'entry.update' || op.type === 'component.rename') v = Object.values(o)[0];
   else if (op.type === 'asset.update') {
     const asset = (o.asset ?? {}) as Record<string, unknown>;
     const key = Object.keys(op).find((k) => k !== 'type' && k !== 'assetId');

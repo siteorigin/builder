@@ -126,7 +126,9 @@ const REVEAL_FRAMES = 60;
 const POST_FIELDS: Record<string, string> = {
   title: '.post-title-input',
   author: '[data-entry-field="author"] input',
-  excerpt: '[data-entry-field="excerpt"] textarea'
+  excerpt: '[data-entry-field="excerpt"] textarea',
+  seoTitle: '[data-entry-field="seoTitle"] input',
+  seoDescription: '[data-entry-field="seoDescription"] textarea'
 };
 
 /** Focus a field of the open post once the writer shows it, its details opened first when it is one of them. */

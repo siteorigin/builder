@@ -25,7 +25,7 @@ import type {
   RichText,
   VariantAxis
 } from '@shared/types';
-import type { Binding } from '@shared/types';
+import type { Binding, EntryDoc } from '@shared/types';
 import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
@@ -37,6 +37,7 @@ import { newId } from '@shared/ids';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { checkPublicUrl } from '@shared/public-url';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { checkCanonicalUrl } from '@shared/seo';
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner } from '@shared/collections';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
@@ -444,7 +445,10 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       // A description that was the old image's suggestion follows the new one, as above; entries have no place in the
       // review list yet.
       if (!op.uses) {
-        for (const e of collectionEntries(state)) if (e.featuredImage === op.assetId) e.featuredImage = op.withAssetId;
+        for (const e of collectionEntries(state)) {
+          if (e.featuredImage === op.assetId) e.featuredImage = op.withAssetId;
+          if (entrySharingImage(e) === op.assetId) e.seo!.socialImage = op.withAssetId;
+        }
         for (const v of collectionImageValues(state, op.assetId)) {
           v.assetId = op.withAssetId;
           if (!op.keepAlt && !v.decorative && (typeof v.alt === 'string' ? v.alt.trim() : '') === was) v.alt = now;
@@ -584,6 +588,12 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
 /** Every entry of every collection. */
 const collectionEntries = (state: ProjectState) => Object.values(state.collections ?? {}).flatMap((c) => Object.values(c.entries));
 
+/** The image an entry chose to be shared with, when it chose one. */
+const entrySharingImage = (e: EntryDoc): string | undefined => {
+  const id = e && typeof e === 'object' && e.seo && typeof e.seo === 'object' ? e.seo.socialImage : undefined;
+  return typeof id === 'string' && id ? id : undefined;
+};
+
 /** The pictures in entries' text showing `assetId`, as the values a replacement changes. */
 function entryBodyImages(state: ProjectState, assetId: string): Array<{ assetId: string | null; alt: string; decorative?: boolean }> {
   return collectionEntries(state).flatMap((e) => (Array.isArray(e.body) ? e.body.filter((b) => b && typeof b === 'object' && b.type === 'image' && b.assetId === assetId) : [])) as Array<{ assetId: string; alt: string; decorative?: boolean }>;
@@ -622,7 +632,11 @@ export function assetUsages(state: ProjectState): Record<string, number> {
   });
   for (const k of [state.site.favicon, state.site.socialImage]) if (k) out[k] = (out[k] ?? 0) + 1;
   for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
-  for (const e of collectionEntries(state)) if (typeof e.featuredImage === 'string' && e.featuredImage) out[e.featuredImage] = (out[e.featuredImage] ?? 0) + 1;
+  for (const e of collectionEntries(state)) {
+    if (typeof e.featuredImage === 'string' && e.featuredImage) out[e.featuredImage] = (out[e.featuredImage] ?? 0) + 1;
+    const sharing = entrySharingImage(e);
+    if (sharing) out[sharing] = (out[sharing] ?? 0) + 1;
+  }
   // An imported font is in use while a token or style names its family.
   for (const [id, n] of Object.entries(fontAssetUsages(state, themeFontTokens(state)))) out[id] = (out[id] ?? 0) + n;
   return out;
@@ -829,6 +843,17 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
     if (op.socialImage && own(state.assets.assets, op.socialImage)?.kind !== 'image') fail('Social image asset not found.');
     if (op.socialImage) page.seo.socialImage = op.socialImage;
     else delete page.seo.socialImage;
+  }
+  if (op.canonical !== undefined) {
+    const canonical = checkCanonicalUrl(op.canonical);
+    if (!canonical.ok) fail(`“${page.title}”: ${canonical.message}`);
+    else if (canonical.url) page.seo.canonical = canonical.url;
+    else delete page.seo.canonical;
+  }
+  if (op.updatedAt === null) delete page.updatedAt;
+  else if (op.updatedAt !== undefined) {
+    if (!isArticleDate(op.updatedAt)) fail(`The revision date "${op.updatedAt}" is not a calendar date written YYYY-MM-DD.`);
+    page.updatedAt = op.updatedAt;
   }
   applyArticle(page, op);
   return moved ? { route: page.route, moved } : { route: page.route };

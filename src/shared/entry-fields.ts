@@ -209,13 +209,15 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
 
 /** The labels of an entry's terms in one grouping, in the order they were assigned, separated by commas. */
 function termLabels(collection: Collection, entry: EntryDoc, taxonomy: string): string {
-  const t = own(collection.settings.taxonomies, taxonomy);
+  return entryTermLabels(collection, entry, taxonomy).join(', ');
+}
+
+/** The labels of an entry's terms in one grouping, in the order they were assigned: one each, none blank. */
+export function entryTermLabels(collection: Collection, entry: EntryDoc, taxonomy: string): string[] {
+  const t = own(collection.settings?.taxonomies, taxonomy);
   const ids = own(entry.terms, taxonomy);
-  if (!t || !Array.isArray(ids)) return '';
-  return ids
-    .map((id) => own(t.terms, id)?.label)
-    .filter((l): l is string => typeof l === 'string' && l.trim() !== '')
-    .join(', ');
+  if (!t || !Array.isArray(ids)) return [];
+  return ids.map((id) => own(t.terms, id)?.label).filter((l): l is string => typeof l === 'string' && l.trim() !== '');
 }
 
 /** Whether an entry's value counts as there, as the generated site's `has` judges a value a condition reads. */

@@ -4,6 +4,7 @@ import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
 import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from './types';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
+import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 
 /**
@@ -188,6 +189,8 @@ const COLLECTION_SETTINGS = {
   categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.')
 };
 
+const CANONICAL_DESCRIPTION = 'The full address (https://…) search engines are told is the original, when it is published elsewhere first. "" uses its own public URL.';
+
 /** An entry's details, as entry.create and entry.update take them. */
 const ENTRY_FIELDS = {
   slug: z.string().max(400).optional().describe('The last part of its address: lowercase letters, numbers and hyphens, in any script ("spring-sale", "春のセール"). Defaults to a slug of the title, numbered when taken.'),
@@ -199,7 +202,13 @@ const ENTRY_FIELDS = {
   featuredImage: z.string().nullable().optional().describe('A library image\'s asset ID; null removes it.'),
   terms: z.record(z.string(), z.array(z.string()).max(50)).optional().describe('Term IDs by taxonomy ID. Each taxonomy given replaces that taxonomy\'s terms; others stay.'),
   values: z.record(z.string(), z.unknown()).optional().describe('Custom field values by field name. Each field given is set; null goes back to the field\'s default; others stay.'),
-  body: z.unknown().optional().describe(`The entry's text. ${RICH_TEXT_VALUE} Links may also go to another entry: [label](entry:en_…) or its address.`)
+  body: z.unknown().optional().describe(`The entry's text. ${RICH_TEXT_VALUE} Links may also go to another entry: [label](entry:en_…) or its address.`),
+  seoTitle: limited(TEXT_LIMITS.seoTitle).optional().describe('The browser title and link-preview title, used as written. "" goes back to the entry\'s title and the site name.'),
+  description: limited(TEXT_LIMITS.pageDescription).optional().describe('What search engines and link previews show. "" goes back to the excerpt, else the site description.'),
+  socialImage: z.string().nullable().optional().describe('A library image\'s asset ID to share it with; null goes back to the featured image, else the site\'s sharing image.'),
+  canonical: z.string().max(CANONICAL_URL_MAX).optional().describe(CANONICAL_DESCRIPTION),
+  noindex: z.boolean().optional().describe('true asks search engines not to list it and leaves it out of the sitemap; it stays published.'),
+  searchHidden: z.boolean().optional().describe("Leave it out of the site's own Site search results. Independent of noindex.")
 };
 
 export const OPERATION_SCHEMAS = {
@@ -233,6 +242,8 @@ export const OPERATION_SCHEMAS = {
     showHeader: z.boolean().optional().describe('Whether this page shows the site\'s shared header. Only this page changes; the footer setting is separate.'),
     showFooter: z.boolean().optional().describe('Whether this page shows the site\'s shared footer. Only this page changes; the header setting is separate.'),
     socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.'),
+    canonical: z.string().max(CANONICAL_URL_MAX).optional().describe(CANONICAL_DESCRIPTION),
+    updatedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe('When its content was last revised, YYYY-MM-DD, for the sitemap. null removes it.'),
     language: z.string().max(20).optional().describe('Language code such as "fr", when not the site language. "" uses the site language.'),
     linkTranslationTo: z.string().nullable().optional().describe('Page ID of this page in another language: links them, joining any versions the other has. Each version needs its own language. null unlinks.'),
     ...ARTICLE_FIELDS,

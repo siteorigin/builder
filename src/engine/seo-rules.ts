@@ -60,10 +60,15 @@ function named(state: ProjectState, meta: EffectiveSeo): string {
 
 const ownerOf = (meta: EffectiveSeo): Owner => (meta.subject.kind === 'page' ? { kind: 'page', id: meta.subject.pageId } : { kind: 'entry', id: meta.subject.entryId });
 
-/** Where a document's title or description is changed: a page's own Search & sharing field, an entry's title or excerpt. */
-function fieldFix(meta: EffectiveSeo, field: 'title' | 'description'): { destination: EditorDestination; aiFixable: boolean } {
+/**
+ * Where a document's title or description is changed: a page's own Search & sharing field; an entry's own search
+ * title or description when it has one (it is what search engines are shown), else its title or excerpt.
+ */
+function fieldFix(state: ProjectState, meta: EffectiveSeo, field: 'title' | 'description'): { destination: EditorDestination; aiFixable: boolean } {
   if (meta.subject.kind === 'page') return { destination: { kind: 'pageSeo', pageId: meta.subject.pageId, field }, aiFixable: true };
-  return { destination: { kind: 'entry', collectionId: meta.subject.collectionId, entryId: meta.subject.entryId, field: field === 'title' ? 'title' : 'excerpt' }, aiFixable: true };
+  const seo = entryOf(state, meta)?.entry.seo;
+  const own = seo && typeof seo === 'object' && seoText(field === 'title' ? seo.title : seo.description) !== '';
+  return { destination: { kind: 'entry', collectionId: meta.subject.collectionId, entryId: meta.subject.entryId, field: field === 'title' ? (own ? 'seoTitle' : 'title') : own ? 'seoDescription' : 'excerpt' }, aiFixable: true };
 }
 
 const baseUrl: SeoAuditRule = {
@@ -122,7 +127,7 @@ function textRule(id: string, field: 'title' | 'description'): SeoAuditRule {
       }
       for (const d of listed) {
         const value = seoText(d[field]);
-        const where = { owner: ownerOf(d), site: field, ...fieldFix(d, field) };
+        const where = { owner: ownerOf(d), site: field, ...fieldFix(state, d, field) };
         if (!value) {
           out.push(
             finding('content', {

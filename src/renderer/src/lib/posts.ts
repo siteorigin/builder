@@ -2,6 +2,7 @@
  * The Posts workspace: a collection's entries listed for finding and sorting, and the operations its buttons send.
  * Plain functions over the project, tested without a renderer; the panel and the writer call them.
  */
+import { TEXT_LIMITS } from '@shared/text-limits';
 import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, orderedEntries, siteEntries } from '@shared/collections';
@@ -118,14 +119,17 @@ export function newPostOps(state: ProjectState, collectionId: string | null, tit
 }
 
 /**
- * A copy of a post, as a new draft dated today: its text, byline, excerpt, pictures, groupings and field values, under
- * a title that says it is a copy. Its address is a new one the engine picks from that title.
+ * A copy of a post, as a new draft dated today: its text, byline, excerpt, pictures, groupings and field values, and
+ * its search description, sharing image and search switches, under a title that says it is a copy. Its address is a
+ * new one the engine picks from that title. Its own browser title and canonical URL say which post it is, so the
+ * copy starts without them.
  */
 export function duplicatePostOps(state: ProjectState, ref: PostRef): { ops: EditOperation[]; ref: PostRef } | null {
   const e = postAt(state, ref);
   if (!e) return null;
   const entryId = newId('en', 10);
   const title = `${e.title} (copy)`.slice(0, MAX_POST_TITLE);
+  const seo = e.seo && typeof e.seo === 'object' ? e.seo : {};
   const op: EditOperation = {
     type: 'entry.create',
     collectionId: ref.collectionId,
@@ -137,7 +141,13 @@ export function duplicatePostOps(state: ProjectState, ref: PostRef): { ops: Edit
     values: structuredClone(e.values ?? {}),
     ...(e.author ? { author: e.author } : {}),
     ...(e.excerpt ? { excerpt: e.excerpt } : {}),
-    ...(e.featuredImage ? { featuredImage: e.featuredImage } : {})
+    ...(e.featuredImage ? { featuredImage: e.featuredImage } : {}),
+    // Only what the copy can be made with: a description over the limit or an image gone from the library (written
+    // by hand) would refuse the whole copy, so it starts without them.
+    ...(typeof seo.description === 'string' && seo.description.trim() && seo.description.length <= TEXT_LIMITS.pageDescription ? { description: seo.description } : {}),
+    ...(typeof seo.socialImage === 'string' && Object.hasOwn(state.assets.assets, seo.socialImage) && state.assets.assets[seo.socialImage].kind === 'image' ? { socialImage: seo.socialImage } : {}),
+    ...(seo.noindex === true ? { noindex: true } : {}),
+    ...(seo.searchHidden === true ? { searchHidden: true } : {})
   };
   return { ops: [op], ref: { collectionId: ref.collectionId, entryId } };
 }

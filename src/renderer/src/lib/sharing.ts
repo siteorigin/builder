@@ -3,7 +3,7 @@
  * sharing image it is, and the words that go with each case. All of it comes from `pageSharing`, which the
  * generator also writes the page's `<head>` from, so the preview can't show what the exported site doesn't carry.
  */
-import type { PageDoc, ProjectState } from '@shared/types';
+import type { EntrySeo, PageDoc, PageSeo, ProjectState } from '@shared/types';
 import { publicUrl } from '@shared/public-url';
 import { assetLabels } from '@shared/asset-order';
 import { pageSharing, type SharingImageSource } from '@shared/sharing';
@@ -84,9 +84,15 @@ export function sharingView(state: ProjectState, page: PageDoc): SharingView {
 
 /** What a page's Search & sharing heading says while it is closed: its own sharing image, and where it is kept out of search. */
 export function searchSummary(page: PageDoc): string | undefined {
-  const noindex = !!page.seo.noindex;
-  const siteSearch = !!page.seo.searchHidden;
+  return seoSummary(page.seo);
+}
+
+/** Where a page's or a post's search and sharing settings stand, for the heading over them; nothing when all are as they fall back. */
+export function seoSummary(seo: PageSeo | EntrySeo | undefined): string | undefined {
+  const own: PageSeo | EntrySeo = seo && typeof seo === 'object' ? seo : {};
+  const noindex = !!own.noindex;
+  const siteSearch = !!own.searchHidden;
   const hidden = noindex && siteSearch ? 'Hidden from all search' : noindex ? 'Not in search engines' : siteSearch ? 'Not in site search' : undefined;
-  const parts = [page.seo.socialImage ? 'Own sharing image' : undefined, hidden].filter(Boolean);
+  const parts = [own.socialImage ? 'Own sharing image' : undefined, own.canonical ? 'Own canonical URL' : undefined, hidden].filter(Boolean);
   return parts.length ? parts.join(' · ') : undefined;
 }
