@@ -251,10 +251,13 @@ export function keepPagesValid(state: ProjectState, pageId: string | null, defin
   };
 }
 
-/** The IDs of a list's items, or undefined when the value is not a list (one passed down from further out). */
+/**
+ * The IDs of a list's items as the preview names them (each `id` made a string, so a hand-edited 42 is "42"), or
+ * undefined when the value is not a list (one passed down from further out).
+ */
 function idsOf(items: unknown): string[] | undefined {
   if (!Array.isArray(items)) return undefined;
-  return items.flatMap((i) => (i && typeof i === 'object' && typeof (i as { id?: unknown }).id === 'string' ? [(i as { id: string }).id] : []));
+  return items.flatMap((i) => (i === null || i === undefined ? [] : [String((i as { id?: unknown }).id)]));
 }
 
 /** The trees components are placed in: every page, the shared header and footer, and every component's design. */

@@ -174,6 +174,9 @@ describe('picking several layers in Layers', () => {
     const sel = at({ kind: 'page', id: copyId }, dup.state.pages[copyId].rootIds[0]);
     const kept = (st: ProjectState, selection: ElementRef | null, pageId = t.homeId) => keepViewValid(st, { pageId, selection, definitionMode: null });
     expect(kept(dup.state, sel, copyId)).not.toHaveProperty('selection');
+    // Selected on the copy while Home shows: kept while the copy is there, gone with it.
+    expect(kept(dup.state, sel)).not.toHaveProperty('selection');
+    expect(kept(t.s, sel)).toStrictEqual({ pageId: t.homeId, definitionMode: null, selection: null });
     // Undone: the copy has gone, so Home shows and the selection goes with the page.
     const undone = kept(t.s, sel, copyId);
     expect(undone).toStrictEqual({ pageId: t.homeId, definitionMode: null, selection: null });

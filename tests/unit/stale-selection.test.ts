@@ -103,6 +103,10 @@ describe('a selection the project no longer has is let go when the project chang
     // A value that is not a list at all (a damaged document) says nothing about the items: the selection stays.
     inst.props.items = null;
     expect(refExists(st, card('i_not_a_default'))).toBe(true);
+    // An item ID that is not a string (a hand-edited document) is named as the preview writes it.
+    inst.props.items = [{ id: 42, title: 'Hand-edited' }];
+    expect(refExists(st, card('42'))).toBe(true);
+    expect(refExists(st, card('43'))).toBe(false);
   });
 
   it('Undo of a list item inserted while editing everywhere clears a selection of it; a placement’s own items stay', () => {
@@ -125,6 +129,10 @@ describe('a selection the project no longer has is let go when the project chang
     expect(refExists(forked.state, title([placed[0].id]))).toBe(true);
     expect(refExists(forked.state, title([defaults[0].id]))).toBe(true);
     expect(refExists(forked.state, title(['i_nowhere']))).toBe(false);
+    // The same for a placement whose item IDs were hand-edited to numbers.
+    const numbered = structuredClone(forked.state);
+    (numbered.pages[t.home].nodes[features] as InstanceNode).props.items = [{ id: 7, title: 'Seven' }];
+    expect(refExists(numbered, title(['7']))).toBe(true);
   });
 
   it('a News card goes when its article leaves the list, and stays while it is listed', () => {
@@ -142,6 +150,8 @@ describe('a selection the project no longer has is let go when the project chang
     const card: ElementRef = { owner: page(home), instancePath: [news], nodeId: def.parts.cardTitle.nodeId, partId: 'cardTitle', itemPath: ['pg_spring'] };
     expect(refExists(r.state, card)).toBe(true);
     expect(refExists(r.state, { ...card, itemPath: ['pg_winter'] })).toBe(true);
+    // Its excerpt, the other text of each card, the same.
+    expect(refExists(r.state, { ...card, nodeId: def.parts.cardText.nodeId, partId: 'cardText' })).toBe(true);
     const hidden = applyOperations(r.state, [{ type: 'page.update', pageId: 'pg_spring', newsHidden: true }]).state;
     expect(refExists(hidden, card)).toBe(false);
     expect(refExists(hidden, { ...card, itemPath: ['pg_winter'] })).toBe(true);
@@ -280,6 +290,7 @@ describe('a selection the project no longer has is let go when the project chang
     // A selection saved damaged (no instance path) is no target: named as missing, never thrown on.
     const damaged = { ...ctx, selection: { owner: t.owner, nodeId: 'n_x' } as unknown as ElementRef, selectionLabel: 'Section' };
     expect(retryView(t.s, damaged, { pageId: t.home, definitionMode: null })).toMatchObject({ pageId: t.home, definitionMode: null, selection: null, missing: 'Section' });
+    expect(continueContext({ ...user, context: damaged }, t.s, 1280)).toEqual({ error: 'Section is no longer in the site. Choose what to change, then send "Continue".' });
   });
 });
 
