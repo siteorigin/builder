@@ -228,6 +228,11 @@ export interface ImportOptions {
   decoder?: PhotoDecoder | null;
   /** The file's content as the author's review saw it (its SHA-256): a file that has changed since is skipped. */
   fingerprint?: string;
+  /**
+   * When the import began. Every file one import adds shares it, so how fast each file was read or converted never
+   * decides their order: images added together are listed by name (see compareAssets).
+   */
+  createdAt?: string;
 }
 
 /** A web-sized copy as a file for the library, carrying the source's credits (author, copyright) and nothing else. */
@@ -515,7 +520,7 @@ export async function importAsset(
     hash: stored.hash,
     kind,
     ...(kind === 'document' ? { originalName: basename(sourcePath).slice(0, 255) } : {}),
-    createdAt: new Date().toISOString(),
+    createdAt: opts.createdAt ?? new Date().toISOString(),
     ...(stored.width !== undefined ? { width: stored.width, height: stored.height } : {}),
     ...(stored.variants ? { variants: stored.variants } : {}),
     ...(p.font ? { font: p.font } : {})
