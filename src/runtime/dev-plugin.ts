@@ -115,7 +115,8 @@ export function previewModuleKey(url: string | undefined): string | null {
     // Vite cannot read it either.
   }
   path = posix.normalize(path.replace(/\\/g, '/'));
-  const m = /^\/+\.siteorigin\/cache\/dev\/isolated\/([^/]+)\//i.exec(path) ?? /^\/+@id\/(?:__x00__|\0)?virtual:siteorigin-component-preview\/([^/]+)\.js$/.exec(path);
+  // A file of a preview's folder however it is reached (from the root, or wrapped as /@id/ or /@fs/ with its whole path).
+  const m = /\/\.siteorigin\/cache\/dev\/isolated\/([^/]+)\//i.exec(path) ?? /^\/+@id\/(?:__x00__|\0)?virtual:siteorigin-component-preview\/([^/]+)\.js$/.exec(path);
   return m && PREVIEW_KEY.test(m[1]) ? m[1] : null;
 }
 
@@ -225,7 +226,7 @@ export function devPlugin(dir: string) {
         }, next);
       });
     },
-    resolveId(this: unknown, id: string, importer?: string, options?: object) {
+    async resolveId(this: unknown, id: string, importer?: string, options?: object) {
       if (id === VIRTUAL) return '\0' + VIRTUAL + '.js';
       if (id.startsWith(PREVIEW_ENTRY)) {
         const key = id.slice(PREVIEW_ENTRY.length).replace(/\.js$/, '');
@@ -233,17 +234,35 @@ export function devPlugin(dir: string) {
       }
       // An import made by a preview's own files (relative, or through $lib, which Vite has made a project path by
       // now): a file the preview has its own copy of comes from that copy, so its pieces fit each other. Anything
-      // else (a helper a code component imports, a folder's index, a path without its extension) is resolved by Vite
-      // as the project's own copy of the importing file would import it, as on a page.
+      // else (a helper a code component imports) is resolved by Vite as the project's own copy of the importing file
+      // would import it, as on a page.
       const from = importer ? isolatedPreviewPath(names, importer, ISOLATED_DIR, PREVIEW_KEY) : null;
       if (!from) return null;
       const q = id.indexOf('?');
+      const query = q < 0 ? '' : id.slice(q);
+      /** The preview's own copy of a project source path, when it has one. */
+      const ownCopy = (rel: string | null) => {
+        const own = rel?.startsWith('src/') ? previewFile(from.key, rel) : null;
+        return own && statSync(own).isFile() ? viteId(own) : null;
+      };
       const path = q < 0 ? id : id.slice(0, q);
-      const rel = path.startsWith('./') || path.startsWith('../') ? posix.normalize(posix.join(posix.dirname(from.rel), path)) : projectSrcPath(names, path);
-      const own = rel?.startsWith('src/') ? previewFile(from.key, rel) : null;
-      if (own && statSync(own).isFile()) return viteId(own) + (q < 0 ? '' : id.slice(q));
+      const exact = ownCopy(path.startsWith('./') || path.startsWith('../') ? posix.normalize(posix.join(posix.dirname(from.rel), path)) : projectSrcPath(names, path));
+      if (exact) return exact + query;
       const resolve = (this as { resolve?: Resolve } | undefined)?.resolve;
-      if (!from.rel.startsWith('src/') || typeof resolve !== 'function') return null;
+      if (typeof resolve !== 'function') return null;
+      // As Vite finds it from where it is imported (a path without its extension, a folder's index): kept when that
+      // is a file of this preview, or of the project that the preview has its own copy of.
+      const here = await resolve.call(this, id, importer, { ...options, skipSelf: true });
+      if (here) {
+        const found = here.id.split('?')[0];
+        const inside = isolatedPreviewPath(names, found, ISOLATED_DIR, PREVIEW_KEY);
+        if (inside?.key === from.key) return here;
+        const copy = ownCopy(projectSrcPath(names, found));
+        if (copy) return copy + query;
+        // A package, or anything else that is neither the preview's nor the project's source, is the same from anywhere.
+        if (!inside && !projectSrcPath(names, found) && !found.includes('/.siteorigin/')) return here;
+      }
+      if (!from.rel.startsWith('src/')) return null;
       return resolve.call(this, id, viteId(join(dir, ...from.rel.split('/'))), { ...options, skipSelf: true });
     },
     load(id: string) {

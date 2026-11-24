@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
@@ -266,9 +266,9 @@ describe('serving an isolated preview', () => {
 
   it('starts with the site’s tokens and base styles, then mounts the preview, then the bridge', async () => {
     const { key, plugin } = await served();
-    const id = plugin.resolveId(`virtual:siteorigin-component-preview/${key}.js`) as string;
+    const id = (await plugin.resolveId(`virtual:siteorigin-component-preview/${key}.js`)) as string;
     expect(id).toBe(`\0virtual:siteorigin-component-preview/${key}.js`);
-    expect(plugin.resolveId('virtual:siteorigin-component-preview/../x.js')).toBeNull();
+    expect(await plugin.resolveId('virtual:siteorigin-component-preview/../x.js')).toBeNull();
     const entry = plugin.load(id) as string;
     const base = `/.siteorigin/cache/dev/isolated/${key}`;
     const order = ['"/src/lib/siteorigin/styles/tokens.css"', '"/src/lib/siteorigin/styles/theme.css"', `"${base}/${PREVIEW_COMPONENT_STYLES}"`, `import("${base}/${PREVIEW_MODULE}")`, "import('virtual:siteorigin-bridge')"].map((s) => entry.indexOf(s));
@@ -370,7 +370,7 @@ describe('serving an isolated preview', () => {
     expect(await ask(`/@id/virtual:siteorigin-component-preview/${key}.js`)).toBe(404);
     expect(await ask(`/@id/__x00__virtual:siteorigin-component-preview/${key}.js`)).toBe(404);
     // However the address is spelled.
-    for (const spelling of [`/.siteorigin/cache/dev/isolated/%${key.charCodeAt(0).toString(16)}${key.slice(1)}/x.js`, `//.siteorigin//cache/dev/isolated/${key}/x.js`, `/.siteorigin/cache/dev/./isolated/${key}/x.js`, `/src/../.siteorigin/cache/dev/isolated/${key}/x.js`])
+    for (const spelling of [`/.siteorigin/cache/dev/isolated/%${key.charCodeAt(0).toString(16)}${key.slice(1)}/x.js`, `//.siteorigin//cache/dev/isolated/${key}/x.js`, `/.siteorigin/cache/dev/./isolated/${key}/x.js`, `/src/../.siteorigin/cache/dev/isolated/${key}/x.js`, `/@id/${at(key, PREVIEW_MODULE)}`, `/@fs${at(key, PREVIEW_MODULE)}?import`])
       expect(await ask(spelling), spelling).toBe(404);
     expect(invalidated).toEqual([]);
     // Showing the next preview drops the released one's modules, and only those.
@@ -382,23 +382,42 @@ describe('serving an isolated preview', () => {
     const { dir, key, plugin } = await served();
     const at = (rel: string) => `${dir}/.siteorigin/cache/dev/isolated/${key}/${rel}`;
     const importer = at(PREVIEW_MODULE);
-    // Relative imports and $lib (a project path once Vite has applied the alias) reach the preview's own copy.
-    expect(plugin.resolveId('../runtime/Icon.svelte', importer)).toBe(at('src/lib/siteorigin/runtime/Icon.svelte'));
-    expect(plugin.resolveId(`${dir}/src/lib/siteorigin/runtime/icons.js`, at('src/lib/siteorigin/custom/Note.svelte'))).toBe(at('src/lib/siteorigin/runtime/icons.js'));
-    expect(plugin.resolveId('../runtime/Icon.svelte?svelte&type=style&lang.css', importer)).toBe(`${at('src/lib/siteorigin/runtime/Icon.svelte')}?svelte&type=style&lang.css`);
-    // Anything the preview has no file of (a helper only the project has, a folder's index, a path without its
-    // extension) is resolved by Vite as the project's own copy of the importing file would import it.
-    const asked: Array<[string, string | undefined, unknown]> = [];
-    const vite = { resolve: async (id: string, from?: string, options?: object) => (asked.push([id, from, options]), { id: `vite:${id}` }) };
     const note = at('src/lib/siteorigin/custom/Note.svelte');
-    expect(await plugin.resolveId.call(vite, './helper.js', note)).toEqual({ id: 'vite:./helper.js' });
-    expect(asked.at(-1)).toEqual(['./helper.js', `${dir}/src/lib/siteorigin/custom/Note.svelte`, { skipSelf: true }]);
-    // A folder of the preview is never taken for a module.
-    expect(await plugin.resolveId.call(vite, `${dir}/src/lib/siteorigin/runtime`, note)).toEqual({ id: `vite:${dir}/src/lib/siteorigin/runtime` });
-    expect(await plugin.resolveId.call(vite, 'svelte', importer)).toEqual({ id: 'vite:svelte' });
-    expect(asked.at(-1)![1]).toBe(`${dir}/${PREVIEW_MODULE}`);
+    // Vite's own resolution, as far as these imports need it: relative to the importer, with or without an extension.
+    const asked: Array<[string, string | undefined]> = [];
+    const vite = {
+      resolve: async (id: string, from?: string) => {
+        asked.push([id, from]);
+        const base = id.startsWith('.') ? posix.join(posix.dirname(from!), id) : id;
+        if (!base.startsWith('/')) return { id: `/node_modules/${id}/index.js` };
+        for (const ext of ['', '.js', '.svelte']) if (existsSync(base + ext) && statSync(base + ext).isFile()) return { id: base + ext };
+        return null;
+      }
+    };
+    const resolve = (id: string, from: string) => plugin.resolveId.call(vite, id, from);
+    // Relative imports and $lib (a project path once Vite has applied the alias) reach the preview's own copy.
+    expect(await resolve('../runtime/Icon.svelte', importer)).toBe(at('src/lib/siteorigin/runtime/Icon.svelte'));
+    expect(await resolve(`${dir}/src/lib/siteorigin/runtime/icons.js`, note)).toBe(at('src/lib/siteorigin/runtime/icons.js'));
+    expect(await resolve('../runtime/Icon.svelte?svelte&type=style&lang.css', importer)).toBe(`${at('src/lib/siteorigin/runtime/Icon.svelte')}?svelte&type=style&lang.css`);
+    // Without its extension too, whether the project has the file as well or not: the preview's copy carries what only
+    // its sample values need.
+    mkdirSync(join(dir, 'src/lib/siteorigin/runtime'), { recursive: true });
+    writeFileSync(join(dir, 'src/lib/siteorigin/runtime/icons.js'), 'export const ICONS = {};');
+    expect(await resolve('../runtime/icons', note)).toEqual({ id: at('src/lib/siteorigin/runtime/icons.js') });
+    expect(await resolve(`${dir}/src/lib/siteorigin/runtime/icons`, note)).toBe(at('src/lib/siteorigin/runtime/icons.js'));
+    // A file only the project has (a helper a code component imports) is found from the project's own copy of the importer.
+    mkdirSync(join(dir, 'src/lib/siteorigin/custom'), { recursive: true });
+    writeFileSync(join(dir, 'src/lib/siteorigin/custom/helper.js'), 'export const x = 1;');
+    expect(await resolve('./helper', note)).toEqual({ id: `${dir}/src/lib/siteorigin/custom/helper.js` });
+    expect(asked.at(-1)).toEqual(['./helper', `${dir}/src/lib/siteorigin/custom/Note.svelte`]);
+    // A package is the same from anywhere.
+    expect(await resolve('svelte', importer)).toEqual({ id: '/node_modules/svelte/index.js' });
+    // Nothing escapes into the rest of the editor's cache: an import that would is resolved from the project instead.
+    expect(await resolve('../../../../../../dev/x.js', importer)).toBeNull();
+    // Without Vite to ask, only the preview's own files are answered.
+    expect(await plugin.resolveId('./helper', note)).toBeNull();
     // An import from anywhere else is not the preview's business.
-    expect(plugin.resolveId('../runtime/Icon.svelte', `${dir}/src/lib/siteorigin/preview/Preview.svelte`)).toBeNull();
+    expect(await resolve('../runtime/Icon.svelte', `${dir}/src/lib/siteorigin/preview/Preview.svelte`)).toBeNull();
   });
 
   it('keeps only well-formed preview requests', () => {
