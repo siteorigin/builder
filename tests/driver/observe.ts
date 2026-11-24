@@ -298,12 +298,14 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   const classified = await factsByRef(page, valued);
   const secretRefs = new Set(valued.filter((r) => classified.get(r)?.secret));
   const unknownRefs = new Set(valued.filter((r) => !classified.get(r)));
-  const redacted = redact(raw, {
-    secretRefs,
-    unknownRefs,
-    secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored, ...(env.remembered?.() ?? [])]
-  });
-  env.remember?.(redacted.secrets);
+  // Every credential field's value, read straight from every frame, and the saved keys.
+  const credentials = [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored];
+  const redacted = redact(raw, { secretRefs, unknownRefs, secrets: [...credentials, ...(env.remembered?.() ?? [])] });
+  // Only those are remembered for the rest of the session. A value that merely could not be classified (a field with no
+  // ref while a menu is open, or one replaced as it was read) is kept out of this reply alone: remembered, it would
+  // scrub ordinary text (a heading's words, a width) from every later reply and make refs to it stale, and a
+  // credential field's value is in the direct read above whether or not the snapshot gave it a ref.
+  env.remember?.(credentials);
   const editor = shape(raw, 'editor');
   // An iframe Playwright could not enter has no children: its page is not there to observe yet.
   const preview = previewRaw?.children?.length ? shape(previewRaw.children, 'preview') : null;

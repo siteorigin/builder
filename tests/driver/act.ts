@@ -392,7 +392,7 @@ interface Probe {
 }
 
 /** Runs in the element's document. */
-function probeIn(el: Dom, a: { position: XY | null; scroll: boolean; surface: 'editor' | 'preview' }): Probe {
+function probeIn(el: Dom, a: { position: XY | null; scroll: boolean; center?: boolean; surface: 'editor' | 'preview' }): Probe {
   const w = globalThis as Dom;
   const d = w.document;
   const none = { connected: false, visible: false, inert: false, disabled: false, editable: false, secret: false, select: null, focused: false, outside: false, scrolled: false, points: [], offscreen: false, blocker: null, box: { x: 0, y: 0, width: 0, height: 0 } };
@@ -450,21 +450,24 @@ function probeIn(el: Dom, a: { position: XY | null; scroll: boolean; surface: 'e
     return { r, left, top, right, bottom };
   };
   const style = w.getComputedStyle(el);
+  // Under a modal nothing is scrolled for it: a person cannot reach it at all.
+  const inert = !!el.closest('[inert]');
   let part = visiblePart();
   const visible = part.r.width > 0 && part.r.height > 0 && style.visibility !== 'hidden' && (typeof el.checkVisibility !== 'function' || el.checkVisibility({ visibilityProperty: true }));
   const outside = !!a.position && (a.position.x >= part.r.width || a.position.y >= part.r.height);
   const aim = (p: typeof part) => (a.position ? { x: p.r.left + a.position.x, y: p.r.top + a.position.y } : { x: (p.left + p.right) / 2, y: (p.top + p.bottom) / 2 });
   const shown = (p: typeof part, pt: XY) => p.right > p.left && p.bottom > p.top && pt.x >= p.left && pt.x < p.right && pt.y >= p.top && pt.y < p.bottom;
   let scrolled = false;
-  if (visible && !outside && a.scroll && !shown(part, aim(part))) {
+  // Out of view: the nearest scroll that shows it. Covered (by a sticky header, say): centred, once.
+  if (visible && !inert && !outside && a.scroll && (a.center || !shown(part, aim(part)))) {
     const before = part.r;
-    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    el.scrollIntoView(a.center ? { block: 'center', inline: 'nearest' } : { block: 'nearest', inline: 'nearest' });
     part = visiblePart();
     scrolled = part.r.left !== before.left || part.r.top !== before.top;
   }
   const points: XY[] = [];
   let blocker = null;
-  const offscreen = !(part.right > part.left && part.bottom > part.top);
+  let offscreen = !(part.right > part.left && part.bottom > part.top);
   if (visible && !outside && !offscreen) {
     const fractions = [
       [0.5, 0.5],
@@ -480,6 +483,8 @@ function probeIn(el: Dom, a: { position: XY | null; scroll: boolean; surface: 'e
       [0.75, 0.25]
     ];
     const candidates = a.position ? [aim(part)] : fractions.map(([fx, fy]) => ({ x: part.left + (part.right - part.left) * fx, y: part.top + (part.bottom - part.top) * fy }));
+    // A position outside the part in view is out of view, not covered.
+    if (!candidates.some((c) => shown(part, c))) offscreen = true;
     for (const c of candidates) {
       if (!shown(part, c)) continue;
       const h = hitAt(c.x, c.y);
@@ -498,7 +503,7 @@ function probeIn(el: Dom, a: { position: XY | null; scroll: boolean; surface: 'e
   return {
     connected: true,
     visible,
-    inert: !!el.closest('[inert]'),
+    inert,
     disabled: (typeof el.matches === 'function' && el.matches(':disabled')) || el.getAttribute('aria-disabled') === 'true',
     editable: !!el.isContentEditable || (tag === 'TEXTAREA' && fieldOk) || (tag === 'INPUT' && textual && fieldOk),
     secret: tag === 'INPUT' && (type === 'password' || /password/i.test(auto)),
@@ -615,8 +620,11 @@ function pointIn(a: { x: number; y: number; surface: 'editor' | 'preview'; selec
 const GUARD_KEY = 'siteorigin.driver.guard';
 
 /**
- * Runs in a document: until disarmed, stop every trusted pointer, mouse, click and wheel event that does not reach the
- * admitted element (none for `admit: null`), before the app's own handlers see it, and record what it stopped.
+ * Runs in a document: until disarmed, stop every trusted press (pointer or mouse down) that does not reach the admitted
+ * element (none for `el: null`), before the app's own handlers see it, and every event after a stopped press (its
+ * release and click); record what it stopped. A release after a press that reached the target is the app's to place:
+ * the press may have opened a menu or drawn a chip that the release lands on. The wheel is not guarded: the compositor
+ * scrolls before the page's wheel event, which then lands on whatever scrolled under the pointer.
  */
 function armGuard(a: { el: Dom; key: string; at: XY | null }) {
   const w = globalThis as Dom;
@@ -624,14 +632,18 @@ function armGuard(a: { el: Dom; key: string; at: XY | null }) {
   if (old) old.off();
   let el = a.el;
   if (!el && a.at) el = w.document.elementFromPoint(a.at.x, a.at.y);
-  const types = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu', 'wheel', 'dragstart', 'drop'];
+  const types = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu'];
+  const presses = ['pointerdown', 'mousedown'];
   const state = { stopped: [] as { type: string; tag: string; role?: string; name?: string }[], admitted: 0 };
+  let missed = false;
   const fn = (e: Dom) => {
     if (!e.isTrusted) return;
-    if (el && e.composedPath().includes(el)) {
+    const press = presses.includes(e.type);
+    if (press ? !!el && e.composedPath().includes(el) : !missed) {
       state.admitted++;
       return;
     }
+    if (press) missed = true;
     e.stopImmediatePropagation();
     if (e.cancelable) e.preventDefault();
     const t = e.target && e.target.nodeType === 1 ? e.target : null;
@@ -798,8 +810,21 @@ async function inTarget<R, A>(t: Resolved, fn: (el: Dom, a: A) => R, arg: A): Pr
 }
 
 /** One look at a ref target: where to put the pointer, or why not yet. */
-async function aimOnce(t: Resolved, position: XY | null, need: Need): Promise<Aim | Miss> {
-  const probe = await inTarget(t, probeIn, { position, scroll: need.scroll, surface: t.scope });
+async function aimOnce(t: Resolved, position: XY | null, need: Need, center = false): Promise<Aim | Miss> {
+  if (t.scope === 'editor') return aimWithin(t, position, need, center, null);
+  // In the preview: a dialog over the editor covers the whole frame, which the page itself cannot tell; checked first,
+  // so nothing in the page is scrolled for a target no one can reach.
+  const { frame, iframe } = await frameOf(t);
+  try {
+    if (await iframe.evaluate((el: Dom) => !!el.closest('[inert]'))) return { miss: 'inert' };
+    return await aimWithin(t, position, need, center, { frame, iframe });
+  } finally {
+    await iframe.dispose().catch(() => undefined);
+  }
+}
+
+async function aimWithin(t: Resolved, position: XY | null, need: Need, center: boolean, inFrame: { frame: Frame; iframe: ElementHandle } | null): Promise<Aim | Miss> {
+  const probe = await inTarget(t, probeIn, { position, scroll: need.scroll, center: center && need.scroll, surface: t.scope });
   if (!probe.connected) throw new DriverError('STALE_REF', `"${t.ref}" (a ${t.role}) is no longer there.`, { details: { ref: t.ref, reason: 'gone' } });
   if (probe.outside) return { miss: 'position-outside' };
   if (need.select && (!probe.select || probe.select.multiple)) return { miss: 'not-a-select' };
@@ -809,24 +834,19 @@ async function aimOnce(t: Resolved, position: XY | null, need: Need): Promise<Ai
   if (need.editable && !probe.editable) return { miss: 'not-editable' };
   if (probe.offscreen) return { miss: 'offscreen' };
   if (!probe.points.length) return { miss: 'obscured', blocker: probe.blocker };
-  if (t.scope === 'editor') {
+  if (!inFrame) {
     const point = probe.points[0];
     return { point, surface: 'editor', hit: hitOf(t, { point: round(point) }), handle: t.handle, frame: null, probe, frameProbe: null, scrolled: probe.scrolled };
   }
-  const { frame, iframe } = await frameOf(t);
-  try {
-    const fp = (await iframe.evaluate(frameProbe as never, probe.points as never)) as FrameProbe;
-    if (fp.inert) return { miss: 'inert' };
-    const i = fp.mapped.findIndex((m) => m.inView && m.frame);
-    if (i < 0) {
-      const anyInView = fp.mapped.some((m) => m.inView);
-      return anyInView ? { miss: 'obscured', blocker: fp.mapped.find((m) => m.blocker)?.blocker ?? null } : { miss: 'offscreen' };
-    }
-    const point = { x: fp.mapped[i].x, y: fp.mapped[i].y };
-    return { point, surface: 'preview', at: probe.points[i], hit: hitOf(t, { point: round(point), at: round(probe.points[i]) }), handle: t.handle, frame, probe, frameProbe: fp, scrolled: probe.scrolled };
-  } finally {
-    await iframe.dispose().catch(() => undefined);
+  const fp = (await inFrame.iframe.evaluate(frameProbe as never, probe.points as never)) as FrameProbe;
+  if (fp.inert) return { miss: 'inert' };
+  const i = fp.mapped.findIndex((m) => m.inView && m.frame);
+  if (i < 0) {
+    const anyInView = fp.mapped.some((m) => m.inView);
+    return anyInView ? { miss: 'obscured', blocker: fp.mapped.find((m) => m.blocker)?.blocker ?? null } : { miss: 'offscreen' };
   }
+  const point = { x: fp.mapped[i].x, y: fp.mapped[i].y };
+  return { point, surface: 'preview', at: probe.points[i], hit: hitOf(t, { point: round(point), at: round(probe.points[i]) }), handle: t.handle, frame: inFrame.frame, probe, frameProbe: fp, scrolled: probe.scrolled };
 }
 
 const round = (p: XY): XY => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 });
@@ -838,9 +858,14 @@ async function aimRef(t: Resolved, position: XY | null, need: Need, end: number,
   const delays = [0, 20, 50, 100, 150, 250, 400];
   let last: Miss = { miss: 'hidden' };
   let scrolled = false;
+  let centered = false;
   for (let i = 0; ; i++) {
-    const first = await aimOnce(t, position, need);
-    if (!isMiss(first)) scrolled ||= first.scrolled;
+    // Something on top of it in view (a sticky header): a person scrolls it clear, so it is centred once.
+    // Not for a position the caller chose: that point is the one to report on.
+    const center = need.scroll && !position && !centered && last.miss === 'obscured';
+    if (center) centered = true;
+    const first = await aimOnce(t, position, need, center);
+    if (!isMiss(first)) scrolled ||= first.scrolled || center;
     if (!isMiss(first)) {
       await sleep(30);
       // Looked at again without scrolling: it must be in the same place, still actionable.
@@ -1089,17 +1114,11 @@ async function dispatch(env: ActEnv, action: Action, d: DispatchCtx): Promise<Om
       return { dispatched: 'complete', target: aim.hit, ...(first.scrolled ? { scrolled: true as const } : {}), waitedMs };
     }
     case 'ui.scroll': {
+      // Checked on arrival only (see armGuard: a guard can neither judge nor stop a wheel).
       const { aim: first, waitedMs, recheck } = await aimAt(env, action.target, { scroll: false, pointer: true }, d, preview);
       d.markSent();
       const aim = await arrive(env, first, recheck);
-      await arm(page, aim);
-      let guards: Guard[] = [];
-      try {
-        await page.mouse.wheel(action.deltaX, action.deltaY);
-      } finally {
-        guards = await disarm(page, aim);
-      }
-      guarded(guards, aim, aim.surface === 'editor' ? ['editor'] : ['editor', 'preview']);
+      await page.mouse.wheel(action.deltaX, action.deltaY);
       return { dispatched: 'complete', target: aim.hit, waitedMs };
     }
     case 'ui.drag':
@@ -1141,9 +1160,9 @@ async function keys(env: ActEnv, action: Extract<Action, { op: 'ui.fill' | 'ui.t
     // As a person would: the focus moves to the list first (whatever had it is left, and commits), then the choice.
     await focusOn(env, t, aim, d);
     d.markSent();
+    // The list's own input and change events go to the app; what it makes of them (a list the app controls shows the
+    // choice once it has applied it) is for observations to check.
     await t.handle.selectOption({ value: found[0].value }, { timeout: Math.max(1000, d.end - Date.now()) });
-    const now = await inTarget(t, (el: Dom) => String(el.value), undefined);
-    if (now !== found[0].value) throw new DriverError('OP_FAILED', 'The option was chosen but the list does not show it.', { details: { dispatched: 'partial' } });
     return { ...done, selected: { label: found[0].label, value: found[0].value } };
   }
   await focusOn(env, t, aim, d);
