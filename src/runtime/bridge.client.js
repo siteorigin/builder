@@ -69,9 +69,9 @@ function findAll(desc) {
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   return [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
 }
-/** The CSS order the page lays an element out by among its siblings: only a flex or grid container orders its
- *  items. An element with display: contents is laid out as its first child that shows. */
-function layoutOrder(el) {
+/** The box an element is laid out as (with display: contents, its first child that shows), and whether its container
+ *  lays its items out by CSS order: only a flex or grid container does. */
+function layoutItem(el) {
   const shows = (c) => {
     const position = getComputedStyle(c).position;
     if (position === 'absolute' || position === 'fixed') return false;
@@ -81,7 +81,12 @@ function layoutOrder(el) {
   const item = getComputedStyle(el).display === 'contents' ? [...el.children].find(shows) || el : el;
   let parent = item.parentElement;
   while (parent && getComputedStyle(parent).display === 'contents') parent = parent.parentElement;
-  if (!parent || !/(^|-)(flex|grid)$/.test(getComputedStyle(parent).display)) return 0;
+  return { item, ordered: !!parent && /(^|-)(flex|grid)$/.test(getComputedStyle(parent).display) };
+}
+/** The CSS order the page lays an element out by among its siblings (see layoutItem). */
+function layoutOrder(el) {
+  const { item, ordered } = layoutItem(el);
+  if (!ordered) return 0;
   const order = Number.parseInt(getComputedStyle(item).order, 10);
   return Number.isSafeInteger(order) ? order : 0;
 }
@@ -3288,10 +3293,33 @@ window.addEventListener('message', async (e) => {
       }
       commitEdit();
       break;
+    case 'scrollBy': {
+      // A drag from the editor's Insert panel turns the wheel over the page into a scroll of the page, which counts as
+      // the author's own scrolling (see the wheel listener): nothing waiting scrolls the page back afterwards.
+      const y = Number(m.payload.y);
+      if (!Number.isFinite(y) || !y) break;
+      stopKeeping();
+      if (revealScroll) revealScroll = false;
+      window.scrollBy({ top: Math.max(-4000, Math.min(4000, y)), behavior: 'instant' });
+      if (selected) scheduleRects();
+      break;
+    }
     case 'measure': {
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
-      // Each box with its CSS order, which can lay siblings out in another order than the document's.
-      send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => { const el = findAll(d)[0]; const r = el && rectOf(el); return r ? { ...r, order: layoutOrder(el) } : null; }) });
+      // Each box with its CSS order, which can lay siblings out in another order than the document's (and whether its
+      // container orders its items at all), and whether more than one copy of it shows (content a component repeats):
+      // the box is only the first copy's.
+      send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => {
+        const all = findAll(d);
+        const el = all[0];
+        const r = el && rectOf(el);
+        if (!r) return null;
+        const shown = all.filter((c) => { const b = rectOf(c); return !!b && (b.width > 0 || b.height > 0); }).length;
+        const out = { ...r, order: layoutOrder(el) };
+        if (layoutItem(el).ordered) out.ordered = true;
+        if (shown > 1) out.many = true;
+        return out;
+      }) });
       break;
     }
     case 'measureSpace': {

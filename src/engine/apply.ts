@@ -2452,7 +2452,9 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
     parts,
     tree: defTree,
     provenance: { createdBy: 'user' },
-    license: 'Project'
+    license: 'Project',
+    // Inserted again where the source sat: one of a page's sections, or an element inside a layout (a card in a grid).
+    insertAs: op.owner.kind !== 'component' && info.parentId === null ? 'section' : 'element'
   };
   if (Object.keys(slots).length) def.slots = slots;
   const deps = directDependencies(def);
