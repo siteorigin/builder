@@ -542,7 +542,7 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   }
   const instId = ref.instancePath[0];
   const binding = target.value;
-  if (!isBinding(binding)) {
+  if (!isBinding(binding) || '$entry' in binding) {
     toast('This text is part of the component design. Use Edit everywhere or Make unique to change it.', 'error');
     return 'restore';
   }

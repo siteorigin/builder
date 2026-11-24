@@ -26,7 +26,7 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type TextTag } from '@shared/types';
+import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
@@ -532,6 +532,7 @@ function refuseFeed(schema: PropSchema) {
 function refuseBound(state: ProjectState, owner: OwnerRef, value: unknown, label: string) {
   if (!isBinding(value)) return;
   if ('$item' in value) fail(`${label} is filled in from each item of the list the design repeats. Edit those items, or unbind it in the design first.`);
+  if ('$entry' in value) fail(`${label} shows each entry's own ${value.$entry}. Edit it in the entry, or unbind it in the layout first.`);
   const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
   const from = parent && Object.hasOwn(parent.properties, value.$prop) ? parent.properties[value.$prop].label : value.$prop;
   fail(`${label} comes from the enclosing component's "${from}" property. Change it there, or unbind it in the design first.`);
@@ -1749,6 +1750,8 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
   // In definition mode, editing bound content edits the property default.
   const setBound = (field: unknown, schemaFix: (s: PropSchema) => unknown): boolean => {
     if (!isBinding(field)) return false;
+    // Typing a value over an entry's field would show one entry's words on every entry's page.
+    if ('$entry' in field) fail(`This shows each entry's own ${field.$entry}. Edit it in the entry, or unbind it in the layout first.`);
     if (!def || !('$prop' in field)) fail('This content is bound to a repeated item; edit the list item instead.');
     const schema = own(def.properties, field.$prop);
     if (!schema) fail(`Missing property ${field.$prop}.`);
@@ -2432,6 +2435,9 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   const parts: ComponentDefinition['parts'] = {};
   const rootCopy = copySubtree(tree, defTree, op.nodeId, state);
   defTree.rootIds = [rootCopy];
+  // An entry's fields are a layout's alone: a component has no entry to read them from.
+  if (Object.values(defTree.nodes).some((n) => bindingSlots(n).some((sl) => isEntryBinding(conditionRef(sl.value) ?? sl.value))))
+    fail('This shows fields of the entry, which a component cannot read. Unbind them first, or keep it in the layout.');
   const rootNode = defTree.nodes[rootCopy];
   // A component can be placed many times, so its root cannot hold a page-unique anchor: the placement keeps it.
   const anchor = rootNode.anchor;
@@ -2450,6 +2456,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
     const outerList = enclosingList(ownerDef, op.nodeId);
     const hoisted = new Map<string, string>();
     const hoist = (b: Binding): Binding => {
+      if ('$entry' in b) fail('A component cannot show an entry field: only a collection layout can.');
       const isProp = '$prop' in b;
       const key = isProp ? `p:${b.$prop}` : `i:${b.$item}`;
       let name = hoisted.get(key);

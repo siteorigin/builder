@@ -706,6 +706,8 @@ export function shownValue(state: ProjectState, ref: ElementRef, bound: unknown)
   const r = resolveRef(state, ref);
   const props = (r.instance?.props ?? {}) as Record<string, unknown>;
   if ('$prop' in bound) return propBindingValue(props[bound.$prop] ?? (r.def?.properties[bound.$prop] as { default?: unknown } | undefined)?.default, bound);
+  // An entry's field shows the entry previewed, which the canvas shows; it is never typed where it shows.
+  if (!('$item' in bound)) return undefined;
   const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
   const schema = list ? r.def!.properties[list] : undefined;
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];

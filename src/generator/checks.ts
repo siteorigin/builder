@@ -70,6 +70,7 @@ export function evaluate(v: unknown, scope: Scope): unknown {
   if (!isBinding(v)) return v;
   const b = v as Binding;
   if ('$prop' in b) return propBindingValue(scope.props[b.$prop], b);
+  if (!('$item' in b)) return undefined;
   const item = scope.item ?? {};
   return Object.hasOwn(item, b.$item) ? item[b.$item] : (scope.fields?.[b.$item] as { default?: unknown } | undefined)?.default;
 }
@@ -575,7 +576,7 @@ function placementField(b: unknown, scope: Scope): PlacementField | undefined {
     return whole.itemId === undefined && whole.field === undefined ? { prop: whole.prop, field: b.field } : undefined;
   }
   const id = scope.item?.id;
-  if (!scope.list || typeof id !== 'string' || !id) return undefined;
+  if (!('$item' in b) || !scope.list || typeof id !== 'string' || !id) return undefined;
   const list = scope.placement ? { prop: scope.list } : scope.forwarded?.[scope.list];
   return list && !list.itemId ? { prop: list.prop, itemId: id, field: b.$item } : undefined;
 }
@@ -595,7 +596,8 @@ function followsPageField(state: ProjectState, tree: NodeTree, placementId: stri
   return list?.type === 'list' && !!list.pageTeaser && teaserFields(list.pageTeaser).some(([field]) => field === f.field);
 }
 
-const sameBinding = (a: unknown, b: unknown) => isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop && a.field === b.field : '$item' in b && a.$item === b.$item);
+const sameBinding = (a: unknown, b: unknown) =>
+  isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop && a.field === b.field : '$item' in a ? '$item' in b && a.$item === b.$item : '$entry' in b && a.$entry === b.$entry);
 
 /**
  * Buttons that will render with a label but no destination. The site leaves them out, which is easy to miss in
@@ -1597,7 +1599,7 @@ const hiddenEverywhere = (...layers: Array<ResponsiveStyles | undefined>) => {
 function renderedTag(n: GraphNode & { kind: 'text' }, scope: Scope, def: ComponentDefinition | undefined): { tag: string; levels?: number[] } {
   if (!isBinding(n.tag)) return { tag: TEXT_TAG_SET.has(n.tag) ? n.tag : 'p' };
   const b = n.tag;
-  const schema = '$prop' in b ? (def ? propBindingSchema(def.properties, b) : undefined) : scope.fields?.[b.$item];
+  const schema = '$prop' in b ? (def ? propBindingSchema(def.properties, b) : undefined) : '$item' in b ? scope.fields?.[b.$item] : undefined;
   const options = schema?.type === 'enum' ? schema.options.map((o) => o.value).filter((o) => TEXT_TAG_SET.has(o)) : [];
   const fallback = schema?.type === 'enum' && options.includes(schema.default) ? schema.default : (options[0] ?? 'p');
   const v = evaluate(b, scope);

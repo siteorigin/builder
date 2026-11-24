@@ -6,7 +6,8 @@ import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem
 import { slotDecl, slotDeclProblem, slotFill } from './slots';
 import { propBindingName, propBindingSchema } from '@shared/bindings';
 import { isArticleDate } from '@shared/articles';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, isBindingRef, isStateRef, slotChildren } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, isBindingRef, isEntryBinding, isStateRef, slotChildren } from '@shared/types';
+import { ENTRY_DATE_FIELDS, entryFieldSchema } from '@shared/entry-fields';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
@@ -724,7 +725,54 @@ function literalFor(field: BindField, node: GraphNode, schema: PropSchema | unde
   }
 }
 
+/**
+ * node.setBinding in a collection's layout: an element (or a section placed there) shows one of the entry's fields,
+ * or stops showing it and keeps an empty value of its own. Only entry fields can be bound there.
+ */
+function templateSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpResult {
+  const collection = Object.hasOwn(state.collections ?? {}, op.owner.id) ? state.collections[op.owner.id] : fail(`Collection "${op.owner.id}" does not exist.`);
+  const node = getNode(collection.settings.template, op.nodeId);
+  const field = op.field as BindField;
+  const kinds = FIELD_KINDS[field];
+  if (kinds && !kinds.includes(node.kind)) fail(`${describeNode(node)} has no "${field}" to bind.`);
+  if (field === 'list' || field === 'variant') fail(`A layout's ${field === 'list' ? 'repeats' : 'section variants'} are the same for every entry; only content can show an entry's fields.`);
+  const condition = field === 'when' || field === 'unless';
+  if (op.eq !== undefined && op.ne !== undefined) fail('A condition compares with "eq" or "ne", not both.');
+  if ((op.eq !== undefined || op.ne !== undefined) && (!condition || op.binding === null)) fail('Only a "when" or "unless" binding compares its value, with "eq" or "ne".');
+  let nested: PropSchema | undefined;
+  if (field === 'prop') {
+    if (!op.prop) fail('Name the property of the placed section to bind with "prop".');
+    const nd = state.components[(node as InstanceNode).definitionId];
+    nested = own(nd?.properties, op.prop) ?? fail(`"${nd?.name ?? 'This component'}" has no property "${op.prop}".`);
+  }
+  const holder = (field === 'prop' ? (node as InstanceNode).props : node) as Record<string, unknown>;
+  const key = field === 'prop' ? op.prop! : field;
+  const current = holder[key];
+  if (op.binding === null) {
+    if (condition || field === 'fallbackAlt') delete holder[key];
+    else if (isBindingRef(current)) {
+      // What is left is empty, never one entry's value: the layout is every entry's.
+      const literal = field === 'prop' ? clone(nested?.default) : literalFor(field, node, undefined, nested);
+      if (literal === undefined) delete holder[key];
+      else holder[key] = literal;
+    }
+    return {};
+  }
+  const b = op.binding;
+  if (!isEntryBinding(b)) fail(`A collection's layout shows the entry's fields: bind to { "$entry": field }. Properties, list items and UI state belong to components.`);
+  const schema = entryFieldSchema(collection, b.$entry) ?? fail(`Entries of ${collection.settings.name} have no field "${String(b.$entry).slice(0, 60)}".`);
+  if (field === 'datetime' && !ENTRY_DATE_FIELDS.has(b.$entry)) fail(`"${schema.label}" is not a date: a text can state the publication date (publishedAt) or the last update (updatedAt).`);
+  const ok = acceptedTypes(node, field, nested);
+  if (ok && !ok.includes(schema.type)) fail(`"${schema.label}" cannot be shown as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}: it needs a ${ok.join(' or ')} field.`);
+  const comparison = op.eq !== undefined ? ({ ref: clone(b), eq: op.eq } as Comparison) : op.ne !== undefined ? ({ ref: clone(b), ne: op.ne } as Comparison) : undefined;
+  const problem = bindingProblem(state, { node, field, prop: op.prop, comparison }, schema);
+  if (problem) fail(`${describeNode(node)} ${problem}`);
+  holder[key] = comparison ?? clone(b);
+  return {};
+}
+
 export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpResult {
+  if (op.owner.kind === 'template') return templateSetBinding(state, op);
   if (op.owner.kind !== 'component') fail('Bindings only exist inside component definitions. Edit the component first.');
   const def = projectDef(state, op.owner.id);
   if (def.kind !== 'managed' || !def.tree) fail(`"${def.name}" is a code component; its properties are used in source.`);
@@ -782,6 +830,7 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
       fail(p.type === 'object' ? `"${p.label}" has no field "${b.field}". Fields: ${Object.keys(p.fields).join(', ')}.` : `"${p.label}" is not an object property, so it has no field "${b.field}".`);
     }
     if ('$prop' in b) fail(`"${def.name}" has no property "${b.$prop}". Add it with component.setPropSchema first.`);
+    if ('$entry' in b) fail('Only a collection layout reads entry fields.');
     fail(enclosingList(def, node.id) ? `The list has no field "${b.$item}".` : 'Only elements inside a repeat can show list item fields.');
   }
   const ok = acceptedTypes(node, field, nested);

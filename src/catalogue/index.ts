@@ -1,4 +1,4 @@
-import type { ComponentDefinition } from '@shared/types';
+import type { ComponentDefinition, NodeTree } from '@shared/types';
 import type { ThemePack } from './pack';
 
 export type { ThemePack } from './pack';
@@ -41,6 +41,14 @@ export function getTheme(id: string): ThemePack {
 
 export function listThemes(): ThemePack[] {
   return registry;
+}
+
+/**
+ * The layout a new collection's entries start with under this theme: the pack's own, or (for a pack without one)
+ * the first loaded pack's that has one. Undefined only when no loaded pack has any.
+ */
+export function articleTemplateFor(themeId: string): NodeTree | undefined {
+  return findTheme(themeId)?.articleTemplate ?? registry.find((p) => p.articleTemplate)?.articleTemplate;
 }
 
 /** What a project's theme lock records for this pack: an installed pack is pinned to its exact release. */

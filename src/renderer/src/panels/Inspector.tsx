@@ -1153,7 +1153,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   // Content bound to this part
   const bindings: Array<{ prop?: string; item?: string; kind: string }> = [];
   const pushB = (v: unknown, kind: string) => {
-    if (!isBinding(v)) return;
+    if (!isBinding(v) || '$entry' in v) return;
     const b = '$prop' in v ? { prop: v.$prop, kind } : { item: v.$item, kind };
     const seen = bindings.find((x) => x.prop === b.prop && x.item === b.item);
     if (!seen) bindings.push(b);

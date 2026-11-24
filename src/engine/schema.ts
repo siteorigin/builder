@@ -494,6 +494,7 @@ export function boundSchema(def: ComponentDefinition, nodeId: string, b: Binding
     return s ? stateAsProp(s) : undefined;
   }
   if ('$prop' in b) return propBindingSchema(def.properties, b);
+  if (!('$item' in b)) return undefined;
   const list = enclosingList(def, nodeId);
   return list && Object.hasOwn(list.fields, b.$item) ? list.fields[b.$item] : undefined;
 }

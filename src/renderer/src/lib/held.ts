@@ -376,7 +376,7 @@ export function shownField(op: EditOperation, read: unknown): string | null {
 function conditionText(c: unknown): string | undefined {
   const ref = conditionRef(c);
   if (!ref) return undefined;
-  const name = '$state' in ref ? ref.$state : '$prop' in ref ? ref.$prop : ref.$item;
+  const name = '$state' in ref ? ref.$state : '$prop' in ref ? ref.$prop : '$item' in ref ? ref.$item : ref.$entry;
   if (!isComparison(c)) return `${name} has a value`;
   const shown = (v: unknown) => (typeof v === 'string' ? `“${v}”` : String(v));
   return 'eq' in c ? `${name} is ${shown(c.eq)}` : `${name} is not ${shown(c.ne)}`;

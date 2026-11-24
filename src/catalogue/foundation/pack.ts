@@ -5,6 +5,7 @@ import { FOUNDATION_BASE_CSS } from './base.css';
 import { FOUNDATION_CONTRAST_PAIRS } from './contrast';
 import { FOUNDATION_FONTS } from './fonts';
 import { FOUNDATION_EXAMPLES } from './ai-examples';
+import { foundationArticleTemplate } from './article';
 
 export const FOUNDATION = createPack({
   id: 'foundation',
@@ -16,6 +17,7 @@ export const FOUNDATION = createPack({
   contrastPairs: FOUNDATION_CONTRAST_PAIRS,
   baseCss: FOUNDATION_BASE_CSS,
   fonts: FOUNDATION_FONTS,
+  articleTemplate: foundationArticleTemplate(),
   aiProfile: {
     examples: FOUNDATION_EXAMPLES,
     guidance: [

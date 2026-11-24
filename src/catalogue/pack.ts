@@ -4,7 +4,7 @@
  * (a `pack.json` manifest beside its font and preview files), and loaded from those files by the app. Loading
  * a pack only reads data: nothing in a release is ever run.
  */
-import type { ComponentDefinition, TokenDef } from '@shared/types';
+import type { ComponentDefinition, NodeTree, TokenDef } from '@shared/types';
 import type { ContrastPair } from '@shared/contrast';
 
 /**
@@ -77,6 +77,11 @@ export interface ThemePack {
   fonts: PackFont[];
   components: ComponentDefinition[];
   aiProfile: { guidance: string[]; examples?: AiExample[] };
+  /**
+   * The layout a new collection's entries start with: elements and text only (no placed components), reading the
+   * entry through `{ $entry: field }` bindings and styled with the pack's tokens. Without one, Foundation's is used.
+   */
+  articleTemplate?: NodeTree;
   /** Compatibility fixtures are only offered in development builds. */
   devOnly?: boolean;
   /** Insert thumbnails by component ID, made when the pack was built. */

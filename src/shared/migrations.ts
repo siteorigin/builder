@@ -403,8 +403,57 @@ export const MIGRATIONS: Migration[] = [
     description:
       'Collection entries are pages of the website, and an old address kept working can send visitors to an entry ({ from, entryId } in site.redirects) as well as to a page. Nothing in the documents changes; the new version only keeps an older editor, which would take such an address for a damaged one and neither publish entries nor keep their addresses, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'collection-templates',
+    description:
+      'Each collection has a layout template (template in collection.json) that every entry\'s page is shown with, whose elements read the entry through { $entry: field }. A collection stored before gets the layout its entries had: the title, the date and author, the featured image and the text in one reading column.',
+    migrate(project, due) {
+      for (const c of Object.values(project.collections ?? {}) as Loose[]) {
+        const settings = c?.settings;
+        if (!settings || typeof settings !== 'object' || !due(settings) || settings.template !== undefined) continue;
+        settings.template = v12ArticleTemplate(typeof settings.id === 'string' ? settings.id : '');
+      }
+    }
   }
 ];
+
+/**
+ * Frozen: the layout entries had before collections had templates, as a template. Its node IDs come from the
+ * collection's ID, so two collections' layouts never share one and the same project always migrates the same way.
+ */
+function v12ArticleTemplate(collectionId: string): NodeTree {
+  const id = (name: string) => `n_${stableHash(`${collectionId}/template/${name}`)}`;
+  const tok = (token: string) => ({ token });
+  const ids = { article: id('article'), column: id('column'), header: id('header'), title: id('title'), meta: id('meta'), date: id('date'), author: id('author'), image: id('image'), body: id('body') };
+  const nodes: Record<string, GraphNode> = {
+    [ids.article]: { id: ids.article, kind: 'element', tag: 'article', name: 'Article', styles: { base: { paddingBlock: tok('space.section'), paddingInline: tok('container.gutter') } }, children: [ids.column] },
+    [ids.column]: {
+      id: ids.column,
+      kind: 'element',
+      tag: 'div',
+      name: 'Reading column',
+      styles: { base: { layout: 'stack', gap: tok('space.lg'), width: 'fill', maxWidth: tok('container.reading'), marginInline: 'auto' } },
+      children: [ids.header, ids.image, ids.body]
+    },
+    [ids.header]: { id: ids.header, kind: 'element', tag: 'header', name: 'Header', styles: { base: { layout: 'stack', gap: tok('space.sm') } }, children: [ids.title, ids.meta] },
+    [ids.title]: { id: ids.title, kind: 'text', tag: 'h1', name: 'Title', text: { $entry: 'title' }, styles: { base: { textStyle: tok('text.h1') } } },
+    [ids.meta]: {
+      id: ids.meta,
+      kind: 'element',
+      tag: 'p',
+      name: 'Date and author',
+      collapseEmpty: true,
+      styles: { base: { layout: 'row', wrap: true, columnGap: '1em', color: tok('color.muted') } },
+      children: [ids.date, ids.author]
+    },
+    [ids.date]: { id: ids.date, kind: 'text', tag: 'span', name: 'Date', text: { $entry: 'publishedAt' }, datetime: { $entry: 'publishedAt' }, when: { $entry: 'publishedAt' } },
+    [ids.author]: { id: ids.author, kind: 'text', tag: 'span', name: 'Author', text: { $entry: 'author' }, when: { $entry: 'author' } },
+    [ids.image]: { id: ids.image, kind: 'image', name: 'Featured image', image: { $entry: 'featuredImage' }, when: { $entry: 'featuredImage' }, styles: { base: { width: 'fill', radius: tok('radius.md') } } },
+    [ids.body]: { id: ids.body, kind: 'text', tag: 'div', name: 'Text', rich: true, text: { $entry: 'body' }, when: { $entry: 'body' } }
+  };
+  return { rootIds: [ids.article], nodes };
+}
 
 /** A page as formats before independent header and footer settings stored it: one setting for both. */
 type LegacyPage = Omit<PageDoc, 'showHeader' | 'showFooter'> & { shell?: 'default' | 'none'; showHeader?: unknown; showFooter?: unknown };

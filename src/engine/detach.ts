@@ -134,7 +134,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       const tag = allowed.has(n.tag) ? n.tag : plain;
       return { tags: [tag], tag };
     }
-    const schema: PropSchema | undefined = '$prop' in n.tag ? propBindingSchema(def.properties, n.tag) : (own(at.scope.fields, n.tag.$item) as PropSchema | undefined);
+    const schema: PropSchema | undefined = '$prop' in n.tag ? propBindingSchema(def.properties, n.tag) : '$item' in n.tag ? (own(at.scope.fields, n.tag.$item) as PropSchema | undefined) : undefined;
     const options = schema?.type === 'enum' ? schema.options.map((o) => o.value).filter((o) => allowed.has(o)) : [];
     const fallback = schema?.type === 'enum' && options.includes(schema.default) ? schema.default : (options[0] ?? plain);
     const v = value(n.tag, at);
