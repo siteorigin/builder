@@ -90,6 +90,9 @@ ${SURFACES}
 
 .so-plain-link { background: var(--so-btn-bg, none); text-decoration: none; }
 .so-plain-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* A button that changes what a component shows (a tab, a disclosure) while looking like a link. */
+:where(button:is(.so-link, .so-plain-link)) { padding: 0; border: 0; font: inherit; text-align: inherit; cursor: pointer; }
+:where(button.so-plain-link) { color: inherit; }
 /* A link's icon beside its label. Buttons space it with their own gap; text links (and a link left without a
    destination, shown as plain text) sit it on the line with a margin. */
 :not(.so-btn) > .so-link__icon { display: inline-block; vertical-align: -0.18em; }
@@ -168,6 +171,12 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 :is(a, button).so-btn--text:dir(rtl):hover::after { transform: translateX(-3px); }
 .so-btn--light { --so-btn-bg: var(--so-color-on-brand); --so-btn-fg: var(--so-color-brand-strong); --so-btn-bg-hover: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand)); }
 :is(a, button).so-btn--light:hover { background: var(--so-btn-bg-hover, color-mix(in srgb, var(--so-btn-bg) 88%, var(--so-btn-fg))); }
+/* The tab chosen, or a choice that is on, is marked by more than its state: its border, an inner ring on a filled
+   button, a heavier underline on a text button or link. After the buttons' own rules, which they
+   would otherwise lose to; a component's own styles for it still win. */
+.so-btn--secondary:where([aria-selected='true'], [aria-pressed='true']) { border-color: currentColor; background: color-mix(in srgb, currentColor 10%, var(--so-btn-bg, transparent)); }
+:is(.so-btn--primary, .so-btn--light):where([aria-selected='true'], [aria-pressed='true']) { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--so-btn-fg, currentColor) 72%, transparent); }
+:is(.so-btn--text, .so-link, .so-plain-link):where([aria-selected='true'], [aria-pressed='true']) { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 5px; }
 
 .so-img { width: 100%; height: auto; object-fit: cover; }
 .so-img--placeholder {
@@ -226,6 +235,14 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
   .so-skip-link, .so-header__menu, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap, .so-viewer):not(#so-print) { display: none !important; }
   .so-action--image::after { display: none; }
   .so-header:not(#so-print) { position: static !important; }
+  /* A component's tabs print every panel (the generated rule hiding the others applies on screen only), each under
+     its tab's label, so the row of tabs is left out. */
+  .so-tablist:not(#so-print) { display: none !important; }
+  [role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before {
+    content: attr(data-tab-label); display: block; grid-column: 1 / -1; flex-basis: 100%;
+    margin-block-end: 0.5em; font-weight: 600;
+  }
+  [role='tabpanel'] + [role='tabpanel'] { margin-block-start: 1.5em; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
      the section), stays with what follows it, and short units (a plan, a contact method, a question and its
      answer, a gallery image and its caption, the contact form) stay whole. */

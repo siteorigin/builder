@@ -16,7 +16,10 @@ import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { REUSABILITY_CODES } from '@engine/reusability';
-import { generateProject, nodeClass } from '@generator/index';
+import { STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
+import { notFoundSectionRoutes, publicationPlan, renderedContent } from '@generator/checks';
+import { UTIL_JS } from '@generator/runtime-files';
+import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { P, eq, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
 import { OPERATION_SCHEMAS, validateOperation } from '@shared/ops';
@@ -52,6 +55,19 @@ function place(s: ProjectState, def: ComponentDefinition, props: Record<string, 
 
 const roots: string[] = [];
 afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+/** Every compiler warning (accessibility ones included) for the generated files of these definitions. */
+function compileWarnings(s: ProjectState, defs: ComponentDefinition[]): string[] {
+  const out: string[] = [];
+  const files = new Set(defs.map(defFile));
+  for (const instrument of [false, true]) {
+    for (const [path, source] of generateProject(s, { instrument })) {
+      if (!files.has(path)) continue;
+      for (const generate of ['server', 'client'] as const) out.push(...compile(source, { filename: path, generate, runes: true }).warnings.map((w) => `${path} (${generate}): ${w.code}`));
+    }
+  }
+  return out;
+}
 
 function compileErrors(s: ProjectState): string[] {
   const out: string[] = [];
@@ -525,9 +541,13 @@ describe('state buttons inside cards that link', () => {
     // The cards' fixed label and link are also flagged as design content every placement shares; that is not this test's subject.
     const cardProblems = (before: Diagnostic[], after: Diagnostic[]) => introducedDiagnostics(before, after).filter((d) => !REUSABILITY_CODES.has(d.code));
     expect(cardProblems(one, both).map((d) => [d.code, d.nodeId])).toEqual([['CARD_LINK_INTERACTIVE', 'card-b']]);
-    // Without its action the button is still a control in the card: the same problem, not a new one.
+    // Without its action the button is still a control in the card: the same problem, not a new one. It is now also a
+    // button with nowhere to go, which the site leaves out, where its action made it a real button.
     delete (tree.nodes['card-a-btn'] as LinkNode).stateAction;
-    expect(introducedDiagnostics(one, validateState(s))).toEqual([]);
+    const actionless = introducedDiagnostics(one, validateState(s));
+    expect(actionless.filter((d) => d.code === 'CARD_LINK_INTERACTIVE')).toEqual([]);
+    expect(validateState(s).filter((d) => d.code === 'CARD_LINK_INTERACTIVE').map((d) => d.nodeId)).toEqual(['card-a']);
+    expect(actionless.map((d) => [d.code, d.message])).toEqual([['BUTTON_UNLINKED', expect.stringMatching(/the “Switch” button has no link/)]]);
   });
 
   it('keeps a placement whose content sits in several cards one problem while those cards are repaired one by one', () => {
@@ -604,7 +624,8 @@ describe('the generated site', () => {
     expect(html).toContain('Billed yearly');
     expect(html).not.toContain('Billed monthly');
     expect(html).toContain('Read the terms');
-    expect(html).not.toContain('Cancel any time');
+    // The small print its button discloses is in the page, hidden on screen until the button opens it.
+    expect(openTag(html, nodeClass(def, 'details'))).toContain(STATE_OFF_CLASS);
     const period = (p: string) => `so-${price.id.replace(/[^a-zA-Z0-9]/g, '-')}--period-${p}`;
     const priceRoot = openTag(html, nodeClass(price, 'price-root'));
     expect(priceRoot).toContain(period('annual'));
@@ -639,6 +660,362 @@ describe('the generated site', () => {
     expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
     const monthly = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { ...BILLING, initial: 'monthly' } }]);
     expect(validateState(monthly).filter((d) => d.code === 'LINK_SECTION_MISSING')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Generated buttons, tabs and disclosures (#376)
+// ---------------------------------------------------------------------------
+
+const PLAN: UiStateSchema = { type: 'enum', label: 'Plan', options: [{ value: 'a', label: 'Starter' }, { value: 'b', label: 'Team' }, { value: 'c', label: 'Studio' }], initial: 'b' };
+
+/**
+ * A tab list over a three-option choice that starts on its middle option, with the tabs in another order than the
+ * options (so the keyboard follows the page and Next follows the options), each with a grid panel; a disclosure whose
+ * content sits in a collapsing wrapper; and a Next button.
+ */
+function tabsDef(
+  s: ProjectState,
+  opts: {
+    panelTag?: 'div' | 'section';
+    tabs?: Array<'a' | 'b' | 'c'>;
+    extra?: (b: Parameters<ComponentSpec['build']>[0]) => string[];
+    panelExtra?: (b: Parameters<ComponentSpec['build']>[0]) => string[];
+    properties?: ComponentSpec['properties'];
+    listLabel?: string | { $prop: string };
+    panelAnchor?: string;
+  } = {}
+) {
+  const tabs = opts.tabs ?? ['a', 'c', 'b'];
+  const appearance = { a: 'secondary', b: 'link', c: 'plain' } as const;
+  const label = { a: 'Starter', b: 'Team', c: 'Studio' } as const;
+  return addDef(s, {
+    componentId: 'test.tabs',
+    name: 'Plan tabs',
+    properties: opts.properties ?? {},
+    parts: {},
+    state: structuredClone({ plan: PLAN, open: OPEN }),
+    build: (b) =>
+      b.el('root', 'section', {}, [
+        b.el('list', 'div', opts.listLabel !== undefined ? { ariaLabel: opts.listLabel } : {}, tabs.map((v) => b.link(`tab-${v}`, NONE, label[v], appearance[v], { stateAction: { state: 'plan', op: 'set', value: v } }))),
+        ...(['a', 'b', 'c'] as const).map((v) =>
+          b.el(`panel-${v}`, opts.panelTag ?? 'div', { when: eq(uiState('plan'), v), styles: { layout: 'grid' }, ...(v === 'a' && opts.panelAnchor ? { anchor: opts.panelAnchor } : {}) }, [b.text(`text-${v}`, 'p', `${label[v]} plan details`), ...(v === 'a' ? (opts.panelExtra?.(b) ?? []) : [])])
+        ),
+        b.link('next', NONE, 'Next plan', 'text', { stateAction: { state: 'plan', op: 'next', wrap: true } }),
+        b.link('prev', NONE, 'Previous plan', 'text', { stateAction: { state: 'plan', op: 'prev' } }),
+        b.link('more', NONE, 'More', 'secondary', { stateAction: { state: 'open', op: 'toggle' } }),
+        b.el('wrap', 'div', { collapseEmpty: true }, [b.el('details', 'div', { when: uiState('open') }, [b.text('details-text', 'p', 'Cancel any time')])]),
+        ...(opts.extra?.(b) ?? [])
+      ])
+  });
+}
+
+/** Every opening tag in the html carrying this attribute set to this value (any value when it is undefined). */
+const tagsWith = (html: string, attr: string, value?: string) => [...html.matchAll(new RegExp(`<[a-z0-9]+\\b[^>]*\\s${attr}="${value ?? '[^"]*'}"[^>]*>`, 'g'))].map((m) => m[0]);
+const attrOf = (tag: string, attr: string) => new RegExp(`\\s${attr}="([^"]*)"`).exec(tag)?.[1];
+
+describe('generated buttons, tabs and disclosures', () => {
+  it('holds each placement’s state in a $state rune that its buttons change', () => {
+    const s = fresh();
+    const def = tabsDef(s);
+    place(s, def);
+    const source = generateProject(s).get(defFile(def))!;
+    expect(source).toContain('let so_state_open = $state(false);');
+    expect(source).toContain('let so_state_plan = $state("b");');
+    expect(source).toContain('onclick={() => (so_state_plan = "a")}');
+    expect(source).toContain('onclick={() => (so_state_open = !so_state_open)}');
+    expect(source).toContain('onclick={() => (so_state_plan = stepState(["a","b","c"], so_state_plan, 1, true))}');
+    expect(source).toContain('onclick={() => (so_state_plan = stepState(["a","b","c"], so_state_plan, -1, false))}');
+    // Nothing of the editor's: no Builder runtime, only the site's own helpers.
+    expect(source).not.toMatch(/data-so-|__so/);
+    expect(errors(s)).toEqual([]);
+    expect(compileErrors(s)).toEqual([]);
+    expect(compileWarnings(s, [def])).toEqual([]);
+  });
+
+  it('still generates a design whose declaration a hand edit damaged: its buttons do nothing, its reads stay put', () => {
+    const s = fresh();
+    const { def } = billingDef(s);
+    (s.components[def.id].state!.billing as { initial: string }).initial = 'weekly';
+    place(s, def);
+    const source = generateProject(s).get(defFile(def))!;
+    expect(source).not.toContain('so_state_billing');
+    // Its reads show the value written, and its buttons are left without an action.
+    expect(source).toContain('{#if "weekly" === "annual"}');
+    expect(source).not.toMatch(/onclick=\{\(\) => \(so_state_billing/);
+    expect(source).toContain('let so_state_open = $state(false);');
+    expect(compileErrors(s)).toEqual([]);
+  });
+
+  it('compiles a design whose properties are named like its own helpers or like Svelte runes', async () => {
+    const s = fresh();
+    const def = tabsDef(s, { properties: { state: P.str('State', 'Ready'), tabKey: P.str('Tab key', 'k'), props: P.str('Props', 'p'), derived: P.str('Derived', 'd') }, extra: (b) => [b.text('note', 'p', prop('state'))] });
+    place(s, def);
+    expect(errors(s)).toEqual([]);
+    expect(compileErrors(s)).toEqual([]);
+    expect(compileWarnings(s, [def])).toEqual([]);
+    expect(await renderHome(s)).toContain('>Ready</p>');
+  });
+
+  it('keeps content in the page beside a list in a collapsing wrapper, which it hides on screen with it', async () => {
+    const s = fresh();
+    const def = addDef(s, {
+      componentId: 'test.rows',
+      name: 'Rows',
+      properties: { rows: P.list('Rows', 'Row', { label: P.str('Label', '') }, []) },
+      parts: {},
+      state: structuredClone({ open: OPEN }),
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.link('more', NONE, 'More', 'secondary', { stateAction: { state: 'open', op: 'toggle' } }),
+          b.el('wrap', 'div', { collapseEmpty: true }, [
+            // A comparison needs no helper of its own: the list's test is the only use of `has`.
+            b.el('details', 'div', { when: eq(uiState('open'), true) }, [b.text('details-text', 'p', 'Cancel any time')]),
+            b.repeat('rows', 'rows', [b.text('row', 'p', { $item: 'label' })])
+          ])
+        ])
+    });
+    place(s, def);
+    expect(compileErrors(s)).toEqual([]);
+    const html = await renderHome(s);
+    expect(html).toContain('Cancel any time');
+    expect(openTag(html, nodeClass(def, 'wrap'))).toContain(STATE_OFF_CLASS);
+  });
+
+  it('names a panel with content of its own, and leaves a tab list alone when it cannot name its parts safely', async () => {
+    // A plain paragraph is a disclosure's content as well as a container is.
+    const s = fresh();
+    const { def } = billingDef(s);
+    place(s, def);
+    const html = await renderHome(s);
+    const [toggle] = tagsWith(html, 'aria-expanded');
+    const details = openTag(html, nodeClass(def, 'details'));
+    expect(details).toMatch(/^<p\b/);
+    expect(attrOf(details, 'id')).toBe(attrOf(toggle, 'aria-controls'));
+    expect(details).toContain(STATE_OFF_CLASS);
+    expect(html).toContain('Cancel any time');
+    // A panel with an anchor, which every placement would share, makes no tab list.
+    const t = fresh();
+    place(t, tabsDef(t, { panelAnchor: 'starter' }));
+    const out = await renderHome(t);
+    expect(tagsWith(out, 'role', 'tablist')).toEqual([]);
+    expect(tagsWith(out, 'aria-pressed')).toHaveLength(3);
+  });
+
+  it('names a tab list by its own label, or by its state’s while a bound label is left blank', async () => {
+    const s = fresh();
+    const def = tabsDef(s, { properties: { listName: P.str('List name', '') }, listLabel: { $prop: 'listName' } });
+    place(s, def);
+    place(s, def, { listName: 'Choose a plan' });
+    expect(compileWarnings(s, [def])).toEqual([]);
+    expect(tagsWith(await renderHome(s), 'role', 'tablist').map((t) => attrOf(t, 'aria-label'))).toEqual(['Plan', 'Choose a plan']);
+  });
+
+  it('checks what kept panels put in the page, as the site’s build does, and what a visitor sees at first', async () => {
+    const s = fresh();
+    // A jump to a section the page lacks, inside the panel of a tab not chosen at first: the build would stop on it.
+    const def = tabsDef(s, { panelExtra: (b) => [b.link('jump', { type: 'anchor', target: 'nowhere' }, 'Compare', 'link')] });
+    place(s, def);
+    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map((d) => d.nodeId)).toHaveLength(1);
+    // A section inside that hidden panel is in the HTML, but a jump to it from outside lands on nothing to see.
+    const t = fresh();
+    const hidden = tabsDef(t, { panelExtra: (b) => [b.text('terms', 'p', 'Starter terms', { anchor: 'starter-terms' })], extra: (b) => [b.link('to-terms', { type: 'anchor', target: 'starter-terms' }, 'Terms', 'link')] });
+    place(t, hidden);
+    expect(await renderHome(t)).toContain('id="starter-terms"');
+    expect(validateState(t).filter((d) => d.code === 'LINK_SECTION_MISSING')).toHaveLength(1);
+    // Chosen at first, the section shows and the jump is fine.
+    const shown = apply(t, [{ type: 'component.setState', definitionId: hidden.id, state: 'plan', schema: { ...PLAN, initial: 'a' } }]);
+    expect(validateState(shown).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+    // A jump within that hidden panel shows with its section, so it is fine too.
+    const u = fresh();
+    place(u, tabsDef(u, { panelExtra: (b) => [b.text('terms', 'p', 'Starter terms', { anchor: 'starter-terms' }), b.link('to-terms', { type: 'anchor', target: 'starter-terms' }, 'Terms', 'link')] }));
+    expect(validateState(u).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+  });
+
+  /** A closed disclosure over a summary that jumps to the terms beside it, which carry an anchor. */
+  function termsDef(s: ProjectState) {
+    return addDef(s, {
+      componentId: 'test.terms',
+      name: 'Terms',
+      properties: {},
+      parts: {},
+      state: structuredClone({ open: OPEN }),
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.link('more', NONE, 'More', 'secondary', { stateAction: { state: 'open', op: 'toggle' } }),
+          b.el('summary', 'div', { when: uiState('open') }, [b.link('to-terms', { type: 'anchor', target: 'terms' }, 'See the terms', 'link')]),
+          b.el('terms', 'div', { when: uiState('open'), anchor: 'terms' }, [b.text('terms-text', 'p', 'The terms')])
+        ])
+    });
+  }
+
+  it('keeps all of a disclosure’s content in the page, so a jump from one part to another works when it opens', async () => {
+    const s = fresh();
+    const def = termsDef(s);
+    place(s, def);
+    expect(compileErrors(s)).toEqual([]);
+    const html = await renderHome(s);
+    expect(html).toContain('href="#terms"');
+    const terms = openTag(html, nodeClass(def, 'terms'));
+    expect(attrOf(terms, 'id')).toBe('terms');
+    expect(terms).toContain(STATE_OFF_CLASS);
+    // The button names only the content without an anchor of its own: an anchor every placement would share.
+    const [toggle] = tagsWith(html, 'aria-expanded');
+    expect(attrOf(toggle, 'aria-controls')).toBe(attrOf(openTag(html, nodeClass(def, 'summary')), 'id'));
+    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+  });
+
+  it('follows kept panels where a page’s HTML is copied or served: a copied page’s jumps, the not-found page’s', () => {
+    const s = fresh();
+    place(s, termsDef(s));
+    const jump = { id: 'n_jumpterm', kind: 'link', link: { type: 'page', target: home(s).id, anchor: 'terms' }, label: 'Terms', appearance: 'link' } as GraphNode;
+    home(s).nodes[jump.id] = jump;
+    home(s).rootIds.push(jump.id);
+    const r = applyOperations(s, [{ type: 'page.duplicate', pageId: home(s).id }]);
+    const copy = r.state.pages[r.results[0].pageId as string];
+    const copied = Object.values(copy.nodes).filter((n): n is LinkNode => n.kind === 'link' && n.label === 'Terms');
+    expect(copied.map((n) => n.link)).toEqual([{ type: 'page', target: copy.id, anchor: 'terms' }]);
+    // A jump in a panel the shared header keeps hidden is served on the not-found page, which sends it to its section.
+    const h = fresh();
+    const header = h.site.shell.header;
+    const inHeader = makeInstance(tabsDef(h, { panelExtra: (b) => [b.link('to-pricing', { type: 'anchor', target: 'pricing' }, 'Pricing', 'link')] }), {});
+    header.nodes[inHeader.id] = inHeader;
+    header.rootIds.push(inHeader.id);
+    home(h).nodes[home(h).rootIds[0]].anchor = 'pricing';
+    expect(notFoundSectionRoutes(h)).toMatchObject({ pricing: home(h).route });
+  });
+
+  it('renders a tab list whose tabs and panels name each other in every placement, every panel in the page', async () => {
+    const s = fresh();
+    const def = tabsDef(s);
+    place(s, def);
+    place(s, def);
+    const html = await renderHome(s);
+    const lists = tagsWith(html, 'role', 'tablist');
+    expect(lists).toHaveLength(2);
+    for (const list of lists) expect(attrOf(list, 'aria-label')).toBe('Plan');
+    const tabs = tagsWith(html, 'role', 'tab');
+    const panels = tagsWith(html, 'role', 'tabpanel');
+    expect(tabs).toHaveLength(6);
+    expect(panels).toHaveLength(6);
+    for (const tab of tabs) expect(tab).toMatch(/^<button\b[^>]*\stype="button"/);
+    // Each placement chooses Team at first: one tab selected and in the tab order, the others reached by arrows.
+    expect(tabs.map((t) => [attrOf(t, 'aria-selected'), attrOf(t, 'tabindex')])).toEqual([...Array(2)].flatMap(() => [['false', '-1'], ['false', '-1'], ['true', '0']]));
+    // Every reference finds exactly one element, and no ID is used twice on the page.
+    const ids = [...html.matchAll(/\sid="([^"]*)"/g)].map((m) => m[1]);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const tab of tabs) {
+      const panel = panels.find((p) => attrOf(p, 'id') === attrOf(tab, 'aria-controls'))!;
+      expect(panel).toBeTruthy();
+      expect(attrOf(panel, 'aria-labelledby')).toBe(attrOf(tab, 'id'));
+      expect(attrOf(panel, 'tabindex')).toBe('0');
+      // Only the chosen tab's panel shows on screen; the others are in the page, hidden until printed.
+      expect(attrOf(panel, 'class')!.split(' ').includes(STATE_OFF_CLASS)).toBe(attrOf(tab, 'aria-selected') === 'false');
+    }
+    expect(panels.map((p) => attrOf(p, 'data-tab-label'))).toEqual([...Array(2)].flatMap(() => ['Starter', 'Team', 'Studio']));
+    for (const words of ['Starter plan details', 'Team plan details', 'Studio plan details']) expect(html.split(words)).toHaveLength(3);
+  });
+
+  it('renders a disclosure that says whether it is expanded, its closed content in the page and hidden on screen', async () => {
+    const s = fresh();
+    const def = tabsDef(s);
+    place(s, def);
+    const html = await renderHome(s);
+    const [more] = tagsWith(html, 'aria-expanded');
+    expect(more).toMatch(/^<button\b[^>]*\stype="button"/);
+    expect(attrOf(more, 'aria-expanded')).toBe('false');
+    const details = openTag(html, nodeClass(def, 'details'));
+    expect(attrOf(details, 'id')).toBe(attrOf(more, 'aria-controls'));
+    expect(details).toContain(STATE_OFF_CLASS);
+    expect(html).toContain('Cancel any time');
+    // The collapsing wrapper stays for the content it holds, and hides on screen with it.
+    expect(openTag(html, nodeClass(def, 'wrap'))).toContain(STATE_OFF_CLASS);
+    // Opened at first, nothing is hidden.
+    const open = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'open', schema: { ...OPEN, initial: true } }]);
+    const shown = await renderHome(open);
+    expect(attrOf(tagsWith(shown, 'aria-expanded')[0], 'aria-expanded')).toBe('true');
+    expect(openTag(shown, nodeClass(def, 'details'))).not.toContain(STATE_OFF_CLASS);
+    expect(openTag(shown, nodeClass(def, 'wrap'))).not.toContain(STATE_OFF_CLASS);
+  });
+
+  it('falls back to buttons that say whether they are pressed where the shape is not a tab list or disclosure', async () => {
+    const s = fresh();
+    const { def } = billingDef(s);
+    place(s, def);
+    const html = await renderHome(s);
+    expect(tagsWith(html, 'role', 'tablist')).toEqual([]);
+    // The billing buttons share their row with the title and notes: they are real buttons the site shows, saying which
+    // choice is on, and the notes stay plain conditions.
+    const pressed = tagsWith(html, 'aria-pressed');
+    expect(pressed.map((t) => [t.slice(0, 7), attrOf(t, 'aria-pressed')])).toEqual([['<button', 'false'], ['<button', 'true']]);
+    for (const t of pressed) expect(t).toContain('type="button"');
+    expect(html).not.toContain('Billed monthly');
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toEqual([]);
+    // A missing tab (a choice the list cannot reach) or a panel that is not a plain container makes no tab list either.
+    for (const variant of [{ tabs: ['a', 'b'] as Array<'a' | 'b' | 'c'> }, { panelTag: 'section' as const }]) {
+      const t = fresh();
+      const tabsOnly = tabsDef(t, variant);
+      place(t, tabsOnly);
+      const out = await renderHome(t);
+      expect(tagsWith(out, 'role', 'tablist')).toEqual([]);
+      expect(tagsWith(out, 'role', 'tabpanel')).toEqual([]);
+      expect(tagsWith(out, 'aria-pressed')).toHaveLength(variant.tabs?.length ?? 3);
+      expect(out).toContain('Team plan details');
+      expect(out).not.toContain('Starter plan details');
+      expect(compileWarnings(t, [tabsOnly])).toEqual([]);
+    }
+  });
+
+  it('keeps a button that also goes somewhere a link, which changes the state as it goes', async () => {
+    const s = fresh();
+    const { def } = plainDef(s);
+    const r = apply(s, [
+      { type: 'component.setState', definitionId: def.id, state: 'open', schema: { type: 'boolean' } },
+      { type: 'node.setStateAction', owner: owner(def), nodeId: 'btn', action: { state: 'open', op: 'toggle' } }
+    ]);
+    (r.components[def.id].tree!.nodes.btn as LinkNode).link = { type: 'url', target: 'https://example.com/plans' };
+    place(r, r.components[def.id]);
+    const source = generateProject(r).get(defFile(def))!;
+    expect(source).toContain('onclick={() => (so_state_open = !so_state_open)}');
+    const html = await renderHome(r);
+    const link = openTag(html, nodeClass(def, 'btn'));
+    expect(link).toMatch(/^<a\b[^>]*href="https:\/\/example\.com\/plans"/);
+    expect(link).not.toMatch(/aria-(pressed|expanded)/);
+  });
+
+  it('treats a state button as one the site shows, and checks links a visitor reaches by changing state', () => {
+    const plan = apply(fresh(), [{ type: 'page.create', pageId: 'pg_draft001', title: 'Soon', route: '/soon/' }, { type: 'page.update', pageId: 'pg_draft001', draft: true }]);
+    // A link to the draft inside the panel of a tab not chosen at first.
+    const def = tabsDef(plan, { panelExtra: (b) => [b.link('soon', { type: 'page', target: 'pg_draft001' }, 'Coming soon', 'link')] });
+    place(plan, def);
+    expect(validateState(plan).filter((d) => d.code === 'BUTTON_UNLINKED')).toEqual([]);
+    const words = renderedContent(plan, home(plan)).filter((c) => c.kind === 'text').map((c) => c.value);
+    expect(words).toEqual(expect.arrayContaining(['Starter', 'Team', 'Studio', 'Next plan', 'More']));
+    expect(publicationPlan(plan).draftLinks.map((l) => l.label)).toEqual(['Coming soon']);
+  });
+
+  it('steps a choice through its options in order, staying at the ends unless it wraps', async () => {
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const dir = mkdtempSync(join(resolve('.tmp'), 'ui-state-util-'));
+    roots.push(dir);
+    writeFileSync(join(dir, 'util.mjs'), UTIL_JS);
+    const { stepState } = (await import(/* @vite-ignore */ join(dir, 'util.mjs'))) as { stepState: (o: string[], v: string, by: number, wrap: boolean) => string };
+    const o = ['a', 'b', 'c'];
+    expect([stepState(o, 'a', 1, false), stepState(o, 'c', 1, false), stepState(o, 'a', -1, false), stepState(o, 'b', -1, false)]).toEqual(['b', 'c', 'a', 'a']);
+    expect([stepState(o, 'c', 1, true), stepState(o, 'a', -1, true)]).toEqual(['a', 'c']);
+    expect([stepState(o, 'gone', 1, true), stepState(o, 'gone', -1, true), stepState(o, 'gone', -1, false)]).toEqual(['a', 'a', 'a']);
+  });
+
+  it('hides content a state hides on screen only, and prints every panel under its tab’s label', () => {
+    const s = fresh();
+    const plain = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
+    expect(plain).not.toContain(STATE_OFF_CLASS);
+    tabsDef(s);
+    const css = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
+    expect(css).toMatch(new RegExp(`@media not print \\{\\s*\\.${STATE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
+    const print = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media print'));
+    expect(print).toContain('.so-tablist:not(#so-print) { display: none !important; }');
+    expect(print).toContain("[role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before");
   });
 });
 

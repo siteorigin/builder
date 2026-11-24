@@ -21,13 +21,14 @@ export function linkSvelte(instrument = false): string {
 	/**
 	 * Renders a resolved link. Site-relative links go through SvelteKit's resolve(), so the site also
 	 * works when it is published under a sub-path. A button without a destination but with a click handler
-	 * (from your own code) is a real button; one with neither is left out (keeping only its id, so links to
-	 * it still land). Other links without a destination render as their text. With \`card\` (a tag), the link is a
+	 * (from your own code) is a real button, and so is a \`so_control\` (one that changes what its component shows),
+	 * whatever it looks like; a button with neither is left out (keeping only its id, so links to it still land).
+	 * Other links without a destination render as their text. With \`card\` (a tag), the link is a
 	 * whole container: an anchor around everything inside it, or that tag when there is nowhere to go. A link to one
 	 * of the site's documents downloads it under its own file name.
 	 */
 	import { resolve } from '$app/paths';
-	let { link = null, appearance = '', card = '', class: className = '', children, ...rest } = $props();
+	let { link = null, appearance = '', card = '', so_control = false, class: className = '', children, ...rest } = $props();
 	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
 	const href = $derived(safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
 	const download = $derived(href && safe.startsWith('/') && typeof link?.download === 'string' && link.download ? link.download : undefined);
@@ -58,7 +59,7 @@ export function linkSvelte(instrument = false): string {
 		rel={link?.newTab ? 'noopener noreferrer' : undefined}
 		{...rest}>{@render children?.()}</a
 	>
-{:else if button && typeof rest.onclick === 'function'}
+{:else if (button || so_control) && typeof rest.onclick === 'function'}
 	<button class={[kind, className]} {...rest} type={['submit', 'reset'].includes(String(rest.type ?? '').toLowerCase()) ? rest.type : 'button'}>{@render children?.()}</button>
 {:else if button}
 	${unlinked}
@@ -497,6 +498,38 @@ export function thumbnail(image) {
 	if (!smaller.length) return image;
 	const largest = smaller.reduce((a, b) => (parseInt(b[1], 10) > parseInt(a[1], 10) ? b : a));
 	return { ...image, src: largest[0], srcset: smaller.map((c) => c.join(' ')).join(', ') };
+}
+
+/**
+ * The option a step button moves a choice to: the next (\`by\` 1) or previous (-1) of \`options\`, staying at the last or
+ * first unless \`wrap\` goes round to the other end. A value that is none of them starts again at the first.
+ */
+export function stepState(options, value, by, wrap) {
+	const at = options.indexOf(value);
+	if (at < 0) return options[0];
+	const to = at + by;
+	return options[wrap ? (to + options.length) % options.length : Math.min(Math.max(to, 0), options.length - 1)];
+}
+
+/**
+ * Moves through a tab list from the keyboard, as a tab's keydown handler: Left and Right go to the previous and next
+ * tab (the other way round in right-to-left text), round from one end to the other, and Home and End to the first and
+ * last. The tab moved to takes the focus and is chosen, as clicking it would choose it. Other keys are left alone.
+ */
+export function tabKey(event) {
+	if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+	const tab = event.currentTarget;
+	// A tab the layout hides (at this screen size) is passed over.
+	const tabs = Array.from(tab.parentElement?.children ?? []).filter((t) => t.getAttribute('role') === 'tab' && t.getClientRects().length > 0);
+	const at = tabs.indexOf(tab);
+	const back = getComputedStyle(tab).direction === 'rtl' ? 'ArrowRight' : 'ArrowLeft';
+	const forward = back === 'ArrowLeft' ? 'ArrowRight' : 'ArrowLeft';
+	const to = { Home: 0, End: tabs.length - 1, [back]: at - 1, [forward]: at + 1 }[event.key];
+	if (at < 0 || to === undefined) return;
+	event.preventDefault();
+	const next = tabs[(to + tabs.length) % tabs.length];
+	next.focus();
+	next.click();
 }
 
 /** Rich text blocks as paragraph strings, for code components written against that older form. */

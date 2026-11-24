@@ -175,6 +175,14 @@ describe('buttons without a destination in the editor preview', () => {
       expect(action({ type: undefined })).toContain('type="button"');
       expect(action({ type: 'submit' })).toContain('type="submit"');
       expect(action({ type: 'RESET' })).toContain('type="RESET"');
+      // Code that gives a text link or a plain link a click handler keeps the text it always had; a control (a design's
+      // button that changes what its component shows) is a real button whatever it looks like.
+      for (const appearance of ['link', 'plain']) {
+        const shown = (props: Record<string, unknown>) => render(Link, { props: { link: null, appearance, onclick: () => undefined, ...props } }).body;
+        expect(shown({})).not.toContain('<button');
+        expect(shown({ control: true })).not.toContain('<button');
+        expect(shown({ so_control: true })).toMatch(/<button\b[^>]*type="button"/);
+      }
     }
   });
 

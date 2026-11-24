@@ -961,8 +961,9 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
  * the source page as a whole stay as they were: a link back to the source is one the author chooses.
  */
 function keepSectionLinksOnCopy(state: ProjectState, sourceId: string, copy: PageDoc) {
-  // No shell IDs leaves the header and footer's IDs out: those are shared, so their links stay where they were.
-  const ids = pageIds(state, copy.id, NO_SHELL_IDS);
+  // No shell IDs leaves the header and footer's IDs out: those are shared, so their links stay where they were. A
+  // section in a panel kept in the page hidden is the copy's too.
+  const ids = pageIds(state, copy.id, NO_SHELL_IDS, true);
   const walk = (v: unknown) => {
     if (Array.isArray(v)) return v.forEach(walk);
     if (!v || typeof v !== 'object') return;

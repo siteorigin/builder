@@ -17,6 +17,7 @@ import type {
   InstanceNode,
   LinkValue,
   ListFeed,
+  LinkNode,
   ListProp,
   NodeTree,
   OwnerRef,
@@ -27,10 +28,12 @@ import type {
   ResponsiveStyles,
   SlotDef,
   TextStyleValue,
+  StateAction,
   TokenDef,
-  TokenValue
+  TokenValue,
+  UiStateSchema
 } from '@shared/types';
-import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, isComparison, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
+import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
 import {
   MEDIA_QUERIES,
   REDUCED_MOTION_QUERY,
@@ -67,6 +70,7 @@ import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
 import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, isArticleDate, pageArticle } from '@shared/articles';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
+import { declaredState, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
@@ -128,7 +132,12 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey']);
+/**
+ * Svelte's runes, by the name a local would hide them under: a property local named `state` would make `$state(...)`
+ * read it as a store, so properties never take these names as locals either.
+ */
+const RUNE_NAMES = new Set(['state', 'derived', 'effect', 'props', 'bindable', 'inspect', 'host']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
 const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'children']);
 
@@ -149,7 +158,7 @@ export function propLocals(def: ComponentDefinition): Map<string, string> {
   const taken = new Set<string>();
   for (const name of Object.keys(def.properties).sort()) {
     let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
-    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || /^(\$|slot_|variant_|so_children_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|variant_|so_children_|so_state_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
     let unique = local;
     for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
     taken.add(unique);
@@ -709,8 +718,15 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
   return rules;
 }
 
+/** The class a panel kept in the page takes while its component's state hides it (see stateWidgets). */
+export const STATE_OFF_CLASS = 'so-state-off';
+
 export function generateComponentsCss(state: ProjectState): string {
   const parts: string[] = ['/* Component definition styles. Generated from siteorigin/components. */'];
+  // A tab's panel while another tab is chosen, or a closed disclosure's content, stays in the page hidden on screen
+  // only, so printing shows it with its own layout. An id no element has (#so-print) outweighs a placement's styles.
+  if (sortedDefs(state).some((def) => def.kind === 'managed' && stateLocals(def).size))
+    parts.push(`/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`);
   for (const def of sortedDefs(state)) {
     if (def.kind !== 'managed' || !def.tree) continue;
     const css = emitRules(definitionRules(state, def));
@@ -915,6 +931,304 @@ interface EmitCtx {
    * placement chose (`appear`, or the design's own while that is unset), written in, since code takes none.
    */
   standalone?: { appear?: AppearPreset | 'none' };
+  /** The definition's UI state, by name, with the `$state` local each one lives in (definitions only). */
+  states?: Map<string, UiStateLocal>;
+  /** The tab lists, disclosures and choice buttons the design's state makes (see stateWidgets). */
+  widgets?: StateWidgets;
+}
+
+/** One UI state variable of the definition being emitted: the local holding it and its well-formed declaration. */
+interface UiStateLocal {
+  local: string;
+  schema: UiStateSchema;
+  /** An enum's values in order, which `next` and `prev` step through; empty for a yes/no state. */
+  values: string[];
+}
+
+/**
+ * A definition's UI state the generated component can hold, by name: each well-formed declaration (as validation
+ * judges it), in a `$state` local of its own (`so_state_<name>`, a prefix no property's local takes). A declaration a
+ * hand edit damaged is left out, and reads of it show the value it starts at, as validation reports it.
+ */
+function stateLocals(def: ComponentDefinition): Map<string, UiStateLocal> {
+  const out = new Map<string, UiStateLocal>();
+  if (def.kind !== 'managed' || !def.state || typeof def.state !== 'object' || Array.isArray(def.state)) return out;
+  for (const name of Object.keys(def.state).sort()) {
+    const schema = declaredState(def, name);
+    if (schema) out.set(name, { local: `so_state_${name}`, schema, values: schema.type === 'enum' ? schema.options.map((o) => o.value) : [] });
+  }
+  return out;
+}
+
+/**
+ * What a button's click does to the state, as an event handler, or null when the action names state the design
+ * cannot hold or a change that state cannot make (validation reports both).
+ */
+function stateActionHandler(ctx: EmitCtx, action: StateAction | undefined): string | null {
+  const s = ctx.def ? actionState(ctx.def, ctx.states, action) : null;
+  if (!action || !s) return null;
+  switch (action.op) {
+    case 'toggle':
+      return `() => (${s.local} = !${s.local})`;
+    case 'set':
+      return `() => (${s.local} = ${js(action.value)})`;
+    default:
+      useImport(ctx, '{ stepState }', `${RUNTIME_DIR}/util.js`);
+      return `() => (${s.local} = stepState(${js(s.values)}, ${s.local}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true}))`;
+  }
+}
+
+/**
+ * The state a button's action changes, when the design holds that state and validation accepts the action (an action
+ * a hand edit damaged does nothing, as validation reports it).
+ */
+function actionState(def: ComponentDefinition, states: Map<string, UiStateLocal> | undefined, action: unknown): UiStateLocal | null {
+  if (!action || typeof action !== 'object' || Array.isArray(action)) return null;
+  const name = (action as { state?: unknown }).state;
+  const s = typeof name === 'string' ? states?.get(name) : undefined;
+  return s && !stateActionProblem(def, action) ? s : null;
+}
+
+/**
+ * Whether a button's state action works in the generated site: the design holds the state and the action is one it can
+ * make. Such a button renders even with nowhere to go, as a real button (the checks use this to tell).
+ */
+export function stateActionWorks(def: ComponentDefinition | null | undefined, action: unknown): boolean {
+  return !!def && action !== undefined && !!actionState(def, stateLocals(def), action);
+}
+
+/** A panel kept in the page while its state hides it: the state and the value it shows for, and its tab in a tab list. */
+interface StatePanel {
+  state: string;
+  shows: boolean | string;
+  tab?: string;
+}
+/** What a button that changes state, and goes nowhere, tells assistive technology about what it does. */
+type StateButton =
+  | { role: 'tab'; state: string; value: string; panel: string }
+  | { role: 'disclosure'; state: string; open: boolean; panels: string[] }
+  | { role: 'pressed'; state: string; value: boolean | string };
+interface StateWidgets {
+  panels: Map<string, StatePanel>;
+  /** Tab lists, by node ID: the state their tabs choose. */
+  lists: Map<string, string>;
+  buttons: Map<string, StateButton>;
+}
+
+/**
+ * The accessible patterns a design's state makes, worked out once per definition from the shape of its tree:
+ *
+ * - A tab list: a plain \`div\` whose children are exactly one "set" button for each option of a choice, with a plain
+ *   \`div\` for each option elsewhere that shows only while that option is chosen (its one condition). The panels stay in
+ *   the page, hidden on screen while another tab is chosen, so every tab's \`aria-controls\` finds its panel and printing
+ *   shows them all.
+ * - A disclosure: a button that toggles a yes/no state, and the elements that show only while it is on (or, failing
+ *   those, only while it is off). They stay in the page the same way, and the button says whether they are expanded.
+ * - Anything else that sets a state to one value says whether it is pressed (the state has that value), and a toggle
+ *   with nothing to disclose likewise; next and previous buttons are commands.
+ *
+ * Only buttons that go nowhere take part (a link that also changes state stays a link), and only content rendered once
+ * per placement: not inside a list or in content handed to a nested component's slot, which may show it more than once,
+ * where one ID could not name it. Such content keeps its condition, so it is simply shown and hidden.
+ */
+function stateWidgets(ctx: EmitCtx): StateWidgets {
+  const out: StateWidgets = { panels: new Map(), lists: new Map(), buttons: new Map() };
+  const def = ctx.def;
+  const tree = def?.tree;
+  if (!def || !tree || !ctx.states?.size) return out;
+  const roots = new Set(tree.rootIds);
+  // Rendered once per placement and whenever the placement is: reached from a root through elements alone, none of
+  // them (below the root) shown only on a condition or rendered by a runtime helper. Content under a condition could
+  // be missing while its tab or button is there, leaving a reference to nothing.
+  const once = new Set<string>();
+  const parent = new Map<string, string>();
+  const reach = (id: string) => {
+    const n = tree.nodes[id];
+    if (!n || once.has(id)) return;
+    once.add(id);
+    if (n.kind !== 'element' || (!roots.has(id) && (n.when || n.unless)) || rendersAsCard(ctx, n) || isCarouselTrack(n)) return;
+    for (const c of n.children) {
+      if (!parent.has(c)) parent.set(c, id);
+      reach(c);
+    }
+  };
+  tree.rootIds.forEach(reach);
+  /** What a node's one condition shows it for: a yes/no state's value or one option of a choice; null for anything else. */
+  const guard = (n: GraphNode): { state: string; shows: boolean | string } | null => {
+    if (!n.when === !n.unless) return null;
+    const c = (n.when ?? n.unless) as Condition;
+    const negate = !n.when;
+    const ref = conditionRef(c);
+    const state = isStateRef(ref) ? ref.$state : '';
+    const s = ctx.states!.get(state);
+    if (!s) return null;
+    if (isComparison(c)) {
+      const equal = 'eq' in c !== negate;
+      const value = 'eq' in c ? c.eq : c.ne;
+      if (s.schema.type === 'boolean') return typeof value === 'boolean' ? { state, shows: equal ? value : !value } : null;
+      return equal && typeof value === 'string' && s.values.includes(value) ? { state, shows: value } : null;
+    }
+    return s.schema.type === 'boolean' ? { state, shows: !negate } : null;
+  };
+  /**
+   * Content that can stay in the page hidden: rendered once, always in the page itself (not collapsing), and not a
+   * runtime helper's host. A tab list and its panels are plain elements of \`tag\` without an anchor of their own
+   * (which two placements would share, where a tab and its panel must name each other); a disclosure's content may
+   * also be plain text, and keeps an anchor, though its button names only the content without one.
+   */
+  const panelHost = (n: GraphNode | undefined, tag?: string): n is GraphNode & { kind: 'element' | 'text' } => {
+    if (!n || !once.has(n.id) || roots.has(n.id) || (tag && n.anchor)) return false;
+    if (n.kind === 'text') return !tag && !n.rich;
+    return n.kind === 'element' && !n.collapseEmpty && !rendersAsCard(ctx, n) && !isCarouselTrack(n) && (tag ? isBareTag(ctx, n, tag) : true);
+  };
+  /** A button that changes state and goes nowhere: always a real button. */
+  const stateButton = (n: GraphNode): n is GraphNode & { kind: 'link'; stateAction: StateAction } =>
+    n.kind === 'link' && !!actionState(def, ctx.states, n.stateAction) && !isBinding(n.link) && !resolveLink(n.link as LinkValue, ctx.rctx);
+  const nodes = Object.values(tree.nodes).filter((n): n is GraphNode => !!n && typeof n === 'object');
+  const guarded = nodes.map((n) => ({ n, g: guard(n) })).filter((x): x is { n: GraphNode; g: { state: string; shows: boolean | string } } => !!x.g);
+  const insidePanel = (id: string, panels: Set<string>) => {
+    for (let at = parent.get(id), seen = 0; at && seen < 1000; at = parent.get(at), seen++) if (panels.has(at)) return true;
+    return false;
+  };
+  for (const [name, s] of [...ctx.states].sort(([a], [b]) => a.localeCompare(b))) {
+    const buttons = nodes.filter((n) => stateButton(n) && n.stateAction.state === name) as Array<GraphNode & { kind: 'link'; stateAction: StateAction }>;
+    if (s.schema.type === 'enum') {
+      // One list whose children are exactly one unconditional "set" button per option, all rendered once.
+      const setters = buttons.filter((b) => b.stateAction.op === 'set' && once.has(b.id) && !b.when && !b.unless && !b.anchor);
+      const lists = [...new Set(setters.map((b) => parent.get(b.id)).filter((p): p is string => !!p))].filter((id) => {
+        const list = tree.nodes[id];
+        if (!panelHost(list, 'div') || list.kind !== 'element' || list.when || list.unless || list.children.length !== s.values.length) return false;
+        const values = list.children.map((c) => setters.find((b) => b.id === c)?.stateAction).map((a) => (a?.op === 'set' ? a.value : undefined));
+        return s.values.every((v) => values.includes(v));
+      });
+      const list = lists.length === 1 ? (tree.nodes[lists[0]] as GraphNode & { kind: 'element' }) : null;
+      const panels = list ? s.values.map((v) => guarded.filter(({ n, g }) => g.state === name && g.shows === v && panelHost(n, 'div')).map(({ n }) => n.id)) : [];
+      const ids = new Set(panels.flat());
+      if (list && panels.every((p) => p.length === 1) && !insidePanel(list.id, ids)) {
+        out.lists.set(list.id, name);
+        for (const c of list.children) {
+          const value = (tree.nodes[c] as LinkNode).stateAction!.op === 'set' ? ((tree.nodes[c] as LinkNode).stateAction as { value: string }).value : '';
+          const panel = panels[s.values.indexOf(value)][0];
+          out.buttons.set(c, { role: 'tab', state: name, value, panel });
+          out.panels.set(panel, { state: name, shows: value, tab: c });
+        }
+      }
+      for (const b of buttons) if (b.stateAction.op === 'set' && !out.buttons.has(b.id)) out.buttons.set(b.id, { role: 'pressed', state: name, value: (b.stateAction as { value: string }).value });
+      continue;
+    }
+    const toggles = buttons.filter((b) => b.stateAction.op === 'toggle');
+    if (!toggles.length) continue;
+    const hosts = (open: boolean) => guarded.filter(({ n, g }) => g.state === name && g.shows === open && panelHost(n)).map(({ n }) => n.id);
+    const open = hosts(true).length ? true : hosts(false).length ? false : null;
+    const panels = open === null ? [] : hosts(open);
+    for (const p of panels) out.panels.set(p, { state: name, shows: open! });
+    // All of the content stays in the page together, so a jump from one part to another works once it shows.
+    const named = panels.filter((p) => !tree.nodes[p]?.anchor);
+    for (const b of toggles) out.buttons.set(b.id, open === null ? { role: 'pressed', state: name, value: true } : { role: 'disclosure', state: name, open, panels: named });
+  }
+  return out;
+}
+
+/**
+ * The nodes of a design kept in the page while its UI state hides them (see stateWidgets): markup the page holds
+ * besides what the state shows at first, for the checks that read what a page ships.
+ */
+export function keptPanels(state: ProjectState, def: ComponentDefinition, memo: { brokenCards?: Set<string> } = {}): ReadonlySet<string> {
+  const states = def.kind === 'managed' && def.tree ? stateLocals(def) : new Map<string, UiStateLocal>();
+  if (!states.size) return new Set();
+  // \`memo\` carries the site's card analysis from one definition to the next within a check.
+  const ctx: EmitCtx = { state, file: defFile(def), imports: new Map(), instrument: false, def, tree: def.tree!, ctxExpr: '', items: [], rctx: { state }, indent: 0, locals: propLocals(def), states, brokenCards: memo.brokenCards };
+  const panels = new Set(stateWidgets(ctx).panels.keys());
+  memo.brokenCards = ctx.brokenCards;
+  return panels;
+}
+
+/** Whether an element always renders as \`tag\` (no property chooses its tag). */
+function isBareTag(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, tag: string): boolean {
+  const { tags } = tagChoices(ctx, node);
+  return tags.length === 1 && tags[0] === tag;
+}
+
+/**
+ * The ID a tab or panel is named by, unique to the placement from \`$props.id()\`. The dots keep it apart from the
+ * IDs a placement's headings take (\`uid-node\`).
+ */
+function widgetId(ctx: EmitCtx, nodeId: string, role: 'tab' | 'panel'): string {
+  ctx.usesUid = true;
+  return `\`\${uid}.${role}.${nodeId.replace(/[^A-Za-z0-9_-]/g, '_')}\``;
+}
+
+/** A state's local compared with a value, as an expression. */
+function stateIs(ctx: EmitCtx, state: string, value: boolean | string): string {
+  const local = ctx.states!.get(state)!.local;
+  return value === true ? local : value === false ? `!${local}` : `${local} === ${js(value)}`;
+}
+
+/** The ARIA a button that changes state takes, from its part in the design (see stateWidgets). */
+function stateButtonAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'link' }): string {
+  const role = ctx.widgets?.buttons.get(node.id);
+  if (!role) return '';
+  switch (role.role) {
+    case 'tab': {
+      useImport(ctx, '{ tabKey }', `${RUNTIME_DIR}/util.js`);
+      const chosen = stateIs(ctx, role.state, role.value);
+      const id = ` id={${widgetId(ctx, node.id, 'tab')}}`;
+      return ` role="tab"${id} aria-selected={${chosen}} aria-controls={${widgetId(ctx, role.panel, 'panel')}} tabindex={${chosen} ? 0 : -1} onkeydown={tabKey}`;
+    }
+    case 'disclosure': {
+      const ids = role.panels.map((p) => widgetId(ctx, p, 'panel'));
+      const controls = !ids.length ? '' : ` aria-controls={${ids.length === 1 ? ids[0] : `[${ids.join(', ')}].join(' ')`}}`;
+      return ` aria-expanded={${stateIs(ctx, role.state, role.open)}}${controls}`;
+    }
+    case 'pressed':
+      return ` aria-pressed={${stateIs(ctx, role.state, role.value)}}`;
+  }
+}
+
+/**
+ * The ARIA of content that is a tab list or kept in the page (see stateWidgets). A tab list is named by its own label,
+ * or the state's while that is blank; a tab's panel by its tab, unless it has a label of its own. (A tab list's own
+ * label is written here, in place of elementLabelAttrs.)
+ */
+function stateElementAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' | 'text' }): string {
+  const own = node.kind === 'element' ? node.ariaLabel : undefined;
+  const ownBlank = own === undefined || (!isBinding(own) && !String(own).trim());
+  const list = ctx.widgets?.lists.get(node.id);
+  if (list) {
+    const fallback = js(ctx.states!.get(list)!.schema.label);
+    if (ownBlank) return ` role="tablist" aria-label={${fallback}}`;
+    if (!isBinding(own)) return ` role="tablist" aria-label=${attrJs(String(own).trim())}`;
+    useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+    const value = bindExpr(ctx, own);
+    return ` role="tablist" aria-label={has(${value}) ? ${value} : ${fallback}}`;
+  }
+  const panel = ctx.widgets?.panels.get(node.id);
+  if (!panel) return '';
+  // Content with an anchor keeps it as its id (anchorAttr), and no button names it.
+  const id = node.anchor ? '' : ` id={${widgetId(ctx, node.id, 'panel')}}`;
+  if (!panel.tab) return id;
+  const by = widgetId(ctx, panel.tab, 'tab');
+  let labelledBy = ` aria-labelledby={${by}}`;
+  if (!ownBlank && !isBinding(own)) labelledBy = '';
+  else if (!ownBlank) {
+    useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+    labelledBy = ` aria-labelledby={has(${bindExpr(ctx, own)}) ? undefined : ${by}}`;
+  }
+  // Printed, every panel shows at once, under its tab's label (the tab list itself is left out).
+  const tab = ctx.tree.nodes[panel.tab] as LinkNode;
+  return `${id} role="tabpanel"${labelledBy} tabindex="0" data-tab-label={${bindExpr(ctx, tab.label)}}`;
+}
+
+/**
+ * The condition under which an element shows on screen while it stays in the page: a panel's own condition, or for a
+ * collapsing element, its children showing when only kept panels would keep it there. Null when nothing hides it.
+ */
+function screenShown(ctx: EmitCtx, node: GraphNode): string | null {
+  if (!ctx.widgets?.panels.size) return null;
+  if (ctx.widgets.panels.has(node.id)) return conditionExpr(ctx, (node.when ?? node.unless) as Condition, !node.when);
+  if (node.kind !== 'element' || !node.collapseEmpty) return null;
+  const shown = childrenCondition(ctx, node, new Set());
+  return shown !== childrenCondition(ctx, node, new Set(), true) ? shown : null;
 }
 
 function useImport(ctx: EmitCtx, name: string, path: string) {
@@ -922,8 +1236,9 @@ function useImport(ctx: EmitCtx, name: string, path: string) {
 }
 
 function bindExpr(ctx: EmitCtx, v: unknown, schema?: PropSchema): string {
-  // UI state shows the value every placement starts at; changing it with the design's buttons is not generated yet.
-  if (isStateRef(v)) return js(stateInitial(ctx.def ?? undefined, v.$state) ?? null);
+  // UI state reads the placement's own `$state` local, so what reads it follows the design's buttons. State the design
+  // cannot hold (a damaged declaration) shows the value it starts at.
+  if (isStateRef(v)) return ctx.states?.get(v.$state)?.local ?? js(stateInitial(ctx.def ?? undefined, v.$state) ?? null);
   if (isBinding(v)) {
     if ('$prop' in v) {
       const local = ctx.locals.get(v.$prop);
@@ -999,6 +1314,9 @@ function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string 
     const root = node.id === ctx.def.tree?.rootIds[0];
     for (const [axis] of root ? axesOf(ctx.def) : nodeAxes(ctx.def, node.id).map((a) => [a])) parts.push(`\`so-${defKey(ctx.def.id)}--${axis}-\${${variantProp(axis)}}\``);
     if (root) parts.push('className');
+    // Kept in the page while its state hides it: hidden on screen, shown in print (see stateWidgets).
+    const shown = screenShown(ctx, node);
+    if (shown) parts.push(`!(${shown}) && ${js(STATE_OFF_CLASS)}`);
     return `{[${parts.join(', ')}]}`;
   }
   const parts = [js(pageNodeClass(node.id)), ...detached, ...extra];
@@ -1063,11 +1381,14 @@ function emitNode(ctx: EmitCtx, id: string): string {
   if (!node) return '';
   const p = pad(ctx);
   let out = emitNodeInner(ctx, node);
-  const children = node.kind === 'element' && node.collapseEmpty && ctx.def ? childrenCondition(ctx, node, new Set()) : null;
+  // A collapsing element stays while any child is in the page: a hidden panel inside keeps it, hidden too (screenShown).
+  const children = node.kind === 'element' && node.collapseEmpty && ctx.def ? childrenCondition(ctx, node, new Set(), true) : null;
   if (children) {
     useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
     out = `${p}{#if ${children}}\n${indentBlock(out)}\n${p}{/if}`;
   }
+  // A panel kept in the page shows and hides by its condition through a class instead (see stateWidgets).
+  if (ctx.widgets?.panels.has(node.id)) return out;
   if (node.when && ctx.def) out = `${p}{#if ${conditionExpr(ctx, node.when, false)}}\n${indentBlock(out)}\n${p}{/if}`;
   if (node.unless && ctx.def) out = `${p}{#if ${conditionExpr(ctx, node.unless, true)}}\n${indentBlock(out)}\n${p}{/if}`;
   return out;
@@ -1093,27 +1414,32 @@ function indentBlock(s: string): string {
 
 /**
  * The condition under which a node renders, from its own `when`/`unless`, a repeat's list and a collapsing
- * element's children; null when it always renders. Definitions only, in the scope the node is emitted in.
+ * element's children; null when it always renders. Definitions only, in the scope the node is emitted in. With
+ * `present`, whether it is in the page at all: a panel kept there while its state hides it always is.
  */
-function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>): string | null {
+function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>, present = false): string | null {
   const parts: string[] = [];
-  if (node.when) parts.push(conditionExpr(ctx, node.when, false));
-  if (node.unless) parts.push(conditionExpr(ctx, node.unless, true));
-  if (node.kind === 'repeat') parts.push(`has(${bindExpr(ctx, node.list)})`);
-  const inner = node.kind === 'element' && node.collapseEmpty ? childrenCondition(ctx, node, seen) : null;
+  const kept = present && !!ctx.widgets?.panels.has(node.id);
+  if (node.when && !kept) parts.push(conditionExpr(ctx, node.when, false));
+  if (node.unless && !kept) parts.push(conditionExpr(ctx, node.unless, true));
+  if (node.kind === 'repeat') {
+    useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+    parts.push(`has(${bindExpr(ctx, node.list)})`);
+  }
+  const inner = node.kind === 'element' && node.collapseEmpty ? childrenCondition(ctx, node, seen, present) : null;
   if (inner) parts.push(`(${inner})`);
   return parts.length ? parts.join(' && ') : null;
 }
 
 /** A collapsing element renders while any child does; a child that always renders (or no children) keeps it. */
-function childrenCondition(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, seen: Set<string>): string | null {
+function childrenCondition(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, seen: Set<string>, present = false): string | null {
   if (seen.has(node.id)) return null;
   seen.add(node.id);
   const conds: string[] = [];
   for (const id of node.children) {
     const child = ctx.tree.nodes[id];
     if (!child) continue;
-    const cond = renderCondition(ctx, child, seen);
+    const cond = renderCondition(ctx, child, seen, present);
     if (cond === null) return null;
     conds.push(cond);
   }
@@ -1592,9 +1918,10 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       ctx.indent++;
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
-      const label = elementLabelAttrs(ctx, node);
+      const list = !!ctx.widgets?.lists.has(node.id);
+      const label = list ? '' : elementLabelAttrs(ctx, node);
       const choices = tagChoices(ctx, node);
-      const attrs = `class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${label}${ids}`;
+      const attrs = `class=${classExpr(ctx, node, list ? [js('so-tablist')] : [])}${anchorAttr(ctx, node)}${label}${stateElementAttrs(ctx, node)}${ids}`;
       let markup: string;
       if (card && !acting) {
         // One link around the whole card; the runtime helper renders the container's own tag without a destination.
@@ -1639,7 +1966,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const parent = parentId ? ctx.tree.nodes[parentId] : undefined;
       const labels = !node.anchor && parent && labellingHeading(ctx, parent)?.id === node.id;
       const idAttr = labels ? ` id={${headingIdExpr(ctx, node)}}` : anchorAttr(ctx, node);
-      const attrs = `class=${classExpr(ctx, node)}${idAttr}${ids}`;
+      const attrs = `class=${classExpr(ctx, node)}${idAttr}${stateElementAttrs(ctx, node)}${ids}`;
       const content = timeContent(ctx, node, val);
       return perTag(ctx, tagChoices(ctx, node), (tag) => `${pad(ctx)}<${tag} ${attrs}>${content}</${tag}>`);
     }
@@ -1669,7 +1996,10 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const label = bindExpr(ctx, node.label);
       const appearance = bindExpr(ctx, node.appearance);
       const name = nameAttr(ctx, 'aria-label', node.ariaLabel);
-      return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${name}${ids}>${linkContent(ctx, node, label)}</SoLink>`;
+      // A button that changes UI state is a real button wherever it has nowhere to go (see the Link helper).
+      const handler = ctx.def ? stateActionHandler(ctx, node.stateAction) : null;
+      const click = handler ? ` so_control onclick={${handler}}${stateButtonAttrs(ctx, node)}` : '';
+      return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${name}${click}${ids}>${linkContent(ctx, node, label)}</SoLink>`;
     }
     case 'icon': {
       useImport(ctx, 'SoIcon', `${RUNTIME_DIR}/Icon.svelte`);
@@ -2058,8 +2388,10 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     rctx: { state },
     indent: 0,
     locals,
-    standalone
+    standalone,
+    states: stateLocals(def)
   };
+  ctx.widgets = stateWidgets(ctx);
   const markup = emitNodes(ctx, tree.rootIds);
   const propDecls = Object.entries(def.properties)
     .sort(([a], [b]) => a.localeCompare(b))
@@ -2090,9 +2422,11 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   propDecls.push(`\t\tclass: className = ''`);
   const imports = renderImports(ctx.imports);
   const uid = ctx.usesUid ? `\tconst uid = $props.id();\n` : '';
+  // Each placement holds its own UI state, starting where the design says.
+  const states = [...ctx.states!.values()].map((s) => `\tlet ${s.local} = $state(${js(s.schema.initial)});\n`).join('');
   return (
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
-    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
+    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
   );
 }
 
