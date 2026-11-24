@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, CloudDownload, FileArchive, FolderOpen, LayoutTemplate, ShieldAlert } from 'lucide-react';
+import { Check, CircleAlert, CloudDownload, FileArchive, FolderOpen, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
 import type { ProgressEvent, WebsiteTools } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
@@ -16,8 +16,14 @@ export function shortPath(dir: string) {
   return dir.replace(/^\/Users\/[^/]+/, '~').replace(/^[A-Z]:\\Users\\[^\\]+/i, '~');
 }
 
+/** npm's own output is for the log. Lines written for people start with a capital and don't name it. */
+const isPlainDetail = (d?: string) => !!d && /^[A-Z]/.test(d) && !/\bnpm\b/i.test(d);
+
+/** A control about to disable itself hands focus to its dialog, so Tab and Escape still belong to the dialog. */
+const keepFocusInDialog = (from: Element | null) => from?.closest<HTMLElement>('.modal')?.focus();
+
 /** Ask before running a project's own website tools; Trust and open records the trust, then opens it. */
-export function TrustProjectModal({ project, onClose }: { project: { dir: string; name: string }; onClose: () => void }) {
+export function TrustProjectModal({ project, onClose, onOpened }: { project: { dir: string; name: string }; onClose: () => void; onOpened?: () => void }) {
   const [trusting, setTrusting] = useState(false);
   return (
     <Modal
@@ -28,17 +34,28 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
       busy={trusting}
       footer={
         <>
+          {/* In the footer, so the dialog and its buttons hold still at the moment of commitment. */}
+          <span className="foot-note" role="status">
+            {trusting ? (
+              <>
+                <Spinner decorative />
+                <span className="ellipsis">Opening {project.name}…</span>
+              </>
+            ) : null}
+          </span>
           <button className="btn" data-autofocus disabled={trusting} onClick={onClose}>
             Cancel
           </button>
           <button
             className="btn btn-primary"
             disabled={trusting}
-            onClick={async () => {
+            onClick={async (e) => {
+              keepFocusInDialog(e.currentTarget);
               setTrusting(true);
               try {
                 const r = await api.projects.trustAndOpen(project.dir);
-                if (!r.ok) {
+                if (r.ok) onOpened?.();
+                else {
                   // The project behind the dialog, if any, is still open and takes input again.
                   endEditingHold();
                   if (r.message) toast(r.message, 'error');
@@ -52,22 +69,27 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
               }
             }}
           >
-            {trusting ? <Spinner decorative /> : null}
-            {trusting ? 'Opening…' : 'Trust and open'}
+            Trust and open
           </button>
         </>
       }
     >
-      <p id="trust-body" style={{ marginTop: 0 }}>
-        <strong>{project.name}</strong> was made on another computer, or its setup files changed since you last opened it.
-      </p>
-      <p className="muted">
-        To show a preview, SiteOrigin Builder runs the project's own website tools, which can run code on your computer. Only continue if you trust where this project came from.
-      </p>
-      <p className="trust-path">
-        <FolderOpen size={14} />
-        <span>{shortPath(project.dir)}</span>
-      </p>
+      <div id="trust-body" className="trust-body">
+        <p>
+          <strong>{project.name}</strong> was made on another computer, or its setup files changed since you last opened it.
+        </p>
+        <p className="trust-path">
+          <FolderOpen size={14} aria-hidden="true" />
+          {/* The exact path: shortened, folders in two people's home folders would look the same. */}
+          <span>{project.dir}</span>
+        </p>
+        <div className="scope-note trust-risk">
+          <TriangleAlert aria-hidden="true" />
+          <span>
+            <strong>Trust and open lets this project run code on your computer</strong> to show its preview. Continue only if you trust the project’s source and any changes to its setup. If you’re unsure, choose Cancel.
+          </span>
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -90,8 +112,9 @@ export function UnpackingModal() {
   );
   if (!unpacking) return null;
   const cancel = () => {
+    keepFocusInDialog(document.activeElement);
     setCancelling(true);
-    void api.projects.cancelOpen().catch(() => undefined);
+    void api.projects.cancelOpen().catch(() => setCancelling(false));
   };
   return (
     <Modal
@@ -101,19 +124,21 @@ export function UnpackingModal() {
       onClose={cancel}
       busy={cancelling}
       footer={
-        <button className="btn" data-autofocus disabled={cancelling} onClick={cancel}>
+        <button className="btn busy-cancel" data-autofocus disabled={cancelling} onClick={cancel}>
           {cancelling ? 'Cancelling…' : 'Cancel'}
         </button>
       }
     >
-      <p id="unpack-body" className="row" style={{ marginTop: 0, gap: 8 }}>
-        <Spinner decorative />
-        <span>Making a working copy from the ZIP file. The ZIP file is not changed.</span>
-      </p>
-      <p className="trust-path">
-        <FolderOpen size={14} />
-        <span>{shortPath(unpacking.dir)}</span>
-      </p>
+      <div className="trust-body">
+        <p id="unpack-body" className="row" role="status" style={{ gap: 8 }}>
+          <Spinner decorative />
+          <span>{cancelling ? 'Cancelling. Anything unpacked so far is being removed.' : 'Making a working copy from the ZIP file. The ZIP file is not changed.'}</span>
+        </p>
+        <p className="trust-path" title={unpacking.dir}>
+          <FolderOpen size={14} aria-hidden="true" />
+          <span>{shortPath(unpacking.dir)}</span>
+        </p>
+      </div>
     </Modal>
   );
 }
@@ -133,6 +158,9 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   // Whether setup will download anything, known before Create is pressed (null while it is being checked).
   const [tools, setTools] = useState<WebsiteTools | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   // Progress belongs to this dialog's own attempt, named in its create call: another attempt still running (from a
   // window closed meanwhile, or one that replaced the open project and is starting its preview) reports nothing
   // here. Once this dialog has gone, its attempt's answer is only told as a notice.
@@ -140,28 +168,59 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
-    void api.dialogs.defaultProjectsFolder().then(setParent);
+    void api.dialogs.defaultProjectsFolder().then(setParent, () => undefined);
     void api.projects.websiteTools().then(
       (t) => live.current && setTools(t),
       () => live.current && setTools('unknown')
     );
-    const off = api.on('create:progress', (p) => !!attempt.current && p.attempt === attempt.current && setProgress(p));
+    const off = api.on('create:progress', (p) => {
+      if (!attempt.current || p.attempt !== attempt.current) return;
+      // The last line written for people stays up while the install runs.
+      setProgress((prev) => ({ ...p, detail: isPlainDetail(p.detail) ? p.detail : prev?.step === p.step ? prev.detail : undefined }));
+    });
     return () => {
       live.current = false;
       off();
     };
   }, []);
   const running = !!progress && progress.step !== 'error' && progress.step !== 'done';
+  const inProgress = !!progress && progress.step !== 'error';
+  const lastStep = progress?.step === 'preview' || progress?.step === 'done';
+  // The form's controls went with it: focus moves to Cancel, then to the dialog once nothing is left to cancel.
+  useEffect(() => {
+    if (inProgress) cancelRef.current?.focus();
+  }, [inProgress]);
+  useEffect(() => {
+    if (lastStep) keepFocusInDialog(cancelRef.current);
+  }, [lastStep]);
+  // Back on the form with an error: the fields it talks about are in view, and focus is on the first of them.
+  useEffect(() => {
+    if (!error) return;
+    nameRef.current?.closest('.modal-body')?.scrollTo({ top: 0 });
+    nameRef.current?.focus();
+  }, [error]);
   // The author learns whether anything is downloaded before committing to it, by the button or by Enter.
   const canCreate = !!name.trim() && !!parent && tools !== null;
   const slug = name.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' and ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'website';
+
+  const separator = parent.includes('\\') ? '\\' : '/';
+  const target = parent && name.trim() ? `${parent}${separator}${slug}` : parent;
+  const idx = progress ? STEPS.findIndex((s) => s.id === progress.step) : -1;
+  // One line per step for a screen reader, in a region that is already there when the form gives way to progress.
+  const announce = !progress || !inProgress ? '' : cancelling && !lastStep ? 'Stopping setup…' : idx < 0 ? progress.message : `Step ${idx + 1} of ${STEPS.length}. ${STEPS[idx].label}.${progress.detail ? ` ${progress.detail}` : ''}`;
+  const status = (
+    <div className="sr-only" role="status">
+      {announce}
+    </div>
+  );
 
   const create = async () => {
     if (attempt.current || !canCreate) return;
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     attempt.current = id;
     setError(null);
-    setProgress({ step: 'files', message: 'Preparing files…' });
+    setCancelling(false);
+    setProgress({ step: 'files', message: 'Preparing project files…' });
     let r: { ok: boolean; message?: string };
     try {
       r = await api.projects.create({ name: name.trim(), parentDir: parent, starter, sampleImages: images, attempt: id });
@@ -187,7 +246,6 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   };
 
   if (progress && progress.step !== 'error') {
-    const idx = STEPS.findIndex((s) => s.id === progress.step);
     return (
       <Modal
         title={`Creating ${name.trim()}`}
@@ -195,21 +253,37 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
         onClose={() => undefined}
         busy
         footer={
-          // Once the new project is starting its preview it has replaced the open one: nothing is left to cancel.
-          <button className="btn" onClick={() => void api.projects.cancelCreate()} disabled={!running || progress.step === 'preview'}>
-            Cancel
-          </button>
+          <>
+            {(lastStep || cancelling) && <span className="foot-note">{lastStep ? 'Opening your project now' : 'Stopping setup…'}</span>}
+            {/* Once the new project is starting its preview it has replaced the open one: nothing is left to cancel. */}
+            <button
+              ref={cancelRef}
+              className="btn busy-cancel"
+              onClick={(e) => {
+                keepFocusInDialog(e.currentTarget);
+                setCancelling(true);
+                void api.projects.cancelCreate().catch(() => setCancelling(false));
+              }}
+              disabled={!running || lastStep || cancelling}
+            >
+              {cancelling && !lastStep ? 'Cancelling…' : 'Cancel'}
+            </button>
+          </>
         }
       >
-        <div className="progress-steps">
+        {status}
+        <ol className="progress-steps">
           {STEPS.map((s, i) => (
-            <div key={s.id} className={`progress-step${i < idx || progress.step === 'done' ? ' done' : i === idx ? ' active' : ''}`}>
-              <span className="dot">{i < idx || progress.step === 'done' ? <Check /> : i === idx ? <Spinner /> : null}</span>
-              {s.label}
-            </div>
+            <li key={s.id} className={`progress-step${i < idx || progress.step === 'done' ? ' done' : i === idx ? ' active' : ''}`} aria-current={i === idx ? 'step' : undefined}>
+              <span className="dot">{i < idx || progress.step === 'done' ? <Check aria-hidden="true" /> : i === idx ? <Spinner decorative /> : null}</span>
+              <span>
+                {i < idx || progress.step === 'done' ? <span className="sr-only">Done: </span> : null}
+                {s.label}
+              </span>
+              {i === idx && progress.detail && <span className="progress-detail">{progress.detail}</span>}
+            </li>
           ))}
-        </div>
-        {progress.detail && <div className="progress-detail">{progress.detail}</div>}
+        </ol>
       </Modal>
     );
   }
@@ -221,38 +295,86 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
       onClose={onClose}
       footer={
         <>
+          {/* Read out as it settles, and describes Create, so nobody creates a project without hearing it. */}
+          <span id="new-project-tools" className="foot-note tools-note" data-tools={tools ?? 'checking'} role="status">
+            {tools === null ? (
+              <>
+                <Spinner decorative /> Checking website tools…
+              </>
+            ) : tools === 'local' ? (
+              <>
+                <Check aria-hidden="true" /> Website tools are on this computer
+                <span className="sr-only">If a saved copy can’t be used, setup downloads it again.</span>
+              </>
+            ) : (
+              <>
+                <CloudDownload aria-hidden="true" /> {tools === 'download' ? 'Setup needs a download' : 'Setup may need a download'}
+              </>
+            )}
+          </span>
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn-primary" disabled={!canCreate} aria-describedby="new-project-tools" onClick={() => void create()}>
+          <button className="btn btn-primary" disabled={!canCreate} aria-describedby="new-project-tools new-project-tools-note" onClick={() => void create()}>
             Create project
           </button>
         </>
       }
     >
-      <div className="col" style={{ gap: 16 }}>
-        <Field label="Project name">
-          <input className="input" autoFocus placeholder="For example, Harbour Lane Studio" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void create()} />
+      {status}
+      <div className="new-project-form">
+        <Field label="Project name" controlId="new-project-name">
+          <input
+            ref={nameRef}
+            id="new-project-name"
+            className="input"
+            autoFocus
+            placeholder="For example, Harbour Lane Studio"
+            value={name}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? 'new-project-error' : undefined}
+            onChange={(e) => {
+              setName(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void create()}
+          />
         </Field>
-        <Field label="Location" hint={parent ? `Saved in ${shortPath(parent)}/${slug}` : undefined}>
+        <Field label="Location">
           <div className="row">
-            <input className="input grow" value={shortPath(parent)} readOnly aria-label="Location" title={parent} />
+            <div id="new-project-path" className="path-field grow" title={target || undefined}>
+              <FolderOpen size={14} aria-hidden="true" />
+              <span>{target ? shortPath(target) : 'Choose a folder'}</span>
+            </div>
             <button
               className="btn"
+              aria-describedby={error ? 'new-project-path new-project-error' : 'new-project-path'}
               onClick={async () => {
                 const d = await api.dialogs.chooseFolder('Choose where to create the project', parent);
-                if (d) setParent(d);
+                if (d) {
+                  setParent(d);
+                  setError(null);
+                }
               }}
             >
               Choose…
             </button>
           </div>
         </Field>
-        <Field label="Start from">
+        {error && (
+          <div id="new-project-error" className="scope-note danger" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <span>{error}</span>
+          </div>
+        )}
+        <div className="field">
+          <div className="field-label" id="new-project-starter-label">
+            Start from
+          </div>
           <div
             className="starter-grid"
             role="radiogroup"
-            aria-label="Start from"
+            aria-labelledby="new-project-starter-label"
             onKeyDown={(e) => {
               if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
               e.preventDefault();
@@ -262,38 +384,33 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
             }}
           >
             <button className="starter-card" role="radio" aria-checked={starter === 'business'} tabIndex={starter === 'business' ? 0 : -1} onClick={() => setStarter('business')}>
-              {starter === 'business' && (
-                <span className="picked" aria-hidden="true">
-                  <Check />
-                </span>
-              )}
               <div className="art">
-                <i style={{ height: 8, width: '100%', opacity: 0.6 }} />
-                <div className="row" style={{ gap: 5, flex: 1 }}>
-                  <div className="col" style={{ gap: 4, flex: 1 }}>
-                    <i className="hi" style={{ height: 10, width: '80%' }} />
+                <i style={{ height: 6, width: '100%', opacity: 0.6 }} />
+                <div className="row" style={{ gap: 5, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
+                  <div className="col" style={{ gap: 4, flex: 1, justifyContent: 'center' }}>
+                    <i className="hi" style={{ height: 9, width: '80%' }} />
                     <i style={{ height: 5, width: '90%' }} />
                     <i style={{ height: 5, width: '70%' }} />
                   </div>
-                  <i style={{ width: 48, height: 46 }} />
+                  <i style={{ width: 48 }} />
                 </div>
                 <div className="row" style={{ gap: 5 }}>
-                  <i style={{ height: 16, flex: 1 }} />
-                  <i style={{ height: 16, flex: 1 }} />
-                  <i style={{ height: 16, flex: 1 }} />
+                  <i style={{ height: 12, flex: 1 }} />
+                  <i style={{ height: 12, flex: 1 }} />
+                  <i style={{ height: 12, flex: 1 }} />
                 </div>
               </div>
               <div className="copy">
+                {starter === 'business' && (
+                  <span className="picked" aria-hidden="true">
+                    <Check />
+                  </span>
+                )}
                 <strong>Business</strong>
                 <p>Home, About and Contact pages, ready to make your own.</p>
               </div>
             </button>
             <button className="starter-card" role="radio" aria-checked={starter === 'blank'} tabIndex={starter === 'blank' ? 0 : -1} onClick={() => setStarter('blank')}>
-              {starter === 'blank' && (
-                <span className="picked" aria-hidden="true">
-                  <Check />
-                </span>
-              )}
               <div className="art">
                 <i style={{ height: 8, width: '100%', opacity: 0.6 }} />
                 <div style={{ flex: 1, display: 'grid', placeItems: 'center' }}>
@@ -302,36 +419,23 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
                 <i style={{ height: 10, width: '100%', opacity: 0.6 }} />
               </div>
               <div className="copy">
+                {starter === 'blank' && (
+                  <span className="picked" aria-hidden="true">
+                    <Check />
+                  </span>
+                )}
                 <strong>Blank site</strong>
                 <p>One page with a header and footer.</p>
               </div>
             </button>
           </div>
-        </Field>
+        </div>
         {starter === 'business' && (
           <SwitchRow checked={images} onChange={setImages} label="Include sample images" hint="Placeholder photos you can replace any time." />
         )}
-        {/* Read out as it settles, and describes Create, so nobody creates a project without hearing it. */}
-        <div id="new-project-tools" className="col tools-note" data-tools={tools ?? 'checking'} role="status" style={{ gap: 8 }}>
-          {tools === 'download' || tools === 'unknown' ? (
-            <div className="scope-note info">
-              <CloudDownload aria-hidden="true" />
-              <span>
-                <strong>{tools === 'download' ? 'Setup downloads some website tools.' : 'Setup may download some website tools.'}</strong>{' '}
-                {tools === 'download' ? 'Some of the tools that build and preview your site are not included for this computer, so creating the project downloads them from the npm registry.' : 'Creating the project may download some of the tools that build and preview your site from the npm registry.'}{' '}
-                If the download cannot connect, the project still opens for editing: choose Try again in its preview once you are back online.
-              </span>
-            </div>
-          ) : null}
-          <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-            {tools === 'local' ? 'The website tools are already on this computer, so setup works offline. A saved copy that turns out to be damaged is downloaded again. ' : tools === null ? 'Checking which website tools are on this computer… ' : ''}
-            Your website is saved as a normal folder that you own.
-          </p>
-        </div>
-        {error && (
-          <div className="scope-note danger" role="alert" ref={(el) => el?.scrollIntoView({ block: 'nearest' })}>
-            <ShieldAlert />
-            <span>{error}</span>
+        {(tools === 'download' || tools === 'unknown') && (
+          <div id="new-project-tools-note" className="scope-note info">
+            <span>If the download can’t connect, your project still opens for editing. Choose Try again in its preview once you’re back online.</span>
           </div>
         )}
       </div>
