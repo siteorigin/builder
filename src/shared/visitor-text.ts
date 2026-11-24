@@ -150,7 +150,7 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
     fields: [
       { key: 'filterLabel', label: 'Filters', hint: 'The name screen readers give a list’s row of category buttons.' },
       { key: 'filterAll', label: 'All', hint: 'The button that shows every item again.' },
-      { key: 'filterOne', label: 'One item showing', hint: 'Announced when a category leaves one item showing.', fills: ['count'] },
+      { key: 'filterOne', label: 'One item showing', hint: 'Announced when a category leaves one item showing.' },
       { key: 'filterMany', label: 'Several items showing', hint: 'Announced when a category leaves several items showing.', fills: ['count'] }
     ]
   },
@@ -218,7 +218,7 @@ const EN: VisitorText = {
   carouselMany: 'Slides {first}–{last} of {count}',
   filterLabel: 'Filter by category',
   filterAll: 'All',
-  filterOne: '{count} item showing',
+  filterOne: '1 item showing',
   filterMany: '{count} items showing',
   videoPlay: 'Play video',
   videoFrom: 'Video from {host}',
