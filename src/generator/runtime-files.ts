@@ -562,7 +562,8 @@ export function filterCategories(rows, field, options) {
 		const key = filterKey(value, options);
 		if (key && !found.has(key)) found.set(key, String(value).trim());
 	}
-	if (options) return options.filter((o) => found.has(o.value)).map((o) => ({ key: o.value, label: o.label }));
+	// A value two options share (a hand edit) is one pill, under its first option's label.
+	if (options) return options.filter((o, i) => found.has(o.value) && options.findIndex((x) => x.value === o.value) === i).map((o) => ({ key: o.value, label: o.label }));
 	return [...found].map(([key, label]) => ({ key, label }));
 }
 

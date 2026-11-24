@@ -47,6 +47,16 @@ function place(s: ProjectState, def: ComponentDefinition, props: Record<string, 
 /** The project's copy of a Foundation component. */
 const foundation = (s: ProjectState, componentId: string) => s.components[installComponent(s, componentId)];
 
+/** Foundation's Page list (a portfolio) on Home: a card per category, linking in turn to the starter's other pages. */
+function portfolio(s: ProjectState, categories: string[], props: Record<string, unknown> = {}) {
+  const list = foundation(s, 'content.pages');
+  const pages = Object.keys(s.pages).filter((id) => id !== s.site.homePageId);
+  const items = categories.map((group, i) => ({ id: `p${i + 1}`, pageLink: { type: 'page', target: pages[i % pages.length] }, title: `Project ${i + 1}`, group }));
+  return { list, node: place(s, list, { items, ...props }) };
+}
+/** The Page list cards on a page. */
+const portfolioCards = (html: string) => html.match(/<li class="so-foundation-content-pages__card-item\b/g) ?? [];
+
 /** A project component built with the catalogue helpers, installed into the project. */
 function addDef(s: ProjectState, spec: Omit<ComponentSpec, 'category' | 'tags' | 'icon' | 'description'>): ComponentDefinition {
   const def = { ...managed({ category: 'content', tags: [], icon: 'sparkles', description: '', ...spec }), owner: 'project' as const };
@@ -133,27 +143,26 @@ function compiled(s: ProjectState, def: ComponentDefinition): string[] {
 }
 
 describe('generated category filters', () => {
-  it('prerender every card and a row of disabled pills, All pressed, from Foundation’s Services grid toggle', async () => {
-    const s = blank();
-    const grid = foundation(s, 'features.grid');
-    place(s, grid, { filterable: true });
-    place(s, grid);
+  it('prerender every card and a row of disabled pills, All pressed, once a Foundation Page list’s cards name two categories', async () => {
+    const s = fresh();
+    const { list } = portfolio(s, ['Homes', 'Offices', 'homes']);
+    portfolio(s, ['Homes', ' homes']);
     expect(filterProblems(s)).toEqual([]);
-    expect(compiled(s, grid)).toEqual([]);
+    expect(compiled(s, list)).toEqual([]);
     const html = await renderHome(s);
-    // The toggle is on in the first placement only; its default cards name three categories.
+    // The second placement's cards name one category between them: no pills there.
     expect(bars(html)).toEqual([
       {
         open: '<div class="so-filter" role="group" aria-label="Filter by category">',
-        pills: [['All', true, true], ['Advice', false, true], ['Design', false, true], ['Building', false, true]],
+        pills: [['All', true, true], ['Homes', false, true], ['Offices', false, true]],
         status: '3 items showing'
       }
     ]);
     // Every card is in the page, none hidden.
-    expect(cards(html)).toHaveLength(6);
+    expect(portfolioCards(html)).toHaveLength(5);
     expect(html).not.toContain(FILTER_OFF_CLASS);
     // The row goes just above the list, inside the section's own container.
-    expect(html.indexOf('class="so-filter"')).toBeLessThan(html.indexOf('so-foundation-features-grid__grid'));
+    expect(html.indexOf('class="so-filter"')).toBeLessThan(html.indexOf('so-foundation-content-pages__grid'));
   });
 
   it('pills a text field’s categories in the order items first name them, once each however they are spelt, and leaves blanks to All', async () => {
@@ -191,11 +200,10 @@ describe('generated category filters', () => {
     const [a, b] = Object.keys(s.pages).filter((id) => id !== s.site.homePageId);
     const page = (target: string) => ({ type: 'page', target });
     place(s, list, {
-      filterable: true,
       items: [
-        { id: 'p1', pageLink: page(a), title: 'One', category: 'Homes' },
-        { id: 'p2', pageLink: page(b), title: 'Two', category: 'Offices' },
-        { id: 'p3', pageLink: { type: 'none', target: '' }, title: 'Gone', category: 'Ghosts' }
+        { id: 'p1', pageLink: page(a), title: 'One', group: 'Homes' },
+        { id: 'p2', pageLink: page(b), title: 'Two', group: 'Offices' },
+        { id: 'p3', pageLink: { type: 'none', target: '' }, title: 'Gone', group: 'Ghosts' }
       ]
     });
     expect(compiled(s, list)).toEqual([]);
@@ -228,9 +236,8 @@ describe('generated category filters', () => {
   });
 
   it('keeps filtering, with its hiding rules, in a code copy of a placement', () => {
-    const s = blank();
-    const grid = foundation(s, 'features.grid');
-    const node = place(s, grid, { filterable: true });
+    const s = fresh();
+    const { node } = portfolio(s, ['Homes', 'Offices']);
     const r = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id }]);
     const copy = r.state.components[(r.results[0] as { definitionId: string }).definitionId];
     expect(copy.kind).toBe('code');
@@ -241,6 +248,22 @@ describe('generated category filters', () => {
     expect(code).toContain(`:global(.${FILTER_OFF_CLASS}:not(#so-print))`);
     expect(code).toContain(`:global(.so-filter:not(#so-print))`);
     for (const generate of ['server', 'client'] as const) expect(compile(code, { filename: 'Copy.svelte', generate, runes: true }).warnings.map((w) => w.code)).toEqual([]);
+  });
+
+  it('keeps filtering by an item field a code copy has to rename', () => {
+    const s = blank();
+    const def = addDef(s, {
+      componentId: 'test.classy',
+      name: 'Classy',
+      properties: { filterable: P.bool('Filter', true), items: P.list('Items', 'Item', { title: P.str('Title', ''), class: P.str('Class', '') }, items('A', 'B').map(({ id, title, category }) => ({ id, title, class: category })), {}) },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.el('grid', 'ul', {}, [b.repeat('cards', 'items', [b.el('card', 'li', {}, [b.text('title', 'h3', { $item: 'title' })])], { filter: { field: 'class', when: { $prop: 'filterable' } } })])])
+    });
+    const node = place(s, def);
+    const r = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id }]);
+    const code = r.state.components[(r.results[0] as { definitionId: string }).definitionId].source!;
+    expect(code).toContain('filterCategories(so_filter_0_rows, "classValue")');
+    expect(code).toContain('filterKey(item.classValue) !== so_filter_0_active');
   });
 
   it('names categories and pills them through the generated helpers', async () => {
@@ -258,6 +281,8 @@ describe('generated category filters', () => {
     expect([filterKey('a', options), filterKey('A', options), filterKey('c', options)]).toEqual(['a', '', '']);
     expect(filterCategories([{ c: 'x' }, null, { c: ' X ' }, { c: 'y' }, {}], 'c')).toEqual([{ key: 'x', label: 'x' }, { key: 'y', label: 'y' }]);
     expect(filterCategories([{ c: 'b' }, { c: 'a' }, { c: 'z' }], 'c', options)).toEqual([{ key: 'a', label: 'Alpha' }, { key: 'b', label: 'Beta' }]);
+    // Two options sharing a value (a hand edit) make one pill, so no two pills share a key.
+    expect(filterCategories([{ c: 'a' }, { c: 'b' }], 'c', [...options, { value: 'a', label: 'Again' }])).toEqual([{ key: 'a', label: 'Alpha' }, { key: 'b', label: 'Beta' }]);
   });
 
   it('says what it says in every language with built-in wording, and in Site styles', () => {
@@ -384,14 +409,15 @@ describe('editing designs that filter', () => {
     expect(() => apply(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'filterable', schema: { type: 'string', label: 'Filter', default: '' } } as EditOperation])).toThrow(/needs a boolean/);
   });
 
-  it('counts a change that breaks a working filter as a new problem, so the edit is refused', () => {
-    const s = fresh();
-    const def = gridDef(s);
-    place(s, def);
-    const before = validateState(s).filter(blocksSaving);
-    // Another element beside the list in the element holding it leaves the pills nowhere to go.
-    const next = apply(s, [{ type: 'node.insert', owner: { kind: 'component', id: def.id }, parentId: 'grid', primitive: 'paragraph', text: 'More soon' }]);
-    expect(introducedDiagnostics(before, validateState(next).filter(blocksSaving)).map((d) => d.code)).toContain('FILTER_INVALID');
+  it('reports a change that breaks a working filter without refusing it, as Create component from a card is', () => {
+    const unique = fresh();
+    const def = gridDef(unique);
+    place(unique, def, { items: items('A', 'B') });
+    // The card becomes a component of its own: the list's item is no longer one element the filter can hide.
+    const next = applyOperations(unique, [{ type: 'component.createFromNode', owner: { kind: 'component', id: def.id }, nodeId: 'card', name: 'Project card' }]).state;
+    expect(introducedDiagnostics(validateState(unique).filter(blocksSaving), validateState(next).filter(blocksSaving))).toEqual([]);
+    expect(filterProblems(next).map((d) => [d.severity, d.message])).toEqual([['warning', expect.stringMatching(/shows items that are not one element each.*Its items all show, without category buttons\./)]]);
+    expect(generateProject(next).get(defFile(next.components[def.id]))).not.toContain('so_filter_0');
   });
 
   it('copies a filter with a design built whole, and refuses one that would not work', () => {
@@ -412,7 +438,8 @@ describe('editing designs that filter', () => {
           { kind: 'text', id: 'name', tag: 'p', text: { $item: 'name' } }
         ]
       }) as EditOperation;
-    const good = op({ field: 'team', when: { $prop: 'filterable' } });
+    // A design written whole names the switch plainly, as it names a repeat's list; the document keeps it as a binding.
+    const good = op({ field: 'team', when: 'filterable' });
     expect(validateOperation(good).ok).toBe(true);
     const after = applyOperations(s, [good]).state;
     const def = Object.values(after.components).find((d) => d.name === 'Directory')!;
@@ -421,7 +448,7 @@ describe('editing designs that filter', () => {
     // Without a switch the pills always show.
     const always = Object.values(applyOperations(s, [op({ field: 'team' })]).state.components).find((d) => d.name === 'Directory')!;
     expect((always.tree!.nodes.each as RepeatNode).filter).toEqual({ field: 'team' });
-    expect(() => applyOperations(s, [op({ field: 'team', when: { $prop: 'people' } })])).toThrow(/needs a boolean/);
+    expect(() => applyOperations(s, [op({ field: 'team', when: 'people' })])).toThrow(/needs a boolean/);
     expect(() => applyOperations(s, [op({ field: 'nickname' })])).toThrow(/filters by "nickname"/);
     // A list held by the design's top element leaves the pills nowhere to go.
     expect(() => applyOperations(s, [op({ field: 'team' }, 'list')])).toThrow(/needs an element of its own/);
@@ -440,11 +467,10 @@ describe('editing designs that filter', () => {
     expect(filterProblems(r.state)).toEqual([]);
   });
 
-  it('refuses to detach a placement that filters its items, and detaches one that does not', () => {
+  it('refuses to detach a placement that filters its items, and detaches one whose cards name one category', () => {
     const s = fresh();
-    const grid = foundation(s, 'features.grid');
-    const on = place(s, grid, { filterable: true });
-    const off = place(s, grid);
+    const on = portfolio(s, ['Homes', 'Offices']).node;
+    const off = portfolio(s, ['Homes', 'homes ']).node;
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: on.id }])).toThrow(/filters its items by category here/);
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: off.id }])).not.toThrow();

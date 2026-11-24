@@ -117,10 +117,10 @@ const NODE = z.discriminatedUnion('kind', [
       children: CHILDREN,
       appearStagger: z.boolean().optional(),
       filter: z
-        .object({ field: z.string().min(1).max(64), when: z.object({ $prop: z.string().min(1).max(64) }).strict().optional() })
+        .object({ field: z.string(), when: z.string().optional() })
         .strict()
         .optional()
-        .describe("Category filter pills for the items: visitors pick a category (or All) and only items whose `field` holds it show. `field` is a text or choice field of the list's items; `when` a yes/no property that turns the pills on. The repeat must be the only child of an element inside the design's top element; the pills go just above that element."),
+        .describe('Category pills above the items: field, a text or choice item field; when, the yes/no property turning them on.'),
       ...CONDITIONS
     })
     .strict(),

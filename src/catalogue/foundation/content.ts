@@ -27,17 +27,15 @@ export const featuresGrid = managed({
         title: P.str('Title', 'Service'),
         description: P.text('Description', 'Describe what this service includes and who it is for.'),
         linkLabel: P.str('Link label', ''),
-        link: P.link('Link'),
-        category: P.str('Category', '', { description: 'Which filter button shows this card, while filtering by category is on.' })
+        link: P.link('Link')
       },
       [
-        { icon: 'compass', title: 'Planning', description: 'Clear priorities, a realistic budget and a schedule everyone understands before work begins.', linkLabel: '', link: { type: 'none', target: '' }, category: 'Advice' },
-        { icon: 'pen-tool', title: 'Design', description: 'Considered layouts, materials and details developed with you through focused reviews.', linkLabel: '', link: { type: 'none', target: '' }, category: 'Design' },
-        { icon: 'hammer', title: 'Delivery', description: 'We coordinate trusted specialists and keep you informed at every stage of the build.', linkLabel: '', link: { type: 'none', target: '' }, category: 'Building' }
+        { icon: 'compass', title: 'Planning', description: 'Clear priorities, a realistic budget and a schedule everyone understands before work begins.', linkLabel: '', link: { type: 'none', target: '' } },
+        { icon: 'pen-tool', title: 'Design', description: 'Considered layouts, materials and details developed with you through focused reviews.', linkLabel: '', link: { type: 'none', target: '' } },
+        { icon: 'hammer', title: 'Delivery', description: 'We coordinate trusted specialists and keep you informed at every stage of the build.', linkLabel: '', link: { type: 'none', target: '' } }
       ],
       { titleField: 'title', max: 12 }
-    ),
-    filterable: { ...P.bool('Filter by category', false), description: 'Shows a row of buttons above the cards, one for each category the cards name and All, so visitors can show one category at a time.' }
+    )
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
@@ -68,7 +66,7 @@ export const featuresGrid = managed({
             b.text('card-text', 'p', { $item: 'description' }, { name: 'Description', styles: mutedStyles }),
             b.link('card-link', { $item: 'link' }, { $item: 'linkLabel' }, 'text', { name: 'Link', when: { $item: 'linkLabel' }, styles: { marginBlockStart: 'auto' } })
           ])
-        ], { filter: { field: 'category', when: { $prop: 'filterable' } } })
+        ])
       ])
     ])
 });
@@ -350,12 +348,12 @@ export const pageList = managed({
         title: P.str('Title', ''),
         description: P.text('Description', ''),
         image: P.image('Image'),
-        category: P.str('Category', '', { description: 'Which filter button shows this card, while filtering by category is on.' })
+        // A card's category: once the cards name two or more, buttons above them show one category at a time.
+        group: P.str('Category', '')
       },
       [],
       { titleField: 'title', min: 0, max: 24, pageTeaser: { link: 'pageLink', title: 'title', description: 'description', image: 'image' } }
-    ),
-    filterable: { ...P.bool('Filter by category', false), description: 'Shows a row of buttons above the cards, one for each category the cards name and All, so visitors can show one category at a time.' }
+    )
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
@@ -388,7 +386,7 @@ export const pageList = managed({
               b.text('card-text', 'p', { $item: 'description' }, { name: 'Description', when: { $item: 'description' }, styles: mutedStyles })
             ])
           ])
-        ], { filter: { field: 'category', when: { $prop: 'filterable' } } })
+        ], { filter: { field: 'group' } })
       ])
     ])
 });

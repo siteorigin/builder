@@ -68,14 +68,18 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   if (Object.values(def.properties).some((p) => p.type === 'list' && p.feed === 'entries'))
     fail(`“${label}” lists posts that come and go with their collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
   if (Object.keys(def.state ?? {}).length) fail(`“${label}” has UI state its buttons change, which elements on a page would not keep. Remove its UI state first.`);
-  // Nor can they filter themselves: a list whose category buttons are on here would lose them.
+  // Nor can they filter themselves: a list whose category buttons show here would lose them.
   const filtering = Object.values(def.tree.nodes).some((n) => {
     if (n?.kind !== 'repeat' || n.filter === undefined || repeatFilterProblem(def, n)) return false;
     const on = n.filter.when?.$prop;
-    if (on === undefined) return true;
     // As the site reads it: a stored value that is not true or false shows the property's default.
-    const v = Object.hasOwn(inst.props, on) ? inst.props[on] : undefined;
-    return (typeof v === 'boolean' ? v : def.properties[on]?.default) === true;
+    const v = on === undefined ? true : Object.hasOwn(inst.props, on) ? inst.props[on] : undefined;
+    if ((typeof v === 'boolean' ? v : def.properties[on!]?.default) !== true) return false;
+    // The buttons show once the items name two categories (told apart as the site tells them, see util.js filterKey).
+    const field = n.filter.field;
+    const rows = Object.hasOwn(inst.props, n.list.$prop) ? inst.props[n.list.$prop] : def.properties[n.list.$prop]?.default;
+    const keys = new Set((Array.isArray(rows) ? rows : []).map((r) => (r && typeof r === 'object' ? (r as Record<string, unknown>)[field] : undefined)).filter((c): c is string => typeof c === 'string' && !!c.trim()).map((c) => c.trim().toLowerCase()));
+    return keys.size > 1;
   });
   if (filtering) fail(`“${label}” filters its items by category here, which elements on a page would not keep. Turn its filter off first.`);
   const design = def.tree;

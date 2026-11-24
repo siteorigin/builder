@@ -237,9 +237,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         const problem = n.kind !== 'link' ? 'changes UI state, which only a button can.' : stateActionProblem(def, action);
         if (problem) out.push({ severity: 'error', code: 'STATE_ACTION_INVALID', message: `${def.name}: ${nodeLabel(n)} ${problem}`, owner, nodeId: id, site: `${id}|stateAction` });
       }
-      // A filter that does not work leaves the items as a plain list, every one showing.
+      // A filter that does not work leaves the items as a plain list, every one showing. Reported, never blocking: a
+      // design keeps its filter while it is off, and an edit to it (a card made a component of its own) still saves.
       const filter = Object.hasOwn(n, 'filter') && n.kind !== 'repeat' ? 'has a category filter, which only a repeat can.' : repeatFilterProblem(def, n);
-      if (filter) out.push({ severity: 'error', code: 'FILTER_INVALID', message: `${def.name}: ${nodeLabel(n)} ${filter} Its items all show, without category buttons.`, owner, nodeId: id, site: `${id}|filter` });
+      if (filter) out.push({ severity: 'warning', code: 'FILTER_INVALID', message: `${def.name}: ${nodeLabel(n)} ${filter} Its items all show, without category buttons.`, owner, nodeId: id, site: `${id}|filter` });
       for (const cl of childLists(n)) cl.ids.forEach((c) => check(c, inRepeat || n.kind === 'repeat'));
     };
     tree.rootIds.forEach((r) => check(r, false));

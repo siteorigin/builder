@@ -371,7 +371,7 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
         list: { $prop: s.list },
         children: [...(s.children ?? [])],
         ...(s.appearStagger ? { appearStagger: true } : {}),
-        ...(s.filter ? { filter: { field: s.filter.field, ...(s.filter.when ? { when: { $prop: s.filter.when.$prop } } : {}) } } : {})
+        ...(s.filter ? { filter: { field: s.filter.field, ...(s.filter.when !== undefined ? { when: { $prop: s.filter.when } } : {}) } } : {})
       } as GraphNode;
     case 'slot':
       return { ...base, kind: 'slot', slot: s.slot } as GraphNode;

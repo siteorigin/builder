@@ -2930,8 +2930,11 @@ function moveCodeReservedProps(def: ComponentDefinition, placed: InstanceNode) {
     const n = tree.nodes[id];
     if (!n || seen.has(id)) return;
     seen.add(id);
-    tree.nodes[id] = rebind(n, list) as GraphNode;
+    const next = (tree.nodes[id] = rebind(n, list) as GraphNode);
     const inner = n.kind === 'repeat' && isBinding(n.list) && '$prop' in n.list ? prop(n.list.$prop) : list;
+    // A category filter names its item field plainly, not as a binding: it moves with the field.
+    const to = next.kind === 'repeat' && next.filter && inner ? fields.get(inner)?.get(next.filter.field) : undefined;
+    if (to && next.kind === 'repeat' && next.filter) next.filter = { ...next.filter, field: to };
     for (const cl of childLists(n)) for (const c of cl.ids) walk(c, inner);
   };
   tree.rootIds.forEach((r) => walk(r));
