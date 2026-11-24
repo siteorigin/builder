@@ -146,6 +146,14 @@ assert.equal(await back().innerText(), 'Use the site’s image', 'Kitchens can r
 assert.match(await section().innerText(), /Pages without their own image show the site’s sharing image, Studio table\./);
 assert.equal(await section().getByText(/no usable public URL/).count(), 0, 'the address note goes once the site has a public URL');
 
+step('replacing a page’s own photo with another from the library');
+await choose('Dining room');
+await eventually(() => assert.equal(pageFile(kitchens).seo.socialImage, 'a_dining', 'Kitchens is saved with the new photo'));
+await eventually(async () => assert.equal(await imageName().innerText(), 'Dining room'));
+await loaded(cardImage(), /dining/);
+await choose('Kitchen');
+await eventually(() => assert.equal(pageFile(kitchens).seo.socialImage, 'a_kitchen', 'and with its own photo again'));
+
 step('choosing the photo the page already shows from the site keeps it for this page when the site’s image changes');
 const contact = (await pageBy('Contact')).id;
 await openPage('Home');

@@ -43,6 +43,15 @@ describe('pageSharing', () => {
     const kitchens = byTitle('Kitchens');
     const withSite = apply(state, { type: 'site.update', description: 'Kitchens and gardens' });
     expect(pageSharing(withSite, byTitle('Kitchens')).description).toBe('Kitchens and gardens');
+    // The home page can have a title and description of its own too, and otherwise takes the site's description.
+    const home = withSite.pages[withSite.site.homePageId];
+    // The starter's home page carries a description of its own, which the site's does not replace.
+    expect(home.seo.description).toBeTruthy();
+    expect(pageSharing(withSite, home)).toMatchObject({ title: 'Test Studio', description: home.seo.description });
+    const homeBare = apply(withSite, { type: 'page.update', pageId: home.id, description: '' });
+    expect(pageSharing(homeBare, homeBare.pages[home.id])).toMatchObject({ title: 'Test Studio', description: 'Kitchens and gardens' });
+    const homeTitled = apply(withSite, { type: 'page.update', pageId: home.id, seoTitle: 'Welcome' });
+    expect(pageSharing(homeTitled, homeTitled.pages[home.id]).title).toBe('Welcome');
     const own = apply(withSite, { type: 'page.update', pageId: kitchens.id, seoTitle: 'Our kitchens', description: 'Oak and steel' });
     expect(pageSharing(own, own.pages[kitchens.id])).toMatchObject({ title: 'Our kitchens', description: 'Oak and steel' });
     const none = apply(state, { type: 'site.update', description: '' });
@@ -145,8 +154,17 @@ describe('sharingView', () => {
     dangling.pages[byTitle('Kitchens').id].seo.socialImage = 'a_gone';
     const d = sharingView(dangling, dangling.pages[byTitle('Kitchens').id]);
     expect(d).toMatchObject({ imageSource: 'page', imageName: undefined });
-    expect(d.imageNote).toMatch(/no longer in Assets/);
+    expect(d.imageNote).toBe('The image chosen for this page is no longer in Assets, so a shared link to it shows no picture. Choose another image, or return to the site’s image.');
     expect(d.picker).toMatchObject({ inherited: 'a_table', back: 'Use the site’s image' });
+    // One that is a file but no picture says so, rather than that it has gone.
+    const pdf = apply(state, { type: 'site.update', socialImage: 'a_table' });
+    pdf.assets.assets['a_menu'] = image('a_menu', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
+    pdf.pages[byTitle('Kitchens').id].seo.socialImage = 'a_menu';
+    expect(sharingView(pdf, pdf.pages[byTitle('Kitchens').id]).imageNote).toMatch(/^The file chosen for this page is not an image, so/);
+    const noSite = apply(state, { type: 'site.update', socialImage: null });
+    noSite.assets.assets['a_menu'] = pdf.assets.assets['a_menu'];
+    noSite.pages[byTitle('Kitchens').id].seo.socialImage = 'a_menu';
+    expect(sharingView(noSite, noSite.pages[byTitle('Kitchens').id]).imageNote).toMatch(/Choose another image, or remove it\.$/);
     // A site image that is a document is no image to return to.
     const doc = apply(state, { type: 'site.update', socialImage: 'a_table' });
     doc.assets.assets['a_table'] = image('a_table', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
@@ -157,6 +175,8 @@ describe('sharingView', () => {
     expect(g.imageSource).toBe('site');
     expect(g.picker.inherited).toBeNull();
     expect(g.imageNote).toMatch(/no longer in Assets/);
+    gone.assets.assets['a_table'] = image('a_table', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
+    expect(sharingView(gone, gone.pages[byTitle('Kitchens').id]).imageNote).toMatch(/^The site’s sharing image is not an image, so/);
   });
 
   it('names the effective title and description together, wherever each comes from', () => {

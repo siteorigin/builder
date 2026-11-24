@@ -50,16 +50,18 @@ export function sharingView(state: ProjectState, page: PageDoc): SharingView {
   const siteHas = !!siteName && state.assets.assets[siteId!].kind === 'image';
   const base = publicUrl(state.site);
   const own = shared.source === 'page';
+  // A saved ID can name a file that is not a picture, which is not the same as one that has gone.
+  const notPicture = (id: string | null) => !!id && Object.hasOwn(state.assets.assets, id) && state.assets.assets[id].kind !== 'image';
   const imageName = shared.image?.kind === 'image' ? nameOf(state, shared.imageId) : undefined;
   let imageNote: string;
   if (own) {
     imageNote = shared.image
       ? `This page’s own choice. ${siteHas ? `Pages without their own image show the site’s sharing image, ${siteName}.` : 'Pages without their own image are shared without one.'} Page lists that follow this page show it on this page’s card.`
-      : 'The image chosen for this page is no longer in Assets, so a shared link to it shows no picture. Choose another, or return to the site’s image.';
+      : `${notPicture(shared.imageId) ? 'The file chosen for this page is not an image' : 'The image chosen for this page is no longer in Assets'}, so a shared link to it shows no picture. Choose another image, or ${siteHas ? 'return to the site’s image' : 'remove it'}.`;
   } else if (shared.source === 'site') {
     imageNote = shared.image
       ? 'This page has no image of its own, so a shared link shows the site’s sharing image. Choose one to use a different image for this page.'
-      : 'The site’s sharing image is no longer in Assets, so a shared link to this page shows no picture. Choose one for this page, or another one in Site details.';
+      : `${notPicture(shared.imageId) ? 'The site’s sharing image is not an image' : 'The site’s sharing image is no longer in Assets'}, so a shared link to this page shows no picture. Choose one for this page, or another one in Site details.`;
   } else {
     imageNote = 'Neither this page nor the site has a sharing image, so a shared link to this page shows no picture.';
   }
