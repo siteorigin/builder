@@ -1,5 +1,5 @@
 import { isFocusValue } from './focus';
-import type { ComponentDefinition, ResponsiveStyles, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import type { ComponentDefinition, ResponsiveStyles, StyleProps, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.
@@ -1151,17 +1151,11 @@ export function styleDeclOrder(prop: string): number {
   return prop === 'textStyle' || prop === 'gap' ? 0 : prop === 'customCss' ? 2 : prop === 'hidden' ? 3 : 1;
 }
 
-/**
- * The value each style property gets from layers of rules, as the generated CSS cascades them. Each size holds the
- * winner at that size: the strongest layer that sets the property there, then the rule written last (base, then
- * tablet-and-up, then the size's own block), then the later layer. Properties that write the same CSS property
- * (columns and a grid template) compete as one. `base` holds the winner among values that apply at every size, when
- * it is what some size shows, so a size never needs to fall back to it: a value kept off phones is in tablet and
- * desktop only.
- */
-export function cascadeStyles(layers: StyleLayer[]): ResponsiveStyles {
-  type Decl = { prop: string; value: StyleValue; bucket: Bucket; strength: number; index: number; seq: number };
-  const decls: Decl[] = [];
+type CascadeDecl = { prop: string; value: StyleValue; bucket: Bucket; strength: number; index: number; seq: number };
+
+/** Every declaration layers of rules write for one element, and how they rank, as the generated CSS cascades them. */
+function cascadeOf(layers: StyleLayer[]) {
+  const decls: CascadeDecl[] = [];
   layers.forEach((layer, index) => {
     const raw = layer.styles;
     if (!raw) return;
@@ -1182,16 +1176,16 @@ export function cascadeStyles(layers: StyleLayer[]): ResponsiveStyles {
     if (raw.base?.hidden === false) for (const size of CASCADE_SIZES) if (raw[size]?.hidden === undefined && weakerHides(size)) push('hidden', false, size);
   });
   // Within one rule, declarations are written in the generator's order, so the later one wins a shared CSS property.
-  const inRule = (a: Decl, b: Decl) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop);
-  const beats = (a: Decl, b: Decl | undefined) =>
+  const inRule = (a: CascadeDecl, b: CascadeDecl) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop);
+  const beats = (a: CascadeDecl, b: CascadeDecl | undefined) =>
     !b ||
     a.strength > b.strength ||
     (a.strength === b.strength &&
       (BUCKET_ORDER[a.bucket] > BUCKET_ORDER[b.bucket] || (BUCKET_ORDER[a.bucket] === BUCKET_ORDER[b.bucket] && (a.index > b.index || (a.index === b.index && inRule(a, b) >= 0)))));
   // One shown-again result per hide a layout overrides, so a value for every size is recognised at each size too.
-  const unhidden = new Map<Decl, Decl>();
+  const unhidden = new Map<CascadeDecl, CascadeDecl>();
   const winners = (applies: (bucket: Bucket) => boolean) => {
-    const best = new Map<string, Decl>();
+    const best = new Map<string, CascadeDecl>();
     for (const d of decls) {
       const channel = CSS_CHANNEL[d.prop] ?? d.prop;
       if (applies(d.bucket) && beats(d, best.get(channel))) best.set(channel, d);
@@ -1204,16 +1198,145 @@ export function cascadeStyles(layers: StyleLayer[]): ResponsiveStyles {
     }
     return [...best.values()];
   };
-  const values = (list: Decl[]) => Object.fromEntries(list.map((d) => [d.prop, d.value]));
+  return { decls, beats, winners };
+}
+
+/** The buckets whose rules apply at one size. */
+const appliesAt = (size: Size) => (b: Bucket) => b === 'base' || b === size || (b === 'wide' && size !== 'phone');
+
+/**
+ * The value each style property gets from layers of rules, as the generated CSS cascades them. Each size holds the
+ * winner at that size: the strongest layer that sets the property there, then the rule written last (base, then
+ * tablet-and-up, then the size's own block), then the later layer. Properties that write the same CSS property
+ * (columns and a grid template) compete as one. `base` holds the winner among values that apply at every size, when
+ * it is what some size shows, so a size never needs to fall back to it: a value kept off phones is in tablet and
+ * desktop only.
+ */
+export function cascadeStyles(layers: StyleLayer[]): ResponsiveStyles {
+  const { winners } = cascadeOf(layers);
+  const values = (list: CascadeDecl[]) => Object.fromEntries(list.map((d) => [d.prop, d.value]));
   const out: ResponsiveStyles = {};
-  const shown = new Set<Decl>();
+  const shown = new Set<CascadeDecl>();
   for (const size of CASCADE_SIZES) {
-    const at = winners((b) => b === 'base' || b === size || (b === 'wide' && size !== 'phone'));
+    const at = winners(appliesAt(size));
     at.forEach((d) => shown.add(d));
     if (at.length) out[size] = values(at);
   }
   // A value for every size that no size shows (each overrides it) is not what the design gives any size.
   const base = winners((b) => b === 'base').filter((d) => shown.has(d));
   if (base.length) out.base = values(base);
+  return out;
+}
+
+/**
+ * Shorthands and the properties they also set. One rule writes a shorthand before them (see `styleDeclOrder` and the
+ * alphabetical order after it), so inside one rule each of them beats its shorthand.
+ */
+const SHORTHANDS: Record<string, string[]> = {
+  gap: ['rowGap', 'columnGap'],
+  textStyle: ['fontFamily', 'fontSize', 'lineHeight', 'fontWeight', 'letterSpacing', 'textTransform'],
+  paddingBlock: ['paddingBlockStart', 'paddingBlockEnd'],
+  paddingInline: ['paddingInlineStart', 'paddingInlineEnd'],
+  marginInline: ['marginInlineStart', 'marginInlineEnd'],
+  border: ['borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd']
+};
+
+/** The CSS properties one style property's declarations set (custom properties left out). */
+function cssProps(prop: string, value: StyleValue): string[] {
+  return styleToCss(prop, value)
+    .map((d) => d.slice(0, d.indexOf(':')).trim().toLowerCase())
+    .filter((p) => p && !p.startsWith('--'));
+}
+
+export interface FlattenOptions {
+  /** The single rule the result is written as: a placement's override (`true`) keeps multi-column values off phones. */
+  wideColumns?: boolean;
+  /**
+   * Layers that stay in force beneath the result (a nested component's own design): a property they win at a size is
+   * left to them, and a `hidden: false` that undoes one of their hides is kept.
+   */
+  beneath?: number;
+  /**
+   * The display the stylesheet gives an element shown again over a weaker hide, where no layout of its own sets one
+   * (see the generator's `unhider`): written as custom CSS, since the element the result lands on hides nothing.
+   */
+  shownDisplay?: (size: Size) => string | null;
+}
+
+/**
+ * Layers of rules on one element folded into the one set of styles that renders the same as a single rule: what an
+ * element detached from its component keeps. At each size the cascade's winner stays, except a property its
+ * shorthand beats (the shorthand alone sets it then), and every layer's custom CSS applies in cascade order minus what
+ * a stronger property sets. A value the same at every size is written once, for all sizes, unless the rule would keep
+ * it off phones.
+ */
+export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): ResponsiveStyles {
+  const { decls, beats, winners } = cascadeOf(layers);
+  const beneath = opts.beneath ?? 0;
+  const own = (d: CascadeDecl) => d.index >= beneath;
+  const bySize = {} as Record<Size, StyleProps>;
+  for (const size of CASCADE_SIZES) {
+    const applies = appliesAt(size);
+    const best = new Map(winners(applies).map((d) => [d.prop, d]));
+    for (const [short, longs] of Object.entries(SHORTHANDS)) {
+      const s = best.get(short);
+      if (s) for (const l of longs) if (best.has(l) && beats(s, best.get(l))) best.delete(l);
+    }
+    // Custom CSS from every layer applies, the stronger written later, less what a stronger named property sets.
+    const custom = decls.filter((d) => d.prop === 'customCss' && applies(d.bucket) && typeof d.value === 'string').sort((a, b) => (a === b ? 0 : beats(a, b) ? 1 : -1));
+    const named = [...best.values()].filter((d) => d.prop !== 'customCss');
+    const written: string[] = [];
+    for (const c of custom) {
+      if (!own(c)) continue;
+      const stronger = new Set(named.filter((n) => beats(n, c)).flatMap((n) => cssProps(n.prop, n.value)));
+      for (const decl of parseCustomCss(String(c.value)).decls) {
+        const p = decl.slice(0, decl.indexOf(':'));
+        if (![...stronger].some((q) => q === p || q.startsWith(`${p}-`))) written.push(decl);
+      }
+    }
+    best.delete('customCss');
+    const hide = best.get('hidden');
+    if (hide?.value === false) {
+      // Shown again over a hide that stays beneath: the result undoes it too. With none beneath, there is nothing to
+      // undo, but the display the stylesheet wrote to show it still decides how it lays out.
+      const under = decls.some((d) => !own(d) && d.prop === 'hidden' && d.value === true && applies(d.bucket));
+      if (!under) {
+        best.delete('hidden');
+        const layout = best.get('layout');
+        const display = layout ? null : (opts.shownDisplay?.(size) ?? null);
+        if (display) written.push(`display: ${display}`);
+      }
+    }
+    const props: StyleProps = {};
+    for (const d of best.values()) if (own(d)) props[d.prop] = d.value;
+    if (written.length) {
+      // Kept within the limits custom CSS has: the declarations written last win, so the earliest go first.
+      while (written.length > 1 && parseCustomCss(written.join('; ')).error) written.shift();
+      const text = written.join('; ');
+      if (!parseCustomCss(text).error) props.customCss = text;
+    }
+    bySize[size] = props;
+  }
+  return packSizes(bySize, !!opts.wideColumns);
+}
+
+/**
+ * Per-size values as one set of styles, as an author would set them: a property every size has takes its most common
+ * value for all sizes (the widest size's on a tie) and the others as exceptions; one some sizes leave alone, or a value
+ * the rule would keep off phones, is set per size.
+ */
+function packSizes(bySize: Record<Size, StyleProps>, wideColumns: boolean): ResponsiveStyles {
+  const out: ResponsiveStyles = {};
+  const props = new Set(CASCADE_SIZES.flatMap((s) => Object.keys(bySize[s])));
+  const key = (v: StyleValue | undefined) => JSON.stringify(v);
+  for (const prop of [...props].sort()) {
+    const values = CASCADE_SIZES.map((s) => bySize[s][prop]);
+    const count = (v: StyleValue | undefined) => values.filter((x) => key(x) === key(v)).length;
+    const common = values.every((v) => v !== undefined) ? [...values].reverse().reduce((a, b) => (count(b) > count(a) ? b : a)) : undefined;
+    if (common !== undefined && !wideOnlyStyle(prop, common, wideColumns)) (out.base ??= {})[prop] = common;
+    CASCADE_SIZES.forEach((s, i) => {
+      if (values[i] !== undefined && (common === undefined || out.base?.[prop] === undefined || key(values[i]) !== key(common))) (out[s] ??= {})[prop] = values[i]!;
+    });
+  }
   return out;
 }

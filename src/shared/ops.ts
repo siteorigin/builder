@@ -365,6 +365,11 @@ export const OPERATION_SCHEMAS = {
 
   'component.createFromNode': z.object({ type: z.literal('component.createFromNode'), owner, nodeId: z.string(), name: z.string().min(1).max(60) }),
   'component.makeUnique': z.object({ type: z.literal('component.makeUnique'), owner, nodeId: z.string(), name: z.string().max(60).optional() }),
+  'component.detachInstance': z
+    .object({ type: z.literal('component.detachInstance'), owner, nodeId: z.string().describe('A managed component placement on a page.') })
+    .describe(
+      "Replace one placement with ordinary page elements that look the same: its properties' current values, one copy per list item, the branches its settings show, its variant and style changes, and its slot content in place. The component and its other placements stay as they are."
+    ),
   'component.duplicate': z.object({ type: z.literal('component.duplicate'), definitionId: z.string(), name: z.string().min(1).max(60) }),
   'component.rename': z.object({ type: z.literal('component.rename'), definitionId: z.string(), name: z.string().min(1).max(60), description: z.string().max(300).optional() }),
   'component.fork': z.object({ type: z.literal('component.fork'), definitionId: z.string() }),

@@ -22,7 +22,7 @@ import { itemStylesOf } from '@shared/item-styles';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
-interface Scope {
+export interface Scope {
   props: Record<string, unknown>;
   /** The UI state of the definition being walked, at the values every placement starts with. */
   ui?: Record<string, unknown>;
@@ -60,7 +60,7 @@ interface Scope {
   instance?: GraphNode & { kind: 'instance' };
 }
 
-function evaluate(v: unknown, scope: Scope): unknown {
+export function evaluate(v: unknown, scope: Scope): unknown {
   if (isStateRef(v)) return scope.ui && Object.hasOwn(scope.ui, v.$state) ? scope.ui[v.$state] : undefined;
   if (!isBinding(v)) return v;
   const b = v as Binding;
@@ -70,7 +70,7 @@ function evaluate(v: unknown, scope: Scope): unknown {
 }
 
 /** Mirrors the generated `has()` helper, on unresolved values. */
-function shown(v: unknown, state: ProjectState): boolean {
+export function shown(v: unknown, state: ProjectState): boolean {
   if (typeof v === 'string') return v.trim().length > 0;
   if (Array.isArray(v)) return v.length > 0;
   if (v && typeof v === 'object') {
@@ -130,7 +130,7 @@ interface Frame {
 }
 
 /** Each property's effective value for a placement: its own (evaluated where it is placed) or the default. */
-function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope, pageId?: string): Record<string, unknown> {
+export function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope, pageId?: string): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(def.properties)) {
     const own = Object.hasOwn(n.props, name);
@@ -176,6 +176,11 @@ function nodeRenders(state: ProjectState, frame: Frame, n: GraphNode, seen: Set<
   if (n.unless && holds(n.unless, frame.scope, state)) return false;
   if (n.kind === 'repeat') return shown(evaluate(n.list, frame.scope), state);
   return n.kind !== 'element' || !n.collapseEmpty || childRenders(state, frame, n, seen);
+}
+
+/** Whether a node of a definition's tree renders in a scope: its conditions, a repeat's list, a collapsing element's children. */
+export function rendersIn(state: ProjectState, tree: NodeTree, scope: Scope, n: GraphNode): boolean {
+  return nodeRenders(state, { tree, scope, n: 0, defs: new Set() }, n, new Set());
 }
 
 /** A collapsing element renders while any child does; with no children it stays. */

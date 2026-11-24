@@ -478,13 +478,19 @@ function nodeDisplay(layout: unknown): string | null {
 }
 
 /**
+ * The display that shows a design's node again where nothing else sets one: what the theme gives this kind of
+ * element (a bound appearance counts as a button); `revert` would fall back to the browser's default instead.
+ */
+export function naturalDisplay(node: GraphNode | undefined): string {
+  return node?.kind === 'image' || node?.kind === 'icon' ? 'block' : node?.kind === 'link' ? (node.appearance === 'link' || node.appearance === 'plain' ? 'inline' : 'inline-flex') : 'revert';
+}
+
+/**
  * For a part shown again by an instance (`hidden: false`), the display value that undoes the definition's or
  * variant's `display: none` at that scope, or null when nothing hides it there.
  */
 function unhider(def: ComponentDefinition, nodeId: string, variants: InstanceNode['variants'] | null, override: ResponsiveStyles, earlier: ResponsiveStyles[] = [], later: ResponsiveStyles[] = []) {
-  const node = def.tree?.nodes[nodeId];
-  // What the theme gives this kind of element; `revert` would fall back to the browser's default instead.
-  const natural = node?.kind === 'image' || node?.kind === 'icon' ? 'block' : node?.kind === 'link' ? (node.appearance === 'link' || node.appearance === 'plain' ? 'inline' : 'inline-flex') : 'revert';
+  const natural = naturalDisplay(def.tree?.nodes[nodeId]);
   const layers = [def.tree?.nodes[nodeId]?.styles, ...earlier, ...(variants === null ? [] : selectedVariantStyles(def, variants, nodeId)), ...later].filter(Boolean) as ResponsiveStyles[];
   return (scope: ResponsiveScope): string | null => {
     const scopes: ResponsiveScope[] = scope === 'base' ? ['base', 'phone', 'tablet', 'desktop'] : ['base', scope];
@@ -614,7 +620,7 @@ export function variantClass(def: ComponentDefinition, axis: string, option: str
  * the root above it: a placement of the same component inside this one (in a slot) has roots of its own between, and
  * must keep its own options.
  */
-function nodeAxes(def: ComponentDefinition, nodeId: string): string[] {
+export function nodeAxes(def: ComponentDefinition, nodeId: string): string[] {
   if (nodeId === def.tree?.rootIds[0]) return [];
   return axesOf(def).flatMap(([axis, a]) => (Object.values(a.options).some((o) => !!o.styles && Object.hasOwn(o.styles, nodeId)) ? [axis] : []));
 }
@@ -768,7 +774,7 @@ function overrideOpts(state: ProjectState, def: ComponentDefinition, inst: Insta
  * also show it where those hide every item. In each size range where a weaker layer hides the part and the item says
  * nothing about its own visibility, the item stays hidden too.
  */
-function keepWeakerHides(def: ComponentDefinition, inst: InstanceNode, partId: string, own: ResponsiveStyles): ResponsiveStyles {
+export function keepWeakerHides(def: ComponentDefinition, inst: InstanceNode, partId: string, own: ResponsiveStyles): ResponsiveStyles {
   const nodeId = def.parts[partId].nodeId;
   const layers = [def.tree?.nodes[nodeId]?.styles, ...selectedVariantStyles(def, inst.variants, nodeId), inst.overrides?.[partId]].filter(Boolean) as ResponsiveStyles[];
   // What the weaker rules end on in a range, in cascade order: a hide, or a display that shows the part. Hides are
@@ -963,9 +969,27 @@ function itemsAttr(ctx: EmitCtx, nodeId: string): string {
   return items === null ? '' : items === '__so_at' ? ' data-so-items={__so_at || undefined}' : ` data-so-items={${items}}`;
 }
 
+/** Names safe to write into a class: what `defKey`, node IDs and variant IDs are made of. */
+const CLASS_PART = /^[A-Za-z0-9_-]{1,80}$/;
+
+/**
+ * Inert copies of the classes a detached node had in its design (`so--d-…`). No definition's class can start that
+ * way (`defKey` trims leading punctuation), so no component rule matches them, while the theme's hooks on class
+ * endings (a dark section's colours, print rules) read them as before.
+ */
+export function detachedClasses(node: Pick<GraphNode, 'detachedFrom'>): string[] {
+  const d = node.detachedFrom;
+  if (!d || typeof d !== 'object' || !CLASS_PART.test(String(d.component)) || !CLASS_PART.test(String(d.node))) return [];
+  const out = [`so--d-${d.component}__${d.node}`];
+  const options = d.options && typeof d.options === 'object' ? d.options : {};
+  for (const axis of Object.keys(options).sort()) if (CLASS_PART.test(axis) && CLASS_PART.test(String(options[axis]))) out.push(`so--d-${d.component}--${axis}-${options[axis]}`);
+  return out;
+}
+
 function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string {
+  const detached = detachedClasses(node).map(js);
   if (ctx.def) {
-    const parts = [js(nodeClass(ctx.def, node.id)), ...extra];
+    const parts = [js(nodeClass(ctx.def, node.id)), ...detached, ...extra];
     for (const [pid, p] of Object.entries(ctx.def.parts)) {
       if (p.nodeId !== node.id) continue;
       parts.push(`so_o?.[${js(pid)}]`);
@@ -977,7 +1001,7 @@ function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string 
     if (root) parts.push('className');
     return `{[${parts.join(', ')}]}`;
   }
-  const parts = [js(pageNodeClass(node.id)), ...extra];
+  const parts = [js(pageNodeClass(node.id)), ...detached, ...extra];
   return `{[${parts.join(', ')}]}`;
 }
 

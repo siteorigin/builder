@@ -82,6 +82,7 @@ import {
   uniqueCopyName
 } from './definitions';
 import { contractConflicts, hiddenSlotContent, themeRefresh } from './theme-updates';
+import { detachInstance } from './detach';
 
 export type OpResult = Record<string, unknown>;
 
@@ -253,6 +254,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return createFromNode(state, op);
     case 'component.makeUnique':
       return makeUnique(state, op);
+    case 'component.detachInstance':
+      return detachInstance(state, op, (tree, id) => copySubtree(tree, tree, id, state));
     case 'component.duplicate': {
       const def = own(state.components, op.definitionId) ?? fail(`Component "${op.definitionId}" does not exist.`);
       const copy = copyDefinition(state, def, op.name);
