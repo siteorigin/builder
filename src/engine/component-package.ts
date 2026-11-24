@@ -20,6 +20,7 @@ import { CUSTOM_DIR, defFile, defKey, effectiveTokens } from '@generator/index';
 import { getTheme } from '@catalogue/index';
 import { codeImports, directDependencies } from './definitions';
 import { childLists, fail } from './tree';
+import { FORM_DESTINATIONS, readsFormServices } from '@catalogue/foundation/form';
 import { clone, installComponent } from './install';
 
 type OpResult = Record<string, unknown>;
@@ -138,7 +139,7 @@ function siteLinks(def: ComponentDefinition, drop: boolean): number {
 }
 
 /** A static import's specifier, with comments allowed between the keyword and the quoted path. */
-const IMPORT_SPEC = /(\bfrom|\bimport\s*\(?)((?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*)(['"])([^'"\n]*)\3/g;
+const IMPORT_SPEC = /(\bfrom|\bimport\s*\(?)((?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*\n)*)(['"])([^'"\n]*)\3/g;
 
 /** The project file an import specifier in the file `fromFile` names, or null for a package import. */
 function resolveImport(spec: string, fromFile: string): string | null {
@@ -444,11 +445,11 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
     const fields = (prop as { fields?: unknown }).fields;
     if ((prop.type === 'list' || prop.type === 'object') && (!isRecord(fields) || !Object.values(fields).every((f) => isRecord(f) && typeof f.type === 'string'))) damaged(`its property "${k}" has no fields`);
     for (const f of [prop, ...(isRecord(fields) ? Object.values(fields) : [])] as Array<{ type?: unknown; options?: unknown }>)
-      if (f.type === 'enum' && !Array.isArray(f.options)) damaged(`its property "${k}" has no options`);
+      if (f.type === 'enum' && !(Array.isArray(f.options) && f.options.every((o) => isRecord(o) && typeof o.value === 'string' && typeof o.label === 'string'))) damaged(`its property "${k}" has no options`);
   }
   for (const [axis, a] of Object.entries(def.variantAxes ?? {})) if (!isRecord(a) || !isRecord(a.options)) damaged(`its variant "${axis}" has no options`);
   if (def.kind === 'code') {
-    if (typeof def.source !== 'string') fail(`${name} is a code component without its code.`);
+    if (typeof def.source !== 'string' || !def.source.trim()) fail(`${name} is a code component without its code.`);
     if (def.tree) fail(`${name} is a code component with a design as well, which no component has.`);
     if (def.dependencies !== undefined && !isIdList(def.dependencies)) damaged('its list of components it needs is not in the expected form');
     for (const dep of def.dependencies ?? []) if (!inPackage.has(dep)) fail(`${name} needs a component the package doesn't include ("${dep}").`);
@@ -457,6 +458,8 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
   const tree = def.tree;
   if (!tree || !isRecord(tree.nodes) || !isIdList(tree.rootIds)) fail(`${name} has no design to show.`);
   if (def.source !== undefined) fail(`${name} is a design with code as well, which no component has.`);
+  // Each element sits in one place: one shared or nested in itself would be generated over and over.
+  const parents = new Map<string, number>(tree.rootIds.map((r) => [r, 1]));
   for (const [id, n] of Object.entries(tree.nodes)) {
     if (!SAFE_NODE_ID.test(id) || !isRecord(n) || n.id !== id || !NODE_KINDS.has(n.kind as string)) damaged(`the element "${id.slice(0, 40)}" is not one the design can hold`);
     if ((n.kind === 'element' || n.kind === 'repeat') && !isIdList(n.children)) damaged(`the element "${id}" has no list of children`);
@@ -465,13 +468,22 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
       if (n.props !== undefined && !isRecord(n.props)) damaged(`the component placed as "${id}" has no settings`);
       if (n.slots !== undefined && (!isRecord(n.slots) || !Object.values(n.slots).every(isIdList))) damaged(`the component placed as "${id}" has damaged slots`);
     }
-    for (const list of childLists(n as GraphNode)) for (const c of list.ids) if (!Object.hasOwn(tree.nodes, c)) damaged(`the element "${id}" lists a missing child`);
+    for (const list of childLists(n as GraphNode))
+      for (const c of list.ids) {
+        if (!Object.hasOwn(tree.nodes, c)) damaged(`the element "${id}" lists a missing child`);
+        parents.set(c, (parents.get(c) ?? 0) + 1);
+        if (parents.get(c)! > 1) damaged(`the element "${c}" is placed in more than one place`);
+      }
   }
   for (const r of tree.rootIds) if (!Object.hasOwn(tree.nodes, r)) fail(`${name} has a damaged design.`);
 }
 
-/** The components a packaged definition renders or imports by ID. */
-const needsOf = (def: ComponentDefinition): string[] => [...(def.kind === 'managed' && def.tree ? directDependencies(def) : []), ...(def.dependencies ?? [])];
+/** The packaged components a packaged definition renders: placed by its design, declared, or imported by its code. */
+function needsOf(def: ComponentDefinition, byFile: ReadonlyMap<string, string>): string[] {
+  const out = [...(def.kind === 'managed' && def.tree ? directDependencies(def) : []), ...(def.dependencies ?? [])];
+  if (def.kind === 'code') for (const f of importedFiles(def.source ?? '', defFile(def))) if (byFile.has(f)) out.push(byFile.get(f)!);
+  return out.filter((d) => d !== def.id);
+}
 
 /**
  * The packaged theme components the project's theme has exactly as packaged (installed here or to install), and
@@ -489,9 +501,10 @@ function reusedFromTheme(state: ProjectState, defs: readonly ComponentDefinition
       })
       .map((d) => d.id)
   );
+  const byFile = new Map(defs.map((d) => [normalizePath(defFile(d)), d.id]));
   for (let changed = true; changed; ) {
     changed = false;
-    for (const def of defs) if (reused.has(def.id) && needsOf(def).some((d) => !reused.has(d))) changed = reused.delete(def.id);
+    for (const def of defs) if (reused.has(def.id) && needsOf(def, byFile).some((d) => !reused.has(d))) changed = reused.delete(def.id);
   }
   return reused;
 }
@@ -505,7 +518,8 @@ export function importedCode(state: ProjectState, input: ComponentImport): Compo
 /** A package style's value and stand-in in the form its kind takes: text for most kinds, metrics for a text style. */
 function tokenShapeOk(t: PackageToken): boolean {
   const literal = (v: unknown) => (t.group === 'text' ? isRecord(v) && 'family' in v && TEXT_KEYS.every((k) => v[k] === undefined || typeof v[k] === 'string' || typeof v[k] === 'number' || (k === 'family' && isRecord(v[k]))) : typeof v === 'string');
-  const link = (v: unknown) => t.group !== 'text' && isRecord(v) && Object.keys(v).length === 1 && typeof v.token === 'string';
+  // A text style may still follow another as a whole, as older sites stored it; it lands with the metrics it resolves to.
+  const link = (v: unknown) => isRecord(v) && Object.keys(v).length === 1 && typeof v.token === 'string';
   return t.id.startsWith(`${t.group}.`) && (literal(t.value) || link(t.value)) && literal(t.resolved);
 }
 
@@ -535,7 +549,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
   const imported: ComponentDefinition[] = [];
   for (const def of defs) {
     // Two components naming one file would land as one: the package can't say which an import of it means.
-    const was = defFile(def);
+    const was = normalizePath(defFile(def));
     if (packagedFiles.has(was)) fail(`The package has two components saved as the same file ("${was.split('/').pop()}"), so it can't be imported.`);
     packagedFiles.add(was);
     if (reused.has(def.id)) {
@@ -631,7 +645,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
         }
       }
     } else {
-      const value = relinked(t!.value, t!.group, t!.label);
+      const value = relinked(t!.group === 'text' && linkOf(t!.value) ? t!.resolved : t!.value, t!.group, t!.label);
       if (same(existing, t!.group, value)) to = id;
       else {
         // Free here: it keeps its name, which was kept for it. Taken by a different style: the next free name.
@@ -670,6 +684,21 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     def.schemaVersion = SCHEMA_VERSION;
     if (!(COMPONENT_CATEGORIES as readonly string[]).includes(def.category)) def.category = 'custom';
     landed.push(def);
+  }
+  // A form a package brings never sends visitors' messages to the package author's account: its service is set up
+  // again here, by whoever imports it.
+  const placedDef = (id: string) => landed.find((d) => d.id === id) ?? own(state.components, id) ?? defs.find((d) => d.id === id);
+  for (const def of landed) {
+    if (readsFormServices(def)) for (const k of FORM_DESTINATIONS) if (def.properties[k]?.type === 'string') def.properties[k].default = '';
+    for (const n of Object.values(def.tree?.nodes ?? {})) {
+      if (n.kind !== 'instance' || !readsFormServices(placedDef(n.definitionId))) continue;
+      for (const k of FORM_DESTINATIONS) {
+        const v = n.props?.[k];
+        const bound = isRecord(v) && typeof v.$prop === 'string' ? own(def.properties, v.$prop) : undefined;
+        if (bound?.type === 'string') bound.default = '';
+        else if (n.props && Object.hasOwn(n.props, k)) delete n.props[k];
+      }
+    }
   }
   for (const def of installs) {
     const installed = installComponent(state, def.componentId);

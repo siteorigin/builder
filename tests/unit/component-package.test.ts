@@ -358,6 +358,12 @@ describe('component packages: export and import (#371)', () => {
     expect(helper.ok).toBe(false);
     expect(helper.error!.message).toMatch(/imports "\.\.\/runtime\/Gone\.svelte", which is not a file in this project/);
     expect(snapshot(dest)).toBe(untouched);
+    // Nor a component the destination happens to have: a package brings everything its code imports.
+    const own = await blank('Own');
+    const badge = ok(await own.apply({ operations: [{ type: 'component.createCode', name: 'Badge', source: '<span>New</span>\n' }] }, { label: 'Create', codeAllowed: true })).results![0];
+    const foreign = await importInto(own, writePackage(codePackage(`<script>\n  import Badge from './${(badge.sourcePath as string).split('/').pop()}';\n</script>\n\n<Badge />\n`)));
+    expect(foreign.error?.message).toMatch(/which is not a component in this project/);
+    await own.close();
     // The same safe code lands.
     ok(await importInto(dest, writePackage(codePackage(`<script>\n  let { title = 'Hello' } = $props();\n</script>\n\n<h3>{title}</h3>\n`))));
     await dest.close();
@@ -383,11 +389,15 @@ describe('component packages: export and import (#371)', () => {
 
     // The same package with a script in its SVG is refused, and no file or record is added.
     const pkg = JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage;
-    const evil = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><script>alert(1)</script><rect width="10" height="10" onload="alert(2)"/></svg>');
-    Object.assign(pkg.images[0], { data: evil.toString('base64'), hash: sha(evil) });
     const fresh = await blank('Fresh');
     const untouched = snapshot(fresh);
-    await expect(importInto(fresh, writePackage(JSON.stringify(pkg)))).rejects.toThrow(/scripts, links or other content/);
+    for (const evil of [
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><script>alert(1)</script><rect width="10" height="10"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" onload="alert(2)"/></svg>'
+    ]) {
+      Object.assign(pkg.images[0], { data: Buffer.from(evil).toString('base64'), hash: sha(evil) });
+      await expect(importInto(fresh, writePackage(JSON.stringify(pkg))), evil).rejects.toThrow(/scripts, links or other content/);
+    }
     expect(snapshot(fresh)).toBe(untouched);
     expect(existsSync(join(fresh.dir, 'static/assets')) ? (await import('node:fs')).readdirSync(join(fresh.dir, 'static/assets')).filter((f) => f.endsWith('.svg')) : []).toEqual([]);
     await Promise.all([src.close(), dest.close(), fresh.close()]);
@@ -456,6 +466,9 @@ describe('component packages: export and import (#371)', () => {
       s2: { id: 's2', kind: 'slot', slot: '_hero_title' }
     });
     const clash = await importInto(dest, writePackage(JSON.stringify({ ...good, rootId: slots.id, definitions: [{ ...slots, slots: { 'hero-title': { label: 'Title' }, _hero_title: { label: 'Title too' } } }] })));
+    // An element placed twice (or inside itself) would be generated over and over: refused by name.
+    const twice = await importInto(dest, writePackage(JSON.stringify({ ...good, rootId: 'proj.band-abcde', definitions: [managed({ root: { id: 'root', kind: 'element', tag: 'div', children: ['c', 'c'] }, c: { id: 'c', kind: 'element', tag: 'div', children: [] } })] })));
+    expect(twice.error?.message).toMatch(/the element "c" is placed in more than one place/);
     expect(clash.error?.message).toMatch(/“Band” can't be imported: its design doesn't compile \(Identifier 'slot__hero_title' has already been declared\)/);
     expect(snapshot(dest)).toBe(untouched);
     await dest.close();
@@ -472,6 +485,57 @@ describe('component packages: export and import (#371)', () => {
     expect(r.ok).toBe(false);
     expect(r.error!.message).toMatch(/The image “Waves” is no longer in this project's library/);
     await Promise.all([src.s.close(), dest.close()]);
+  });
+
+  it('never writes over a library file that changed, and imports again after a refused import', async () => {
+    const src = await pricingCard();
+    const { path } = await exportTo(src.s, src.rootId);
+    const bytes = readFileSync(join(src.s.dir, src.s.state.assets.assets[src.imageId].file));
+
+    // The destination has the same picture, but its file was replaced: the import refuses and leaves the file alone.
+    const dest = await blank('Dest');
+    const mine = await addImage(dest, 'Waves.png', bytes);
+    const file = join(dest.dir, dest.state.assets.assets[mine].file);
+    const other = await png('#ff0000');
+    writeFileSync(file, other);
+    const untouched = snapshot(dest);
+    await expect(importInto(dest, path)).rejects.toThrow(/has changed in the project folder/);
+    expect(readFileSync(file).equals(other)).toBe(true);
+    expect(snapshot(dest)).toBe(untouched);
+
+    // Files an earlier attempt stored without landing are the same bytes: the next import uses them.
+    const again = await blank('Again');
+    await preparePackageImport(again.dir, again.state, await readComponentPackage(path), { codeAllowed: true });
+    ok(await importInto(again, path));
+    // A record whose picture differs from the packaged one is not the packaged image.
+    const third = await blank('Third');
+    const prepared = await preparePackageImport(third.dir, third.state, await readComponentPackage(path), { codeAllowed: true });
+    const assets = prepared.assets.map((a) => ({ ...a, asset: { ...a.asset, hash: 'f'.repeat(64) } }));
+    const r = await third.apply({ operations: [...assets, { type: 'component.import', importId: prepared.input.id }] }, { label: 'Import', source: 'user', componentImport: prepared.input });
+    expect(r.error?.message).toMatch(/no longer in this project's library as it was packaged/);
+    // One import per change.
+    const op = { type: 'component.import' as const, importId: prepared.input.id };
+    const doubled = await third.apply({ operations: [...prepared.assets, op, op] }, { label: 'Import', source: 'user', componentImport: prepared.input });
+    expect(doubled.error?.message).toMatch(/change of its own/);
+    await Promise.all([src.s.close(), dest.close(), again.close(), third.close()]);
+  });
+
+  it('brings a contact form without the service its messages went to', async () => {
+    const s = await blank('Forms');
+    const owner = home(s);
+    const section = ok(await s.apply({ operations: [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }] }, { label: 'Insert' })).results![0].nodeId as string;
+    const form = ok(await s.apply({ operations: [{ type: 'node.insert', owner, parentId: section, slot: 'content', componentId: 'contact.form', props: { provider: 'endpoint', endpoint: 'https://forms.example.com/f/abc', accessKey: 'secret-key' } }] }, { label: 'Form' }));
+    expect(form.ok, form.error?.message).toBe(true);
+    const defId = ok(await s.apply({ operations: [{ type: 'component.createFromNode', owner, nodeId: section, name: 'Contact band' }] }, { label: 'Create' })).results![0].definitionId as string;
+    const { path } = await exportTo(s, defId);
+    expect(readFileSync(path, 'utf8')).toContain('https://forms.example.com/f/abc');
+    const dest = await blank('Dest');
+    const r = ok(await importInto(dest, path, { codeAllowed: false }));
+    const landed = dest.state.components[r.results!.at(-1)!.definitionId as string];
+    const text = JSON.stringify(landed);
+    expect(text).not.toContain('https://forms.example.com/f/abc');
+    expect(text).not.toContain('secret-key');
+    await Promise.all([s.close(), dest.close()]);
   });
 
   it('lets only the editor import: the assistant, and an edit without the checked package, land nothing', async () => {
