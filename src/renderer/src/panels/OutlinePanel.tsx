@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
-import { CircleCheck, Heading1, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Heading1, Info, TriangleAlert } from 'lucide-react';
 import { sameRef } from '@shared/types';
 import type { OutlineHeading } from '@generator/checks';
 import { applyOps, getState, setState, useStore } from '../store';
-import { headingLevelOps, headingTarget, headingWords, pageOutline, type OutlineRow } from '../lib/outline';
+import { headingKey, headingLevelOps, headingTarget, headingWords, pageOutline, type OutlineRow } from '../lib/outline';
 
 const WHERE: Record<string, string> = { header: 'Shared header', footer: 'Shared footer' };
 
@@ -40,20 +40,19 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
 
   const select = (h: OutlineHeading) => setState({ mode: 'edit', selection: headingTarget(state, h), rightTab: 'inspect', dockOpen: true });
   /**
-   * Give a heading another level. Focus stays in the outline, on the same heading's row once it has its new level
-   * (changing a level never adds or removes a row), unless the edit did not land or another page is shown by then.
+   * Give a heading another level. Focus stays in the outline, on the same heading's row once it has its new level,
+   * unless the edit did not land or another page is shown by then.
    */
   const setLevel = (h: OutlineHeading, level: number) => {
     const ops = headingLevelOps(h, level);
-    const index = rows.findIndex((r) => r.heading === h);
     if (!ops) return;
+    const key = headingKey(h);
     void applyOps(ops, `Make “${headingWords(h)}” Heading ${level}`, undefined, revision).then((done) => {
       if (!done || getState().pageId !== pageId) return;
-      requestAnimationFrame(() => document.querySelectorAll<HTMLElement>('.outline-list > li .outline-row')[index]?.focus());
+      requestAnimationFrame(() => document.querySelector<HTMLElement>(`.outline-list .outline-row[data-heading="${CSS.escape(key)}"]`)?.focus());
     });
   };
 
-  const own = rows.filter((r) => r.heading.owner.kind === 'page');
   const summary = review.missingTitle ? (
     <div className="scope-note site" role="note">
       <TriangleAlert aria-hidden="true" />
@@ -77,7 +76,12 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
         {review.skips.length > 0 && <>{review.skips.length === 1 ? 'A heading skips a level.' : `${review.skips.length} headings skip a level.`} Each level should follow on from the heading before it.</>}
       </span>
     </div>
-  ) : own.length ? (
+  ) : !review.titles.length && outline.uninspected ? (
+    <div className="scope-note instance" role="note">
+      <Info aria-hidden="true" />
+      <span className="grow">No Heading 1 is listed. Custom code on this page may show one; check the page in Preview.</span>
+    </div>
+  ) : review.titles.length ? (
     <div className="scope-note shared" role="note">
       <CircleCheck aria-hidden="true" />
       <span className="grow">One page title, and no skipped levels. Changing a level never changes how a heading looks.</span>
@@ -107,6 +111,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
                 <div className="outline-item">
                   <button
                     className={`outline-row${note?.warn ? ' warn' : ''}`}
+                    data-heading={headingKey(h)}
                     aria-current={sameRef(selection, target) ? 'true' : undefined}
                     aria-label={`Heading ${h.level}, ${words}${note ? `. ${note.text}` : ''}${h.repeated && !r.extraTitle ? '. Shown more than once' : ''}`}
                     title={why || undefined}

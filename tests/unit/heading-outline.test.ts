@@ -154,21 +154,21 @@ describe('headings as the generated site renders them', () => {
     const s = fresh();
     const home = s.site.homePageId;
     const level = (def: string, opts: string[]) => P.choice('Level', def, opts.map((o) => [o, o.toUpperCase()] as [string, string]));
-    // The inner heading renders Heading 2 or 3; its wrapper offers 1, 2 or 3 and forwards its choice.
-    projectDef(s, 'p_inner', { lvl: level('h2', ['h2', 'h3']), year: P.num('Year', 2026) }, [{ id: 'title', kind: 'text', tag: { $prop: 'lvl' }, text: { $prop: 'year' } }]);
+    // The inner heading renders Heading 2 or 3, Heading 3 by default; its wrapper offers 1, 2 or 3 and forwards its choice.
+    projectDef(s, 'p_inner', { lvl: level('h3', ['h2', 'h3']), year: P.num('Year', 2026) }, [{ id: 'title', kind: 'text', tag: { $prop: 'lvl' }, text: { $prop: 'year' } }]);
     const wrapper = projectDef(s, 'p_wrap', { level: level('h2', ['h1', 'h2', 'h3']) }, [
       { id: 'root', kind: 'element', tag: 'div', children: ['first', 'second'] },
       { id: 'first', kind: 'instance', definitionId: 'p_inner', props: { lvl: { $prop: 'level' } } },
-      { id: 'second', kind: 'instance', definitionId: 'p_inner', props: { lvl: 'h3' } }
+      { id: 'second', kind: 'instance', definitionId: 'p_inner', props: { lvl: 'h2' } }
     ]);
     const placed: InstanceNode = { ...makeInstance(wrapper, {}), props: { level: 'h1' } };
     withHeadings(s, home, []);
     s.pages[home].nodes = { [placed.id]: placed };
     s.pages[home].rootIds = [placed.id];
     const [first, second] = own(s, home);
-    // "h1" is not one of the inner heading's levels: the site renders its default, Heading 2.
-    expect(first).toMatchObject({ level: 2, text: '2026', levelSource: { kind: 'prop', prop: 'level' }, levels: [2, 3], instancePath: [placed.id, 'first'] });
-    expect(second).toMatchObject({ level: 3, instancePath: [placed.id, 'second'] });
+    // "h1" is not one of the inner heading's levels: the site renders its default, Heading 3.
+    expect(first).toMatchObject({ level: 3, text: '2026', levelSource: { kind: 'prop', prop: 'level' }, levels: [2, 3], instancePath: [placed.id, 'first'] });
+    expect(second).toMatchObject({ level: 2, instancePath: [placed.id, 'second'] });
     expect(second.levelSource).toBeUndefined();
     // Each nested heading selects itself, not the wrapper they share.
     expect(headingTarget(s, first)).toEqual({ owner: { kind: 'page', id: home }, instancePath: [placed.id, 'first'], nodeId: 'title' });
@@ -188,6 +188,16 @@ describe('headings as the generated site renders them', () => {
     // Shown again on phones, it is a second title there.
     (s.pages[home].nodes.n_old as TextNode).styles = { base: { hidden: true }, phone: { hidden: false } };
     expect(headingWarnings(s).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+    // A layout set for one size gives the element a display there, which shows it again.
+    (s.pages[home].nodes.n_old as TextNode).styles = { base: { hidden: true, layout: 'stack' }, tablet: { layout: 'row' } };
+    expect(headingWarnings(s).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+    (s.pages[home].nodes.n_old as TextNode).styles = { base: { hidden: true }, tablet: { layout: 'row', hidden: true } };
+    expect(headingWarnings(s)).toEqual([]);
+    // A container hidden at every size hides the headings inside it.
+    s.pages[home].nodes.n_box = { id: 'n_box', kind: 'element', tag: 'div', children: ['n_new'], styles: { base: { hidden: true } } };
+    s.pages[home].rootIds = ['n_old', 'n_box'];
+    (s.pages[home].nodes.n_old as TextNode).styles = {};
+    expect(rows(s, home)).toEqual([[1, 'Old title']]);
     // A section hidden at every size hides its headings: the Contact page's hero, here.
     const { s: withHero, pageId, heroId } = contactWithHero();
     (withHero.pages[pageId].nodes[heroId] as InstanceNode).overrides = { root: { base: { hidden: true } } };
@@ -370,6 +380,34 @@ describe('page outline rows and fixes', () => {
       [true, false, null],
       [false, true, null]
     ]);
+    // Below a title of the page's own, both skip a level at Heading 3, and still neither offers a fix.
+    s.pages[home].nodes.n_top = { id: 'n_top', kind: 'text', tag: 'h1', text: 'Top' };
+    s.pages[home].rootIds.unshift('n_top');
+    def.properties.level = P.choice('Level', 'h1', [['h1', 'H1'], ['h2', 'H2'], ['h3', 'H3']]);
+    (s.pages[home].nodes[inst.id] as InstanceNode).props.level = 'h3';
+    const skipped = pageOutline(s, home).rows.filter((r) => r.heading.owner.kind === 'page');
+    expect(skipped.map((r) => [r.heading.level, r.skip?.suggest ?? null, r.fix ?? null])).toEqual([
+      [1, null, null],
+      [3, 2, null],
+      [3, null, null]
+    ]);
+  });
+
+  it('offers no one-step fix for a level a design also reads to decide what shows', () => {
+    const s = fresh();
+    const home = s.site.homePageId;
+    const def = projectDef(s, 'p_cond', { level: P.choice('Level', 'h1', [['h1', 'H1'], ['h2', 'H2']]) }, [
+      { id: 'root', kind: 'element', tag: 'div', children: ['note', 'title'] },
+      { id: 'note', kind: 'text', tag: 'p', text: 'Shown for a page title only', when: { ref: { $prop: 'level' }, eq: 'h1' } },
+      { id: 'title', kind: 'text', tag: { $prop: 'level' }, text: 'Second' }
+    ]);
+    const inst = makeInstance(def, {});
+    withHeadings(s, home, [{ id: 'n_a', tag: 'h1', text: 'First' }]);
+    s.pages[home].nodes[inst.id] = inst;
+    s.pages[home].rootIds.push(inst.id);
+    const row = pageOutline(s, home).rows.find((r) => r.heading.text === 'Second')!;
+    expect(row).toMatchObject({ extraTitle: true, heading: { levelConditions: true } });
+    expect(row.fix).toBeUndefined();
   });
 
   it('offers no fix where the level is fixed: rich text, the contact form, an older design', () => {

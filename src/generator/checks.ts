@@ -1060,15 +1060,21 @@ export interface OutlineHeading {
   /** Where its level can be changed, and the levels offered there. Absent when a component's design fixes it. */
   levelSource?: HeadingLevelSource;
   levels?: number[];
+  /** The field choosing its level also decides whether something on the page shows: changing it may change more. */
+  levelConditions?: boolean;
 }
 
 const levelOf = (tag: unknown) => (typeof tag === 'string' && HEADING.test(tag) ? Number(tag[1]) : 0);
 const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
 const SIZES = ['phone', 'tablet', 'desktop'] as const;
 
-/** Whether styles hide an element at every size: hidden at the base size and shown again at none. */
+/**
+ * Whether styles hide an element at every size: hidden at the base size, and shown again at none. A size that sets
+ * a layout (or custom CSS) without hiding the element itself gives it a display again, which shows it there.
+ */
 const hiddenEverywhere = (...layers: Array<ResponsiveStyles | undefined>) =>
-  layers.some((l) => l?.base?.hidden === true) && !layers.some((l) => SIZES.some((z) => l?.[z]?.hidden === false));
+  layers.some((l) => l?.base?.hidden === true) &&
+  !layers.some((l) => SIZES.some((z) => { const at = l?.[z]; return !!at && (at.hidden === false || (at.hidden !== true && ('layout' in at || 'customCss' in at))); }));
 
 /** The tag a text node renders, as the generator decides it: a bound tag's value when it is one of its choice's text tags, else the choice's default. */
 function renderedTag(n: GraphNode & { kind: 'text' }, scope: Scope, def: ComponentDefinition | undefined): { tag: string; levels?: number[] } {
@@ -1097,9 +1103,16 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
   const add = (h: OutlineHeading, scope: Scope) => {
     // Slot content a design shows inside a list renders once per item; a code component's is taken as shown once.
     if (scope.multiple && !scope.codeSlot) h.repeated = true;
-    for (const slot of scope.slots ?? []) bySlot.set(slot, [...(bySlot.get(slot) ?? []), h]);
+    for (const slot of scope.slots ?? []) {
+      const list = bySlot.get(slot);
+      if (list) list.push(h);
+      else bySlot.set(slot, [h]);
+    }
     out.push(h);
   };
+  // Placement fields a design's conditions read: a heading level chosen by one of them decides more than the level.
+  const fieldKey = (owner: OwnerRef, nodeId: string, f: PlacementField) => JSON.stringify([owner.kind, owner.id, nodeId, f.prop, f.itemId ?? null, f.field ?? null]);
+  const conditions = new Set<string>();
   for (const [owner, tree] of trees) {
     // Page nodes hidden at every size, from the outermost one in: nothing inside them renders for anyone.
     const hiding: boolean[] = [];
@@ -1115,6 +1128,13 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
       },
       again: (slot) => {
         for (const h of bySlot.get(slot) ?? []) h.repeated = true;
+      },
+      node: (n, scope, reportId, inDef) => {
+        if (!inDef) return;
+        for (const ref of [conditionRef(n.when), conditionRef(n.unless)]) {
+          const f = placementField(ref, scope);
+          if (f) conditions.add(fieldKey(owner, reportId, f));
+        }
       },
       text: (n, scope, reportId, inDef, def) => {
         if (hidden) return;
@@ -1165,6 +1185,7 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
       }
     });
   }
+  for (const h of out) if (h.levelSource?.kind === 'prop' && conditions.has(fieldKey(h.owner, h.nodeId, h.levelSource))) h.levelConditions = true;
   return { outline: out, uninspected };
 }
 

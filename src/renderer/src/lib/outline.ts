@@ -49,7 +49,7 @@ export function pageOutline(state: ProjectState, pageId: string): PageOutline {
     const k = sourceKey(h);
     if (k) sharing.set(k, (sharing.get(k) ?? 0) + (h.repeated ? 2 : 1));
   }
-  const fixable = (h: OutlineHeading, level: number) => canSetLevel(h, level) && sharing.get(sourceKey(h)!) === 1;
+  const fixable = (h: OutlineHeading, level: number) => canSetLevel(h, level) && !h.levelConditions && sharing.get(sourceKey(h)!) === 1;
   // The first Heading 1 is taken as the page's title, and each later one as a second title. A title shown more than
   // once is its own second title, which no other level settles while it stays the page's only one.
   review.titles.forEach((i, k) => {
@@ -91,6 +91,9 @@ export function headingLevelOps(h: OutlineHeading, level: number): EditOperation
   if (s.kind === 'node') return [{ type: 'node.setContent', owner: h.owner, nodeId: h.nodeId, field: 'tag', value }];
   return [{ type: 'instance.setProp', owner: h.owner, nodeId: h.nodeId, prop: s.prop, ...(s.itemId ? { itemId: s.itemId, field: s.field } : {}), value }];
 }
+
+/** Names one heading across revisions: where it is shown, not its level or words. */
+export const headingKey = (h: OutlineHeading) => JSON.stringify([h.owner.kind, h.owner.id, h.nodeId, h.instancePath ?? null, h.defNodeId ?? null, h.itemPath ?? null, h.rich ? h.text : null]);
 
 /** A heading's words for a row or a label; an empty heading says so. */
 export const headingWords = (h: OutlineHeading) => h.text || 'Empty heading';
