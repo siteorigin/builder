@@ -164,6 +164,22 @@ describe('collections', () => {
     expect(moved.pages[withPosts.site.homePageId].route).toBe('/home-2/');
   });
 
+  it('keeps the pages inside a moved page off collection and entry addresses too', () => {
+    const s = run(
+      site(),
+      { type: 'collection.create', collectionId: 'posts', route: '/updates/blog/' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio' },
+      { type: 'page.create', title: 'Old', route: '/old/' },
+      { type: 'page.create', title: 'Blog', route: '/old/blog/' },
+      { type: 'page.create', title: 'Spring', route: '/old/blog/spring-open-studio/' }
+    );
+    const old = pageAt(s, '/old/').id;
+    expect(() => apply(s, [{ type: 'page.update', pageId: old, route: '/updates/' }])).toThrow(/would move “Blog” to \/updates\/blog\/, which is the address of the Posts collection/);
+    // Elsewhere the whole branch moves, and no page sits on an entry's address.
+    const moved = run(s, { type: 'page.update', pageId: old, route: '/archive/' });
+    expect(Object.values(moved.pages).map((p) => p.route)).toEqual(expect.arrayContaining(['/archive/', '/archive/blog/', '/archive/blog/spring-open-studio/']));
+  });
+
   it('moves a collection with its entries only when every new address is free', () => {
     let s = run(blog(), { type: 'page.create', title: 'Winter', route: '/news/winter-hours/' });
     expect(() => apply(s, [{ type: 'collection.update', collectionId: 'posts', route: '/news/' }])).toThrow(/would give “Winter hours” the address \/news\/winter-hours\/, which is the page “Winter”/);
