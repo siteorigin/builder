@@ -61,6 +61,7 @@ const INSTRUCTIONS = [
   'A ref goes stale when what it named changes (STALE_REF): observe again for a fresh one. Every failure is the driver\'s error { code, message, retryable, details }; details.hint often says what to do next.',
   'Kinds: observe only reads; act does what a person could, with real input; fixture prepares state no person made through the UI (choosers\' answers, sample files); session manages the run.',
   'Screenshots: ui_snapshot with screenshot: true saves them, and evidence_read returns one by its id as an image.',
+  'Outcomes: wait_for waits for a named condition (a save settled, the preview ready, an export finished, ...), project_summary and exports_inspect read the project and the exports independently of the UI, and evidence_log and evidence_save give the run\'s ordered record and a replayable replay.json.',
   'Requests run one at a time (BUSY otherwise). Once a session has closed (CLOSED), session_close ends it for good and the next session_start starts a new one.'
 ].join('\n');
 

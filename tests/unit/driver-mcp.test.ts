@@ -22,6 +22,7 @@ import type { HostConnection } from '../driver/mcp.ts';
 import { WAIT_LIMITS, parseSnapshotArgs, parseLocateArgs, parseWaitArgs, waitFor } from '../driver/observe.ts';
 import type { Located } from '../driver/observe.ts';
 import { OPERATIONS } from '../driver/operations.ts';
+import { parseCondition, parseInspectArgs } from '../driver/outcomes.ts';
 import { processTable } from '../driver/processes.ts';
 import { DriverError } from '../driver/protocol.ts';
 import type { Reply } from '../driver/protocol.ts';
@@ -63,7 +64,7 @@ describe('tool discovery', () => {
     expect(tools.map((t) => t.name)).toEqual(Object.keys(OPERATIONS).map((op) => op.replace('.', '_')));
     expect(new Set(tools.map((t) => t.name)).size).toBe(tools.length);
     for (const t of tools) expect(t.name).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
-    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['session_start', 'session_close', 'ui_snapshot', 'ui_click', 'ui_waitFor', 'evidence_read', 'desktop_setAnswers']));
+    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['session_start', 'session_close', 'ui_snapshot', 'ui_click', 'ui_waitFor', 'evidence_read', 'desktop_setAnswers', 'wait_for', 'project_summary', 'exports_inspect', 'evidence_log', 'evidence_save']));
   });
 
   it('says what kind each is, so a fixture is never mistaken for something a person did', () => {
@@ -75,7 +76,7 @@ describe('tool discovery', () => {
       expect(t.annotations.openWorldHint).toBe(t.annotations.readOnlyHint ? false : undefined);
     }
     expect(tools.find((t) => t.name === 'desktop_setAnswers')!.description).toContain('not something a user did');
-    expect(tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.title)).toEqual(['session.describe', 'window.info', 'menu.list', 'desktop.events', 'files.list', 'ui.locate', 'ui.waitFor', 'evidence.read']);
+    expect(tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.title)).toEqual(['session.describe', 'window.info', 'menu.list', 'desktop.events', 'files.list', 'ui.locate', 'ui.waitFor', 'evidence.read', 'wait.for', 'project.summary', 'exports.inspect', 'evidence.log']);
   });
 
   it('gives every tool an object schema with the request options, and none of the options a contained session refuses', () => {
@@ -153,6 +154,27 @@ describe('tool discovery', () => {
       parse: (a) => parseAction('ui.drag', a),
       good: [{ from: ref, to: { ref: 'a1b2c3:5' } }, { from: ref, by: { x: 10, y: 0 }, steps: 100 }],
       bad: [{ from: ref, to: { ref: 'a1b2c3:5' }, steps: 0 }, { from: ref, to: { ref: 'a1b2c3:5' }, steps: 101 }, { from: ref, by: { x: 20_000, y: 0 } }, { to: ref }]
+    },
+    'wait.for': {
+      parse: (a) => parseCondition(a),
+      good: [
+        { condition: 'ui.present', role: 'dialog', name: 'New project' },
+        { condition: 'ui.absent', role: 'dialog', scope: 'editor', exact: false },
+        { condition: 'ui.absent', role: 'button', name: 'Save', within: 'a1b2c3:9' },
+        { condition: 'ui.context', screen: 'editor', mode: null, dialog: null },
+        { condition: 'ui.context', dialog: 'New project' },
+        { condition: 'preview.ready', path: '/about/' },
+        { condition: 'save.settled', changed: false },
+        { condition: 'project.revision', atLeast: 0 },
+        { condition: 'export.finished' },
+        { condition: 'outcome.terminal', since: 'start' }
+      ],
+      bad: [{}, { condition: 'ui.gone' }, { condition: 'ui.present', role: 'Dialog' }, { condition: 'ui.context', screen: 'home' }, { condition: 'ui.context', mode: 'code' }, { condition: 'preview.ready', path: 'about' }, { condition: 'project.revision', atLeast: -1 }, { condition: 'outcome.terminal', since: 'later' }, { condition: 'export.finished', verbose: true }]
+    },
+    'exports.inspect': {
+      parse: (a) => parseInspectArgs(a),
+      good: [{ path: 'exports/site' }, { path: 'exports/site', file: 'index.html', find: 'Harbour', read: true }],
+      bad: [{}, { path: '' }, { path: 'exports/site', find: '' }, { path: 'exports/site', read: 'yes' }, { path: 'exports/site', depth: 1 }]
     },
     'desktop.setAnswers': {
       parse: answers,
