@@ -132,10 +132,10 @@ export interface ApplyContext {
   componentImport?: ComponentImport;
   /**
    * The addresses visitors reached each collection entry at when the batch began, lowercased, with that entry's ID
-   * (see entryAddressesInUse): an entry keeps an old address working only when it was one of these.
-   * applyOperations fills it.
+   * (see entryAddressesInUse): an entry keeps an old address working only when it was one of these. An entry removed
+   * for another hands its old addresses on to it here, for the rest of the batch. applyOperations fills it.
    */
-  entryAddressesAtStart?: ReadonlyMap<string, string>;
+  entryAddressesAtStart?: Map<string, string>;
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -368,7 +368,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'entry.reorder':
       return entryReorder(state, op);
     case 'entry.remove':
-      return entryRemove(state, op);
+      return entryRemove(state, op, ctx.entryAddressesAtStart);
     case 'asset.remove': {
       const removing = own(state.assets.assets, op.assetId);
       if (!removing) fail(`Asset "${op.assetId}" does not exist.`);
@@ -3061,7 +3061,7 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
 export function walkOperations(state: ProjectState, ops: EditOperation[], check: (state: ProjectState, op: EditOperation) => string | null, ctx: ApplyContext = {}): string | null {
   let draft: ProjectState | null = null;
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: ctx.entryAddressesAtStart ?? entryAddressesInUse(state) };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)) };
   for (const [i, op] of ops.entries()) {
     const reason = check(draft ?? state, op);
     if (reason) return reason;
@@ -3089,7 +3089,7 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
   const draft = clone(state);
   const results: OpResult[] = [];
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: ctx.entryAddressesAtStart ?? entryAddressesInUse(state) };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)) };
   for (const [i, op] of ops.entries()) {
     // Any edit but a removal may move an asset's uses: the next removal counts them again.
     if (op.type !== 'asset.remove') assetUses.counts = undefined;

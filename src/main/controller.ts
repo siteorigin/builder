@@ -170,9 +170,12 @@ const THUMB_SETTLE_MS = 400;
 const MAX_FONT_FILE = 32 * 1024 * 1024;
 
 
-/** The editor's identity attributes inside a tag, or its bridge: never in a built page. A page's own words can say the same
- * names, escaped in its text, so only a start tag counts. */
-const EDITOR_MARKUP = /<[a-z][^<>]*\sdata-so-(?:ctx|node)=|siteorigin-bridge/i;
+/**
+ * The editor's identity attributes on an element, or its bridge: never in a built page. A page's own words can say
+ * the same names, in its text or in an attribute's value, so only an attribute of a start tag counts (a value's own
+ * quotes are written &quot;, so `="` never occurs inside one).
+ */
+const EDITOR_MARKUP = /<[a-zA-Z][^<>]*\sdata-so-(?:ctx|node)="|siteorigin-bridge/;
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;

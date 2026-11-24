@@ -133,15 +133,13 @@ function claimOwnAddresses(state: ProjectState, routes: ReadonlyMap<string, stri
 
 /**
  * Whether `from`, an address an entry has just left, is one to keep working for it: an address visitors reached that
- * entry at when the batch began (`atStart`), or reached an entry the batch has since removed (whose old addresses
- * this one took over), whatever the entry's draft flag says in between. Without a batch to go by, an address the
- * entry had while published. Never one an address cannot be, or one anything else holds now.
+ * entry at when the batch began, or that an entry removed in the batch handed on to it (`atStart`), whatever the
+ * entry's draft flag says in between. Without a batch to go by, an address the entry had while published. Never one
+ * an address cannot be, or one anything else holds now.
  */
-function keepsAddress(state: ProjectState, entryId: string, from: string, published: boolean, atStart: ReadonlyMap<string, string> | undefined, holder: ReturnType<typeof routeIndex>): boolean {
+function keepsAddress(entryId: string, from: string, published: boolean, atStart: ReadonlyMap<string, string> | undefined, holder: ReturnType<typeof routeIndex>): boolean {
   if (from === '/' || validateRoute(from) || holder(from)) return false;
-  if (!atStart) return published;
-  const owner = atStart.get(from.toLowerCase());
-  return owner !== undefined && (owner === entryId || !findEntry(state, owner));
+  return atStart ? atStart.get(from.toLowerCase()) === entryId : published;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +266,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     claimOwnAddresses(state, new Map(left.map(({ e }) => [entryRoute(c, e).toLowerCase(), e.id])));
     // Each published entry's address keeps working, sending visitors on to the entry's new one.
     const holder = routeIndex(state);
-    const kept = left.filter(({ e, from }) => keepsAddress(state, e.id, from, e.draft === false, atStart, holder)).map(({ e, from }): SiteRedirect => ({ from, entryId: e.id }));
+    const kept = left.filter(({ e, from }) => keepsAddress(e.id, from, e.draft === false, atStart, holder)).map(({ e, from }): SiteRedirect => ({ from, entryId: e.id }));
     if (kept.length) setKeptAddresses(state, [...keptAddresses(state), ...kept]);
   }
   if (op.taxonomies !== undefined || op.fields !== undefined) {
@@ -365,7 +363,7 @@ function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, o
       refuseTaken(state, `${c.settings.route}${slug}/`, { entryIds: new Set([entry.id]) }, 'slug');
       entry.slug = slug;
       claimOwnAddresses(state, new Map([[entryRoute(c, entry).toLowerCase(), entry.id]]));
-      if (keepsAddress(state, entry.id, from, wasPublished, atStart, routeIndex(state))) setKeptAddresses(state, [...keptAddresses(state), { from, entryId: entry.id }]);
+      if (keepsAddress(entry.id, from, wasPublished, atStart, routeIndex(state))) setKeptAddresses(state, [...keptAddresses(state), { from, entryId: entry.id }]);
     }
   }
   if (op.body !== undefined) entry.body = normalizeRichText(op.body ?? [], state, `${label} text`, undefined, { entries: true });
@@ -410,7 +408,7 @@ export function entryReorder(state: ProjectState, op: Op<'entry.reorder'>): OpRe
   return { collectionId: c.settings.id };
 }
 
-export function entryRemove(state: ProjectState, op: Op<'entry.remove'>): OpResult {
+export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart?: Map<string, string>): OpResult {
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
   if (op.replacementEntryId !== undefined && op.replacementPageId !== undefined) fail('Choose a replacement entry or a replacement page, not both.');
@@ -428,8 +426,11 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>): OpResu
   }
   delete c.entries[entry.id];
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder = c.settings.entryOrder.filter((id) => id !== entry.id);
-  // Its old addresses send visitors to the replacement the links now go to, or go with it when there is none.
+  // Its old addresses send visitors to the replacement the links now go to, or go with it when there is none. The
+  // replacement keeps them as its own through the rest of the batch.
   const kept = keptAddresses(state);
+  if (op.replacementEntryId !== undefined && atStart)
+    for (const r of kept) if (r?.entryId === entry.id && typeof r.from === 'string' && atStart.get(r.from.toLowerCase()) === entry.id) atStart.set(r.from.toLowerCase(), op.replacementEntryId);
   if (kept.some((r) => r?.entryId === entry.id))
     setKeptAddresses(
       state,

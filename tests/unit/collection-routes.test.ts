@@ -12,7 +12,7 @@ import { validateState } from '@engine/validate';
 import { entryFile, generateLayout, generateProject, generateSitemap, liveRedirects, publishedState, resolveLink } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { publicationPlan } from '@generator/checks';
-import { draftLinksStop, draftSourceNotes, withheldRoutes } from '../../src/main/export';
+import { draftLinksStop, draftSourceNotes, isGeneratedReadme, projectReadme, withheldRoutes } from '../../src/main/export';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -239,7 +239,7 @@ describe('draft entries and the website export', () => {
     s = run(s, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: nav.id, prop: linkProp!, value: { type: 'anchor', target: 'visit' } });
     const found = validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map((d) => d.message);
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatch(/goes to #visit, but .*3 collection entries have no section with that ID/);
+    expect(found[0]).toMatch(/goes to #visit, but .*2 collection entries have no section with that ID/);
     expect(found[0]).toMatch(/Entries have none of a page’s sections/);
   });
 });
@@ -409,5 +409,40 @@ describe('links in entries that the website cannot follow', () => {
     s.pages[home].nodes.n_typed002 = { id: 'n_typed002', kind: 'link', label: 'Workshop', appearance: 'primary', link: { type: 'url', target: 'https://example.com/blog/winter-workshop/' } } as never;
     s.pages[home].rootIds.push('n_typed002');
     expect(publicationPlan(s).draftLinks.filter((l) => l.nodeId === 'n_typed002')).toEqual([{ owner: { kind: 'page', id: home }, nodeId: 'n_typed002', label: 'Workshop', inText: false, entryId: 'en_winter' }]);
+  });
+});
+
+describe('after the focused review', () => {
+  it('never hands a removed entry’s address to an entry it was not given to', () => {
+    // Winter is removed with no replacement; Spring takes Winter's slug and leaves it again in the same batch.
+    const s = run(
+      blog(),
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] },
+      { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' },
+      rename('en_spring', 'winter-workshop'),
+      rename('en_spring', 'elsewhere')
+    );
+    expect(kept(s)).toEqual([{ from: '/blog/spring-open-studio/', entryId: 'en_spring' }]);
+  });
+
+  it('opens damaged entry text, and checks only what published entries show', () => {
+    const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', body: ['See [About](/about/#not-here).'] });
+    // A draft's links are not the website's yet.
+    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+    const damaged = structuredClone(s);
+    damaged.collections.posts.entries.en_winter.body = [null as never, { type: 'p', spans: [{ text: '  ', link: { type: 'entry', target: 'en_secret' } }] }];
+    expect(() => validateState(damaged)).not.toThrow();
+    expect(validateState(damaged).map((d) => d.code)).toContain('ENTRY_INVALID');
+    // A link with no words shows nothing to follow.
+    expect(publicationPlan(damaged).draftLinks).toEqual([]);
+  });
+
+  it('names an entry that links to a draft as the source of the stop, and keeps the README’s note on reopening', () => {
+    const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['See [the plans](entry:en_secret).'] });
+    expect(draftLinksStop(s)!.message).toBe('A published entry links to Secret plans, which is a draft and is left out of the website. Change the link or publish the entry, then export again.');
+    const readme = projectReadme('Riverside Studio', false, undefined, true);
+    expect(readme).toContain('## Draft entries');
+    expect(isGeneratedReadme(readme)).toBe(true);
+    expect(isGeneratedReadme(projectReadme('Riverside Studio', true, undefined, true))).toBe(true);
   });
 });

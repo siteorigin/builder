@@ -4,7 +4,7 @@
 import type { Binding, ComponentDefinition, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
-import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
+import { isListBlock, isRichBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
@@ -1134,7 +1134,9 @@ export function notFoundSectionRoutes(state: ProjectState): Record<string, strin
 export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
   const shell = shellIds(state);
-  const entries = siteEntries(state).map((e) => e.entry.id);
+  // Only published entries are pages of the website a build has to follow links on.
+  const published = siteEntries(state).filter((e) => !isDraftEntry(e.entry));
+  const entries = published.map((e) => e.entry.id);
   const entryIds = new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]);
   const ids = new Map<string, Set<string>>();
   // A link visitors see at first must find its section on screen. One in a panel kept in the page hidden shows with
@@ -1174,7 +1176,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       out.push(issue);
     }
   // An entry's text: its page has the layout's and the header and footer's sections, and none of a page's.
-  for (const { entry } of siteEntries(state)) {
+  for (const { entry } of published) {
     const owner = { kind: 'entry' as const, id: entry.id };
     entryTextLinks(entry.body).forEach(({ link, label }, i) => {
       const key = `body:${i}`;
@@ -1189,15 +1191,22 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   return out;
 }
 
-/** The links in an entry's text, in order, each with its words. */
+/**
+ * The links in an entry's text that visitors see, in order, each with its words. Text damaged by a hand edit (a block
+ * that is not one, which Project health reports) holds none, and a link with no words shows nothing to follow.
+ */
 function entryTextLinks(body: unknown): Array<{ link: LinkValue; label: string }> {
   const out: Array<{ link: LinkValue; label: string }> = [];
   const spans = (list: unknown) => {
-    for (const s of Array.isArray(list) ? (list as RichSpan[]) : []) if (s?.link && typeof s.link.type === 'string' && typeof s.link.target === 'string') out.push({ link: s.link, label: typeof s.text === 'string' ? s.text.trim() : '' });
+    for (const s of Array.isArray(list) ? (list as RichSpan[]) : []) {
+      const label = typeof s?.text === 'string' ? s.text.trim() : '';
+      if (label && s.link && typeof s.link.type === 'string' && typeof s.link.target === 'string') out.push({ link: s.link, label });
+    }
   };
   for (const b of Array.isArray(body) ? body : []) {
+    if (!isRichBlock(b)) continue;
     if (isListBlock(b)) b.items.forEach(spans);
-    else spans((b as { spans?: unknown })?.spans);
+    else spans(b.spans);
   }
   return out;
 }
