@@ -3,7 +3,7 @@
  * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
 import { allTrees, childLists, findParent } from '@engine/tree';
 import { ownerLabel, refLabel, treeFor } from './model';
@@ -88,8 +88,26 @@ export function heldSlots(state: ProjectState, ref: ElementRef | null): string[]
   if (ref?.instancePath.length !== 1) return [];
   const inst = own(treeFor(state, ref.owner)?.nodes, ref.instancePath[0]);
   const def = inst?.kind === 'instance' ? own(state.components, inst.definitionId) : undefined;
-  const tree = def?.tree;
-  if (!def || !tree || ref.nodeId === tree.rootIds[0]) return [];
+  if (!def?.tree || ref.nodeId === def.tree.rootIds[0]) return [];
+  return slotsOnce(def, [ref.nodeId]);
+}
+
+/**
+ * The slots a component's design shows exactly once: through its own elements, not inside a repeat (shown once per
+ * item, or never) or handed to a component placed in it (which may not show it). In the order it declares them. A code
+ * component renders its own, so every slot it declares counts.
+ */
+export function shownOnceSlots(state: ProjectState, definitionId: string): string[] {
+  const def = own(state.components, definitionId);
+  if (!def) return [];
+  if (def.kind !== 'managed' || !def.tree) return Object.keys(def.slots ?? {});
+  return slotsOnce(def, def.tree.rootIds);
+}
+
+/** The declared slots `def`'s design shows through the nodes `from`, walking only its elements (see shownOnceSlots). */
+function slotsOnce(def: ComponentDefinition, from: string[]): string[] {
+  const tree = def.tree;
+  if (!tree) return [];
   const held = new Set<string>();
   const seen = new Set<string>();
   const walk = (id: string) => {
@@ -99,7 +117,7 @@ export function heldSlots(state: ProjectState, ref: ElementRef | null): string[]
     if (n.kind === 'slot') held.add(n.slot);
     else if (n.kind === 'element') n.children.forEach(walk);
   };
-  walk(ref.nodeId);
+  from.forEach(walk);
   return Object.keys(def.slots ?? {}).filter((name) => held.has(name));
 }
 

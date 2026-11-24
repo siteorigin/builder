@@ -53,7 +53,7 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 
 /** The slots a placed component shows: those its design places (a declared slot left out is never seen), every declared
  *  one for code, which renders its own. */
-export function shownSlots(state: ProjectState, definitionId: string): string[] {
+function shownSlots(state: ProjectState, definitionId: string): string[] {
   const def = own(state.components, definitionId);
   const names = Object.keys(def?.slots ?? {});
   if (def?.kind !== 'managed' || !def.tree) return names;

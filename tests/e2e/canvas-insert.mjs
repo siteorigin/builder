@@ -164,6 +164,9 @@ const selectedBefore = await win.locator('.canvas').getAttribute('data-selected-
 await inside.focus();
 await win.keyboard.press('Enter');
 await list.waitFor();
+// A press on the list's own heading leaves the cursor in search, so its keys still work.
+await list.locator('.qi-title').click();
+assert.equal(await search.evaluate((el) => el === document.activeElement), true, 'the cursor stays in search');
 await win.keyboard.type('x');
 await win.keyboard.press('Backspace');
 await win.keyboard.press('Backspace');

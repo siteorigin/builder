@@ -4,7 +4,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { insertOps } from '../../src/renderer/src/lib/insert-at';
-import { addPoints, fitting, pointLabel, quickItems, resolvePoint } from '../../src/renderer/src/lib/inline-insert';
+import { addPoints, fitting, offeredAt, pointLabel, quickItems, resolvePoint } from '../../src/renderer/src/lib/inline-insert';
 
 /**
  * The canvas's own Add buttons (#387): above and below a section of the page, and inside a container or a placed
@@ -85,9 +85,11 @@ describe('Add buttons above and below a section of the page', () => {
   it('is worked out again where the section is now: moved, it follows; gone, there is no place', () => {
     const p = page();
     const below = addPoints(p.state, p.owner, ref(p.owner, p.intro)).find((x) => x.side === 'after')!;
+    const above = addPoints(p.state, p.owner, ref(p.owner, p.intro)).find((x) => x.side === 'before')!;
     const moved = applyOperations(p.state, [{ type: 'node.move', owner: p.owner, nodeId: p.intro, parentId: null, index: 2 }]).state;
     expect(home(moved).rootIds.indexOf(p.intro)).toBe(2);
     expect(resolvePoint(moved, below)).toEqual({ owner: p.owner, parentId: null, index: 3 });
+    expect(resolvePoint(moved, above)).toEqual({ owner: p.owner, parentId: null, index: 2 });
     const gone = applyOperations(p.state, [{ type: 'node.remove', owner: p.owner, nodeId: p.intro }]).state;
     expect(resolvePoint(gone, below)).toBeNull();
     // Moved inside another section, it is no longer one of the page's sections.
@@ -143,6 +145,8 @@ describe('Add buttons inside a container or a slot', () => {
     expect(resolvePoint(p.state, slot)).toEqual({ owner: p.owner, parentId: p.section, slot: 'content' });
     const defId = (home(p.state).nodes[p.section] as InstanceNode).definitionId;
     expect(resolvePoint({ ...p.state, components: { ...p.state.components, [defId]: { ...p.state.components[defId], slots: {} } } }, slot)).toBeNull();
+    // Another slot declared in its place is not that one.
+    expect(resolvePoint({ ...p.state, components: { ...p.state.components, [defId]: { ...p.state.components[defId], slots: { body: { label: 'Body' } } } } }, slot)).toBeNull();
   });
 });
 
@@ -181,6 +185,21 @@ describe('an Add button goes only where the slot it fills is plain', () => {
     expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
   });
 
+  it('a placement whose one slot shows once per item of a list gets none: it would show many times, or never', () => {
+    const p = page();
+    const def = p.state.components[p.cardDef];
+    const root = def.tree!.rootIds[0];
+    def.slots = { extra: { label: 'Extra' } };
+    def.tree!.nodes.extraSlot = { id: 'extraSlot', kind: 'slot', slot: 'extra' };
+    def.tree!.nodes.rows = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: ['extraSlot'] };
+    (def.tree!.nodes[root] as ElementNode).children.push('rows');
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+    // Shown once outside the list as well, it is plain again.
+    def.tree!.nodes.extraBox = { id: 'extraBox', kind: 'element', tag: 'div', children: ['extraSlot'] };
+    (def.tree!.nodes[root] as ElementNode).children.push('extraBox');
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card)).map((x) => [x.side, x.slot])).toEqual([['inside', 'extra']]);
+  });
+
   it('a repeated item’s copy gets none: the place would be every item’s', () => {
     const p = page();
     expect(addPoints(p.state, p.owner, { ...ref(p.owner, p.row), itemPath: ['a'] })).toEqual([]);
@@ -196,6 +215,11 @@ describe('where the canvas offers no Add buttons', () => {
     expect(addPoints(p.state, header, ref(header, shellRoot))).toEqual([]);
     expect(addPoints(p.state, p.owner, ref(header, shellRoot))).toEqual([]);
     expect(addPoints(p.state, { kind: 'page', id: 'elsewhere' }, ref(p.owner, p.section))).toEqual([]);
+    // A selection on Home, with another page (holding the same nodes) on the canvas.
+    const other: OwnerRef = { kind: 'page', id: 'other' };
+    const twin: ProjectState = { ...p.state, pages: { ...p.state.pages, other: { ...home(p.state), id: 'other' } } };
+    expect(addPoints(twin, other, ref(other, p.section)).length).toBe(3);
+    expect(addPoints(twin, other, ref(p.owner, p.section))).toEqual([]);
     const comp: OwnerRef = { kind: 'component', id: p.cardDef };
     expect(addPoints(p.state, comp, ref(comp, p.state.components[p.cardDef].tree!.rootIds[0]))).toEqual([]);
   });
@@ -217,6 +241,7 @@ describe('what each Add button offers', () => {
     expect(items.find((it) => it.name === 'Button')?.spec).toEqual({ primitive: 'button' });
     expect(items.filter((it) => it.kind === 'component').map((it) => it.spec.definitionId)).toEqual([p.cardDef]);
     expect(items.some((it) => it.kind === 'section')).toBe(false);
+    expect(items.findIndex((it) => it.kind === 'component')).toBeGreaterThan(items.findLastIndex((it) => it.kind === 'element'));
   });
 
   it('leaves out what the place would refuse: a Button inside a card that links somewhere', () => {
@@ -229,6 +254,25 @@ describe('what each Add button offers', () => {
     // Unlinked, it takes a Button again.
     delete (home(p.state).nodes[p.row] as ElementNode).link;
     expect(fitting(p.state, resolvePoint(p.state, inside)!, 'element', quickItems(p.state, 'element')).some((it) => it.name === 'Button')).toBe(true);
+  });
+
+  it('between sections, leaves out a section component that cannot stand at the page’s top level, and keeps the theme’s', () => {
+    const p = page();
+    const def = p.state.components[p.cardDef];
+    // A component made to go in as a section whose design is a list item: a page's top level can't hold one.
+    def.insertAs = 'section';
+    (def.tree!.nodes[def.tree!.rootIds[0]] as ElementNode).tag = 'li';
+    const [above] = addPoints(p.state, p.owner, ref(p.owner, p.intro));
+    const at = resolvePoint(p.state, above)!;
+    const all = quickItems(p.state, 'section');
+    expect(all.some((it) => it.spec.definitionId === p.cardDef)).toBe(true);
+    const offered = offeredAt(p.state, at, 'section');
+    expect(offered.some((it) => it.spec.definitionId === p.cardDef)).toBe(false);
+    expect(offered.filter((it) => it.kind === 'section')).toEqual(all.filter((it) => it.kind === 'section'));
+    expect(offered.some((it) => it.spec.definitionId === p.bandDef)).toBe(true);
+    // Inside a container, every item is tried.
+    const [inside] = addPoints(p.state, p.owner, ref(p.owner, p.row));
+    expect(offeredAt(p.state, resolvePoint(p.state, inside)!, 'element').map((it) => it.key)).toEqual(fitting(p.state, resolvePoint(p.state, inside)!, 'element', quickItems(p.state, 'element')).map((it) => it.key));
   });
 
   it('leaves out the shared header and footer, and code components outside Developer mode', () => {

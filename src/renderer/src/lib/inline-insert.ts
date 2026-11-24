@@ -8,8 +8,8 @@ import type { ElementRef, NodeTree, OwnerRef, ProjectState } from '@shared/types
 import type { Diagnostic } from '@engine/validate';
 import { childLists } from '@engine/tree';
 import { catalogueEntries, CATEGORY_LABELS } from '@catalogue/index';
-import { definitionRole, heldSlots, insertOps, type InsertAt, type InsertRole } from './insert-at';
-import { dropRefusal, savingProblems, shownSlots } from './insert-drop';
+import { definitionRole, heldSlots, insertOps, shownOnceSlots, type InsertAt, type InsertRole } from './insert-at';
+import { dropRefusal, savingProblems } from './insert-drop';
 import { BASICS, basicHay, basicSpec, type InsertSpec } from './insert-search';
 import { refLabel, treeFor } from './model';
 
@@ -45,7 +45,7 @@ const keyOf = (at: InsertAt) => JSON.stringify([at.parentId, at.slot ?? null, at
 /**
  * The Add buttons for `ref`, selected or (`hovered`) under the pointer, on a page or a collection's layout. A section of
  * the page itself (not one placed inside another) gets one above and one below it. A container gets one inside, and so
- * does a placed component that shows one slot, or a part of a placement that holds exactly one of its slots (a
+ * does a placed component that shows one slot (once, not inside a repeat), or a part of a placement that holds exactly one of its slots (a
  * Section's Container holds its Content, #185); hovered, only while that list is empty, so moving over a filled page
  * does not scatter buttons over it. Where the slot it would fill is not plain (a component showing several, a part
  * holding two), there is none: what is chosen must go where the button is. Nothing for a repeated item, the shared
@@ -83,7 +83,7 @@ function insideOf(state: ProjectState, tree: NodeTree, ref: ElementRef): { nodeI
   const node = own(tree.nodes, ref.nodeId);
   if (node?.kind === 'element') return { nodeId: node.id };
   if (node?.kind !== 'instance') return null;
-  const shown = shownSlots(state, node.definitionId);
+  const shown = shownOnceSlots(state, node.definitionId);
   return shown.length === 1 ? { nodeId: node.id, slot: shown[0] } : null;
 }
 
@@ -149,6 +149,18 @@ export function quickItems(state: ProjectState, role: InsertRole, dev = false): 
     })
   );
   return [...sections, ...mine];
+}
+
+/**
+ * What a + offers at `at` (see quickItems), less what the place would refuse (see fitting). Between sections the
+ * theme's own sections are not tried, since a page's top level takes any of them and trying each would check the whole
+ * project some thirty times; the project's components are, since one can be made from something that cannot stand
+ * there (a list item). Whatever is chosen is tried again as it is added.
+ */
+export function offeredAt(state: ProjectState, at: InsertAt, role: InsertRole, dev = false): QuickItem[] {
+  const items = quickItems(state, role, dev);
+  const tried = new Set(fitting(state, at, role, items.filter((it) => role === 'element' || it.kind === 'component')).map((it) => it.key));
+  return items.filter((it) => (role === 'section' && it.kind !== 'component') || tried.has(it.key));
 }
 
 /**

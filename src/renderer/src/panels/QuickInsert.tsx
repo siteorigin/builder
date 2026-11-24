@@ -4,6 +4,7 @@ import { Search } from 'lucide-react';
 import { pointLabel, type AddPoint, type QuickItem } from '../lib/inline-insert';
 import { searchItems } from '../lib/insert-search';
 import { openMenus } from '../components/ui';
+import { isImeComposing } from '../lib/ime';
 import { LucideIcon } from './InsertPanel';
 
 type Box = { left: number; top: number; width: number; height: number };
@@ -12,10 +13,11 @@ type Box = { left: number; top: number; width: number; height: number };
  * The short list a canvas Add button opens (#387): what fits at its place, searched as it is typed, beside the button.
  * The cursor starts in search; the arrows move through what is listed, Enter adds the highlighted one, a click adds
  * the one clicked. Escape (or Tab) puts it away and hands focus back to its button; a press anywhere else only puts it
- * away. While it is open the editor's own shortcuts stay out of the way, as for a menu. `refused`: why the last choice
- * can't go there, said in the list.
+ * away, and a press on its own words leaves the cursor in search. While it is open the editor's own shortcuts stay out
+ * of the way, as for a menu. `anchor`: its button's box on screen as it opened, followed while `trigger` stays on the
+ * page. `refused`: why the last choice can't go there, said in the list.
  */
-export function QuickInsert({ point, items, anchor, refused, onChoose, onClose }: { point: AddPoint; items: QuickItem[]; anchor: Box; refused: string | null; onChoose: (it: QuickItem) => void; onClose: (back: boolean) => void }) {
+export function QuickInsert({ point, items, anchor, trigger, refused, onChoose, onClose }: { point: AddPoint; items: QuickItem[]; anchor: Box; trigger?: HTMLElement | null; refused: string | null; onChoose: (it: QuickItem) => void; onClose: (back: boolean) => void }) {
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
   const id = useId();
@@ -44,17 +46,22 @@ export function QuickInsert({ point, items, anchor, refused, onChoose, onClose }
       if (!el) return;
       const w = el.offsetWidth;
       const h = el.offsetHeight;
-      const left = Math.max(8, Math.min(anchor.left + anchor.width / 2 - w / 2, window.innerWidth - w - 8));
-      const below = anchor.top + anchor.height + 6;
-      const top = below + h <= window.innerHeight - 8 ? below : Math.max(8, anchor.top - 6 - h);
+      // The window resized moves the page, and the button with it.
+      const a = trigger?.isConnected ? trigger.getBoundingClientRect() : anchor;
+      const left = Math.max(8, Math.min(a.left + a.width / 2 - w / 2, window.innerWidth - w - 8));
+      const below = a.top + a.height + 6;
+      const top = below + h <= window.innerHeight - 8 ? below : Math.max(8, a.top - 6 - h);
       setPos((p) => (p && p.left === left && p.top === top ? p : { left, top }));
     };
     place();
     window.addEventListener('resize', place);
     return () => window.removeEventListener('resize', place);
-  }, [anchor, shown.length, refused]);
+  }, [anchor, trigger, shown.length, refused]);
 
+  // On the whole list, so its keys work wherever focus is in it. The Enter (or Escape) that settles an input method's
+  // candidate is the input method's.
   const onKey = (e: React.KeyboardEvent) => {
+    if (isImeComposing(e)) return;
     const n = shown.length;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -79,7 +86,17 @@ export function QuickInsert({ point, items, anchor, refused, onChoose, onClose }
           onClose(false);
         }}
       />
-      <div ref={boxRef} className="quick-insert" role="dialog" aria-label={title} style={pos ?? { left: anchor.left, top: anchor.top + anchor.height + 6, opacity: 0 }} data-testid="quick-insert">
+      <div
+        ref={boxRef}
+        className="quick-insert"
+        role="dialog"
+        aria-label={title}
+        style={pos ?? { left: anchor.left, top: anchor.top + anchor.height + 6, opacity: 0 }}
+        data-testid="quick-insert"
+        onKeyDown={onKey}
+        // A press on its words (the heading, a note) keeps the cursor in search, where its keys are.
+        onPointerDown={(e) => e.target !== inputRef.current && e.preventDefault()}
+      >
         <div className="qi-title">{title}</div>
         <div className="qi-search">
           <Search aria-hidden="true" />
@@ -97,7 +114,6 @@ export function QuickInsert({ point, items, anchor, refused, onChoose, onClose }
             autoComplete="off"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            onKeyDown={onKey}
           />
         </div>
         <ul className="qi-list" role="listbox" id={`${id}-list`} aria-label={title}>
@@ -109,8 +125,6 @@ export function QuickInsert({ point, items, anchor, refused, onChoose, onClose }
               aria-selected={i === active}
               className={`qi-item${i === active ? ' active' : ''}`}
               data-key={it.key}
-              // The cursor stays in search.
-              onPointerDown={(e) => e.preventDefault()}
               onPointerMove={() => i !== active && setActive(i)}
               onClick={() => onChoose(it)}
             >
