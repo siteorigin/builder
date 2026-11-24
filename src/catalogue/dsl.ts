@@ -35,7 +35,7 @@ import type {
   UiStateSchema,
   VariantAxis
 } from '@shared/types';
-import { SCHEMA_VERSION, isBinding } from '@shared/types';
+import { SCHEMA_VERSION, isBinding, parseStyleScopeKey } from '@shared/types';
 import { toRichText, type RichListType } from '@shared/richtext';
 import type { AuthoredPack, PackMeta } from './pack';
 
@@ -56,7 +56,7 @@ type NamedOpts = NodeOpts & { ariaLabel?: Bindable<string> };
 function normStyles(s?: ResponsiveStyles | StyleProps): ResponsiveStyles | undefined {
   if (!s) return undefined;
   const keys = Object.keys(s);
-  if (keys.length && keys.every((k) => ['base', 'phone', 'tablet', 'desktop'].includes(k))) return s as ResponsiveStyles;
+  if (keys.length && keys.every((k) => parseStyleScopeKey(k) !== null)) return s as ResponsiveStyles;
   return { base: s as StyleProps };
 }
 

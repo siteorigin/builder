@@ -16,10 +16,36 @@ export const GENERATOR_VERSION = '0.1.0';
 export type ResponsiveScope = 'base' | 'phone' | 'tablet' | 'desktop';
 export const RESPONSIVE_SCOPES: ResponsiveScope[] = ['base', 'phone', 'tablet', 'desktop'];
 
+/**
+ * Interactive states a style rule can be limited to: `hover` (pointer over it, on devices that hover), `focus`
+ * (keyboard focus, as `:focus-visible` shows it) and `active` (while pressed). Listed in the order the stylesheet
+ * writes them, so a later state wins while several hold at once.
+ */
+export type StyleState = 'hover' | 'focus' | 'active';
+export const STYLE_STATES: StyleState[] = ['hover', 'focus', 'active'];
+/** Where one bucket of styles applies: a size range, or a size range in one interactive state (`phone:hover`). */
+export type StyleScopeKey = ResponsiveScope | `${ResponsiveScope}:${StyleState}`;
+
+/** The key a size range's rules in one state (or, without one, its resting rules) are stored under. */
+export const styleScopeKey = (scope: ResponsiveScope, state?: StyleState): StyleScopeKey => (state ? `${scope}:${state}` : scope);
+
+/** The size range and state a stored key names, or null for a key that names none (a hand-edited document). */
+export function parseStyleScopeKey(key: string): { scope: ResponsiveScope; state?: StyleState } | null {
+  const [scope, state, ...rest] = key.split(':');
+  if (rest.length || !(RESPONSIVE_SCOPES as string[]).includes(scope)) return null;
+  if (state === undefined) return { scope: scope as ResponsiveScope };
+  return (STYLE_STATES as string[]).includes(state) ? { scope: scope as ResponsiveScope, state: state as StyleState } : null;
+}
+
 /** A literal style value or a reference to a site token. */
 export type StyleValue = string | number | boolean | { token: string };
 export type StyleProps = Record<string, StyleValue>;
-export type ResponsiveStyles = Partial<Record<ResponsiveScope, StyleProps>>;
+/**
+ * Style rules by where they apply: each size range's resting rules, and the rules for its interactive states, side by
+ * side in one map (`{ base: {...}, "base:hover": {...}, "phone:focus": {...} }`). Every value is one set of style
+ * properties, so whatever walks every rule (token use, copying) reads states without knowing of them.
+ */
+export type ResponsiveStyles = Partial<Record<StyleScopeKey, StyleProps>>;
 
 export type LinkType = 'none' | 'page' | 'url' | 'email' | 'tel' | 'anchor' | 'document' | 'entry';
 export interface LinkValue {

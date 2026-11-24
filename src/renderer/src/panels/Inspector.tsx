@@ -34,7 +34,7 @@ import {
   Users
 } from 'lucide-react';
 import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue, TextNode } from '@shared/types';
-import { isBinding } from '@shared/types';
+import { isBinding, parseStyleScopeKey } from '@shared/types';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
@@ -1268,7 +1268,9 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
       ? focusImage(state, devUrl, shownImage(state, selection, node.image), [[inst.overrides?.[partId!]], selectedVariantStyles(def, inst.variants, part.nodeId), [def.tree?.nodes[part.nodeId]?.styles]], 'This picture can’t be shown here.')
       : undefined;
   // Rows the shared style uses show for one item too, so the item can change what every item was given.
-  const sharedRows = (controls: string[] | undefined) => controls && [...new Set([...controls, ...Object.values(inst.overrides?.[partId!] ?? {}).flatMap((sc) => Object.keys(sc ?? {}))])];
+  // Resting values only: a hover, focus or pressed value has no control of its own here.
+  const sharedRows = (controls: string[] | undefined) =>
+    controls && [...new Set([...controls, ...Object.entries(inst.overrides?.[partId!] ?? {}).flatMap(([k, sc]) => (parseStyleScopeKey(k)?.state === undefined ? Object.keys(sc ?? {}) : []))])];
 
   return (
     <>
@@ -2164,8 +2166,12 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
             original
               ? (only) => {
                   const ops: EditOperation[] = [];
-                  for (const sc of (only ? [only] : Object.keys(changed ?? {})) as Array<keyof ResponsiveStyles>)
-                    for (const prop of Object.keys(changed?.[sc] ?? {})) ops.push({ type: 'node.setStyle', owner, nodeId: node.id, scope: sc, property: prop, value: (original[sc]?.[prop] ?? null) as StyleValue | null });
+                  // A size restores its resting style and its states; without one, every rule that changed.
+                  for (const key of Object.keys(changed ?? {}) as Array<keyof ResponsiveStyles>) {
+                    const at = parseStyleScopeKey(key);
+                    if (!at || (only && at.scope !== only)) continue;
+                    for (const prop of Object.keys(changed?.[key] ?? {})) ops.push({ type: 'node.setStyle', owner, nodeId: node.id, scope: at.scope, ...(at.state ? { state: at.state } : {}), property: prop, value: (original[key]?.[prop] ?? null) as StyleValue | null });
+                  }
                   if (ops.length) void applyOps(ops, `Restore ${def.name} design`);
                 }
               : (sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], 'Clear element styles')

@@ -14,6 +14,9 @@ import type {
   ProjectState,
   PropSchema,
   ResponsiveScope,
+  ResponsiveStyles,
+  StyleScopeKey,
+  StyleState,
   StyleValue,
   TokenDef,
   TokenGroup,
@@ -23,9 +26,9 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type TextTag } from '@shared/types';
+import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
-import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
 import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
 import { VISITOR_TEXT_KEYS, isVisitorTextKey, ownVisitorText, ownVisitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
@@ -1551,7 +1554,7 @@ function pruneEmptyItemStyles(node: InstanceNode) {
   for (const [partId, entry] of Object.entries(node.itemOverrides ?? {})) {
     if (!isObject(entry) || !isObject(entry.items)) continue;
     for (const [itemId, rs] of Object.entries(entry.items)) {
-      if (isObject(rs)) for (const scope of Object.keys(rs) as ResponsiveScope[]) if (!isObject(rs[scope]) || !Object.keys(rs[scope]!).length) delete rs[scope];
+      if (isObject(rs)) for (const scope of Object.keys(rs) as StyleScopeKey[]) if (!isObject(rs[scope]) || !Object.keys(rs[scope]!).length) delete rs[scope];
       if (!isObject(rs) || !Object.keys(rs).length) delete entry.items[itemId];
     }
     if (!Object.keys(entry.items).length) delete node.itemOverrides![partId];
@@ -1588,6 +1591,11 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
   const node = getNode(tree, op.nodeId);
   const itemTarget = op.itemId !== undefined ? itemStyleTarget(state, op.owner, node, op.partId, op.itemId) : undefined;
   if (!own(STYLE_PROP_MAP, op.property)) fail(`Unknown style property "${op.property}". Valid: ${Object.keys(STYLE_PROP_MAP).join(', ')}.`);
+  // Clearing a value a state cannot hold is always allowed, so a hand-edited document can be cleaned up.
+  if (op.state !== undefined && op.value !== null) {
+    const err = stateStyleError(op.property);
+    if (err) fail(err);
+  }
   if (op.value !== null) {
     const err = validateStyleValue(op.property, op.value);
     if (err) fail(err);
@@ -1601,7 +1609,7 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
       op = { ...op, value: font.stack };
     }
   }
-  const scope = op.scope as ResponsiveScope;
+  const scope = styleScopeKey(op.scope as ResponsiveScope, op.state);
   if (op.variant !== undefined) {
     const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId, op.axis);
     v.styles![op.nodeId] ??= {};
@@ -1664,12 +1672,14 @@ function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpRes
   if (op.axis !== undefined && op.variant === undefined) fail('"axis" needs a "variant": name the option to reset.');
   if (op.itemId !== undefined && op.variant !== undefined) fail('"itemId" resets one item of a placement; variant rules belong to the component definition.');
   const node = getNode(editableTree(state, op.owner), op.nodeId);
+  // A size or a state limits the reset to the rules it names; with neither, every rule goes.
+  const filtered = op.scope !== undefined || op.state !== undefined;
   if (op.itemId !== undefined) {
     // Back to the shared style: the item's own values go, and the part's shared values show through again.
     const { node: inst, partId, list, itemId } = itemStyleTarget(state, op.owner, node, op.partId, op.itemId);
     const entry = inst.itemOverrides?.[partId];
     const rs = entry?.list === list && Object.hasOwn(entry.items, itemId) ? entry.items[itemId] : undefined;
-    if (rs && op.scope) delete rs[op.scope];
+    if (rs && filtered) clearStyles(rs, op);
     else if (rs) delete entry!.items[itemId];
     pruneEmptyItemStyles(inst);
     return {};
@@ -1677,8 +1687,8 @@ function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpRes
   if (op.variant !== undefined) {
     const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId, op.axis);
     const rules = v.styles![op.nodeId];
-    if (rules && op.scope) delete rules[op.scope];
-    if (rules && (!op.scope || !Object.keys(rules).length)) delete v.styles![op.nodeId];
+    if (rules && filtered) clearStyles(rules, op);
+    if (rules && (!filtered || !Object.keys(rules).length)) delete v.styles![op.nodeId];
     if (!Object.keys(v.styles!).length) delete v.styles;
     return {};
   }
@@ -1686,23 +1696,35 @@ function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpRes
     // Resetting every part of the placement takes its item styles with it; resetting one part keeps them.
     if (!op.partId && node.itemOverrides) {
       for (const entry of Object.values(node.itemOverrides))
-        for (const rs of Object.values(entry?.items ?? {})) if (rs && typeof rs === 'object') for (const sc of Object.keys(rs) as ResponsiveScope[]) if (!op.scope || sc === op.scope) delete rs[sc];
+        for (const rs of Object.values(entry?.items ?? {})) if (rs && typeof rs === 'object') clearStyles(rs, op);
       pruneEmptyItemStyles(node);
     }
     if (!node.overrides) return {};
     const parts = op.partId ? [op.partId] : Object.keys(node.overrides);
     for (const p of parts) {
       if (!node.overrides[p]) continue;
-      if (op.scope) delete node.overrides[p][op.scope];
+      if (filtered) clearStyles(node.overrides[p], op);
       else delete node.overrides[p];
       if (node.overrides[p] && !Object.keys(node.overrides[p]).length) delete node.overrides[p];
     }
     if (!Object.keys(node.overrides).length) delete node.overrides;
   } else if (node.styles) {
-    if (op.scope) delete node.styles[op.scope];
-    else delete node.styles;
+    if (filtered) clearStyles(node.styles, op);
+    if (!filtered || !Object.keys(node.styles).length) delete node.styles;
   }
   return {};
+}
+
+/**
+ * Remove the rules a reset names from one set of styles: those of its size (resting and every state) and of its state
+ * (at every size), or the one rule of both. A key naming neither a size nor a state goes only with every rule.
+ */
+function clearStyles(styles: ResponsiveStyles, filter: { scope?: ResponsiveScope; state?: StyleState }) {
+  for (const key of Object.keys(styles) as StyleScopeKey[]) {
+    const at = parseStyleScopeKey(key);
+    const named = at ? (filter.scope === undefined || at.scope === filter.scope) && (filter.state === undefined || at.state === filter.state) : filter.scope === undefined && filter.state === undefined;
+    if (named) delete styles[key];
+  }
 }
 
 function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResult {

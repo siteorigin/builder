@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronRight, EyeOff, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
+import { parseStyleScopeKey } from '@shared/types';
 import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, cssRivals, styleDeclOrder, withColumnSizes, type StylePropDef } from '@shared/styles';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
@@ -21,7 +22,10 @@ const labelOf = (p: StylePropDef) => LABELS[p.id] ?? p.label;
 export const styleLabel = (id: string, fallback: string) => (Object.hasOwn(STYLE_PROP_MAP, id) ? labelOf(STYLE_PROP_MAP[id]) : fallback);
 
 const sizeForWidth = (w: number): Size => (w < 768 ? 'phone' : w < 1024 ? 'tablet' : 'desktop');
-const has = (s: ResponsiveStyles | undefined, scope: ResponsiveScope) => !!s?.[scope] && Object.keys(s[scope]!).length > 0;
+/** Whether a size has changes of its own: resting, or in a hover, focus or pressed state there (which its reset clears). */
+const has = (s: ResponsiveStyles | undefined, scope: ResponsiveScope) => Object.entries(s ?? {}).some(([k, v]) => parseStyleScopeKey(k)?.scope === scope && !!v && Object.keys(v).length > 0);
+/** The resting rules of a set of styles: what the controls show. */
+const restingRules = (s: ResponsiveStyles | undefined) => Object.entries(s ?? {}).flatMap(([k, v]) => (parseStyleScopeKey(k)?.state === undefined ? [v] : []));
 const listJoin = (items: string[]) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
 const tokenOf = (tokens: TokenDef[], id: string) => tokens.find((t) => t.id === id);
@@ -269,7 +273,7 @@ export function StyleControls({
     if (root.current?.contains(document.activeElement)) pendingFocus.current = selectors;
   };
   // A value set outside the offered controls (by the AI, say) still gets a row, so it can be seen and reset.
-  const setOutside = allowed?.length ? [...new Set(Object.values(styles ?? {}).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !allowed.includes(id)) : [];
+  const setOutside = allowed?.length ? [...new Set(restingRules(styles).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !allowed.includes(id)) : [];
   const props = allowed?.length ? [...allowed, ...setOutside].map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS;
   const groups = new Map<StylePropDef['group'], StylePropDef[]>();
   for (const p of props) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);
@@ -284,7 +288,7 @@ export function StyleControls({
   const grid = layouts.includes('grid');
   const positioned = reached('position').some((v) => v !== 'static');
   // Set at any size: such a row always shows, so "From All sizes" and "Phone uses …" are never hidden.
-  const setAnywhere = (id: string) => own[id] !== undefined || Object.values(styles ?? {}).some((sc) => sc?.[id] !== undefined);
+  const setAnywhere = (id: string) => own[id] !== undefined || restingRules(styles).some((sc) => sc?.[id] !== undefined);
   const relevant = (id: string) => {
     if (setAnywhere(id)) return true;
     if (id === 'order') return false;
@@ -303,7 +307,8 @@ export function StyleControls({
   const isPrimary = (g: StylePropDef['group'], p: StylePropDef) => !long || (primary.has(g) && !p.advanced);
   const tucked = (g: StylePropDef['group'], p: StylePropDef) => !isPrimary(g, p) && relevant(p.id) && !setAnywhere(p.id);
   const total = Object.values(styles ?? {}).reduce((n, s) => n + Object.keys(s ?? {}).length, 0);
-  const here = Object.keys(own).length;
+  // A size's reset clears its hover, focus and pressed changes with it, so they count as its changes.
+  const here = Object.entries(styles ?? {}).reduce((n, [k, s]) => n + (parseStyleScopeKey(k)?.scope === scope ? Object.keys(s ?? {}).length : 0), 0);
   const sizeName = (s: ResponsiveScope) => SCOPE_LABEL[s].toLowerCase();
 
   const row = (p: StylePropDef) => {

@@ -269,7 +269,7 @@ ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
 - update_selected_props changes its content; send only what changes.
 - edit_selected_list changes one item of a list.
 - edit_selected_table changes one cell, row or column of a table, by the IDs in its content.
-- style_selected_element changes its look. Use scope "phone", "tablet" or "desktop" for one screen size, "base" for all. A card or other repeated part is styled for every item; pass itemId to style one item alone (only that card, plan or testimonial).
+- style_selected_element changes its look. Use scope "phone", "tablet" or "desktop" for one screen size, "base" for all. A card or other repeated part is styled for every item; pass itemId to style one item alone (only that card, plan or testimonial). Add state "hover", "focus" or "active" for how it looks while hovered, keyboard-focused or pressed.
 - request_wider_scope asks the user first, when the request needs changes outside this element.${
       images
         ? `
@@ -336,7 +336,7 @@ How the website is modelled:
 - The shared header and footer are owned by { kind: "shell", id: "header" | "footer" }. Each already has exactly one component instance (its node ID is in the project summary's "shell" section). Never insert, remove or replace them: edit that instance with instance.setProp / instance.listInsert. Navigation links live in the header's "links" list and the footer's "links" list. ${headerNoticeGuidance(state)} Each page shows or hides the header and the footer on its own: page.update showHeader / showFooter (false hides it on that page only).
 - Links are objects: { "type": "page", "target": "<pageId>" } for internal pages (never use a URL for an internal page), { "type": "url", "target": "https://…" }, { "type": "email", "target": "name@example.com" }, { "type": "tel", "target": "+1…" }.
 - Images are { "assetId": "<asset id>" | null, "alt": "…" }. You cannot see images: use an image the user attached by its assetId, choose by name/description, or let the user pick between images by sight with request_clarification assetIds. Two images can share a name; the assetId tells them apart.
-- Styles use node.setStyle with a responsive scope ("base" for all sizes, or "phone" / "tablet" / "desktop" for one range) and prefer token values like { "token": "space.lg" } or { "token": "color.brand" }. For component instances pass partId (see the component's parts). A part repeated per list item (its parts entry has repeatsPerItemOf) styles every item; add itemId to style one item alone (only that card, plan or testimonial), leaving its siblings on the shared style, and node.resetStyles with partId + itemId returns it to the shared style.
+- Styles use node.setStyle with a responsive scope ("base" for all sizes, or "phone" / "tablet" / "desktop" for one range) and prefer token values like { "token": "space.lg" } or { "token": "color.brand" }. For component instances pass partId (see the component's parts). A part repeated per list item (its parts entry has repeatsPerItemOf) styles every item; add itemId to style one item alone (only that card, plan or testimonial), leaving its siblings on the shared style, and node.resetStyles with partId + itemId returns it to the shared style. Add state ("hover", "focus" for keyboard, "active" while pressed) to style that state only (color, background, border, radius, shadow, opacity).
 - Site-wide brand changes (colors, fonts, spacing scale) use token.set. Only make site-wide changes when the user asks for them.
 
 Scope:

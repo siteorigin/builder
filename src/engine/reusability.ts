@@ -1,6 +1,6 @@
 import type { ComponentDefinition, GraphNode, ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef, TokenGroup, TokenValue } from '@shared/types';
-import { isBinding } from '@shared/types';
-import { STYLE_PROP_MAP, followToken } from '@shared/styles';
+import { isBinding, parseStyleScopeKey } from '@shared/types';
+import { STATE_WORDS, STYLE_PROP_MAP, followToken } from '@shared/styles';
 import { parseColor } from '@shared/color';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { variantOptions } from '@shared/variants';
@@ -216,7 +216,9 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
           kind = 'spacing';
         }
         if (!kind) continue;
-        const what = `${style.label.toLowerCase()}${SCOPE_WORDS[scope as ResponsiveScope] ?? ` at ${scope}`}${variantWords}`;
+        const at = parseStyleScopeKey(scope);
+        const where = at ? `${SCOPE_WORDS[at.scope]}${at.state ? ` ${STATE_WORDS[at.state]}` : ''}` : ` at ${scope}`;
+        const what = `${style.label.toLowerCase()}${where}${variantWords}`;
         const suggestion = matches.length === 1 ? `the site style “${matches[0].t.label}” (${matches[0].t.id})` : kind === 'color' ? 'one of the site colors' : 'one of the spacing styles';
         const follows = kind === 'color' ? 'so it follows Site styles' : 'so it follows the site’s spacing';
         push('COMPONENT_LITERAL_STYLE', n, ['style', layerKey, scope, prop], `${layer(n, KIND_WORDS[n.kind] ?? 'an element')} uses ${value} for its ${what}. Link it to ${suggestion}, ${follows}.`);

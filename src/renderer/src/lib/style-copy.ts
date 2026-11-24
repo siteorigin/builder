@@ -5,8 +5,9 @@
  * Pure: it reads a project and says what a paste would change, for the editor to show and send.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleValue } from '@shared/types';
-import { STYLE_PROP_MAP, offeredStyleProps, placementStyleControls, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
+import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
+import { STYLE_STATES, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { STYLE_PROP_MAP, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { effectiveTokens } from '@generator/index';
 import { resolveFontStack } from '@catalogue/fonts';
@@ -14,6 +15,13 @@ import { boundaryOf, ownerLabel, pagesUsingShell, refLabel, treeFor } from './mo
 
 export const STYLE_SCOPES: ResponsiveScope[] = ['base', 'phone', 'tablet', 'desktop'];
 export const SCOPE_LABELS: Record<ResponsiveScope, string> = { base: 'All sizes', phone: 'Phone', tablet: 'Tablet', desktop: 'Desktop' };
+export const STATE_LABELS: Record<StyleState, string> = { hover: 'hover', focus: 'focus', active: 'pressed' };
+/** A size's resting rule and then its state rules: every rule a paste for that size writes. */
+const keysAt = (scope: ResponsiveScope): StyleScopeKey[] => [scope, ...STYLE_STATES.map((st) => styleScopeKey(scope, st))];
+/** Every rule a set of styles can hold, in the order a paste lists them. */
+const ALL_KEYS: StyleScopeKey[] = STYLE_SCOPES.flatMap(keysAt);
+/** Where a change applies, in words: "Phone", or "All sizes, hover". */
+export const changeLabel = (c: { scope: ResponsiveScope; state?: StyleState }) => (c.state ? `${SCOPE_LABELS[c.scope]}, ${STATE_LABELS[c.state]}` : SCOPE_LABELS[c.scope]);
 
 /** Which sizes a paste writes: every size the copy holds a change for, or only the changes made for one. */
 export type PasteScope = 'every' | ResponsiveScope;
@@ -53,6 +61,8 @@ export interface StyleCopy {
 /** One override a paste writes (`to`) over what the destination has now (`from`). No `to` removes the override. */
 export interface PasteChange {
   scope: ResponsiveScope;
+  /** The interactive state the value is for; none for the resting style. */
+  state?: StyleState;
   from?: StyleValue;
   to?: StyleValue;
 }
@@ -151,7 +161,7 @@ export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelec
   return { kind: 'single', label: `${t.label} in ${inst.name ?? def.name}`, where, targets: [{ ...t, part: null }] };
 }
 
-const hasRules = (s: ResponsiveStyles | undefined) => STYLE_SCOPES.some((sc) => Object.keys(s?.[sc] ?? {}).length > 0);
+const hasRules = (s: ResponsiveStyles | undefined) => ALL_KEYS.some((sc) => Object.keys(s?.[sc] ?? {}).length > 0);
 
 /** Take the style a selection carries now. Null when it takes none; a copy with no sets has nothing to paste. */
 export function captureStyle(state: ProjectState, ref: ElementRef): StyleCopy | null {
@@ -194,8 +204,10 @@ interface Known {
  * as its full stack), or why it can't be written into this project now: the checks the edit makes, so one value
  * never fails the whole paste.
  */
-function prepare(state: ProjectState, known: Known, property: string, v: unknown): { value: StyleValue; stored: StyleValue } | { error: string } {
+function prepare(state: ProjectState, known: Known, property: string, v: unknown, inState: boolean): { value: StyleValue; stored: StyleValue } | { error: string } {
   if (!isStyleValue(v)) return { error: 'The copied value isn’t one the builder can paste.' };
+  // A hand-edited document can hold a state value the builder never writes.
+  if (inState && !isStateStyleProp(property)) return { error: stateStyleError(property)! };
   const err = validateStyleValue(property, v);
   if (err) return { error: err };
   const token = tokenRef(property, v);
@@ -216,7 +228,7 @@ function prepare(state: ProjectState, known: Known, property: string, v: unknown
   return { value: v, stored: v };
 }
 
-const scopeList = (s: ResponsiveStyles, property: string) => STYLE_SCOPES.filter((sc) => s[sc]?.[property] !== undefined).map((sc) => SCOPE_LABELS[sc]);
+const scopeList = (s: ResponsiveStyles, property: string) => ALL_KEYS.filter((k) => s[k]?.[property] !== undefined).map((k) => changeLabel(parseStyleScopeKey(k)!));
 
 /**
  * What pasting `copy` onto the selection would do. A section pastes onto a section part by part (the same part IDs);
@@ -231,7 +243,8 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
   if (!destination) return { destination, rows: [], operations: [] };
   const now = effectiveTokens(state);
   const known: Known = { tokens: new Set(now.map((t) => t.id)), vars: new Set(now.map((t) => tokenVar(t.id))), copied: new Set(copy.vars) };
-  const scopes = scope === 'every' ? STYLE_SCOPES : [scope];
+  // A size's paste takes its state rules too: they change how it looks there.
+  const scopes = scope === 'every' ? ALL_KEYS : keysAt(scope);
   const rows: PasteRow[] = [];
   const operations: EditOperation[] = [];
   for (const set of copy.sets) {
@@ -245,7 +258,7 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
       target = destination.targets.find((t) => t.part === part);
       missing = `${destination.label} has no ${set.label.toLowerCase()} part to take it.`;
     }
-    const properties = [...new Set(STYLE_SCOPES.flatMap((sc) => Object.keys(set.styles[sc] ?? {})))];
+    const properties = [...new Set(ALL_KEYS.flatMap((sc) => Object.keys(set.styles[sc] ?? {})))];
     for (const property of properties) {
       const def = own(STYLE_PROP_MAP, property);
       const label = def?.label ?? property;
@@ -259,12 +272,12 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
       else if (!scopes.some((sc) => set.styles[sc]?.[property] !== undefined)) skip(`The copy sets it for ${scopeList(set.styles, property).join(', ')}, not ${SCOPE_LABELS[scope as ResponsiveScope]}.`);
       else {
         // Every size the paste writes is checked first: a property with one value that can't be written changes nowhere.
-        const wants = new Map<ResponsiveScope, { value: StyleValue; stored: StyleValue }>();
+        const wants = new Map<StyleScopeKey, { value: StyleValue; stored: StyleValue }>();
         let why = '';
         for (const sc of scopes) {
           const raw: unknown = set.styles[sc]?.[property];
           if (raw === undefined) continue;
-          const ready = prepare(state, known, property, raw);
+          const ready = prepare(state, known, property, raw, sc.includes(':'));
           if ('error' in ready) {
             why = ready.error;
             break;
@@ -278,12 +291,16 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
         const changes: PasteChange[] = [];
         for (const sc of scopes) {
           const want = wants.get(sc);
+          // One size writes only what the copy holds there; every size also clears what it doesn't.
+          if (want === undefined && scope !== 'every') continue;
           const have = target.styles?.[sc]?.[property];
-          if (want === undefined ? have !== undefined : !sameValue(want.stored, have)) changes.push(want === undefined ? { scope: sc, from: have } : { scope: sc, from: have, to: want.value });
+          const at = parseStyleScopeKey(sc)!;
+          const where = { scope: at.scope, ...(at.state ? { state: at.state } : {}) };
+          if (want === undefined ? have !== undefined : !sameValue(want.stored, have)) changes.push(want === undefined ? { ...where, from: have } : { ...where, from: have, to: want.value });
         }
         rows.push({ part, target: at, property, label, status: changes.length ? 'change' : 'same', changes });
         for (const c of changes)
-          operations.push({ type: 'node.setStyle', owner: target.owner, nodeId: target.nodeId, ...(target.partId ? { partId: target.partId } : {}), scope: c.scope, property, value: c.to ?? null });
+          operations.push({ type: 'node.setStyle', owner: target.owner, nodeId: target.nodeId, ...(target.partId ? { partId: target.partId } : {}), scope: c.scope, ...(c.state ? { state: c.state } : {}), property, value: c.to ?? null });
       }
     }
   }

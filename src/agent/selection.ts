@@ -5,9 +5,9 @@
  */
 import { variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import { TEXT_TAGS, isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
+import { STYLE_STATES, TEXT_TAGS, isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { STYLE_PROPS } from '@shared/styles';
+import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { getTree } from '@engine/tree';
 import { TABLE_ACTIONS, TABLE_LIMITS, type TableAction } from '@engine/table';
 import { checkProps, chooseVariants, fieldError, variantsJsonSchema, type FieldIssue } from './macros';
@@ -44,6 +44,7 @@ export const SELECTION_ARGS = {
       itemId: z.string().optional(),
       resetItem: z.boolean().optional(),
       scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
+      state: z.enum(['hover', 'focus', 'active']).optional(),
       styles: z.array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() }), z.null()]) }).strict()).max(12)
     })
     .strict(),
@@ -56,7 +57,7 @@ export const SELECTION_DESCRIPTIONS: Record<keyof typeof SELECTION_ARGS, string>
   edit_selected_table:
     'Change one cell, row or column of a table in the selected element, by the row and column IDs in its content: set a cell, rename a column, or insert, remove or move a row or column. Other cells stay where they are.',
   style_selected_element:
-    'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%". Motion: translateX and translateY take a length such as "-4px", scale a factor such as 1.03, rotate degrees such as -2, transformOrigin "center" or an edge or corner such as "top left", transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration milliseconds such as 200 and transitionEasing ease, ease-out, linear or smooth. Grids: gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem", "2fr repeat(2, 1fr)" or "repeat(auto-fit, minmax(18rem, 1fr))" (as many columns as fit, each at least 18rem or the whole grid when narrower); a grid child spans columns with columnSpan (1 to 12 or full) and rows with rowSpan (1 to 6). Set for all sizes, a template and spans above 1 apply from tablet up, so phones keep their own columns unless scope "phone" sets them. A repeated part (a card) is styled for every item unless itemId names the one item to style; that item then differs from its siblings, and null values return it to the shared style.',
+    'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. Add state "hover", "focus" (keyboard focus) or "active" (while pressed) to style how it looks in that state only (colors, background, border, corner radius, shadow and opacity); set transition on the resting style to animate the change; null values clear the state\'s value. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%". Motion: translateX and translateY take a length such as "-4px", scale a factor such as 1.03, rotate degrees such as -2, transformOrigin "center" or an edge or corner such as "top left", transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration milliseconds such as 200 and transitionEasing ease, ease-out, linear or smooth. Grids: gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem", "2fr repeat(2, 1fr)" or "repeat(auto-fit, minmax(18rem, 1fr))" (as many columns as fit, each at least 18rem or the whole grid when narrower); a grid child spans columns with columnSpan (1 to 12 or full) and rows with rowSpan (1 to 6). Set for all sizes, a template and spans above 1 apply from tablet up, so phones keep their own columns unless scope "phone" sets them. A repeated part (a card) is styled for every item unless itemId names the one item to style; that item then differs from its siblings, and null values return it to the shared style.',
   request_wider_scope: 'Ask the user for permission to change more than the selected element, when the request cannot be done inside it.'
 };
 
@@ -66,7 +67,7 @@ export const SELECTION_BRIEFS: Record<keyof typeof SELECTION_ARGS, string> = {
   edit_selected_list: 'Update, insert, remove or move one item of a list.',
   edit_selected_table: 'Set a cell, rename a column, or insert, remove or move a row or column, by the IDs in its content.',
   style_selected_element:
-    'scope phone, tablet or desktop styles one screen size, base all. Prefer tokens such as {"token":"space.lg"}. objectPosition is a focal point "X% Y%" across and down (each 0 to 100, at most one decimal, such as "50% 20%"). translateX/Y take a length ("-4px"), scale a factor (1.03), rotate degrees, transformOrigin center or an edge or corner ("top left"), transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration ms, transitionEasing ease, ease-out, linear or smooth. gridTemplate takes a preset or column sizes ("16rem 1fr", "repeat(auto-fit, minmax(18rem, 1fr))"); a grid child spans columnSpan 1 to 12 or full and rowSpan 1 to 6. Set for all sizes, a template and spans above 1 apply from tablet up; phones keep their own unless scope phone sets them. A repeated part (a card) is styled for every item unless itemId names one; null values return it to the shared style.',
+    'scope styles one screen size, base all; state, that state only. Prefer tokens such as {"token":"space.lg"}. objectPosition is a focal point "X% Y%" across and down (each 0 to 100, at most one decimal, such as "50% 20%"). translateX/Y take a length ("-4px"), scale a factor (1.03), rotate degrees, transformOrigin center or an edge or corner ("top left"), transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration ms, transitionEasing ease, ease-out, linear or smooth. gridTemplate takes a preset or column sizes ("16rem 1fr", "repeat(auto-fit, minmax(18rem, 1fr))"); a grid child spans columnSpan 1 to 12 or full and rowSpan 1 to 6. Set for all sizes, a template and spans above 1 apply from tablet up; phones keep their own unless scope phone sets them. A repeated part (a card) is styled for every item unless itemId names one; null values return it to the shared style.',
   request_wider_scope: 'Ask permission to change more than the selected element.'
 };
 
@@ -318,10 +319,11 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
                 type: 'string',
                 description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style.${itemOnly ? ` Omitted, it is the selected item "${target.itemId}": styling every item needs request_wider_scope first.` : ` Omit to style every item.${selectedItem}`}`
               },
-              resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles; then apply styles, which may be empty.' }
+              resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles (with state, only its rule for that state at scope); then apply styles, which may be empty.' }
             }
           : {}),
         scope: { type: 'string', enum: ['base', 'phone', 'tablet', 'desktop'] },
+        state: { type: 'string', enum: [...STYLE_STATES], description: 'Style only this interactive state: hover, focus (keyboard focus) or active (while pressed). Omit for the resting style.' },
         styles: {
           type: 'array',
           minItems: perItem.length ? 0 : 1,
@@ -474,10 +476,11 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
   const issues: FieldIssue[] = [];
   a.styles.forEach((s, i) => {
     if (!known.has(s.property)) issues.push({ field: `styles[${i}].property`, message: `unknown style property "${s.property}"` });
+    else if (a.state !== undefined && s.value !== null && !isStateStyleProp(s.property)) issues.push({ field: `styles[${i}].property`, message: stateStyleError(s.property)! });
   });
   if (issues.length) return fieldError(issues, note);
-  const ops: EditOperation[] = a.styles.map((s) => ({ type: 'node.setStyle', owner, nodeId, ...(partId ? { partId } : {}), ...(a.itemId !== undefined ? { itemId: a.itemId } : {}), scope: a.scope, property: s.property, value: s.value }));
+  const ops: EditOperation[] = a.styles.map((s) => ({ type: 'node.setStyle', owner, nodeId, ...(partId ? { partId } : {}), ...(a.itemId !== undefined ? { itemId: a.itemId } : {}), scope: a.scope, ...(a.state ? { state: a.state } : {}), property: s.property, value: s.value }));
   // The reset and any new values are one batch: one change in history.
-  if (a.resetItem) ops.unshift({ type: 'node.resetStyles', owner, nodeId, partId, itemId: a.itemId });
+  if (a.resetItem) ops.unshift({ type: 'node.resetStyles', owner, nodeId, partId, itemId: a.itemId, ...(a.state ? { scope: a.scope, state: a.state } : {}) });
   return applySelected(ops, host, a.resetItem && !a.styles.length ? 'Reset one item to the shared style' : a.itemId !== undefined ? 'Style one item' : 'Style selection', callId);
 }

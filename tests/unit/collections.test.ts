@@ -549,24 +549,25 @@ describe('collections', () => {
 
 describe('collections format', () => {
   it('is format 8, which stamps collection and entry documents like any other', () => {
-    // Released as the seventh migration, upgrading format 7 to 8; the later UI state step (8 to 9) only changes the version.
+    // Released as the seventh migration, upgrading format 7 to 8; the later UI state (8 to 9) and style state (9 to 10)
+    // steps only change the version.
     expect(MIGRATIONS.findIndex((m) => m.id === 'collections') + 1).toBe(7);
-    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state']);
-    expect(SCHEMA_VERSION).toBe(9);
+    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states']);
+    expect(SCHEMA_VERSION).toBe(10);
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['**Bold** [link](entry:en_winter)'], terms: {}, author: 'Ana' });
     for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = 7;
     s.collections.posts.settings.schemaVersion = 7;
     s.collections.posts.entries.en_spring.schemaVersion = 7;
     const r = migrateProject(s)!;
-    expect(r).toMatchObject({ from: 7, to: 9, applied: ['collections', 'ui-state'] });
-    expect(r.state.collections.posts.settings.schemaVersion).toBe(9);
-    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(9);
+    expect(r).toMatchObject({ from: 7, to: 10, applied: ['collections', 'ui-state', 'style-states'] });
+    expect(r.state.collections.posts.settings.schemaVersion).toBe(10);
+    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(10);
     // Nothing else changes.
     expect({ ...r.state.collections.posts.entries.en_spring, schemaVersion: 7 }).toEqual(s.collections.posts.entries.en_spring);
     expect({ ...r.state.collections.posts.settings, schemaVersion: 7 }).toEqual(s.collections.posts.settings);
     // A newer entry alone makes the whole project newer than this app.
     const newer = blog();
-    newer.collections.posts.entries.en_winter.schemaVersion = 10;
+    newer.collections.posts.entries.en_winter.schemaVersion = SCHEMA_VERSION + 1;
     expect(migrateProject(newer)).toBeNull();
   });
 });

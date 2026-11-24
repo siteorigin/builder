@@ -42,6 +42,9 @@ const IMAGE_USE = z.discriminatedUnion('kind', [
 ]);
 
 const scope = z.enum(['base', 'phone', 'tablet', 'desktop']).describe('Responsive scope. "base" applies at all sizes.');
+const styleState = z
+  .enum(['hover', 'focus', 'active'])
+  .describe('"hover", "focus" (keyboard) or "active" (pressed); omit for the resting style. A state sets only color, background, border, radius, shadow and opacity.');
 /** A web font's face. The family becomes a CSS font-family name, so only plain characters are allowed. */
 const FONT_FACE = z.object({
   family: z.string().regex(FONT_FAMILY_RE),
@@ -233,6 +236,7 @@ export const OPERATION_SCHEMAS = {
     variant: z.string().optional().describe('Component definitions only: set the rule for this variant option.'),
     axis: z.string().optional().describe('The variant axis, when the option ID is on several.'),
     scope,
+    state: styleState.optional(),
     property: z.string().describe('Style property ID, e.g. paddingBlock, background, textStyle, gap, columns.'),
     value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. objectPosition also takes a focal point "X% Y%" (each 0 to 100). gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem" or "repeat(auto-fit, minmax(18rem, 1fr))"; rowSpan 1 to 6. null removes the override.')
   }),
@@ -244,7 +248,8 @@ export const OPERATION_SCHEMAS = {
     itemId: z.string().optional().describe('Reset only this repeated item\'s own styles for the part, so it shows the shared style again. Needs partId. Without it the shared part styles are reset and item styles stay.'),
     variant: z.string().optional(),
     axis: z.string().optional(),
-    scope: scope.optional()
+    scope: scope.optional().describe('Reset only this size, its states included.'),
+    state: styleState.optional().describe('Reset only this state, at scope or every size.')
   }),
   'node.setContent': z.object({
     type: z.literal('node.setContent'),

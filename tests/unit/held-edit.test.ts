@@ -147,6 +147,19 @@ describe('held edit field check', () => {
     expect(fieldKey([op])).not.toBe(fieldKey([{ ...op, itemId: first }]));
   });
 
+  it('holds a hover style apart from the resting one and from other states (#348)', () => {
+    const s = fresh();
+    const home = s.pages[s.site.homePageId];
+    const grid = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId].componentId === 'features.grid')!;
+    const owner = { kind: 'page' as const, id: home.id };
+    const op: EditOperation = { type: 'node.setStyle', owner, nodeId: grid.id, partId: 'card', scope: 'base', state: 'hover', property: 'background', value: '#dbeeff' };
+    // A change to the resting background is another field; a change to the hover background is this one.
+    expect(check(s, apply(s, [{ ...op, state: undefined, value: '#ffeeee' }]), [op])).toEqual({ kind: 'apply' });
+    expect(check(s, apply(s, [{ ...op, value: '#ffeeee' }]), [op]).kind).toBe('changed');
+    expect(fieldKey([op])).not.toBe(fieldKey([{ ...op, state: 'focus' }]));
+    expect(fieldKey([op])).not.toBe(fieldKey([{ ...op, state: undefined }]));
+  });
+
   it('reads the routes for text with a link, a custom style whole, and the project for a font rename', () => {
     const s = fresh();
     const { owner, node, prop, items } = listInstance(s);

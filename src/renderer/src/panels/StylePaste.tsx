@@ -6,7 +6,8 @@ import { STYLE_PROP_MAP, cssRivals } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { Field, Modal, type MenuItem } from '../components/ui';
 import { commitOps, getState, setState, toast, undoAction, useStore, type State } from '../store';
-import { SCOPE_LABELS, captureStyle, planStylePaste, styleSelection, type PasteRow, type PasteScope } from '../lib/style-copy';
+import { SCOPE_LABELS, captureStyle, changeLabel, planStylePaste, styleSelection, type PasteRow, type PasteScope } from '../lib/style-copy';
+import { styleScopeKey, type StyleState } from '@shared/types';
 import { allSizesReach } from '../lib/style-source';
 import { describeStyleValue, isStyleLink, styleLabel, styleSwatch } from './StyleControls';
 
@@ -127,24 +128,25 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   // A section's paste can land on several of its parts: the review groups the changes under each.
   const sectionWide = destination?.kind === 'section';
   // What a size's own value falls back to once cleared: the All sizes value the destination ends with, if any.
-  const allSizesAfter = (r: PasteRow) => {
-    const pasted = r.changes.find((c) => c.scope === 'base');
+  // A state's own size value falls back to the All sizes value for the same state.
+  const allSizesAfter = (r: PasteRow, state?: StyleState) => {
+    const pasted = r.changes.find((c) => c.scope === 'base' && c.state === state);
     if (pasted) return pasted.to;
     const at = destination?.targets.find((t) => t.part === r.part) ?? (destination?.targets.length === 1 ? destination.targets[0] : undefined);
-    return at?.styles?.base?.[r.property];
+    return at?.styles?.[styleScopeKey('base', state)]?.[r.property];
   };
   // "Uses All sizes" only where the stylesheet carries that value to the size (a multi-column value on a placement
   // skips phones) and no other control writing the same CSS keeps its own value there (Column sizes over Columns).
   const targetOf = (r: PasteRow) => destination?.targets.find((t) => t.part === r.part) ?? (destination?.targets.length === 1 ? destination.targets[0] : undefined);
-  const fallsToAll = (r: PasteRow, size: PasteRow['changes'][number]['scope']) => {
+  const fallsToAll = (r: PasteRow, size: PasteRow['changes'][number]['scope'], state?: StyleState) => {
     const at = targetOf(r);
     // A rival's value at this size as the paste leaves it: what the review writes or clears, else what is there now.
     const rivalAfter = (rv: string) => {
-      const planned = rows.find((x) => x.part === r.part && x.property === rv && x.status === 'change')?.changes.find((c) => c.scope === size);
-      return planned ? planned.to : at?.styles?.[size]?.[rv];
+      const planned = rows.find((x) => x.part === r.part && x.property === rv && x.status === 'change')?.changes.find((c) => c.scope === size && c.state === state);
+      return planned ? planned.to : at?.styles?.[styleScopeKey(size, state)]?.[rv];
     };
     const rivalHere = cssRivals(r.property).some((rv) => rivalAfter(rv) !== undefined);
-    return !rivalHere && allSizesReach(r.property, allSizesAfter(r), size, at?.partId !== undefined);
+    return !rivalHere && allSizesReach(r.property, allSizesAfter(r, state), size, at?.partId !== undefined);
   };
   // A part inside a repeat is styled once for all of them: its heading says so.
   const reachOf = (where: string) => destination?.targets.find((t) => t.label === where)?.reach;
@@ -230,8 +232,8 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                             <span className="paste-prop">{named(r)}</span>
                             <span className="paste-changes">
                               {r.changes.map((c) => (
-                                <span key={c.scope} className="paste-change">
-                                  <span className="paste-size">{SCOPE_LABELS[c.scope]}</span>
+                                <span key={styleScopeKey(c.scope, c.state)} className="paste-change">
+                                  <span className="paste-size">{changeLabel(c)}</span>
                                   <span className="paste-values">
                                     {/* Before and after: what this size has of its own now, or that it has nothing of its own. */}
                                     {c.from !== undefined ? (
@@ -248,7 +250,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                                         <PasteValue row={r} value={c.to} tokens={tokens} text={show(r, c.to)} />
                                       </ins>
                                     ) : (
-                                      <span className="paste-cleared">{c.scope !== 'base' && fallsToAll(r, c.scope) ? 'cleared, uses All sizes' : 'cleared'}</span>
+                                      <span className="paste-cleared">{c.scope !== 'base' && fallsToAll(r, c.scope, c.state) ? 'cleared, uses All sizes' : 'cleared'}</span>
                                     )}
                                   </span>
                                 </span>

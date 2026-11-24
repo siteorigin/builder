@@ -1095,13 +1095,20 @@ describe('copies and conversions', () => {
 
 describe('the document format and the assistant', () => {
   it('marks the format with a version-only step, so an older editor opens a project with state read-only', () => {
-    expect(MIGRATIONS.at(-1)!.id).toBe('ui-state');
+    // The step upgrades format 8 to 9; the style state step after it (9 to 10) only changes the version too.
+    const from = MIGRATIONS.findIndex((m) => m.id === 'ui-state') + 1;
+    expect(from).toBe(8);
+    expect(MIGRATIONS.slice(from).map((m) => m.id)).toEqual(['style-states']);
     expect(SCHEMA_VERSION).toBe(MIGRATIONS.length + 1);
     const s = fresh();
     const { def } = billingDef(s);
     place(s, def);
     const docs = (p: ProjectState) => [p.manifest, p.site, p.tokens, p.assets, p.themeLock, ...Object.values(p.pages), ...Object.values(p.components)];
-    for (const d of docs(s)) d.schemaVersion = SCHEMA_VERSION - 1;
+    for (const d of docs(s)) d.schemaVersion = from;
+    // The step itself changes nothing in the documents.
+    const stepped = structuredClone(s);
+    MIGRATIONS[from - 1].migrate(stepped, () => true);
+    expect(stepped).toEqual(s);
     const before = structuredClone(s);
     const out = migrateProject(s)!.state;
     // Every document is as it was apart from its version, and the theme lock it keeps truthful.
