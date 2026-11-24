@@ -211,13 +211,15 @@ function RemoveFontDialog({ a, onClose }: { a: AssetRecord; onClose: () => void 
   const last = !others.length;
   const effects = last ? [`Text set in ${family} would be drawn with the next font of each style that names it, such as the system font.`] : keepEffects(a, others, coverage);
   const covers = coverageText(mine);
-  const ready = choice === 'keep' || choice === 'fallback' || (choice === 'replace' && !!replacement);
+  // Nothing uses the family any more (an Undo, the AI, while this was open): it simply goes.
+  const unused = !uses.length;
+  const ready = unused || choice === 'keep' || choice === 'fallback' || (choice === 'replace' && !!replacement);
   const confirm = async () => {
     if (!ready || busy) return;
     setBusy(true);
-    const fontUses = choice === 'replace' ? { replaceWith: replacement } : choice!;
+    const fontUses = unused ? undefined : choice === 'replace' ? { replaceWith: replacement } : choice!;
     // Applies only to the project as it was shown: a change since (an Undo, the AI) asks again.
-    const r = await commitOps([{ type: 'asset.remove', assetId: a.id, fontUses }], `Remove ${a.name}`, undefined, snap.revision);
+    const r = await commitOps([{ type: 'asset.remove', assetId: a.id, ...(fontUses ? { fontUses } : {}) }], `Remove ${a.name}`, undefined, snap.revision);
     setBusy(false);
     if (!r) return;
     toast(`Removed ${a.name}.`, 'info', undoAction(r));
@@ -264,37 +266,45 @@ function RemoveFontDialog({ a, onClose }: { a: AssetRecord; onClose: () => void 
             <span className="confirm-subject-note">{fontFileName(a)}</span>
           </span>
         </div>
-        <p className="confirm-lead" id={`${id}-lead`}>
-          Your site uses {family} in {plural(uses.length, 'place', 'places')}:
-        </p>
-        <ul className="font-remove-uses">
-          {where.map((w, i) => (
-            <li key={i}>{w}</li>
-          ))}
-        </ul>
-        <ul className="confirm-details">
-          {effects.map((e, i) => (
-            <li key={i} data-kind="risk">
-              <TriangleAlert />
-              <span>{e}</span>
-            </li>
-          ))}
-        </ul>
-        <div className="font-remove-choices" role="radiogroup" aria-label={`What ${family} uses get instead`}>
-          {last
-            ? option('fallback', 'Let them fall back', `Every style that names ${family} draws with its next font instead.`)
-            : option('keep', `Keep using ${family}’s other ${others.length === 1 ? 'file' : 'files'}`, `Styles keep ${family}; its text is drawn as described above.`)}
-          {option('replace', 'Use another font instead', `Every style that uses ${family} switches to the font you choose.${last ? '' : ` Its other files stay in Assets.`}`)}
-          {choice === 'replace' && (
-            <div className="font-remove-replacement">
-              <FontSelect state={snap.state} stack={replacement} exclude={family} label="Font to use instead" onChoose={(next) => setReplacement(next)} />
-            </div>
-          )}
-        </div>
-        {code > 0 && (last || choice === 'replace' || choice === 'fallback') && (
-          <p className="muted">
-            Code that names {family} itself is not changed: {code === 1 ? 'it draws' : 'they draw'} with {code === 1 ? 'its' : 'their'} own fallback font once no file of {family} is left.
+        {unused ? (
+          <p className="confirm-lead" id={`${id}-lead`}>
+            Nothing on your site uses {family} now, so removing this file changes nothing you see.
           </p>
+        ) : (
+          <>
+            <p className="confirm-lead" id={`${id}-lead`}>
+              Your site uses {family} in {plural(uses.length, 'place', 'places')}:
+            </p>
+            <ul className="font-remove-uses">
+              {where.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+            <ul className="confirm-details">
+              {effects.map((e, i) => (
+                <li key={i} data-kind="risk">
+                  <TriangleAlert />
+                  <span>{e}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="font-remove-choices" role="radiogroup" aria-label={`What ${family} uses get instead`}>
+              {last
+                ? option('fallback', 'Let them fall back', `Every style that names ${family} draws with its next font instead.`)
+                : option('keep', `Keep using ${family}’s other ${others.length === 1 ? 'file' : 'files'}`, `Styles keep ${family}; its text is drawn as described above.`)}
+              {option('replace', 'Use another font instead', `Every style that uses ${family} switches to the font you choose.${last ? '' : ` Its other files stay in Assets.`}`)}
+              {choice === 'replace' && (
+                <div className="font-remove-replacement">
+                  <FontSelect state={snap.state} stack={replacement} exclude={family} label="Font to use instead" onChoose={(next) => setReplacement(next)} />
+                </div>
+              )}
+            </div>
+            {code > 0 && last && (
+              <p className="muted">
+                Code that names {family} itself is not changed: {code === 1 ? 'it draws' : 'they draw'} with {code === 1 ? 'its' : 'their'} own fallback font once this last file is gone.
+              </p>
+            )}
+          </>
         )}
       </div>
     </Modal>
