@@ -95,6 +95,7 @@ describe('busy for assistive technology (#490)', () => {
     expect(chatBusy(true, isPaused(null, 'm_a', true, false))).toBe(true);
     expect(chatBusy(true, false)).toBe(true);
     expect(chatBusy(false, false)).toBeUndefined();
+    expect(chatBusy(false, true)).toBeUndefined();
   });
 
   it('stays ready until the run resumes, even once the answer is recorded', () => {
