@@ -1554,6 +1554,8 @@ export class Controller {
       if (r.canceled || !r.filePath) return { ok: false };
       file = r.filePath;
     }
+    // A package written into the project would replace one of its own files, outside its history.
+    if (isInside(s.dir, file)) return { ok: false, message: 'Choose a location outside the project folder.' };
     try {
       const { text, notes } = await buildComponentPackage(s.dir, state, definitionId, `SiteOrigin Builder ${app.getVersion()}`);
       await atomicWrite(file, text);
@@ -1588,18 +1590,20 @@ export class Controller {
       return { ok: false, message: (e as Error).message };
     }
     const name = pkg.definitions.find((d) => d.id === pkg.rootId)?.name ?? 'the component';
-    const codeAllowed = (await loadSettings()).settings.developerMode;
     // Its images are written before their records exist, so the session holds off sweeping meanwhile.
     return this.serialImport(() =>
       s.withImport(async () => {
         if (this.session !== s || this.closing) return closed;
         let prepared: PreparedImport;
         try {
-          prepared = await preparePackageImport(s.dir, s.state, pkg, { codeAllowed, fence: this.writeFence(s) });
+          prepared = await preparePackageImport(s.dir, s.state, pkg, { codeAllowed: (await loadSettings()).settings.developerMode, fence: this.writeFence(s) });
         } catch (e) {
           return { ok: false, message: (e as Error).message };
         }
+        // Asked again now the images are in: Developer mode or the assistant may have changed meanwhile.
         if (this.session !== s || this.closing) return closed;
+        if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before importing a component.' };
+        const codeAllowed = (await loadSettings()).settings.developerMode;
         const r = await s.apply({ operations: [...prepared.assets, { type: 'component.import', importId: prepared.input.id }] }, { label: `Import ${name}`, source: 'user', codeAllowed, componentImport: prepared.input });
         if (!r.ok) return { ok: false, message: `“${name}” was not imported: ${(r.error?.message ?? 'it could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
         const definitionId = r.results?.at(-1)?.definitionId;

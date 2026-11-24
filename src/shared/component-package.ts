@@ -214,7 +214,7 @@ export function decodeComponentPackage(text: string): ComponentPackage {
   unique(pkg.images.map((i) => i.id), 'image');
   if (!pkg.definitions.some((d) => d.id === pkg.rootId)) refuse('the component it is for is missing from it.');
   let bytes = 0;
-  for (const img of pkg.images) bytes += Math.floor((img.data.length * 3) / 4);
+  for (const img of pkg.images) bytes += Math.floor((img.data.length * 3) / 4) - (img.data.endsWith('==') ? 2 : img.data.endsWith('=') ? 1 : 0);
   if (bytes > MAX_PACKAGE_IMAGES_BYTES) refuse(`its images add up to more than ${MAX_PACKAGE_IMAGES_BYTES / 1024 / 1024} MB.`);
   return pkg;
 }

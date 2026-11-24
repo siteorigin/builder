@@ -107,6 +107,11 @@ export interface CheckOptions {
    * generates for the project's own designs (`src/lib/siteorigin/generated/…`), which no one hand-writes.
    */
   generated?: (path: string) => boolean;
+  /**
+   * The project files that exist, when every import of one must name a file that does: an import of anything else in
+   * the project is refused, as compiling a component alone never notices it is missing.
+   */
+  modules?: (path: string) => boolean;
 }
 
 /** The props a component passes on to places that load a URL, apply CSS or open a link. */
@@ -143,7 +148,7 @@ async function checkSibling(path: string, opts: CheckOptions, reach: Reach): Pro
   if (source === null || source === undefined) return null;
   reach.visiting.add(path);
   try {
-    const r = await check(source, { strict: true, resolve: opts.resolve, author: opts.author, generated: opts.generated }, reach);
+    const r = await check(source, { strict: true, resolve: opts.resolve, author: opts.author, generated: opts.generated, modules: opts.modules }, reach);
     const checked = { errors: r.problems.filter((p) => p.severity === 'error'), sinks: r.sinks };
     reach.done.set(path, checked);
     return checked;
@@ -191,10 +196,15 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
     const p = resolveSpec(spec);
     return !!p && !!opts.generated?.(p);
   };
+  const missing = (spec: string) => {
+    const p = resolveSpec(spec);
+    return !!p && !!opts.modules && !['', '.js', '.ts', '.svelte', '/index.js'].some((ext) => opts.modules!(`${p}${ext}`));
+  };
   const checkSpec = (spec: unknown, node: Node) => {
     if (typeof spec !== 'string') return;
     if (!importAllowed(spec)) add('error', `"${spec}" is not available in this project. Use relative imports inside src/lib, $lib, svelte or $app modules only.`, node);
     else if (strict && !importAllowed(spec, true) && !generated(spec)) forbid(`"${spec}"`, node);
+    else if (missing(spec)) add('error', `It imports "${spec}", which is not a file in this project.`, node);
   };
   /** Capability names reached as a property (obj.fetch) or by destructuring ({ fetch } = window). */
   const checkCapability = (name: string, node: Node, onGlobal: boolean, called: boolean) => {

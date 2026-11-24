@@ -548,8 +548,10 @@ export async function importPackageImage(
   if (image.bytes.length > MAX_BYTES) throw new Error(`${shown} is larger than 25 MB.`);
   const p = await prepareBytes(shown, image.bytes, image.mime, image.ext, refuse);
   if (image.mime === 'image/svg+xml' && !p.buf.equals(image.bytes)) throw refuse('it holds scripts, links or other content a site’s images may not have.');
+  // The same picture already in the library is that record, while its file is still the picture.
   const dup = existing.find((a) => a.hash === p.hash && a.mime === p.mime);
-  if (dup) return { record: dup, existing: true };
+  const intact = dup && (await fs.readFile(safeJoin(projectDir, dup.file)).then((b) => sha(b) === dup.hash, () => false));
+  if (dup && intact) return { record: dup, existing: true };
   const { stored, files } = await planStore(p, refuse);
   if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
   const record: AssetRecord = {

@@ -4,7 +4,7 @@ import { promises as fs, constants as fsConstants, existsSync, type BigIntStats,
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import type { PageDoc, ProjectState } from '@shared/types';
+import type { ComponentDefinition, PageDoc, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
 import type { FileText, RestoreVersionResult, SavedCopy, StorageInfo, VersionReview, VersionsInfo } from '@shared/api';
@@ -407,6 +407,27 @@ export interface Conflict {
  * One open, writable project. Owns canonical state, the revision counter, history,
  * the publication journal and generated output. All writes pass through `apply` or `commitState`.
  */
+/**
+ * Why designs a package brought don't compile as the app generates them (`files`), for the server and the browser, or
+ * null when they all do.
+ */
+async function compileDesigns(defs: ComponentDefinition[], files: Map<string, string>): Promise<string | null> {
+  if (!defs.length) return null;
+  const { compile } = await import('svelte/compiler');
+  for (const def of defs) {
+    const source = files.get(defFile(def));
+    if (source === undefined) return `“${def.name}” can't be imported: its design could not be generated.`;
+    for (const generate of ['client', 'server'] as const) {
+      try {
+        compile(source, { filename: defFile(def), generate, runes: true });
+      } catch (e) {
+        return `“${def.name}” can't be imported: its design doesn't compile (${(e as Error).message.split('\n')[0]}).`;
+      }
+    }
+  }
+  return null;
+}
+
 export class ProjectSession extends EventEmitter {
   state!: ProjectState;
   revision = 0;
@@ -1838,6 +1859,9 @@ export class ProjectSession extends EventEmitter {
       // A package is read and checked by the editor's import, which is the only way one reaches a project.
       if (importing && (opts.source === 'ai' || opts.runId))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can import a component package. Ask the user to import it from the component library.', recoverable: true } };
+      // An import is a change of its own (its images and the package), checked against the project as it stands.
+      if (importing && (ops.filter((o) => o.type === 'component.import').length !== 1 || ops.some((o) => o.type !== 'asset.add' && o.type !== 'component.import')))
+        return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'A component package is imported as a change of its own, with only its images.', recoverable: true } };
       const context = { clipboards: this.clipboards, ...(opts.componentImport ? { componentImport: opts.componentImport } : {}) };
       const code = opts.codeAllowed === false ? developerModeRefusal(this.state, ops, context) : null;
       if (code) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `${code} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
@@ -1866,14 +1890,23 @@ export class ProjectSession extends EventEmitter {
       // Any authored code that is new or changed must pass the safety checks before it can be saved. Imports
       // are followed into the components as they will be once this batch is saved, whichever order it made them in.
       const resolve = componentSources(next.components);
-      // A package's code was written by someone else, for another project: it is held to the assistant's policy, and
-      // may import the designs it came with as the app generates them here.
-      const designs = importing ? new Set(Object.values(next.components).filter((d) => d.kind === 'managed').map(defFile)) : null;
+      // A package's code was written by someone else, for another project: it is held to the assistant's policy, and may
+      // import only what the package brought (as saved, or as the app generates it here) and the runtime the site has.
+      const brought = importing ? this.importedComponents(next, ops, results) : null;
+      let built: Map<string, string> | null = null;
+      if (brought) {
+        try {
+          built = generateProject(next, { instrument: false });
+        } catch (e) {
+          return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The package's components are damaged: ${(e as Error).message}`, recoverable: true } };
+        }
+      }
+      const files = brought ? new Set(brought.map(defFile)) : null;
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
-        // whichever pack reuses it; nor does a package bringing that code, unchanged, to a site whose theme lacks it.
-        if ((def.owner === 'theme' || importing) && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.kind === 'code' && c.source === def.source))) continue;
+        // whichever pack reuses it.
+        if (def.owner === 'theme' && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.kind === 'code' && c.source === def.source))) continue;
         // Code the AI writes is held to a stricter policy than code a developer writes, and so is an installed pack's
         // own code, which nobody here wrote or reviewed.
         const installed = def.owner === 'theme' && listThemes().some((t) => t.source === 'user' && t.components.some((c) => c.id === def.id));
@@ -1881,15 +1914,28 @@ export class ProjectSession extends EventEmitter {
           await checkSvelteSource(def.source, {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
-            resolve,
-            ...(designs ? { author: 'Code in a component package', generated: (p: string) => designs.has(p) } : {})
+            resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
+            ...(files && built
+              ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }
+              : {})
           })
         ).filter((p) => p.severity === 'error');
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }
+      // A package's designs are generated here for the first time: each must compile, for the server and the browser.
+      if (brought && built) {
+        const problem = await compileDesigns(brought.filter((d) => d.kind === 'managed' && d.owner === 'project' && !Object.hasOwn(this.state.components, d.id)), built);
+        if (problem) return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: problem, recoverable: true } };
+      }
       // An import is checked place by place: a problem in what it brings is new even if another component has the same.
-      const introduced = importing ? this.introducedProblems(next) : introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
+      let introduced: Diagnostic[];
+      try {
+        introduced = importing ? this.introducedProblems(next) : introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
+      } catch (e) {
+        if (!importing) throw e;
+        return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The package's components are damaged: ${(e as Error).message}`, recoverable: true } };
+      }
       if (introduced.length)
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
@@ -1903,6 +1949,13 @@ export class ProjectSession extends EventEmitter {
       if (opts.idempotencyKey) this.idempotency.set(opts.idempotencyKey, { fingerprint, result });
       return result;
     });
+  }
+
+  /** The definitions a batch's `component.import` brought or kept from the theme, as they are in `next`. */
+  private importedComponents(next: ProjectState, ops: EditOperation[], results: Array<Record<string, unknown>>): ComponentDefinition[] {
+    const at = ops.findIndex((o) => o.type === 'component.import');
+    const ids = (results[at]?.definitionIds as unknown[] | undefined) ?? [];
+    return ids.flatMap((id) => (typeof id === 'string' && Object.hasOwn(next.components, id) ? [next.components[id]] : []));
   }
 
   /** Library images whose files are missing from the project folder, as `refreshAssetFiles` last found them. */

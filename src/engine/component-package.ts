@@ -37,14 +37,31 @@ const TEXT_TOKEN = /^text\.[a-z0-9-]+$/;
 const VAR_SUFFIXES = ['', '-family', '-size', '-line-height', '-weight', '-tracking', '-transform'];
 const VAR_NAME = /--so-[A-Za-z0-9-]+/g;
 
-/** The site style a CSS variable is for, and the metric suffix after its name, among `byVar` (variable → style ID). */
-function varToken(name: string, byVar: ReadonlyMap<string, string>): { id: string; suffix: string } | null {
+/** Site styles by the CSS variable the generator names them with. */
+type VarIndex = ReadonlyMap<string, { id: string; group: TokenGroup }>;
+const varIndex = (tokens: ReadonlyArray<{ id: string; group: TokenGroup }>): VarIndex => new Map(tokens.map((t) => [tokenVar(t.id), { id: t.id, group: t.group }]));
+
+/**
+ * The site style a CSS variable is for, and the metric suffix after its name. The generator writes a text style as
+ * one variable per metric and never bare, and every other style bare, so `--so-text-title-size` is Title's size even
+ * where a style "Title size" exists.
+ */
+function varToken(name: string, byVar: VarIndex): { id: string; suffix: string } | null {
   for (const suffix of VAR_SUFFIXES) {
     if (suffix && !name.endsWith(suffix)) continue;
-    const id = byVar.get(suffix ? name.slice(0, -suffix.length) : name);
-    if (id) return { id, suffix };
+    const t = byVar.get(suffix ? name.slice(0, -suffix.length) : name);
+    if (t && (t.group === 'text') === !!suffix) return { id: t.id, suffix };
   }
   return null;
+}
+
+/** CSS text with each site style variable it names pointed at the style `visit` returns (unchanged when undefined). */
+function mapVars(css: string, byVar: VarIndex, visit: (id: string) => string | undefined): string {
+  return css.replace(VAR_NAME, (m) => {
+    const hit = varToken(m, byVar);
+    const to = hit ? visit(hit.id) : undefined;
+    return hit && to !== undefined ? `${tokenVar(to)}${hit.suffix}` : m;
+  });
 }
 
 /**
@@ -53,13 +70,8 @@ function varToken(name: string, byVar: ReadonlyMap<string, string>): { id: strin
  * variable of a style written into a value or a code component's source. `visit` returns the style to name instead,
  * or undefined to leave the reference as it is. The definition is changed in place.
  */
-function mapTokenRefs(def: ComponentDefinition, byVar: ReadonlyMap<string, string>, visit: (id: string) => string | undefined) {
-  const text = (s: string) =>
-    s.replace(VAR_NAME, (m) => {
-      const hit = varToken(m, byVar);
-      const to = hit ? visit(hit.id) : undefined;
-      return hit && to !== undefined ? `${tokenVar(to)}${hit.suffix}` : m;
-    });
+function mapTokenRefs(def: ComponentDefinition, byVar: VarIndex, visit: (id: string) => string | undefined) {
+  const text = (s: string) => mapVars(s, byVar, visit);
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') return text(v);
     if (Array.isArray(v)) {
@@ -102,31 +114,54 @@ const isSiteLink = (v: unknown): boolean => isRecord(v) && SITE_LINKS.has(v.type
 
 /**
  * Links to this site's own pages, collection entries and documents, which another project does not have. `drop` takes
- * each out (a text link becomes plain text, any other link goes nowhere) and says how many there were.
+ * each out and says how many there were: a link in rich text becomes plain text, and any other link is kept as one
+ * that goes nowhere, so a list item or placement never falls back to a default link instead.
  */
 function siteLinks(def: ComponentDefinition, drop: boolean): number {
   let n = 0;
-  const walk = (v: unknown) => {
-    if (Array.isArray(v)) return v.forEach(walk);
+  const walk = (v: unknown, inSpans: boolean) => {
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, inSpans));
     if (!isRecord(v)) return;
     for (const [k, x] of Object.entries(v)) {
       if (!isSiteLink(x)) {
-        walk(x);
+        walk(x, k === 'spans');
         continue;
       }
       n++;
       if (!drop) continue;
-      if (k === 'link' && typeof v.text === 'string') delete v[k];
+      if (k === 'link' && inSpans) delete v[k];
       else v[k] = { type: 'none', target: '' };
     }
   };
-  walk(def);
+  walk(def, false);
   return n;
+}
+
+/** A static import's specifier, with comments allowed between the keyword and the quoted path. */
+const IMPORT_SPEC = /(\bfrom|\bimport\s*\(?)((?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*)(['"])([^'"\n]*)\3/g;
+
+/** The project file an import specifier in the file `fromFile` names, or null for a package import. */
+function resolveImport(spec: string, fromFile: string): string | null {
+  const fromDir = fromFile.split('/').slice(0, -1).join('/');
+  return spec.startsWith('$lib/') ? normalizePath(`src/lib/${spec.slice(5)}`) : spec.startsWith('./') || spec.startsWith('../') ? normalizePath(`${fromDir}/${spec}`) : null;
+}
+
+/** The project files a code component's source imports. */
+function importedFiles(source: string, fromFile: string): string[] {
+  const out: string[] = [];
+  for (const m of source.matchAll(IMPORT_SPEC)) {
+    const at = resolveImport(m[4], fromFile);
+    if (at) out.push(at);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
+
+/** The CSS text a site style's value holds: the value itself, or a text style's metrics. */
+const cssStrings = (v: unknown): string[] => (typeof v === 'string' ? [v] : isRecord(v) ? Object.values(v).filter((x): x is string => typeof x === 'string') : []);
 
 /** A definition in the project, or one of its theme's that a theme component it has would install. */
 function findDefinition(state: ProjectState, id: string): ComponentDefinition | undefined {
@@ -147,7 +182,10 @@ export function packageClosure(state: ProjectState, rootId: string): ComponentDe
     out.set(id, def);
     if (out.size > MAX_PACKAGE_DEFINITIONS) fail(`It uses more than ${MAX_PACKAGE_DEFINITIONS} components, more than one package carries.`);
     const needs = new Set([...(def.kind === 'managed' ? directDependencies(def) : []), ...(def.dependencies ?? [])]);
-    if (def.kind === 'code') for (const other of Object.values(state.components)) if (codeImports(state, def, other.id)) needs.add(other.id);
+    if (def.kind === 'code') {
+      const files = new Set(importedFiles(def.source ?? '', defFile(def)));
+      for (const other of Object.values(state.components)) if (other.id !== def.id && (codeImports(state, def, other.id) || files.has(defFile(other)))) needs.add(other.id);
+    }
     for (const dep of needs) {
       if (!findDefinition(state, dep)) fail(`${quoted(def.name)} uses a component that is no longer in this project ("${dep}").`);
       queue.push(dep);
@@ -210,7 +248,9 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
       fail(`${quoted(def.name)} was converted to code by an earlier version and still relies on the original design's styles. Convert the design to code again, then export that.`);
   }
   // Code that writes a library file's address shows a file the other site won't have, wherever it lands.
-  const files = Object.values(state.assets.assets).flatMap((a) => (typeof a?.file === 'string' && a.file.startsWith('static/') ? [{ name: a.name, url: a.file.slice('static'.length) }] : []));
+  const files = Object.values(state.assets.assets).flatMap((a) =>
+    [a?.file, ...(Array.isArray(a?.variants) ? a.variants.map((v) => v?.file) : [])].flatMap((f) => (typeof f === 'string' && f.startsWith('static/') ? [{ name: a.name, url: f.slice('static'.length) }] : []))
+  );
   for (const def of defs) {
     const hit = def.kind === 'code' && files.find((f) => def.source?.includes(f.url));
     if (hit) fail(`The code of ${quoted(def.name)} shows ${quoted(hit.name)} from this site's library by its address, which a package can't carry. Give the component an image property for it instead.`);
@@ -230,7 +270,7 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
     });
   // Site styles: every one named, and every one those follow.
   const tokens = effectiveTokens(state);
-  const byVar = new Map(tokens.map((t) => [tokenVar(t.id), t.id]));
+  const byVar = varIndex(tokens);
   const wanted: Array<{ id: string; by: string }> = [];
   for (const def of defs)
     mapTokenRefs(def, byVar, (id) => {
@@ -254,9 +294,11 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
     const link = linkOf(t.value, t.group);
     if (link) wanted.push({ id: link, by: t.label });
     if (t.group === 'text' && isRecord(t.value)) {
-      const fam = linkOf(t.value.family);
+      const fam = linkOf((t.value as Record<string, unknown>).family);
       if (fam) wanted.push({ id: fam, by: t.label });
     }
+    // A value can name another style by its variable too (a shadow in the site's own colour).
+    for (const css of cssStrings(t.value)) mapVars(css, byVar, (ref) => void wanted.push({ id: ref, by: t.label }));
   }
   const pkg: ComponentPackage = {
     format: COMPONENT_PACKAGE_FORMAT,
@@ -352,21 +394,26 @@ function relativeSpec(fromDir: string, to: string): string {
   return `${up ? '../'.repeat(up) : './'}${b.slice(i).join('/')}`;
 }
 
-const IMPORT_SPEC = /(\bfrom\s*|\bimport\s*\(?\s*)(['"])([^'"\n]*)\2/g;
-
 /**
- * A code component's source with its imports of the package's other components pointed at where they land: `moved`
- * maps each file as the package named it to its file in this project. Other imports are left as they are.
+ * A code component's source as it lands: its imports of the package's other components pointed at their files here
+ * (`moved` maps each file as the package named it to its file here), and the class names the generator derives from a
+ * definition's ID (`so-{key}__part`, `so-{key}--variant`, `so-shown--{key}`) renamed with it (`keys`, old to new), so
+ * variants, part styles and shown parts keep reaching converted code. Every other import is left as it is: the save
+ * checks refuse one that names a component the package didn't bring.
  */
-function relinkImports(source: string, fromFile: string, toFile: string, moved: ReadonlyMap<string, string>): string {
-  const fromDir = fromFile.split('/').slice(0, -1).join('/');
+function relinkSource(source: string, fromFile: string, toFile: string, moved: ReadonlyMap<string, string>, keys: ReadonlyMap<string, string>): string {
   const toDir = toFile.split('/').slice(0, -1).join('/');
-  return source.replace(IMPORT_SPEC, (m, lead: string, q: string, spec: string) => {
-    const at = spec.startsWith('$lib/') ? normalizePath(`src/lib/${spec.slice(5)}`) : spec.startsWith('./') || spec.startsWith('../') ? normalizePath(`${fromDir}/${spec}`) : null;
+  let out = source.replace(IMPORT_SPEC, (m, lead: string, gap: string, q: string, spec: string) => {
+    const at = resolveImport(spec, fromFile);
     const target = at === null ? undefined : moved.get(at);
     if (!target) return m;
-    return `${lead}${q}${spec.startsWith('$lib/') ? `$lib/${target.replace(/^src\/lib\//, '')}` : relativeSpec(toDir, target)}${q}`;
+    return `${lead}${gap}${q}${spec.startsWith('$lib/') ? `$lib/${target.replace(/^src\/lib\//, '')}` : relativeSpec(toDir, target)}${q}`;
   });
+  for (const [from, to] of keys) {
+    const k = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`\\bso-${k}(__|--)`, 'g'), `so-${to}$1`).replace(new RegExp(`\\bso-shown--${k}(?![a-z0-9]|-(?!phone\\b|tablet\\b|desktop\\b))`, 'g'), `so-shown--${to}`);
+  }
+  return out;
 }
 
 /** JSON text with keys in order, so two values that hold the same are told apart from two that don't. */
@@ -380,38 +427,86 @@ function canonical(v: unknown): string {
   return JSON.stringify(v) ?? 'null';
 }
 
-/** The shape problems that would stop a definition from being read at all, named for the author. */
+const NODE_KINDS = new Set(['element', 'text', 'image', 'link', 'icon', 'divider', 'instance', 'slot', 'repeat']);
+const isIdList = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+/**
+ * The shape problems that would stop a definition from being read at all, named for the author: what the engine, the
+ * checks and the editor walk must be there, in the form they walk it. What the values mean is checked as they land.
+ */
 function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
   const name = quoted(def.name);
+  const damaged = (what: string): never => fail(`${name} is damaged: ${what}.`);
   if (def.category === 'shell') fail(`${name} is part of a shared header or footer, which can't be imported.`);
+  if (!isRecord(def.parts) || !Object.values(def.parts).every((p) => isRecord(p) && typeof p.nodeId === 'string')) damaged('its parts are not in the expected form');
+  if (!isRecord(def.properties)) damaged('its properties are not in the expected form');
+  for (const [k, prop] of Object.entries(def.properties)) {
+    const fields = (prop as { fields?: unknown }).fields;
+    if ((prop.type === 'list' || prop.type === 'object') && (!isRecord(fields) || !Object.values(fields).every((f) => isRecord(f) && typeof f.type === 'string'))) damaged(`its property "${k}" has no fields`);
+    for (const f of [prop, ...(isRecord(fields) ? Object.values(fields) : [])] as Array<{ type?: unknown; options?: unknown }>)
+      if (f.type === 'enum' && !Array.isArray(f.options)) damaged(`its property "${k}" has no options`);
+  }
+  for (const [axis, a] of Object.entries(def.variantAxes ?? {})) if (!isRecord(a) || !isRecord(a.options)) damaged(`its variant "${axis}" has no options`);
   if (def.kind === 'code') {
     if (typeof def.source !== 'string') fail(`${name} is a code component without its code.`);
     if (def.tree) fail(`${name} is a code component with a design as well, which no component has.`);
+    if (def.dependencies !== undefined && !isIdList(def.dependencies)) damaged('its list of components it needs is not in the expected form');
     for (const dep of def.dependencies ?? []) if (!inPackage.has(dep)) fail(`${name} needs a component the package doesn't include ("${dep}").`);
     return;
   }
   const tree = def.tree;
-  if (!tree || !isRecord(tree.nodes) || !Array.isArray(tree.rootIds)) fail(`${name} has no design to show.`);
+  if (!tree || !isRecord(tree.nodes) || !isIdList(tree.rootIds)) fail(`${name} has no design to show.`);
   if (def.source !== undefined) fail(`${name} is a design with code as well, which no component has.`);
   for (const [id, n] of Object.entries(tree.nodes)) {
-    if (!SAFE_NODE_ID.test(id) || !isRecord(n) || n.id !== id) fail(`${name} has a damaged element ("${id.slice(0, 40)}").`);
-    for (const list of childLists(n as GraphNode))
-      for (const c of list.ids) if (typeof c !== 'string' || !Object.hasOwn(tree.nodes, c)) fail(`${name} has an element that lists a missing child.`);
-    if (n.kind === 'instance' && !inPackage.has(String(n.definitionId))) fail(`${name} places a component the package doesn't include.`);
+    if (!SAFE_NODE_ID.test(id) || !isRecord(n) || n.id !== id || !NODE_KINDS.has(n.kind as string)) damaged(`the element "${id.slice(0, 40)}" is not one the design can hold`);
+    if ((n.kind === 'element' || n.kind === 'repeat') && !isIdList(n.children)) damaged(`the element "${id}" has no list of children`);
+    if (n.kind === 'instance') {
+      if (!inPackage.has(String(n.definitionId))) fail(`${name} places a component the package doesn't include.`);
+      if (n.props !== undefined && !isRecord(n.props)) damaged(`the component placed as "${id}" has no settings`);
+      if (n.slots !== undefined && (!isRecord(n.slots) || !Object.values(n.slots).every(isIdList))) damaged(`the component placed as "${id}" has damaged slots`);
+    }
+    for (const list of childLists(n as GraphNode)) for (const c of list.ids) if (!Object.hasOwn(tree.nodes, c)) damaged(`the element "${id}" lists a missing child`);
   }
-  for (const r of tree.rootIds) if (typeof r !== 'string' || !Object.hasOwn(tree.nodes, r)) fail(`${name} has a damaged design.`);
+  for (const r of tree.rootIds) if (!Object.hasOwn(tree.nodes, r)) fail(`${name} has a damaged design.`);
 }
 
-/** Whether the project's theme has this packaged theme component exactly as it is, as installed here or to install. */
-function themeHas(state: ProjectState, def: ComponentDefinition): boolean {
-  if (def.owner !== 'theme') return false;
-  const local = own(state.components, def.id) ?? getTheme(state.site.themeId).components.find((c) => c.id === def.id);
-  return local?.owner === 'theme' && definitionHash(local) === definitionHash(def);
+/** The components a packaged definition renders or imports by ID. */
+const needsOf = (def: ComponentDefinition): string[] => [...(def.kind === 'managed' && def.tree ? directDependencies(def) : []), ...(def.dependencies ?? [])];
+
+/**
+ * The packaged theme components the project's theme has exactly as packaged (installed here or to install), and
+ * whose every component they render is one of those too: one rendering a component that would land as a copy of its
+ * own must land as a copy as well, or it would show this theme's version instead of the one it was packaged with.
+ */
+function reusedFromTheme(state: ProjectState, defs: readonly ComponentDefinition[]): Set<string> {
+  const theme = getTheme(state.site.themeId);
+  const reused = new Set(
+    defs
+      .filter((def) => {
+        if (def.owner !== 'theme') return false;
+        const local = own(state.components, def.id) ?? theme.components.find((c) => c.id === def.id);
+        return local?.owner === 'theme' && definitionHash(local) === definitionHash(def);
+      })
+      .map((d) => d.id)
+  );
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const def of defs) if (reused.has(def.id) && needsOf(def).some((d) => !reused.has(d))) changed = reused.delete(def.id);
+  }
+  return reused;
 }
 
 /** The code components an import would add to the project as its own: code the project does not already have. */
 export function importedCode(state: ProjectState, input: ComponentImport): ComponentDefinition[] {
-  return input.pkg.definitions.filter((d) => d.kind === 'code' && !themeHas(state, d));
+  const reused = reusedFromTheme(state, input.pkg.definitions);
+  return input.pkg.definitions.filter((d) => d.kind === 'code' && !reused.has(d.id));
+}
+
+/** A package style's value and stand-in in the form its kind takes: text for most kinds, metrics for a text style. */
+function tokenShapeOk(t: PackageToken): boolean {
+  const literal = (v: unknown) => (t.group === 'text' ? isRecord(v) && 'family' in v && TEXT_KEYS.every((k) => v[k] === undefined || typeof v[k] === 'string' || typeof v[k] === 'number' || (k === 'family' && isRecord(v[k]))) : typeof v === 'string');
+  const link = (v: unknown) => t.group !== 'text' && isRecord(v) && Object.keys(v).length === 1 && typeof v.token === 'string';
+  return t.id.startsWith(`${t.group}.`) && (literal(t.value) || link(t.value)) && literal(t.resolved);
 }
 
 /**
@@ -420,7 +515,8 @@ export function importedCode(state: ProjectState, input: ComponentImport): Compo
  * from the theme. Styles the theme here also has are used as they are here; the site's own styles are reused when this
  * project has the same one, and made otherwise (under a new name when the name is taken by a different style); a theme
  * style this project's theme lacks becomes a style of the site's own with the value it had. Every image points at the
- * library record the main process stored its bytes as. Returns the imported component's new ID.
+ * library record the main process stored its bytes as, which must still be in the library. Returns the imported
+ * component's new ID and every packaged definition's ID here.
  */
 export function importComponentPackage(state: ProjectState, input: ComponentImport, helpers: ImportHelpers): OpResult {
   const { pkg } = input;
@@ -428,13 +524,21 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
   const inPackage = new Set(defs.map((d) => d.id));
   for (const def of defs) checkShape(def, inPackage);
   // Identities: a theme component the theme here has unchanged is the theme's; every other one is a new component.
+  const reused = reusedFromTheme(state, defs);
   const ids = new Map<string, string>();
-  const files = new Map<string, string>();
+  const keys = new Map<string, string>();
+  const moved = new Map<string, string>();
+  const fileOf = new Map<string, string>();
   const takenIds = new Set(Object.keys(state.components));
   const takenFiles = new Set(Object.values(state.components).map((d) => defFile(d).toLowerCase()));
+  const packagedFiles = new Set<string>();
   const imported: ComponentDefinition[] = [];
   for (const def of defs) {
-    if (themeHas(state, def)) {
+    // Two components naming one file would land as one: the package can't say which an import of it means.
+    const was = defFile(def);
+    if (packagedFiles.has(was)) fail(`The package has two components saved as the same file ("${was.split('/').pop()}"), so it can't be imported.`);
+    packagedFiles.add(was);
+    if (reused.has(def.id)) {
       ids.set(def.id, def.id);
       continue;
     }
@@ -447,10 +551,18 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     takenIds.add(id);
     takenFiles.add(file.toLowerCase());
     ids.set(def.id, id);
-    files.set(defFile(def), file);
+    keys.set(defKey(def.id), defKey(id));
+    moved.set(was, file);
+    fileOf.set(def.id, file);
     imported.push(def);
   }
-  const installs = defs.filter((d) => ids.get(d.id) === d.id && !Object.hasOwn(state.components, d.id));
+  const installs = defs.filter((d) => reused.has(d.id) && !Object.hasOwn(state.components, d.id));
+  // Images: each is the library record the main process stored it as, still here as the picture packaged.
+  for (const img of pkg.images) {
+    const asset = own(input.images, img.id);
+    const rec = asset ? own(state.assets.assets, asset) : undefined;
+    if (!rec || rec.kind !== 'image' || rec.hash !== img.hash) fail(`The image ${quoted(img.name)} is no longer in this project's library as it was packaged. Import the component again.`);
+  }
   // Site styles, decided as they are first needed, so a style only another (already here) would have followed is not made.
   const tokens = new Map(pkg.tokens.map((t) => [t.id, t]));
   const here = new Map(effectiveTokens(state).map((t) => [t.id, t]));
@@ -458,6 +570,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
   const tokenIds = new Map<string, string>();
   const created: string[] = [];
   const visiting = new Set<string>();
+  const byVar = varIndex(pkg.tokens);
   // A name taken here, or kept for one of the package's own styles that is free here, is never given to another.
   const freeId = (base: string) => {
     let id = base;
@@ -475,12 +588,17 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     here.set(id, state.tokens.custom.find((c) => c.id === id)!);
     created.push(id);
   };
-  /** Point a value's links to other styles at what they became here. */
-  const relinked = (value: unknown, group: TokenGroup): unknown => {
+  /** A value with its links to other styles, and the style variables in its CSS, pointed at what they became here. */
+  const relinked = (value: unknown, group: TokenGroup, by: string): unknown => {
     const v = clone(value);
     const link = linkOf(v, group);
-    if (link) return { token: tokenFor(link, 'a site style') };
-    if (isRecord(v) && isRecord(v.family) && typeof v.family.token === 'string') v.family = { token: tokenFor(v.family.token, 'a text style') };
+    if (link) return { token: tokenFor(link, by) };
+    const vars = (css: string) => mapVars(css, byVar, (ref) => tokenFor(ref, by));
+    if (typeof v === 'string') return vars(v);
+    if (isRecord(v)) {
+      for (const [k, x] of Object.entries(v)) if (typeof x === 'string') v[k] = vars(x);
+      if (isRecord(v.family) && typeof v.family.token === 'string') v.family = { token: tokenFor(v.family.token, by) };
+    }
     return v;
   };
   const tokenFor = (id: string, by: string): string => {
@@ -492,22 +610,28 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
       if (here.has(id)) return id;
       fail(`${quoted(by)} uses the site style "${id}", which neither the package nor this project has.`);
     }
+    if (!tokenShapeOk(t!)) fail(`The site style ${quoted(t!.label)} in the package is damaged.`);
     if (visiting.has(id)) fail(`The site style ${quoted(t!.label)} follows itself in a loop.`);
     visiting.add(id);
     const existing = here.get(id);
     let to: string;
     if (!t!.custom) {
       // The theme's own style: this site's version of it, or a look-alike of the site's own when its theme lacks it
-      // (the same look-alike an earlier import made, when it still looks the same).
-      const base = `${t!.group}.custom-${slugify(t!.label) || 'style'}`;
+      // (the same look-alike an earlier import made, under whichever name it took, when it still looks the same).
       if (existing && existing.group === t!.group) to = id;
-      else if (same(here.get(base), t!.group, t!.resolved)) to = base;
       else {
-        to = freeId(base);
-        make(t!, to, clone(t!.resolved));
+        const base = `${t!.group}.custom-${slugify(t!.label) || 'style'}`;
+        const value = relinked(t!.resolved, t!.group, t!.label);
+        let match: string | undefined;
+        for (let i = 1, at = base; here.has(at); at = `${base}-${++i}`) if (same(here.get(at), t!.group, value)) match = at;
+        if (match) to = match;
+        else {
+          to = freeId(base);
+          make(t!, to, value);
+        }
       }
     } else {
-      const value = relinked(t!.value, t!.group);
+      const value = relinked(t!.value, t!.group, t!.label);
       if (same(existing, t!.group, value)) to = id;
       else {
         // Free here: it keeps its name, which was kept for it. Taken by a different style: the next free name.
@@ -519,7 +643,6 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     tokenIds.set(id, to);
     return to;
   };
-  const byVar = new Map(pkg.tokens.map((t) => [tokenVar(t.id), t.id]));
   // Each definition as it lands: its identity, the components it uses, its styles and its images.
   const landed: ComponentDefinition[] = [];
   for (const def of imported) {
@@ -529,18 +652,17 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     mapAssetRefs(def, (asset) => own(input.images, asset) ?? fail(`${quoted(def.name)} shows an image the package doesn't include.`));
     for (const n of Object.values(def.tree?.nodes ?? {})) if (n.kind === 'instance') n.definitionId = ids.get(n.definitionId)!;
     if (def.kind === 'code') {
-      const file = files.get(defFile(def))!;
-      def.source = relinkImports(def.source ?? '', defFile(def), file, files);
+      const file = fileOf.get(def.id)!;
+      def.source = relinkSource(def.source ?? '', defFile(def), file, moved, keys);
       def.sourcePath = file;
       if (def.dependencies?.length) def.dependencies = [...new Set(def.dependencies.map((d) => ids.get(d)!))].sort();
     } else delete def.sourcePath;
+    // Where it was copied from is another project's history: it names nothing here.
     const prov = def.provenance ?? {};
-    const forkedFrom = prov.forkedFrom && ids.has(prov.forkedFrom) ? ids.get(prov.forkedFrom) : undefined;
     def.provenance = {
       ...(prov.pack ? { pack: prov.pack } : {}),
       ...(prov.packVersion ? { packVersion: prov.packVersion } : {}),
       ...(prov.componentId ? { componentId: prov.componentId } : {}),
-      ...(forkedFrom ? { forkedFrom } : {}),
       createdBy: prov.createdBy === 'ai' ? 'ai' : 'user'
     };
     def.id = id;
