@@ -8,7 +8,7 @@ import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { anchorCapable, anchorsInUse, displayName } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
-import { isDraftPage, liveRedirects, resolveLink, takesParagraphs } from './index';
+import { codeTakesBlocks, isDraftPage, liveRedirects, resolveLink } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
@@ -526,7 +526,6 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
     code: (def, props, reportId, placement, n, scope, inDef) => {
       const which = shippedCode(state, def);
       const shows = which ? shippedCodeShows(state, which, props) : undefined;
-      const rich = !takesParagraphs(def);
       // The placement's own field each property is: directly, or through the binding a design hands it.
       const fieldOf = (key: string): PlacementField | undefined => (inDef ? placementField(n.props[key], scope) : { prop: key });
       // A form's fields handed in by a design are edited on that design's list, where their submission keys are not kept.
@@ -541,7 +540,7 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
           ...(source ? { source: { kind: 'prop', ...source } } : { at }),
           ...(custom ? { custom: true } : {}),
           ...(inDef ? { direct: false } : {}),
-          ...(schema.type === 'richtext' ? { rich: true, richLinks: rich } : {})
+          ...(schema.type === 'richtext' ? { rich: true, richLinks: codeTakesBlocks(schema) } : {})
         });
       const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined, at: string, custom: boolean) => {
         const schema = schemas[key];
@@ -716,16 +715,15 @@ export const labelKeyFor = (key: string) => (key.endsWith('Link') ? `${key.slice
 
 /**
  * Links a code component receives: its link properties, the link fields of its lists, and the links in its rich
- * text (unless it reads rich text as plain paragraphs). Whether its markup shows each one is up to its code; a
+ * text it takes as blocks (see `codeForm`). Whether its markup shows each one is up to its code; a
  * link paired with a label property is taken to show only when the label does, as the shipped header does. The
  * shipped header (`which`) shows its notice's link only beside the notice's words, which a label alone does not show.
  */
 function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, out: RenderedLink[], which?: string) {
-  const rich = !takesParagraphs(def);
   const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, fallback: string, at: string) => {
     const v = values[key];
     const schema = schemas[key];
-    if (schema?.type === 'richtext' && rich) richLinks(v).forEach((sp, i) => out.push({ link: sp.link!, label: sp.text.trim(), reportId, key: `${at}:${i}`, inText: true }));
+    if (codeTakesBlocks(schema)) richLinks(v).forEach((sp, i) => out.push({ link: sp.link!, label: sp.text.trim(), reportId, key: `${at}:${i}`, inText: true }));
     if (schema?.type !== 'link' || !isLinkValue(v)) return;
     const labelKey = labelKeyFor(key);
     const paired = schemas[labelKey]?.type === 'string';

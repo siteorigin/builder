@@ -2,7 +2,7 @@
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
 import type { Binding, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, RICH_CODE_FORMS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { ARTICLE_ROW_FIELDS } from '@shared/articles';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
@@ -111,6 +111,10 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       if (r.plainAs !== undefined) {
         if (typeof r.plainAs !== 'string' || !['ul', 'ol', 'check'].includes(r.plainAs)) fail(`${label}: plainAs must be ul, ol or check.`);
         out.plainAs = r.plainAs;
+      }
+      if (r.codeForm !== undefined) {
+        if (typeof r.codeForm !== 'string' || !(RICH_CODE_FORMS as readonly string[]).includes(r.codeForm)) fail(`${label}: codeForm must be ${RICH_CODE_FORMS.join(' or ')}.`);
+        out.codeForm = r.codeForm;
       }
       out.default = [];
       break;
@@ -364,7 +368,12 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
     }
   }
   // Older fields are type-checked where they are bound; documents saved before these checks keep loading as they did.
-  const fresh = ['tag', 'variant', 'iconPosition', 'ariaLabel', 'action', 'datetime'].includes(field) || (field === 'link' && node.kind === 'element') || (field === 'icon' && node.kind === 'link');
+  // Rich text has only ever been bindable to rich text properties, so only a hand-edited document shows anything else.
+  const fresh =
+    ['tag', 'variant', 'iconPosition', 'ariaLabel', 'action', 'datetime'].includes(field) ||
+    (field === 'link' && node.kind === 'element') ||
+    (field === 'icon' && node.kind === 'link') ||
+    (field === 'text' && node.kind === 'text' && !!node.rich);
   const ok = acceptedTypes(node, field, undefined);
   if (!fresh || !ok) return null;
   if (!ok.includes(schema.type)) return `shows a ${schema.type} property as its ${field}, which needs a ${ok.join(' or ')} property.`;

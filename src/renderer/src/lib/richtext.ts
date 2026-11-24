@@ -6,8 +6,8 @@
  * RichDomNode), and this module turns it back into blocks. Marks are independent, so text can be bold and italic
  * at once, and an asterisk is just a character. Links are read back by destination, so a page link keeps its ID.
  */
-import type { RichBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
-import { cleanBlocks, linkFromTarget, mergeLists, type RichPages } from '@shared/richtext';
+import type { GraphNode, RichBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
+import { asParagraphList, cleanBlocks, isListBlock, linkFromTarget, mergeLists, sameRichText, toRichText, type RichPages } from '@shared/richtext';
 
 /** A text node, or an element by tag name with its children. `b` and `i` carry an inline style's bold or
  *  italic (true) or its explicit removal (false), as the browser's own commands can leave them. `check` marks a
@@ -100,4 +100,35 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks:
   for (const n of nodes) walk(n, {});
   flush();
   return { blocks: mergeLists(cleanBlocks(blocks)), droppedLinks };
+}
+
+/**
+ * What an inline edit of rich text stores. A node that lists paragraphs it shares with places showing them as
+ * paragraphs (`paragraphList`) is edited as that list; when the text held paragraphs, each item goes back to what it
+ * was (a paragraph, or an item of its list), so neither those places nor an edit that changes nothing see a
+ * different kind of block. An item is found by its words, in order; a changed one takes the kind of the item in its
+ * place while the edit keeps the number of items, and is a paragraph otherwise.
+ */
+export function storedEdit(node: GraphNode | undefined, current: unknown, next: string | RichText): string | RichText {
+  const kind = node?.kind === 'text' && node.rich ? node.paragraphList : undefined;
+  if (!kind || !Array.isArray(next)) return next;
+  const shown = toRichText(current);
+  // Shown as written: what was edited is what is stored.
+  if (sameRichText(asParagraphList(shown, kind), shown)) return next;
+  if (!next.length || !next.every((b) => b.type === kind && isListBlock(b))) return next;
+  const items = next.flatMap((b) => (b as RichListBlock).items);
+  const before = shown.flatMap((b) => (isListBlock(b) ? b.items.map((spans) => ({ spans, item: true })) : [{ spans: b.spans, item: false }]));
+  const same = (a: RichSpan[], b: RichSpan[]) => JSON.stringify(a) === JSON.stringify(b);
+  let at = 0;
+  const out: RichBlock[] = [];
+  items.forEach((spans, i) => {
+    const found = before.findIndex((b, j) => j >= at && same(b.spans, spans));
+    if (found >= 0) at = found + 1;
+    const item = found >= 0 ? before[found].item : before.length === items.length && before[i].item;
+    const last = out[out.length - 1];
+    if (!item) out.push({ type: 'p', spans });
+    else if (last && last.type === kind && isListBlock(last)) last.items.push(spans);
+    else out.push({ type: kind, items: [spans] });
+  });
+  return out;
 }

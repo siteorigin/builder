@@ -10,8 +10,9 @@ import { applyOperations } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction } from '../store';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
+import { storedEdit } from './richtext';
 import { showAsset } from './place';
-import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownValue, treeFor } from './model';
+import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
@@ -521,7 +522,10 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   const r = resolveRef(snapshot.state, ref);
   const target = inlineField(r.node as GraphNode | undefined);
   if (!target) return;
-  if (sameValue(shownValue(snapshot.state, ref, target.value), text)) return;
+  // A repeated item without the field shows the field's default, which is what the edit started from.
+  const current = shownOrDefault(snapshot.state, ref, target.value);
+  text = storedEdit(r.node as GraphNode | undefined, current, text);
+  if (sameValue(current, text)) return;
   // A news card or article header shows a page's settings: typing over it would change nothing, so it goes back.
   if (computedAt(snapshot.state, ref, target.value)) {
     toast('This comes from the article’s page settings. Change its title, date, byline or excerpt there.', 'info');

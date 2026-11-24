@@ -290,7 +290,8 @@ export const RICHTEXT_SVELTE = `<script>
 	/**
 	 * Renders structured rich text as plain semantic HTML: paragraphs, headings, quotes and lists of text spans.
 	 * Text is always escaped; HTML is never interpreted. \`paragraphs\` and \`list\` are the older form, which code
-	 * components written against it still pass: strings with inline **strong** and *emphasis*.
+	 * components written against it still pass: strings with inline **strong** and *emphasis*. With \`list\` the root
+	 * is the list itself, as it always was, so their selectors (\`.x > li\`) keep matching.
 	 */
 	import SoLink from './Link.svelte';
 	let { value = undefined, paragraphs = undefined, list = '', class: className = '', ...rest } = $props();
@@ -310,40 +311,55 @@ export const RICHTEXT_SVELTE = `<script>
 		if (last < text.length) out.push({ text: text.slice(last) });
 		return out;
 	}
-	function toBlocks(input, kind) {
+	const entries = (input) => (Array.isArray(input) ? input : input == null ? [] : [String(input)]);
+	function toBlocks(input) {
+		return entries(input).map((entry) => (typeof entry === 'string' ? { type: 'p', spans: segments(entry) } : entry));
+	}
+	/**
+	 * The older list form's items: one per paragraph, and the items of a list of the same kind. Null when the text
+	 * holds anything else (a heading, a quote, another kind of list), which then shows as written.
+	 */
+	function toItems(input, kind) {
 		const out = [];
-		for (const entry of Array.isArray(input) ? input : input == null ? [] : [String(input)]) {
-			if (typeof entry !== 'string') out.push(entry);
-			else if (!kind) out.push({ type: 'p', spans: segments(entry) });
-			else if (out.at(-1)?.type === kind) out.at(-1).items.push(segments(entry));
-			else out.push({ type: kind, items: [segments(entry)] });
+		for (const entry of entries(input)) {
+			if (typeof entry === 'string') out.push(segments(entry));
+			else if (entry?.type === 'p' && Array.isArray(entry.spans)) out.push(entry.spans);
+			else if (entry?.type === kind && Array.isArray(entry.items)) out.push(...entry.items);
+			else return null;
 		}
 		return out;
 	}
-	const blocks = $derived(toBlocks(value ?? paragraphs, list === 'check' ? 'check' : list ? 'ul' : ''));
+	const items = $derived(list ? toItems(value ?? paragraphs, list === 'check' ? 'check' : 'ul') : null);
+	const blocks = $derived(items ? [] : toBlocks(value ?? paragraphs));
 	const LIST_CLASS = { ul: 'so-rich--bullet', check: 'so-rich--check', ol: 'so-rich--number' };
 </script>
 
 {#snippet marked(s)}{#if s.strong && s.em}<strong><em>{s.text}</em></strong>{:else if s.strong}<strong>{s.text}</strong>{:else if s.em}<em>{s.text}</em>{:else}{s.text}{/if}{/snippet}
 {#snippet inline(spans)}{#each spans as s, i (i)}{#if s.link}<SoLink link={s.link} appearance="link">{@render marked(s)}</SoLink>{:else}{@render marked(s)}{/if}{/each}{/snippet}
 
-<div class={['so-rich', className]} {...rest}>
-	{#each blocks as block, i (i)}
-		{#if block.type === 'ol'}
-			<ol class={LIST_CLASS.ol}>{#each block.items as item, j (j)}<li>{@render inline(item)}</li>{/each}</ol>
-		{:else if block.items}
-			<ul class={LIST_CLASS[block.type]}>{#each block.items as item, j (j)}<li>{@render inline(item)}</li>{/each}</ul>
-		{:else if block.type === 'h3'}
-			<h3>{@render inline(block.spans)}</h3>
-		{:else if block.type === 'h4'}
-			<h4>{@render inline(block.spans)}</h4>
-		{:else if block.type === 'blockquote'}
-			<blockquote>{@render inline(block.spans)}</blockquote>
-		{:else}
-			<p>{@render inline(block.spans)}</p>
-		{/if}
-	{/each}
-</div>
+{#if items}
+	<ul class={['so-rich', 'so-rich--' + list, className]} {...rest}>
+		{#each items as item, i (i)}<li>{@render inline(item)}</li>{/each}
+	</ul>
+{:else}
+	<div class={['so-rich', className]} {...rest}>
+		{#each blocks as block, i (i)}
+			{#if block.type === 'ol'}
+				<ol class={LIST_CLASS.ol}>{#each block.items as item, j (j)}<li>{@render inline(item)}</li>{/each}</ol>
+			{:else if block.items}
+				<ul class={LIST_CLASS[block.type]}>{#each block.items as item, j (j)}<li>{@render inline(item)}</li>{/each}</ul>
+			{:else if block.type === 'h3'}
+				<h3>{@render inline(block.spans)}</h3>
+			{:else if block.type === 'h4'}
+				<h4>{@render inline(block.spans)}</h4>
+			{:else if block.type === 'blockquote'}
+				<blockquote>{@render inline(block.spans)}</blockquote>
+			{:else}
+				<p>{@render inline(block.spans)}</p>
+			{/if}
+		{/each}
+	</div>
+{/if}
 `;
 
 export function iconSvelte(): string {
@@ -461,12 +477,34 @@ export function thumbnail(image) {
 }
 
 /** Rich text blocks as paragraph strings, for code components written against that older form. */
-export function richParagraphs(value) {
+/**
+ * Rich text shown as one list of \`kind\`, for a design that lists a value it shares with places showing it as
+ * paragraphs: paragraphs and items of that kind of list become its items. Anything else shows as written.
+ */
+export function richList(value, kind) {
+	if (!Array.isArray(value)) return value;
+	const items = [];
+	for (const b of value) {
+		if (b && b.type === 'p' && Array.isArray(b.spans)) items.push(b.spans);
+		else if (b && b.type === kind && Array.isArray(b.items)) items.push(...b.items);
+		else return value;
+	}
+	return items.length ? [{ type: kind, items }] : value;
+}
+
+/**
+ * Rich text for code that reads paragraph strings: one string per paragraph or list item, with **bold** and *italic*.
+ * Given \`fields\`, the value is a list and only those fields of its items are converted; without them, every field
+ * of a list's items is, as code generated before rich text forms were declared expects.
+ */
+export function richParagraphs(value, fields) {
 	if (!Array.isArray(value)) return value;
 	const isBlock = (b) => !!b && typeof b === 'object' && (Array.isArray(b.spans) || Array.isArray(b.items));
 	const line = (spans) => spans.map((s) => (s.strong ? '**' + s.text + '**' : s.em ? '*' + s.text + '*' : s.text)).join('');
+	const item = (it) => !!it && typeof it === 'object' && !Array.isArray(it);
+	if (Array.isArray(fields)) return value.map((it) => (item(it) ? { ...it, ...Object.fromEntries(fields.filter((f) => Object.hasOwn(it, f)).map((f) => [f, richParagraphs(it[f])])) } : it));
 	if (value.length && value.every(isBlock)) return value.flatMap((b) => (b.items ? b.items.map(line) : [line(b.spans)]));
-	return value.map((it) => (it && typeof it === 'object' && !Array.isArray(it) ? Object.fromEntries(Object.entries(it).map(([k, v]) => [k, richParagraphs(v)])) : it));
+	return value.map((it) => (item(it) ? Object.fromEntries(Object.entries(it).map(([k, v]) => [k, richParagraphs(v)])) : it));
 }
 `;
 

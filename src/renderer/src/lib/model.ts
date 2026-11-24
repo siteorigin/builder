@@ -455,6 +455,24 @@ export function shownValue(state: ProjectState, ref: ElementRef, bound: unknown)
   return (schema?.type === 'list' ? effectiveItem(state, schema, item as Record<string, unknown>) : (item as Record<string, unknown>))[bound.$item];
 }
 
+/**
+ * A field as the page shows it (`shownValue`), and for a repeated item stored without that field, the field's
+ * default, as the site shows it. Undefined when it can't be told.
+ */
+export function shownOrDefault(state: ProjectState, ref: ElementRef, bound: unknown): unknown {
+  const v = shownValue(state, ref, bound);
+  if (v !== undefined || !isBinding(bound) || !('$item' in bound)) return v;
+  const r = resolveRef(state, ref);
+  const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
+  const schema = list ? r.def!.properties[list] : undefined;
+  if (schema?.type !== 'list') return undefined;
+  const props = (r.instance?.props ?? {}) as Record<string, unknown>;
+  const items = Object.hasOwn(props, list!) ? props[list!] : schema.default;
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  const item = Array.isArray(items) ? (items.find((it) => (it as { id?: unknown } | null)?.id === itemId) as Record<string, unknown> | undefined) : undefined;
+  return item && !Object.hasOwn(item, bound.$item) ? (schema.fields[bound.$item] as { default?: unknown } | undefined)?.default : undefined;
+}
+
 /** A component's own reference as the page shows it, through one placement. */
 export function throughPlacement(ref: ElementRef, placement: ElementRef): ElementRef {
   return { ...ref, owner: placement.owner, instancePath: [...placement.instancePath, placement.nodeId, ...ref.instancePath] };

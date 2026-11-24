@@ -271,9 +271,17 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
           </>
         )}
         {type === 'richtext' && (
-          <Field label="Default" hint="One paragraph per line.">
-            <DraftInput multiline rows={2} value={richDefault(s)} onCommit={(v) => set({ default: v as never })} ariaLabel={named('default')} />
-          </Field>
+          <>
+            <Field label="Default" hint="One paragraph per line.">
+              <DraftInput multiline rows={2} value={richDefault(s)} onCommit={(v) => set({ default: v as never })} ariaLabel={named('default')} />
+            </Field>
+            <Field label="Your code receives" controlId={`${uid}-form`} hint="Blocks keep links, lists and headings: render them with RichText.svelte. Paragraph text is one string per paragraph, with **bold** and *italic*.">
+              <select id={`${uid}-form`} className="select sm" value={s.codeForm === 'blocks' ? 'blocks' : 'paragraphs'} onChange={(e) => set({ codeForm: e.target.value === 'blocks' ? 'blocks' : undefined })}>
+                <option value="paragraphs">Paragraph text</option>
+                <option value="blocks">Blocks</option>
+              </select>
+            </Field>
+          </>
         )}
         {type === 'number' && (
           <div className="schema-grid-3">
@@ -343,7 +351,7 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
                 <DraftInput className="input sm" value={shown('max', s.max === undefined ? '' : String(s.max))} onCommit={commitCount('max', 'Most items')} ariaLabel={named('most items')} />
               </Field>
             </div>
-            <Field label="Item fields" hint={'JSON: { "title": { "type": "string", "label": "Title" } }'} error={drafts.fields?.message}>
+            <Field label="Item fields" hint={'JSON: { "title": { "type": "string", "label": "Title" } }. A richtext field with "codeForm": "blocks" reaches your code as blocks.'} error={drafts.fields?.message}>
               <DraftInput
                 multiline
                 rows={4}

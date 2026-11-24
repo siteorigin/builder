@@ -50,7 +50,7 @@ import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, ope
 import { StyleControls } from './StyleControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
-import { assetUrl, definitionView, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
+import { assetUrl, definitionView, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, structuralTarget } from '../lib/actions';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
@@ -167,23 +167,8 @@ const styleKey = (property: string, key: string) => (property === 'objectPositio
 /** Where the preview serves pictures from, once it is running. */
 const useDevUrl = () => useStore((s) => (s.runtime.state === 'ready' ? s.runtime.url : null));
 
-/**
- * An image as the page shows it (`shownValue`), and for a repeated item stored without that field, the field's
- * default, as the site shows it. Undefined when it can't be told.
- */
-function shownImage(state: ProjectState, ref: ElementRef, bound: unknown): unknown {
-  const v = shownValue(state, ref, bound);
-  if (v !== undefined || !isBinding(bound) || !('$item' in bound)) return v;
-  const r = resolveRef(state, ref);
-  const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
-  const schema = list ? r.def!.properties[list] : undefined;
-  if (schema?.type !== 'list') return undefined;
-  const props = (r.instance?.props ?? {}) as Record<string, unknown>;
-  const items = Object.hasOwn(props, list!) ? props[list!] : schema.default;
-  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
-  const item = Array.isArray(items) ? (items.find((it) => (it as { id?: unknown } | null)?.id === itemId) as Record<string, unknown> | undefined) : undefined;
-  return item && !Object.hasOwn(item, bound.$item) ? (schema.fields[bound.$item] as { default?: unknown } | undefined)?.default : undefined;
-}
+/** An image as the page shows it, a repeated item's field default included (`shownOrDefault`). */
+const shownImage = shownOrDefault;
 
 /**
  * The picture an image shows, for choosing its focal point, with the style rules under its own. `value` is the

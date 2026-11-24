@@ -1,5 +1,5 @@
 import { isArticleDate, pageArticle } from '@shared/articles';
-import type { GraphNode, ImageValue, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { GraphNode, ImageValue, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { validateRoute } from '@shared/routes';
@@ -139,6 +139,27 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       for (const cl of childLists(n)) cl.ids.forEach((c) => check(c, inRepeat || n.kind === 'repeat'));
     };
     tree.rootIds.forEach((r) => check(r, false));
+  }
+  // A default shows in every placement that keeps it, and its page links are counted and moved like any other link,
+  // so one whose page or document is gone is broken there too.
+  for (const def of Object.values(state.components)) {
+    const owner = { kind: 'component', id: def.id };
+    // A list's own default items, and the default each new item's fields start with, read by their schema: only
+    // what a link property or rich text holds is a link.
+    const defaults = Object.entries(def.properties ?? {}).flatMap(([name, schema]) => [
+      { label: schema?.label || name, links: linksOf(schema, schema?.default) },
+      ...(schema?.type === 'list' ? Object.entries(schema.fields ?? {}).map(([f, field]) => ({ label: `${schema.label || name} › ${field?.label || f}`, links: linksOf(field, field?.default) })) : [])
+    ]);
+    for (const { label, links } of defaults) {
+      const broken = new Set<'page' | 'document'>();
+      for (const l of links) {
+        if (l.type === 'page' && !Object.hasOwn(state.pages, l.target)) broken.add('page');
+        if (l.type === 'document' && (Object.hasOwn(state.assets.assets, l.target) ? state.assets.assets[l.target] : undefined)?.kind !== 'document') broken.add('document');
+      }
+      const what = `${def.name}: the default “${label}” links to`;
+      if (broken.has('page')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a page that no longer exists.`, owner });
+      if (broken.has('document')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a document that is no longer in Assets. Choose another destination for it.`, owner });
+    }
   }
 
   for (const { owner, tree, label } of allTrees(state)) {
@@ -439,4 +460,24 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     }
   }
   return out;
+}
+
+/** The links a property value holds, read as its schema stores them: a link, rich text's spans, and list item fields. */
+function linksOf(schema: PropSchema | undefined, v: unknown): Array<{ type: unknown; target: string }> {
+  if (!schema || !v || typeof v !== 'object' || isBinding(v)) return [];
+  const link = (l: unknown) => (l && typeof l === 'object' && typeof (l as { target?: unknown }).target === 'string' ? [l as { type: unknown; target: string }] : []);
+  switch (schema.type) {
+    case 'link':
+      return link(v);
+    case 'richtext':
+      return (Array.isArray(v) ? v : []).flatMap((b) => {
+        const block = (b && typeof b === 'object' ? b : {}) as { spans?: unknown; items?: unknown };
+        const spans = [...(Array.isArray(block.spans) ? block.spans : []), ...(Array.isArray(block.items) ? block.items.flatMap((it) => (Array.isArray(it) ? it : [])) : [])];
+        return spans.flatMap((sp) => link((sp as { link?: unknown } | null)?.link));
+      });
+    case 'list':
+      return (Array.isArray(v) ? v : []).flatMap((it) => (it && typeof it === 'object' ? Object.entries(schema.fields ?? {}).flatMap(([f, fs]) => linksOf(fs, (it as Record<string, unknown>)[f])) : []));
+    default:
+      return [];
+  }
 }

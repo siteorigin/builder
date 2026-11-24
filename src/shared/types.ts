@@ -101,7 +101,15 @@ export interface RichTextProp extends PropBase {
   default: RichText;
   /** Plain lines given to this property become items of this kind of list. */
   plainAs?: RichListType;
+  /**
+   * How a code component receives the value. `blocks`: the structured blocks, for its RichText.svelte to render
+   * with links, lists and headings. Otherwise, as code components always have: one string per paragraph or list
+   * item, with **bold** and *italic*. Managed components always take blocks.
+   */
+  codeForm?: RichCodeForm;
 }
+export type RichCodeForm = 'blocks' | 'paragraphs';
+export const RICH_CODE_FORMS: readonly RichCodeForm[] = ['blocks', 'paragraphs'];
 export interface NumberProp extends PropBase {
   type: 'number';
   default: number;
@@ -275,6 +283,12 @@ export interface TextNode extends NodeBase {
    * this as its machine-readable `datetime`, while it is set.
    */
   datetime?: Bindable<string>;
+  /**
+   * Rich text only: shows paragraphs, and the items of this kind of list, as one list of this kind, as rich text
+   * marked as a list showed them before structured rich text. Text holding anything else shows as written. Set by
+   * the migration where one property's value is shown both as a list and as paragraphs.
+   */
+  paragraphList?: Extract<RichListType, 'ul' | 'check'>;
 }
 export interface ImageNode extends NodeBase {
   kind: 'image';
