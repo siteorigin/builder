@@ -292,6 +292,14 @@ describe('the stdio host', () => {
     expect(lines).toEqual([]);
   });
 
+  it('a close that ran ends the host even when it failed', async () => {
+    const fake = fakeSession((frame) => ({ ...reply(frame), ok: false as const, error: { code: 'OP_FAILED' as const, message: 'rm failed', retryable: false } }) as Reply);
+    const input = new PassThrough();
+    const ended = new Promise<string>((resolve) => serve({ session: fake.session, input, write: (_line, done) => done(), onEnd: (reason) => resolve(reason) }));
+    input.write('{"v":1,"id":"a","op":"session.close"}\n');
+    expect(await ended).toBe('closed');
+  });
+
   it('a close refused for a bad frame leaves the session running', async () => {
     const s = new Session({ appRoot });
     const input = new PassThrough();

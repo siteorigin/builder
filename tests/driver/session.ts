@@ -228,10 +228,20 @@ const PLAYWRIGHT_LAUNCH_FAILED = 'Process failed to launch!';
  * otherwise thrown, as Node does with an unhandled rejection by default.
  */
 let launchesSettling = 0;
+/** How this process was told to treat unhandled rejections (`--unhandled-rejections`); Node's default is `throw`. */
+function rejectionMode(): string {
+  const flags = [...process.execArgv, ...(process.env.NODE_OPTIONS ?? '').split(/\s+/)];
+  return flags.map((f) => /^--unhandled-rejections=(\S+)$/.exec(f)?.[1]).filter((m): m is string => !!m).pop() ?? 'throw';
+}
 function onUnhandledRejection(reason: unknown) {
   if (reason instanceof Error && reason.message === PLAYWRIGHT_LAUNCH_FAILED) return;
   if (process.listenerCount('unhandledRejection') > 1) return;
-  throw reason;
+  // Having a listener turns Node's own handling off, so it is done here as the process was told to.
+  const mode = rejectionMode();
+  if (mode === 'throw' || mode === 'strict') throw reason;
+  if (mode === 'none') return;
+  process.emitWarning(`Unhandled promise rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`);
+  if (mode === 'warn-with-error-code') process.exitCode = 1;
 }
 function tolerateStrayLaunchFailures(): () => void {
   if (launchesSettling++ === 0) process.on('unhandledRejection', onUnhandledRejection);
@@ -768,7 +778,8 @@ export class Session {
         e instanceof DriverError
           ? e
           : new DriverError('LAUNCH_FAILED', `The app did not start (at ${phase}): ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`, { details: { phase } });
-      if (!interrupted && this.args.keepArtifacts !== 'never') await this.writeEvidence(err).catch(() => undefined);
+      // Bounded: the app is still running until the close below, and Playwright's own deadline is not far off.
+      if (!interrupted && this.args.keepArtifacts !== 'never') await bounded(this.writeEvidence(err).catch(() => undefined), 3000, undefined);
       const closed = await this.close({ failed: !interrupted }).catch((c: unknown) => c);
       // A failure that names its own phase knows better than the last phase reached.
       const details: Record<string, unknown> = { ...err.details, phase: err.details?.phase ?? phase, sessionState: 'closed' };
@@ -817,7 +828,7 @@ export class Session {
       args: [`--user-data-dir=${this.paths.profile}`],
       // Playwright's own deadline comes after the session's, which kills the app first: Playwright's leaves waits
       // that reject with no one listening.
-      timeoutMs: left() + 10_000,
+      timeoutMs: left() + 30_000,
       artifactsDir: join(this.paths.root, 'playwright'),
       onSpawn: (child) => {
         this.proc = child;
@@ -1021,10 +1032,11 @@ export class Session {
     if (this.keeping && this.bound && !this.bound.closed && !this.appExited)
       await this.bound.page.screenshot({ path: join(this.paths!.artifacts, 'final.png'), timeout: 5000 }).catch(() => undefined);
     let ended: CloseResult['ended'] = !wasStarted || !this.pid ? 'not-started' : this.appExited ? 'already-exited' : 'quit';
-    // Whatever the session cannot account for (a process table it could not read, a start that would not settle)
-    // keeps the run folder in place rather than delete it under something still running.
+    // Whatever the session cannot account for once it is done (a process table it could not read, a start that would
+    // not settle, a process that would not end) keeps the run folder in place rather than delete it under something
+    // still running.
     const problems: string[] = [];
-    await this.ownedNow().catch((e: unknown) => problems.push(`the process table could not be read (${String(e)})`));
+    await this.ownedNow().catch(() => undefined);
     if (this.app && !this.appExited) {
       const quit = await bounded(
         this.app.close().then(
@@ -1037,22 +1049,25 @@ export class Session {
       if (!quit) ended = 'killed';
     } else if (this.appRunning()) ended = 'killed';
     // Even an app that quit can leave a child behind (an npm install whose parent is gone): sweep what it owned.
-    const sweep = async () => {
+    const sweep = async (final: boolean) => {
       if (!this.pid) return [];
       try {
         const report = await killTree(this.pid, { known: [...this.seen.values()] });
         for (const e of report.owned) this.seen.set(e.pid, e);
         return report.survivors;
       } catch (e) {
-        problems.push(`the process table could not be read (${String(e)})`);
+        // Without a process table, the app itself is still known to be this process's child while Node has not seen
+        // it exit: end it and its group, which takes what it started with it.
+        this.killAppDirectly();
+        if (final) problems.push(`the process table could not be read (${String(e)})`);
         return [];
       }
     };
-    await sweep();
+    await sweep(false);
     // A launch or start still in flight settles once its process is gone; anything it spawned meanwhile is swept.
     const settled = await bounded(Promise.all([this.launching, this.starting]).then(() => true), SETTLE_MS, false);
     if (!settled) problems.push(`the start did not settle within ${SETTLE_MS / 1000}s`);
-    const survivors = await sweep();
+    const survivors = await sweep(true);
     if (survivors.length) problems.push(`processes ${survivors.map((e) => e.pid).join(', ')} did not end`);
     const processes = [...this.seen.keys()];
     await this.mock?.stop().catch(() => undefined);
@@ -1063,8 +1078,26 @@ export class Session {
         details: { problems, survivors: survivors.map((e) => e.pid), processes, root: this.paths?.root ?? null }
       });
     }
-    const { removed, artifacts } = await this.removeOwned(this.keeping);
-    return { artifacts, removed, processes, ended };
+    try {
+      const { removed, artifacts } = await this.removeOwned(this.keeping);
+      return { artifacts, removed, processes, ended };
+    } catch (e) {
+      if (e instanceof DriverError) throw e;
+      throw new DriverError('CLEANUP_FAILED', `The run folder ${this.paths?.root} could not be removed: ${e instanceof Error ? e.message : String(e)}`, { details: { processes, root: this.paths?.root ?? null } });
+    }
+  }
+
+  /** End the app's main process and its group without a process table: only while Node holds it as an unexited child. */
+  private killAppDirectly() {
+    if (!this.appRunning() || !this.pid) return;
+    if (process.platform !== 'win32') {
+      try {
+        process.kill(-this.pid, 'SIGKILL');
+      } catch {
+        // No such group.
+      }
+    }
+    this.proc?.kill('SIGKILL');
   }
 
   /** Remove what the session made, after checking each folder still carries its mark; keep the artifacts if asked. */
@@ -1122,6 +1155,7 @@ export class Session {
       } catch {
         // Nothing more can be done on the way out.
       }
+      this.killAppDirectly();
     }
     const ours = (dir: string) => {
       try {

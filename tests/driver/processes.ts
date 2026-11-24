@@ -95,12 +95,14 @@ function rootIsOurs(table: ProcessEntry[], root: number, known: ProcessEntry[]):
  */
 export function ownedEntries(table: ProcessEntry[], root: number, known: ProcessEntry[] = []): ProcessEntry[] {
   const pids = new Set(rootIsOurs(table, root, known) ? ownedProcesses(table, root) : []);
-  const out = table.filter((p) => pids.has(p.pid));
+  // A remembered process that is still the same one is owned, and so is whatever it has started since.
   for (const k of known) {
     const now = table.find((p) => p.pid === k.pid);
-    if (now && k.started && now.started === k.started && !out.includes(now)) out.push(now);
+    if (!now || !k.started || now.started !== k.started) continue;
+    pids.add(now.pid);
+    for (const d of descendants(table, now.pid)) pids.add(d);
   }
-  return out;
+  return table.filter((p) => pids.has(p.pid));
 }
 
 function run(file: string, args: string[], timeoutMs: number): Promise<string> {
@@ -173,14 +175,17 @@ export async function killTree(root: number, { waitMs = 5000, known = [] }: { wa
   const before = await processTable();
   const owned = ownedEntries(before, root, known);
   const ours = rootIsOurs(before, root, known);
+  // What this scan found is what a later scan is checked against: a pid that has meanwhile gone to another process
+  // (the root's included) is not taken for the one killed.
+  const seen = [...known, ...owned];
   if (process.platform === 'win32') {
-    if (ours && before.some((p) => p.pid === root)) await run('taskkill', ['/pid', String(root), '/T', '/F'], 10000).catch(() => undefined);
     for (const e of owned) signal(e.pid);
+    if (ours && before.some((p) => p.pid === root)) await run('taskkill', ['/pid', String(root), '/T', '/F'], 10000).catch(() => undefined);
   } else {
     if (ours) signal(-root);
     for (const e of owned) signal(e.pid);
     const after = await processTable().catch(() => before);
-    for (const e of ownedEntries(after, root, known)) {
+    for (const e of ownedEntries(after, root, seen)) {
       if (owned.some((o) => same(o, e))) continue;
       owned.push(e);
       signal(e.pid);

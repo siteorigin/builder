@@ -99,7 +99,7 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
 export interface ErrorInfo {
   code: ErrorCode;
   message: string;
-  /** Whether sending the same request again could succeed without anything else changing first. */
+  /** Whether the same request, unchanged, may succeed later (see the note on `retryable` above). */
   retryable: boolean;
   details?: Record<string, unknown>;
 }

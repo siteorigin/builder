@@ -42,6 +42,9 @@ describe('the process table', () => {
     expect(ownedEntries(same, 10, known).map((e) => e.pid)).toEqual([10, 11]);
     // With nothing recorded about the root, it is taken as found.
     expect(ownedEntries(same, 10).map((e) => e.pid)).toEqual([10, 11]);
+    // What a remembered process started after it left is owned with it.
+    const later = parseProcessTable('1 0 1 Mon Nov 24 09:00:00 2026\n30 1 30 Mon Nov 24 13:00:05 2026\n32 30 30 Mon Nov 24 13:10:00 2026\n33 32 33 Mon Nov 24 13:10:01 2026');
+    expect(ownedEntries(later, 10, known).map((e) => e.pid)).toEqual([30, 32, 33]);
   });
 });
 
@@ -69,14 +72,17 @@ describe.skipIf(process.platform === 'win32')('killing a tree', () => {
   it('kills a process seen as owned earlier that has since left the tree and the group', async () => {
     // A detached sleep is a group of its own under this process: nothing ties it to `leader` but the record.
     const { leader } = await group();
-    const loner = spawn('/bin/sh', ['-c', 'sleep 60'], { detached: true, stdio: 'ignore' });
+    // It is recorded before it starts a child of its own, which nothing then ties to anything but its parent.
+    const loner = spawn('/bin/sh', ['-c', 'read go; sleep 60 & echo $!; wait'], { detached: true, stdio: ['pipe', 'pipe', 'ignore'] });
     await new Promise((r) => setTimeout(r, 200));
     const entry = (await processTable()).find((p) => p.pid === loner.pid)!;
     expect(entry.started).toBeTruthy();
+    loner.stdin!.write('go\n');
+    const child = await new Promise<number>((resolve) => loner.stdout!.once('data', (d) => resolve(Number(String(d).trim()))));
     const report = await killTree(leader, { known: [entry] });
-    expect(report.owned.map((e) => e.pid)).toContain(loner.pid);
+    expect(report.owned.map((e) => e.pid)).toEqual(expect.arrayContaining([loner.pid, child]));
     expect(report.survivors).toEqual([]);
-    expect(isAlive(loner.pid!)).toBe(false);
+    expect([isAlive(loner.pid!), isAlive(child)]).toEqual([false, false]);
   });
 
   it('sweeps a group whose leader already died', async () => {

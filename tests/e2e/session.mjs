@@ -100,15 +100,18 @@ try {
   assert.deepEqual(slow.error.details, { phase: 'window.info', sessionState: 'ready' });
   assert.equal(ok(await client.request('window.info'), 'window.info after the timeout').nativeId, first.nativeId);
 
-  step('a second session at the same time gets an app of its own, never the one already running');
-  const beside = session();
-  await beside.start({ fixture: 'welcome', keepArtifacts: 'never' });
-  assert.notEqual(beside.pid, one.pid);
-  assert.notEqual(beside.paths.root, one.root);
-  assert.equal(code(await beside.call(req('window.info'))), 'ok');
-  assert.equal(ok(await client.request('window.info'), 'the first session after the second started').nativeId, first.nativeId);
-  const besideClosed = await beside.close();
-  await allGone(besideClosed.processes, 'the second session');
+  step('more sessions at the same time, two launching together in one process, each get an app of their own');
+  const beside = [session(), session()];
+  await Promise.all(beside.map((s) => s.start({ fixture: 'welcome', keepArtifacts: 'never' })));
+  const pids = new Set([one.pid, ...beside.map((s) => s.pid)]);
+  assert.equal(pids.size, 3, `three apps (${[...pids]})`);
+  for (const s of beside) {
+    assert.notEqual(s.paths.root, one.root);
+    assert.equal(s.app.process().pid, s.pid, 'each session holds the app it launched');
+    assert.equal(code(await s.call(req('window.info'))), 'ok');
+  }
+  assert.equal(ok(await client.request('window.info'), 'the first session after the others started').nativeId, first.nativeId);
+  for (const s of beside) await allGone((await s.close()).processes, 'a concurrent session');
 
   step('a Builder already running in the profile the caller names is never reached');
   // A stand-in for the person's own Builder: started the old way, in a profile the caller's environment points to.

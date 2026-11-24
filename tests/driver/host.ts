@@ -39,6 +39,9 @@ export interface Server {
 /** How long replies still being written may hold up the end of a session. */
 const DRAIN_MS = 5000;
 
+/** Failures that mean a request never ran. */
+const REFUSED = new Set(['BAD_REQUEST', 'UNSUPPORTED_VERSION', 'UNKNOWN_OP']);
+
 export function serve({ session, input, write, onEnd }: ServeOptions): Server {
   let ending: Promise<void> | null = null;
   let disconnected = false;
@@ -61,10 +64,12 @@ export function serve({ session, input, write, onEnd }: ServeOptions): Server {
   const lines = createInterface({ input, crlfDelay: Infinity });
   lines.on('line', (line) => {
     if (!line.trim() || disconnected) return;
-    const handled = session.call(line).then(async (reply) => {
-      await send(reply);
-      // Only a close that ran ends the host: one refused for a bad frame leaves the session as it was.
-      if (reply.op === 'session.close' && (reply.ok || reply.error.code === 'CLEANUP_FAILED')) void end('closed');
+    const handled = session.call(line).then((reply) => {
+      const sent = send(reply);
+      // A close that ran ends the host, however it went; one refused before it ran leaves the session as it was. The
+      // end waits (bounded) for this reply to be written.
+      if (reply.op === 'session.close' && (reply.ok || !REFUSED.has(reply.error.code))) void end('closed');
+      return sent;
     });
     inFlight.add(handled);
     void handled.finally(() => inFlight.delete(handled));

@@ -122,7 +122,7 @@ export class DriverClient {
     } catch {
       return;
     }
-    if (!reply || typeof reply !== 'object') return;
+    if (!reply || typeof reply !== 'object' || reply.v !== PROTOCOL_VERSION || typeof reply.ok !== 'boolean') return;
     const pending = typeof reply.id === 'string' ? this.pending.get(reply.id) : undefined;
     if (!pending) {
       this.unmatched.push(reply);
@@ -154,6 +154,8 @@ export class DriverClient {
     try {
       const result = await Promise.race([this.exited, late]);
       if ('timedOut' in result) {
+        // Nothing more will be read: requests still waiting fail now rather than hold this process open.
+        this.fail(new TransportError(`The session host was still closing after ${waitMs / 1000}s; it was left to finish.`));
         this.host.stdout?.destroy();
         this.host.unref();
       }
