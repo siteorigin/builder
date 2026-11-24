@@ -195,9 +195,11 @@ function checkTree(def: ComponentDefinition) {
     if (inst) for (const ids of Object.values(inst.slots ?? {})) for (const c of Array.isArray(ids) ? ids : []) if (!nodes[c]) refuse(`${where}: node "${id}" puts "${String(c).slice(0, 40)}" in a slot, which does not exist.`);
     // UI state is read by conditions (checked as the project checks them) and nested variant axes, and changed by
     // buttons; nothing else reads it.
+    const holdsState = (v: unknown) => JSON.stringify(v ?? null).includes('"$state"');
     for (const field of ['when', 'unless'] as const) {
       const c = n[field];
       const ref = conditionRef(c);
+      if (!ref && holdsState(c)) refuse(`${where}: node "${id}" has a ${field} condition that is neither UI state nor a comparison of it with one value.`);
       if (!isStateRef(ref)) continue;
       const problem = typeof ref.$state === 'string' ? stateRefProblem({} as ProjectState, def, { node: n, field, comparison: c === ref ? undefined : (c as never) }, ref) : 'reads UI state without naming it.';
       if (problem) refuse(`${where}: node "${id}" ${problem}`);
@@ -206,6 +208,7 @@ function checkTree(def: ComponentDefinition) {
       if (key === 'when' || key === 'unless' || !v || typeof v !== 'object' || !Object.hasOwn(v, '$state')) continue;
       refuse(`${where}: node "${id}" reads UI state as its ${key.slice(0, 40)}; only conditions and the variants of a nested component read UI state.`);
     }
+    if (n.kind === 'instance' && Object.values(n.props).some(holdsState)) refuse(`${where}: node "${id}" gives a nested component UI state as a property; only conditions and variants read UI state.`);
     for (const v of Object.values((n as { variants?: Record<string, unknown> }).variants ?? {})) {
       if (!v || typeof v !== 'object' || !Object.hasOwn(v, '$state')) continue;
       const name = isStateRef(v) ? v.$state : undefined;

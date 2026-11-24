@@ -141,6 +141,11 @@ describe('loading a theme pack release', () => {
       if (!text || text.kind !== 'text') throw new Error('The component has no text to test with.');
       text.text = { $state: 'open' } as never;
     }), /reads UI state as its text/],
+    ['a condition naming UI state that is neither a read nor one comparison', (d) => edit(d, (m) => {
+      const c = m.components[2];
+      c.state = { open: { type: 'boolean', label: 'Open', initial: false } };
+      c.tree!.nodes[c.tree!.rootIds[0]].when = { ref: { $state: 'open' }, eq: true, ne: false } as never;
+    }), /neither UI state nor a comparison of it with one value/],
     ['more UI state than a component may have', (d) => edit(d, (m) => (m.components[2].state = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`flag${i}`, { type: 'boolean', label: 'Flag', initial: false }])))), /more than 20 UI state variables/],
     ['a button that toggles a choice', (d) => edit(d, (m) => {
       const c = m.components[2];

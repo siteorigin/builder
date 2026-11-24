@@ -13,7 +13,7 @@ import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { MAX_UI_STATES, bindingProblem, bindingSlots, boundSchema, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
-import { cardKey, cardLinkProblems } from '@generator/card-links';
+import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, type FormNameClash } from '@generator/checks';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
@@ -195,7 +195,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
           continue;
         }
         // A read of state that also names a property or an item field would be read as one by some and the other by others.
-        if (!condition && slot.value && typeof slot.value === 'object' && Object.hasOwn(slot.value, '$state') && !isStateRef(slot.value)) {
+        if (!condition && slot.value && typeof slot.value === 'object' && Object.hasOwn(slot.value, '$state') && !plainBinding(slot.value)) {
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: ${nodeLabel(n)} reads UI state and something else at once as its ${slot.field}; read one of them.`, owner, nodeId: id, site: `${id}|${slot.field}|${slot.prop ?? ''}` });
           continue;
         }
@@ -389,9 +389,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       message: `${p.label}: ${p.what} sits inside a card that links somewhere, and a link or control cannot sit inside another. Move it out of the card, or remove the card's link.`,
       owner: p.owner,
       nodeId: p.nodeId,
-      // Each card is its own problem, whatever the content inside it is called: a second card with the same kind of
-      // content is new, and a change to what the content is (a button losing its state action) is not.
-      site: `card:${p.nodeId}|${p.cards.map(cardKey).join(',')}`
+      // Each card (or placement whose slot content sits in cards) is its own problem, whatever the content inside it is
+      // called and however many cards hold it: a second broken card is new, while a button losing its state action, or
+      // one of several cards losing its link, is not.
+      site: `card:${p.nodeId}`
     });
   for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
     const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : (state.pages[i.owner.id]?.title ?? 'A page');

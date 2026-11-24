@@ -536,10 +536,9 @@ export function setState(state: ProjectState, op: Op<'component.setState'>): OpR
   // A change that leaves out the label or the starting value keeps the ones the state has, where they still fit:
   // relabelling a choice never moves every placement to its first option.
   const prev = own(def.state, op.state);
-  if (prev && !damagedState(def, op.state)) {
-    if (op.schema.label === undefined || !op.schema.label.trim()) schema.label = prev.label;
-    if (op.schema.initial === undefined && prev.type === schema.type && (schema.type === 'boolean' || schema.options.some((o) => o.value === prev.initial))) schema.initial = prev.initial as never;
-  }
+  if ((op.schema.label === undefined || !op.schema.label.trim()) && typeof prev?.label === 'string' && prev.label.trim()) schema.label = prev.label;
+  if (prev && op.schema.initial === undefined && !damagedState(def, op.state) && prev.type === schema.type && (schema.type === 'boolean' || schema.options.some((o) => o.value === prev.initial)))
+    schema.initial = prev.initial as never;
   const next = withState(def, op.state, schema);
   for (const site of bindingSites(next)) {
     if (!isStateRef(site.binding) || site.binding.$state !== op.state) continue;

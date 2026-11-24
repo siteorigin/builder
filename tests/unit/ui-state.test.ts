@@ -332,6 +332,7 @@ describe('conditions and variants that read UI state', () => {
     const set = (state: string, schema: Record<string, unknown>) => () => apply(t, [{ type: 'component.setState', definitionId: built.def.id, state, schema } as EditOperation]);
     // The nested component cannot lose an option the state can choose.
     expect(() => apply(t, [{ type: 'component.removeVariant', definitionId: built.price.id, variant: 'annual', axis: 'period' }])).toThrow(/can choose the period "annual" through its "Billing" UI state/);
+    expect(() => apply(t, [{ type: 'component.removeVariant', definitionId: built.price.id, variant: 'monthly', axis: 'period' }])).toThrow(/can choose the period "monthly" through its "Billing" UI state/);
     // Relabelling or reordering keeps every reader.
     expect(errors(set('billing', { type: 'enum', label: 'Pay', options: ['annual', 'monthly'], initial: 'monthly' })())).toEqual([]);
     // Dropping an option the nested variant, a comparison or a button uses: each is enough to refuse it.
@@ -373,6 +374,7 @@ describe('buttons that change UI state', () => {
     expect((node(act({ state: 'billing', op: 'prev', wrap: false })(), def, 'btn') as LinkNode).stateAction).toEqual({ state: 'billing', op: 'prev', wrap: false });
     expect(act({ state: 'billing', op: 'toggle' })).toThrow(/toggles the choice "billing"/);
     expect(act({ state: 'open', op: 'prev' })).toThrow(/steps the yes\/no state "open" to its prev option/);
+    expect(act({ state: 'open', op: 'next' })).toThrow(/steps the yes\/no state "open" to its next option/);
     expect(act({ state: 'billing', op: 'set', value: 'weekly' })).toThrow(/sets "billing" to "weekly", which is not one of its options/);
     expect(act({ state: 'open', op: 'set', value: 'yes' })).toThrow(/sets the yes\/no state "open" to "yes"; set it to true or false/);
     expect(act({ state: 'ghost', op: 'toggle' })).toThrow(/changes the UI state "ghost", which the component does not declare/);
@@ -436,6 +438,8 @@ describe('documents that declare, read and change UI state', () => {
     ).toEqual([['BINDING_INVALID', 'price', expect.stringMatching(/options "weekly" are not options of "Price"/)]]);
     // A read of state that also names a property is neither, wherever it is.
     expect(problems((_, d) => (nodes(d).price.variants = { period: { $prop: 'title', $state: 'billing' } }))).toEqual([['BINDING_INVALID', 'price', expect.stringMatching(/reads UI state and something else at once/)]]);
+    // A comparison has no place on a variant: it would be silently dropped.
+    expect(problems((_, d) => (nodes(d).price.variants = { period: { $state: 'billing', eq: 'annual' } as never }))).toEqual([['BINDING_INVALID', 'price', expect.stringMatching(/reads UI state and something else at once/)]]);
     // Two sources in one condition is not a condition.
     expect(problems((_, d) => (nodes(d).details.when = { $state: 'open', $prop: 'title' }))).toEqual([['BINDING_INVALID', 'details', expect.stringMatching(/neither a property, a list item field, UI state/)]]);
   });
@@ -521,6 +525,32 @@ describe('state buttons inside cards that link', () => {
     // Without its action the button is still a control in the card: the same problem, not a new one.
     delete (tree.nodes['card-a-btn'] as LinkNode).stateAction;
     expect(introducedDiagnostics(one, validateState(s))).toEqual([]);
+  });
+
+  it('keeps a placement whose content sits in several cards one problem while those cards are repaired one by one', () => {
+    const s = fresh();
+    const twin = addDef(s, {
+      componentId: 'test.twin',
+      name: 'Twin cards',
+      properties: {},
+      parts: {},
+      slots: { extra: { label: 'Extra' } },
+      build: (b) =>
+        b.el('t-root', 'section', {}, [
+          b.el('t-a', 'article', { link: { type: 'url', target: 'https://example.com/a' } }, [b.slot('t-slot-a', 'extra')]),
+          b.el('t-b', 'article', { link: { type: 'url', target: 'https://example.com/b' } }, [b.slot('t-slot-b', 'extra')])
+        ])
+    });
+    const inst = place(s, twin);
+    const id = 'n_extrabtn';
+    home(s).nodes[id] = { id, kind: 'link', link: { type: 'url', target: 'https://example.com/more' }, label: 'More', appearance: 'primary' };
+    inst.slots = { extra: [id] };
+    const broken = validateState(s);
+    expect(broken.filter((d) => d.code === 'CARD_LINK_INTERACTIVE').map((d) => d.nodeId)).toEqual([inst.id]);
+    delete (s.components[twin.id].tree!.nodes['t-a'] as { link?: unknown }).link;
+    const fewer = validateState(s);
+    expect(fewer.filter((d) => d.code === 'CARD_LINK_INTERACTIVE')).toHaveLength(1);
+    expect(introducedDiagnostics(broken, fewer)).toEqual([]);
   });
 
   it('refuses a component with state buttons placed inside another design’s card, on that card', () => {
@@ -671,8 +701,9 @@ describe('copies and conversions', () => {
     (s.components[def.id].state!.billing as { initial: string }).initial = 'weekly';
     expect(() => apply(s, [{ type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: { state: 'billing', op: 'toggle' } }])).toThrow(/"billing" of "Billing switch" is damaged/);
     expect(() => apply(s, [{ type: 'component.removeVariant', definitionId: price.id, variant: 'annual', axis: 'period' }])).toThrow(/UI state "billing", which is damaged/);
-    // Declared again, it is whole: the edits it guards are judged as usual.
-    const repaired = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: BILLING }]);
+    // Declared again, it is whole, and keeps the label it had: the edits it guards are judged as usual.
+    const repaired = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { type: 'enum', options: ['monthly', 'annual'], initial: 'annual' } }]);
+    expect(repaired.components[def.id].state!.billing).toMatchObject({ label: 'Billing', initial: 'annual' });
     expect(errors(repaired)).toEqual([]);
     expect(() => apply(repaired, [{ type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: { state: 'billing', op: 'toggle' } }])).toThrow(/toggles the choice "billing"/);
   });
@@ -723,6 +754,7 @@ describe('the document format and the assistant', () => {
     const send = (operations: unknown[]) => executeTool('apply_operations', JSON.stringify({ expectedRevision: 1, operations }), host, 'c1');
     for (const op of [
       { type: 'component.setState', definitionId: def.id, state: 'tab', schema: { type: 'boolean' } },
+      { type: 'component.removeState', definitionId: def.id, state: 'open' },
       { type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: null },
       { type: 'node.setBinding', owner: owner(def), nodeId: 'title', field: 'when', binding: { $state: 'open' } }
     ]) {
