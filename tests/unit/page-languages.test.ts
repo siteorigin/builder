@@ -9,6 +9,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { HOOKS_SERVER_FILE, generateAppHtml, generateProject, pageAlternates, pageFile, publishedState } from '@generator/index';
+import { GenerationCache } from '@generator/cache';
 import { declaredLanguage, linkClash, pageLanguage, translationPeers } from '@shared/languages';
 import { pageLanguageWarning, rivalHookStop } from '../../src/main/export';
 import { ProjectSession } from '../../src/main/project/session';
@@ -337,6 +338,35 @@ describe('page languages in the website', () => {
       expect(() => compile(layout, { generate: 'server', filename: 'src/routes/+layout.svelte', runes: true })).not.toThrow();
       expect(() => compile(layout, { generate: 'client', filename: 'src/routes/+layout.svelte', runes: true })).not.toThrow();
     }
+  });
+
+  it('generates the same as a full run when only part is made again', () => {
+    const cache = new GenerationCache();
+    /** Both kinds of output through the cache, each the same as a full run; what the clean one had to make. */
+    const made = (state: ProjectState) => {
+      let clean: string[] = [];
+      for (const opts of [{}, { instrument: true }]) {
+        expect([...generateProject(state, opts, cache)]).toEqual([...generateProject(state, opts)]);
+        if (!('instrument' in opts)) clean = cache.made.slice();
+      }
+      return clean;
+    };
+    let s = apply(fresh(), { type: 'site.update', baseUrl: 'https://example.com/' });
+    const en = byTitle(s, 'About').id;
+    const contact = byTitle(s, 'Contact').id;
+    made(s);
+    // A page in another language: the hook appears, the layout follows, and that page says so; the others are kept.
+    s = apply(s, { type: 'page.update', pageId: en, language: 'fr' });
+    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js', 'layout#clean', `page:${en}#clean`]));
+    // Linking a translation remakes both versions, and a language change on one of them remakes the hook and layout.
+    s = apply(s, { type: 'page.update', pageId: contact, language: 'de', linkTranslationTo: en });
+    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, `page:${contact}#clean`, 'hooks.server.js', 'layout#clean']));
+    s = apply(s, { type: 'page.update', pageId: contact, route: '/kontakt/' });
+    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, 'hooks.server.js']));
+    // Back in one language: the hook goes and every file is as a full run makes it.
+    s = apply(s, { type: 'page.update', pageId: contact, linkTranslationTo: null }, { type: 'page.update', pageId: contact, language: '' }, { type: 'page.update', pageId: en, language: '' });
+    made(s);
+    expect(generateProject(s, {}, cache).has(HOOKS_SERVER_FILE)).toBe(false);
   });
 
   it('lists the same languages whatever order the pages are in', () => {
