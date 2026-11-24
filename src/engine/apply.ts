@@ -1566,6 +1566,10 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (op.socialImage && own(state.assets.assets, op.socialImage)?.kind !== 'image') fail('Social image asset not found.');
     s.socialImage = op.socialImage;
   }
+  // Empty text restores the default wording.
+  if (op.notFoundHeading !== undefined) s.notFoundHeading = op.notFoundHeading.trim() || undefined;
+  if (op.notFoundMessage !== undefined) s.notFoundMessage = op.notFoundMessage.trim() || undefined;
+  if (op.notFoundLinkLabel !== undefined) s.notFoundLinkLabel = op.notFoundLinkLabel.trim() || undefined;
   return {};
 }
 

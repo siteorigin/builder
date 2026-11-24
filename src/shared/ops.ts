@@ -244,7 +244,10 @@ export const OPERATION_SCHEMAS = {
     description: z.string().max(320).optional(),
     baseUrl: z.string().max(200).optional(),
     favicon: z.string().nullable().optional(),
-    socialImage: z.string().nullable().optional()
+    socialImage: z.string().nullable().optional(),
+    notFoundHeading: z.string().max(120).optional().describe('Heading of the page shown at an address the site does not have. "" restores the default.'),
+    notFoundMessage: z.string().max(400).optional().describe('Message on that page, shown above its link to the Home page. "" restores the default.'),
+    notFoundLinkLabel: z.string().max(60).optional().describe('Text of that page\'s link to the Home page. "" restores the default.')
   }),
 
   'component.createFromNode': z.object({ type: z.literal('component.createFromNode'), owner, nodeId: z.string(), name: z.string().min(1).max(60) }),

@@ -26,7 +26,8 @@ const filesIn = (dir: string): string[] =>
   existsSync(dir) ? readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => relative(dir, join(e.parentPath, e.name)).split('\\').join('/')) : [];
 
 // The website build, without SvelteKit: each page module becomes the HTML file a static host serves at its address
-// (its source stands in for the rendered page), and static/ is copied as it is. The tools are not copied.
+// (its source stands in for the rendered page; a route named like a file, 404.html, is written as that file), and
+// static/ is copied as it is. The tools are not copied.
 vi.mock('../../src/main/runtime/manager', async (original) => ({
   ...(await original<typeof import('../../src/main/runtime/manager')>()),
   buildProject: async (dir: string) => {
@@ -34,7 +35,7 @@ vi.mock('../../src/main/runtime/manager', async (original) => ({
     const out = join(dir, 'build');
     if (existsSync(join(dir, 'static'))) cpSync(join(dir, 'static'), out, { recursive: true });
     for (const f of filesIn(join(dir, 'src/routes')).filter((f) => f.endsWith('+page.svelte'))) {
-      const html = join(out, dirname(f), 'index.html');
+      const html = dirname(f).endsWith('.html') ? join(out, dirname(f)) : join(out, dirname(f), 'index.html');
       mkdirSync(dirname(html), { recursive: true });
       writeFileSync(html, readFileSync(join(dir, 'src/routes', f), 'utf8'));
     }
@@ -129,6 +130,24 @@ describe('exporting a project with a draft', () => {
     const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
     expect(source.ok).toBe(true);
     expect(source.warnings).toContain('static/winter-stock-preview/index.html is served at /winter-stock-preview/, the address of the draft Winter stock preview, so a build of the exported project publishes it there. Remove or move the file before building.');
+  });
+
+  it('issue 66: publishes the generated not-found page, and refuses a 404.html of the author’s own in static/', async () => {
+    const { c, dir } = await projectWithDraft();
+    const ok = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(ok.ok).toBe(true);
+    expect(readFileSync(join(ok.path!, '404.html'), 'utf8')).toContain('so-not-found__heading');
+    expect(ok.warnings.at(-1)).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\..* set the 404 error document to \/404\.html /);
+    mkdirSync(join(dir, 'static'), { recursive: true });
+    writeFileSync(join(dir, 'static/404.html'), '<p>Our old page</p>');
+    const dest = join(temp('out'), 'site');
+    const r = await c.buildStaticTo(dest);
+    expect(r).toMatchObject({ ok: false, message: expect.stringMatching(/^static\/404\.html takes the place of the not-found page SiteOrigin Builder generates/) });
+    expect(env.builds).toBe(1);
+    expect(existsSync(dest)).toBe(false);
+    const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    expect(source.ok).toBe(true);
+    expect(source.warnings).toContain('static/404.html takes the place of the not-found page SiteOrigin Builder generates, so a build of the exported project fails until it is deleted or renamed.');
   });
 
   it('refuses the website export when the draft is published while the folder picker is open', async () => {

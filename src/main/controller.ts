@@ -16,7 +16,7 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
+import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -1654,6 +1654,7 @@ export class Controller {
       const folder = join(staging, 'project');
       const snap = await this.snapshotSource(s, folder);
       if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+      await settleServerHook(folder, publishedState(snap.state));
       // The exported source is the published site; its drafts are kept to edit but not built.
       const live = publishedState(snap.state);
       warnings.push(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live));
@@ -1662,6 +1663,8 @@ export class Controller {
       const kept = locationKeptNote(await locatedPhotos(folder, snap.state));
       if (kept) warnings.push(kept);
       warnings.push(...missingSourceWarnings(snap.state, await findMissingAssetFiles(folder, snap.state.assets.assets)));
+      const ownNotFound = ownNotFoundFileNote(folder);
+      if (ownNotFound) warnings.push(ownNotFound);
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
@@ -1753,6 +1756,7 @@ export class Controller {
     const project = join(staging, 'project');
     const snap = await this.snapshotSource(s, project, { forBuild: true });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+    await settleServerHook(project, publishedState(snap.state));
     const { revision, state } = snap;
     // The snapshot may differ from what the export was started on (the folder picker gives the project time to
     // change): check its links to drafts again, and that it publishes the pages the author was shown.
@@ -1760,6 +1764,9 @@ export class Controller {
     if (draftStop) return { ok: false, ...draftStop };
     // What visitors get: the published pages and the old addresses that lead to them.
     const live = publishedState(state);
+    // A 404.html of the author's own would stop the build from writing the generated one.
+    const ownNotFound = ownNotFoundFileStop(project);
+    if (ownNotFound) return { ok: false, message: ownNotFound, warnings: [] };
     // An image file the site uses but the folder does not have fails the build without naming the picture: stop first,
     // naming it. The staged copy is checked, not what Project health last saw, so the answer is right for this export.
     const missingFiles = await missingWebsiteAssets(project, state);
@@ -1809,6 +1816,10 @@ export class Controller {
     ];
     for (const { route, page } of withheld)
       if (existsSync(join(out, route, 'index.html'))) return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${page.title}. Remove the file that puts it there, then export again.`, warnings };
+    // The not-found page, which hosts show at any address the site does not have.
+    const notFound = await readNotFoundPage(out);
+    const notFoundStop = notFoundPageProblem(notFound);
+    if (notFoundStop || notFound === null) return { ok: false, message: notFoundStop ?? '', warnings };
     for (const f of await listFiles(out)) {
       if (/\.js$/.test(f) && /siteorigin-bridge|data-so-ctx/.test(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings };
     }
@@ -1826,10 +1837,13 @@ export class Controller {
     if (left) warnings.push(left);
     const located = locationRemovedNote(photos.located);
     if (located) warnings.push(located);
+    const relative = notFoundAddressWarning(notFound);
+    if (relative) warnings.push(relative);
     const pages = live.site.pageOrder.length;
     const exported = `${pages} page${pages === 1 ? '' : 's'}`;
     const problem = await this.publish(s, out, dest, format);
     if (problem) return { ok: false, message: problem, warnings };
+    warnings.push(notFoundHostNote(basePath(state)));
     const exportedAt = new Date().toISOString();
     this.exportPaths.add(dest);
     if (format === 'zip') {

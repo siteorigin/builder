@@ -15,7 +15,7 @@ import { shellPageLinks } from '@generator/checks';
 
 const PRIMITIVES: Record<string, string> = { richtext: 'rich text', repeat: 'repeated items', slot: 'content area' };
 const CONTENT_FIELDS: Record<string, string> = { text: 'text', link: 'link', label: 'button text', appearance: 'button style', icon: 'icon', tag: 'heading level', anchor: 'anchor' };
-const SITE_FIELDS: Record<string, string> = { name: 'name', language: 'language', description: 'description', baseUrl: 'web address', favicon: 'favicon', socialImage: 'sharing image' };
+const SITE_FIELDS: Record<string, string> = { name: 'name', language: 'language', description: 'description', baseUrl: 'web address', favicon: 'favicon', socialImage: 'sharing image', notFoundHeading: 'not-found page heading', notFoundMessage: 'not-found page message', notFoundLinkLabel: 'not-found page link' };
 const PAGE_FIELDS: Record<string, string> = { title: 'title', route: 'address', navLabel: 'menu label', seoTitle: 'search title', description: 'description', noindex: 'search visibility', searchHidden: 'site search visibility', draft: 'draft status', showHeader: 'shared header', showFooter: 'shared footer', socialImage: 'sharing image' };
 
 /** A property label as it reads inside a sentence: "Title" becomes "title", "CTA link" stays. */

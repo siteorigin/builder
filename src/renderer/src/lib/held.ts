@@ -35,7 +35,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   showFooter: ['showFooter'],
   socialImage: ['seo', 'socialImage']
 };
-const SITE_FIELDS = ['name', 'language', 'description', 'baseUrl', 'favicon', 'socialImage'];
+const SITE_FIELDS = ['name', 'language', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel'];
 
 function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   if (owner.kind === 'page') return has(state.pages, owner.id);
