@@ -134,6 +134,17 @@ describe('labels a page rename leaves behind', () => {
     expect(labels(apply(s, found.map((l) => l.op)).state, 'header')[3]).toBe('Portfolio');
     // The current title is never an old name.
     expect(renameLabels(s, id, ['Portfolio'])).toEqual([]);
+    // A section whose Heading 1 says one old name while its heading field, shown smaller, holds the other: the field is
+    // not the page's title. (Its design shows the eyebrow as the Heading 1 here.)
+    const crossed = apply(s, [
+      { type: 'instance.setProp', owner: { kind: 'page', id }, nodeId: intro(s, id).id, prop: 'headingLevel', value: 'h2' },
+      { type: 'instance.setProp', owner: { kind: 'page', id }, nodeId: intro(s, id).id, prop: 'eyebrow', value: 'Team' }
+    ]).state;
+    const tree = crossed.components[intro(crossed, id).definitionId].tree!;
+    const eyebrow = Object.values(tree.nodes).find((n) => n.name === 'Eyebrow') as { tag: string };
+    eyebrow.tag = 'h1';
+    expect(h1(crossed, id)).toEqual(['Team']);
+    expect(renameLabels(crossed, id, ['Lookbook', 'Team']).map((l) => l.where)).toEqual(['Header menu link']);
   });
 
   it('finds a title written with doubled spaces, and a hero’s Heading 1 as well as an introduction’s', () => {

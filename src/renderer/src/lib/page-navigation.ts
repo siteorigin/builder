@@ -57,16 +57,14 @@ export function renameLabels(state: ProjectState, pageId: string, from: string |
   const owner: OwnerRef = { kind: 'page', id: pageId };
   // The headings visitors read as the page's title, by the section that shows them (the outline reads spaces as one).
   const words = (t: string) => t.replace(/\s+/g, ' ').trim();
-  const shown = new Set([...names].map(words));
-  const titles = new Set(
-    pageHeadings(state, pageId, { shell: false })
-      .outline.filter((h) => h.level === 1 && shown.has(h.text) && h.owner.kind === 'page' && h.owner.id === pageId)
-      .map((h) => h.nodeId)
-  );
-  for (const id of titles) {
+  const titles = new Map<string, Set<string>>();
+  for (const h of pageHeadings(state, pageId, { shell: false }).outline)
+    if (h.level === 1 && h.owner.kind === 'page' && h.owner.id === pageId) titles.set(h.nodeId, (titles.get(h.nodeId) ?? new Set()).add(h.text));
+  for (const [id, shown] of titles) {
     const n = page.nodes[id];
     const text = n?.kind === 'instance' ? n.props.heading : undefined;
-    if (n?.kind !== 'instance' || !old(text)) continue;
+    // The section's heading field holds an old name, and it is that very text the section shows as the Heading 1.
+    if (n?.kind !== 'instance' || !old(text) || !shown.has(words(text))) continue;
     const def = state.components[n.definitionId];
     if (def?.properties.heading?.type !== 'string') continue;
     out.push({ key: `heading:${id}`, where: `${def.name} heading`, preselect: true, text, op: { type: 'instance.setProp', owner, nodeId: id, prop: 'heading', value: to } });
