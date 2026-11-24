@@ -183,8 +183,11 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   if (args.typeScale !== undefined) {
     const themeTokens = getTheme(state.site.themeId).tokens;
     // The scale keeps each style's font, so a font changed in this same call still shows in every style.
+    const scale = typeScaleOps([...tokens.values()], themeTokens, state.tokens.overrides, args.typeScale);
+    const names = scale.unscalable.map((id) => `"${tokens.get(id)?.label ?? id}"`).join(', ');
     if (!scaleRoles(themeTokens).length) issues.push({ field: 'typeScale', message: "this site's theme has none of the text styles a type scale sets" });
-    else ops.push(...typeScaleOps([...tokens.values()], themeTokens, args.typeScale));
+    else if (scale.unscalable.length) issues.push({ field: 'typeScale', message: `${names} ${scale.unscalable.length === 1 ? 'has' : 'have'} a font or letter case that cannot be kept; the user can fix ${scale.unscalable.length === 1 ? 'it' : 'them'} in Site styles` });
+    else ops.push(...scale.ops);
   }
 
   const contactLink = (field: 'contactEmail' | 'contactPhone', value: string | undefined, type: 'email' | 'tel'): LinkValue | null => {

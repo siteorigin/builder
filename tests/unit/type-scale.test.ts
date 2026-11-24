@@ -9,7 +9,7 @@ import { getTheme } from '@catalogue/index';
 import { installedFonts } from '@catalogue/fonts';
 import { applyOperations } from '@engine/apply';
 import { effectiveTokens, generateTokensCss } from '@generator/index';
-import { isTokenLength, textMetrics } from '@shared/styles';
+import { followedText, isTokenLength, textMetrics } from '@shared/styles';
 import {
   FLUID_MAX_WIDTH,
   FLUID_MIN_WIDTH,
@@ -32,7 +32,7 @@ import { ProjectSession } from '../../src/main/project/session';
 
 const starter = () => createStarterState('business', 'Type Studio', false);
 const themeTokens = (s: ProjectState) => getTheme(s.site.themeId).tokens;
-const opsFor = (s: ProjectState, choice: TypeScaleChoice) => typeScaleOps(effectiveTokens(s), themeTokens(s), choice);
+const opsFor = (s: ProjectState, choice: TypeScaleChoice) => typeScaleOps(effectiveTokens(s), themeTokens(s), s.tokens.overrides, choice).ops;
 const apply = (s: ProjectState, ops: EditOperation[]) => applyOperations(s, ops).state;
 const metrics = (s: ProjectState, id: string) => textMetrics(effectiveTokens(s), id, themeTokens(s).find((t) => t.id === id)?.value)!;
 const set = (s: ProjectState, tokenId: string, value: unknown) => apply(s, [{ type: 'token.set', tokenId, value }]);
@@ -50,7 +50,10 @@ describe('fluid sizes', () => {
     expect(isTokenLength(steep, { negative: false })).toBe(true);
     expect(sizeAtWidth(steep, FLUID_MIN_WIDTH)).toBeCloseTo(10, 2);
     expect(sizeAtWidth(steep, FLUID_MAX_WIDTH)).toBeCloseTo(40, 2);
-    expect(() => fluidSize(20, 10)).toThrow();
+    // A size that starts at zero at the narrowest width needs no intercept.
+    expect(fluidSize(36, 128)).toBe('clamp(2.25rem, 10vw, 8rem)');
+    for (const bad of [[20, 10], [0, 10], [16, Infinity], [16, NaN], [16, 1e9]]) expect(() => fluidSize(bad[0], bad[1]), String(bad)).toThrow();
+    expect(() => fluidSize(16, 20, 800, 800)).toThrow();
   });
 
   it('works out a size at a window width, as the browser does, or says it cannot', () => {
@@ -62,7 +65,11 @@ describe('fluid sizes', () => {
     expect(sizeAtWidth('18px', 1280)).toBe(18);
     // As in CSS, a smallest size above the largest wins.
     expect(sizeAtWidth('clamp(2rem, 1vw, 1rem)', 1280)).toBe(32);
-    for (const v of ['calc(1rem + 2vw)', 'min(2rem, 5vw)', 'clamp(1rem, var(--x), 2rem)', 'large', '']) expect(sizeAtWidth(v, 375), v).toBeNull();
+    // Small, large and dynamic viewport widths are the window's width.
+    expect(sizeAtWidth('clamp(16px, 2dvw, 32px)', 1280)).toBeCloseTo(25.6, 5);
+    expect(sizeAtWidth('CLAMP(1REM, 1REM + 1SVW, 3REM)', 1000)).toBeCloseTo(26, 5);
+    for (const v of ['calc(1rem + 2vw)', 'min(2rem, 5vw)', 'clamp(1rem, var(--x), 2rem)', 'clamp(1rem, 1rem 2vw, 4rem)', 'clamp(1rem, 2vw +, 4rem)', 'large', ''])
+      expect(sizeAtWidth(v, 375), v).toBeNull();
   });
 });
 
@@ -75,7 +82,8 @@ describe('type scale presets', () => {
         const [min, max, lineHeight, tracking] = scale.roles[role];
         const { size } = m[role];
         const where = `${scale.id} ${role}`;
-        expect(size, where).toMatch(/^clamp\(/);
+        expect(size, where).toMatch(min === max ? /^[\d.]+rem$/ : /^clamp\(/);
+        expect(Number.isInteger(min) && Number.isInteger(max), `${where}: whole pixels, so the size fields show both ends exactly`).toBe(true);
         expect(isTokenLength(size, { negative: false }), where).toBe(true);
         expect(size, where).not.toMatch(/e[+-]?\d/i);
         expect(sizeAtWidth(size, 320), where).toBeCloseTo(min, 2);
@@ -100,13 +108,19 @@ describe('type scale presets', () => {
     }
     // Each step up the presets makes the display size more dramatic on a desktop.
     const display = TYPE_SCALE_IDS.map((id) => sizeAtWidth(scaleMetrics(id)['text.display'].size, 1280)!);
-    expect([...display].sort((a, b) => a - b)).toEqual(display);
+    for (let i = 1; i < display.length; i++) expect(display[i]).toBeGreaterThan(display[i - 1]);
+    // The approved ends of a few styles, pinned apart from the table they are written from.
+    expect(scaleMetrics('balanced')['text.h3'].size).toBe(fluidSize(19, 22));
+    expect(scaleMetrics('editorial')['text.h2'].size).toBe(fluidSize(26, 40));
+    expect(scaleMetrics('bold-display')['text.display'].size).toBe('clamp(2.625rem, 1.0109rem + 7.1739vw, 6.75rem)');
+    expect(scaleMetrics('compact')['text.body'].size).toBe('1rem');
   });
 });
 
 describe('applying a type scale', () => {
   it('sets the size, line height and spacing of every scaled style in one batch, keeping fonts, weights and case', () => {
-    const s0 = starter();
+    let s0 = apply(starter(), [{ type: 'token.create', group: 'text', label: 'Callout', value: { family: { token: 'font.body' }, size: '1.4rem', lineHeight: '1.3', weight: 500, tracking: '0em' } }]);
+    s0 = set(s0, 'text.h2', { transform: 'uppercase' });
     const ops = opsFor(s0, 'editorial');
     expect(ops).toHaveLength(TYPE_SCALE_ROLES.length);
     expect(ops.every((o) => o.type === 'token.set')).toBe(true);
@@ -118,6 +132,8 @@ describe('applying a type scale', () => {
       expect(after, role).toEqual({ ...before, ...want[role] });
       expect(after.family, role).toEqual(before.family);
     }
+    expect(metrics(s, 'text.h2').transform).toBe('uppercase');
+    expect(s.tokens.custom).toEqual(s0.tokens.custom);
     expect(metrics(s, 'text.display').family).toEqual({ token: 'font.display' });
     expect(metrics(s, 'text.body').family).toEqual({ token: 'font.body' });
     // Styles outside the scale keep the theme's values.
@@ -133,7 +149,7 @@ describe('applying a type scale', () => {
     dirs.push(dir);
     const session = await ProjectSession.create(dir, starter());
     // A font change first, so undo has something to go back to that is not the theme.
-    await session.apply({ operations: [{ type: 'token.set', tokenId: 'text.h2', value: { weight: 600 } }] }, { label: 'Bolder headings' });
+    expect((await session.apply({ operations: [{ type: 'token.set', tokenId: 'text.h2', value: { weight: 600 } }] }, { label: 'Bolder headings' })).ok).toBe(true);
     const before = structuredClone(session.state.tokens);
     const r = await session.apply({ operations: opsFor(session.state, 'bold-display') }, { label: 'Use the Bold display type scale' });
     expect(r.ok).toBe(true);
@@ -151,7 +167,13 @@ describe('applying a type scale', () => {
     // One style of its own no longer matches any scale.
     expect(activeTypeScale(effectiveTokens(s), themeTokens(s))).toBeNull();
     const theme = textMetrics(themeTokens(s), 'text.h1')!;
-    s = set(s, 'text.h1', { size: theme.size, lineHeight: theme.lineHeight, tracking: theme.tracking });
+    const compact = scaleMetrics('compact')['text.h1'];
+    // Each metric goes back on its own, leaving the others as the scale set them.
+    s = set(s, 'text.h1', { lineHeight: theme.lineHeight });
+    expect(metrics(s, 'text.h1')).toMatchObject({ lineHeight: theme.lineHeight, tracking: compact.tracking });
+    s = set(s, 'text.h1', { tracking: theme.tracking });
+    expect(metrics(s, 'text.h1')).toMatchObject({ lineHeight: theme.lineHeight, tracking: theme.tracking, size: 'clamp(2rem, 1rem + 3vw, 4rem)' });
+    s = set(s, 'text.h1', { size: theme.size });
     expect(metrics(s, 'text.h1')).toEqual(theme);
     s = set(s, 'text.body', null);
     expect(s.tokens.overrides['text.body']).toBeUndefined();
@@ -162,6 +184,7 @@ describe('applying a type scale', () => {
     let s = apply(starter(), opsFor(starter(), 'balanced'));
     expect(opsFor(s, 'balanced')).toEqual([]);
     s = set(s, 'text.display', { weight: 800 });
+    s = set(s, 'text.h2', { family: 'Space Grotesk' });
     s = set(s, 'font.display', 'Lora');
     expect(activeTypeScale(effectiveTokens(s), themeTokens(s))).toBe('balanced');
     expect(opsFor(s, 'balanced')).toEqual([]);
@@ -183,6 +206,33 @@ describe('applying a type scale', () => {
     expect(metrics(s, 'text.h3').family).toContain('Lora Variable');
     expect(metrics(s, 'text.h3').size).toBe(textMetrics(themeTokens(s), 'text.h3')!.size);
     expect(activeTypeScale(effectiveTokens(s), themeTokens(s))).toBe('theme');
+    // A weight of its own is a change the theme's scale keeps.
+    s = set(s, 'text.h2', { weight: 700 });
+    s = apply(s, opsFor(s, 'theme'));
+    expect(metrics(s, 'text.h2').weight).toBe(700);
+  });
+
+  it("clears a change that only repeats the theme when the theme's scale is chosen", () => {
+    const s0 = starter();
+    const theme = textMetrics(themeTokens(s0), 'text.h3')!;
+    const s = apply(s0, [{ type: 'token.set', tokenId: 'text.h3', value: { ...theme } }]);
+    expect(s.tokens.overrides['text.h3']).toBeDefined();
+    expect(activeTypeScale(effectiveTokens(s), themeTokens(s))).toBe('theme');
+    expect(opsFor(s, 'theme')).toEqual([{ type: 'token.set', tokenId: 'text.h3', value: null }]);
+    // A preset leaves it alone where it already matches: nothing to undo for a change nobody sees.
+    const balanced = apply(s, opsFor(s, 'balanced'));
+    expect(opsFor(balanced, 'balanced')).toEqual([]);
+  });
+
+  it("leaves a style the theme writes as a link following it when the theme's scale is chosen", () => {
+    const s = starter();
+    const linked: TokenDef[] = themeTokens(s).map((t) => (t.id === 'text.h3' ? { ...t, value: { token: 'text.h2' } } : t));
+    // Untouched: the theme's own scale has nothing to do, and the link is kept.
+    expect(typeScaleOps(linked, linked, {}, 'theme')).toEqual({ ops: [], unscalable: [] });
+    expect(activeTypeScale(linked, linked)).toBe('theme');
+    // A preset has to write it out, with the font and weight it showed through the link.
+    const h3 = typeScaleOps(linked, linked, {}, 'editorial').ops.find((o) => (o as { tokenId: string }).tokenId === 'text.h3') as { value: TextStyleValue };
+    expect(h3.value).toEqual({ ...textMetrics(linked, 'text.h2'), ...scaleMetrics('editorial')['text.h3'] });
   });
 
   it('keeps a font stack written into a style, not just a link to a font', () => {
@@ -208,49 +258,111 @@ describe('applying a type scale', () => {
     expect(sizeAtWidth(metrics(s, 'text.h1').size, 1280)!).toBeGreaterThan(sizeAtWidth(metrics(s, 'text.h2').size, 1280)!);
   });
 
+  it('keeps the font of a style that followed a broken link through a style repaired earlier in the batch', () => {
+    let s = starter();
+    const h3 = textMetrics(themeTokens(s), 'text.h3')!;
+    // Heading 1 follows a style that is gone, so it shows the theme's own; Heading 3 follows Heading 1, so it shows its own too.
+    s.tokens.overrides['text.h1'] = { token: 'text.missing' };
+    s.tokens.overrides['text.h3'] = { token: 'text.h1' };
+    expect(metrics(s, 'text.h3')).toMatchObject({ family: h3.family, weight: h3.weight });
+    s = apply(s, opsFor(s, 'editorial'));
+    expect(metrics(s, 'text.h1')).toMatchObject({ family: { token: 'font.display' }, ...scaleMetrics('editorial')['text.h1'] });
+    expect(metrics(s, 'text.h3')).toMatchObject({ family: { token: 'font.body' }, weight: 600, ...scaleMetrics('editorial')['text.h3'] });
+  });
+
   it('sets only the styles a theme has', () => {
     const s = starter();
     const fewer: TokenDef[] = themeTokens(s).filter((t) => t.id !== 'text.lead' && t.id !== 'text.small');
     expect(scaleRoles(fewer)).toEqual(['text.display', 'text.h1', 'text.h2', 'text.h3', 'text.body']);
-    const ops = typeScaleOps(effectiveTokens(s), fewer, 'compact');
+    const ops = typeScaleOps(effectiveTokens(s), fewer, {}, 'compact').ops;
     expect(ops.map((o) => (o as { tokenId: string }).tokenId)).toEqual(['text.display', 'text.h1', 'text.h2', 'text.h3', 'text.body']);
     expect(scaleRoles(themeTokens(s).filter((t) => t.group !== 'text'))).toEqual([]);
     expect(activeTypeScale(effectiveTokens(s), themeTokens(s).filter((t) => t.group !== 'text'))).toBeNull();
+    // An ID used for another kind of style, or a text style the theme cannot write out, is not a style to scale.
+    const odd: TokenDef[] = themeTokens(s).map((t) => (t.id === 'text.h3' ? { ...t, group: 'space', value: '1rem' } : t.id === 'text.lead' ? { ...t, value: { token: 'text.gone' } } : t));
+    expect(scaleRoles(odd)).toEqual(['text.display', 'text.h1', 'text.h2', 'text.body', 'text.small']);
+    expect(typeScaleOps(odd, odd, {}, 'compact').ops.map((o) => (o as { tokenId: string }).tokenId)).toEqual(['text.display', 'text.h1', 'text.h2', 'text.body', 'text.small']);
+    // The theme's own scale is named only when every style it has matches, not some of them.
+    expect(activeTypeScale(odd, odd)).toBe('theme');
+    const one = odd.map((t) => (t.id === 'text.body' ? { ...t, value: { ...(t.value as TextStyleValue), size: '1.1rem' } } : t));
+    expect(activeTypeScale(one, odd)).toBeNull();
   });
 
-  it('writes a whole style out when the one saved cannot be read', () => {
+  it('writes a whole style out when the one saved cannot be read, keeping what it saved that reads', () => {
     const s = starter();
-    s.tokens.overrides['text.small'] = { size: '0.8rem' } as unknown as TextStyleValue;
+    const georgia = 'Georgia, serif';
+    s.tokens.overrides['text.small'] = { family: georgia, size: '0.8rem', lineHeight: '1.4', weight: 700 } as unknown as TextStyleValue;
     const ops = opsFor(s, 'balanced');
     const small = ops.find((o) => (o as { tokenId: string }).tokenId === 'text.small') as { value: TextStyleValue };
-    expect(small.value).toEqual({ ...textMetrics(themeTokens(s), 'text.small'), ...scaleMetrics('balanced')['text.small'] });
-    expect(metrics(apply(s, ops), 'text.small')).toMatchObject(scaleMetrics('balanced')['text.small']);
+    expect(small.value).toEqual({ ...textMetrics(themeTokens(s), 'text.small'), family: georgia, weight: 700, ...scaleMetrics('balanced')['text.small'] });
+    expect(metrics(apply(s, ops), 'text.small')).toMatchObject({ family: georgia, weight: 700, ...scaleMetrics('balanced')['text.small'] });
+    // The theme's own scale repairs it too, rather than taking the theme's sizes it shows for a match.
+    const back = apply(s, opsFor(s, 'theme'));
+    expect(metrics(back, 'text.small')).toMatchObject({ family: georgia, weight: 700, size: textMetrics(themeTokens(s), 'text.small')!.size });
+  });
+
+  it('leaves out a style whose font or case would be refused, so the rest still applies', () => {
+    const s = starter();
+    s.tokens.overrides['text.h3'] = { ...textMetrics(themeTokens(s), 'text.h3')!, transform: 'full-width' };
+    s.tokens.overrides['text.lead'] = { ...textMetrics(themeTokens(s), 'text.lead')!, family: { token: 'font.gone' } };
+    const { ops, unscalable } = typeScaleOps(effectiveTokens(s), themeTokens(s), s.tokens.overrides, 'compact');
+    expect(unscalable).toEqual(['text.h3', 'text.lead']);
+    expect(ops.map((o) => (o as { tokenId: string }).tokenId)).toEqual(['text.display', 'text.h1', 'text.h2', 'text.body', 'text.small']);
+    expect(() => applyOperations(s, ops)).not.toThrow();
   });
 });
 
 describe('font pairings', () => {
-  it('offers the pairings whose fonts the theme ships', () => {
-    const names = installedFonts(starter()).map((f) => f.name);
-    expect(availablePairings(names)).toEqual(FONT_PAIRINGS);
-    expect(availablePairings(['Inter', 'fraunces']).map((p) => p.id)).toEqual(['fraunces-inter']);
+  it('offers the pairings whose fonts the theme ships, with their stacks', () => {
+    const fonts = installedFonts(starter());
+    const pairings = availablePairings(fonts);
+    expect(pairings.map((p) => p.id)).toEqual(['fraunces-inter', 'playfair-lora', 'lora-dm-sans', 'space-grotesk-dm-sans', 'jakarta-inter']);
+    expect(pairings.map(({ displayStack: _d, bodyStack: _b, ...p }) => p)).toEqual(FONT_PAIRINGS);
+    expect(pairings[1].displayStack).toBe(fonts.find((f) => f.name === 'Playfair Display')!.stack);
+    const only = (names: string[]) => fonts.filter((f) => names.includes(f.name));
+    expect(availablePairings(only(['Inter', 'Fraunces'])).map((p) => p.id)).toEqual(['fraunces-inter']);
+    // Both fonts are needed.
+    expect(availablePairings(only(['Fraunces', 'Playfair Display', 'Space Grotesk']))).toEqual([]);
   });
 
   it('sets both fonts in one batch, and only the one that changes', () => {
     const s0 = starter();
-    const stack = (s: ProjectState, id: string) => String(effectiveTokens(s).find((t) => t.id === id)!.value);
-    const pairings = availablePairings(installedFonts(s0).map((f) => f.name));
+    const stack = (s: ProjectState, id: string) => followedText(effectiveTokens(s), id);
+    const pairings = availablePairings(installedFonts(s0));
+    const by = (id: string) => pairings.find((p) => p.id === id)!;
     expect(activePairing(pairings, stack(s0, 'font.display'), stack(s0, 'font.body'))?.id).toBe('fraunces-inter');
-    const playfair = pairings.find((p) => p.id === 'playfair-lora')!;
-    const s = apply(s0, pairingOps(playfair, stack(s0, 'font.display'), stack(s0, 'font.body')));
-    expect(stack(s, 'font.display')).toContain('Playfair Display Variable');
-    expect(stack(s, 'font.body')).toContain('Lora Variable');
+    const playfair = by('playfair-lora');
+    const s = apply(s0, pairingOps(playfair, effectiveTokens(s0)));
+    expect(stack(s, 'font.display')).toBe(playfair.displayStack);
+    expect(stack(s, 'font.body')).toBe(playfair.bodyStack);
     expect(activePairing(pairings, stack(s, 'font.display'), stack(s, 'font.body'))).toBe(playfair);
-    expect(pairingOps(playfair, stack(s, 'font.display'), stack(s, 'font.body'))).toEqual([]);
-    const loraDm = pairings.find((p) => p.id === 'lora-dm-sans')!;
-    expect(pairingOps(loraDm, stack(s, 'font.display'), stack(s, 'font.body'))).toEqual([
-      { type: 'token.set', tokenId: 'font.display', value: 'Lora' },
-      { type: 'token.set', tokenId: 'font.body', value: 'DM Sans' }
+    expect(pairingOps(playfair, effectiveTokens(s))).toEqual([]);
+    expect(pairingOps(by('lora-dm-sans'), effectiveTokens(s))).toEqual([
+      { type: 'token.set', tokenId: 'font.display', value: by('lora-dm-sans').displayStack },
+      { type: 'token.set', tokenId: 'font.body', value: by('lora-dm-sans').bodyStack }
     ]);
-    expect(pairingOps(pairings[0], "'Fraunces Variable', serif", "'Lora Variable', serif")).toEqual([{ type: 'token.set', tokenId: 'font.body', value: 'Inter' }]);
+    // A matching display font with another body font is not the pairing.
+    expect(activePairing(pairings, playfair.displayStack, by('fraunces-inter').bodyStack)).toBeNull();
+    expect(pairingOps(by('fraunces-inter'), effectiveTokens(s0))).toEqual([]);
+  });
+
+  it('sets a font that follows the other one, so both end up as the pairing', () => {
+    let s = set(starter(), 'font.body', 'Lora');
+    s = set(s, 'font.display', { token: 'font.body' });
+    const pairings = availablePairings(installedFonts(s));
+    const loraDm = pairings.find((p) => p.id === 'lora-dm-sans')!;
+    s = apply(s, pairingOps(loraDm, effectiveTokens(s)));
+    expect(followedText(effectiveTokens(s), 'font.display')).toBe(loraDm.displayStack);
+    expect(followedText(effectiveTokens(s), 'font.body')).toBe(loraDm.bodyStack);
+  });
+
+  it('tells a shipped font from a project font of the same name', () => {
+    const pairings = availablePairings(installedFonts(starter()));
+    const fraunces = pairings[0];
+    // A project's own font called Inter, as its stack starts.
+    expect(activePairing(pairings, fraunces.displayStack, "'Inter', system-ui, sans-serif")).toBeNull();
+    expect(pairingOps(fraunces, [{ id: 'font.display', label: 'Display', group: 'font', value: fraunces.displayStack }, { id: 'font.body', label: 'Body', group: 'font', value: "'Inter', sans-serif" }])).toEqual([
+      { type: 'token.set', tokenId: 'font.body', value: fraunces.bodyStack }
+    ]);
   });
 });

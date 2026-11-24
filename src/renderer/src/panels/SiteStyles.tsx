@@ -152,7 +152,7 @@ const SPECIMEN_WIDTHS = [
   { label: 'Desktop', width: 1280 }
 ] as const;
 /** A size drawn small enough for the dock and in the same order as the real ones: body text reads at 13px. */
-const specimenPx = (px: number) => Math.round(13 * Math.sqrt(Math.max(px, 1) / 16) * 2) / 2;
+const specimenPx = (px: number) => Math.round(13 * Math.pow(Math.max(px, 1) / 16, 0.45) * 2) / 2;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const refOf = (v: unknown) => (v && typeof v === 'object' && 'token' in (v as object) ? String((v as { token: string }).token) : null);
@@ -940,12 +940,10 @@ export function SiteStyles() {
   const brand = byId('color.brand') ?? colors[0];
 
   // Font pairings: both fonts the theme ships, set together in one step.
-  const shipped = installedFonts(st);
-  const pairings = byId('font.display')?.group === 'font' && byId('font.body')?.group === 'font' ? availablePairings(shipped.map((f) => f.name)) : [];
+  const pairings = byId('font.display')?.group === 'font' && byId('font.body')?.group === 'font' ? availablePairings(installedFonts(st)) : [];
   const pairing = activePairing(pairings, fontStack('font.display'), fontStack('font.body'));
-  const shippedStack = (name: string) => shipped.find((f) => f.name === name)?.stack;
   const choosePairing = (p: (typeof pairings)[number]) => {
-    const ops = pairingOps(p, fontStack('font.display'), fontStack('font.body'));
+    const ops = pairingOps(p, tokens);
     if (ops.length) void applyOps(ops, `Use ${p.display} and ${p.body}`, undefined, snap.revision);
   };
 
@@ -953,8 +951,9 @@ export function SiteStyles() {
   const roles = scaleRoles(theme.tokens);
   const scale = activeTypeScale(tokens, theme.tokens);
   const scaleName = (c: TypeScaleChoice) => (c === 'theme' ? 'Theme' : typeScale(c).label);
+  const scaleDescription = (c: TypeScaleChoice) => (c === 'theme' ? `${theme.name}'s own sizes, line heights and letter spacing.` : typeScale(c).description);
   const chooseScale = (c: TypeScaleChoice) => {
-    const ops = typeScaleOps(tokens, theme.tokens, c);
+    const { ops } = typeScaleOps(tokens, theme.tokens, overrides, c);
     if (ops.length) void applyOps(ops, c === 'theme' ? "Use the theme's type scale" : `Use the ${typeScale(c).label} type scale`, undefined, snap.revision);
   };
   const specimen = roles.flatMap((id) => {
@@ -963,10 +962,20 @@ export function SiteStyles() {
     if (!t || !v) return [];
     const famRef = refOf(v.family);
     const ends = clampRange(v.size);
-    const at = (w: number, i: 0 | 1) => sizeAtWidth(v.size, w) ?? ends?.[i] ?? toPx(v.size);
-    return [{ id, label: t.label, v, stack: famRef ? fontStack(famRef) : String(v.family), sizes: SPECIMEN_WIDTHS.map((w, i) => at(w.width, i as 0 | 1)) }];
+    return [
+      {
+        id,
+        label: t.label,
+        v,
+        stack: famRef ? fontStack(famRef) : String(v.family),
+        // Worked out where the size allows; a size written some other way is shown as written, never guessed.
+        sizes: SPECIMEN_WIDTHS.map((w, i) => {
+          const px = sizeAtWidth(v.size, w.width);
+          return { px, drawn: specimenPx(px ?? ends?.[i] ?? toPx(v.size) ?? 16), text: px === null ? friendlySize(v.size) : `${Math.round(px)}px` };
+        })
+      }
+    ];
   });
-  const scaleNoteId = `${uid}-scale-note`;
 
   const jumps = [
     { id: 'tok-basics', label: 'Basics' },
@@ -1169,9 +1178,9 @@ export function SiteStyles() {
                 {pairings.map((p) => (
                   <button key={p.id} className="ss-pairing" aria-pressed={pairing?.id === p.id} onClick={() => choosePairing(p)}>
                     <span className="ss-pairing-fonts">
-                      <span style={{ fontFamily: shippedStack(p.display) }}>{p.display}</span>
+                      <span style={{ fontFamily: p.displayStack }}>{p.display}</span>
                       <span className="faint"> + </span>
-                      <span style={{ fontFamily: shippedStack(p.body) }}>{p.body}</span>
+                      <span style={{ fontFamily: p.bodyStack }}>{p.body}</span>
                     </span>
                     <span className="ss-pairing-note">{p.note}</span>
                   </button>
@@ -1202,39 +1211,35 @@ export function SiteStyles() {
             </div>
             <div className="segmented full ss-scale-choices">
               {TYPE_SCALE_CHOICES.map((c) => (
-                <button key={c} aria-pressed={scale === c} aria-describedby={scaleNoteId} onClick={() => chooseScale(c)}>
+                <button key={c} aria-pressed={scale === c} title={scaleDescription(c)} onClick={() => chooseScale(c)}>
                   {scaleName(c)}
                 </button>
               ))}
             </div>
-            <p className="ss-scale-note" id={scaleNoteId}>
-              {scale === 'theme'
-                ? `${theme.name}'s own sizes.`
-                : scale
-                  ? typeScale(scale).description
-                  : 'Sizes of your own. A scale sets every heading and text size at once, keeping your fonts.'}{' '}
-              Each style below stays editable.
+            <p className="ss-scale-note">
+              {scale ? scaleDescription(scale) : 'Sizes of your own. A scale sets every heading and text size at once, keeping your fonts.'} Each style below stays editable.
             </p>
-            <div className="ss-type-specimen" role="img" aria-label={`Text styles at phone and desktop widths: ${specimen.map((r) => `${r.label} ${r.sizes.map((px) => (px === null ? '' : `${Math.round(px)}px`)).join(' to ')}`).join(', ')}`}>
+            <div
+              className="ss-type-specimen"
+              role="img"
+              aria-label={SPECIMEN_WIDTHS.map((w, i) => `${w.label}, ${w.width} pixels wide: ${specimen.map((r) => `${r.label} ${r.sizes[i].text}`).join(', ')}`).join('. ')}
+            >
               {SPECIMEN_WIDTHS.map((w, i) => (
                 <div className="ss-type-col" key={w.label} aria-hidden="true">
                   <div className="ss-type-head">
                     {w.label} <span className="faint">{w.width}px</span>
                   </div>
-                  {specimen.map((r) => {
-                    const px = r.sizes[i];
-                    return (
-                      <div className="ss-type-row" key={r.id}>
-                        <span
-                          className="ss-type-sample"
-                          style={{ fontFamily: r.stack, fontWeight: r.v.weight, fontSize: specimenPx(px ?? 16), letterSpacing: r.v.tracking, textTransform: (r.v.transform as React.CSSProperties['textTransform']) ?? 'none' }}
-                        >
-                          {r.label}
-                        </span>
-                        <span className="ss-type-px">{px === null ? friendlySize(r.v.size) : `${Math.round(px)}px`}</span>
-                      </div>
-                    );
-                  })}
+                  {specimen.map((r) => (
+                    <div className="ss-type-row" key={r.id}>
+                      <span
+                        className="ss-type-sample"
+                        style={{ fontFamily: r.stack, fontWeight: r.v.weight, fontSize: r.sizes[i].drawn, letterSpacing: r.v.tracking, textTransform: (r.v.transform as React.CSSProperties['textTransform']) ?? 'none' }}
+                      >
+                        {r.label}
+                      </span>
+                      <span className="ss-type-px">{r.sizes[i].text}</span>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>

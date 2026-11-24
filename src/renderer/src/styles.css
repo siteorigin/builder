@@ -1416,8 +1416,9 @@ iframe { color-scheme: light dark; }
 .ss-pairing { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; padding: 7px 9px; border: 0; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); color: var(--text); text-align: left; }
 .ss-pairing:hover { background: var(--hover); }
 .ss-pairing[aria-pressed='true'] { background: var(--accent-soft); box-shadow: inset 0 0 0 1.5px var(--accent); }
-.ss-pairing-fonts { max-width: 100%; font-size: 14px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-pairing-fonts { max-width: 100%; font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
 .ss-pairing-note { font-size: 12px; line-height: 1.3; color: var(--text-3); }
+.ss-pairing[aria-pressed='true'] .ss-pairing-note { color: var(--text-2); }
 /* Type scale: the choices, what the chosen one does, and every scaled style at a phone's and a desktop's width. */
 .ss-scale { display: flex; flex-direction: column; gap: 6px; }
 .ss-scale-choices { flex-wrap: wrap; }
@@ -1426,9 +1427,10 @@ iframe { color-scheme: light dark; }
 .ss-type-specimen { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border-radius: var(--r-sm); background: var(--border); box-shadow: 0 0 0 1px var(--border-strong); overflow: hidden; }
 .ss-type-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 10px 10px; background: var(--raised); color: var(--text); }
 .ss-type-head { padding-bottom: 2px; font-size: 12px; font-weight: 600; color: var(--text-2); }
-.ss-type-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.ss-type-sample { flex: 1; min-width: 0; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-type-px { flex: none; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* Each sample on its own line, its size under it, so the largest samples keep the column's whole width. */
+.ss-type-row { display: flex; flex-direction: column; min-width: 0; }
+.ss-type-sample { min-width: 0; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-type-px { font-size: 11px; line-height: 1.3; color: var(--text-3); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 /* Text styles: each one previewed in its own font, weight and (capped) size; the numbers open below. */
 .ss-text-list { display: flex; flex-direction: column; border-radius: var(--r-md); box-shadow: 0 0 0 1px var(--border-strong); background: var(--raised); overflow: hidden; }
 .ss-text + .ss-text { border-top: 1px solid var(--border); }

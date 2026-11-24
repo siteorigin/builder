@@ -669,16 +669,17 @@ describe('update_site_brand', () => {
   });
 
   it('sets a type scale with a new heading font in one batch, undone in one step', async () => {
-    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { headingFont: 'Lora', typeScale: 'editorial' })], () => finish()]);
-    await run('Use Lora for headings, with an editorial feel');
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { headingFont: 'Lora', typeScale: 'bold-display' })], () => finish()]);
+    await run('Use Lora for headings, with big bold headlines');
     const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, { enum?: string[] }> };
     expect(schema.properties.typeScale.enum).toEqual([...TYPE_SCALE_CHOICES]);
     const s = session.state;
     expect(String(s.tokens.overrides['font.display'])).toContain('Lora Variable');
-    const want = scaleMetrics('editorial');
+    const want = scaleMetrics('bold-display');
     for (const role of TYPE_SCALE_ROLES) expect(s.tokens.overrides[role], role).toMatchObject(want[role]);
     // The styles keep following the fonts, so the new heading font shows in every heading.
     expect(s.tokens.overrides['text.display']).toMatchObject({ family: { token: 'font.display' }, weight: 480 });
+    expect(s.tokens.overrides['text.h3']).toMatchObject({ family: { token: 'font.body' }, weight: 600 });
     expect(s.tokens.overrides['text.body']).toMatchObject({ family: { token: 'font.body' } });
     expect(lastResult(adapter.requests[1])).toMatchObject({ ok: true, changed: TYPE_SCALE_ROLES.length + 1 });
     expect(await compileProject(s)).toEqual([]);
@@ -694,6 +695,21 @@ describe('update_site_brand', () => {
     // The message names the field and the scales it can take.
     expect(r.message).toMatch(/^typeScale: .*editorial/);
     expect(session.state.tokens.overrides).toEqual({});
+  });
+
+  it('refuses a type scale it cannot apply whole, naming the style, and changes nothing else in the call', async () => {
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { siteName: 'Kept Out', typeScale: 'compact' })], () => finish()], {}, 'business', (s) => {
+      // A letter case the engine refuses, as a hand-edited document could hold.
+      s.tokens.overrides['text.h3'] = { family: { token: 'font.body' }, size: '1.2rem', lineHeight: '1.35', weight: 600, tracking: '0em', transform: 'full-width' };
+    });
+    const before = structuredClone(session.state.tokens);
+    await run('Rename the site and tighten the type');
+    const r = lastResult(adapter.requests[1]);
+    expect(r.error).toBe('VALIDATION_FAILED');
+    expect(r.fields).toEqual([expect.objectContaining({ field: 'typeScale' })]);
+    expect(r.fields[0].message).toContain('"Heading 3"');
+    expect(session.state.site.name).toBe('Test Studio');
+    expect(session.state.tokens).toEqual(before);
   });
 
   it('derives readable colors for both dark and light brand colors', () => {
