@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import type { TableProp } from '@shared/types';
 import type { TableEdit } from '@engine/table';
@@ -31,31 +31,6 @@ type After = { at: number; from: string } & (
   | { kind: 'removed'; axis: 'row' | 'column'; id: string; order: string[] }
   | { kind: 'moved'; axis: 'row' | 'column'; id: string; direction: TableMove; index: number; start: number; title: string }
 );
-
-/**
- * A one-line value that wraps, so the whole of it can always be read: Enter still saves it (as in every single-line
- * field) and line breaks in pasted text become spaces, so a cell never gains a line the site would not show.
- */
-function Wrapping({ children }: { children: ReactNode }) {
-  const enter = (e: KeyboardEvent) => {
-    const t = e.target;
-    if (e.key !== 'Enter' || !(t instanceof HTMLTextAreaElement) || e.nativeEvent.isComposing || e.keyCode === 229) return;
-    // Blur is the field's one commit path, so Enter saves exactly as it does in a single-line field.
-    e.preventDefault();
-    t.blur();
-  };
-  const paste = (e: ClipboardEvent) => {
-    const text = e.clipboardData.getData('text/plain');
-    if (!(e.target instanceof HTMLTextAreaElement) || !/[\r\n]/.test(text)) return;
-    e.preventDefault();
-    document.execCommand('insertText', false, text.replace(/\s*[\r\n]+\s*/g, ' '));
-  };
-  return (
-    <div className="table-wrap" onKeyDownCapture={enter} onPasteCapture={paste}>
-      {children}
-    </div>
-  );
-}
 
 /**
  * A table property, shown as the table it is: a header over its values, each row a disclosure that opens one field
@@ -302,18 +277,17 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
                           {isOpen && (
                             <div className="list-editor-body table-grid-form">
                               {columns.map((c, ci) => (
-                                <Wrapping key={c.id}>
+                                <div key={c.id} className="table-wrap">
                                   <Field label={columnTitle(c, ci)}>
                                     <DraftInput
                                       id={key(`cell-${r.id}-${c.id}`)}
-                                      multiline
-                                      rows={1}
+                                      wrap
                                       className="textarea table-text"
                                       value={cellText(r, c.id)}
                                       onCommit={(v) => void onTable({ action: 'setCell', rowId: r.id, columnId: c.id, value: v })}
                                     />
                                   </Field>
-                                </Wrapping>
+                                </div>
                               ))}
                               <div className="table-row-tools">
                                 <span className="table-row-move">
@@ -375,18 +349,17 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
                 <span className="table-col-num" aria-hidden="true">
                   {i + 1}
                 </span>
-                <Wrapping>
+                <div className="table-wrap">
                   <DraftInput
                     id={key(`colname-${c.id}`)}
-                    multiline
-                    rows={1}
+                    wrap
                     className="textarea table-text sm"
                     value={typeof c.label === 'string' ? c.label : ''}
                     placeholder={`Column ${i + 1}`}
                     ariaLabel={`Column ${i + 1} name`}
                     onCommit={(v) => void onTable({ action: 'renameColumn', columnId: c.id, value: v })}
                   />
-                </Wrapping>
+                </div>
                 <span className="table-move">
                   <button className="icon-btn sm" id={key(`colleft-${c.id}`)} aria-label={`Move column ${title} left`} title="Move left" disabled={i === 0} onClick={() => move('column', c.id, i, 'left', title)}>
                     <ArrowLeft />

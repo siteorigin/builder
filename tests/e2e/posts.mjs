@@ -183,6 +183,74 @@ await win.locator('.posts-panel').getByRole('button', { name: 'Back to writing' 
 await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), '/', 'the canvas returns to the page'), 60000);
 assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer shows again');
 
+step('a long title wraps instead of clipping, and Enter saves it rather than adding a line (#561)');
+const titleField = win.getByLabel('Post title');
+/** How the title shows: its lines, and whether any of it lies out of sight (sideways or below). */
+const titleFit = () =>
+  titleField.evaluate((el) => {
+    const line = parseFloat(getComputedStyle(el).lineHeight);
+    return { lines: Math.round(el.clientHeight / line), clippedSideways: el.scrollWidth > el.clientWidth + 1, clippedBelow: el.scrollHeight > el.clientHeight + 1, focused: document.activeElement === el };
+  });
+const savedTitle = () => entryFile(entryId).title;
+const longTitle = 'Designing for Winter Light in the Pacific Northwest';
+await titleField.click();
+await titleField.fill(longTitle);
+let fit = await titleFit();
+assert.ok(fit.lines >= 2, `a title of ${longTitle.length} characters takes more than one line at the editor's width: ${JSON.stringify(fit)}`);
+assert.equal(fit.clippedSideways || fit.clippedBelow, false, `none of the title is out of sight: ${JSON.stringify(fit)}`);
+// Enter saves the title and leaves the field; it adds no line.
+await titleField.press('Enter');
+await eventually(() => assert.equal(savedTitle(), longTitle, 'Enter saves the whole title'), 20000);
+assert.equal((await titleFit()).focused, false, 'and leaves the field');
+assert.equal(await titleField.inputValue(), longTitle, 'the title has no added line');
+// The longest title the project keeps shows whole, too.
+const longest = 'Winter light on the water '.repeat(8).trim().slice(0, 200);
+assert.equal(longest.length, 200);
+await titleField.click();
+await titleField.fill(longest);
+fit = await titleFit();
+assert.ok(fit.lines >= 4, `a title of the most characters wraps over several lines: ${JSON.stringify(fit)}`);
+assert.equal(fit.clippedSideways || fit.clippedBelow, false, `all of it shows: ${JSON.stringify(fit)}`);
+await win.screenshot({ path: join(SHOTS, 'posts-long-title.png') });
+await titleField.press('Enter');
+await eventually(() => assert.equal(savedTitle(), longest), 20000);
+// Pasted line breaks become spaces.
+await titleField.click();
+await titleField.press(`${MOD}+a`);
+await titleField.evaluate((el) => {
+  const data = new DataTransfer();
+  data.setData('text/plain', 'Spring glaze tests\nand what we learned\r\n');
+  el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+});
+assert.equal(await titleField.inputValue(), 'Spring glaze tests and what we learned ', 'pasted line breaks become spaces');
+await titleField.press('Enter');
+await eventually(() => assert.equal(savedTitle(), 'Spring glaze tests and what we learned', 'the saved title is one line'), 20000);
+// Text put in some other way (an input method, a drop) is one line before it is counted or saved.
+await titleField.click();
+await titleField.press(`${MOD}+a`);
+await win.keyboard.insertText('Raku firing\nnotes\r\nfrom the weekend');
+assert.equal(await titleField.inputValue(), 'Raku firing notes from the weekend', 'inserted line breaks become spaces');
+await titleField.press('Enter');
+await eventually(() => assert.equal(savedTitle(), 'Raku firing notes from the weekend', 'the saved title is one line'), 20000);
+// A title over the limit is kept whole and refused, with the reason beside it; Escape puts the saved one back.
+const tooLong = 'Winter light on the water '.repeat(9).trim().slice(0, 201);
+assert.equal(tooLong.length, 201);
+await titleField.click();
+await titleField.fill(tooLong);
+await titleField.press('Enter');
+await eventually(async () => assert.equal(await titleField.getAttribute('aria-invalid'), 'true', 'a title over the limit is marked'), 20000);
+assert.equal(await titleField.inputValue(), tooLong, 'and kept whole');
+assert.equal(savedTitle(), 'Raku firing notes from the weekend', 'but not saved');
+await titleField.click();
+await titleField.press('Escape');
+await eventually(async () => assert.equal(await titleField.inputValue(), 'Raku firing notes from the weekend', 'Escape puts the saved title back'), 20000);
+// An empty title is still refused: the saved one stays.
+await titleField.click();
+await titleField.fill('');
+await titleField.press('Enter');
+await eventually(async () => assert.equal(await titleField.inputValue(), 'Raku firing notes from the weekend', 'the saved title comes back'), 20000);
+assert.equal(savedTitle(), 'Raku firing notes from the weekend', 'an empty title is not saved');
+
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 cleanup();

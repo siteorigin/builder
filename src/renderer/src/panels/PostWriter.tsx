@@ -541,7 +541,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       </div>
       <div className="post-scroll">
         <article className="post-page">
-          <DraftInput className="input post-title-input" ariaLabel="Post title" value={entry.title} limit={MAX_POST_TITLE} placeholder="Title" onCommit={(v) => (v.trim() ? (v.trim() !== entry.title ? update({ title: v.trim() }, 'Rename post') : undefined) : refuse())} />
+          {/* A title is one line that wraps: all of it stays readable, and Enter saves it instead of adding a line. */}
+          <DraftInput wrap className="input post-title-input" ariaLabel="Post title" value={entry.title} limit={MAX_POST_TITLE} placeholder="Title" onCommit={(v) => (v.trim() ? (v.trim() !== entry.title ? update({ title: v.trim() }, 'Rename post') : undefined) : refuse())} />
           <details className="post-details">
             <summary>
               {formatArticleDate(entry.publishedAt, state.site.language)}
