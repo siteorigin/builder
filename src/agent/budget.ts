@@ -19,12 +19,12 @@ const TOMBSTONE = '[Superseded ';
 export const MIN_OUTPUT_TOKENS = 1024;
 
 /**
- * About four characters of English or code to a token. A character outside ASCII (Chinese, Japanese, Korean, most
- * symbols) is often a token of its own, so it counts as one: a quarter would let such text past a window it overflows.
+ * About four characters to a token. Chinese, Japanese and Korean characters are often a token each, so they count as
+ * one: at a quarter, such text could slip past a window it overflows.
  */
+const WIDE = /[\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/g;
 export const estimateTokens = (text: string) => {
-  let wide = 0;
-  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 0x7f) wide++;
+  const wide = text.match(WIDE)?.length ?? 0;
   return Math.ceil((text.length - wide) / 4) + wide;
 };
 

@@ -512,6 +512,9 @@ describe('why a request does not fit', () => {
     expect(estimateRequestTokens('', [], [user(4000)])).toBe(1000);
     const han: CanonicalItem = { kind: 'user', text: '漢'.repeat(4000) };
     expect(estimateRequestTokens('', [], [han])).toBe(4000);
+    expect(estimateRequestTokens('', [], [{ kind: 'user', text: 'ひらがな한국어' }])).toBe(7);
+    // Accented Latin, smart punctuation and emoji keep the usual rate.
+    expect(estimateRequestTokens('', [], [{ kind: 'user', text: 'é—“😀'.repeat(200) }])).toBe(250);
     const v = contextVerdict({ ...base, system: '', items: [han], current: han, windowTokens: 4096, maxOutputTokens: 8192, rejected: false });
     expect(v.kind).toBe('setup');
   });

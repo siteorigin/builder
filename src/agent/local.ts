@@ -147,7 +147,7 @@ export function contextOverflow(body: string): ContextOverflow & { server?: Loca
   const fields = (v && typeof v.error === 'object' && v.error ? v.error : (v ?? {})) as Record<string, unknown>;
   const text = serverMessage(body);
   const windowTokens = count(fields.n_ctx) ?? first(text, [/available context size \((\d+) tokens?\)/i, /maximum context length is (\d+)/i, /context length of only (\d+)/i, /maximum context size is (\d+)/i]);
-  const promptTokens = count(fields.n_prompt_tokens) ?? first(text, [/request \((\d+) tokens?\)/i, /\((\d+) in the messages/i, /but (\d+) tokens were provided/i, /(\d+) input tokens/i]);
+  const promptTokens = count(fields.n_prompt_tokens) ?? first(text, [/request \((\d+) tokens?\)/i, /\((\d+) in the messages/i, /but (\d+) tokens were provided/i, /request has (\d+) input tokens/i]);
   const server: LocalServerKind | undefined =
     fields.type === 'exceed_context_size_error' || /available context size/i.test(text) ? 'llama.cpp' : /maximum context length is \d+/i.test(text) ? 'vllm' : /context length of only|maximum context size is/i.test(text) ? 'lm-studio' : undefined;
   return { ...(windowTokens ? { windowTokens } : {}), ...(promptTokens ? { promptTokens } : {}), ...(server ? { server } : {}) };
