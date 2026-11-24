@@ -825,7 +825,8 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
 .toolbar-end { justify-content: flex-end; }
 /* 6px between neighbouring controls: a 2px focus ring drawn 2px out still clears the next control's edge. */
 .toolbar-group { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.toolbar-mark { display: grid; place-items: center; flex: none; margin: 0 2px; }
+.toolbar-mark { display: grid; place-items: center; flex: none; width: 28px; height: 28px; margin: 0; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer; transition: background 120ms; }
+.toolbar-mark:hover { background: var(--hover); }
 .toolbar-mark svg { display: block; }
 .toolbar-center { display: flex; align-items: center; gap: 6px; }
 /* Dividers mark sub-groups inside a region (viewport | mode, history | panels); regions themselves are set apart by
@@ -3407,7 +3408,7 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .chip.add:hover { border-color: var(--accent); color: var(--accent-text); }
 /* Title bar: every empty stretch between controls is a window drag region, so double-clicking it does the
    system's title-bar action (Zoom on macOS: the window fills the screen without going full screen).
-   Controls opt out individually; the mark, the dividers and the blank end of the status slot drag. */
+   Controls opt out individually (the mark is a button too); the dividers and the blank end of the status slot drag. */
 .toolbar :is(button, label, .segmented, .save-state) { -webkit-app-region: no-drag; }
 #root, .editor, .welcome { width: 100%; }
 /* The top of Welcome's main area is a window drag strip; the scrolling pane itself is not. */
