@@ -133,7 +133,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey']);
 /**
  * Svelte's runes, by the name a local would hide them under: a property local named `state` would make `$state(...)`
  * read it as a store, so properties never take these names as locals either.
@@ -2248,17 +2248,18 @@ function emptyFrameAttr(ctx: EmitCtx, node: GraphNode & { kind: 'element' }): st
 /**
  * Editor variants: `so_editing`, whether the editor shows the page in Edit (the bridge marks <html> with
  * `data-so-editing`), for what the markup shows only then. False until mounted, so the server's render and the
- * first paint have none of it, as Preview has none.
+ * first paint have none of it, as Preview has none. The page's globals are reached through `globalThis`, which no
+ * property's local takes (see INTERNAL_LOCALS): a component's own property may be called `document`.
  */
 function editingState(ctx: EmitCtx): string {
   if (!ctx.usesEditing) return '';
   return [
     `\tlet so_editing = $state(false);`,
     `\t$effect(() => {`,
-    `\t\tconst html = document.documentElement;`,
+    `\t\tconst html = globalThis.document.documentElement;`,
     `\t\tconst sync = () => (so_editing = html.hasAttribute('data-so-editing'));`,
     `\t\tsync();`,
-    `\t\tconst watch = new MutationObserver(sync);`,
+    `\t\tconst watch = new globalThis.MutationObserver(sync);`,
     `\t\twatch.observe(html, { attributes: true, attributeFilter: ['data-so-editing'] });`,
     `\t\treturn () => watch.disconnect();`,
     `\t});`

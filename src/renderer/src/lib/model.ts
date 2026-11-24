@@ -304,8 +304,9 @@ function ancestry(state: ProjectState, ref: ElementRef): Set<string> {
  * the outermost level; each further click steps in one level from the selection (Section, then the Card in
  * it, then the Card's heading). A click elsewhere inside something already selected or worked in selects the
  * level just inside it there, so moving between a component's parts stays at the parts. `deep` (a modifier,
- * a double-click) goes straight to the innermost level, and so does a click on an empty container's own frame
- * (a Grid inserted a moment ago): the frame names that container, and Insert then fills it.
+ * a double-click) goes straight to the innermost level, and so does a click on the frame of an empty container of
+ * the page's own (a Grid inserted a moment ago): the frame names that container, and Insert then fills it. One in a
+ * placed component's design is stepped to as any part is: Insert cannot put anything there from the page.
  */
 export function selectionFromChain(state: ProjectState, chain: BridgeDesc[], current: ElementRef | null, deep: boolean): ElementRef | null {
   // Descriptors that name nothing in the project (stale, or not the editor's) are ignored.
@@ -330,8 +331,8 @@ export function selectionFromChain(state: ProjectState, chain: BridgeDesc[], cur
   // pointer, still selects it, and each repeated item (a Card) stays a step of its own.
   levels = levels.filter((l, i) => i === levels.length - 1 || !layoutPart(state, l));
   if (!levels.length) return boundaryOf(state, refs[0]);
-  // The pointer on an empty container's frame: the innermost element under it is that container.
-  const onFrame = refs[0] === chainRefs[0] && isEmptyLayout(resolveRef(state, refs[0]).node);
+  // The pointer on an empty container's frame: the innermost element under it is that container, on the page itself.
+  const onFrame = refs[0] === chainRefs[0] && refs[0].owner.kind === 'page' && !refs[0].instancePath.length && isEmptyLayout(resolveRef(state, refs[0]).node);
   if (deep || onFrame) return levels[levels.length - 1];
   if (current) {
     const around = ancestry(state, current);

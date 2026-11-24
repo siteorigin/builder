@@ -3500,8 +3500,8 @@ style.textContent =
   // see and pick, with a grid's columns ruled in its gaps where its items will go. The label spans every column, so
   // even columns that fit as many as they can are all there. In the container's own colours, so it shows on a dark
   // section too. Preview leaves the container as visitors get it: with nothing in it, often no height at all.
-  ' html[data-so-editing] [data-so-empty-layout] { outline: 1px dashed color-mix(in srgb, currentColor 45%, transparent); outline-offset: -1px; column-rule: 1px dashed color-mix(in srgb, currentColor 35%, transparent); column-rule-break: none; }' +
-  ' html[data-so-editing] [data-so-empty-layout]::before { content: attr(data-so-empty-layout) / ""; display: block; grid-column: 1 / -1; flex: 1 1 auto; align-self: stretch; box-sizing: border-box; min-block-size: 72px; min-inline-size: 0; padding: 6px 10px; color: color-mix(in srgb, currentColor 65%, transparent); font: 600 12px/1.35 system-ui, -apple-system, sans-serif; letter-spacing: normal; text-align: start; text-transform: none; }' +
+  ' html[data-so-editing] [data-so-empty-layout] { outline: 1px dashed color-mix(in srgb, currentColor 55%, transparent); outline-offset: -1px; column-rule: 1px dashed color-mix(in srgb, currentColor 50%, transparent); column-rule-break: none; }' +
+  ' html[data-so-editing] [data-so-empty-layout]::before { content: attr(data-so-empty-layout) / ""; display: block; grid-column: 1 / -1; flex: 1 1 auto; align-self: stretch; box-sizing: border-box; min-block-size: 72px; min-inline-size: 0; padding: 6px 10px; color: color-mix(in srgb, currentColor 80%, transparent); font: 600 12px/1.35 system-ui, -apple-system, sans-serif; letter-spacing: normal; text-align: start; text-transform: none; }' +
   // Edit shows every section as designed: an entrance the site's observer armed (it arms nothing in Edit) never hides one.
   ' html[data-so-editing] [data-appear-state]:not(#so-editor) { animation: none !important; }';
 document.head.appendChild(style);

@@ -36,6 +36,29 @@ function site() {
 }
 
 const nodeOf = (s: ProjectState, pageId: string, id: string) => s.pages[pageId].nodes[id];
+
+/**
+ * A component of the site's own holding an empty Section, so its file places an empty slot, with properties called
+ * "document" and "globalThis", and one called "so_editing" as only a definition written by hand (or a theme pack)
+ * can have.
+ */
+export function holder(): { s: ProjectState; defId: string } {
+  let s: ProjectState = createStarterState('blank', 'Holder', false);
+  const owner = { kind: 'page' as const, id: s.site.homePageId };
+  let r = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' }]);
+  const outer = r.results[0].nodeId as string;
+  r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: outer, slot: 'content', primitive: 'stack' }]);
+  const stack = r.results[0].nodeId as string;
+  r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: stack, componentId: 'layout.section' }]);
+  r = applyOperations(r.state, [{ type: 'component.createFromNode', owner, nodeId: stack, name: 'Holder' }]);
+  const defId = r.results[0].definitionId as string;
+  s = applyOperations(r.state, [
+    { type: 'component.setPropSchema', definitionId: defId, prop: 'document', schema: { type: 'string', label: 'Document', default: 'Brochure' } },
+    { type: 'component.setPropSchema', definitionId: defId, prop: 'globalThis', schema: { type: 'string', label: 'Scope', default: 'Here' } }
+  ]).state;
+  s.components[defId].properties.so_editing = { ...s.components[defId].properties.document, label: 'Editing' };
+  return { s, defId };
+}
 /** The opening tag of the element the editor marks with `id`. */
 const tagOf = (src: string, id: string) => src.match(new RegExp(`<[a-z]+ [^>]*data-so-node="${id}"[^>]*>`))?.[0] ?? '';
 
@@ -120,6 +143,22 @@ describe('an empty slot’s placeholder in the editor preview', () => {
     expect(generateProject(s, { instrument: true }).get(LAYOUT)).not.toContain('so_editing');
     for (const [path, src] of generateProject(s)) expect(src, path).not.toMatch(EDITOR_ONLY);
   });
+
+  it('keeps its state apart from a component’s own properties, whatever they are called', () => {
+    const { s, defId } = holder();
+    const dev = generateProject(s, { instrument: true });
+    const file = [...dev.values()].find((src) => src.includes(`siteorigin/components/${defId}/component.json`))!;
+    expect(file).toContain('{#if so_editing}');
+    // The properties called "so_editing" and "globalThis" have locals of their own; "document" leaves the page's alone.
+    expect(file.match(/let so_editing = \$state\(false\);/g)).toHaveLength(1);
+    expect(file).toMatch(/so_editing: prop_so_editing = /);
+    expect(file).toMatch(/globalThis: prop_globalThis = /);
+    expect(file).toContain('globalThis.document.documentElement');
+    expect(file).toContain('new globalThis.MutationObserver(sync)');
+    expect(() => compile(file, { filename: 'Holder.svelte', generate: 'client', runes: true })).not.toThrow();
+    // Exported, the property keeps its name, and nothing of the editor's state is there.
+    for (const [path, src] of generateProject(s)) expect(src, path).not.toMatch(/let so_editing|data-so-editing|so-slot-empty|data-so-editor-only|data-so-empty-layout/);
+  });
 });
 
 describe('a click on an empty container’s frame', () => {
@@ -138,8 +177,22 @@ describe('a click on an empty container’s frame', () => {
     // Filled, a click on the grid's own space steps in one level at a time again: the section first.
     const filled = applyOperations(s, [{ type: 'node.insert', owner, parentId: ids.grid, primitive: 'paragraph', text: 'In the grid' }]).state;
     expect(strip(selectionFromChain(filled, chain(filled, ids.grid), null, false))).toEqual(at([], section));
-    // A stale descriptor under the pointer is not taken for the frame.
-    const stale = [{ ...descOf(s, at([], ids.grid))!, node: 'gone' }, ...chain(s, ids.grid).slice(1)];
+    // Something under the pointer the project no longer has (stale, inside the grid) is not the grid's frame.
+    const stale = [{ ...descOf(s, at([], ids.grid))!, node: 'gone' }, ...chain(s, ids.grid)];
     expect(strip(selectionFromChain(s, stale, null, false))).toEqual(at([], section));
+  });
+
+  it('steps in as to any part when the empty container is in a placed component’s design, which Insert cannot fill', () => {
+    const { s: base, owner, section, ids } = site();
+    const made = applyOperations(base, [{ type: 'component.createFromNode', owner, nodeId: ids.row, name: 'Empty row' }]);
+    const s = made.state;
+    const placement = made.results[0].nodeId as string;
+    const root = s.components[made.results[0].definitionId as string].tree!.rootIds[0];
+    expect(isEmptyLayout(s.components[made.results[0].definitionId as string].tree!.nodes[root])).toBe(true);
+    const at = (instancePath: string[], nodeId: string) => ({ owner, instancePath, nodeId });
+    const inner = s.components[(s.pages[owner.id].nodes[section] as InstanceNode).definitionId].parts.container.nodeId;
+    const chain = [descOf(s, at([placement], root)), descOf(s, at([section], inner)), descOf(s, at([], section))];
+    const strip = (r: ReturnType<typeof selectionFromChain>) => r && { owner: r.owner, instancePath: r.instancePath, nodeId: r.nodeId };
+    expect(strip(selectionFromChain(s, chain, null, false))).toEqual(at([], section));
   });
 });

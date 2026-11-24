@@ -127,6 +127,19 @@ try {
     for (const f of all) assert.doesNotMatch(readFileSync(join(root, f), 'utf8'), EDITOR_ONLY, `${what}: ${f}`);
   }
 
+  step('arranged as a Row, the frame names it a Row at once; back as a Grid, a Grid again');
+  // Only the editor's variant of the page changes (the visitor's file is the same): the canvas still follows it.
+  const arrange = (value) =>
+    win.evaluate(async ([id, value]) => {
+      const s = await window.builder.project.snapshot();
+      const r = await window.builder.project.apply({ operations: [{ type: 'node.setStyle', owner: { kind: 'page', id: s.state.site.homePageId }, nodeId: id, scope: 'base', property: 'layout', value }] }, { label: 'Arrange' });
+      if (!r.ok) throw new Error(r.error?.message);
+    }, [gridId, value]);
+  await arrange('row');
+  await eventually(async () => assert.equal((await boxOf(gridId)).framed, 'Row'), 30000);
+  await arrange('grid');
+  await eventually(async () => assert.equal((await boxOf(gridId)).framed, 'Grid'), 30000);
+
   step('with the Grid clicked, a Paragraph inserted from the panel lands inside it, and the frame gives way to it');
   await clickMiddle(gridId);
   await eventually(async () => assert.equal(await selected(), 'Grid actions'), 10000);

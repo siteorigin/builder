@@ -23,7 +23,10 @@ const SESSION = 'so-test';
 const GEN = '\0gen:';
 const HOME = 'src/routes/+page.svelte';
 
-/** A blank site whose Home has a Section holding an empty Grid and an empty Row, and a second Section left empty. */
+/**
+ * A blank site whose Home has a Section holding an empty Grid and an empty Row, then a component of the site's own
+ * (with a property called "document") holding an empty Section, and a Section left empty.
+ */
 function site() {
   let s: ProjectState = createStarterState('blank', 'Frames', false);
   const owner = { kind: 'page' as const, id: s.site.homePageId };
@@ -36,7 +39,16 @@ function site() {
   r = applyOperations(s, [{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'row' }]);
   s = r.state;
   const row = r.results[0].nodeId as string;
-  s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]).state;
+  // The component: a Stack holding an empty Section, made a component, given a property called "document".
+  r = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]);
+  r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: r.results[0].nodeId as string, slot: 'content', primitive: 'stack' }]);
+  const stack = r.results[0].nodeId as string;
+  r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: stack, componentId: 'layout.section' }]);
+  r = applyOperations(r.state, [{ type: 'component.createFromNode', owner, nodeId: stack, name: 'Holder' }]);
+  s = applyOperations(r.state, [
+    { type: 'component.setPropSchema', definitionId: r.results[0].definitionId as string, prop: 'document', schema: { type: 'string', label: 'Document', default: 'Brochure' } },
+    { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }
+  ]).state;
   return { s, grid, row };
 }
 
@@ -88,6 +100,32 @@ type Box = { width: number; height: number; label: string; outline: string; rule
 const BOX = (id: string) =>
   `(() => { const e = ${el(id)}; const r = e.getBoundingClientRect(); const cs = getComputedStyle(e); return { width: r.width, height: r.height, label: getComputedStyle(e, '::before').content, outline: cs.outlineStyle, rule: cs.columnRuleStyle, tracks: cs.gridTemplateColumns === 'none' ? [] : cs.gridTemplateColumns.split(' ').map(parseFloat), gap: parseFloat(cs.columnGap) || 0, padLeft: parseFloat(cs.paddingLeft) || 0 }; })()`;
 const MARKERS = `document.querySelectorAll('[data-so-slot-empty], [data-so-editor-only]').length`;
+/**
+ * Run in a blank page on [png, the content box's left offset, height]: the x offsets inside the content box where a
+ * row across the middle of the picture differs from the page behind (read just inside the first column).
+ */
+const INK = `async ([png, pad, height]) => {
+  const img = new Image();
+  img.src = 'data:image/png;base64,' + png;
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = img.width;
+  c.height = img.height;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0);
+  const xs = new Set();
+  // Below the label, which sits at the top left.
+  const mid = Math.round(Math.max(height / 2, 40));
+  for (let y = mid; y < Math.min(mid + 8, img.height - 3); y++) {
+    const row = g.getImageData(0, y, img.width, 1).data;
+    const [r0, g0, b0] = [row[(pad + 6) * 4], row[(pad + 6) * 4 + 1], row[(pad + 6) * 4 + 2]];
+    for (let x = 3; x < img.width - 3; x++) {
+      const d = Math.abs(row[x * 4] - r0) + Math.abs(row[x * 4 + 1] - g0) + Math.abs(row[x * 4 + 2] - b0);
+      if (d > 24) xs.add(x - pad);
+    }
+  }
+  return [...xs].sort((a, b) => a - b);
+}`;
 
 describe.skipIf(!browserInstalled)('empty containers and slots in the editor preview, in a browser', () => {
   let browser: Browser;
@@ -156,31 +194,7 @@ describe.skipIf(!browserInstalled)('empty containers and slots in the editor pre
     const b = await box(site, id);
     const reader = await browser.newPage();
     try {
-      return await reader.evaluate<number[], [string, number, number]>(
-        async ([png, pad, height]) => {
-          const img = new Image();
-          img.src = `data:image/png;base64,${png}`;
-          await img.decode();
-          const c = document.createElement('canvas');
-          c.width = img.width;
-          c.height = img.height;
-          const g = c.getContext('2d')!;
-          g.drawImage(img, 0, 0);
-          const xs = new Set<number>();
-          // Below the label, which sits at the top left.
-          const mid = Math.round(Math.max(height / 2, 40));
-          for (let y = mid; y < Math.min(mid + 8, img.height - 3); y++) {
-            const row = g.getImageData(0, y, img.width, 1).data;
-            const [r0, g0, b0] = [row[(pad + 6) * 4], row[(pad + 6) * 4 + 1], row[(pad + 6) * 4 + 2]];
-            for (let x = 3; x < img.width - 3; x++) {
-              const d = Math.abs(row[x * 4] - r0) + Math.abs(row[x * 4 + 1] - g0) + Math.abs(row[x * 4 + 2] - b0);
-              if (d > 24) xs.add(x - pad);
-            }
-          }
-          return [...xs].sort((a, b) => a - b);
-        },
-        [shot.toString('base64'), Math.round(b.padLeft), Math.round(b.height)]
-      );
+      return await reader.evaluate<number[]>(`(${INK})(${JSON.stringify([shot.toString('base64'), Math.round(b.padLeft), Math.round(b.height)])})`);
     } finally {
       await reader.close();
     }
@@ -229,11 +243,13 @@ describe.skipIf(!browserInstalled)('empty containers and slots in the editor pre
     }
   });
 
-  it('shows the page as visitors get it in Preview, and the frames and slot placeholder again back in Edit', async () => {
+  it('shows the page as visitors get it in Preview, and the frames and slot placeholders again back in Edit', async () => {
     const { page, site, close } = await open();
     try {
-      await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(1);
-      expect(await site.evaluate<string>(`document.querySelector('[data-so-slot-empty]').getBoundingClientRect().height + ''`)).not.toBe('0');
+      // The page's empty Section, and the one in the component (placed there, whatever its own properties are called).
+      await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(2);
+      const heights = await site.evaluate<number[]>(`[...document.querySelectorAll('[data-so-slot-empty]')].map((m) => m.getBoundingClientRect().height)`);
+      expect(heights.length === 2 && heights.every((h) => h >= 72), JSON.stringify(heights)).toBe(true);
 
       await mode(page, site, 'preview');
       const grid = await box(site, ids.grid);
@@ -245,7 +261,7 @@ describe.skipIf(!browserInstalled)('empty containers and slots in the editor pre
 
       await mode(page, site, 'edit');
       expect((await box(site, ids.grid)).height).toBeGreaterThanOrEqual(72);
-      await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(1);
+      await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(2);
     } finally {
       await close();
     }
