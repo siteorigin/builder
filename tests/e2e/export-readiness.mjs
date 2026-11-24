@@ -4,7 +4,7 @@
 // notes, each leading to where it is fixed; and once the public URL is saved, the export's note and the field itself
 // say the website needs exporting again.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { answerChoosers, createProject, eventually, launch, scratch, step } from './harness.mjs';
 
@@ -88,11 +88,15 @@ await review.getByRole('button', { name: 'Go to form' }).click();
 await expectAtForm('from the export review');
 
 step('a real website folder export with no public URL says both, each with its way to the fix');
+// The folder chooser is answered with a folder that is there; the export makes its own new folder inside it.
 const exportsDir = join(WORK, 'exports');
+mkdirSync(exportsDir, { recursive: true });
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 await answerChoosers(app, [{ dialog: 'open', selection: 'folder', paths: [exportsDir] }]);
 await modal.getByRole('button', { name: /Website files, ready to upload/ }).click();
-await modal.getByRole('status').filter({ hasText: /^Exported \d+ pages/ }).waitFor({ timeout: 300000 });
+const result = modal.locator('.export-result');
+await result.waitFor({ timeout: 300000 });
+assert.match(await result.innerText(), /^Exported \d+ pages/, `the website export succeeds: ${await modal.innerText()}`);
 const out = join(exportsDir, 'lookbook-studio-site');
 assert.ok(existsSync(join(out, 'lookbook', 'index.html')), 'the Lookbook page was exported with its form');
 assert.equal(existsSync(join(out, 'sitemap.xml')), false, 'no sitemap without a public URL');
