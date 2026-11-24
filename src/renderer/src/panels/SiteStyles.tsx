@@ -1,6 +1,6 @@
 import { variantOptions } from '@shared/variants';
-import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, Globe, Link2, Palette, RotateCcw } from 'lucide-react';
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { ChevronDown, ChevronRight, Globe, Link2, RotateCcw } from 'lucide-react';
 import type { ProjectState, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
@@ -37,6 +37,14 @@ const FOUNDATION_USES: Record<string, string> = {
   'color.focus': 'Focus outline for keyboard users'
 };
 
+/** What Foundation's layout values that are not self-explanatory do, so an owner can predict the effect. */
+const FOUNDATION_LAYOUT_USES: Record<string, string> = {
+  'space.section': 'Space above and below each section',
+  'container.reading': 'Longest line of text',
+  'container.content': 'Widest the page content gets',
+  'container.gutter': 'Space between the content and the window edge'
+};
+
 /** Where Foundation's components use each text style, checked against its component definitions. */
 const FOUNDATION_TEXT_USES: Record<string, string> = {
   'text.display': 'The centered hero heading',
@@ -52,12 +60,18 @@ const FOUNDATION_TEXT_USES: Record<string, string> = {
 
 /** Colour roles grouped by purpose, brand first: it is the one most owners change. Unknown ids go last. */
 const COLOR_GROUPS: Array<{ label: string; ids: string[] }> = [
-  { label: 'Brand', ids: ['color.brand', 'color.brand-strong', 'color.on-brand', 'color.accent'] },
+  { label: 'Brand and accent', ids: ['color.brand', 'color.brand-strong', 'color.on-brand', 'color.accent'] },
   { label: 'Backgrounds', ids: ['color.background', 'color.surface', 'color.surface-alt'] },
   { label: 'Text', ids: ['color.text', 'color.muted'] },
-  { label: 'Dark sections', ids: ['color.inverse', 'color.on-inverse'] },
+  { label: 'Dark areas', ids: ['color.inverse', 'color.on-inverse'] },
   { label: 'Lines and focus', ids: ['color.border', 'color.focus'] }
 ];
+
+/**
+ * Says a change out loud in the panel's status region (WCAG 2.2 SC 4.1.3): a reset happens away from where focus
+ * lands afterwards, so without this a screen reader user hears nothing.
+ */
+const SayContext = createContext<(text: string) => void>(() => {});
 
 const LAYOUT_GROUPS = [
   { group: 'space', label: 'Spacing' },
@@ -78,6 +92,8 @@ const WEIGHTS: Array<[number, string]> = [
   [800, 'Extra bold'],
   [900, 'Black']
 ];
+/** Spacing and widths are drawn on a square-root scale within their group, so small steps stay apart. */
+const barWidth = (size: number, max: number) => Math.max(3, Math.round(Math.sqrt(Math.max(0, size) / (max || 1)) * 40));
 
 const TEXT_METRICS = ['family', 'size', 'weight', 'lineHeight', 'tracking', 'transform'] as const;
 type TextMetric = (typeof TEXT_METRICS)[number];
@@ -86,7 +102,7 @@ const CASES: Array<[string, string]> = [
   ['none', 'As typed'],
   ['uppercase', 'UPPERCASE'],
   ['lowercase', 'lowercase'],
-  ['capitalize', 'Capitalise Each Word']
+  ['capitalize', 'Capitalize Each Word']
 ];
 /** A text style's metric with the engine's defaults filled in, so "no case" and "none" compare equal. */
 const metricOf = (v: TextStyleValue | undefined, k: TextMetric) => (v?.[k] ?? (k === 'transform' ? 'none' : undefined));
@@ -188,26 +204,37 @@ const clampParts = (v: string): [string, string, string] | null => {
  * its smallest and largest sizes, each edited on its own so the scaling in between is kept; and the CSS
  * itself one step away for anything else.
  */
-function SizeControl({ value, name, id, onCommit, cssToggle = true, negative = false }: { value: string; name: string; id?: string; onCommit: (v: string) => void; cssToggle?: boolean; negative?: boolean }) {
-  const [asCss, setAsCss] = useState(false);
+function SizeControl({ value, name, id, onCommit, cssToggle = true, negative = false, css = false }: { value: string; name: string; id?: string; onCommit: (v: string) => void; cssToggle?: boolean; negative?: boolean; css?: boolean }) {
+  const [ownCss, setAsCss] = useState(false);
+  const [order, setOrder] = useState(false);
+  // A whole group can be switched to CSS from its heading; a row can also be switched on its own.
+  const asCss = ownCss || css;
+  const uid = useId();
   const parts = clampParts(value);
   const range = clampRange(value);
   const px = toPx(value);
   const simple = !asCss && (range || px !== null);
-  const bound = (i: 0 | 2, label: string, first: boolean) =>
-    parts && range ? (
+  const bound = (i: 0 | 2, label: string, first: boolean) => {
+    const fieldId = first ? (id ?? `${uid}-min`) : `${uid}-max`;
+    return parts && range ? (
       <span className="ss-num">
-        <span className="ss-num-label" aria-hidden="true">
+        <label className="ss-num-label" htmlFor={fieldId}>
           {label}
-        </span>
+        </label>
         <DraftInput
-          id={first ? id : undefined}
+          id={fieldId}
           className="input sm"
           value={String(range[i === 0 ? 0 : 1])}
           ariaLabel={`${name}, ${label.toLowerCase()}, in pixels`}
           onCommit={(s) => {
             const n = parseNum(s, negative);
             if (n === null) return false;
+            // The smallest size above the largest would stop the size growing at all; say so and keep the value.
+            if ((i === 0 && n > range[1]) || (i === 2 && n < range[0])) {
+              setOrder(true);
+              return false;
+            }
+            setOrder(false);
             const next = [...parts];
             next[i] = fromPx(n, unitOf(parts[i]));
             onCommit(`clamp(${next.join(', ')})`);
@@ -216,6 +243,7 @@ function SizeControl({ value, name, id, onCommit, cssToggle = true, negative = f
         <span className="ss-unit">px</span>
       </span>
     ) : null;
+  };
   return (
     <div className="ss-size">
       {simple && range ? (
@@ -228,15 +256,15 @@ function SizeControl({ value, name, id, onCommit, cssToggle = true, negative = f
         </div>
       ) : simple ? (
         <span className="ss-num">
-          <DraftInput id={id} className="input sm" value={String(px)} ariaLabel={`${name}, in pixels`} onCommit={(s) => { const n = parseNum(s, negative); if (n === null) return false; onCommit(fromPx(n, unitOf(value))); }} />
+          <DraftInput id={id} className="input sm" value={String(px)} ariaLabel={`${name}, in pixels or any CSS length`} onCommit={(s) => { const n = parseNum(s, negative); if (n !== null) return void onCommit(fromPx(n, unitOf(value))); /* A CSS length typed into the field (1.5rem, clamp(…)) is taken as written; the project refuses one it cannot use. */ if (!s.trim() || /^-?\d/.test(s.trim()) && !/[a-z(%]/i.test(s)) return false; onCommit(s.trim()); }} />
           <span className="ss-unit">px</span>
         </span>
       ) : (
         <DraftInput id={id} className="input sm mono" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => (v.trim() ? onCommit(v.trim()) : false)} />
       )}
-      {(range || px !== null) && (cssToggle || range || asCss) && (
+      {(range || px !== null) && !css && (cssToggle || range || asCss) && (
         <div className="ss-size-note">
-          {range && !asCss && <span>Grows with the window between these sizes.</span>}
+          {range && !asCss && (order ? <span className="ss-size-error" role="alert">Smallest has to be no larger than Largest.</span> : <span>Grows with the window between these sizes.</span>)}
           <button className="link-btn ss-css-toggle" onClick={() => setAsCss(!asCss)}>
             {asCss ? 'Use simple fields' : 'Edit as CSS'}
             <span className="sr-only"> for {name}</span>
@@ -263,29 +291,47 @@ function ShadowControl({ value, name, onCommit }: { value: string; name: string;
 
 /** A border as width, line style and one of the site's colours; anything else stays editable as CSS. */
 function BorderControl({ value, name, colors, onCommit }: { value: string; name: string; colors: TokenDef[]; onCommit: (v: string) => void }) {
+  const [asCss, setAsCss] = useState(false);
   const m = /^(\d*\.?\d+)px\s+(solid|dashed|dotted|double)\s+var\((--so-[a-z0-9-]+)\)$/i.exec(value.trim());
   const color = m ? colors.find((c) => tokenVar(c.id) === m[3]) : undefined;
-  if (!m || !color) return <DraftInput className="input sm mono" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => (v.trim() ? onCommit(v.trim()) : false)} />;
+  const css = <DraftInput className="input sm mono" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => (v.trim() ? onCommit(v.trim()) : false)} />;
+  if (!m || !color) return css;
   const build = (w: string, s: string, c: string) => `${w}px ${s} var(${tokenVar(c)})`;
+  const toggle = (
+    <button className="link-btn ss-css-toggle" onClick={() => setAsCss(!asCss)}>
+      {asCss ? 'Use simple fields' : 'Edit as CSS'}
+      <span className="sr-only"> for {name}</span>
+    </button>
+  );
+  if (asCss)
+    return (
+      <div className="ss-size">
+        {css}
+        {toggle}
+      </div>
+    );
   return (
-    <div className="ss-border">
-      <label className="ss-num">
-        <DraftInput className="input sm" value={m[1]} ariaLabel={`${name} width, in pixels`} onCommit={(s) => { const n = parseNum(s); if (n === null) return false; onCommit(build(String(n), m[2], color.id)); }} />
-        <span className="ss-unit">px</span>
-      </label>
-      <select className="select sm" value={m[2].toLowerCase()} aria-label={`${name} line`} onChange={(e) => onCommit(build(m[1], e.target.value, color.id))}>
-        <option value="solid">Solid</option>
-        <option value="dashed">Dashed</option>
-        <option value="dotted">Dotted</option>
-        <option value="double">Double</option>
-      </select>
-      <select className="select sm" value={color.id} aria-label={`${name} color`} onChange={(e) => onCommit(build(m[1], m[2], e.target.value))}>
-        {colors.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.label}
-          </option>
-        ))}
-      </select>
+    <div className="ss-size">
+      <div className="ss-border">
+        <label className="ss-num">
+          <DraftInput className="input sm" value={m[1]} ariaLabel={`${name} width, in pixels`} onCommit={(s) => { const n = parseNum(s); if (n === null) return false; onCommit(build(String(n), m[2], color.id)); }} />
+          <span className="ss-unit">px</span>
+        </label>
+        <select className="select sm" value={m[2].toLowerCase()} aria-label={`${name} line`} onChange={(e) => onCommit(build(m[1], e.target.value, color.id))}>
+          <option value="solid">Solid</option>
+          <option value="dashed">Dashed</option>
+          <option value="dotted">Dotted</option>
+          <option value="double">Double</option>
+        </select>
+        <select className="select sm" value={color.id} aria-label={`${name} color`} onChange={(e) => onCommit(build(m[1], m[2], e.target.value))}>
+          {colors.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      {toggle}
     </div>
   );
 }
@@ -323,7 +369,8 @@ function NameWithReset({ label, reset }: { label: string; reset: ReactNode }) {
 }
 
 /** The reset control on a changed value: the mark is the action, and it names what it puts back. */
-function ResetDot({ label, theme, onReset }: { label: string; theme: string; onReset: () => void }) {
+function ResetDot({ label, theme, onReset }: { label: string; theme: string; onReset: () => unknown }) {
+  const say = useContext(SayContext);
   return (
     <button
       className="reset-dot"
@@ -332,11 +379,13 @@ function ResetDot({ label, theme, onReset }: { label: string; theme: string; onR
       onClick={(e) => {
         const row = e.currentTarget.closest('[data-ss-row]');
         const item = e.currentTarget.closest('li');
-        const next = (item?.nextElementSibling ?? item?.previousElementSibling)?.querySelector<HTMLElement>('.reset-dot') ?? null;
+        // The next change's reset, or the one before when this was the last: never the list's own footer.
+        const next = item?.nextElementSibling?.querySelector<HTMLElement>('.reset-dot') ?? item?.previousElementSibling?.querySelector<HTMLElement>('.reset-dot') ?? null;
         const panel = e.currentTarget.closest('.ss');
         const trigger = e.currentTarget;
-        onReset();
-        refocus(trigger, row, next, () => panel?.querySelector<HTMLElement>('.ss-changes button') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
+        // Said once the change has saved, never before: a refused reset says nothing.
+        void Promise.resolve(onReset()).then((ok) => ok !== null && ok !== false && say(`${label} is back to the theme's ${theme}.`));
+        refocus(trigger, row, next, () => panel?.querySelector<HTMLElement>('.ss-changes button, .ss-theme-switch, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
       }}
     >
       <RotateCcw />
@@ -360,6 +409,13 @@ export function SiteStyles() {
   const contrastStatus = useContrastStatus(contrast);
   const refusedPacks = useStore((s) => s.packs.refused);
   const packsDir = useStore((s) => s.packs.userDir);
+  // What a reset just did, for the status region; a repeat of the same words still changes the text, so it is read again.
+  const [said, setSaid] = useState('');
+  // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings.
+  const [here, setHere] = useState(0);
+  // Layout groups whose sizes are shown as CSS, switched from the group's heading.
+  const [cssGroups, setCssGroups] = useState<Set<string>>(() => new Set());
+  const say = useCallback((text: string) => setSaid((prev) => (prev === text ? `${text} ` : text)), []);
   if (!snap) return null;
   const st = snap.state;
   // The image menus list images in the order Assets does.
@@ -397,6 +453,21 @@ export function SiteStyles() {
     // Brand's value is plain text while it follows another colour: then its "Use its own color" button is what can take focus.
     refocus(trigger, row, null, () => panel?.querySelector<HTMLElement>('.ss-color.compact input.ss-hex, .ss-color.compact .ss-follows .link-btn') ?? null);
   };
+  /** Open a colour's row in Colors and put focus on its value, or on its details when it follows another colour. */
+  const jumpTo = (id: string) => {
+    const linked = !!refOf(byId(id)?.value);
+    openSection('tok-color', { focus: `[data-token-id="${CSS.escape(id)}"] ${linked ? '.ss-disclose' : 'input.ss-hex'}` });
+  };
+  /** Open where a changed style is edited, from its line in the review: its row, its text style, or its font in Basics. */
+  const jumpToToken = (id: string) => {
+    const t = byId(id);
+    if (!t) return;
+    const at = `[data-token-id="${CSS.escape(id)}"]`;
+    if (t.group === 'color') return jumpTo(id);
+    if (t.group === 'text') return void (setOpenText(id), openSection('tok-text', { focus: `${at} .ss-text-toggle` }));
+    if (t.group === 'font') return void openSection('tok-basics', { focus: `${at} select` });
+    openSection('tok-layout', { focus: `${at} :is(input, select, button:not(.reset-dot))` });
+  };
   const site = st.site;
   const updSite = (patch: Record<string, unknown>) => void applyOps([{ type: 'site.update', ...patch }], 'Update site settings');
   const changedIds = tokens.map((t) => t.id).filter(changed);
@@ -405,8 +476,10 @@ export function SiteStyles() {
   const resetAll = (e: React.MouseEvent<HTMLButtonElement>) => {
     const panel = e.currentTarget.closest('.ss');
     const trigger = e.currentTarget;
-    void applyOps(savedIds.map((id) => ({ type: 'token.set' as const, tokenId: id, value: null })), 'Use theme defaults');
-    refocus(trigger, null, null, () => panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
+    const n = changedIds.length;
+    void applyOps(savedIds.map((id) => ({ type: 'token.set' as const, tokenId: id, value: null })), 'Use theme defaults').then((ok) => ok && say(`${plural(n, 'change', 'changes')} put back to ${theme.name}. You can undo this.`));
+    // The changes bar goes with the reset: focus moves to the theme, the next thing down, not back to the top.
+    refocus(trigger, null, null, () => panel?.querySelector<HTMLElement>('.ss-theme-switch, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
   };
   const themes = listThemes().filter((t) => !t.devOnly || dev || t.id === theme.id);
   const hex = (id: string) => resolveColor(tokens, byId(id)?.value);
@@ -448,7 +521,7 @@ export function SiteStyles() {
     const { lines, count } = usesOf(id);
     return (
       <div className="ss-uses-block">
-        <div className="ss-detail-label">Also set directly in this project{count ? ` (${count})` : ''}</div>
+        <div className="ss-detail-label">Set directly in this project{count ? ` (${count})` : ''}</div>
         {lines.length ? (
           <dl className="ss-uses">
             {lines.map(([k, names]) => (
@@ -459,7 +532,7 @@ export function SiteStyles() {
             ))}
           </dl>
         ) : (
-          <p className="ss-none">Nothing else. The theme applies it wherever its description says.</p>
+          <p className="ss-none">{theme.tokens.some((x) => x.id === id) ? 'Nowhere directly. The theme applies it wherever its description says.' : 'Not used anywhere yet.'}</p>
         )}
       </div>
     );
@@ -474,7 +547,7 @@ export function SiteStyles() {
   /** One readable value: a font by name, a size in px, a link by the colour it follows. */
   const show = (group: TokenDef['group'], k: TextMetric | null, v: unknown): string => {
     const ref = refOf(v);
-    if (ref) return k === 'family' || group === 'font' ? (byId(ref)?.label ?? ref) : `same as ${byId(ref)?.label ?? ref}`;
+    if (ref) return k === 'family' || group === 'font' ? (byId(ref)?.label ?? 'a style that is no longer available') : `same as ${byId(ref)?.label ?? 'a style that is no longer available'}`;
     if (k === 'family' || group === 'font') return familyName(String(v));
     if (k === 'size' || ((group === 'space' || group === 'container' || group === 'radius') && k === null)) return friendlySize(String(v));
     if (k === 'weight') return weightName(Number(v));
@@ -482,7 +555,7 @@ export function SiteStyles() {
     return String(v ?? '');
   };
   /** What changed in a style, metric by metric for text styles: "size 48px (theme 36–58px)". */
-  const differences = (id: string): Array<{ what: string; now: string; was: string }> => {
+  const differences = (id: string): Array<{ what: string; now: string; was: string; nowColor?: string; wasColor?: string }> => {
     const t = byId(id);
     if (!t) return [];
     if (t.group === 'text') {
@@ -490,21 +563,26 @@ export function SiteStyles() {
       const b = themeValue(id) as TextStyleValue;
       return TEXT_METRICS.filter((k) => !sameValue(metricOf(v, k), metricOf(b, k))).map((k) => ({ what: METRIC_NAMES[k], now: show('text', k, metricOf(v, k)), was: show('text', k, metricOf(b, k)) }));
     }
-    return [{ what: '', now: show(t.group, null, t.value), was: show(t.group, null, themeValue(id)) }];
+    // A colour is shown as itself beside its value, so a change can be judged without reading hex.
+    const colorsOf = t.group === 'color' ? { nowColor: hex(id), wasColor: themeHex(id) } : {};
+    return [{ what: '', now: show(t.group, null, t.value), was: show(t.group, null, themeValue(id)), ...colorsOf }];
   };
 
   const colorRow = (t: TokenDef, compact = false) => {
     const value = hex(t.id);
     const ref = refOf(t.value);
-    const follows = ref ? (byId(ref)?.label ?? ref) : null;
-    const desc = (st.site.themeId === 'foundation' ? FOUNDATION_USES[t.id] : undefined) ?? t.description;
+    // A link to a colour that is gone (renamed, removed with its pack) says so, rather than naming an ID.
+    const follows = ref ? (byId(ref) && value ? byId(ref)!.label : 'a color that is no longer available') : null;
+    // Gone, or followed through a chain that ends nowhere: either way there is no colour to show.
+    const lost = !!ref && (!byId(ref) || !value);
+    const desc = (theme.id.startsWith('foundation') ? FOUNDATION_USES[t.id] : undefined) ?? t.description;
     const open = !compact && openDetail === t.id;
     const detailId = `${uid}-detail-${t.id}`;
     const loops = followers(t.id);
     return (
-      <div className={`ss-color${changed(t.id) ? ' set' : ''}${open ? ' open' : ''}${compact ? ' compact' : ''}`} key={t.id} data-ss-row>
+      <div className={`ss-color${changed(t.id) ? ' set' : ''}${open ? ' open' : ''}${compact ? ' compact' : ''}${follows ? ' linked' : ''}`} key={t.id} data-ss-row data-token-id={compact ? undefined : t.id}>
         {!compact && (
-          <button className="ss-disclose" aria-expanded={open} aria-controls={detailId} aria-label={`${t.label}: where it is used, and linking`} onClick={() => setOpenDetail(open ? null : t.id)}>
+          <button className="ss-disclose" title="Linking, contrast and where it is used" aria-expanded={open} aria-controls={detailId} aria-label={`${t.label}: linking, contrast and where it is used`} onClick={() => setOpenDetail(open ? null : t.id)}>
             <ChevronRight />
           </button>
         )}
@@ -513,42 +591,86 @@ export function SiteStyles() {
           <div className="ss-name">
             <NameWithReset label={compact ? `${t.label} color` : t.label} reset={changed(t.id) && <ResetDot label={t.label} theme={`color, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />} />
           </div>
-          <div className="ss-desc">{desc}</div>
-          {!compact && <ContrastFlags model={contrast} tokenId={t.id} onUse={chooseReadable} />}
-          {follows && (
-            <div className="ss-follows">
-              <Link2 aria-hidden="true" />
-              <span>Same as {follows}</span>
-              <button
-                className="link-btn"
-                onClick={(e) => {
-                  const row = e.currentTarget.closest('[data-ss-row]');
-                  const trigger = e.currentTarget;
-                  relink(t.id, value);
-                  refocus(trigger, row, null, () => null);
-                }}
-              >
-                Use its own color
-              </button>
-            </div>
-          )}
+          {desc && <div className="ss-desc">{desc}</div>}
         </div>
         {follows ? (
-          <span className="ss-hex ss-hex-linked mono" title={`${value}. Follows ${follows}. Choose "Use its own color" to set it separately.`}>
-            {value}
+          <span className="ss-hex ss-hex-linked mono" title={lost ? 'The color it followed is no longer available. Open its details to choose another.' : `${value}. Follows ${follows}. Choose "Use its own color" to set it separately.`}>
+            {value || '—'}
           </span>
         ) : (
           <DraftInput className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? set(t.id, v.trim()) : false)} ariaLabel={`${t.label} color value`} />
+        )}
+        {/* Below the row, under the name: what it follows, and what is unreadable. Never squeezed beside the value. */}
+        {follows && (
+          <div className="ss-follows ss-color-extra">
+            <Link2 aria-hidden="true" />
+            <span>
+              Same as{' '}
+              {lost ? (
+                follows
+              ) : (
+                <button type="button" className="link-btn ss-jump" onClick={() => jumpTo(ref!)}>
+                  {follows}
+                  <span className="sr-only">, go to its color</span>
+                </button>
+              )}
+            </span>
+            {/* With nothing to keep (the colour it followed is gone), the way out is to choose another colour in its details. */}
+            {lost && !open && (
+              <>
+                <span aria-hidden="true">·</span>
+                <button
+                  className="link-btn"
+                  aria-controls={compact ? undefined : detailId}
+                  aria-expanded={compact ? undefined : false}
+                  onClick={() => {
+                    // Opens the colour's details (in Colors, from Basics) and puts focus on the choice itself.
+                    setOpenDetail(t.id);
+                    if (compact) openSection('tok-color', { focus: `[data-token-id="${CSS.escape(t.id)}"] .ss-detail select` });
+                    else requestAnimationFrame(() => document.getElementById(detailId)?.querySelector<HTMLElement>('select')?.focus());
+                  }}
+                >
+                  Choose another<span className="sr-only"> color for {t.label}</span>
+                </button>
+              </>
+            )}
+            {value && (
+              <>
+                <span aria-hidden="true">·</span>
+                <button
+                  className="link-btn"
+                  onClick={(e) => {
+                    const row = e.currentTarget.closest('[data-ss-row]');
+                    const trigger = e.currentTarget;
+                    relink(t.id, value);
+                    refocus(trigger, row, null, () => null);
+                  }}
+                >
+                  Use its own color
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {!compact && (
+          <div className="ss-color-extra ss-flags-slot">
+            <ContrastFlags model={contrast} tokenId={t.id} onUse={chooseReadable} onJump={jumpTo} onShowAll={open ? undefined : () => (setOpenDetail(t.id), requestAnimationFrame(() => document.getElementById(detailId)?.querySelector<HTMLElement>('.ss-contrast-block')?.focus()))} showAllControls={detailId} />
+          </div>
         )}
         {!compact && (
           <div className="ss-detail" id={detailId} hidden={!open}>
             {open && (
               <>
-                <Field label="Same as" hint="Follows another color, and changes when it does.">
-                  <select className="select sm" value={ref ?? ''} onChange={(e) => relink(t.id, e.target.value ? { token: e.target.value } : value)}>
+                <Field label="Link to another color" hint={lost ? 'The color it followed is no longer available. Choose another, or give it its own color.' : 'Follows another color, and changes when it does.'}>
+                  <select className="select sm" value={ref ?? ''} onChange={(e) => relink(t.id, e.target.value ? { token: e.target.value } : value || themeHex(t.id) || '#000000')}>
+                    {lost && (
+                      <option value={ref!} disabled>
+                        No longer available
+                      </option>
+                    )}
                     <option value="">Its own color</option>
                     {colorIds
-                      .filter((id) => id !== t.id && !loops.has(id))
+                      .filter((id) => id !== t.id && !loops.has(id) && !!hex(id))
                       .map((id) => (
                         <option key={id} value={id}>
                           {byId(id)?.label}
@@ -571,7 +693,7 @@ export function SiteStyles() {
     const ref = refOf(t.value);
     const selectId = `${uid}-font-${t.id}`;
     return (
-      <div className={`ss-font${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row>
+      <div className={`ss-font${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row data-token-id={t.id}>
         <span className="ss-font-sample" style={{ fontFamily: stack }} aria-hidden="true">
           Aa
         </span>
@@ -585,7 +707,7 @@ export function SiteStyles() {
               </>
             )}
           </div>
-          <FontSelect id={selectId} state={st} stack={stack} follows={ref ? (byId(ref)?.label ?? ref) : null} onChoose={(next) => set(t.id, next)} />
+          <FontSelect id={selectId} state={st} stack={stack} follows={ref ? (byId(ref)?.label ?? 'a style that is no longer available') : null} onChoose={(next) => set(t.id, next)} />
         </div>
       </div>
     );
@@ -597,12 +719,12 @@ export function SiteStyles() {
     const base = (themeValue(t.id) ?? v) as TextStyleValue;
     const famRef = refOf(v.family);
     const stack = famRef ? fontStack(famRef) : String(v.family);
-    const famLabel = famRef ? (byId(famRef)?.label ?? famRef) : familyName(stack);
+    const famLabel = famRef ? (byId(famRef)?.label ?? 'a font that is no longer available') : familyName(stack);
     const max = clampRange(v.size)?.[1] ?? toPx(v.size) ?? 16;
     const open = openText === t.id;
     const bodyId = `${uid}-text-${t.id}`;
     const nameId = `${bodyId}-name`;
-    const textUse = st.site.themeId === 'foundation' ? FOUNDATION_TEXT_USES[t.id] : t.description;
+    const textUse = theme.id.startsWith('foundation') ? FOUNDATION_TEXT_USES[t.id] : t.description;
     const weights = WEIGHTS.some(([n]) => n === v.weight) ? WEIGHTS : [...WEIGHTS, [v.weight, String(v.weight)] as [number, string]].sort((a, b) => a[0] - b[0]);
     const metricChanged = (k: TextMetric) => changed(t.id) && !sameValue(metricOf(v, k), metricOf(base, k));
     // Put back one metric; when that leaves the whole style matching the theme, drop the change entirely.
@@ -612,7 +734,7 @@ export function SiteStyles() {
       const id = `${bodyId}-${k}`;
       return (
         <div className="field ss-field" data-ss-row>
-          <div className="ss-name ss-field-name">
+          <div className="ss-name ss-field-name ss-nowrap">
             <label htmlFor={id}>
               {METRIC_NAMES[k][0].toUpperCase() + METRIC_NAMES[k].slice(1)}
               <span className="sr-only"> of {t.label}</span>
@@ -662,6 +784,11 @@ export function SiteStyles() {
               {metric('family', (id) => (
                 <select id={id} className="select sm" value={famRef ?? ''} onChange={(e) => set(t.id, { family: { token: e.target.value } })}>
                   {!famRef && <option value="">{familyName(stack)}</option>}
+                  {famRef && !byId(famRef) && (
+                    <option value={famRef} disabled>
+                      No longer available
+                    </option>
+                  )}
                   {group('font').map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.label} ({familyName(fontStack(f.id))})
@@ -710,28 +837,36 @@ export function SiteStyles() {
     // A style that follows another is drawn and described with the value it follows.
     const value = resolvedText(tokens, t.id);
     const ref = refOf(t.value);
-    const follows = ref ? (byId(ref)?.label ?? ref) : null;
+    const follows = ref ? (byId(ref)?.label ?? 'a style that is no longer available') : null;
     const px = toPx(value);
     const size = px ?? clampRange(value)?.[1] ?? 0;
     const bg = hex('color.background') || undefined;
     const card = hex('color.surface') || '#fff';
     const noun = { space: 'spacing', radius: 'corner', shadow: 'shadow' }[g as string];
+    const desc = theme.id.startsWith('foundation') ? FOUNDATION_LAYOUT_USES[t.id] : undefined;
     const name = noun ? `${t.label} ${noun}` : t.label;
     let preview: ReactNode = null;
     // Spacing and widths are drawn to scale within their group, so the steps read as a progression.
-    if (g === 'space' || g === 'container') preview = <span className="ss-bar" style={{ width: Math.max(2, Math.round((size / (groupMax || 1)) * 40)) }} />;
+    if (g === 'space' || g === 'container') preview = <span className="ss-bar" style={{ width: barWidth(size, groupMax) }} />;
+    // A corner drawn at its real radius up to what the sample can show; a fully rounded one is drawn as the capsule it makes.
     else if (g === 'radius')
-      preview = (
-        <span className="ss-corner">
-          <i style={{ borderTopLeftRadius: px !== null ? Math.min(px, 30) : value }} />
-        </span>
-      );
+      preview =
+        px !== null && px >= 100 ? (
+          <span className="ss-corner pill">
+            <i />
+          </span>
+        ) : (
+          <span className="ss-corner">
+            <i style={{ borderTopLeftRadius: px !== null ? Math.min(px, 26) : value }} />
+          </span>
+        );
     // Shadows and borders are drawn on a card three times larger, then scaled down, so their real offsets
     // and spreads survive; both sit on the site's own background and card colours.
     else if (g === 'shadow')
       preview = (
         <span className="ss-well" style={{ background: bg }}>
-          <i style={{ boxShadow: value, background: card }} />
+          {/* The card keeps a hairline under the shadow, so a soft shadow on a pale page still has an edge to read. */}
+          <i style={{ boxShadow: value && value !== 'none' ? `inset 0 0 0 2px rgb(0 0 0 / 0.1), ${value}` : 'inset 0 0 0 2px rgb(0 0 0 / 0.1)', background: card }} />
         </span>
       );
     else if (g === 'border')
@@ -743,13 +878,16 @@ export function SiteStyles() {
     const wide = !!follows || g === 'border' || !!clampRange(value) || (g !== 'shadow' && px === null && value.length > 12);
     const commit = (v: string) => set(t.id, v);
     return (
-      <div className={`ss-token${wide ? ' wide' : ''}${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row>
+      <div className={`ss-token${wide ? ' wide' : ''}${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row data-token-id={t.id}>
         <div className="ss-token-label">
           <span className="ss-preview" aria-hidden="true">
             {preview}
           </span>
-          <span className="ss-name">
-            <NameWithReset label={t.label} reset={changed(t.id) && <ResetDot label={name} theme={`value, ${show(g, null, themeValue(t.id))}`} onReset={() => set(t.id, null)} />} />
+          <span className="ss-token-text">
+            <span className="ss-name">
+              <NameWithReset label={t.label} reset={changed(t.id) && <ResetDot label={name} theme={`value, ${show(g, null, themeValue(t.id))}`} onReset={() => set(t.id, null)} />} />
+            </span>
+            {desc && <span className="ss-desc">{desc}</span>}
           </span>
         </div>
         {follows ? (
@@ -759,13 +897,14 @@ export function SiteStyles() {
               Same as {follows}
               {value && g !== 'shadow' && g !== 'border' && <span className="faint"> · {show(g, null, value)}</span>}
             </span>
-            {value && (
+            {(value || typeof themeValue(t.id) === 'string') && (
               <button
                 className="link-btn"
                 onClick={(e) => {
                   const row = e.currentTarget.closest('[data-ss-row]');
                   const trigger = e.currentTarget;
-                  relink(t.id, value);
+                  // What it shows now, or the theme's own value when what it followed is gone.
+                  relink(t.id, value || themeValue(t.id));
                   refocus(trigger, row, null, () => null);
                 }}
               >
@@ -778,7 +917,7 @@ export function SiteStyles() {
         ) : g === 'shadow' ? (
           <ShadowControl value={value} name={name} onCommit={commit} />
         ) : (
-          <SizeControl value={value} name={name} onCommit={commit} cssToggle={wide} negative={g === 'space'} />
+          <SizeControl value={value} name={name} onCommit={commit} cssToggle={wide} negative={g === 'space'} css={cssGroups.has(g)} />
         )}
       </div>
     );
@@ -800,20 +939,37 @@ export function SiteStyles() {
   const reviewId = `${uid}-review`;
 
   return (
-    <div className="panel-body ss">
+    <SayContext.Provider value={say}>
+    <div
+      className="panel-body ss"
+      onScroll={(e) => {
+        const box = e.currentTarget;
+        // The section that owns the upper third of what is in view below the header is the one being read.
+        const head = box.querySelector<HTMLElement>('.ss-head')?.offsetHeight ?? 0;
+        const line = box.getBoundingClientRect().top + head + (box.clientHeight - head) / 3;
+        const sections = [...box.querySelectorAll<HTMLElement>(':scope > .section')];
+        let i = 0;
+        sections.forEach((sec, n) => sec.getBoundingClientRect().top <= line && (i = n));
+        const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
+        const next = atEnd ? jumps.length - 1 : Math.min(i, jumps.length - 1);
+        if (next !== here) setHere(next);
+      }}
+    >
       <div className="sr-only" role="status" aria-live="polite">
         {contrastStatus}
       </div>
+      {/* Resets and removals are said here; the status region above stays the one place contrast is reported. */}
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {said}
+      </div>
       <div className="insp-head ss-head">
-        <div className="insp-title">
-          <span className="layer-kind" aria-hidden="true">
-            <Palette />
-          </span>
+        {/* The dock tab already names the panel; the heading stays for screen readers and gives the jump links the room. */}
+        <div className="insp-title sr-only">
           <h3>Site styles</h3>
         </div>
         <nav className="insp-jump" aria-label="Jump to section">
           {jumps.map((j) => (
-            <button key={j.id} onClick={() => openSection(j.id)}>
+            <button key={j.id} aria-current={jumps[here]?.id === j.id ? 'location' : undefined} onClick={() => openSection(j.id)}>
               {j.label}
             </button>
           ))}
@@ -821,80 +977,79 @@ export function SiteStyles() {
       </div>
 
       <div className="ss-intro">
-        <div className="scope-note site">
-          <Globe />
-          <span>
-            <strong>Your whole site.</strong> Anything given its own value on the page keeps it.
-          </span>
-        </div>
-        <div className="ss-theme">
-          <div className="ss-look" style={{ background: hex('color.background') || undefined, color: hex('color.text') || undefined }} aria-hidden="true">
-            <span style={{ fontFamily: displayStack }}>Aa</span>
-            <span className="ss-look-dots">
-              {look.map((c, i) => (
-                <i key={i} style={{ background: c }} />
-              ))}
-            </span>
-          </div>
-          <div className="ss-theme-meta">
-            <div className="ss-eyebrow">Theme</div>
-            <div className="ss-theme-name">
-              <strong>{theme.name}</strong>
-              <span className="faint">{theme.version}</span>
-            </div>
-            <div className="ss-theme-desc">{theme.description}</div>
-            {themes.length > 1 && (
-              <select className="select sm ss-theme-switch" value={theme.id} aria-label="Theme" aria-describedby={`${uid}-theme-hint`} onChange={(e) => void applyOps([{ type: 'theme.apply', themeId: e.target.value }], 'Switch theme')}>
-                {themes.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} {t.version}
-                  </option>
+        <div className="ss-theme ss-theme-meta">
+          <div className="ss-theme-id">
+            <div className="ss-look" style={{ background: hex('color.background') || undefined, color: hex('color.text') || undefined }} aria-hidden="true">
+              <span className="ss-look-type" style={{ fontFamily: displayStack }}>
+                Aa
+              </span>
+              <span className="ss-look-button" style={{ background: hex('color.brand') || undefined }} />
+              <span className="ss-look-dots">
+                {look.map((c, i) => (
+                  <i key={i} style={{ background: c }} />
                 ))}
-              </select>
-            )}
-            {themes.length > 1 && (
-              <div className="ss-theme-hint" id={`${uid}-theme-hint`}>
-                Switching keeps your content and changes. You can undo it.
+              </span>
+            </div>
+            <div className="ss-theme-text">
+              <div className="ss-eyebrow">
+                Theme <span className="ss-theme-version">{theme.version}</span>
               </div>
-            )}
-            {theme.id !== st.site.themeId && (
-              <div className="ss-theme-hint" role="note">
-                This site's theme, “{st.site.themeId}”, is not installed, so {theme.name}'s styles are shown.
-              </div>
-            )}
-            {refusedPacks.length > 0 && (
-              <details className="ss-packs-refused">
-                <summary>
-                  {refusedPacks.length === 1 ? '1 theme pack' : `${refusedPacks.length} theme packs`} could not be loaded
-                </summary>
-                <ul>
-                  {refusedPacks.map((r) => (
-                    <li key={r.dir}>
-                      <strong>{r.packId ?? r.dir.split(/[\\/]/).pop()}</strong>: {r.reason}
-                    </li>
+              {/* With themes to choose from, the selector is the theme's name; with one, the name stands alone. */}
+              {themes.length > 1 ? (
+                <select className="select ss-theme-switch" title={theme.name} value={theme.id} aria-label="Theme" aria-describedby={`${uid}-theme-hint`} onChange={(e) => void applyOps([{ type: 'theme.apply', themeId: e.target.value }], 'Switch theme')}>
+                  {themes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
                   ))}
-                </ul>
-                {packsDir && <p className="faint">Installed packs are read from {packsDir} when SiteOrigin Builder starts.</p>}
-              </details>
-            )}
+                </select>
+              ) : (
+                <div className="ss-theme-name">
+                  <strong>{theme.name}</strong>
+                </div>
+              )}
+              <div className="ss-theme-desc">{theme.description}</div>
+            </div>
           </div>
-        </div>
+          {themes.length > 1 && (
+            <div className="ss-theme-hint" id={`${uid}-theme-hint`}>
+              Switching keeps your content and changes.
+            </div>
+          )}
+          {theme.id !== st.site.themeId && (
+            <div className="ss-theme-hint" role="note">
+              This site's theme, “{st.site.themeId}”, is not installed, so {theme.name}'s styles are shown.{' '}
+              <button className="link-btn" onClick={() => void applyOps([{ type: 'theme.apply', themeId: theme.id }], 'Switch theme')}>
+                Use {theme.name}
+              </button>
+            </div>
+          )}
+          {refusedPacks.length > 0 && (
+            <details className="ss-packs-refused">
+              <summary>
+                {refusedPacks.length === 1 ? '1 theme pack' : `${refusedPacks.length} theme packs`} could not be loaded
+              </summary>
+              <ul>
+                {refusedPacks.map((r) => (
+                  <li key={r.dir}>
+                    <strong>{r.packId ?? r.dir.split(/[\\/]/).pop()}</strong>: {r.reason}
+                  </li>
+                ))}
+              </ul>
+              {packsDir && <p className="faint">Installed packs are read from {packsDir} when SiteOrigin Builder starts.</p>}
+            </details>
+          )}
         {changedIds.length > 0 && (
           <div className="ss-changes">
             <div className="ss-changes-row">
               <span className="ss-changes-count">
                 <strong>{changedIds.length} changed</strong>
+                <span className="sr-only"> from {theme.name}</span>
               </span>
-              <span className="ss-changes-actions">
-                <button className="btn btn-sm btn-ghost" aria-expanded={reviewing} aria-controls={reviewId} onClick={() => setReviewing(!reviewing)}>
-                  Review
-                  <ChevronDown className={reviewing ? 'ss-flip' : undefined} />
-                </button>
-                <button className="btn btn-sm" onClick={resetAll} title="Put every site style back to the theme's value. You can undo this.">
-                  <RotateCcw />
-                  Reset all
-                </button>
-              </span>
+              <button className="btn btn-sm" aria-expanded={reviewing} aria-controls={reviewId} onClick={() => setReviewing(!reviewing)}>
+                Review
+                <ChevronDown className={reviewing ? 'ss-flip' : undefined} />
+              </button>
             </div>
             <ul className="ss-review" id={reviewId} hidden={!reviewing}>
               {reviewing &&
@@ -902,27 +1057,68 @@ export function SiteStyles() {
                   const diffs = differences(id);
                   return (
                     <li key={id}>
-                      <span className="ss-review-name">{reviewName(id)}</span>
+                      <button type="button" className="link-btn ss-review-name" onClick={() => jumpToToken(id)}>
+                        {reviewName(id)}
+                        <span className="sr-only">, go to it</span>
+                      </button>
                       {diffs.map((d, i) => (
                         <span className="ss-review-vals" key={i}>
                           {d.what && <span className="ss-review-what">{d.what} </span>}
+                          {d.nowColor && <span className="ss-chip" style={{ background: d.nowColor }} aria-hidden="true" />}
                           {d.now}
-                          <span className="faint"> · theme {d.was}</span>
+                          <span className="ss-review-was">
+                            {' · theme '}
+                            {d.wasColor && <span className="ss-chip" style={{ background: d.wasColor }} aria-hidden="true" />}
+                            {d.was}
+                          </span>
                         </span>
                       ))}
                       <ResetDot label={reviewName(id)} theme={diffs.length === 1 ? `${diffs[0].what ? diffs[0].what + ', ' : ''}${diffs[0].was}` : 'values'} onReset={() => set(id, null)} />
                     </li>
                   );
                 })}
+              {reviewing && (
+                <li className="ss-review-all">
+                  {/* The bulk reset lives with the list it acts on, and names the values it goes back to. */}
+                  <button className="btn btn-sm btn-ghost" onClick={resetAll}>
+                    <RotateCcw />
+                    Reset all to {theme.name}
+                  </button>
+                  <span className="ss-review-undo">You can undo this.</span>
+                </li>
+              )}
             </ul>
           </div>
         )}
+        </div>
+        <div className="scope-note site">
+          <Globe />
+          <span>
+            <strong>Your whole site.</strong> Anything given its own value on the page keeps it.
+          </span>
+        </div>
       </div>
 
-      <Section title="Basics" id="tok-basics" scope="Shortcuts">
+      <Section title="Basics" id="tok-basics" scope={changedNote([...(brand ? [brand.id] : []), ...fontIds])}>
         <div className="ss-group">
           {brand && colorRow(brand, true)}
-          {brand?.id === 'color.brand' && <BrandContrast model={contrast} onUse={chooseReadable} />}
+          {brand?.id === 'color.brand' && <BrandContrast model={contrast} onUse={chooseReadable} onJump={jumpTo} />}
+          {/* A new brand colour with the theme's hover colour left as it was: buttons would hover to a colour from another palette. */}
+          {brand?.id === 'color.brand' && changed('color.brand') && byId('color.brand-strong') && !changed('color.brand-strong') && !refOf(byId('color.brand-strong')?.value) && (
+            <p className="ss-hover-note">
+              <span className="ss-chip" style={{ background: hex('color.brand-strong') }} aria-hidden="true" />
+              <span>
+                Buttons still hover to the theme's{' '}
+                <span className="ss-nowrap">
+                  <button type="button" className="link-btn ss-jump" onClick={() => jumpTo('color.brand-strong')}>
+                    Brand (strong)
+                  </button>
+                  .
+                </span>{' '}
+                Change it to match your brand.
+              </span>
+            </p>
+          )}
           {fontsOrdered.map(fontRow)}
         </div>
       </Section>
@@ -948,15 +1144,30 @@ export function SiteStyles() {
           const max = Math.max(...group(g).map((t) => toPx(resolvedText(tokens, t.id)) ?? clampRange(resolvedText(tokens, t.id))?.[1] ?? 0));
           return (
             <div className="ss-group" key={g} role="group" aria-label={label}>
-              <div className="ss-group-label">{label}</div>
+              <div className="ss-group-label ss-group-head">
+                <span>{label}</span>
+                {(g === 'space' || g === 'container' || g === 'radius') && (
+                  <button
+                    className="link-btn ss-css-toggle"
+                    onClick={() => setCssGroups((prev) => {
+                      const next = new Set(prev);
+                      if (!next.delete(g)) next.add(g);
+                      return next;
+                    })}
+                  >
+                    {cssGroups.has(g) ? 'Use simple fields' : 'Edit as CSS'}
+                    <span className="sr-only"> for {label.toLowerCase()}</span>
+                  </button>
+                )}
+              </div>
               {group(g).map((t) => layoutRow(g, t, max))}
             </div>
           );
         })}
       </Section>
 
-      <Section title="Your styles" id="tok-custom" defaultOpen={st.tokens.custom.length > 0} scope={st.tokens.custom.length ? String(st.tokens.custom.length) : undefined}>
-        <CustomTokens state={st} onEditText={(id) => (setOpenText(id), openSection('tok-text', { focus: `[data-token-id="${CSS.escape(id)}"] .ss-text-toggle` }))} />
+      <Section title="Your styles" id="tok-custom" defaultOpen={st.tokens.custom.length > 0} scope={st.tokens.custom.length ? plural(st.tokens.custom.length, 'style', 'styles') : undefined}>
+        <CustomTokens state={st} say={say} whereUsed={(id) => usesOf(id).lines.flatMap(([, names]) => names)} onEditText={(id) => (setOpenText(id), openSection('tok-text', { focus: `[data-token-id="${CSS.escape(id)}"] .ss-text-toggle` }))} />
       </Section>
 
       <Section title="Site details" id="site-settings" defaultOpen={false}>
@@ -1006,5 +1217,6 @@ export function SiteStyles() {
         </Field>
       </Section>
     </div>
+    </SayContext.Provider>
   );
 }

@@ -173,6 +173,63 @@ await win.keyboard.press('Shift+Tab');
 await pause(200);
 await shot('focus', `${PANEL} :focus-visible`, { themes: ['light'] });
 
+/** Scroll the panel so `sel` sits `offset` pixels below its top edge, clear of the sticky header. */
+const scrollToEl = async (sel, offset = 120) => {
+  const top = await win.evaluate(([s, scr, o]) => {
+    const el = document.querySelector(s);
+    if (!el) throw new Error(`nothing matches ${s}`);
+    const box = document.querySelector(scr);
+    return el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - o;
+  }, [sel, SCROLLER, offset]);
+  await scrollTo(top);
+};
+const mustApply = async (operations, label) => {
+  const r = await apply(operations, label);
+  if (!r?.ok) throw new Error(`could not apply "${label}": ${JSON.stringify(r?.error)}`);
+  await pause(900);
+};
+
+// ---- The effect on the site: the whole window with the changes in place ----
+await win.evaluate(() => document.activeElement?.blur());
+await shot('changed-context', PANEL, { whole: true, themes: ['light'], before: () => scrollTo(0) });
+
+// ---- A brand colour the button text cannot be read on: where it is set, and on the colour's own row ----
+await mustApply([{ type: 'token.set', tokenId: 'color.brand', value: '#f4d35e' }], 'Design capture: low contrast brand');
+await shot('contrast-fail', `${PANEL} .ss-contrast .ss-pair.fail`, { before: () => scrollToEl(`${PANEL} .ss-contrast`, 220) });
+await shot('contrast-flag', `${PANEL} .ss-color .ss-flag`, { themes: ['light'], before: () => scrollToEl(`${PANEL} .ss-color:has(.ss-flag)`, 160) });
+await mustApply([{ type: 'token.set', tokenId: 'color.brand', value: '#2b5d8a' }], 'Design capture: readable brand');
+
+// ---- Your own styles: one of each common kind, a very long name, a link, and one that is in use ----
+await mustApply(
+  [
+    { type: 'token.create', group: 'color', label: 'Sea glass', value: '#2e8b57' },
+    { type: 'token.create', group: 'color', label: 'A considerably longer name for a seasonal promotion colour', value: '#c2410c' },
+    { type: 'token.create', group: 'space', label: 'Card gap', value: '28px' },
+    { type: 'token.create', group: 'font', label: 'Quote font', value: "Georgia, 'Times New Roman', serif" },
+    { type: 'token.create', group: 'text', label: 'Callout', value: { family: { token: 'font.body' }, size: '1.25rem', weight: 500, lineHeight: '1.5', tracking: '0em' } }
+  ],
+  'Design capture: add your own styles'
+);
+await mustApply([{ type: 'token.set', tokenId: 'color.accent', value: { token: 'color.custom-sea-glass' } }], 'Design capture: use your own colour');
+await win.locator(`${PANEL} .insp-jump button`, { hasText: 'Yours' }).click();
+await pause(500);
+await shot('yours', `${PANEL} .ss-custom-row`, { before: () => scrollToEl(`${PANEL} .ss-custom`, 110) });
+const seaRow = win.locator(`${PANEL} .ss-custom-row[data-token-id="color.custom-sea-glass"]`);
+if (/Not used yet/.test(await seaRow.innerText())) throw new Error('the colour meant to be in use reports no uses');
+await seaRow.getByRole('button', { name: 'Remove Sea glass' }).click();
+await pause(250);
+await shot('yours-remove', `${PANEL} .ss-custom-row [role="group"]`, { themes: ['light'], before: () => scrollToEl(`${PANEL} .ss-custom-row[data-token-id="color.custom-sea-glass"]`, 110) });
+await seaRow.getByRole('button', { name: 'Cancel' }).click();
+await mustApply([{ type: 'token.set', tokenId: 'color.accent', value: null }], 'Design capture: stop using your own colour');
+
+// ---- Another theme applied, with the changes kept: the panel and the site ----
+await mustApply([{ type: 'theme.apply', themeId: 'foundation-alt' }], 'Design capture: switch theme');
+await pause(1500);
+await shot('theme-alt', PANEL, { themes: ['light'], before: () => scrollTo(0) });
+await shot('theme-alt-context', PANEL, { whole: true, themes: ['light'], before: () => scrollTo(0) });
+await mustApply([{ type: 'theme.apply', themeId: 'foundation' }], 'Design capture: switch theme back');
+await pause(1000);
+
 // ---- The narrowest dock ----
 await win.evaluate(() => document.activeElement?.blur());
 const resizer = win.locator('.dock .resizer');
