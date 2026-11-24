@@ -117,7 +117,8 @@ export function imageUseRows(state: ProjectState, assetId: string): ImageUseRow[
     }
     if (!u.place) {
       if (t?.kind === 'pageSharing') return { key, target: t, icon: 'page', where: state.pages[t.pageId].title, what: 'Sharing image', setting: { pageId: t.pageId } };
-      return { key, target: t, icon: 'site', where: 'Site', what: t?.kind === 'site' && t.field === 'favicon' ? 'Browser tab icon' : 'Sharing image', setting: 'site' };
+      const what = t?.kind === 'site' && t.field === 'favicon' ? 'Browser tab icon' : t?.kind === 'site' && t.field === 'logo' ? 'Publisher logo' : 'Sharing image';
+      return { key, target: t, icon: 'site', where: 'Site', what, setting: 'site' };
     }
     const label = describePlace(state, u.place, trees) ?? { icon: 'component' as const, where: 'Site', what: 'Image' };
     return { ...label, key, target: t, alt: typeof u.value.alt === 'string' ? u.value.alt : '', ...(u.value.decorative ? { decorative: true } : {}) };

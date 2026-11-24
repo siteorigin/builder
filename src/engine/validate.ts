@@ -481,6 +481,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   };
   picture(state.site.favicon, 'The site icon', 'favicon');
   picture(state.site.socialImage, 'The site’s sharing image', 'socialImage');
+  picture(state.site.identity?.logo, 'The site’s logo', 'logo');
   for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
   if (opts.sectionLinks !== false) {
     out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state));

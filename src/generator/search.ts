@@ -10,7 +10,7 @@
  * content the page itself renders (never the shared header and footer, which every page has). Old addresses kept for
  * renamed pages only send visitors on, so they are never results; a page found always links to where it is now.
  */
-import type { NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { ComponentDefinition, NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
 import { slotChildren } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { renderedContent } from './checks';
@@ -130,6 +130,21 @@ const NAMES_HELPER = /['"`][^'"`\n]*site-search(?:\.js)?['"`]/;
  */
 export function usesSiteSearch(state: ProjectState): boolean {
   return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source));
+}
+
+/**
+ * Code that reads its page's address, not only a form it submits: `location.search`, `new URL(location.href)` or
+ * SvelteKit's `page.url.searchParams`, with a `q` parameter read from it (directly, or through a variable).
+ */
+const READS_ADDRESS = /\blocation\.search\b|new\s+URL\(\s*(?:window\.|document\.)?location(?:\.href)?\s*\)|\bpage\.url\.searchParams\b/;
+const READS_Q = /\.get\(\s*['"`]q['"`]\s*\)/;
+
+/**
+ * Whether a component runs a search of the site from its page's address (`?q=` in the URL), as the theme's Site search
+ * does for a link to a search: its code names the search code and reads the `q` parameter of its page's address.
+ */
+export function searchesFromAddress(def: ComponentDefinition | undefined): boolean {
+  return !!def && def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source) && READS_ADDRESS.test(def.source) && READS_Q.test(def.source);
 }
 
 /** The index as a module: the same pages always give the same bytes. */

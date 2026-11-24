@@ -15,6 +15,9 @@ import { destinationLabel, noteState } from '../../src/renderer/src/lib/destinat
 import { copy, POST_BODY, run, seoSite } from './fixtures/seo-site';
 
 const codes = (s: ProjectState) => runSeoAudit(s).map((f) => f.code);
+/** The SEO fixture as a project made before #586 has it: nothing said of who publishes the site. */
+const unidentifiedSite = () => seoSite({ identity: false });
+
 const only = (s: ProjectState, code: string) => runSeoAudit(s).filter((f) => f.code === code);
 const x = (n: number) => 'x'.repeat(n);
 
@@ -36,7 +39,7 @@ function expectValidDestination(s: ProjectState, f: SeoFinding) {
       expect(Object.hasOwn(treeFor(s, d.owner)?.nodes ?? {}, d.nodeId), f.code).toBe(true);
       break;
     case 'site':
-      expect(['baseUrl', 'favicon', 'socialImage']).toContain(d.field);
+      expect(['baseUrl', 'favicon', 'socialImage', 'identity', 'logo', 'sameAs']).toContain(d.field);
       break;
     default:
       throw new Error(`Unexpected destination ${d.kind}`);
@@ -179,6 +182,33 @@ describe('baseline rules', () => {
     expect(codes(gone)).toEqual(['SEO_FAVICON_MISSING']);
   });
 
+  it('says when the site doesn’t say who publishes it, or links to no profile that confirms who that is', () => {
+    const plain = unidentifiedSite().state;
+    expect(runSeoAudit(plain)).toEqual([
+      expect.objectContaining({ code: 'SEO_ENTITY_IDENTITY_MISSING', severity: 'warning', pillar: 'entity', site: 'identity', aiFixable: false, destination: { kind: 'site', field: 'identity' } })
+    ]);
+    // A kind, named by the site, with no profile: who it is can't be confirmed.
+    const person = run(plain, { type: 'site.update', identity: { kind: 'Person' } });
+    expect(runSeoAudit(person)).toEqual([
+      expect.objectContaining({ code: 'SEO_ENTITY_SAME_AS_MISSING', severity: 'warning', pillar: 'entity', site: 'sameAs', aiFixable: false, message: expect.stringContaining('its author'), destination: { kind: 'site', field: 'sameAs' } })
+    ]);
+    // A kind chosen with no name at all, its own or the site's, says no one.
+    const nameless = copy(run(person, { type: 'site.update', identity: { sameAs: ['https://github.com/riverside'] } }));
+    nameless.site.name = '  ';
+    expect(runSeoAudit(nameless)).toEqual([expect.objectContaining({ code: 'SEO_ENTITY_IDENTITY_MISSING', message: 'The site’s publisher has no name.', site: 'identity' })]);
+    expect(runSeoAudit(run(person, { type: 'site.update', identity: { sameAs: ['https://github.com/riverside'] } }))).toEqual([]);
+    // Values edited into the file by hand that Site details would refuse count as none.
+    const damaged = copy(seoSite().state);
+    damaged.site.identity = { kind: 'Company' as never, sameAs: ['https://www.wikidata.org/wiki/Q123456'] };
+    expect(codes(damaged)).toEqual(['SEO_ENTITY_IDENTITY_MISSING']);
+    damaged.site.identity = { kind: 'Organization', sameAs: ['javascript:alert(1)', 'not an address'] };
+    expect(codes(damaged)).toEqual(['SEO_ENTITY_SAME_AS_MISSING']);
+    (damaged.site as { identity: unknown }).identity = 'Organization';
+    expect(codes(damaged)).toEqual(['SEO_ENTITY_IDENTITY_MISSING']);
+    // Clearing it all is the same as never saying.
+    expect(codes(run(seoSite().state, { type: 'site.update', identity: null }))).toEqual(['SEO_ENTITY_IDENTITY_MISSING']);
+  });
+
   it('says when nothing on the rest of the site links to a page', () => {
     const { state, home } = seoSite();
     const s = run(state, { type: 'page.create', pageId: 'pg_kilns', title: 'Kiln hire', route: '/kiln-hire/' }, { type: 'page.update', pageId: 'pg_kilns', seoTitle: 'Kiln hire by the hour · Riverside Studio', description: 'Hire our electric and gas kilns by the hour, with firing help from the studio team.' });
@@ -293,7 +323,7 @@ describe('baseline rules', () => {
     const { state, services } = seoSite();
     let s = run(
       state,
-      { type: 'site.update', socialImage: null, favicon: null },
+      { type: 'site.update', socialImage: null, favicon: null, identity: { sameAs: null } },
       { type: 'page.update', pageId: state.site.homePageId, noindex: true },
       { type: 'page.update', pageId: services, seoTitle: 'Short', description: '' },
       { type: 'page.create', pageId: 'pg_lost', title: 'Lost', route: '/lost/' },
@@ -309,7 +339,7 @@ describe('baseline rules', () => {
     const ranks = found.map((f) => order.indexOf(f.pillar) * 3 + ['error', 'warning', 'info'].indexOf(f.severity));
     expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
     expect(new Set(found.map((f) => f.code))).toEqual(
-      new Set(['SEO_HOME_NOINDEX', 'SEO_ENTRY_HEADING_SKIP', 'ALT_MISSING', 'SEO_TITLE_LENGTH', 'SEO_DESCRIPTION_DUPLICATE', 'SEO_PAGE_UNLINKED', 'SEO_LINK_TEXT_GENERIC', 'SEO_SOCIAL_IMAGE_MISSING', 'SEO_FAVICON_MISSING'])
+      new Set(['SEO_HOME_NOINDEX', 'SEO_ENTITY_SAME_AS_MISSING', 'SEO_ENTRY_HEADING_SKIP', 'ALT_MISSING', 'SEO_TITLE_LENGTH', 'SEO_DESCRIPTION_DUPLICATE', 'SEO_PAGE_UNLINKED', 'SEO_LINK_TEXT_GENERIC', 'SEO_SOCIAL_IMAGE_MISSING', 'SEO_FAVICON_MISSING'])
     );
     for (const f of found) expect(f.explanation.length, f.code).toBeGreaterThan(20);
     expect(JSON.stringify(runSeoAudit(structuredClone(s)))).toBe(JSON.stringify(found));

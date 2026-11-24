@@ -1,10 +1,11 @@
 /**
- * A document's structured data as one connected Schema.org graph: the organization that publishes the site, the
- * website, the page itself and its breadcrumb trail, each with a stable `@id` the others refer to, so search engines
- * and AI answer engines read one set of linked entities rather than separate claims.
+ * A document's structured data as one connected Schema.org graph: the organization, local business or person that
+ * publishes the site (its identity, shared/site-identity.ts), the website, the page itself and its breadcrumb trail,
+ * each with a stable `@id` the others refer to, so search engines and AI answer engines read one set of linked entities
+ * rather than separate claims.
  *
- * IDs follow one convention. The site's own entities hang off its public URL (`https://example.com/#organization`,
- * `#website`); a document's hang off its own address (`https://example.com/about/#webpage`, `#breadcrumb`). Features
+ * IDs follow one convention. The site's own entities hang off its public URL (`https://example.com/#organization`, or
+ * `#localbusiness` or `#person` for those publishers, and `#website`); a document's hang off its own address (`https://example.com/about/#webpage`, `#breadcrumb`). Features
  * add entities through contributors: a contributor gets those IDs and returns nodes of its own (a BlogPosting whose
  * publisher is `ids.organization`, say) and extensions of nodes already there (a SearchAction on the website). A
  * contribution that would make the graph say two things (an ID used twice, a property set to two values, a reference
@@ -12,12 +13,13 @@
  *
  * The graph is plain JSON with a fixed order: the same project always gives the same bytes.
  */
-import type { ProjectState } from '@shared/types';
+import type { EntityKind, ProjectState } from '@shared/types';
 import type { EffectiveSeo, SeoSubject } from '@shared/seo';
 import { seoText } from '@shared/seo';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
-import { isLanguageCode, siteLanguage } from '@shared/languages';
+import { isLanguageCode, sameLanguage, siteLanguage } from '@shared/languages';
+import { sitePublisher } from '@shared/site-identity';
 import { siteArchives } from './archive';
 import type { SeoResolver } from './seo-metadata';
 
@@ -30,6 +32,16 @@ export type GraphNode = JsonObject & { '@id': string; '@type': string | string[]
 
 /** The IDs of the graph's own entities, and the way to make more of them. */
 export interface GraphIds {
+  /**
+   * Who publishes the site: `#organization`, `#localbusiness` or `#person`, as the site's identity says it is. A
+   * feature names the publisher (a BlogPosting's, say) by this ID or `organization`, which is the same one.
+   */
+  publisher: string;
+  /**
+   * The publisher's ID, whatever kind it is: the same as `publisher`. Its fragments (`organization`, `localbusiness`,
+   * `person`) are the publisher's own: an author or other person a feature adds takes an ID of its own
+   * (`ids.site('author-ana')`), and the publisher's logo is the site identity's to set.
+   */
   organization: string;
   website: string;
   webpage: string;
@@ -79,14 +91,22 @@ const ordered = <T extends JsonValue>(v: T): T => JSON.parse(canonical(v)) as T;
 /** A property only when it has a value. */
 const opt = (key: string, value: JsonValue | undefined): JsonObject => (value === undefined || value === '' ? {} : { [key]: value });
 
-/** The IDs for a site whose public URL ends in `root` ("https://example.com/studio/") and a document at `url`. */
-export function graphIds(root: string, url: string): GraphIds {
+/** The fragment of the publisher's ID for each kind of publisher. */
+const PUBLISHER_FRAGMENT: Record<EntityKind, string> = { Organization: 'organization', LocalBusiness: 'localbusiness', Person: 'person' };
+
+/**
+ * The IDs for a site whose public URL ends in `root` ("https://example.com/studio/") and a document at `url`, published
+ * by a `kind` of entity (an organization when not said).
+ */
+export function graphIds(root: string, url: string, kind: EntityKind = 'Organization'): GraphIds {
   const id = (at: string, fragment: string) => {
     if (!FRAGMENT.test(fragment)) throw new Error(`“${fragment}” is not a graph ID fragment: lowercase letters, digits and hyphens, starting with a letter.`);
     return `${at}#${fragment}`;
   };
+  const publisher = id(root, PUBLISHER_FRAGMENT[kind] ?? 'organization');
   return {
-    organization: id(root, 'organization'),
+    publisher,
+    organization: publisher,
     website: id(root, 'website'),
     webpage: id(url, 'webpage'),
     breadcrumb: id(url, 'breadcrumb'),
@@ -94,6 +114,9 @@ export function graphIds(root: string, url: string): GraphIds {
     page: (fragment) => id(url, fragment)
   };
 }
+
+/** The collection indexes of each resolver's project, worked out once for every entry's trail it resolves. */
+const archivesOf = new WeakMap<SeoResolver, ReturnType<typeof siteArchives>>();
 
 /** The trail from the Home page to a document: Home, the published pages its address is inside, its collection's index. */
 function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, root: string): Array<{ name: string; url: string }> {
@@ -115,7 +138,8 @@ function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, r
   }
   if (meta.subject.kind === 'entry') {
     const { collectionId } = meta.subject;
-    const index = siteArchives(state).find((a) => a.collectionId === collectionId && a.category === undefined && a.page === 1);
+    if (!archivesOf.has(resolver)) archivesOf.set(resolver, siteArchives(state));
+    const index = archivesOf.get(resolver)!.find((a) => a.collectionId === collectionId && a.category === undefined && a.page === 1);
     const name = seoText(state.collections[collectionId]?.settings?.name);
     if (index && name) steps.push({ route: index.route, name });
   }
@@ -127,12 +151,52 @@ function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, r
   return out;
 }
 
+/**
+ * A library file the website serves: one under static/ and nowhere above it, its name plain enough to be its own
+ * address (no escapes, query or fragment). What a damaged record names otherwise is not.
+ */
+const servedFile = (file: string) => {
+  const parts = file.split('/');
+  return parts[0] === 'static' && parts.length > 1 && parts.slice(1).every((p) => p && p !== '.' && p !== '..' && !/[\\\0%?#\s]/.test(p));
+};
+
+/** Whether an asset ID names a picture in the library, with a file the website serves to link to. */
+export const isLibraryImage = (state: ProjectState) => (id: string) => {
+  const a = Object.hasOwn(state.assets?.assets ?? {}, id) ? state.assets.assets[id] : undefined;
+  return a?.kind === 'image' && typeof a.file === 'string' && servedFile(a.file);
+};
+
+/**
+ * The publisher, as the site's identity describes it: its kind, its name (the site's, unless it has its own), its home
+ * page (this site's, unless it has its own), its logo or photo, its profiles elsewhere and its contact details, and for
+ * a local business its hours, prices and place on the map.
+ */
+function publisherNode(state: ProjectState, root: string, ids: GraphIds): GraphNode {
+  const who = sitePublisher(state.site, isLibraryImage(state));
+  const logo = who.logo ? `${root}${state.assets.assets[who.logo].file.replace(/^static\//, '')}` : undefined;
+  const one = (list: string[]) => (list.length === 1 ? list[0] : list.length ? list : undefined);
+  return {
+    '@type': who.kind,
+    '@id': ids.publisher,
+    ...opt('name', seoText(who.name)),
+    url: who.url ?? root,
+    ...opt(who.kind === 'Person' ? 'image' : 'logo', logo ? { '@type': 'ImageObject', url: logo } : undefined),
+    ...opt('sameAs', one(who.sameAs)),
+    ...opt('address', who.address),
+    ...opt('telephone', who.telephone),
+    ...opt('email', who.email),
+    ...opt('openingHours', one(who.openingHours)),
+    ...opt('priceRange', who.priceRange),
+    ...opt('geo', who.geo ? { '@type': 'GeoCoordinates', latitude: who.geo.latitude, longitude: who.geo.longitude } : undefined)
+  };
+}
+
 /** The graph's own four entities, in their fixed order. */
 function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, root: string, ids: GraphIds): GraphNode[] {
   const site = state.site;
   const name = seoText(site.name);
   const language = siteLanguage(site);
-  const organization: GraphNode = { '@type': 'Organization', '@id': ids.organization, ...opt('name', name), url: root };
+  const organization = publisherNode(state, root, ids);
   const website: GraphNode = {
     '@type': 'WebSite',
     '@id': ids.website,
@@ -140,7 +204,7 @@ function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSe
     ...opt('name', name),
     ...opt('description', seoText(site.description)),
     ...opt('inLanguage', isLanguageCode(language) ? language : undefined),
-    publisher: ref(ids.organization)
+    publisher: ref(ids.publisher)
   };
   const webpage: GraphNode = {
     '@type': 'WebPage',
@@ -148,7 +212,8 @@ function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSe
     url: meta.url!,
     ...opt('name', seoText(meta.title)),
     ...opt('description', seoText(meta.description)),
-    ...opt('inLanguage', isLanguageCode(meta.language) ? meta.language : undefined),
+    // A page in the site's language says it as the site does, however the page spells it ("EN" on an "en" site).
+    ...opt('inLanguage', isLanguageCode(meta.language) ? (sameLanguage(meta.language, language) ? language : meta.language) : undefined),
     isPartOf: ref(ids.website),
     breadcrumb: ref(ids.breadcrumb),
     ...opt('primaryImageOfPage', meta.imageUrl ? { '@type': 'ImageObject', url: meta.imageUrl } : undefined)
@@ -212,7 +277,7 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
   const base = publicUrl(state.site);
   if (!meta?.visibility.jsonLd || !meta.url || !base) return null;
   const root = `${base}/`;
-  const ids = graphIds(root, meta.url);
+  const ids = graphIds(root, meta.url, sitePublisher(state.site, isLibraryImage(state)).kind);
   // An ID at the site's address or this document's, with a fragment: one of the graph's own, written well or not.
   const local = (id: string) => {
     const at = id.indexOf('#');

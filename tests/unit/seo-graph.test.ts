@@ -7,7 +7,7 @@ import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
 import { buildSeoGraph, graphIds, graphScriptText, type GraphContributor, type GraphNode, type SeoGraph } from '@generator/seo-graph';
-import { run, seoSite } from './fixtures/seo-site';
+import { run, seoSite, SEO_SITE_PROFILE } from './fixtures/seo-site';
 
 const graphOf = (s: ProjectState, subject: SeoSubject, contributors: GraphContributor[] = []) => buildSeoGraph(s, createSeoResolver(s), subject, contributors);
 const node = (g: SeoGraph, id: string) => g['@graph'].find((n) => n['@id'] === id) as GraphNode;
@@ -39,7 +39,7 @@ describe('buildSeoGraph', () => {
       ['BreadcrumbList', 'https://example.com/studio/#breadcrumb']
     ]);
     expectLinked(g);
-    expect(node(g, 'https://example.com/studio/#organization')).toEqual({ '@type': 'Organization', '@id': 'https://example.com/studio/#organization', name: 'Riverside Studio', url: 'https://example.com/studio/' });
+    expect(node(g, 'https://example.com/studio/#organization')).toEqual({ '@type': 'Organization', '@id': 'https://example.com/studio/#organization', name: 'Riverside Studio', url: 'https://example.com/studio/', sameAs: SEO_SITE_PROFILE });
     expect(node(g, 'https://example.com/studio/#website')).toMatchObject({ url: 'https://example.com/studio/', name: 'Riverside Studio', inLanguage: 'en', publisher: { '@id': 'https://example.com/studio/#organization' } });
     expect(node(g, 'https://example.com/studio/#webpage')).toMatchObject({
       url: 'https://example.com/studio/',
@@ -113,7 +113,8 @@ describe('buildSeoGraph', () => {
       'https://example.com/studio/#person',
       'https://example.com/studio/blog/spring-pottery-classes/#blogposting'
     ]);
-    expect(node(g, 'https://example.com/studio/#organization')).toMatchObject({ '@type': ['Organization', 'LocalBusiness'], sameAs: ['https://social.example/riverside', 'https://wiki.example/Riverside_Studio'] });
+    // Added values follow the ones the site's identity gives, in an order of their own.
+    expect(node(g, 'https://example.com/studio/#organization')).toMatchObject({ '@type': ['Organization', 'LocalBusiness'], sameAs: [SEO_SITE_PROFILE, 'https://social.example/riverside', 'https://wiki.example/Riverside_Studio'] });
     expect(node(g, 'https://example.com/studio/#website').potentialAction).toMatchObject({ '@type': 'SearchAction' });
     expect(node(g, 'https://example.com/studio/blog/spring-pottery-classes/#blogposting')).toEqual({
       '@type': 'BlogPosting',

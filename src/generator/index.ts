@@ -67,7 +67,7 @@ import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/rout
 import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
-import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
+import { HTML_ATTR, HTML_START, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
 import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
@@ -95,7 +95,9 @@ import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerS
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
-import { notFoundSectionRoutes, structuredContent } from './checks';
+import { notFoundSectionRoutes } from './checks';
+import { graphScript, inGenerationRun } from './structured-data';
+import { siteTwitterHandle } from '@shared/site-identity';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -2932,7 +2934,8 @@ function seoHead(state: ProjectState, meta: SeoMetadata, opts: { article: boolea
     if (meta.imageAlt) head.push(`\t<meta property="og:image:alt" content={${js(meta.imageAlt)}} />`);
   }
   head.push(`\t<meta name="twitter:card" content=${js(image ? 'summary_large_image' : 'summary')} />`);
-  const handle = twitterHandle(state.site.twitterSite);
+  // Who publishes the site names its account; a handle stored on the site itself is the fallback.
+  const handle = derived(state, 'twitterSite', (s) => siteTwitterHandle(s.site) ?? twitterHandle(s.site.twitterSite));
   if (handle) head.push(`\t<meta name="twitter:site" content=${js(handle)} />`);
   head.push(`\t<meta name="twitter:title" content={${js(meta.socialTitle)}} />`);
   if (meta.description) head.push(`\t<meta name="twitter:description" content={${js(meta.description)}} />`);
@@ -2971,7 +2974,6 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   const site = state.site;
   // What the page says about itself when its link is shared, as the SEO audit and the editor's preview read it.
   const meta = pageMetadata(state, page)!;
-  const noindex = meta.noindex;
   // A dated article says so, with its publication date in a form other sites and readers can use.
   const article = pageArticle(page);
   const base = publicUrl(site);
@@ -2980,29 +2982,10 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   // The same page in other languages, and this one among them: each version lists the same set.
   // Without a public address they are site paths, resolved as authored links are, so they hold under any sub-path.
   for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${base ? js(base + routeUrl(alt.route)) : `resolve(${js(alt.route)})`}} />`);
-  // `<` is escaped inside the JSON, so no text can end the script.
-  const ldScript = (ld: Record<string, unknown>) => `\t{@html ${js(`<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`)}}`;
-  // Structured data: the home page describes the website itself, once a public URL is known.
-  if (base && page.id === site.homePageId && !noindex) {
-    const ld: Record<string, unknown> = { '@context': 'https://schema.org', '@type': 'WebSite', name: site.name, url: base + '/' };
-    if (site.description) ld.description = site.description;
-    if (isLanguageCode(site.language)) ld.inLanguage = site.language;
-    head.push(ldScript(ld));
-  }
-  // A page's contact sections describe the business, and its FAQ the questions it answers, as the page shows them.
-  if (!noindex) {
-    const found = structuredContent(state, page);
-    const facts = (k: string, list: string[]) => (list.length ? { [k]: list.length === 1 ? list[0] : list } : {});
-    // A business is named by the site; a site with no name says nothing about one.
-    for (const b of site.name.trim() ? found.businesses : [])
-      head.push(ldScript({ '@context': 'https://schema.org', '@type': 'LocalBusiness', name: site.name, ...(base ? { url: base + '/' } : {}), ...facts('email', b.email), ...facts('telephone', b.telephone), ...facts('address', b.address) }));
-    if (found.faq.length)
-      head.push(ldScript({ '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: found.faq.map((e) => ({ '@type': 'Question', name: e.question, acceptedAnswer: { '@type': 'Answer', text: e.answer } })) }));
-  }
-  // On a site in more than one language, every page also says which language it is in.
-  if (base && !noindex && languagesByRoute(state).length) {
-    head.push(ldScript({ '@context': 'https://schema.org', '@type': 'WebPage', name: page.seo?.title || page.title, url: base + routeUrl(page.route), inLanguage: pageLanguage(site, page) }));
-  }
+  // Structured data: one connected graph of who publishes the site, the website, this page and its trail from Home,
+  // its FAQ and contact sections. A page search engines are asked not to list, or one with no public URL, has none.
+  const graph = graphScript(state, { kind: 'page', pageId: page.id });
+  if (graph) head.push(`\t{@html ${js(graph)}}`);
   const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : ''].filter(Boolean).join('\n');
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   return (
@@ -3367,6 +3350,9 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   // What the entry says about itself to search engines and link previews: its own search settings, else its title,
   // excerpt and featured image, as the SEO audit reads them.
   const head = seoHead(state, entryMetadata(state, collectionId, entryId, route)!, { article: true, alternates: [] });
+  // The same connected graph as a page's: who publishes the site, the website, this entry and its trail from Home.
+  const graph = graphScript(state, { kind: 'entry', collectionId, entryId });
+  if (graph) head.push(`\t{@html ${js(graph)}}`);
   const imports = renderImports(ctx.imports);
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   // Section headings and pictures in the entry's text get the article's rules.
@@ -3812,6 +3798,11 @@ export function generateLibrary(state: ProjectState, opts: GenerateOptions = {})
  * is the same bytes either way.
  */
 export function generateProject(state: ProjectState, opts: GenerateOptions = {}, cache?: GenerationCache): FileMap {
+  // Every page's and entry's structured data reads the same documents: the run works them out once (structured-data.ts).
+  return inGenerationRun(() => generateFiles(state, opts, cache));
+}
+
+function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: GenerationCache): FileMap {
   const files: FileMap = new Map();
   const run = cache?.run(state, !!opts.instrument);
   // Content that differs between the clean and instrumented output is kept apart by its key; the rest is shared.

@@ -465,7 +465,7 @@ function revealInGrid(grid: HTMLElement | null) {
  * A site-level image that carries no description: the browser tab icon (shown square) or the picture shown when
  * the site is shared (shown at the 1.91:1 shape link previews crop it to).
  */
-export type PlainImage = 'favicon' | 'social';
+export type PlainImage = 'favicon' | 'social' | 'logo';
 
 /** The picker for a site image: the image editor's thumbnail, search, import and keyboard grid, with None as Remove. */
 export function SiteImageField({ value, onChange, state, title, plain }: { value: string | null | undefined; onChange: (assetId: string | null) => void; state: ProjectState; title: string; plain: PlainImage }) {
@@ -492,10 +492,10 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
   // Where this image sits in the project, so a description refused for being too long waits for it there.
   const home = useFieldHome();
   const v = value ?? { assetId: null, alt: '' };
-  // A picture-only field (a sharing image) shows only what the library has as an image: a saved ID that names a
-  // document or font, or is no record at all, is the same as an image that is gone.
+  // A picture-only field (a sharing image, a site image) shows only what the library has as an image: a saved ID that
+  // names a document or font, or is no record at all, is the same as an image that is gone.
   const named = v.assetId && Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : null;
-  const asset = picture ? (named?.kind === 'image' ? named : null) : v.assetId ? state.assets.assets[v.assetId] : null;
+  const asset = picture || plain ? (named?.kind === 'image' && typeof named.file === 'string' && named.file ? named : null) : v.assetId ? state.assets.assets[v.assetId] : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   // The value as it is now, for work that finishes later (an import).
   const latest = useRef(v);

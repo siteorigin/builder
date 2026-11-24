@@ -236,7 +236,9 @@ describe('an entry’s generated page', () => {
       '<meta name="twitter:title" content={"Spring pottery classes"} />',
       '<meta name="twitter:description" content={"Spring wheel classes open for bookings: six weeks of throwing, trimming and glazing."} />',
       '<meta name="twitter:image" content={"https://example.com/studio/assets/img_share-1a2b3c4d.png"} />',
-      '<meta name="twitter:image:alt" content={"The studio from the river"} />'
+      '<meta name="twitter:image:alt" content={"The studio from the river"} />',
+      // The connected graph every listed entry carries (site-identity.test.ts reads what it says).
+      expect.stringMatching(/^\{@html "\\u003cscript type=\\"application\/ld\+json\\">/)
     ]);
   });
 

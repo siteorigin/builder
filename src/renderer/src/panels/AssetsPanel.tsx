@@ -350,6 +350,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
   }
   if (state.site.favicon === assetId) out.push({ key: 'favicon', icon: 'site', where: 'Site', what: 'Browser tab icon', count: 1, go: openSiteStyles });
   if (state.site.socialImage === assetId) out.push({ key: 'social', icon: 'site', where: 'Site', what: 'Sharing image', count: 1, go: openSiteStyles });
+  if (state.site.identity?.logo === assetId) out.push({ key: 'logo', icon: 'site', where: 'Site', what: 'Publisher logo', count: 1, go: openSiteStyles });
   return out;
 }
 

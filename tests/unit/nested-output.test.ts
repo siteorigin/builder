@@ -912,14 +912,37 @@ describe('a code component that names its font while it runs', () => {
 
 /** Every JSON-LD object a rendered head carries, parsed as a search engine would. */
 const jsonLd = (head: string) => [...head.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map((m) => JSON.parse(m[1]) as Record<string, unknown>);
-const ofType = (head: string, type: string) => jsonLd(head).filter((ld) => ld['@type'] === type);
+/** The nodes of the one connected graph a head carries: never more than one script of structured data. */
+function graphOf(head: string): Array<Record<string, unknown>> {
+  const scripts = jsonLd(head);
+  expect(scripts.length).toBeLessThanOrEqual(1);
+  if (scripts[0]) expect(Object.keys(scripts[0]).sort()).toEqual(['@context', '@graph']);
+  if (scripts[0]) expect(scripts[0]['@context']).toBe('https://schema.org');
+  return (scripts[0]?.['@graph'] ?? []) as Array<Record<string, unknown>>;
+}
+/** The graph's nodes of a type (a page that is also an FAQ page is both). */
+const ofType = (head: string, type: string) => graphOf(head).filter((n) => [n['@type']].flat().includes(type));
+/** Each contact section's email, telephone and address, as the graph gives them. */
+const contactFacts = (head: string) =>
+  ofType(head, 'WebPageElement').map((section) => {
+    const about = [section.about].flat() as Array<Record<string, unknown>>;
+    const point = about.find((a) => a['@type'] === 'ContactPoint') ?? {};
+    const places = about.filter((a) => a['@type'] === 'Place').map((a) => a.address);
+    return [point.email, point.telephone, places.length === 1 ? places[0] : places];
+  });
+/** A starter site with a public URL, which its pages' structured data hangs off. */
+const published = () => {
+  const s = fresh();
+  s.site.baseUrl = 'https://studio.example';
+  return s;
+};
 const firstOf = (s: ProjectState, page: PageDoc, componentId: string) => Object.values(page.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === componentId) as InstanceNode;
 /** Text as the page shows it, with tags dropped and entities read. */
 const shownText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ');
 
 describe('structured data on a page with contact details and an FAQ', () => {
   it('leaves out an FAQ whose questions the placement hides, and reads each rendering of one placed in a list', async () => {
-    const s = fresh();
+    const s = published();
     const contact = byTitle(s, 'Contact');
     const faq = firstOf(s, contact, 'faq.list');
     faq.overrides = { item: { base: { hidden: true } } };
@@ -931,7 +954,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
     faq.overrides = { item: { base: { hidden: true } } };
     expect(ofType((await renderPage(s, contact)).head, 'FAQPage')).toEqual([]);
     // A design that shows the same FAQ once in each of its two rows: each rendering's questions count.
-    const t = fresh();
+    const t = published();
     const faqDef = t.components[installComponent(t, 'faq.list')];
     const twice = addDef(t, {
       componentId: 'project.twice',
@@ -947,7 +970,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
   });
 
   it('reads visibility as the stylesheet decides it, size by size through every element around the question', async () => {
-    const s = fresh();
+    const s = published();
     const contact = byTitle(s, 'Contact');
     const faq = firstOf(s, contact, 'faq.list');
     const faqDef = s.components[faq.definitionId];
@@ -963,7 +986,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
   });
 
   it('reads an FAQ placed in a design with the options and styles that design gives it', async () => {
-    const s = fresh();
+    const s = published();
     const faqDef = s.components[installComponent(s, 'faq.list')];
     faqDef.variantAxes!.tone.options.quiet = { label: 'Quiet', styles: { item: { base: { hidden: true } } } };
     const wrap = addDef(s, { componentId: 'project.help', name: 'Help', properties: {}, parts: { root: { nodeId: 'root', label: 'Help' } }, build: (b) => b.el('root', 'section', { name: 'Help' }, []) });
@@ -977,13 +1000,13 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(ofType((await renderPage(s)).head, 'FAQPage')).toEqual([]);
   });
 
-  it('reads contact details in the shared footer the page shows, and names no business for a site with no name', async () => {
-    const s = fresh();
+  it('reads contact details in the shared footer the page shows, and names no one for a site with no name', async () => {
+    const s = published();
     const about = byTitle(s, 'About');
     const details = makeInstance(s.components[installComponent(s, 'contact.details')], {});
     s.site.shell.footer.nodes[details.id] = details;
     s.site.shell.footer.rootIds.push(details.id);
-    expect(ofType((await renderPage(s, about)).head, 'LocalBusiness')).toHaveLength(1);
+    expect(contactFacts((await renderPage(s, about)).head)).toEqual([['hello@example.com', '+1 555 0134', '12 Harbour Lane, Millbrook']]);
     // A cached run follows what the footer shows into every page, and an edit elsewhere in it changes no page.
     const cache = new GenerationCache();
     const page = pageFile(about);
@@ -997,28 +1020,42 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(generateProject(u, {}, cache).get(page)).toContain('studio@example.com');
     expect(generateProject(u, {}, cache).get(page)).toBe(generateProject(u).get(page));
     about.showFooter = false;
-    expect(ofType((await renderPage(s, about)).head, 'LocalBusiness')).toEqual([]);
+    expect(ofType((await renderPage(s, about)).head, 'WebPageElement')).toEqual([]);
+    // The details are the page's to show whoever they belong to: a site with no name keeps them, and names no one.
     s.site.name = '  ';
-    expect(ofType((await renderPage(s, byTitle(s, 'Contact'))).head, 'LocalBusiness')).toEqual([]);
+    const { head } = await renderPage(s, byTitle(s, 'Contact'));
+    expect(contactFacts(head)).toHaveLength(2);
+    expect(graphOf(head).filter((n) => 'name' in n && !String(n.name).trim())).toEqual([]);
+    expect(ofType(head, 'Organization')[0]).not.toHaveProperty('name');
   });
 
   it('describes the business and the questions as the page shows them', async () => {
-    const s = fresh();
+    const s = published();
     s.site.baseUrl = 'https://studio.example';
     const contact = byTitle(s, 'Contact');
     const { head, body } = await renderPage(s, contact);
-    expect(ofType(head, 'LocalBusiness')).toEqual([
-      { '@context': 'https://schema.org', '@type': 'LocalBusiness', name: 'Test Studio', url: 'https://studio.example/', email: 'hello@example.com', telephone: '+1 555 0134', address: '12 Harbour Lane, Millbrook' }
+    // The contact section is a part of the page, about the contact point and the place it shows; the facts are not
+    // said to be the publisher's, since a page can show someone else's (a venue's box office, say).
+    const page = 'https://studio.example' + contact.route;
+    expect(ofType(head, 'WebPageElement')).toEqual([
+      {
+        '@type': 'WebPageElement',
+        '@id': `${page}#contact`,
+        isPartOf: { '@id': `${page}#webpage` },
+        about: [
+          { '@type': 'ContactPoint', email: 'hello@example.com', telephone: '+1 555 0134' },
+          { '@type': 'Place', address: '12 Harbour Lane, Millbrook' }
+        ]
+      }
     ]);
+    expect(ofType(head, 'Organization')).toEqual([{ '@type': 'Organization', '@id': 'https://studio.example/#organization', name: 'Test Studio', url: 'https://studio.example/' }]);
+    // The page itself is the FAQ page, with every question and its answer.
     const [faqPage, ...more] = ofType(head, 'FAQPage');
     expect(more).toEqual([]);
     const faq = firstOf(s, contact, 'faq.list');
     const items = faq.props.items as Array<{ question: string; answer: string }>;
-    expect(faqPage).toEqual({
-      '@context': 'https://schema.org',
-      '@type': 'FAQPage',
-      mainEntity: items.map((i) => ({ '@type': 'Question', name: i.question, acceptedAnswer: { '@type': 'Answer', text: i.answer } }))
-    });
+    expect(faqPage).toMatchObject({ '@type': ['WebPage', 'FAQPage'], '@id': `${page}#webpage` });
+    expect(faqPage.mainEntity).toEqual(items.map((i) => ({ '@type': 'Question', name: i.question, acceptedAnswer: { '@type': 'Answer', text: i.answer } })));
     // Each question and answer is one the page shows, in the order it shows them.
     const text = shownText(body);
     let at = 0;
@@ -1029,12 +1066,13 @@ describe('structured data on a page with contact details and an FAQ', () => {
     }
     // Other pages have neither.
     const about = await renderPage(s, byTitle(s, 'About'));
-    expect(ofType(about.head, 'LocalBusiness')).toEqual([]);
+    expect(ofType(about.head, 'WebPageElement')).toEqual([]);
     expect(ofType(about.head, 'FAQPage')).toEqual([]);
+    expect(ofType(about.head, 'WebPage')).toHaveLength(1);
   });
 
   it('reads an FAQ placed in a section, leaves out empty and hidden ones, and keeps hostile text inside its script', async () => {
-    const s = fresh();
+    const s = published();
     const contact = byTitle(s, 'Contact');
     const faq = firstOf(s, contact, 'faq.list');
     const items = faq.props.items as Array<{ id: string; question: string; answer: string }>;
@@ -1052,19 +1090,24 @@ describe('structured data on a page with contact details and an FAQ', () => {
     page.nodes[hidden.id] = hidden;
     page.rootIds.push(hidden.id);
     const { head } = await renderPage(t, page);
-    expect(head.match(/<script/g)).toHaveLength(2);
+    expect(head.match(/<script/g)).toHaveLength(1);
     const [faqPage] = ofType(head, 'FAQPage');
     const entries = faqPage.mainEntity as Array<{ name: string; acceptedAnswer: { text: string } }>;
     const innerItems = inner.props.items as Array<{ question: string; answer: string }>;
     const outerItems = (byTitle(t, 'Contact').nodes[faq.id] as InstanceNode).props.items as Array<{ question: string; answer: string }>;
     expect(entries.map((e) => e.name)).toEqual([...innerItems.map((i) => i.question), outerItems[0].question, ...outerItems.slice(2).map((i) => i.question)]);
     expect(entries[innerItems.length].acceptedAnswer.text).toBe('Yes </script><script>alert(1)</script> & “quoted” across lines');
-    // No public address yet: the business has no URL, and nothing else is missing.
-    expect(ofType(head, 'LocalBusiness')[0]).not.toHaveProperty('url');
+    // With no public address there is nothing to hang the graph's entities off: the page carries no structured data,
+    // and still shows its questions and contact details to visitors.
+    delete t.site.baseUrl;
+    const local = await renderPage(t, byTitle(t, 'Contact'));
+    expect(jsonLd(local.head)).toEqual([]);
+    expect(shownText(local.body)).toContain(innerItems[0].question);
+    expect(shownText(local.body)).toContain('hello@example.com');
   });
 
   it('leaves a page out when it asks search engines not to list it', async () => {
-    const s = fresh();
+    const s = published();
     s.site.baseUrl = 'https://studio.example';
     const contact = byTitle(s, 'Contact');
     contact.seo = { ...contact.seo, noindex: true };
@@ -1072,7 +1115,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
   });
 
   it('reads a project copy of the FAQ and keeps each contact section’s facts together', async () => {
-    const s = fresh();
+    const s = published();
     const contact = byTitle(s, 'Contact');
     const faq = firstOf(s, contact, 'faq.list');
     const details = firstOf(s, contact, 'contact.details');
@@ -1095,7 +1138,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(more).toEqual([]);
     expect((faqPage.mainEntity as Array<{ name: string }>).map((e) => e.name)).toEqual((copied.props.items as Array<{ question: string }>).map((i) => i.question));
     // A number shown as words gives the number it dials; words beside a map icon are not an address.
-    expect(ofType(head, 'LocalBusiness').map((b) => [b.email, b.telephone, b.address])).toEqual([
+    expect(contactFacts(head)).toEqual([
       ['hello@example.com', '+1 555 0134', '12 Harbour Lane, Millbrook'],
       [['depot@example.com', 'sales@example.com'], ['+1 555 0199', '+15550100'], '4 Mill Road']
     ]);

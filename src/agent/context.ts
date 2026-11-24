@@ -174,6 +174,8 @@ export function projectSummary(state: ProjectState, revision: number) {
       direction: { runs: siteDirection(state.site), automatic: state.site.direction !== 'ltr' && state.site.direction !== 'rtl' },
       baseUrl: state.site.baseUrl ?? null,
       seo: siteSeoSummary(state),
+      // Who publishes the site, as its pages tell search engines (site.update identity changes it).
+      ...(state.site.identity ? { identity: state.site.identity } : {}),
       notFoundPage: notFoundCopy(state.site),
       // Which pieces of visitor text have the author's own wording, by language; their words are not repeated here.
       ...visitorTextSummary(state)

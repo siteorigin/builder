@@ -88,7 +88,7 @@ export type ImageUseTarget =
   | { kind: 'node'; owner: OwnerRef; nodeId: string; path: string[] }
   | { kind: 'default'; definitionId: string; path: string[] }
   | { kind: 'pageSharing'; pageId: string }
-  | { kind: 'site'; field: 'favicon' | 'socialImage' };
+  | { kind: 'site'; field: 'favicon' | 'socialImage' | 'logo' };
 
 /**
  * Binding to a property of the enclosing component, or a field of the current repeated item. `field` names one
@@ -828,6 +828,43 @@ export interface SiteDoc {
    * wording for the language.
    */
   visitorText?: Record<string, Record<string, string>>;
+  /**
+   * Who publishes the site, as search engines and AI answer engines are told it in the pages' structured data
+   * (src/shared/site-identity.ts). Absent: the site's name, as an organization, with nothing else said of it.
+   */
+  identity?: SiteIdentity;
+}
+
+/** The kinds of entity a site can be published by. */
+export type EntityKind = 'Organization' | 'LocalBusiness' | 'Person';
+
+/**
+ * The site's publisher. Every field is optional; one left out says nothing. Contact details are said of any kind;
+ * opening hours, price range and map position only of a local business, and choosing another kind clears them.
+ */
+export interface SiteIdentity {
+  /** Absent: not chosen yet, and the site is described as an organization. */
+  kind?: EntityKind;
+  /** The publisher's legal or brand name, when it is not the site's name. */
+  name?: string;
+  /** The publisher's own home page, when it is not this site (https://…). */
+  url?: string;
+  /** A library image's asset ID: the organization's logo, or the person's photo. */
+  logo?: string;
+  /** Addresses of the publisher's profiles elsewhere that say who it is (Wikidata, LinkedIn, GitHub…), in order. */
+  sameAs?: string[];
+  /** The publisher's X (Twitter) handle, with its @. */
+  twitterSite?: string;
+  /** A postal address, as one line. */
+  address?: string;
+  telephone?: string;
+  email?: string;
+  /** When a local business is open, one Schema.org period per line ("Mo-Fr 09:00-17:00"). */
+  openingHours?: string[];
+  /** A local business's price range ("$$", "R100–R400"). */
+  priceRange?: string;
+  /** Where a local business is on a map. */
+  geo?: { latitude: number; longitude: number };
 }
 
 /**

@@ -1,7 +1,8 @@
 /**
  * The baseline SEO and agentic readiness rules (see seo-audit.ts), over what every project already holds: its public
  * URL, the Home page's search setting, each page's and entry's title and description, sharing images and the site
- * icon, links between pages and the words on them, and the pictures and headings in collection entries' text.
+ * icon, links between pages and the words on them, the pictures and headings in collection entries' text, and who
+ * publishes the site (its identity, and the profiles that confirm it).
  *
  * Titles and descriptions are judged on the documents search engines may list; links and entries' text on everything
  * the website publishes. Drafts are never judged: they are not on the website.
@@ -15,6 +16,8 @@ import { archivePages } from '@shared/archives';
 import { checkPublicUrl } from '@shared/public-url';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
 import { showsEntryText, type SiteLink } from '@generator/checks';
+import { isLibraryImage } from '@generator/seo-graph';
+import { sitePublisher } from '@shared/site-identity';
 import { publishedState } from '@generator/index';
 import { bodyImageProblems } from './collections';
 import type { SeoAuditContext, SeoAuditRule } from './seo-audit';
@@ -374,4 +377,41 @@ const entryHeadings: SeoAuditRule = {
 };
 
 /** Every baseline rule, in the order their findings are listed within a pillar. */
-export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings];
+/**
+ * Whether the site says who publishes it: its kind (organization, local business or person) and a name, and the
+ * addresses of profiles elsewhere that confirm who that is. AI answer engines and search engines match an entity across
+ * the web by those links, so without them the site's own claims stand alone. Neither can be filled in for the author:
+ * only they know who they are and which profiles are theirs.
+ */
+const entityReadiness: SeoAuditRule = {
+  id: 'entity-readiness',
+  check({ state }) {
+    const who = sitePublisher(state.site, isLibraryImage(state));
+    if (!who.chosen || !seoText(who.name))
+      return [
+        finding('entity', {
+          severity: 'warning',
+          code: 'SEO_ENTITY_IDENTITY_MISSING',
+          message: who.chosen ? 'The site’s publisher has no name.' : 'The site doesn’t say who publishes it: an organization, a local business or a person.',
+          site: 'identity',
+          explanation: 'Search engines and AI answer engines describe a site by the entity behind it. Saying who that is, by name, lets them connect the site to the business or person people ask about.',
+          aiFixable: false,
+          destination: { kind: 'site', field: 'identity' }
+        })
+      ];
+    if (who.sameAs.length) return [];
+    return [
+      finding('entity', {
+        severity: 'warning',
+        code: 'SEO_ENTITY_SAME_AS_MISSING',
+        message: `The site names ${who.kind === 'Person' ? 'its author' : 'its publisher'} but links to no profile that confirms who that is.`,
+        site: 'sameAs',
+        explanation: 'Profiles elsewhere (Wikidata, LinkedIn, GitHub, X, YouTube) let search engines and AI answer engines confirm the publisher is the one they know, rather than another with the same name.',
+        aiFixable: false,
+        destination: { kind: 'site', field: 'sameAs' }
+      })
+    ];
+  }
+};
+
+export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness];

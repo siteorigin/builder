@@ -37,6 +37,7 @@ import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, 
 import { newId } from '@shared/ids';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { checkPublicUrl } from '@shared/public-url';
+import { patchIdentity } from '@shared/site-identity';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { feedRowFields } from '@shared/entry-feed';
@@ -433,7 +434,10 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         const t = u.target;
         if (!u.value) {
           if (t?.kind === 'pageSharing') state.pages[t.pageId].seo.socialImage = op.withAssetId;
-          else if (t?.kind === 'site') state.site[t.field] = op.withAssetId;
+          else if (t?.kind === 'site') {
+            if (t.field === 'logo') state.site.identity = { ...state.site.identity, logo: op.withAssetId };
+            else state.site[t.field] = op.withAssetId;
+          }
           continue;
         }
         const v = u.value;
@@ -635,7 +639,7 @@ export function assetUsages(state: ProjectState): Record<string, number> {
     // A document is in use while a link goes to it.
     if (isDocumentLink(v)) out[v.target] = (out[v.target] ?? 0) + 1;
   });
-  for (const k of [state.site.favicon, state.site.socialImage]) if (k) out[k] = (out[k] ?? 0) + 1;
+  for (const k of [state.site.favicon, state.site.socialImage, state.site.identity?.logo]) if (typeof k === 'string' && k) out[k] = (out[k] ?? 0) + 1;
   for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
   for (const e of collectionEntries(state)) {
     if (typeof e.featuredImage === 'string' && e.featuredImage) out[e.featuredImage] = (out[e.featuredImage] ?? 0) + 1;
@@ -2477,6 +2481,12 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   if (op.notFoundMessage !== undefined) s.notFoundMessage = op.notFoundMessage.trim() || undefined;
   if (op.notFoundLinkLabel !== undefined) s.notFoundLinkLabel = op.notFoundLinkLabel.trim() || undefined;
   if (op.visitorText) setVisitorText(s, op.visitorText.language, op.visitorText.text);
+  if (op.identity !== undefined) {
+    const next = patchIdentity(s.identity, op.identity, (id) => own(state.assets.assets, id)?.kind === 'image');
+    if (!next.ok) fail(next.message);
+    if (next.value) s.identity = next.value;
+    else delete s.identity;
+  }
   return {};
 }
 
