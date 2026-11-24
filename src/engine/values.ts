@@ -247,7 +247,7 @@ export function normalizeChoices(v: unknown, label: string, stored?: unknown): C
 }
 
 /** The description of an image value already saved, if it is one. */
-const storedAlt = (stored: unknown): string | undefined => (stored && typeof stored === 'object' && typeof (stored as ImageValue).alt === 'string' ? (stored as ImageValue).alt : undefined);
+export const storedAlt = (stored: unknown): string | undefined => (stored && typeof stored === 'object' && typeof (stored as ImageValue).alt === 'string' ? (stored as ImageValue).alt : undefined);
 
 /**
  * `stored` is the value already saved for this field, if any. A value that was valid under older rules is

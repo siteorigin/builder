@@ -16,6 +16,8 @@ export interface KeptDraft<Start = unknown> {
   name?: string;
   /** Whether what the text belongs to is still in the project: a removed page, image or list row takes it away. */
   alive?: () => boolean;
+  /** The control that keeps it now; text handed over from elsewhere has none until a field takes it up. */
+  owner?: object;
 }
 
 const kept = new Map<string, KeptDraft>();

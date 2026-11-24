@@ -1275,8 +1275,6 @@ export interface ReadValue {
   revision: number;
 }
 
-/** Whether a list read as the project holds it now still has a row (an unreadable list says nothing about it). */
-const rowIn = (list: unknown, itemId: string) => !Array.isArray(list) || list.some((x) => (x as ListItem | null)?.id === itemId);
 
 /** One field of one list item, from a list read as the project holds it now. */
 function readItemField(list: ReadValue | undefined, itemId: string, field: string): ReadValue | undefined {
@@ -1374,7 +1372,7 @@ export interface ListReveal {
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages }: {
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -1388,6 +1386,8 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   read?: () => ReadValue | undefined;
   /** Whether the property is still the node's: text kept for its fields goes with it (see FieldHome). */
   alive?: () => boolean;
+  /** For a list: whether a row's field is still there (the row, and the field in the list's schema). */
+  itemAlive?: (itemId: string, field: string) => () => boolean;
   state: ProjectState;
   focusItem?: string;
   /** For a list: open this item, once per request ("Open in inspector"); the author can close it again. */
@@ -1416,7 +1416,7 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   if (schema.type === 'list')
     return (
       <FieldHome part={`prop:${name}`} alive={alive}>
-        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} />
+        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} />
       </FieldHome>
     );
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
@@ -1679,7 +1679,7 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, read, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string }) {
+function ListEditor({ name, schema, items, onList, read, itemAlive, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -1937,7 +1937,7 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
                     render={({ key, schema: fs, label }) => {
                       const teaser = teaserFieldNote(state, schema, it, key);
                       return (
-                        <FieldHome key={key} part={`item:${it.id}:${key}`} alive={read && (() => rowIn(read()?.value, it.id))}>
+                        <FieldHome key={key} part={`item:${it.id}:${key}`} alive={itemAlive?.(it.id, key)}>
                           <ScalarField
                             schema={fs as ScalarPropSchema}
                             label={label}

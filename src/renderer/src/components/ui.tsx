@@ -904,9 +904,16 @@ function DraftField({
   const nameRef = useRef(restored?.name ?? '');
   // Kept as soon as it is refused and kept current as it is edited, so a control of the same place that comes up
   // before this one has gone (the field moved into a group) finds it too.
-  const stash = (text: string, start: DraftStart) => field && keepDraft<DraftStart>(field, { text, start, name: nameRef.current, alive: keepWhile });
+  // Each control keeps its place's text as its own; a newer one (text handed over from a rename) is never overwritten
+  // or dropped by a control that has gone.
+  const owner = useRef({});
+  const mine = () => !field || !keptDraft(field) || keptDraft(field)!.owner === owner.current;
+  const stash = (text: string, start: DraftStart) => field && keepDraft<DraftStart>(field, { text, start, name: nameRef.current, alive: keepWhile, owner: owner.current });
   useEffect(() => {
     mounted.current = true;
+    // Text found for this place on mount is this control's to keep from now on.
+    const found = field ? keptDraft<DraftStart>(field) : undefined;
+    if (field && restored && found) keepDraft<DraftStart>(field, { ...found, owner: owner.current });
     return () => {
       mounted.current = false;
       retainRefused(draftKey, null);
@@ -915,16 +922,18 @@ function DraftField({
       const over = limit !== undefined && text.length > limit;
       const snap = useStore.getState().snapshot;
       const open = !!from?.base && !cancelled.current && text !== from.value && snap?.workspaceKey === from.base.workspaceKey;
-      // What the field belonged to was removed (its page, image or row): nothing is kept for a place that has gone.
-      const gone = !!field && !!keepWhile && !keepWhile();
+      // What the field belonged to was removed (its page, image or row): nothing is kept for a place that has gone. Not
+      // while the AI runs: what it removed comes back if it is stopped, and the check waits for the run to end.
+      const gone = !!field && !!keepWhile && !snap?.aiBusy && !keepWhile();
       // Too long to save, or refused and shortened but not saved yet: it stays with the field's place.
       if (open && field && !gone && (over || tooLongRef.current)) {
+        if (!mine()) return;
         stash(text, from!);
         markDraft(draftKey, true, over ? tooLongReport(nameRef.current, text.length, limit!) : unsavedReport(nameRef.current));
         return;
       }
       // Kept text this field held is settled; text kept by another control of the same place is left to it.
-      if (field && tooLongRef.current) dropKeptDraft(field);
+      if (field && tooLongRef.current && mine()) dropKeptDraft(field);
       if (!field || !keptDraft(field)) markDraft(draftKey, false);
       // Refused text kept for a place that has gone was already offered to copy as it went.
       if (!open || !(focused.current || over) || (gone && tooLongRef.current)) return;

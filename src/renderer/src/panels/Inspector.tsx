@@ -148,9 +148,14 @@ const propAlive = (owner: OwnerRef, nodeId: string, prop: string) => () => {
   const node = s ? treeFor(s, owner)?.nodes[nodeId] : undefined;
   return node?.kind !== 'instance' || Object.hasOwn(s!.components[node.definitionId]?.properties ?? {}, prop);
 };
-const rowAlive = (owner: OwnerRef, nodeId: string, prop: string, itemId: string) => () => {
-  const list = readProp(owner, nodeId, prop)?.value;
-  return !Array.isArray(list) || list.some((x) => (x as ListItem | null)?.id === itemId);
+/** One field of one row of a placement's list goes with the node, the list property, the row, or the field. */
+const rowAlive = (owner: OwnerRef, nodeId: string, prop: string, itemId: string, field: string) => () => {
+  const s = getState().snapshot?.state;
+  const node = s ? treeFor(s, owner)?.nodes[nodeId] : undefined;
+  if (!s || node?.kind !== 'instance') return false;
+  const schema = s.components[node.definitionId]?.properties[prop];
+  const list = node.props[prop] ?? schema?.default;
+  return schema?.type === 'list' && Object.hasOwn(schema.fields, field) && Array.isArray(list) && list.some((x) => (x as ListItem | null)?.id === itemId);
 };
 
 /**
@@ -931,6 +936,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
                   read={() => readProp(owner, node.id, key)}
                   alive={propAlive(owner, node.id, key)}
+                  itemAlive={(itemId, field) => rowAlive(owner, node.id, key, itemId, field)}
                   onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label}`)}
                   state={state}
                   openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
@@ -1322,6 +1328,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                     onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
                     read={() => readProp(instOwner, instNodeId, b.prop!)}
                     alive={propAlive(instOwner, instNodeId, b.prop!)}
+                    itemAlive={(itemId, field) => rowAlive(instOwner, instNodeId, b.prop!, itemId, field)}
                     onTable={(edit) => applyTableEdit(instOwner, instNodeId, b.prop!, edit, `Edit ${schema.label}`)}
                     linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
                     {...flagged(b.kind)}
@@ -1345,7 +1352,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 return (
                   <div key={`${itemId}:${b.item}`} data-field={b.item} style={{ display: 'contents' }} {...reveal.handlers}>
                     {/* The same place as this row's field in the section's own list, so text kept there is found here too. */}
-                    <FieldHome part={`prop:${listProp}|item:${itemId}:${b.item}`} alive={rowAlive(instOwner, instNodeId, listProp, itemId)}>
+                    <FieldHome part={`prop:${listProp}|item:${itemId}:${b.item}`} alive={rowAlive(instOwner, instNodeId, listProp, itemId, b.item!)}>
                       <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint ?? (mixedReach ? `This ${itemLabel} only.` : undefined)} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
                     </FieldHome>
                   </div>
@@ -1821,6 +1828,7 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
                 onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label} everywhere`, op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
                 read={() => readProp(owner, node.id, key)}
                 alive={propAlive(owner, node.id, key)}
+                itemAlive={(itemId, field) => rowAlive(owner, node.id, key, itemId, field)}
                 onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label} everywhere`)}
                 state={state}
                 linkPairs={schema.type === 'list' ? itemLinkPairs(placedDef, key) : undefined}

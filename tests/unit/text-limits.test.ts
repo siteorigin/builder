@@ -95,6 +95,21 @@ describe('placed image descriptions', () => {
     expect(() => set({ assetId: null, alt: legacy.slice(0, -1) + '!' })).toThrow(/310 characters is longer than the 300 allowed/);
   });
 
+  it('keeps a design’s longer saved default description while its image is marked decorative', () => {
+    const s0 = fresh();
+    const theme = Object.values(s0.components).find((d) => d.componentId === 'hero.split')!;
+    const forked = applyOperations(s0, [{ type: 'component.fork', definitionId: theme.id }]);
+    const defId = forked.results[0].definitionId as string;
+    const s = forked.state;
+    const legacy = sentence(310);
+    const prop = s.components[defId].properties.image as { default: ImageValue };
+    prop.default = { assetId: null, alt: legacy };
+    const set = (value: ImageValue) => applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'component', id: defId }, nodeId: 'media', field: 'image', value }]);
+    const next = set({ assetId: null, alt: legacy, decorative: true }).state;
+    expect(next.components[defId].properties.image.default).toEqual({ assetId: null, alt: legacy, decorative: true });
+    expect(() => set({ assetId: null, alt: legacy.slice(0, -1) + '!' })).toThrow(/310 characters is longer than the 300 allowed/);
+  });
+
   it('tells a model the same limit the engine keeps', () => {
     expect((IMAGE_SCHEMA.properties as { alt: { maxLength: number } }).alt.maxLength).toBe(TEXT_LIMITS.imageAlt);
   });

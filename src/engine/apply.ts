@@ -49,7 +49,7 @@ import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists,
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
-import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
+import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, storedAlt } from './values';
 import { editTable } from './table';
 import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties } from './schema';
 import { declaredTokens, findTokenCycle, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
@@ -1637,8 +1637,9 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       (schema as { default: unknown }).default = normalizeProp(schema, { [field.field]: schemaFix(f) }, state, `${def.name} → ${schema.label}`, schema.default);
       return true;
     }
-    // The default must still fit its schema (a number or choice can be bound to text).
-    (schema as { default: unknown }).default = normalizeProp(schema, schemaFix(schema), state, `${def.name} → ${schema.label}`);
+    // The default must still fit its schema (a number or choice can be bound to text); one saved under older rules
+    // stays while it is not changed.
+    (schema as { default: unknown }).default = normalizeProp(schema, schemaFix(schema), state, `${def.name} → ${schema.label}`, (schema as { default: unknown }).default);
     return true;
   };
   const v = op.value;
@@ -1652,7 +1653,10 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
     }
     case 'image': {
       if (node.kind !== 'image') fail('Only image nodes have an image.');
-      const val = normalizeImage(v, state, label, isBinding(node.image) ? undefined : node.image?.alt);
+      // A description saved before the limit stays while it is not changed: the node's own, or the default of the
+      // property (or the object field) it is bound to.
+      const bound = isBinding(node.image) && def && '$prop' in node.image ? propBindingSchema(def.properties, node.image) : undefined;
+      const val = normalizeImage(v, state, label, storedAlt(bound ? (bound as { default?: unknown }).default : node.image));
       if (!setBound(node.image, () => val)) node.image = val;
       return {};
     }
