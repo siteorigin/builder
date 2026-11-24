@@ -1760,7 +1760,8 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     // Written in: the code copy passes its one placement's choice (or its root's own) straight to the design inside.
     const chosen = ctx.standalone.appear ?? ownAppear;
     if (chosen) attrs.push(`so_appear=${attrJs(chosen)}`);
-  } else if (def.kind === 'managed' && appearPlumbing(ctx.state)) {
+  } else if (def.kind === 'managed' && (ctx.standalone || appearPlumbing(ctx.state))) {
+    // A code copy writes in what every placement inside it chose, whatever the site uses today.
     const own = ownAppear;
     if (isDefRoot(ctx, node)) attrs.push(own ? `so_appear={so_appear ?? ${js(own)}}` : 'so_appear={so_appear}', 'so_stagger={so_stagger}');
     else {

@@ -156,6 +156,27 @@ describe('entrance operations', () => {
     compiles(files);
   });
 
+  it('writes into a converted copy the design’s own root entrance, a placement’s none, and the choices inside it', () => {
+    // The grid design's root fades in; its cards become a component whose root lifts, turned off where the grid places it.
+    let { s, design, grid } = withGridDesign();
+    const made = applyOperations(s, [appear(design, 'root', 'fade'), { type: 'component.createFromNode', owner: design, nodeId: 'card', name: 'Feature card' }]);
+    s = made.state;
+    const card = made.results[1].definitionId as string;
+    s = apply(s, [appear({ kind: 'component', id: card }, s.components[card].tree!.rootIds[0], 'lift'), appear(design, made.results[1].nodeId as string, 'none')]);
+    const convert = (t: ProjectState, name: string) => {
+      const c = applyOperations(t, [{ type: 'component.convertToCode', owner: owner(t), nodeId: grid.id, name }]);
+      return c.state.components[c.results[0].definitionId as string].source!;
+    };
+    // The placement leaves it to the design: the root fades, and the cards are told none, written in.
+    const inherited = convert(s, 'Grid code');
+    expect(inherited).toMatch(/<section [^>]*data-appear="fade"/);
+    expect(inherited).toMatch(/<C_\w+\s[^>]*so_appear=\{"none"\}/);
+    // The placement turns the root off: nothing on the root.
+    const off = convert(apply(s, [appear(owner(s), grid.id, 'none')]), 'Grid off');
+    expect(off).not.toMatch(/<section [^>]*data-appear=/);
+    expect(off).toMatch(/so_appear=\{"none"\}/);
+  });
+
   it('can always clear an entrance a code placement was left with, which never turns the observer on', () => {
     let s = fresh();
     const header = s.site.shell.header.rootIds[0];

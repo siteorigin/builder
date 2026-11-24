@@ -137,7 +137,11 @@ export function observeAppear() {
 		const found = [];
 		for (const r of records) {
 			if (r.type === 'childList') r.addedNodes.forEach((n) => found.push(...within(n)));
-			else if (PRESETS.includes(r.target.getAttribute('data-appear'))) found.push(r.target);
+			else if (PRESETS.includes(r.target.getAttribute('data-appear'))) {
+				// Changed, or taken away and given back before this saw it: measured afresh unless it is already coming in.
+				if (!marked.has(r.target)) checked.delete(r.target);
+				found.push(r.target);
+			}
 			else {
 				// A preset taken away lets go at once, and one given back later counts afresh.
 				checked.delete(r.target);
@@ -190,8 +194,11 @@ export function observeAppear() {
 `;
 }
 
-/** What a code component's source carries when it shows an entrance: a preset on its markup, or one it passes on. */
-const CODE_ENTRANCE = /\bdata-appear="(?:fade|lift|scale-subtle)"|\bso_appear=\{"(?:fade|lift|scale-subtle)"\}/;
+/**
+ * What a code component's source carries when it may show an entrance, however its author writes it: a preset on its
+ * markup, or an entrance it passes to a design inside (any but a written-in `none`).
+ */
+const CODE_ENTRANCE = /\bdata-appear\s*=|\bso_appear\s*=(?!\s*\{?\s*["'`]none["'`])/;
 
 /**
  * Whether a visitor of the generated site can meet an entrance: one of its pages (drafts included while editing; a
