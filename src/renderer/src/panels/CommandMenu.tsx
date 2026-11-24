@@ -4,7 +4,7 @@ import { BookmarkPlus, Component, FileText, FolderOpen, History, Link2, Plus, Re
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
-import { api, setState, setViewport, toast, useStore } from '../store';
+import { api, projectHistory, setState, setViewport, toast, useStore } from '../store';
 import { pageShowing, partName } from '@shared/page-shell';
 import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline } from '../lib/actions';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
@@ -88,8 +88,8 @@ export function CommandMenu() {
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
       { id: 'styles', label: 'Open site styles: colors, fonts and spacing', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
       { id: 'find', kbd: '⇧⌘F', label: 'Find and replace in site content…', group: 'Edit', icon: <Replace />, run: () => setState({ modal: { kind: 'find' } }) },
-      { id: 'undo', kbd: '⌘Z', label: 'Undo', group: 'Edit', icon: <Undo2 />, run: () => void api.project.undo() },
-      { id: 'redo', kbd: '⇧⌘Z', label: 'Redo', group: 'Edit', icon: <Redo2 />, run: () => void api.project.redo() },
+      { id: 'undo', kbd: '⌘Z', label: 'Undo', group: 'Edit', icon: <Undo2 />, run: () => projectHistory('undo') },
+      { id: 'redo', kbd: '⇧⌘Z', label: 'Redo', group: 'Edit', icon: <Redo2 />, run: () => projectHistory('redo') },
       { id: 'newproject', kbd: '⇧⌘N', label: 'New project…', group: 'Project', icon: <Plus />, run: () => sendCommand('new-project') },
       { id: 'openproject', kbd: '⌘O', label: 'Open project…', group: 'Project', icon: <FolderOpen />, run: () => sendCommand('open-project') },
       { id: 'preview', label: 'Switch between edit and preview', group: 'View', icon: <Eye />, run: () => setMode(useStore.getState().mode === 'edit' ? 'preview' : 'edit') },

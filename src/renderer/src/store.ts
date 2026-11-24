@@ -271,6 +271,17 @@ export function setViewport(width: number) {
   saveLocal({ viewport: width });
 }
 
+/** Undo or redo the project, from any button, shortcut or menu. Followed like an edit, so Save waits for it and
+ *  hears if it failed; a failure is also said at once. */
+export function projectHistory(action: 'undo' | 'redo') {
+  const run = action === 'redo' ? api.project.redo() : api.project.undo();
+  trackApply(run.then((r) => ({ ok: !r || r.ok, message: r?.error?.message })));
+  void run.then(
+    (r) => r && !r.ok && r.error && toast(r.error.message, 'error'),
+    () => undefined
+  );
+}
+
 /** Zoom the preview and remember it for this project. */
 export function setZoom(zoom: number | 'fit') {
   setState({ zoom });

@@ -310,31 +310,44 @@ const dragHandle = async (handle, dx) => {
   await win.mouse.up();
 };
 assert.deepEqual([await rightEdge.getAttribute('aria-valuemin'), await rightEdge.getAttribute('aria-valuemax')], ['240', '2560'], 'the handles say the width field’s range');
+/** How far the preview is scaled on screen, and the width a drag of `dx` on the right edge should give: the
+ *  centered frame grows by twice the edge's movement, in the page's own pixels, within 240..2560. */
+const scale = () => win.evaluate(() => document.querySelector('.frame-box').getBoundingClientRect().width / Number(document.querySelector('.width-input').value));
+const expectDrag = async (from, dx) => Math.max(240, Math.min(2560, Math.round(from + (dx / (await scale())) * 2)));
+const dragTo = async (from, dx, what) => {
+  const want = await expectDrag(from, dx);
+  await dragHandle(rightEdge, dx);
+  const got = await frameWidth();
+  assert.ok(Math.abs(got - want) <= 1, `${what}: ${got}px, expected ${want}px`);
+  assert.equal(await win.locator('.frame-handle.dragging').count(), 0, `${what}: the drag has ended`);
+  await remembered(`${what}: the width is remembered`, { viewport: got });
+  return got;
+};
 await setWidth(2400);
-await dragHandle(rightEdge, -3);
-let dragged = await frameWidth();
-assert.ok(dragged > 2300 && dragged < 2400, `a short drag from 2400px narrows the frame from there, not to 1920px (${dragged})`);
-await remembered('the dragged width is remembered', { viewport: dragged });
+let dragged = await dragTo(2400, -3, 'a short drag from 2400px narrows the frame from there, not to 1920px');
+assert.ok(dragged > 1920, 'the drag kept the wide frame');
+// Well past the handle (it holds the pointer) and the limit.
+dragged = await dragTo(dragged, 60, 'a long drag outward stops at 2560px');
+assert.equal(dragged, 2560);
 await setWidth(280);
-await dragHandle(rightEdge, 3);
-dragged = await frameWidth();
-assert.ok(dragged > 280 && dragged < 300, `a short drag from 280px widens the frame from there, not to 320px (${dragged})`);
-await remembered('the dragged width is remembered', { viewport: dragged });
-assert.equal(await win.locator('.frame-handle.dragging').count(), 0, 'the drag has ended');
-await rightEdge.focus();
-await win.keyboard.press('ArrowRight');
-assert.equal(await frameWidth(), dragged + 16, 'Right Arrow on the right edge widens the frame');
-await leftEdge.focus();
-await win.keyboard.press('ArrowLeft');
-assert.equal(await frameWidth(), dragged + 32, 'Left Arrow on the left edge widens it too');
-await win.keyboard.press('ArrowRight');
-assert.equal(await frameWidth(), dragged + 16, 'Right Arrow on the left edge narrows it');
-await eventually(async () => assert.equal(await widthField.inputValue(), String(dragged + 16), 'the width field shows the keyboard’s width'));
-await remembered('the keyboard’s width is remembered', { viewport: dragged + 16 });
+dragged = await dragTo(280, 3, 'a short drag from 280px widens the frame from there, not to 320px');
+assert.ok(dragged < 320, 'the drag kept the narrow frame');
+const keyStep = async (edge, key, want, what) => {
+  await edge.focus();
+  await win.keyboard.press(key);
+  assert.equal(await frameWidth(), want, what);
+  await eventually(async () => assert.equal(await widthField.inputValue(), String(want), `${what}: the width field shows it`));
+  await remembered(`${what}: the width is remembered`, { viewport: want });
+};
+await keyStep(rightEdge, 'ArrowRight', dragged + 16, 'Right Arrow on the right edge widens the frame');
+await keyStep(leftEdge, 'ArrowLeft', dragged + 32, 'Left Arrow on the left edge widens it too');
+await keyStep(leftEdge, 'ArrowRight', dragged + 16, 'Right Arrow on the left edge narrows it');
+await keyStep(rightEdge, 'ArrowLeft', dragged, 'Left Arrow on the right edge narrows it');
 await setWidth(250);
-await leftEdge.focus();
-await win.keyboard.press('ArrowRight');
-assert.equal(await frameWidth(), 240, 'the keyboard stops at the narrowest width');
+await keyStep(leftEdge, 'ArrowRight', 240, 'the keyboard stops at the narrowest width');
+await button('Phone').click();
+assert.equal(await frameWidth(), 390, 'the toolbar’s Phone width');
+await remembered('the toolbar’s Phone width is remembered', { viewport: 390 });
 await win.keyboard.press(`${MOD}+K`);
 await win.locator('.cmdk').waitFor();
 await win.keyboard.type('Preview at tablet width');
@@ -365,6 +378,10 @@ assert.equal(l.canvas.width, CANVAS_MIN, 'the reopened canvas keeps its minimum'
 assertToolbarFits(l, 'reopened at 1100px');
 await eventually(async () => assert.equal(await widthField.inputValue(), '834', 'the reopened preview has the width it was given'));
 assert.equal(await toolbar.locator('.zoom-btn').innerText(), '75%', 'and the zoom');
+assert.ok(Math.abs((await win.locator('.frame-box').boundingBox()).width - 834 * 0.75) <= 1, 'the preview is drawn at 75%');
+await toolbar.locator('.zoom-btn').click();
+await win.getByRole('menuitemradio', { name: 'Fit to window' }).click();
+await remembered('Fit is remembered', { zoom: 'fit' });
 
 step('a drag ends when the layout changes under it, instead of jumping');
 {

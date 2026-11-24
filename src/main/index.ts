@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { Appearance, ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
-import { appearanceSwitch, editorBackground, editorScheme } from '@shared/appearance';
+import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
 import { visitorStepKey } from '@shared/preview-keys';
 import { checkLocalBaseURL } from '@shared/local';
@@ -341,8 +341,8 @@ function registerIpc() {
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
   });
-  // Save's last step: resolves once the project's queued writes are on disk.
-  handle('project:flush', () => controller.flush());
+  // Save's last step: resolves once the project's queued writes are on disk, saying whether they all got there.
+  handle('project:flush', (opening?: unknown) => controller.flush(typeof opening === 'string' ? opening : undefined));
   // Development-only hooks used by the end-to-end tests in place of native save dialogs.
   if (!app.isPackaged) {
     handle('test:exportStatic', (dest: string, format?: unknown) => controller.buildStaticTo(dest, format === 'zip' ? 'zip' : 'folder'));
@@ -406,6 +406,11 @@ function registerIpc() {
   handle('ai:cancelFix', () => {
     fixAbort?.abort();
     fixAbort = null;
+  });
+  // The preload asks once per editor page, before its first paint: a page reloaded since the window opened gets the
+  // Appearance saved since. Answered synchronously from memory, and always, since the page waits for it.
+  ipcMain.on('app:appearance', (event) => {
+    event.returnValue = event.sender === win?.webContents ? appearance : 'system';
   });
   ipcMain.on('lifecycle:result', (event, requestId: string, answer: LeaveAnswer) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
@@ -473,9 +478,7 @@ async function createWindow() {
       sandbox: true,
       webSecurity: true,
       spellcheck: true,
-      backgroundThrottling: !headless,
-      // The preload draws the editor's first paint in its Appearance.
-      additionalArguments: [appearanceSwitch(appearance)]
+      backgroundThrottling: !headless
     }
   });
   // Open maximized: the editor is used with as much room for the site preview as the screen allows.

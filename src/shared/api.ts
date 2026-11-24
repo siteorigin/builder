@@ -621,7 +621,9 @@ export interface BuilderApi {
     /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
     saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;
     validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
-    flush(): Promise<void>;
+    /** Resolves once the writes queued for the project have finished: whether they all reached the disk, in the
+     *  opening given (its snapshot's workspaceKey). */
+    flush(opening?: string): Promise<boolean>;
   };
   ai: {
     providers(): Promise<ProviderStatus[]>;

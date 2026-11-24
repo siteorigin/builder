@@ -166,13 +166,16 @@ describe('preview width and zoom', () => {
     expect(clampViewport(2600)).toBe(2560);
     expect(clampViewport(100)).toBe(240);
     expect(clampViewport(1280.4)).toBe(1280);
+    expect(clampViewport(1280.6)).toBe(1281);
   });
 
   it('resizes the frame from the keyboard, each handle in the direction it is dragged', () => {
-    expect(frameKeyResize('right', 'ArrowRight', 1280)).toBe(1280 + FRAME_KEY_STEP);
-    expect(frameKeyResize('right', 'ArrowLeft', 1280)).toBe(1280 - FRAME_KEY_STEP);
-    expect(frameKeyResize('left', 'ArrowLeft', 1280)).toBe(1280 + FRAME_KEY_STEP);
-    expect(frameKeyResize('left', 'ArrowRight', 1280)).toBe(1280 - FRAME_KEY_STEP);
+    // Each press changes the width by the splitters' 16px step.
+    expect(FRAME_KEY_STEP).toBe(16);
+    expect(frameKeyResize('right', 'ArrowRight', 1280)).toBe(1296);
+    expect(frameKeyResize('right', 'ArrowLeft', 1280)).toBe(1264);
+    expect(frameKeyResize('left', 'ArrowLeft', 1280)).toBe(1296);
+    expect(frameKeyResize('left', 'ArrowRight', 1280)).toBe(1264);
     // Up to each limit, then no further.
     expect(frameKeyResize('right', 'ArrowRight', 2550)).toBe(2560);
     expect(frameKeyResize('right', 'ArrowRight', 2560)).toBeNull();
@@ -188,8 +191,9 @@ describe('preview width and zoom', () => {
     for (const bad of [undefined, null, '834', 239, 2561, 834.5, Number.NaN]) expect(restoreViewport(bad)).toBe(DEFAULT_VIEWPORT);
     expect(DEFAULT_VIEWPORT).toBe(1280);
     expect(restoreZoom('fit')).toBe('fit');
-    for (const z of ZOOM_LEVELS) expect(restoreZoom(z)).toBe(z);
-    // The canvas divides by the zoom: nothing else is restored.
-    for (const bad of [undefined, 0, -1, 3, '0.5', Number.NaN]) expect(restoreZoom(bad)).toBe('fit');
+    expect(ZOOM_LEVELS).toEqual([0.5, 0.75, 1, 1.25]);
+    for (const z of [0.5, 0.75, 1, 1.25]) expect(restoreZoom(z)).toBe(z);
+    // The canvas divides by the zoom: nothing else is restored, not even a level between the menu's.
+    for (const bad of [undefined, 0, -1, 0.6, 3, '0.5', Number.NaN]) expect(restoreZoom(bad)).toBe('fit');
   });
 });

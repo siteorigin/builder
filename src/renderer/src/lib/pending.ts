@@ -127,8 +127,11 @@ export interface SettleDeps {
    *  is still being saved (the app asks whether to keep waiting when the editor stops answering). */
   saveTimeoutMs?: number;
   /** Run once every tracked change has landed, and waited for: an explicit save also waits here for the
-   *  project's other queued writes (Undo, the AI's edits) to reach the disk. */
-  barrier?: () => Promise<unknown>;
+   *  project's other queued writes (the AI's edits, a restore) to reach the disk. It resolves to whether they did. */
+  barrier?: () => Promise<boolean>;
+  /** How long to wait for the barrier: a write held up for longer (an export copying to a slow drive) goes on, but
+   *  the settle ends without confirming it. */
+  barrierTimeoutMs?: number;
 }
 
 export interface Settled {
@@ -174,7 +177,12 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
     await until(() => !drafts.has(CANVAS_DRAFT), deps.canvasTimeoutMs ?? 3000, deps.wait);
     deps.hold?.();
     if (!(await until(() => inflight.size === 0, deps.saveTimeoutMs ?? Infinity, deps.wait))) report('A change is still being saved.');
-    else if (deps.barrier) await deps.barrier().catch(() => report('A change could not be confirmed as saved.'));
+    else if (deps.barrier) {
+      const timeout = deps.barrierTimeoutMs ?? 10000;
+      const saved = await Promise.race([deps.barrier().catch(() => false), deps.wait(timeout).then(() => null)]);
+      if (saved === null) report('A change is still being saved.');
+      else if (!saved) report('A change could not be confirmed as saved.');
+    }
     await deps.wait(0);
     // Whatever is still open was not saved: a titled Add page form, unsaved code, an edit the preview kept, or
     // (a backstop) a field typed in meanwhile.

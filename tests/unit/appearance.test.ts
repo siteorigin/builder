@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { appearanceFromArgv, appearanceSwitch, editorBackground, editorScheme } from '@shared/appearance';
+import { editorBackground, editorScheme, knownAppearance } from '@shared/appearance';
 
 // The editor's Appearance styles the editor and never the website it previews (#202).
 describe('editor appearance', () => {
@@ -14,12 +14,12 @@ describe('editor appearance', () => {
     expect(editorBackground('light')).toBe('#f2f4f7');
   });
 
-  it('hands a new window its Appearance, and anything else is System', () => {
-    expect(appearanceFromArgv(['electron', '--flag', appearanceSwitch('dark')])).toBe('dark');
-    expect(appearanceFromArgv([appearanceSwitch('light')])).toBe('light');
-    expect(appearanceFromArgv([appearanceSwitch('system')])).toBe('system');
-    expect(appearanceFromArgv(['--so-appearance=purple'])).toBe('system');
-    expect(appearanceFromArgv([])).toBe('system');
+  it('takes a saved Appearance it does not know as System, so the editor still follows this computer', () => {
+    expect(knownAppearance('light')).toBe('light');
+    expect(knownAppearance('dark')).toBe('dark');
+    for (const unknown of ['system', null, undefined, 'purple', 1]) expect(knownAppearance(unknown)).toBe('system');
+    expect(editorScheme(null, false)).toBe('light');
+    expect(editorScheme('purple', true)).toBe('dark');
   });
 
   it('leaves Electron following this computer, so the preview’s color scheme is a visitor’s', () => {

@@ -42,10 +42,16 @@ const choose = async (label) => {
   await eventually(async () => assert.equal(await dialog.getByRole('radio', { name: label }).getAttribute('aria-checked'), 'true', `${label} is chosen`));
 };
 const label = (s) => (s === 'dark' ? 'Dark' : 'Light');
+// One of the editor's own dark rules, beyond its colors: the Developer mode switch's thumb.
+const THUMB = { light: 'rgb(255, 255, 255)', dark: 'rgb(244, 247, 251)' };
+const thumbIn = (scheme) =>
+  eventually(async () => assert.equal(await dialog.getByRole('switch').first().evaluate((el) => getComputedStyle(el, '::after').backgroundColor), THUMB[scheme], `the switch is drawn ${scheme}`));
 await choose(label(other));
 await drawnIn(other, label(other));
+await thumbIn(other);
 await choose(label(system));
 await drawnIn(system, label(system));
+await thumbIn(system);
 await choose('System');
 await drawnIn(system, 'System again');
 
@@ -69,12 +75,30 @@ assert.ok((await win.evaluate((d) => window.builder.projects.open(d), dir)).ok, 
 await site().locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 90000 });
 await drawnIn(other, 'the project reopened');
 
-step('on System the editor follows this computer’s setting as it changes');
+step('a reloaded editor is drawn in the Appearance saved since its window opened, from its first paint');
+await win.evaluate(() => window.builder.projects.close());
+await win.waitForSelector('.welcome');
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'system' }));
-await drawnIn(system, 'System, set through the API');
-for (const colorScheme of [other, system]) {
-  await win.emulateMedia({ colorScheme });
-  await eventually(async () => assert.equal((await editor()).scheme, colorScheme, `the editor follows a change to ${colorScheme}`));
+await drawnIn(system, 'System, set through the API', { previewed: false });
+// Recorded as the page's body is parsed, before the editor's own script runs.
+await win.addInitScript(() => {
+  new MutationObserver((_, watch) => {
+    if (!document.body) return;
+    window.appearanceAtFirstPaint = document.documentElement.dataset.appearance ?? 'unset';
+    watch.disconnect();
+  }).observe(document, { childList: true, subtree: true });
+});
+await win.reload();
+await win.waitForSelector('.welcome');
+assert.equal(await win.evaluate(() => window.appearanceAtFirstPaint), system, 'the reloaded page starts in the saved Appearance');
+await drawnIn(system, 'reloaded', { previewed: false });
+
+step('on System the editor and its window follow this computer’s setting as it changes');
+// Electron's own theme stands in for this computer's setting changing.
+for (const [themeSource, scheme] of [[other, other], ['system', system]]) {
+  await app.evaluate(({ nativeTheme }, t) => (nativeTheme.themeSource = t), themeSource);
+  await eventually(async () => assert.equal((await editor()).scheme, scheme, `the editor follows a change to ${scheme}`));
+  await eventually(async () => assert.equal((await native()).background, BG[scheme], `the window follows a change to ${scheme}`));
 }
 
 assert.deepEqual(errors, [], 'no page errors');

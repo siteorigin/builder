@@ -1186,11 +1186,17 @@ export class Controller {
   }
 
   /**
-   * Resolves once every write already queued for the open project has finished (Save waits on this). It joins the
-   * end of the session's queue without taking the writer lock, so a later write never waits on it.
+   * Resolves once every write already queued for the open project has finished (Save waits on this), saying whether
+   * they all reached the disk in the opening Save was pressed in (`opening`, from its snapshot; any, when not given):
+   * false when that opening has started closing or a save did not finish. It joins the end of the session's queue
+   * without taking the writer lock, so a later write never waits on it.
    */
-  async flush(): Promise<void> {
-    await this.session?.exclusive(async () => undefined);
+  async flush(opening?: string): Promise<boolean> {
+    const s = this.session;
+    const current = () => this.session === s && (opening === undefined || opening === this.workspaceKey);
+    if (!s || !current()) return false;
+    await s.exclusive(async () => undefined);
+    return current() && !s.saveUnfinished;
   }
 
   /** Write pending workspace state now. Writes run one at a time, in order, so an older state never lands last. */

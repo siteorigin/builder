@@ -102,7 +102,7 @@ export function Canvas() {
   };
   const [dragging, setDragging] = useState(false);
   /** A frame resize in progress: the pointer, where it started, and the opening its width belongs to. */
-  const resizeDrag = useRef<{ pointer: number; x: number; from: number; zoom: number; opening: string | undefined; changed: boolean } | null>(null);
+  const resizeDrag = useRef<{ el: HTMLDivElement; pointer: number; x: number; from: number; zoom: number; opening: string | undefined; changed: boolean } | null>(null);
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
   /** Inline text edits in progress, with the project and the AI's activity when each began. */
@@ -783,30 +783,41 @@ export function Canvas() {
 
   // Drag-to-resize viewport. The frame stays centered, so both edges follow the pointer, within the widths the
   // toolbar's width field accepts. The handle captures the pointer (as the panel splitters do), so the drag always
-  // hears its release; the width is remembered once, for the opening it was made in.
+  // hears its release; the width is remembered once, for the opening it was made in. One drag at a time: a second
+  // pointer, or one pressed during a block reorder, is ignored.
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || resizeDrag.current || dragging) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    resizeDrag.current = { pointer: e.pointerId, x: e.clientX, from: getState().viewport, zoom, opening: getState().snapshot?.workspaceKey, changed: false };
+    resizeDrag.current = { el: e.currentTarget, pointer: e.pointerId, x: e.clientX, from: getState().viewport, zoom, opening: getState().snapshot?.workspaceKey, changed: false };
     setDragging(true);
   };
   const moveResize = (e: React.PointerEvent<HTMLDivElement>, side: PanelSide) => {
     const d = resizeDrag.current;
     if (d?.pointer !== e.pointerId) return;
+    // Another project opened under the drag: it is not this one's to resize.
+    if (getState().snapshot?.workspaceKey !== d.opening) return endResize();
     const w = clampViewport(d.from + ((e.clientX - d.x) / d.zoom) * 2 * (side === 'right' ? 1 : -1));
     if (w === getState().viewport) return;
     setState({ viewport: w });
     d.changed = true;
   };
-  const endResize = (el: HTMLDivElement, pointer: number) => {
+  /** End the resize in progress, if any (only `pointer`'s, when given): on release, or when its handle goes away. */
+  const endResize = (pointer?: number) => {
     const d = resizeDrag.current;
-    if (d?.pointer !== pointer) return;
+    if (!d || (pointer !== undefined && d.pointer !== pointer)) return;
     resizeDrag.current = null;
     setDragging(false);
-    if (el.hasPointerCapture(pointer)) el.releasePointerCapture(pointer);
+    if (d.el.isConnected && d.el.hasPointerCapture(d.pointer)) d.el.releasePointerCapture(d.pointer);
     if (d.changed && getState().snapshot?.workspaceKey === d.opening) saveLocal({ viewport: getState().viewport });
   };
+  // The handles go with the frame (the preview restarting, the project closing) and the canvas: a drag they held
+  // ends where it is, so the frame never stays unclickable behind a drag nobody can release.
+  const frameShown = !!(url && initialSrc);
+  useEffect(() => {
+    if (!frameShown) endResize();
+  }, [frameShown]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => endResize(), []); // eslint-disable-line react-hooks/exhaustive-deps
   const frameHandle = (side: PanelSide) => (
     <div
       className={`frame-handle ${side}${dragging ? ' dragging' : ''}`}
@@ -821,9 +832,9 @@ export function Canvas() {
       title="Drag to resize, or use the arrow keys"
       onPointerDown={startResize}
       onPointerMove={(e) => moveResize(e, side)}
-      onPointerUp={(e) => endResize(e.currentTarget, e.pointerId)}
-      onPointerCancel={(e) => endResize(e.currentTarget, e.pointerId)}
-      onLostPointerCapture={(e) => endResize(e.currentTarget, e.pointerId)}
+      onPointerUp={(e) => endResize(e.pointerId)}
+      onPointerCancel={(e) => endResize(e.pointerId)}
+      onLostPointerCapture={(e) => endResize(e.pointerId)}
       onKeyDown={(e) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
         e.preventDefault();

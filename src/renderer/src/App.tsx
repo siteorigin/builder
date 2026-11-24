@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, toast, useStore } from './store';
+import { api, applyAiEvent, getState, persistChatState, projectHistory, saveLocal, setState, toast, useStore } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
@@ -8,7 +8,7 @@ import { Toasts, openDialogs, openMenus } from './components/ui';
 import { ConfirmHost } from './components/ConfirmDialog';
 import { runComponentPreviews, runInspection } from './lib/inspect';
 import { restorePanelWidth, restoreViewport, restoreZoom } from './lib/layout';
-import { handleShortcut, projectHistory } from './Editor';
+import { handleShortcut } from './Editor';
 import { forgetCopy } from './lib/clipboard';
 import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';

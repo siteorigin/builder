@@ -1,12 +1,12 @@
 import { savesInFlight, settle, type Settled } from './pending';
-import { api, confirmDialog, getConfirm, getState, pendingConfirms, setState, toast } from '../store';
+import { api, confirmDialog, editRunStatus, getConfirm, getState, pendingConfirms, setState, toast } from '../store';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Settle edits against the real page: a field being typed in commits by losing focus, as it always has on an
  *  explicit save. Focus anywhere else (a Layers row, a button) stays put; an inline edit on the canvas is
  *  handed back by message instead. `hold` stops new input once that is done; `barrier` is waited for last. */
-export function settleEdits(hold?: () => void, barrier?: () => Promise<unknown>): Promise<Settled> {
+export function settleEdits(hold?: () => void, barrier?: () => Promise<boolean>): Promise<Settled> {
   return settle({
     blur: () => {
       const el = document.activeElement;
@@ -20,12 +20,14 @@ export function settleEdits(hold?: () => void, barrier?: () => Promise<unknown>)
 
 /** Cmd/Ctrl+S: commit the field being typed in, wait for every change to land, then for the project's queued
  *  writes to reach the disk. The notice only describes that moment, in the project it was asked in: a change
- *  that failed (already explained), a new edit started meanwhile, or another project open by then means no notice. */
+ *  that failed (already explained), a new edit started meanwhile, another project open by then, or AI changes
+ *  still being made (Stop takes them back) means no notice. */
 export async function saveNow() {
   const opening = getState().snapshot?.workspaceKey;
-  const { problems, finish } = await settleEdits(undefined, () => api.project.flush());
+  const { problems, finish } = await settleEdits(undefined, () => api.project.flush(opening));
   finish();
-  if (!problems.length && !getState().drafting && !savesInFlight() && getState().snapshot?.workspaceKey === opening) toast('All changes are saved on this computer.', 'success');
+  const s = getState();
+  if (!problems.length && !s.drafting && !savesInFlight() && !editRunStatus(s) && s.snapshot?.workspaceKey === opening) toast('All changes are saved on this computer.', 'success');
 }
 
 let holdTimer: ReturnType<typeof setTimeout> | null = null;

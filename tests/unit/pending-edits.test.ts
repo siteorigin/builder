@@ -206,8 +206,8 @@ describe('the save barrier', () => {
     const apply = deferred();
     trackApply(apply.promise);
     const order: string[] = [];
-    let release!: () => void;
-    const queued = new Promise<void>((r) => (release = r));
+    let release!: (saved: boolean) => void;
+    const queued = new Promise<boolean>((r) => (release = r));
     let settled = false;
     const run = settle({
       blur: () => undefined,
@@ -225,24 +225,47 @@ describe('the save barrier', () => {
     await wait(40);
     expect(order).toEqual(['barrier']);
     expect(settled).toBe(false);
-    release();
+    release(true);
     const { problems, finish } = await run;
     finish();
     expect(problems).toEqual([]);
   });
 
-  it('reports a barrier that fails, and a refusal heard while waiting for it', async () => {
+  it('skips the barrier when a change never landed in the time given', async () => {
+    trackApply(new Promise<ApplyOutcome>(() => undefined));
+    let called = 0;
+    const { problems, finish } = await settle({ blur: () => undefined, wait, saveTimeoutMs: 60, barrier: async () => (called++, true) });
+    finish();
+    expect(called).toBe(0);
+    expect(problems).toEqual(['A change is still being saved.']);
+  });
+
+  it('reports writes the barrier could not confirm, and a refusal heard while waiting for it', async () => {
     const run = settle({
       blur: () => undefined,
       wait,
       barrier: async () => {
+        await wait(30);
         reportRefused('That anchor is already used on this page.');
+        await wait(30);
         throw new Error('The project was closed.');
       }
     });
     const { problems, finish } = await run;
     finish();
     expect(problems).toEqual(['That anchor is already used on this page.', 'A change could not be confirmed as saved.']);
+    const unsaved = await settle({ blur: () => undefined, wait, barrier: async () => false });
+    unsaved.finish();
+    expect(unsaved.problems).toEqual(['A change could not be confirmed as saved.']);
+  });
+
+  it('stops waiting for writes held up past its time, without confirming them', async () => {
+    const started = Date.now();
+    const { problems, finish } = await settle({ blur: () => undefined, wait, barrier: () => new Promise<boolean>(() => undefined), barrierTimeoutMs: 80 });
+    finish();
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(problems).toEqual(['A change is still being saved.']);
+    expect(isSettling()).toBe(false);
   });
 });
 

@@ -22,6 +22,7 @@
  */
 :root {
   color-scheme: light;
+  --selection: rgb(23 102 192 / 0.22);
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
   --mono: 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
 
@@ -76,6 +77,7 @@
 
 :root:where([data-appearance='dark']) {
   color-scheme: dark;
+  --selection: rgb(124 190 255 / 0.3);
   --bg: #11151c;
   --canvas: #0e1217;
   --canvas-dots: rgb(255 255 255 / 0.05);
@@ -132,8 +134,7 @@ button { cursor: default; background: none; }
    containers and elements that set their own box-shadow. Inputs add the soft ring on top. */
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .input:focus-visible, .select:focus-visible, .textarea:focus-visible, .input:focus, .select:focus, .textarea:focus { outline: 2px solid var(--focus); outline-offset: -1px; }
-::selection { background: rgb(23 102 192 / 0.22); }
-:where(:root[data-appearance='dark']) { ::selection { background: rgb(124 190 255 / 0.3); } }
+::selection { background: var(--selection); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
 
 .scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }

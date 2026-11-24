@@ -1,5 +1,5 @@
 import type { Appearance } from '@shared/api';
-import { editorScheme } from '@shared/appearance';
+import { editorScheme, knownAppearance } from '@shared/appearance';
 import { api } from '../store';
 
 /**
@@ -15,12 +15,12 @@ export function followAppearance(): () => void {
     if (chosen) document.documentElement.dataset.appearance = editorScheme(chosen, system.matches);
   };
   const choose = (a: Appearance) => {
-    chosen = a;
+    chosen = knownAppearance(a);
     apply();
   };
   const off = api.on('appearance', choose);
   system.addEventListener('change', apply);
-  // A window reloaded since it opened may have been opened with an older Appearance; one saved meanwhile is newer.
+  // The saved Appearance, unless Settings has already said a newer one.
   void api.app
     .getSettings()
     .then((s) => chosen ?? choose(s.appearance))
