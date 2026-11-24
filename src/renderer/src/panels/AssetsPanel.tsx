@@ -329,7 +329,7 @@ function showUse(u: ImageUseRow): (() => void) | undefined {
   if (u.at) return revealUse(u.at.owner, u.at.nodeId, u.field, u.what);
   if (u.setting === 'site') return openSiteStyles;
   const pageId = u.setting?.pageId;
-  return pageId ? () => selectPage(pageId) : undefined;
+  return pageId ? () => selectPage(pageId, null) : undefined;
 }
 
 /**
@@ -371,7 +371,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
   }
   for (const p of Object.values(state.pages)) {
     const c = count(p.seo) + (p.seo.socialImage === assetId ? 1 : 0);
-    if (c) out.push({ key: `seo/${p.id}`, icon: 'page', where: p.title, what: 'Sharing image', count: c, go: () => selectPage(p.id) });
+    if (c) out.push({ key: `seo/${p.id}`, icon: 'page', where: p.title, what: 'Sharing image', count: c, go: () => selectPage(p.id, null) });
   }
   if (state.site.favicon === assetId) out.push({ key: 'favicon', icon: 'site', where: 'Site', what: 'Browser tab icon', count: 1, go: openSiteStyles });
   if (state.site.socialImage === assetId) out.push({ key: 'social', icon: 'site', where: 'Site', what: 'Sharing image', count: 1, go: openSiteStyles });

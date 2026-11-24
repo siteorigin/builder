@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';
 import { collectionRoutes } from '@shared/collections';
-import type { ProjectState } from '@shared/types';
+import type { ElementRef, ProjectState } from '@shared/types';
 import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { limitNote } from '../lib/kept-drafts';
@@ -393,9 +393,12 @@ export function PagesPanel() {
     setPeek({ id: row.dataset.page!, top: r.bottom - wrap.top + 3, left: r.left - wrap.left, width: r.width });
   };
 
-  /** Open a page. From a filtered list the find is cleared, so the page shows in its place in the outline. */
-  const open = (id: string, focus = false) => {
-    selectPage(id);
+  /**
+   * Open a page, at its remembered place or at `target` (null: the page itself; see selectPage). From a filtered list
+   * the find is cleared, so the page shows in its place in the outline.
+   */
+  const open = (id: string, focus = false, target?: ElementRef | null) => {
+    selectPage(id, target);
     if (!finding) return;
     setQuery('');
     requestAnimationFrame(() => {
@@ -523,8 +526,8 @@ export function PagesPanel() {
     if (v.length > TEXT_LIMITS.pageTitle) {
       const commit = (t: string) => void applyOps([{ type: 'page.update', pageId: id, title: t.trim() }], 'Rename page');
       keepRefusedText(`page:${id}:title`, v, { base: from?.snap ?? getState().snapshot, value: was ?? '', commit, ai: from?.ai ?? aiActivity() }, 'Title', TEXT_LIMITS.pageTitle, () => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id));
-      selectPage(id);
-      setState({ selection: null, rightTab: 'inspect', dockOpen: true, keptHandoff: getState().keptHandoff + 1 });
+      selectPage(id, null);
+      setState({ rightTab: 'inspect', dockOpen: true, keptHandoff: getState().keptHandoff + 1 });
       toast(`A page title can be up to ${TEXT_LIMITS.pageTitle} characters, and this one is ${v.length}, so it was not saved. It is in the page’s settings to shorten.`, 'error');
       return;
     }
@@ -546,7 +549,7 @@ export function PagesPanel() {
     const openAt = (items: Parameters<typeof menu.openAt>[1], label: string) => (el instanceof HTMLElement ? menu.openAt(el, items, label) : menu.open(el.x, el.y, items, label, el.row));
     openAt([
       { heading: st.pages[id].title },
-      { label: 'Page settings', icon: <Settings2 />, onSelect: () => (open(id), setState({ selection: null, rightTab: 'inspect', dockOpen: true })) },
+      { label: 'Page settings', icon: <Settings2 />, onSelect: () => (open(id, false, null), setState({ rightTab: 'inspect', dockOpen: true })) },
       { label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: () => setRenaming(id) },
       // Home is the top level itself, and an address four levels down has no room for another.
       ...(isHome || levels(st.pages[id].route) >= MAX_DEPTH ? [] : [{ label: 'Add page inside', icon: <FilePlus />, onSelect: () => ((addFrom.current = id), setQuery(''), openForm(id)) }]),
@@ -898,7 +901,8 @@ export function PagesPanel() {
                     if (dragId && o) void moveTo(dragId, o, 'moved', false);
                     endDrag();
                   }}
-                  onClick={() => open(id)}
+                  // The second click of a double-click renames the page it opened, which keeps its place.
+                  onClick={(e) => (e.detail < 2 || getState().pageId !== id) && open(id)}
                   onDoubleClick={() => setRenaming(id)}
                   onKeyDown={(e) => {
                     if (e.target !== e.currentTarget) return;

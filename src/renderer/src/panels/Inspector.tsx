@@ -60,7 +60,7 @@ import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls'
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, createComponentTarget, definitionView, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
-import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, structuralTarget } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, setMode, structuralTarget } from '../lib/actions';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -2273,7 +2273,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
                 <button
                   className="insp-mini"
                   onClick={() => {
-                    setState({ mode: 'edit' });
+                    setMode('edit');
                     focusName();
                   }}
                 >

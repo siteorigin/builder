@@ -13,6 +13,7 @@ import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
+import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
@@ -35,6 +36,17 @@ export function structuralTarget(ref: ElementRef | null, { withRoot = false, sta
   return b;
 }
 
+/** Whether `ref` is `target`, or inside it, in `state`'s tree of their owner. */
+function holds(state: ProjectState, target: ElementRef, ref: ElementRef | null): boolean {
+  const tree = ref && ref.owner.kind === target.owner.kind && ref.owner.id === target.owner.id ? treeFor(state, ref.owner) : undefined;
+  const seen = new Set<string>();
+  for (let id = tree && ref ? (ref.instancePath[0] ?? ref.nodeId) : null; tree && id && !seen.has(id); id = findParent(tree, id)?.parentId ?? null) {
+    if (id === target.nodeId) return true;
+    seen.add(id);
+  }
+  return false;
+}
+
 export async function deleteSelection() {
   const s = getState();
   const t = structuralTarget(s.selection);
@@ -44,7 +56,8 @@ export async function deleteSelection() {
   const r = await commitOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], `Delete ${label}`);
   // A reply that arrives after its project closed has nothing left here to select or announce.
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-  setState({ selection: null });
+  // What went with it goes, also picked again meanwhile; what the author selected elsewhere (another page) stays.
+  if (holds(s.snapshot.state, t, getState().selection)) setState({ selection: null });
   toast(`Deleted ${label}`, 'info', undoAction(r));
 }
 
@@ -602,8 +615,18 @@ export function canInlineEdit(ref: ElementRef): boolean {
   return ref.instancePath.length === 1 && isBinding(target.value);
 }
 
-export function selectPage(pageId: string) {
-  setState({ pageId, selection: null, definitionMode: null });
+/**
+ * Open a page. Another page opens at the element last selected there (lib/page-place), so the author resumes where
+ * they were; `target` names what to select instead, and null opens the page itself and forgets its place. Choosing the
+ * page already shown selects the page itself too. In Preview nothing is selected.
+ */
+export function selectPage(pageId: string, target?: ElementRef | null) {
+  const s = getState();
+  const st = s.snapshot?.state;
+  const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
+  const selection = target !== undefined ? target : s.mode === 'edit' && !itself && st ? placeOn(st, s.pagePlaces, pageId) : null;
+  // A page opened while previewing is where Edit opens: what was selected before Preview is not selected again.
+  setState({ pageId, selection, definitionMode: null, previewReturn: null, ...(itself ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });
   saveLocal({ pageId });
 }
 
@@ -630,9 +653,42 @@ export function askAiAbout(ref: ElementRef | null) {
   setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 50);
 }
 
-/** The one way to switch Edit and Preview, so every entry point leaves the same selection and inspector state. */
+/**
+ * The one way to switch Edit and Preview, so every entry point leaves the same selection and inspector state. Preview
+ * selects nothing; back in Edit, what was selected is selected again when the visitor stayed where they were (the
+ * page and the place on it the author left; Canvas lets it go when the visitor moves on). It is not scrolled to: the
+ * visitor may have scrolled the page, and the page stays as they left it.
+ */
 export function setMode(mode: 'edit' | 'preview') {
-  setState(mode === 'preview' ? { mode, selection: null } : { mode });
+  const s = getState();
+  const editing = s.definitionMode?.definitionId ?? null;
+  if (mode === 'preview') {
+    // What is selected is what Edit returns to: also one made while previewing (in Layers, a change shown from the
+    // chat), which choosing Preview again lets go of on the page, as entering it does.
+    const back = s.selection && s.pageId && s.snapshot ? { pageId: s.pageId, ref: s.selection, revision: s.snapshot.revision, definitionId: editing } : s.mode === 'preview' ? s.previewReturn : null;
+    setState({ mode, selection: null, previewReturn: back });
+    return;
+  }
+  if (s.mode === 'edit') return;
+  const back = s.previewReturn;
+  const st = s.snapshot?.state;
+  // A selection made while previewing is the author's latest choice and stays. Otherwise the one Preview was entered
+  // with, on the same page and in the same component edited everywhere (or none), while it is still there.
+  const ref = !s.selection && back && st && back.pageId === s.pageId && back.definitionId === editing ? selectionBack(st, back.pageId, back.ref, back.revision === s.snapshot?.revision) : null;
+  unscrolled = ref;
+  setState({ mode, previewReturn: null, ...(ref ? { selection: ref } : {}) });
+  // The page Edit returns on (one a visitor's link opened, say) is the page being worked on, and reopens.
+  if (s.pageId) saveLocal({ pageId: s.pageId });
+}
+
+/** A selection made again without being scrolled to (see setMode). */
+let unscrolled: ElementRef | null = null;
+
+/** Whether `ref` is the selection Edit just made again unscrolled: asked once, by the canvas, as it scrolls to a new selection. */
+export function takeUnscrolled(ref: ElementRef | null): boolean {
+  const quiet = !!ref && ref === unscrolled;
+  unscrolled = null;
+  return quiet;
 }
 
 /** Open Site styles. Site styles are site-wide, so this leaves component editing first: the plum band
