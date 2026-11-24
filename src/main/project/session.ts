@@ -441,6 +441,8 @@ export class ProjectSession extends EventEmitter {
    * whose stat has not changed since is not read again.
    */
   private seenOnDisk = new Map<string, { stamp: string; hash: string }>();
+  /** Generated files whose variant changed alone but which could not be touched for the preview: tried again. */
+  private untouched = new Set<string>();
   /** The hash of each generated file's latest content, by absolute path, so unchanged content is not hashed again. */
   private contentHashes = new Map<string, { content: string | Buffer; hash: string }>();
   /**
@@ -1624,6 +1626,8 @@ export class ProjectSession extends EventEmitter {
     const variants = [...dev].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(devRoot, path) }));
     // A variant that cannot be read is written again: only the app writes them.
     const variantsOnDisk = await inBatches(variants, async (f) => (keptExternal.has(f.path) ? null : ((await this.seenHash(f.abs)) ?? (await this.readHash(f.abs)).hash)));
+    /** Project files whose variant this publication changed (an empty Grid arranged as a Row is named a Row there only). */
+    const variantsChanged = new Set<string>();
     for (const [i, { path, content, abs }] of variants.entries()) {
       if (keptExternal.has(path)) {
         if (existsSync(abs)) {
@@ -1638,6 +1642,7 @@ export class ProjectSession extends EventEmitter {
       // Rebuilt from the documents on every publication, so a power loss costs nothing here.
       const hash = hashOf(abs, content);
       if (variantsOnDisk[i] !== hash) {
+        variantsChanged.add(path);
         this.seenOnDisk.delete(abs);
         await atomicWrite(abs, content, { durable: false });
         // Only the app writes its preview variants, so the file now on disk is this one.
@@ -1684,6 +1689,26 @@ export class ProjectSession extends EventEmitter {
         const variant = safeJoin(devRoot, path);
         await fs.rm(variant, { force: true });
         this.seenOnDisk.delete(variant);
+      }
+    }
+    // The preview does not watch the editor's cache: a project file whose variant alone changed is touched, so the
+    // preview loads the new variant (as a read-only project's private copy does, see syncPreviewStage). Only a file
+    // that is this app's own as it stands, and only once the preview may be running.
+    // A file that could not be touched is tried again at the next publication; one written meanwhile needs none.
+    if (!initial) {
+      const now = new Date();
+      for (const path of new Set([...variantsChanged, ...this.untouched])) {
+        this.untouched.delete(path);
+        if (!(path in nextFiles) || changedFiles.includes(path) || keptExternal.has(path) || this.conflicts.some((c) => c.path === path)) continue;
+        // Never a reason for the save to fail: the path checked again (it may lead elsewhere now), the file read, the stamp set.
+        try {
+          const abs = safeJoin(this.dir, path);
+          if ((await this.seenHash(abs)) !== nextFiles[path] && (await this.readHash(abs)).hash !== nextFiles[path]) continue;
+          this.seenOnDisk.delete(abs);
+          await fs.utimes(abs, now, now);
+        } catch {
+          this.untouched.add(path);
+        }
       }
     }
     // Remove files that are no longer generated, for good before the manifest stops claiming them.
