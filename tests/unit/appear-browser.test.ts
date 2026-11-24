@@ -106,12 +106,16 @@ beforeAll(async () => {
 
 if (!ENGINES.length) describe.skip('entrances in a browser (needs Chromium or WebKit)', () => it('runs in a browser', () => {}));
 
-/** Reads of the page, by selector: the entrance state, opacity, animation and shifts. */
-const READ = (sel: string) => {
-  const el = document.querySelector(sel)!;
-  const cs = getComputedStyle(el);
-  return { state: el.getAttribute('data-appear-state'), step: el.getAttribute('data-appear-step'), opacity: cs.opacity, animation: cs.animationName, transform: cs.transform, translate: cs.translate, top: el.getBoundingClientRect().top };
-};
+/*
+ * What runs in the page is written as source, as in motion.test.ts: these tests compile without the DOM's types.
+ */
+type Read = { state: string | null; step: string | null; opacity: string; animation: string; transform: string; translate: string; top: number };
+const q = (sel: string) => `document.querySelector(${JSON.stringify(sel)})`;
+/** The entrance state, opacity, animation and shifts of the element a selector finds. */
+const READ = (sel: string) =>
+  `(() => { const el = ${q(sel)}; const cs = getComputedStyle(el); return { state: el.getAttribute('data-appear-state'), step: el.getAttribute('data-appear-step'), opacity: cs.opacity, animation: cs.animationName, transform: cs.transform, translate: cs.translate, top: el.getBoundingClientRect().top }; })()`;
+const stateOf = (sel: string) => `${q(sel)}.getAttribute('data-appear-state')`;
+const ARMED = `document.querySelectorAll('[data-appear-state]').length`;
 const HERO = '[data-appear="lift"]:not([data-appear-stagger])';
 const BANNER = '[data-appear="fade"]';
 const CARDS = '[data-appear-stagger]';
@@ -134,11 +138,11 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
     const page = await context.newPage();
     const script = run ? `<script type="module">${before}\n${appearJs(instrument)}\nwindow.__stop = observeAppear();\nwindow.__ready = true;</script>` : '';
     await page.setContent(`<!doctype html><html><head><meta charset="utf-8"><style>${css}\n${extraCss}</style></head><body><main id="main">${body}</main>${script}</body></html>`, { waitUntil: 'domcontentloaded' });
-    if (run) await page.waitForFunction(() => (window as unknown as { __ready?: boolean }).__ready === true);
+    if (run) await page.waitForFunction('window.__ready === true');
     return { page, close: () => context.close() };
   }
-  const read = (page: Page, sel: string) => page.evaluate(READ, sel);
-  const scrollTo = (page: Page, sel: string) => page.evaluate((s) => document.querySelector(s)!.scrollIntoView({ block: 'center' }), sel);
+  const read = (page: Page, sel: string) => page.evaluate<Read>(READ(sel));
+  const armed = (page: Page) => page.evaluate<number>(ARMED);
 
   it('renders the presets on the sections and cards they belong to', () => {
     expect(body).toMatch(/<section [^>]*data-appear="lift"/);
@@ -165,10 +169,10 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
       const waiting = await read(page, BANNER);
       expect(waiting.top).toBeGreaterThan(720);
       expect(waiting).toMatchObject({ state: 'waiting', opacity: '0' });
-      await scrollTo(page, BANNER);
-      await page.waitForFunction((s) => document.querySelector(s)!.getAttribute('data-appear-state') === 'running', BANNER);
+      await page.evaluate(`${q(BANNER)}.scrollIntoView({ block: 'center' })`);
+      await page.waitForFunction(`${stateOf(BANNER)} === 'running'`);
       // Once in, nothing of the entrance is left behind.
-      await page.waitForFunction((s) => !document.querySelector(s)!.hasAttribute('data-appear-state'), BANNER, { timeout: 5_000 });
+      await page.waitForFunction(`${stateOf(BANNER)} === null`, undefined, { timeout: 5_000 });
       expect(await read(page, BANNER)).toMatchObject({ state: null, opacity: '1', animation: 'none', transform: 'none' });
     } finally {
       await close();
@@ -179,11 +183,11 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
     // Slowed down, so every card is caught while it comes in.
     const { page, close } = await open({ extraCss: '[data-appear-state="running"] { animation-duration: 20s !important; }' });
     try {
-      const count = await page.evaluate((s) => document.querySelectorAll(s).length, CARDS);
+      const count = await page.evaluate<number>(`document.querySelectorAll(${JSON.stringify(CARDS)}).length`);
       const cards = Array.from({ length: count }, (_, i) => `${CARDS}:nth-child(${i + 1} of ${CARDS})`);
       expect((await read(page, cards[0])).state).toBe('waiting');
-      await page.evaluate((s) => document.querySelector(s)!.parentElement!.scrollIntoView({ block: 'center' }), CARDS);
-      await page.waitForFunction((s) => [...document.querySelectorAll(s)].every((el) => el.getAttribute('data-appear-state') === 'running'), CARDS);
+      await page.evaluate(`${q(CARDS)}.parentElement.scrollIntoView({ block: 'center' })`);
+      await page.waitForFunction(`[...document.querySelectorAll(${JSON.stringify(CARDS)})].every((el) => el.getAttribute('data-appear-state') === 'running')`);
       const now = await Promise.all(cards.map((c) => read(page, c)));
       expect(now.map((c) => c.step)).toEqual(now.map((_, i) => (i ? String(Math.min(i, 4)) : null)));
       // The first is on its way up; the others wait out their delay at the start, unseen.
@@ -218,7 +222,7 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
   it('arms nothing for a visitor who asks for reduced motion, and lets go when they ask mid-visit', async () => {
     const reduced = await open({ reducedMotion: 'reduce' });
     try {
-      expect(await reduced.page.evaluate(() => document.querySelectorAll('[data-appear-state]').length)).toBe(0);
+      expect(await armed(reduced.page)).toBe(0);
       for (const sel of [BANNER, CARDS]) expect(await read(reduced.page, sel)).toMatchObject({ opacity: '1', animation: 'none' });
     } finally {
       await reduced.close();
@@ -227,7 +231,7 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
     try {
       expect((await read(page, BANNER)).state).toBe('waiting');
       await page.emulateMedia({ reducedMotion: 'reduce' });
-      await page.waitForFunction(() => !document.querySelector('[data-appear-state]'));
+      await page.waitForFunction(`${ARMED} === 0`);
       expect(await read(page, BANNER)).toMatchObject({ opacity: '1', animation: 'none' });
     } finally {
       await close();
@@ -237,19 +241,19 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
   it('arms content that arrives later, and lets everything go when stopped', async () => {
     const { page, close } = await open();
     try {
-      await page.evaluate(() => {
+      await page.evaluate(`(() => {
         const late = document.createElement('div');
         late.id = 'late';
         late.setAttribute('data-appear', 'fade');
         late.textContent = 'Late arrival';
-        document.querySelector('main')!.append(late);
-      });
-      await page.waitForFunction(() => document.getElementById('late')!.getAttribute('data-appear-state') === 'waiting');
+        document.querySelector('main').append(late);
+      })()`);
+      await page.waitForFunction(`${stateOf('#late')} === 'waiting'`);
       // A preset taken away lets go at once.
-      await page.evaluate(() => document.getElementById('late')!.removeAttribute('data-appear'));
-      await page.waitForFunction(() => !document.getElementById('late')!.hasAttribute('data-appear-state'));
-      await page.evaluate(() => (window as unknown as { __stop: () => void }).__stop());
-      expect(await page.evaluate(() => document.querySelectorAll('[data-appear-state]').length)).toBe(0);
+      await page.evaluate(`${q('#late')}.removeAttribute('data-appear')`);
+      await page.waitForFunction(`${stateOf('#late')} === null`);
+      await page.evaluate('window.__stop()');
+      expect(await armed(page)).toBe(0);
       expect(await read(page, BANNER)).toMatchObject({ opacity: '1', animation: 'none' });
     } finally {
       await close();
@@ -259,7 +263,7 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
   it('hides nothing in a browser without IntersectionObserver', async () => {
     const { page, close } = await open({ before: 'delete window.IntersectionObserver;' });
     try {
-      expect(await page.evaluate(() => document.querySelectorAll('[data-appear-state]').length)).toBe(0);
+      expect(await armed(page)).toBe(0);
       expect(await read(page, BANNER)).toMatchObject({ opacity: '1', animation: 'none' });
     } finally {
       await close();
@@ -268,22 +272,18 @@ describe.each(ENGINES)('entrances in %s', { timeout: 20_000 }, (name, engine) =>
 
   it('in the editor, arms nothing until Preview, and shows everything again in Edit', async () => {
     const { page, close } = await open({ instrument: true });
-    const armed = () => page.evaluate(() => document.querySelectorAll('[data-appear-state]').length);
     try {
       // Before the editor's bridge runs, and once it starts in Edit.
-      expect(await armed()).toBe(0);
-      await page.evaluate(() => {
-        (window as unknown as { __siteoriginBridge: boolean }).__siteoriginBridge = true;
-        document.documentElement.setAttribute('data-so-editing', '');
-      });
-      expect(await armed()).toBe(0);
+      expect(await armed(page)).toBe(0);
+      await page.evaluate(`window.__siteoriginBridge = true; document.documentElement.setAttribute('data-so-editing', '')`);
+      expect(await armed(page)).toBe(0);
       // Preview.
-      await page.evaluate(() => document.documentElement.removeAttribute('data-so-editing'));
-      await page.waitForFunction((s) => document.querySelector(s)!.getAttribute('data-appear-state') === 'waiting', BANNER);
+      await page.evaluate(`document.documentElement.removeAttribute('data-so-editing')`);
+      await page.waitForFunction(`${stateOf(BANNER)} === 'waiting'`);
       expect((await read(page, HERO)).state).toBe(null);
       // Back to Edit.
-      await page.evaluate(() => document.documentElement.setAttribute('data-so-editing', ''));
-      await page.waitForFunction(() => !document.querySelector('[data-appear-state]'));
+      await page.evaluate(`document.documentElement.setAttribute('data-so-editing', '')`);
+      await page.waitForFunction(`${ARMED} === 0`);
       expect(await read(page, BANNER)).toMatchObject({ opacity: '1', animation: 'none' });
     } finally {
       await close();
