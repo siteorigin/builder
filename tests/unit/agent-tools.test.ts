@@ -1089,6 +1089,113 @@ describe('context budget', () => {
     expect(tight.overflow).toBe(true);
   });
 
+  describe('code, element, layout and project reads (#195)', () => {
+    const pad = 'q'.repeat(4000);
+    const src = (def: string, start: number, end: number, hash: string) => JSON.stringify({ definitionId: def, editable: true, hash, totalLines: 900, startLine: start, endLine: end, source: pad });
+    const element = (id: string, rev = 3) => JSON.stringify({ revision: rev, owner: { kind: 'page', id }, node: { id: 'n_1', kind: 'instance', props: { body: pad } }, displayName: 'Hero', parent: null });
+    const layout = (pageId: string, viewport: string) => JSON.stringify({ pageId, viewport, width: 390, report: { issues: [], headings: pad } });
+    const project = (rev = 3) => JSON.stringify({ revision: rev, homePageId: 'pg_a', pages: [{ id: 'pg_a', route: '/' }, { id: 'pg_b', route: '/about/' }], tokens: pad });
+    const filler = (id: string) => read(id, {}, '{"errors":[]}', 'validate_project');
+    const at = (items: CanonicalItem[], callId: string) => results(items).find((r) => r.callId === callId)!.content;
+    const optsWith = (window: number, extra: Partial<Parameters<typeof applyContextBudget>[1]> = {}) => ({ ...opts(window), isMutation: (n: string) => n === 'apply_source_patch' || n === 'apply_operations', ...extra });
+
+    it('collapses a read another read of the same thing replaced, and nothing it did not', () => {
+      const items: CanonicalItem[] = [
+        ...read('s1', { definitionId: 'def_a', startLine: 1, endLine: 80 }, src('def_a', 1, 80, 'sha_one'), 'read_source'),
+        ...read('s2', { definitionId: 'def_a' }, src('def_a', 1, 400, 'sha_one'), 'read_source'),
+        // Other lines of the same source are not a replacement.
+        ...read('s3', { definitionId: 'def_a', startLine: 401 }, src('def_a', 401, 800, 'sha_one'), 'read_source'),
+        ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a'), 'inspect_element'),
+        ...read('e2', { owner: { kind: 'page', id: 'pg_b' }, nodeId: 'n_1' }, element('pg_b'), 'inspect_element'),
+        ...read('e3', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a'), 'inspect_element'),
+        // A route and the page's ID are the same page; another viewport is another measurement.
+        ...read('l1', { pageId: '/', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...read('l2', { pageId: 'pg_a', viewport: 'desktop' }, layout('pg_a', 'desktop'), 'inspect_layout'),
+        ...read('l3', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),
+        // A project read that includes everything an earlier one did replaces it, whatever order the sections came in.
+        ...read('p1', { sections: ['tokens'] }, project(), 'read_project'),
+        ...read('p2', { sections: ['catalogue', 'pages'] }, project(), 'read_project'),
+        ...read('p3', { sections: ['catalogue', 'tokens'] }, project(), 'read_project'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      const kept = structuredClone(items);
+      const r = applyContextBudget(items, optsWith(20000));
+      expect(r.tombstoned).toBe(5);
+      expect(at(items, 's1')).toBe('[Superseded read_source def_a lines 1–80 of 900. Read it again for the current source and hash.]');
+      expect(at(items, 's1')).not.toContain('sha_one');
+      expect(at(items, 'e1')).toBe('[Superseded inspect_element n_1 on page pg_a at rev 3. Inspect it again before relying on it.]');
+      expect(at(items, 'l1')).toBe('[Superseded inspect_layout pg_a phone. Measure it again if you need it.]');
+      expect(at(items, 'p1')).toBe('[Superseded read_project at rev 3 (tokens). Pages: pg_a /, pg_b /about/. Read it again if you need it.]');
+      expect(at(items, 'p2')).toContain('[Superseded read_project at rev 3 (catalogue, pages).');
+      for (const id of ['s2', 's3', 'e2', 'e3', 'l2', 'l3', 'p3']) expect(at(items, id), id).toBe(at(kept, id));
+    });
+
+    it('never lets a read cut short by the size limit replace a complete one', () => {
+      const cut = (s: string) => JSON.stringify({ truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
+      const items: CanonicalItem[] = [
+        ...read('a', { pageId: 'pg_a' }, big(1)),
+        ...read('b', { pageId: 'pg_a' }, cut(big(2))),
+        ...read('s1', { definitionId: 'def_a' }, cut(src('def_a', 1, 400, 'sha_one')), 'read_source'),
+        ...read('s2', { definitionId: 'def_a' }, src('def_a', 1, 400, 'sha_one'), 'read_source'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      applyContextBudget(items, optsWith(8000));
+      expect(at(items, 'a')).toBe(big(1));
+      // A complete read of the lines the cut one asked for replaces it.
+      expect(at(items, 's1')).toBe('[Superseded read_source def_a. Read it again for the current source and hash.]');
+    });
+
+    it('under pressure collapses what a later change made stale, then sources once anything has changed', () => {
+      const patch: CanonicalItem[] = [
+        { kind: 'assistant', text: '', toolCalls: [{ id: 'm', name: 'apply_source_patch', arguments: JSON.stringify({ definitionId: 'def_a', expectedHash: 'sha_one', edits: [] }) }] },
+        { kind: 'tool_result', callId: 'm', name: 'apply_source_patch', content: '{"ok":true,"revision":4,"hash":"sha_two"}' }
+      ];
+      const failed: CanonicalItem[] = [
+        { kind: 'assistant', text: '', toolCalls: [{ id: 'x', name: 'apply_source_patch', arguments: JSON.stringify({ definitionId: 'def_c', expectedHash: 'h', edits: [] }) }] },
+        { kind: 'tool_result', callId: 'x', name: 'apply_source_patch', content: '{"error":"STALE_REVISION"}', isError: true }
+      ];
+      const history = (): CanonicalItem[] => [
+        ...read('c1', { definitionId: 'def_c' }, src('def_c', 1, 400, 'sha_c'), 'read_source'),
+        ...failed,
+        ...read('s1', { definitionId: 'def_a' }, src('def_a', 1, 400, 'sha_one'), 'read_source'),
+        ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a'), 'inspect_element'),
+        ...read('l1', { pageId: 'pg_b', viewport: 'phone' }, layout('pg_b', 'phone'), 'inspect_layout'),
+        ...read('p1', {}, project(), 'read_project'),
+        ...read('s2', { definitionId: 'def_b' }, src('def_b', 1, 400, 'sha_b'), 'read_source'),
+        ...patch,
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      // Enough room once the stale reads are gone: the sources nothing changed are kept.
+      const roomy = history();
+      applyContextBudget(roomy, optsWith(4000));
+      for (const id of ['s1', 'e1', 'l1', 'p1']) expect(at(roomy, id), id).toMatch(/^\[Superseded /);
+      for (const id of ['c1', 's2']) expect(at(roomy, id), id).not.toContain('Superseded');
+      // Tighter still, a source is given up after a change that need not have named it (a theme switch removes
+      // components without naming them), but a failed patch changed nothing.
+      const tight = history();
+      applyContextBudget(tight, optsWith(2000));
+      for (const id of ['c1', 's2']) expect(at(tight, id), id).toMatch(/^\[Superseded read_source/);
+      // With no change at all, nothing is stale.
+      const quiet = history().filter((i) => !('callId' in i && i.callId === 'm') && !(i.kind === 'assistant' && i.toolCalls[0]?.id === 'm'));
+      applyContextBudget(quiet, optsWith(2000));
+      for (const id of ['c1', 's1', 'e1', 'l1', 'p1', 's2']) expect(at(quiet, id), id).not.toContain('Superseded');
+    });
+
+    it('counts a change that was not a tool’s result, such as links connected when a page was created', () => {
+      const items = (): CanonicalItem[] => [...read('p1', {}, project(3), 'read_project'), ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a', 3), 'inspect_element'), ...filler('f1'), ...filler('f2')];
+      const current = items();
+      applyContextBudget(current, optsWith(2000, { revision: 3 }));
+      expect(at(current, 'p1')).toBe(project(3));
+      const moved = items();
+      applyContextBudget(moved, optsWith(2000, { revision: 4 }));
+      expect(at(moved, 'p1')).toMatch(/^\[Superseded read_project at rev 3\./);
+      expect(at(moved, 'e1')).toMatch(/^\[Superseded inspect_element n_1/);
+    });
+  });
+
   it('keeps a run inside a small window, then stops with its work kept when it cannot', async () => {
     const page = { slug: 'services', title: 'Services', sections: [{ componentId: 'intro.page' }, { componentId: 'features.grid' }] };
     const flood = 'z'.repeat(120000);
