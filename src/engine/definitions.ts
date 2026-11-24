@@ -7,7 +7,7 @@ import { slotDecl, slotDeclProblem, slotFill } from './slots';
 import { propBindingName, propBindingSchema } from '@shared/bindings';
 import { isArticleDate } from '@shared/articles';
 import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, isBindingRef, isEntryBinding, isStateRef, slotChildren } from '@shared/types';
-import { ENTRY_DATE_FIELDS, entryFieldSchema } from '@shared/entry-fields';
+import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
@@ -735,7 +735,7 @@ function templateSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpR
   const field = op.field as BindField;
   const kinds = FIELD_KINDS[field];
   if (kinds && !kinds.includes(node.kind)) fail(`${describeNode(node)} has no "${field}" to bind.`);
-  if (field === 'list' || field === 'variant') fail(`A layout's ${field === 'list' ? 'repeats' : 'section variants'} are the same for every entry; only content can show an entry's fields.`);
+  if (!ENTRY_CONTENT_FIELDS.has(field)) fail(`A layout's ${field === 'list' ? 'repeats' : field === 'variant' ? 'section variants' : `${field}s`} are the same for every entry; only content can show an entry's fields.`);
   const condition = field === 'when' || field === 'unless';
   if (op.eq !== undefined && op.ne !== undefined) fail('A condition compares with "eq" or "ne", not both.');
   if ((op.eq !== undefined || op.ne !== undefined) && (!condition || op.binding === null)) fail('Only a "when" or "unless" binding compares its value, with "eq" or "ne".');
@@ -764,6 +764,8 @@ function templateSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpR
   if (field === 'datetime' && !ENTRY_DATE_FIELDS.has(b.$entry)) fail(`"${schema.label}" is not a date: a text can state the publication date (publishedAt) or the last update (updatedAt).`);
   const ok = acceptedTypes(node, field, nested);
   if (ok && !ok.includes(schema.type)) fail(`"${schema.label}" cannot be shown as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}: it needs a ${ok.join(' or ')} field.`);
+  const choice = entryChoiceProblem(schema, nested);
+  if (choice) fail(`"${schema.label}" ${choice}`);
   const comparison = op.eq !== undefined ? ({ ref: clone(b), eq: op.eq } as Comparison) : op.ne !== undefined ? ({ ref: clone(b), ne: op.ne } as Comparison) : undefined;
   const problem = bindingProblem(state, { node, field, prop: op.prop, comparison }, schema);
   if (problem) fail(`${describeNode(node)} ${problem}`);

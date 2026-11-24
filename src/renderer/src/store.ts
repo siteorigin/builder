@@ -244,8 +244,12 @@ function savedAssetSort(): AssetSort {
 const oneSelection = (p: Partial<State>): Partial<State> => ('selection' in p && !('layerSet' in p) ? { ...p, layerSet: null } : p);
 /** Opening a page, or editing a component everywhere, closes a collection's layout: the canvas shows one thing. */
 const oneView = (p: Partial<State>): Partial<State> => {
-  if ('templateMode' in p || !useStore.getState().templateMode) return p;
-  return ('pageId' in p && p.pageId !== useStore.getState().pageId) || p.definitionMode ? { ...p, templateMode: null } : p;
+  const s = useStore.getState();
+  if ('templateMode' in p || !s.templateMode) return p;
+  if (!(('pageId' in p && p.pageId !== s.pageId) || p.definitionMode)) return p;
+  // What was selected in the layout goes with it: nothing is ever acted on that the canvas no longer shows.
+  const selection = 'selection' in p ? p.selection : s.selection;
+  return { ...p, templateMode: null, ...(selection?.owner.kind === 'template' ? { selection: null } : {}) };
 };
 
 export const useStore = create<State>((set) => ({

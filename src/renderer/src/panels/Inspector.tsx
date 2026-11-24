@@ -1612,9 +1612,9 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
       <EntryFieldsSection state={state} owner={owner} node={node} />
       <Section title="Content" id="prim-content" level={LEVEL}>
         <EntryBoundNote state={state} owner={owner} value={node.kind === 'text' ? node.text : node.kind === 'image' ? node.image : undefined} label={node.kind === 'image' ? 'Image' : 'Text'} />
+        {node.kind === 'text' && !node.rich && !isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
         {node.kind === 'text' && !isBinding(node.text) && (
           <>
-            {!node.rich && !isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
             <div data-field="text" style={{ display: 'contents' }}>
               {node.rich && !isBinding(node.text) ? (
                 <Field label="Text" hint="Or double-click the text on the page to edit it there." controlId={`${node.id}-text`}>

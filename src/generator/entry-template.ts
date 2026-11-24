@@ -7,7 +7,7 @@
  */
 import type { Collection, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, ProjectState, PropSchema } from '@shared/types';
 import { conditionHolds, conditionRef, isBindingRef, isEntryBinding } from '@shared/types';
-import { ENTRY_DATE_FIELDS, entryFieldSchema, entryFieldValue, entryValuePresent, type EntryNeighbours, type EntryReadContext } from '@shared/entry-fields';
+import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryFieldSchema, entryFieldValue, entryValuePresent, type EntryNeighbours, type EntryReadContext } from '@shared/entry-fields';
 import { isDraftEntry, siteEntries } from './index';
 import { derived } from './cache';
 
@@ -18,17 +18,32 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
  * for. A draft (shown in the editor) has the published entries on either side of where it is listed.
  */
 export function entryNeighbours(state: ProjectState, collectionId: string, entryId: string): EntryNeighbours {
-  // Worked out once per state: in a cached run each entry's page then depends on this list, not on every entry.
-  const order = derived(state, `entryOrder:${collectionId}`, (s) =>
-    siteEntries(s)
+  // Each entry's own pair, worked out once per state: in a cached run an entry's page depends on its two neighbours,
+  // not on every entry (a draft added elsewhere, or a post reordered far from it, leaves it as it is).
+  const pair = derived(state, `entryNeighbours:${collectionId}:${entryId}`, (s) => {
+    const listed = collectionOrder(s, collectionId).filter((e) => e.id === entryId || !e.draft);
+    const at = listed.findIndex((e) => e.id === entryId);
+    return at < 0 ? null : { prev: listed[at - 1]?.id ?? null, next: listed[at + 1]?.id ?? null };
+  });
+  const entries = state.collections[collectionId]?.entries ?? {};
+  const prev = pair?.prev ? own(entries, pair.prev) : undefined;
+  const next = pair?.next ? own(entries, pair.next) : undefined;
+  return { ...(prev ? { prev } : {}), ...(next ? { next } : {}) };
+}
+
+/** Each collection's entries the site has a page for, in order, worked out once per state for all its entries. */
+const orders = new WeakMap<object, Map<string, Array<{ id: string; draft: boolean }>>>();
+function collectionOrder(state: ProjectState, collectionId: string): Array<{ id: string; draft: boolean }> {
+  let byCollection = orders.get(state);
+  if (!byCollection) orders.set(state, (byCollection = new Map()));
+  let order = byCollection.get(collectionId);
+  if (!order) {
+    order = siteEntries(state)
       .filter((e) => e.collection.settings.id === collectionId)
-      .map((e) => ({ id: e.entry.id, draft: isDraftEntry(e.entry) }))
-  );
-  const listed = order.filter((e) => e.id === entryId || !e.draft);
-  const at = listed.findIndex((e) => e.id === entryId);
-  if (at < 0) return {};
-  const entries = state.collections[collectionId].entries;
-  return { ...(at > 0 ? { prev: entries[listed[at - 1].id] } : {}), ...(at < listed.length - 1 ? { next: entries[listed[at + 1].id] } : {}) };
+      .map((e) => ({ id: e.entry.id, draft: isDraftEntry(e.entry) }));
+    byCollection.set(collectionId, order);
+  }
+  return order;
 }
 
 const EMPTY_IMAGE: ImageValue = { assetId: null, alt: '' };
@@ -69,6 +84,8 @@ function emptyFor(node: GraphNode, field: string, nested?: PropSchema): unknown 
       return node.kind === 'link' ? NO_LINK : undefined;
     case 'tag':
       return node.kind === 'text' ? 'p' : 'div';
+    case 'icon':
+      return node.kind === 'icon' ? 'sparkles' : undefined;
     case 'appearance':
       return 'primary';
     case 'prop':
@@ -86,7 +103,9 @@ function boundValue(read: EntryReadContext, node: GraphNode, field: string, entr
   const schema = entryFieldSchema(read.collection, entryField);
   if (!schema) return emptyFor(node, field, nested);
   if (field === 'datetime') return ENTRY_DATE_FIELDS.has(entryField) ? entryFieldValue(read, entryField, 'raw') : undefined;
-  const value = entryFieldValue(read, entryField, 'shown');
+  // A number or yes/no property takes the value itself (the minutes of a reading time); a text, as readers see it.
+  const raw = field === 'prop' && (nested?.type === 'number' || nested?.type === 'boolean');
+  const value = entryFieldValue(read, entryField, raw ? 'raw' : 'shown');
   switch (field) {
     case 'text':
       return asType(node.kind === 'text' && node.rich ? 'richtext' : 'string', value);
@@ -137,7 +156,8 @@ export function materializeTemplate(state: ProjectState, collection: Collection,
     for (const field of ['text', 'datetime', 'image', 'fallbackAlt', 'link', 'label', 'ariaLabel', 'tag', 'action', 'appearance', 'icon', 'iconPosition']) {
       const v = r[field];
       if (!isBindingRef(v)) continue;
-      const value = isEntryBinding(v) ? boundValue(read, node, field, v.$entry) : emptyFor(node, field);
+      // A layout's structure and look (a tag, a button's style) are the same on every entry: only content reads one.
+      const value = isEntryBinding(v) && ENTRY_CONTENT_FIELDS.has(field) ? boundValue(read, node, field, v.$entry) : emptyFor(node, field);
       if (value === undefined) delete r[field];
       else r[field] = structuredClone(value);
     }

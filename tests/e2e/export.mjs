@@ -307,6 +307,8 @@ await win.getByTestId('template-strip').waitFor();
 /** The strip has the post open: the frame has reported landing on it. */
 const settled = () => eventually(async () => assert.equal(await win.getByTestId('template-strip').getAttribute('aria-busy'), null, 'the post has opened'), 30000);
 await settled();
+// The picker keeps keyboard focus while the post it chose opens.
+await win.getByTestId('template-sample').focus();
 await win.getByTestId('template-sample').selectOption('en_hours01');
 await eventually(async () => assert.equal(await framePath(), '/blog/opening-times/', 'the layout is shown on the chosen post'), 30000);
 await eventually(async () => assert.equal((await frame.locator('h1').first().innerText()).trim(), 'Opening hours'), 30000);
@@ -314,6 +316,7 @@ await settled();
 await win.getByTestId('template-sample').selectOption('en_spring01');
 await eventually(async () => assert.equal((await frame.locator('h1').first().innerText()).trim(), 'Spring open studio', 'another post shows its own title in the same layout'), 30000);
 await settled();
+assert.equal(await win.getByTestId('template-sample').evaluate((el) => el === document.activeElement), true, 'the picker still has focus after two posts opened');
 // Layers show the layout between the shared header and footer.
 await eventually(async () => assert.match(await win.locator('.layers-tree').innerText(), /Layout of every entry/), 10000);
 // Its title picked on the canvas is the layout's, showing each post's own title.
@@ -341,19 +344,24 @@ assert.equal(await win.getByTestId('entry-field-text').inputValue(), 'title', 't
 const layout = (await win.evaluate(() => window.builder.project.snapshot())).state.collections.posts.settings.template;
 const titleNode = Object.values(layout.nodes).find((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"title"}');
 assert.ok(titleNode, 'the layout has a title showing each post\'s title');
-// One edit of the layout: the title's colour and a call to action under every post.
+// A call to action under every post, from Insert while the layout is open, its heading typed in the Inspector.
+const layoutCtas = async () => {
+  const st = (await win.evaluate(() => window.builder.project.snapshot())).state;
+  return Object.values(st.collections.posts.settings.template.nodes).filter((n) => n.kind === 'instance' && st.components[n.definitionId]?.componentId === 'cta.banner');
+};
+await openRail('Insert');
+await win.locator('.side-panel-view:not([hidden]) .insert-tile.section', { has: win.locator('strong', { hasText: /^Call to action$/ }) }).first().click();
+await eventually(async () => assert.equal((await layoutCtas()).length, 1, 'Insert places the section in the layout, not on a page'), 15000);
+const ctaHeading = win.locator('#dock-panel-inspect').getByRole('textbox', { name: 'Heading', exact: true });
+await ctaHeading.waitFor({ timeout: 15000 });
+await ctaHeading.fill(LAYOUT_CTA);
+await ctaHeading.press('Tab');
+await eventually(async () => assert.equal((await layoutCtas())[0]?.props.heading, LAYOUT_CTA, 'the heading typed in the Inspector is the layout\'s'), 15000);
+// And the title's colour, once for every post.
 const layoutEdit = await win.evaluate(
-  ([id, color, heading]) =>
-    window.builder.project.apply(
-      {
-        operations: [
-          { type: 'node.setStyle', owner: { kind: 'template', id: 'posts' }, nodeId: id, scope: 'base', property: 'color', value: color },
-          { type: 'node.insert', owner: { kind: 'template', id: 'posts' }, parentId: null, componentId: 'cta.banner', props: { heading } }
-        ]
-      },
-      { label: 'Edit the posts layout' }
-    ),
-  [titleNode.id, LAYOUT_COLOR, LAYOUT_CTA]
+  ([id, color]) =>
+    window.builder.project.apply({ operations: [{ type: 'node.setStyle', owner: { kind: 'template', id: 'posts' }, nodeId: id, scope: 'base', property: 'color', value: color }] }, { label: 'Colour the posts\' titles' }),
+  [titleNode.id, LAYOUT_COLOR]
 );
 assert.equal(layoutEdit.ok, true, `the layout is edited: ${layoutEdit.error?.message}`);
 await eventually(async () => assert.equal(await frame.getByText(LAYOUT_CTA).count(), 1, 'the canvas shows the layout\'s new section on the post'), 30000);
@@ -382,7 +390,7 @@ function checkBuiltPosts(root, label, base = '') {
   assert.ok(!page('about').includes(LAYOUT_CTA), `${label}: a page is not a post: the layout's section is not on it`);
   const cls = title[1].split(/\s+/).find((c) => c.startsWith('so-n-'));
   const css = all.filter((f) => f.endsWith('.css')).map((f) => readFileSync(join(root, f), 'utf8')).join('\n');
-  assert.match(css, new RegExp(`\\.${cls}[^{]*\\{[^}]*color:\\s*${LAYOUT_COLOR}`, 'i'), `${label}: the title's colour from the layout styles every post`);
+  assert.match(css, new RegExp(`\\.${cls}[^{]*\\{(?:[^}]*;)?\\s*color:\\s*${LAYOUT_COLOR}`, 'i'), `${label}: the title's colour from the layout styles every post`);
   const springLinks = [...spring.matchAll(/<a [^>]*href="([^"]*)"[^>]*>our hours<\/a>/g)].map((m) => new URL(m[1], `https://example.test${base}/blog/spring-open-studio/`).pathname);
   assert.deepEqual(springLinks, [`${base}/blog/opening-times/`], `${label}: the link between posts follows the rename`);
   const old = page('blog', 'opening-hours');

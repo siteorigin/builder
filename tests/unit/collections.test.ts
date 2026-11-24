@@ -62,6 +62,7 @@ describe('collections', () => {
     expect(template.rootIds).toHaveLength(1);
     expect(Object.values(template.nodes).some((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"title"}')).toBe(true);
     const other = s.collections['case-studies'].settings.template;
+    expect(Object.values(other.nodes).some((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"title"}')).toBe(true);
     expect(Object.keys(other.nodes).filter((id) => Object.hasOwn(template.nodes, id))).toEqual([]);
     expect(s.collections['case-studies'].settings).toMatchObject({ name: 'Case studies', route: '/case-studies/', taxonomies: {}, fields: {} });
     // What is given wins over the ready-made blog's settings.

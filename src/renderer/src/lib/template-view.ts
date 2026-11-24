@@ -65,15 +65,16 @@ export const viewKey = (s: { snapshot: { state: ProjectState } | null; pageId: s
   s.snapshot ? (shownView(s.snapshot.state, s.pageId, s.templateMode)?.key ?? null) : s.pageId;
 
 /**
- * Where an address the frame reports leads the editor: the same layout on another of its entries, a page, or
- * nowhere it can show (an old address, the not-found page) while the layout stays.
+ * Where an address the frame reports leads the editor: a collection entry's page is its collection's layout shown on
+ * that entry (whichever collection it is in), an ordinary page is that page, and anywhere else (an old address, the
+ * not-found page) leaves the editor where it is. Null too for the view already shown.
  */
 export function viewAt(state: ProjectState, mode: TemplateMode | null, path: string): { templateMode: TemplateMode } | { pageId: string } | null {
   const same = (route: string) => route === path || route === path + '/';
-  if (mode) {
-    const c = own(state.collections, mode.collectionId);
-    const entry = c ? sampleEntries(state, mode.collectionId).find((e) => same(entryRoute(c, e))) : undefined;
-    if (entry) return entry.id === mode.entryId ? null : { templateMode: { collectionId: mode.collectionId, entryId: entry.id } };
+  for (const e of siteEntries(state)) {
+    if (!same(e.route)) continue;
+    const cid = e.collection.settings.id;
+    return mode?.collectionId === cid && mode.entryId === e.entry.id ? null : { templateMode: { collectionId: cid, entryId: e.entry.id } };
   }
   const page = Object.values(state.pages).find((p) => same(p.route));
   return page ? { pageId: page.id } : null;

@@ -115,6 +115,8 @@ function fontSlots(state: ProjectState, components: unknown = state.components, 
   for (const [id, page] of Object.entries(state.pages ?? {})) walk(page, element('page', (page as { id?: string })?.id ?? id));
   for (const [id, def] of Object.entries((components ?? {}) as Record<string, unknown>)) walk(def, element('component', (def as { id?: string })?.id ?? id));
   for (const [part, tree] of Object.entries(state.site.shell ?? {})) walk(tree, element('shell', part));
+  // Each collection's layout, which every entry's page is shown with.
+  for (const [id, c] of Object.entries(state.collections ?? {})) walk((c as { settings?: { template?: unknown } })?.settings?.template, element('template', id));
   return slots;
 }
 

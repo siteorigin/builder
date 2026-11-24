@@ -91,6 +91,9 @@ describe('loading a theme pack release', () => {
     expect(JSON.stringify(pack.components)).toBe(JSON.stringify(studio().components));
     expect(pack.components[0].id).toBe('studio.shell.header');
     expect(pack.fonts.map((f) => f.name)).toEqual(['Lora']);
+    // The article layout a new collection starts with comes through as built.
+    expect(pack.articleTemplate?.rootIds).toHaveLength(1);
+    expect(pack.articleTemplate).toEqual(studio().articleTemplate);
     expect([...files.keys()].sort()).toEqual(Object.keys(manifestOf(dir).files).sort());
     expect(files.get(firstFont(dir))!.sha256).toBe(fileSource(join(dir, firstFont(dir))).sha256);
   });

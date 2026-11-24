@@ -11,7 +11,7 @@ import { FontList } from './FontFiles';
 import { inSeries, sortAssets } from '@shared/asset-order';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { Picture, Thumb } from '../components/AssetPicture';
-import { goToShellPart, imagePlacement, openSiteStyles, placeAsset, selectPage } from '../lib/actions';
+import { goToShellPart, imagePlacement, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
@@ -232,6 +232,7 @@ interface Place {
  */
 const revealUse = (owner: OwnerRef, nodeId: string, field?: UseField, label = 'That image') => () => {
   if (owner.kind === 'page') selectPage(owner.id);
+  else if (owner.kind === 'template') openLayout(owner.id);
   else if (owner.kind === 'shell' && !goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id}, so this image is not on any page.`, 'info');
   const opening = getState().snapshot?.workspaceKey;
   setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true, ...(field && opening ? { inspectorFocus: inspectorFocusRequest({ opening, owner, nodeId, ...field, label }) } : {}) });

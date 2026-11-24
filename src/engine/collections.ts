@@ -4,7 +4,7 @@
  * pointed elsewhere when an entry goes; pictures and links in entries pointing at things that exist.
  */
 import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionTaxonomy, EntryDoc, GraphNode, LinkValue, NodeTree, ProjectState, ResponsiveStyles, RichText, SiteRedirect } from '@shared/types';
-import { COLLECTION_FIELD_TYPES, SCHEMA_VERSION } from '@shared/types';
+import { COLLECTION_FIELD_TYPES, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, findEntry, isCollectionId, isEntryId, isTermId, routeOwners, type RouteOwner } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
@@ -13,7 +13,7 @@ import { isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { EngineError, fail } from './tree';
 import { normalizeRichText, normalizeScalar } from './values';
-import { checkPropName, normalizePropSchema } from './schema';
+import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
 import { entryLinkUses } from './page-links';
 import { declaredTokens } from './tokens';
 import { articleTemplateFor } from '@catalogue/index';
@@ -312,11 +312,33 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   if (op.taxonomies !== undefined || op.fields !== undefined) {
     const taxonomies = op.taxonomies !== undefined ? normalizeTaxonomies(op.taxonomies) : c.settings.taxonomies;
     const fields = op.fields !== undefined ? normalizeFields(op.fields, state) : c.settings.fields;
+    // A custom field the layout shows can't go, or become another kind, while it does: every entry's value would be
+    // dropped below, even if a later change in the same batch brought the field back.
+    for (const name of layoutFields(c)) {
+      const before = Object.hasOwn(c.settings.fields ?? {}, name) ? c.settings.fields[name] : undefined;
+      const after = Object.hasOwn(fields, name) ? fields[name] : undefined;
+      if (before && (!after || after.type !== before.type))
+        fail(`The ${c.settings.name} layout shows ${before.label}. Unbind it in the layout before ${after ? 'changing its kind' : 'removing it'}.`);
+    }
     settleEntries(state, c, taxonomies, fields);
     c.settings.taxonomies = taxonomies;
     c.settings.fields = fields;
   }
   return { collectionId: c.settings.id, route: c.settings.route };
+}
+
+/** The custom fields a collection's layout shows or tests, by name. */
+function layoutFields(c: Collection): Set<string> {
+  const out = new Set<string>();
+  const nodes = c.settings.template?.nodes;
+  for (const n of Object.values(nodes && typeof nodes === 'object' ? nodes : {})) {
+    if (!n || typeof n !== 'object') continue;
+    for (const slot of bindingSlots(n)) {
+      const b = conditionRef(slot.value) ?? slot.value;
+      if (isEntryBinding(b) && b.$entry.startsWith('field.')) out.add(b.$entry.slice(6));
+    }
+  }
+  return out;
 }
 
 export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>, atStart?: Map<string, EntryAddress>): OpResult {

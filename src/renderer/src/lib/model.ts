@@ -445,10 +445,14 @@ type View = { pageId: string | null; selection: ElementRef | null; definitionMod
  * `selection` is in the result only when it changes, so a selection that still holds is kept as it is.
  */
 export function keepViewValid(state: ProjectState, view: View): { pageId: string; definitionMode: DefinitionMode; selection?: null; templateMode?: TemplateMode | null } {
-  // A collection's layout whose collection went closes, and one whose entry went is shown on another (`templateMode`
-  // is in the result only when it changes).
-  const tm = view.templateMode ? keepTemplateValid(state, view.templateMode) : undefined;
-  if (tm !== undefined && tm !== view.templateMode) return { ...keepViewValid(state, { ...view, templateMode: undefined }), templateMode: tm, ...(tm ? {} : view.selection?.owner.kind === 'template' ? { selection: null } : {}) };
+  // A collection's layout whose collection went closes, and one whose entry went is shown on another. While one is
+  // open, `templateMode` is always in the result, so the page shown changing under it (an Undo took the page away and
+  // Home is shown) never closes it.
+  if (view.templateMode) {
+    const tm = keepTemplateValid(state, view.templateMode);
+    const rest = keepViewValid(state, { ...view, templateMode: undefined });
+    return { ...rest, templateMode: tm, ...(!tm && view.selection?.owner.kind === 'template' ? { selection: null } : {}) };
+  }
   const dm = view.definitionMode;
   if (dm && !own(state.components, dm.definitionId)) {
     const pageId = keepPagesValid(state, dm.returnPageId, null).pageId;

@@ -212,7 +212,9 @@ export function Canvas() {
   const page = state && pageId ? state.pages[pageId] : null;
   // What the frame shows: the page, or a collection's layout on one of its entries (lib/template-view).
   const view = state ? shownView(state, pageId, templateMode) : null;
-  const initialSrc = useMemo(() => (url && view?.route ? url + view.route : null), [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A layout with no entry to show it on keeps the page behind it, under its note, so the frame is there for what comes next.
+  const initialRoute = view?.route ?? page?.route;
+  const initialSrc = useMemo(() => (url && initialRoute ? url + initialRoute : null), [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
   // A new frame (another server, or Try again) is not ready until it says so: nothing is sent to it before then.
   useEffect(() => {
     setState({ frameReady: false });
@@ -777,7 +779,8 @@ export function Canvas() {
     const s = getState();
     // While a collection's layout is open, another of its entries keeps it open on that entry; a page closes it.
     const to = viewAt(st, s.templateMode, path);
-    if (to && 'templateMode' in to) setState({ templateMode: to.templateMode });
+    // Another entry of the same collection keeps what is selected in its layout; another collection's starts afresh.
+    if (to && 'templateMode' in to) setState({ templateMode: to.templateMode, definitionMode: null, ...(to.templateMode.collectionId === s.templateMode?.collectionId ? {} : { selection: null }) });
     else if (to && (to.pageId !== s.pageId || s.templateMode)) setState({ pageId: to.pageId, templateMode: null, selection: null });
   }
 

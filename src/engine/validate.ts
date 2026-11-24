@@ -5,7 +5,7 @@ import type { GraphNode, ImageValue, NodeTree, ProjectState, PropSchema, Respons
 import { STYLE_PROP_MAP, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
-import { ENTRY_DATE_FIELDS, entryFieldSchema } from '@shared/entry-fields';
+import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
@@ -407,7 +407,16 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     });
   for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
     const entry = i.owner.kind === 'entry' ? findEntry(state, i.owner.id) : undefined;
-    const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[i.owner.id]?.title ?? 'A page');
+    const where =
+      i.owner.kind === 'shell'
+        ? i.owner.id === 'header'
+          ? 'Header'
+          : 'Footer'
+        : i.owner.kind === 'template'
+          ? `${state.collections[i.owner.id]?.settings.name ?? 'Collection'} layout`
+          : entry
+            ? `${entry.entry.title} (${entry.collection.settings.name})`
+            : (state.pages[i.owner.id]?.title ?? 'A page');
     const what = i.label ? `the “${i.label}” link${i.inText ? ' in the text' : ''}` : `a link${i.inText ? ' in the text' : ''}`;
     const fix = i.inText ? 'Change the link in the text to a section the page has.' : 'Choose one of the page’s sections in the link’s Section list.';
     // Collection entries are named by how many there are: a blog can have hundreds. Their pages have no sections, so
@@ -620,8 +629,8 @@ function entryBindingProblems(state: ProjectState, collection: Collection, n: Gr
       out.push(`shows "${String(b.$entry).slice(0, 60)}", which entries of ${collection.settings.name} do not have.`);
       continue;
     }
-    if (slot.field === 'variant') {
-      out.push(`chooses a variant from "${schema.label}"; a section's variant is chosen in the layout, the same for every entry.`);
+    if (!ENTRY_CONTENT_FIELDS.has(slot.field)) {
+      out.push(`takes its ${slot.field === 'variant' ? 'variant' : slot.field} from "${schema.label}"; that is the layout's own, the same for every entry. Only content can show an entry's field.`);
       continue;
     }
     if (slot.field === 'datetime' && !ENTRY_DATE_FIELDS.has(b.$entry)) {
@@ -636,6 +645,11 @@ function entryBindingProblems(state: ProjectState, collection: Collection, n: Gr
     const ok = acceptedTypes(n, slot.field, nested?.[slot.prop!]);
     if (ok && !ok.includes(schema.type)) {
       out.push(`shows "${schema.label}" (${schema.type === 'string' ? 'text' : schema.type}) as its ${slot.field === 'prop' ? `"${slot.prop}"` : slot.field}, which needs ${ok.map((t) => (t === 'string' ? 'text' : t)).join(' or ')}.`);
+      continue;
+    }
+    const choice = slot.field === 'prop' ? entryChoiceProblem(schema, nested?.[slot.prop!]) : null;
+    if (choice) {
+      out.push(`shows "${schema.label}" in "${slot.prop}", but it ${choice}`);
       continue;
     }
     const comparison = condition && isComparison(slot.value) ? slot.value : undefined;

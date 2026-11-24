@@ -128,7 +128,7 @@ describe('old addresses of entries', () => {
       { from: '/blog/glazing-evenings/', entryId: 'en_winter' },
       { from: '/blog/glaze/', entryId: 'en_winter' }
     ]);
-    expect(generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')).toContain('{"Winter workshop"}</h1>');
+    expect(generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')).toMatch(/<h1 class=\{\["so-n-[a-z0-9_-]+"\]\}>\{"Winter workshop"\}<\/h1>/);
   });
 
   it('keeps nothing for a draft, for one published in the same change, or for a slug it only passed through', () => {

@@ -107,7 +107,7 @@ export function isBinding(v: unknown): v is Binding {
 
 /** A read of an entry field, and nothing else: a value that also names a property or an item field is neither. */
 export function isEntryBinding(v: unknown): v is EntryBinding {
-  return !!v && typeof v === 'object' && !Array.isArray(v) && Object.hasOwn(v, '$entry') && !Object.hasOwn(v, '$prop') && !Object.hasOwn(v, '$item') && !Object.hasOwn(v, '$state');
+  return !!v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { $entry?: unknown }).$entry === 'string' && !Object.hasOwn(v, '$prop') && !Object.hasOwn(v, '$item') && !Object.hasOwn(v, '$state');
 }
 
 /**

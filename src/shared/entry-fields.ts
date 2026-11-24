@@ -10,7 +10,8 @@
  * - `body`: the entry's text, as rich text.
  * - `categories`: the labels of the entry's categories, in the order they were assigned; `terms.<taxonomy>` reads
  *   any other grouping the same way.
- * - `readingTime`: how long the text takes to read ("4 min read"), empty for an entry with no text.
+ * - `readingTime`: how many minutes the text takes to read, shown as the site words it ("4 min read"); 0, and nothing
+ *   shown, for an entry with no text. A condition compares the minutes, whatever the wording.
  * - `prevEntry`, `nextEntry`: links to the published entries listed just before and just after it, in the
  *   collection's order (`prevEntry.title`, `nextEntry.title`: their titles). Empty for the first and the last.
  * - `field.<name>`: the value of one of the collection's custom fields, or its default.
@@ -38,6 +39,13 @@ export const ENTRY_FIELD_NAMES = [
   'nextEntry.title'
 ] as const;
 
+/**
+ * The places of an element in a layout that can show an entry's field: its content. Its tag, a button's style, an
+ * icon and what clicking does are the layout's own, the same on every entry, so the page's structure never depends on
+ * one entry's value. A placed section's properties (`prop`) and the conditions (`when`, `unless`) can read fields too.
+ */
+export const ENTRY_CONTENT_FIELDS: ReadonlySet<string> = new Set(['text', 'datetime', 'image', 'fallbackAlt', 'link', 'label', 'ariaLabel', 'prop', 'when', 'unless']);
+
 /** The fields whose value is a date (YYYY-MM-DD): the only ones a text's `datetime` can read. */
 export const ENTRY_DATE_FIELDS: ReadonlySet<string> = new Set(['publishedAt', 'updatedAt']);
 
@@ -55,7 +63,7 @@ const BUILT_IN: Record<(typeof ENTRY_FIELD_NAMES)[number], PropSchema> = {
   featuredImage: { type: 'image', label: 'Featured image', default: { assetId: null, alt: '' } },
   categories: text('Categories'),
   body: { type: 'richtext', label: 'Text', default: [] },
-  readingTime: text('Reading time', 'How long the text takes to read, such as "4 min read".'),
+  readingTime: { type: 'number', label: 'Reading time', default: 0, min: 0, description: 'Minutes the text takes to read, shown as "4 min read".' },
   prevEntry: { type: 'link', label: 'Previous entry', default: { type: 'none', target: '' } },
   'prevEntry.title': text("Previous entry's title"),
   nextEntry: { type: 'link', label: 'Next entry', default: { type: 'none', target: '' } },
@@ -129,6 +137,18 @@ function pictureValue(state: Pick<ProjectState, 'assets'>, assetId: unknown): Im
   return { assetId: a.id, alt: a.description || a.altSuggestion || '' };
 }
 
+/**
+ * A custom picture field's value as the entry stores it: its own description, or that it is decorative, kept; the
+ * library's description only for one left without words. A picture the library no longer has shows nothing.
+ */
+function storedPicture(state: Pick<ProjectState, 'assets'>, value: unknown): ImageValue {
+  const v = (value && typeof value === 'object' ? value : {}) as Partial<ImageValue>;
+  const found = pictureValue(state, v.assetId ?? null);
+  if (!found.assetId) return found;
+  if (v.decorative === true) return { assetId: found.assetId, alt: '', decorative: true };
+  return { assetId: found.assetId, alt: typeof v.alt === 'string' && v.alt.trim() ? v.alt : found.alt };
+}
+
 const entryLink = (e: EntryDoc | undefined): LinkValue => (e ? { type: 'entry', target: e.id } : { type: 'none', target: '' });
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 
@@ -139,6 +159,7 @@ const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
  */
 export function entryFieldValue(ctx: EntryReadContext, field: string, form: EntryValueForm = 'shown'): unknown {
   const { state, collection, entry, neighbours } = ctx;
+  if (typeof field !== 'string') return undefined;
   const date = (d: unknown) => (typeof d === 'string' && isArticleDate(d) ? (form === 'raw' ? d : formatArticleDate(d, siteLanguage(state.site))) : '');
   switch (field) {
     case 'title':
@@ -159,6 +180,7 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
       return Array.isArray(entry.body) ? entry.body : [];
     case 'readingTime': {
       const minutes = readingMinutes(entry.body);
+      if (form === 'raw') return minutes;
       if (!minutes) return '';
       const wording = visitorTextFor(state.site, siteLanguage(state.site)).readingTime;
       return wording.replaceAll('{count}', String(minutes));
@@ -179,7 +201,7 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
     if (!schema) return undefined;
     const v = own(entry.values, name);
     const value = v === undefined ? schema.default : v;
-    if (schema.type === 'image') return pictureValue(state, (value as ImageValue | undefined)?.assetId ?? null);
+    if (schema.type === 'image') return storedPicture(state, value);
     return value;
   }
   return undefined;
@@ -207,3 +229,15 @@ export function entryValuePresent(v: unknown): boolean {
   }
   return !!v;
 }
+
+/**
+ * Why a choice field cannot fill a placed section's choice: an option the section does not offer, which every entry
+ * choosing it would show as the section's fallback. Null when it fits (or either is not a choice).
+ */
+export function entryChoiceProblem(field: PropSchema, target: PropSchema | undefined): string | null {
+  if (field.type !== 'enum' || target?.type !== 'enum') return null;
+  const offered = new Set(target.options.map((o) => o.value));
+  const missing = field.options.map((o) => o.value).filter((v) => !offered.has(v));
+  return missing.length ? `offers ${missing.map((v) => `"${v}"`).join(', ')}, which "${target.label}" does not have.` : null;
+}
+

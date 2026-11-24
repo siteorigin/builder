@@ -118,6 +118,30 @@ describe('collections on disk', () => {
     // A binding to a field the entries lack is refused where it is made.
     const bad = await s.apply({ operations: [{ type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.nope' } }] }, { label: 'Bind' });
     expect(bad.ok).toBe(false);
+    // A custom field the layout shows can't be removed (and brought back in the same batch) under it: every entry's
+    // value would be dropped.
+    await ok(
+      s.apply(
+        {
+          operations: [
+            { type: 'collection.update', collectionId: 'posts', fields: { price: { type: 'string', label: 'Price' } } },
+            { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', values: { price: '£10' } },
+            { type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.price' } }
+          ]
+        },
+        { label: 'Show the price' }
+      )
+    );
+    const bound = files(`${POSTS}/collection.json`);
+    const spring = files(`${POSTS}/entries/en_spring.json`);
+    const gone = await s.apply(
+      { operations: [{ type: 'collection.update', collectionId: 'posts', fields: {} }, { type: 'collection.update', collectionId: 'posts', fields: { price: { type: 'string', label: 'Price' } } }] },
+      { label: 'Remove and restore the price' }
+    );
+    expect(gone.ok).toBe(false);
+    expect(gone.error?.message).toMatch(/layout shows Price\. Unbind it in the layout before removing it/);
+    expect([files(`${POSTS}/collection.json`), files(`${POSTS}/entries/en_spring.json`)]).toEqual([bound, spring]);
+    await ok(s.undo());
     await ok(s.undo());
     expect(files(`${POSTS}/collection.json`)).toBe(settings);
     expect([files(`${POSTS}/entries/en_spring.json`), files(`${POSTS}/entries/en_winter.json`)]).toEqual(entries);

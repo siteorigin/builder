@@ -654,7 +654,16 @@ export function setMode(mode: 'edit' | 'preview') {
   const st = s.snapshot?.state;
   // A selection made while previewing is the author's latest choice and stays. Otherwise the one Preview was entered
   // with, on the same page and in the same component edited everywhere (or none), while it is still there.
-  const ref = !s.selection && back && st && back.pageId === s.pageId && back.definitionId === editing ? selectionBack(st, back.pageId, back.ref, back.revision === s.snapshot?.revision) : null;
+  // A layout's element comes back while that layout is still open and has it.
+  const layoutBack = !!back && back.ref.owner.kind === 'template' && s.templateMode?.collectionId === back.ref.owner.id;
+  const ref =
+    !s.selection && back && st && back.pageId === s.pageId && back.definitionId === editing
+      ? layoutBack
+        ? resolveRef(st, back.ref).node
+          ? back.ref
+          : null
+        : selectionBack(st, back.pageId, back.ref, back.revision === s.snapshot?.revision)
+      : null;
   unscrolled = ref;
   setState({ mode, previewReturn: null, ...(ref ? { selection: ref } : {}) });
   // The page Edit returns on (one a visitor's link opened, say) is the page being worked on, and reopens.

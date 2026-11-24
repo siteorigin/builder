@@ -419,11 +419,12 @@ export const MIGRATIONS: Migration[] = [
 ];
 
 /**
- * Frozen: the layout entries had before collections had templates, as a template. Its node IDs come from the
- * collection's ID, so two collections' layouts never share one and the same project always migrates the same way.
+ * Frozen: the layout entries had before collections had templates, as a template. Its node IDs are the collection's
+ * ID and the element's role, so two collections' layouts never share one (collection IDs are unique) and the same
+ * project always migrates the same way.
  */
 function v12ArticleTemplate(collectionId: string): NodeTree {
-  const id = (name: string) => `n_${stableHash(`${collectionId}/template/${name}`)}`;
+  const id = (name: string) => `n_${collectionId}_${name}`;
   const tok = (token: string) => ({ token });
   const ids = { article: id('article'), column: id('column'), header: id('header'), title: id('title'), meta: id('meta'), date: id('date'), author: id('author'), image: id('image'), body: id('body') };
   const nodes: Record<string, GraphNode> = {

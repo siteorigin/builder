@@ -570,7 +570,7 @@ export function draftLinksStop(state: ProjectState): { message: string; warnings
   const one = entries && draftLinks.every((l) => l.entryId !== undefined) ? 'the entry' : 'the page';
   const message =
     draftLinks.length === 1
-      ? `${draftLinks[0].owner.kind === 'entry' ? 'A published entry' : 'A published page'} links to ${drafts[0]}, which is a draft and is left out of the website. Change the link or publish ${one}, then export again.`
+      ? `${draftLinks[0].owner.kind === 'entry' ? 'A published entry' : draftLinks[0].owner.kind === 'template' ? 'A collection layout' : 'A published page'} links to ${drafts[0]}, which is a draft and is left out of the website. Change the link or publish ${one}, then export again.`
       : `${draftLinks.length} links on published pages go to ${drafts.length === 1 ? `${drafts[0]}, a draft` : 'drafts'} the website leaves out. Change the links or publish ${drafts.length === 1 ? one : entries ? 'those drafts' : 'those pages'}, then export again.`;
   return { message, warnings };
 }

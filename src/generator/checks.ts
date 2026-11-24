@@ -1117,8 +1117,8 @@ export function shellPageLinks(state: ProjectState, pageIds: string[]): ShellPag
 
 
 export interface SectionLinkIssue {
-  /** Where the link is: a page, the shared header or footer, or a collection entry's text. */
-  owner: { kind: 'page' | 'shell' | 'entry'; id: string };
+  /** Where the link is: a page, the shared header or footer, a collection's layout, or a collection entry's text. */
+  owner: { kind: 'page' | 'shell' | 'entry' | 'template'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
@@ -1192,13 +1192,26 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
     if (!ids.has(key)) ids.set(key, pageIds(state, pageId, hidden ? undefined : shell, !!hidden));
     return ids.get(key)!;
   };
-  // An entry's page shows the layout, header and footer around its own text: the same rule holds there.
+  // An entry's page shows the site's layout, header and footer, and its collection's layout, around its own text.
   let keptEntryIds: Set<string> | undefined;
   const entryIdsOf = (hidden?: boolean) => (hidden ? (keptEntryIds ??= treeIds(state, [state.site.shell.header, state.site.shell.footer], new Set(LAYOUT_IDS), true)) : entryIds);
+  const layoutIds = new Map<string, Set<string>>();
+  const collectionIdsOf = (collectionId: string, hidden?: boolean) => {
+    const key = `${hidden ? 'kept' : 'shown'}:${collectionId}`;
+    const template = state.collections[collectionId]?.settings?.template;
+    if (!layoutIds.has(key)) layoutIds.set(key, template?.nodes ? treeIds(state, [template], new Set(entryIdsOf(hidden)), !!hidden) : entryIdsOf(hidden));
+    return layoutIds.get(key)!;
+  };
+  /** The published entries whose page lacks a section with this ID: of one collection, or of every one. */
+  const lackingIn = (fragment: string, hidden: boolean | undefined, collectionId?: string) =>
+    published.filter((e) => (collectionId === undefined || e.collection.settings.id === collectionId) && !collectionIdsOf(e.collection.settings.id, hidden).has(fragment)).map((e) => e.entry.id);
+  const withEntries = new Set(published.map((e) => e.collection.settings.id));
   // The header and footer are checked on the pages that show each: they can differ.
   const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[] }> = [
     ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0),
-    ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] }))
+    ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] })),
+    // A collection's layout, on the pages of its published entries.
+    ...[...withEntries].flatMap((id) => (state.collections[id]?.settings?.template?.nodes ? [{ owner: { kind: 'template' as const, id }, tree: state.collections[id].settings.template, on: [] as PageDoc[] }] : []))
   ];
   const out: SectionLinkIssue[] = [];
   const seen = new Set<string>();
@@ -1212,7 +1225,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
         const missing = src.on.filter((p) => !idsOf(p.id, hidden).has(fragment)).map((p) => p.id);
-        const lacking = src.owner.kind === 'shell' && !entryIdsOf(hidden).has(fragment) ? entries : [];
+        const lacking = src.owner.kind === 'shell' ? lackingIn(fragment, hidden) : src.owner.kind === 'template' ? lackingIn(fragment, hidden, src.owner.id) : [];
         if (missing.length || lacking.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}) };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once.
@@ -1222,7 +1235,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       out.push(issue);
     }
   // An entry's text: its page has the layout's and the header and footer's sections, and none of a page's.
-  for (const { entry } of published) {
+  for (const { entry, collection } of published) {
     const owner = { kind: 'entry' as const, id: entry.id };
     entryTextLinks(entry.body).forEach(({ link, label }, i) => {
       const key = `body:${i}`;
@@ -1230,7 +1243,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
         if (!idsOf(link.target).has(link.anchor)) out.push({ owner, nodeId: '', key, label, inText: true, fragment: link.anchor, pageId: link.target });
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
-        if (!entryIds.has(fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
+        if (!collectionIdsOf(collection.settings.id).has(fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
       }
     });
   }
@@ -1259,8 +1272,11 @@ function entryTextLinks(body: unknown): Array<{ link: LinkValue; label: string }
 
 /** A link visitors would see on the published site that goes to a draft page. */
 export interface DraftLink {
-  /** Where the link is: a published page, the shared header or footer shown on one, or a published entry's text. */
-  owner: { kind: 'page' | 'shell' | 'entry'; id: string };
+  /**
+   * Where the link is: a published page, the shared header or footer shown on one, the layout of a collection with a
+   * published entry, or a published entry's text.
+   */
+  owner: { kind: 'page' | 'shell' | 'entry' | 'template'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
@@ -1339,12 +1355,15 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
     )
   ]);
-  // An entry shows both shared parts.
+  // An entry shows both shared parts, and its collection's layout.
   const entryShown = entries.length > draftEntries.length;
+  const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
+  const layouts = [...new Set(entries.filter((e) => !draftEntryIds.has(e.entry.id)).map((e) => e.collection.settings.id))];
   const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
-    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
+    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
+    ...layouts.flatMap((id) => (state.collections[id]?.settings?.template?.nodes ? [{ owner: { kind: 'template' as const, id }, tree: state.collections[id].settings.template }] : []))
   ];
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
@@ -1353,9 +1372,11 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       const to =
         link.type === 'page' && draftIds.has(link.target)
           ? { pageId: link.target, ...(link.anchor ? { anchor: link.anchor } : {}) }
-          : link.type === 'url'
-            ? draftAtAddress(state, link.target, withheld)
-            : null;
+          : link.type === 'entry' && draftEntryIds.has(link.target)
+            ? { entryId: link.target }
+            : link.type === 'url'
+              ? draftAtAddress(state, link.target, withheld)
+              : null;
       if (!to) continue;
       // A link the walk reaches twice (a repeated slot, say) is reported once.
       const id = JSON.stringify([src.owner, reportId, key]);
@@ -1364,7 +1385,6 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to });
     }
   // A published entry's text: a link to a draft entry, a page link to a draft page, or a typed address of one.
-  const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
   for (const { entry } of entries) {
     if (draftEntryIds.has(entry.id)) continue;
     for (const { link, label } of entryTextLinks(entry.body)) {
@@ -1388,9 +1408,11 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
  * preview (/winter-stock-preview/)".
  */
 export function describeDraftLink(state: ProjectState, l: DraftLink): string {
-  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : l.owner.kind === 'page' ? state.pages[l.owner.id] : undefined;
+  const layout = l.owner.kind === 'template' ? state.collections[l.owner.id] : undefined;
+  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : l.owner.kind === 'page' ? state.pages[l.owner.id] : layout?.settings.template;
   const entry = l.owner.kind === 'entry' ? findEntry(state, l.owner.id) : undefined;
-  const place = l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[l.owner.id]?.title ?? 'A page');
+  const place =
+    l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : layout ? `${layout.settings.name} layout` : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[l.owner.id]?.title ?? 'A page');
   const node = tree?.nodes[l.nodeId];
   const where = node && node.kind === 'instance' ? `${place} · ${displayName(state, node)}` : place;
   const draft = draftTarget(state, l);

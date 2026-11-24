@@ -60,8 +60,11 @@ export function EntryFieldsSection({ state, owner, node }: { state: ProjectState
   const collection = state.collections[owner.id];
   const fields = entryFieldSchemas(collection);
   const places = placesOf(state, node);
+  // What decides whether it shows: one entry field being there (`with:`) or not (`without:`). A condition read from
+  // anything else (a hand edit) shows as it is, and choosing On every entry clears both.
   const when = conditionRef(node.when);
-  const condition = isEntryBinding(when) ? when.$entry : '';
+  const unless = conditionRef(node.unless);
+  const condition = isEntryBinding(when) ? `with:${when.$entry}` : isEntryBinding(unless) ? `without:${unless.$entry}` : node.when !== undefined || node.unless !== undefined ? 'other' : '';
   const bind = (place: Place, field: string) => {
     const ops: EditOperation[] = [{ type: 'node.setBinding', owner, nodeId: node.id, field: place.field, ...(place.prop ? { prop: place.prop } : {}), binding: field ? { $entry: field } : null }];
     // A text showing a date states it for machines too (a <time>); showing anything else, it states none.
@@ -71,8 +74,13 @@ export function EntryFieldsSection({ state, owner, node }: { state: ProjectState
     }
     void applyOps(ops, field ? `Show ${entryFieldLabel(collection, field)}` : `Unbind ${place.label}`);
   };
-  const showWhen = (field: string) =>
-    void applyOps([{ type: 'node.setBinding', owner, nodeId: node.id, field: 'when', binding: field ? { $entry: field } : null }], field ? `Show only with ${entryFieldLabel(collection, field)}` : 'Always show');
+  const showWhen = (choice: string) => {
+    const [how, field] = choice.split(/:(.*)/s);
+    const ops: EditOperation[] = [];
+    if (node.when !== undefined || how === 'with') ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'when', binding: how === 'with' ? { $entry: field } : null });
+    if (node.unless !== undefined || how === 'without') ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'unless', binding: how === 'without' ? { $entry: field } : null });
+    if (ops.length) void applyOps(ops, how === 'with' ? `Show only with ${entryFieldLabel(collection, field)}` : how === 'without' ? `Show only without ${entryFieldLabel(collection, field)}` : 'Show on every entry');
+  };
   return (
     <Section title="Entry content" id="entry-fields" level={4}>
       <p className="faint insp-note">Every entry of {collection.settings.name} is shown with this layout. Choose what this shows of each entry.</p>
@@ -97,10 +105,20 @@ export function EntryFieldsSection({ state, owner, node }: { state: ProjectState
       <Field label="Show" controlId={`entry-when-${node.id}`}>
         <select id={`entry-when-${node.id}`} className="select" value={condition} data-testid="entry-field-when" onChange={(e) => showWhen(e.target.value)}>
           <option value="">On every entry</option>
-          {condition && !Object.hasOwn(fields, condition) && <option value={condition}>Only with {condition} (gone)</option>}
+          {condition === 'other' && (
+            <option value="other" disabled>
+              Under a condition set elsewhere
+            </option>
+          )}
+          {condition.includes(':') && !Object.hasOwn(fields, condition.split(/:(.*)/s)[1]) && <option value={condition}>{condition.split(/:(.*)/s)[1]} (gone)</option>}
           {Object.keys(fields).map((f) => (
-            <option key={f} value={f}>
+            <option key={`with:${f}`} value={`with:${f}`}>
               Only on entries with {fields[f].label.toLowerCase()}
+            </option>
+          ))}
+          {Object.keys(fields).map((f) => (
+            <option key={`without:${f}`} value={`without:${f}`}>
+              Only on entries without {fields[f].label.toLowerCase()}
             </option>
           ))}
         </select>

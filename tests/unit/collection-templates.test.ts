@@ -13,6 +13,7 @@ import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { generateProject, generateSiteCss, pageNodeClass, publishedState } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
+import { missingSectionLinks, publicationPlan } from '@generator/checks';
 import { entryNeighbours, materializeTemplate } from '@generator/entry-template';
 import { entryFieldSchemas, entryFieldValue, readingMinutes } from '@shared/entry-fields';
 import { migrateProject } from '@shared/migrations';
@@ -83,6 +84,8 @@ describe('a collection layout', () => {
     const css = generateSiteCss(s);
     expect(css).toContain(`.${pageNodeClass(title.id)}`);
     expect(css).toMatch(new RegExp(`\\.${pageNodeClass(title.id)} \\{[^}]*#aa0000`));
+    // Responsive scopes too: the phone size of the title, for every entry.
+    expect(css).toMatch(new RegExp(`@media[^{]*\\{[^@]*\\.${pageNodeClass(title.id)} \\{[^}]*font-size: 2rem`));
     for (const [slug, own] of [
       ['winter-workshop', 'Winter workshop'],
       ['spring-open-studio', 'Spring open studio']
@@ -126,6 +129,12 @@ describe('entry fields', () => {
     expect(entryFieldValue(read('en_spring'), 'nope')).toBeUndefined();
     expect(readingMinutes([{ type: 'p', spans: [{ text: 'word '.repeat(401) }] }])).toBe(3);
     expect(readingMinutes([])).toBe(0);
+    // Reading time is minutes, shown in the site's words: a condition compares the minutes, whatever the wording.
+    expect(fields.readingTime.type).toBe('number');
+    expect(entryFieldValue(read('en_winter'), 'readingTime', 'raw')).toBe(1);
+    expect(entryFieldValue(read('en_winter'), 'readingTime')).toBe('1 min read');
+    // Something not a field name (a hand edit) reads as nothing rather than failing.
+    expect(entryFieldValue(read('en_winter'), 42 as unknown as string)).toBeUndefined();
   });
 
   it('links each published entry to the ones listed beside it, never to a draft, in the collection’s order', () => {
@@ -168,10 +177,32 @@ describe('entry fields', () => {
     expect(shown(spring, bound(s, 'excerpt').id)).toBe(false);
     expect(shown(spring, bound(s, 'author').id)).toBe(false);
     expect(JSON.stringify(template(s))).toContain('"$entry":"featuredImage"');
+    // An entry with no neighbour at all: the links' row and the band around it collapse, not only the links.
+    const alone = run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring' }, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_secret' });
+    const more = Object.values(template(s).nodes).find((n) => n.name === 'Previous and next')!;
+    const lone = materializeTemplate(alone, alone.collections.posts, alone.collections.posts.entries.en_winter, entryNeighbours(alone, 'posts', 'en_winter'));
+    expect(shown(lone, more.id)).toBe(false);
+    expect(shown(winter, more.id)).toBe(true);
     // A comparison reads the stored value: only entries with that price show it.
     s = run(s, { type: 'node.setBinding', owner: POSTS, nodeId: bound(s, 'excerpt').id, field: 'unless', binding: { $entry: 'field.price' }, eq: 'Free' });
     const after = s.collections.posts;
     expect(shown(materializeTemplate(s, after, after.entries.en_winter, {}), bound(s, 'excerpt').id)).toBe(false);
+  });
+});
+
+describe('a custom picture field', () => {
+  it('keeps each entry’s own description, or that it is decorative', () => {
+    let s = run(blog(), { type: 'collection.update', collectionId: 'posts', fields: { photo: { type: 'image', label: 'Photo' } } });
+    s.assets.assets.img_hall = { id: 'img_hall', name: 'Hall', file: 'static/assets/hall-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 1600, height: 900, hash: 'h', kind: 'image', description: 'The great hall', createdAt: '2026-01-01T00:00:00.000Z' };
+    s = run(
+      s,
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', values: { photo: { assetId: 'img_hall', alt: 'Glazes drying in the hall' } } },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', values: { photo: { assetId: 'img_hall', alt: '', decorative: true } } }
+    );
+    const c = s.collections.posts;
+    const read = (id: string) => ({ state: s, collection: c, entry: c.entries[id], neighbours: {} });
+    expect(entryFieldValue(read('en_winter'), 'field.photo')).toEqual({ assetId: 'img_hall', alt: 'Glazes drying in the hall' });
+    expect(entryFieldValue(read('en_spring'), 'field.photo')).toEqual({ assetId: 'img_hall', alt: '', decorative: true });
   });
 });
 
@@ -202,6 +233,34 @@ describe('binding a layout to entry fields', () => {
     expect(template(s).nodes[excerpt.id]).toMatchObject({ text: '' });
   });
 
+  it('keeps the layout’s structure its own: a tag, or a choice a section does not offer, is never an entry’s', () => {
+    let s = run(blog(), { type: 'collection.update', collectionId: 'posts', fields: { season: { type: 'enum', label: 'Season', default: 'winter', options: [{ value: 'winter', label: 'Winter' }, { value: 'summer', label: 'Summer' }] } } });
+    const excerpt = bound(s, 'excerpt');
+    expect(() => run(s, { type: 'node.setBinding', owner: POSTS, nodeId: excerpt.id, field: 'tag', binding: { $entry: 'field.season' } })).toThrow(/same for every entry/);
+    const r = applyOperations(s, [{ type: 'node.insert', owner: POSTS, parentId: null, componentId: 'cta.banner' }]);
+    s = r.state;
+    const cta = r.results[0].nodeId as string;
+    expect(() => run(s, { type: 'node.setBinding', owner: POSTS, nodeId: cta, field: 'prop', prop: 'headingLevel', binding: { $entry: 'field.season' } })).toThrow(/offers "winter", "summer", which "Heading level" does not have/);
+    // Stored by hand, it is reported, and the page keeps the layout's own tag.
+    const hand = structuredClone(s);
+    (hand.collections.posts.settings.template.nodes[excerpt.id] as { tag: unknown }).tag = { $entry: 'field.season' };
+    expect(validateState(hand).filter((d) => d.code === 'BINDING_INVALID').map((d) => d.message)).toEqual([expect.stringMatching(/takes its tag from "Season"; that is the layout's own/)]);
+    expect(pageOf(generateProject(publishedState(hand)), 'winter-workshop')).not.toMatch(/<winter|<summer/);
+    // A field the layout shows can't be removed or retyped under it.
+    s = run(s, { type: 'node.setBinding', owner: POSTS, nodeId: excerpt.id, field: 'text', binding: { $entry: 'field.season' } });
+    expect(() => run(s, { type: 'collection.update', collectionId: 'posts', fields: {} })).toThrow(/layout shows Season\. Unbind it in the layout before removing it/);
+    expect(() => run(s, { type: 'collection.update', collectionId: 'posts', fields: { season: { type: 'string', label: 'Season' } } })).toThrow(/before changing its kind/);
+  });
+
+  it('never fails on a hand-edited binding that names no field', () => {
+    const s = blog();
+    const broken = structuredClone(s);
+    const title = broken.collections.posts.settings.template.nodes[bound(s, 'title').id] as TextNode;
+    title.when = { $entry: 42 } as never;
+    expect(() => generateProject(broken)).not.toThrow();
+    expect(validateState(broken).some((d) => d.code === 'BINDING_INVALID' || d.code === 'BINDING_SCOPE')).toBe(true);
+  });
+
   it('never types one entry’s words over a field every entry fills', () => {
     const s = blog();
     expect(() => run(s, { type: 'node.setContent', owner: POSTS, nodeId: bound(s, 'title').id, field: 'text', value: 'Winter workshop' })).toThrow(/each entry's own title/);
@@ -214,9 +273,10 @@ describe('binding a layout to entry fields', () => {
     const node = broken.pages[home.id].nodes[home.rootIds[0]] as GraphNode;
     (node as { when?: unknown }).when = { $entry: 'title' };
     expect(validateState(broken).find((d) => d.code === 'BINDING_SCOPE')?.message).toMatch(/field of a collection entry, which only an element of a collection's layout can/);
-    // A custom field the layout shows can't silently go: the layout reports it until it is unbound.
+    // A custom field the layout shows, gone by a hand edit of the settings: the layout reports it until it is unbound.
     s = run(s, { type: 'node.setBinding', owner: POSTS, nodeId: bound(s, 'excerpt').id, field: 'text', binding: { $entry: 'field.price' } });
-    s = run(s, { type: 'collection.update', collectionId: 'posts', fields: { seats: { type: 'number', label: 'Seats' } } });
+    s = structuredClone(s);
+    delete s.collections.posts.settings.fields.price;
     expect(validateState(s).filter((d) => d.code === 'BINDING_INVALID').map((d) => d.message)).toEqual([expect.stringMatching(/Posts layout: .*shows "field.price", which entries of Posts do not have/)]);
     // The generated page shows nothing there rather than failing.
     expect(pageOf(generateProject(publishedState(s)), 'winter-workshop')).toContain('Winter workshop');
@@ -228,9 +288,34 @@ describe('binding a layout to entry fields', () => {
   });
 });
 
+describe('content checks on entries’ pages', () => {
+  it('finds a layout’s sections for links in entries, and a layout’s link to a draft before the website goes out', () => {
+    let s = blog();
+    const column = Object.values(template(s).nodes).find((n) => n.name === 'Reading column')!;
+    s = run(s, { type: 'node.setContent', owner: POSTS, nodeId: column.id, field: 'anchor', value: 'credits' }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['See [the credits](#credits).'] });
+    expect(missingSectionLinks(s).filter((i) => i.owner.kind === 'entry')).toEqual([]);
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['See [the notes](#notes).'] });
+    expect(missingSectionLinks(s).filter((i) => i.owner.kind === 'entry').map((i) => i.fragment)).toEqual(['notes']);
+    // A button in the layout linking to a draft page stops the website export, as one on a page does.
+    const r = applyOperations(s, [
+      { type: 'page.create', pageId: 'pg_plans', title: 'Plans' },
+      { type: 'page.update', pageId: 'pg_plans', draft: true },
+      { type: 'node.insert', owner: POSTS, parentId: column.id, primitive: 'button', text: 'Our plans' }
+    ]);
+    s = run(r.state, { type: 'node.setContent', owner: POSTS, nodeId: r.results[2].nodeId as string, field: 'link', value: { type: 'page', target: 'pg_plans' } });
+    expect(publicationPlan(s).draftLinks).toEqual([expect.objectContaining({ owner: POSTS, pageId: 'pg_plans', label: 'Our plans' })]);
+  });
+});
+
 describe('a cached run', () => {
   it('makes every entry’s page and the stylesheet again for a layout edit, and a neighbour’s page for a new title', () => {
-    let s = blog();
+    // A second collection with published entries of its own, whose pages a posts change never reaches.
+    let s = run(
+      blog(),
+      { type: 'collection.create', collectionId: 'projects' },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_hall01', title: 'Hall', publishedAt: '2026-01-01', draft: false },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_barn01', title: 'Barn', publishedAt: '2026-02-01', draft: false }
+    );
     const cache = new GenerationCache();
     const made = () => {
       const out: string[] = [];
@@ -249,6 +334,12 @@ describe('a cached run', () => {
     // Spring's title shows on Winter's page (its previous entry), so Winter's page is made again with it.
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', title: 'Spring open day' });
     expect(made().filter((k) => k.startsWith('entry:'))).toEqual(['entry:posts:en_secret#clean', 'entry:posts:en_secret#dev', 'entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'entry:posts:en_winter#clean', 'entry:posts:en_winter#dev']);
+    // A new draft changes no published entry's neighbours: only its own page is made.
+    s = run(s, { type: 'entry.create', collectionId: 'posts', entryId: 'en_later', title: 'Later', publishedAt: '2026-12-01' });
+    expect(made().filter((k) => k.startsWith('entry:'))).toEqual(['entry:posts:en_later#clean', 'entry:posts:en_later#dev']);
+    // The other collection's neighbours follow its own order.
+    s = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall01', title: 'Great hall' });
+    expect(made().filter((k) => k.startsWith('entry:'))).toEqual(['entry:projects:en_barn01#clean', 'entry:projects:en_barn01#dev', 'entry:projects:en_hall01#clean', 'entry:projects:en_hall01#dev']);
   });
 });
 
@@ -269,6 +360,18 @@ describe('collections stored before layouts', () => {
     expect(page).toContain('{"Winter workshop"}</h1>');
     expect(page).toContain('<time datetime={"2026-01-12"}>{"January 12, 2026"}</time>');
     expect(page).toContain('{"Ana Ruiz"}');
+    // Two collections migrated together never share an element, so a style set in one never reaches the other.
+    const two = structuredClone(old);
+    two.collections.costarring = structuredClone(old.collections.posts);
+    two.collections.costarring.settings.id = 'costarring';
+    two.collections.costarring.settings.route = '/costarring/';
+    two.collections.costarring.entries = {};
+    two.collections.liquid = structuredClone(two.collections.costarring);
+    two.collections.liquid.settings.id = 'liquid';
+    two.collections.liquid.settings.route = '/liquid/';
+    const migrated = migrateProject(two)!.state;
+    const ids = (id: string) => Object.keys(migrated.collections[id].settings.template.nodes);
+    expect(ids('costarring').filter((n) => ids('liquid').includes(n) || ids('posts').includes(n))).toEqual([]);
     // A collection that already has a layout keeps it.
     const kept = structuredClone(s);
     kept.collections.posts.settings.schemaVersion = 11;
@@ -287,11 +390,21 @@ describe('the layout on the canvas', () => {
     expect(viewAt(s, mode, '/blog/winter-workshop')).toEqual({ templateMode: { collectionId: 'posts', entryId: 'en_winter' } });
     expect(viewAt(s, mode, '/blog/spring-open-studio/')).toBeNull();
     expect(viewAt(s, mode, '/')).toEqual({ pageId: s.site.homePageId });
+    // A shown entry that is still there keeps the mode as it is.
+    const winter = { collectionId: 'posts', entryId: 'en_winter' };
+    expect(keepTemplateValid(s, winter)).toBe(winter);
+    // An entry of another collection, reached in Preview, opens that collection's layout on it.
+    const other = run(s, { type: 'collection.create', collectionId: 'projects' }, { type: 'entry.create', collectionId: 'projects', entryId: 'en_hall01', title: 'Hall', draft: false });
+    expect(viewAt(other, mode, '/projects/hall/')).toEqual({ templateMode: { collectionId: 'projects', entryId: 'en_hall01' } });
+    expect(viewAt(other, null, '/blog/winter-workshop/')).toEqual({ templateMode: { collectionId: 'posts', entryId: 'en_winter' } });
     // An entry removed is replaced by the first; a collection removed closes the layout and lets go of its selection.
     s = run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring' });
     expect(keepTemplateValid(s, mode)).toEqual({ collectionId: 'posts', entryId: 'en_secret' });
     const selection = { owner: POSTS, instancePath: [], nodeId: bound(s, 'title').id };
     expect(keepViewValid(s, { pageId: s.site.homePageId, selection, definitionMode: null, templateMode: mode })).toEqual({ pageId: s.site.homePageId, definitionMode: null, templateMode: { collectionId: 'posts', entryId: 'en_secret' } });
+    // The page behind it going (an Undo) moves that page to Home and keeps the layout, and what is selected in it, open.
+    const valid = { collectionId: 'posts', entryId: 'en_secret' };
+    expect(keepViewValid(s, { pageId: 'pg_gone', selection, definitionMode: null, templateMode: valid })).toEqual({ pageId: s.site.homePageId, definitionMode: null, templateMode: valid });
     s = run(s, { type: 'collection.remove', collectionId: 'posts' });
     expect(keepViewValid(s, { pageId: s.site.homePageId, selection, definitionMode: null, templateMode: mode })).toEqual({ pageId: s.site.homePageId, definitionMode: null, templateMode: null, selection: null });
   });
