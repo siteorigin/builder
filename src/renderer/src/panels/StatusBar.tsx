@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { ChevronRight, CircleAlert, CircleCheck, Component, Ellipsis, Info, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
-import type { Diagnostic, RuntimeState } from '@shared/api';
+import { Archive, ChevronRight, CircleAlert, CircleCheck, Component, Ellipsis, Info, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
+import type { Diagnostic, FileText, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
 import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, selectPage } from '../lib/actions';
-import { Modal, useMenu } from '../components/ui';
+import { Modal, Spinner, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -401,7 +401,7 @@ export function HealthModal() {
       title="Project health"
       icon={<Stethoscope />}
       onClose={() => close()}
-      wide={problems + warnings.length + notes.length > 0}
+      wide={problems + warnings.length + notes.length + (snap.savedCopies?.length ?? 0) > 0}
       footer={
         <button className="btn" onClick={() => close()}>
           Close
@@ -436,7 +436,7 @@ export function HealthModal() {
         <HealthGroup
           title="Problems"
           count={problems}
-          note={snap.conflicts.length > 0 ? 'Whichever version of a file you choose, the one it replaces is saved in the project’s recovery folder.' : undefined}
+          note={snap.conflicts.length > 0 ? 'Whichever version of a file you choose, the one it replaces is kept under Saved copies.' : undefined}
         >
           {toolsFailed && (
             <HealthRow
@@ -453,43 +453,9 @@ export function HealthModal() {
               <strong>This page couldn’t be previewed.</strong> Something on it failed to show. Undo your last change, or choose Try again on the preview.
             </HealthRow>
           )}
-          {snap.conflicts.map((c) => {
-            // An older snapshot without a kind: generated conflicts were the ones whose reason says so.
-            const canonical = (c.kind ?? (c.reason.startsWith('Generated') ? 'generated' : 'canonical')) === 'canonical';
-            return (
-              <HealthRow
-                key={c.path}
-                tone="danger"
-                icon={<CircleAlert />}
-                stacked
-                actions={
-                  <>
-                    <button className="btn btn-sm" onClick={() => void api.projects.reveal(`${snap.dir}/${c.path}`)}>
-                      Show in folder
-                    </button>
-                    <span className="grow" />
-                    {canonical ? (
-                      <>
-                        <button className="btn btn-sm" disabled={!!busy || readOnly} title="Use the file as it is now on disk. SiteOrigin Builder’s version is saved in the project’s recovery folder." onClick={() => void resolve(c.path, 'keep')}>
-                          Keep external changes
-                        </button>
-                        <button className="btn btn-sm" disabled={!!busy || readOnly} title="Put back SiteOrigin Builder’s version. The external file is saved in the project’s recovery folder." onClick={() => void resolve(c.path, 'restore')}>
-                          Restore Builder version
-                        </button>
-                      </>
-                    ) : (
-                      <button className="btn btn-sm" disabled={!!busy || readOnly} title="Put back SiteOrigin Builder’s file. The edited file is saved in the project’s recovery folder." onClick={() => void resolve(c.path, 'restore')}>
-                        Restore Builder’s file
-                      </button>
-                    )}
-                  </>
-                }
-              >
-                <strong>{conflictSubject(st, c.path)}.</strong> {conflictReason(c.reason)}
-                <span className="health-path">{c.path}</span>
-              </HealthRow>
-            );
-          })}
+          {snap.conflicts.map((c) => (
+            <ConflictRow key={c.path} conflict={c} state={st} dir={snap.dir} busy={!!busy} readOnly={readOnly} onResolve={(choice) => void resolve(c.path, choice)} />
+          ))}
           {errors.map(diagnosticRow)}
         </HealthGroup>
       )}
@@ -537,6 +503,7 @@ export function HealthModal() {
           </HealthRow>
         </HealthGroup>
       )}
+      {!!snap.savedCopies?.length && <SavedCopies copies={snap.savedCopies} dir={snap.dir} readOnly={readOnly} />}
       {!toolsFailed && (
         <HealthGroup title="Website tools">
           <HealthRow tone="quiet" icon={<Wrench />} actions={!readOnly && runtime.state !== 'unavailable' ? reinstall('Reinstall') : undefined}>
@@ -546,5 +513,187 @@ export function HealthModal() {
         </HealthGroup>
       )}
     </Modal>
+  );
+}
+
+/** Why a version of a file is not shown as text. */
+const NOT_SHOWN: Record<Exclude<FileText['state'], 'text'>, string> = {
+  missing: 'There is no file.',
+  binary: 'This file is not text (a font or an image, say), so it can’t be shown here.',
+  'too-large': 'This file is too large to show here.',
+  unreadable: 'This file can’t be read.'
+};
+
+/** One version of a file, as read-only text, or why it is not shown. */
+function VersionText({ label, version }: { label: string; version: FileText | undefined }) {
+  return (
+    <figure className="version-pane">
+      <figcaption>{label}</figcaption>
+      {version?.state === 'text' ? <pre className="code-view">{version.text || ' '}</pre> : <p className="faint">{version ? NOT_SHOWN[version.state] : 'This file can’t be read.'}</p>}
+    </figure>
+  );
+}
+
+/**
+ * A file in conflict: what happened, which version each choice keeps, and both versions side by side on request.
+ * Whichever version is not used is kept under Saved copies.
+ */
+function ConflictRow({
+  conflict: c,
+  state,
+  dir,
+  busy,
+  readOnly,
+  onResolve
+}: {
+  conflict: ProjectSnapshot['conflicts'][number];
+  state: ProjectState;
+  dir: string;
+  busy: boolean;
+  readOnly: boolean;
+  onResolve: (choice: 'keep' | 'restore') => void;
+}) {
+  // An older snapshot without a kind: generated conflicts were the ones whose reason says so.
+  const kind = c.kind ?? (c.reason.startsWith('Generated') ? 'generated' : 'canonical');
+  const [versions, setVersions] = useState<{ builder?: FileText; disk?: FileText } | 'loading' | null>(null);
+  // Only the latest request's reply is shown; hiding the versions drops one still on its way.
+  const asked = useRef(0);
+  const compare = async () => {
+    const ask = ++asked.current;
+    if (versions) return setVersions(null);
+    setVersions('loading');
+    const r = await api.project.compareConflict(c.path).catch((e: Error) => ({ ok: false as const, message: e.message, builder: undefined, disk: undefined }));
+    if (ask !== asked.current) return;
+    if (!r.ok) {
+      setVersions(null);
+      return toast(r.message ?? 'The two versions could not be read.', 'error');
+    }
+    setVersions({ builder: r.builder, disk: r.disk });
+  };
+  // With the versions shown, a choice is made against them: one that changed since is shown again first.
+  const choose = async (choice: 'keep' | 'restore') => {
+    if (versions && versions !== 'loading') {
+      const ask = ++asked.current;
+      const opening = getState().snapshot?.workspaceKey;
+      const r = await api.project.compareConflict(c.path).catch(() => null);
+      // Only for the project it was asked in, and only the latest ask.
+      if (ask !== asked.current || getState().snapshot?.workspaceKey !== opening) return;
+      if (r?.ok && (JSON.stringify(r.builder) !== JSON.stringify(versions.builder) || JSON.stringify(r.disk) !== JSON.stringify(versions.disk))) {
+        setVersions({ builder: r.builder, disk: r.disk });
+        return toast('The file changed since you compared the versions. Look again, then choose.', 'info');
+      }
+    }
+    onResolve(choice);
+  };
+  const ours = kind === 'generated' ? 'SiteOrigin Builder’s version, made from your pages' : 'SiteOrigin Builder’s version';
+  const help =
+    kind === 'generated'
+      ? 'Using SiteOrigin Builder’s version keeps the file on disk under Saved copies, then makes the file again from your pages. To keep a change to it, make it in the page or in a code component.'
+      : c.builderMissing
+        ? 'In SiteOrigin Builder’s version this file does not exist. Keep the file on disk to use it, or use SiteOrigin Builder’s version to remove it: the file is kept under Saved copies first.'
+        : 'Keep the file on disk to use it as it is now, or use SiteOrigin Builder’s version to put back the one you were editing. The version you don’t use is kept under Saved copies.';
+  return (
+    <HealthRow
+      tone="danger"
+      icon={<CircleAlert />}
+      stacked
+      actions={
+        <>
+          <button className="btn btn-sm" aria-expanded={!!versions} onClick={() => void compare()}>
+            {versions ? 'Hide versions' : 'Compare versions'}
+          </button>
+          <button className="btn btn-sm" onClick={() => void api.projects.reveal(`${dir}/${c.path}`)}>
+            Show in folder
+          </button>
+          <span className="grow" />
+          {kind === 'canonical' && (
+            <button className="btn btn-sm" disabled={busy || readOnly} onClick={() => void choose('keep')}>
+              Keep the file on disk
+            </button>
+          )}
+          <button className="btn btn-sm" disabled={busy || readOnly} onClick={() => void choose('restore')}>
+            {c.builderMissing ? 'Use SiteOrigin Builder’s version (remove the file)' : 'Use SiteOrigin Builder’s version'}
+          </button>
+        </>
+      }
+      details={
+        versions === 'loading' ? (
+          <Spinner />
+        ) : versions ? (
+          <div className="versions">
+            <VersionText label={ours} version={versions.builder} />
+            <VersionText label="The file on disk, edited outside SiteOrigin Builder" version={versions.disk} />
+          </div>
+        ) : undefined
+      }
+    >
+      <strong>{conflictSubject(state, c.path)}.</strong> {conflictReason(c.reason)}
+      <span className="health-path">{c.path}</span>
+      <span className="health-hint">{help}</span>
+    </HealthRow>
+  );
+}
+
+/** The versions not used when conflicts were settled: still there to read, find in the folder, or take off the list. */
+function SavedCopies({ copies, dir, readOnly }: { copies: SavedCopy[]; dir: string; readOnly: boolean }) {
+  return (
+    <HealthGroup title="Saved copies" count={copies.length} note="The versions you didn’t use when a file was changed in two places. They stay in this project’s recovery folder.">
+      {copies.map((c) => (
+        <SavedCopyRow key={c.id} copy={c} dir={dir} readOnly={readOnly} />
+      ))}
+    </HealthGroup>
+  );
+}
+
+function SavedCopyRow({ copy: c, dir, readOnly }: { copy: SavedCopy; dir: string; readOnly: boolean }) {
+  const [content, setContent] = useState<FileText | 'loading' | null>(null);
+  const asked = useRef(0);
+  const which = c.side === 'external' ? 'The file as edited outside SiteOrigin Builder' : 'SiteOrigin Builder’s version';
+  const when = new Date(c.savedAt).toLocaleString();
+  const view = async () => {
+    const ask = ++asked.current;
+    if (content) return setContent(null);
+    setContent('loading');
+    const r = await api.project.readSavedCopy(c.id).catch((e: Error) => ({ ok: false as const, message: e.message, content: undefined }));
+    if (ask !== asked.current) return;
+    if (!r.ok || !r.content) {
+      setContent(null);
+      return toast(r.message ?? 'That saved copy could not be read.', 'error');
+    }
+    setContent(r.content);
+  };
+  const dismiss = async () => {
+    const r = await api.project.dismissSavedCopy(c.id).catch((e: Error) => ({ ok: false, message: e.message }));
+    if (!r.ok) toast(r.message ?? 'That saved copy could not be removed from the list.', 'error');
+  };
+  return (
+    <HealthRow
+      tone="quiet"
+      icon={<Archive />}
+      stacked
+      actions={
+        <>
+          <button className="btn btn-sm" aria-expanded={!!content} onClick={() => void view()}>
+            {content ? 'Hide copy' : 'View copy'}
+          </button>
+          {content && content !== 'loading' && content.state === 'text' && (
+            <button className="btn btn-sm" onClick={() => void navigator.clipboard?.writeText(content.text).catch(() => undefined)}>
+              Copy text
+            </button>
+          )}
+          <button className="btn btn-sm" onClick={() => void api.projects.reveal(`${dir}/${c.file}`)}>
+            Show in folder
+          </button>
+          {!readOnly && (
+            <button className="btn btn-sm" title="The file stays in the recovery folder." onClick={() => void dismiss()}>
+              Remove from list
+            </button>
+          )}
+        </>
+      }
+      details={content === 'loading' ? <Spinner /> : content ? <div className="versions"><VersionText label={`${which}, as saved`} version={content} /></div> : undefined}
+    >
+      <strong>{which}</strong> of {c.path}, saved {when}.
+    </HealthRow>
   );
 }

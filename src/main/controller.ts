@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportFormat, ExportResult, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { CreateProjectOptions, ExportFormat, ExportResult, FileText, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -243,6 +243,7 @@ export class Controller {
       assetUsage: safeUsages(s),
       missingAssets: s.missingAssets,
       conflicts: s.conflicts,
+      savedCopies: s.savedCopies,
       readOnly: s.readOnly,
       themeUpdates: s.readOnly ? undefined : s.themeUpdates(),
       localState: this.localState,
@@ -689,6 +690,38 @@ export class Controller {
     // Reopening closes this read-only session: a page being added in it is settled (or kept) first (see openTrusted).
     // Only the owner the user was shown is displaced: if another app took the project since, it is shown instead.
     return this.openTrusted(s.dir, { force: s.readOnly.lockToken ?? NO_LOCK });
+  }
+
+  /** Both versions of a file in conflict, for the author to compare before choosing. */
+  async compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'No project is open.' };
+    return s.compareConflict(path);
+  }
+
+  /** What a saved copy of a conflict version holds. */
+  async readSavedCopy(id: string): Promise<{ ok: boolean; content?: FileText; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'No project is open.' };
+    return s.readSavedCopy(id);
+  }
+
+  /** Take a saved copy off the list; its file stays in the recovery folder. */
+  async dismissSavedCopy(id: string): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'No project is open.' };
+    const r = await s.dismissSavedCopy(id);
+    if (r.ok && this.session === s) this.broadcast();
+    return r;
+  }
+
+  /** Read the project documents from disk now, as the file watcher does (an edit was refused because its file changed). */
+  async reloadFromDisk(): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'No project is open.' };
+    // As the watcher does: the AI's changes are on their way, and its request reads the files when it ends.
+    if (this.aiBusy()) return { ok: false, message: 'Busy' };
+    return s.reloadFromDisk();
   }
 
   /** Settle a file conflict: keep the version changed outside the app, or restore SiteOrigin Builder's version. */

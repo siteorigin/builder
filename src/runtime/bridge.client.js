@@ -788,7 +788,8 @@ function beginTextEdit(desc, editId) {
   restoreDraft(el);
   const rich = el.classList.contains('so-rich');
   // selectedAll: the whole text is still selected as the edit began (until a key or a press inside it).
-  editing = { el, desc, editId, original: el.innerHTML, rich, selectedAll: true };
+  // before: the plain text shown as the edit began, so the editor can tell what the author typed over.
+  editing = { el, desc, editId, original: el.innerHTML, rich, selectedAll: true, before: rich ? null : el.innerText.replace(/\s+/g, ' ').trim() };
   // Rich text keeps its bold, italic (⌘B, ⌘I) and links (⌘K); everything else is plain text.
   el.setAttribute('contenteditable', rich ? 'true' : 'plaintext-only');
   el.setAttribute('spellcheck', 'true');
@@ -983,10 +984,11 @@ function endEdit() {
   reportTextFocus();
 }
 /** The last edit handed to the editor, so text the editor did not keep can be put back. */
-let committed = null;
-function commitEdit() {
+const committed = new Map();
+/** `detached`: an update re-rendered the element away while it was edited, so the page may now show other text. */
+function commitEdit(detached = false) {
   if (!editing) return;
-  const { el, desc, editId, rich, original } = editing;
+  const { el, desc, editId, rich, original, before } = editing;
   // Nothing changed: end the edit without a commit, so no history entry or rebuild follows.
   if (el.innerHTML === original) {
     endEdit();
@@ -995,6 +997,7 @@ function commitEdit() {
   // Rich text goes back as a small copy of its structure (blocks, lists, breaks, marks, links) for the editor
   // to turn into its stored form; plain text as its words.
   const payload = rich ? { desc, editId, rich: richCopy(el) } : { desc, editId, text: el.innerText.replace(/\s+/g, ' ').trim() };
+  if (detached) Object.assign(payload, { detached: true }, typeof before === 'string' ? { before } : {});
   // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
   if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
     el.innerHTML = original;
@@ -1002,7 +1005,9 @@ function commitEdit() {
     return send('textCancel', { desc, editId, reason: 'too-large' });
   }
   endEdit();
-  committed = { el, editId, original, left: el.innerHTML };
+  committed.set(editId, { el, original, left: el.innerHTML });
+  // Only the last few can still be answered: older ones are let go.
+  while (committed.size > 8) committed.delete(committed.keys().next().value);
   send('textCommit', payload);
 }
 /** Text, element names, inline marks, list kinds and links of what an edit left, as plain data; null when too large. */
@@ -1330,8 +1335,12 @@ window.addEventListener('message', async (e) => {
     // The editor kept nothing from that edit and nothing will rebuild: show the element as it was.
     case 'restoreText':
       // Only over the text the author left: anything newer (a rebuild, another edit) stays.
-      if (committed && committed.editId === m.payload.editId && committed.el.isConnected && editing?.el !== committed.el && committed.el.innerHTML === committed.left) committed.el.innerHTML = committed.original;
-      committed = null;
+      {
+        // Each edit's own record, so a reply for one never answers (or forgets) another.
+        const c = committed.get(m.payload.editId);
+        if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
+        committed.delete(m.payload.editId);
+      }
       break;
     case 'commitTextEdit':
       if (!editing) break;
@@ -1381,11 +1390,16 @@ window.addEventListener('resize', () => {
 });
 new ResizeObserver(scheduleRects).observe(document.documentElement);
 new MutationObserver(() => {
-  // The page re-rendered the element being edited away (an update arrived): the edit is over.
+  // The page re-rendered the element being edited away (an update arrived): the edit is over. Text typed into it
+  // is handed to the editor as it would be on leaving it, never dropped: the editor checks it against what the
+  // update changed before it is saved, and keeps it for the author when it cannot be.
   if (editing && !editing.el.isConnected) {
-    const { desc, editId } = editing;
-    endEdit();
-    send('textCancel', { desc, editId });
+    // A link still being typed has nowhere to go: say so, as saving does.
+    if (linkEditor) {
+      closeLinkEditor(false);
+      send('linkDropped', { desc: editing.desc, editId: editing.editId });
+    }
+    commitEdit(true);
   }
   // An update re-rendered the page: a revealed item comes back closed, and without the text being typed. Brought up
   // to date once per frame, however many changes arrive.

@@ -15,7 +15,7 @@ import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
-import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, structuralTarget } from '../lib/actions';
+import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, showsInlineText, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -355,8 +355,11 @@ export function Canvas() {
           if (!edit) break;
           endInlineEdit(editId);
           const d = descOrNull(p.desc);
-          // Accept only the commit for an edit the editor started, on that exact element.
-          if (!d || JSON.stringify([d.ctx, d.node, d.items]) !== edit.desc || !canInlineEdit(edit.ref)) break;
+          // Accept only the commit for an edit the editor started, on that exact element. Text whose element changed
+          // or went away while it was typed (the page was updated from somewhere else) is still committed, against
+          // the element as it was: it is checked before it is applied and kept for the author if it cannot be.
+          if (!d || JSON.stringify([d.ctx, d.node, d.items]) !== edit.desc) break;
+          if (!edit.base && !canInlineEdit(edit.ref)) break;
           // Rich text arrives as a copy of its structure (marks, lists and links included), plain text as a string.
           const dom = p.rich !== undefined ? richDom(p.rich) : null;
           const rich = dom ? blocksFromDom(dom, getState().snapshot?.state.pages ?? {}) : null;
@@ -377,7 +380,15 @@ export function Canvas() {
           // An edit that leaves the field as it was rebuilds nothing: the page puts back the text it showed.
           const restore = (r: 'restore' | void) => void (r === 'restore' && post('restoreText', { editId }));
           if (snap?.aiBusy || aiActivity() !== edit.ai) commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base).then(restore), typedText, { check: true });
-          else commitDraft(null, () => void commitText(edit.ref, value).then(restore), typedText);
+          else {
+            // Built from the field editing began on, and written only while it still holds what it held then (see
+            // commitOps). Text handed back because an update re-rendered its element may have been typed over text
+            // the page showed before it caught up with the project: then it waits for the author to look.
+            // Rich text has no plain baseline to compare, so a re-rendered one always waits for the author to look.
+            const shown = p.detached === true && typeof p.before === 'string' ? p.before : null;
+            const review = !!edit.base && p.detached === true && (shown === null ? Array.isArray(value) : !showsInlineText(edit.base, edit.ref, shown));
+            commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base ?? undefined).then(restore), typedText, review ? { review, ...(shown !== null ? { shown } : {}) } : {});
+          }
           break;
         }
         case 'linkDropped':

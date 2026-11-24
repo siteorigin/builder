@@ -102,7 +102,7 @@ export function Toolbar() {
             : phase
               ? { cls: 'pending', icon: spin, text: 'AI is working', title: 'The AI is editing this site. Its changes are saved once they pass checks.' }
               : held
-                ? { cls: 'pending', icon: <Pencil />, text: 'Edit not saved', title: 'An edit you made while the AI was working is waiting for you.' }
+                ? { cls: 'pending', icon: <Pencil />, text: 'Edit not saved', title: 'An edit you made is waiting for you. Review it below.' }
                 : drafting
                   ? { cls: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
                   : pending

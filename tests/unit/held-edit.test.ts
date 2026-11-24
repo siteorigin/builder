@@ -177,6 +177,11 @@ describe('held edit field check', () => {
     expect(check(aiElsewhere, withFont, [rename]).kind).toBe('changed');
     // Other file details are the file's own.
     expect(check(aiElsewhere, withFont, [{ type: 'asset.update', assetId: font.id, name: 'Atlas regular' }])).toEqual({ kind: 'apply' });
+    // Each one its own field: a description written beside a changed suggested alt text is not a conflict (#82).
+    const altChanged = structuredClone(withFont);
+    (altChanged.assets.assets[font.id] as unknown as Record<string, unknown>).altSuggestion = 'Changed elsewhere';
+    expect(check(withFont, altChanged, [{ type: 'asset.update', assetId: font.id, description: 'Typed' }])).toEqual({ kind: 'apply' });
+    expect(check(withFont, altChanged, [{ type: 'asset.update', assetId: font.id, altSuggestion: 'Typed' }]).kind).toBe('changed');
   });
 
   it('holds only field edits: a gesture or a variant rule is not one', () => {
@@ -238,6 +243,21 @@ describe('held edit row', () => {
     });
     expect(heldPrompt({ phase: 'gone', text: null, note: 'element' }, false).actions).toEqual(['discard']);
     expect(heldPrompt({ phase: 'failed', text: 'x', note: 'Another page already uses /team/.' }, false)).toEqual({ message: 'Not applied: Another page already uses /team/.', actions: ['retry', 'discard'] });
+  });
+
+  it('explains a field changed somewhere else while it was typed, never as the AI’s doing, and offers the typed text (#82)', () => {
+    expect(heldPrompt({ phase: 'changed', text: 'Typed', currentText: 'From the file', cause: 'elsewhere' }, false)).toEqual({
+      message: 'Not saved: this changed somewhere else while you were typing and now holds “From the file”. Replace it with your edit, or keep it and discard yours?',
+      actions: ['replace', 'copy', 'discard']
+    });
+    expect(heldPrompt({ phase: 'changed', text: null, currentText: 'x', cause: 'elsewhere' }, false).actions).toEqual(['replace', 'discard']);
+    expect(heldPrompt({ phase: 'changed', text: 'Typed', currentText: 'x', cause: 'elsewhere' }, true).message).not.toMatch(/AI/);
+    expect(heldPrompt({ phase: 'failed', text: 'Typed', note: 'home.json was changed outside SiteOrigin Builder.', cause: 'elsewhere' }, false)).toEqual({
+      message: 'Not saved: home.json was changed outside SiteOrigin Builder.',
+      actions: ['retry', 'copy', 'discard']
+    });
+    // A target removed meanwhile reads the same whatever removed it.
+    expect(heldPrompt({ phase: 'gone', text: 'Typed', note: 'element', cause: 'elsewhere' }, false).actions).toEqual(['copy', 'discard']);
   });
 });
 

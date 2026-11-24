@@ -182,8 +182,10 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const asset = has(state.assets.assets, op.assetId);
       if (!asset) return gone('file');
       // Renaming a font family rewrites every style that names it, anywhere in the project: the whole
-      // project is what it writes. Other details are the file's own.
-      return found(op.font ? { asset, project: state } : { asset });
+      // project is what it writes. Other details are the file's own, each one its own field.
+      if (op.font) return found({ asset, project: state });
+      const keys = Object.keys(op).filter((k) => k !== 'type' && k !== 'assetId' && (op as Record<string, unknown>)[k] !== undefined);
+      return found({ asset: Object.fromEntries(keys.map((k) => [k, (asset as unknown as Record<string, unknown>)[k]])) });
     }
     case 'component.rename': {
       const def = has(state.components, op.definitionId);
@@ -364,8 +366,23 @@ export function whereOf(state: ProjectState, op: EditOperation): string {
 export type HeldAction = 'stop-apply' | 'apply' | 'replace' | 'copy' | 'retry' | 'discard';
 
 /** What a held edit's row says, and the actions it offers, in each phase. */
-export function heldPrompt(h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean }, aiBusy: boolean, phase: 'working' | 'asking' | 'checking' | 'stopping' | null = null): { message: string; actions: HeldAction[] } {
+export function heldPrompt(
+  h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean; cause?: 'elsewhere' },
+  aiBusy: boolean,
+  phase: 'working' | 'asking' | 'checking' | 'stopping' | null = null
+): { message: string; actions: HeldAction[] } {
   const quote = (t: string | null | undefined) => (t === '' ? 'nothing' : t ? `“${t}”` : null);
+  // Typed into a field that changed somewhere else meanwhile (a file saved outside the app): both are kept, the
+  // newer value in the project and the typed text here, until the author chooses.
+  if (h.cause === 'elsewhere' && (h.phase === 'changed' || h.phase === 'failed')) {
+    const copy: HeldAction[] = h.text ? ['copy'] : [];
+    if (h.phase === 'failed') return { message: `Not saved: ${h.note ?? 'the change could not be made.'}`, actions: ['retry', ...copy, 'discard'] };
+    const now = quote(h.currentText);
+    return {
+      message: `Not saved: this changed somewhere else while you were typing${now ? ` and now holds ${now}` : ''}. Replace it with your edit, or keep it and discard yours?`,
+      actions: ['replace', ...copy, 'discard']
+    };
+  }
   switch (h.phase) {
     case 'applying':
       // Once the write is on its way it cannot be called back, so nothing is offered.

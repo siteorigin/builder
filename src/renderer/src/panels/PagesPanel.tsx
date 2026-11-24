@@ -200,7 +200,8 @@ export function PagesPanel() {
     if (!v || v === (from?.snap?.state.pages[id]?.title ?? st.pages[id]?.title)) return;
     const rename = () => void applyOps([{ type: 'page.update', pageId: id, title: v }], 'Rename page');
     if (from && (getState().snapshot?.aiBusy || aiActivity() !== from.ai)) commitDraft(from.snap, rename, v, { check: true });
-    else commitDraft(null, rename, v);
+    // Otherwise written only while the title is still the one renaming began from (see commitOps).
+    else commitDraft(from?.snap ?? null, rename, v);
   };
 
   const pageMenu = (el: HTMLElement | { x: number; y: number; row: HTMLElement }, id: string) => {

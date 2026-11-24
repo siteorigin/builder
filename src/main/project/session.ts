@@ -7,7 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import type { PageDoc, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
-import type { RestoreVersionResult, StorageInfo, VersionReview, VersionsInfo } from '@shared/api';
+import type { FileText, RestoreVersionResult, SavedCopy, StorageInfo, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
@@ -79,6 +79,14 @@ async function readFileAt(abs: string): Promise<{ bytes: Buffer; stamp: string }
   } finally {
     await handle.close().catch(() => undefined);
   }
+}
+
+/** Nothing at all is at the path: not a file that merely cannot be looked at now. */
+async function absent(abs: string): Promise<boolean> {
+  return fs.lstat(abs).then(
+    () => false,
+    (e) => isMissing(e)
+  );
 }
 
 /** The stat of whatever a new handle on the path reaches, taken as `readFileAt` takes it; null when nothing can be. */
@@ -348,6 +356,8 @@ export interface Conflict {
   reason: string;
   /** canonical: a project document changed outside the app; generated: a derived source file was edited. */
   kind: 'canonical' | 'generated';
+  /** SiteOrigin Builder's version has no such file: using it removes the file. */
+  builderMissing?: boolean;
 }
 
 /**
@@ -385,6 +395,8 @@ export class ProjectSession extends EventEmitter {
   /** Holds read back from conflicts.json when the project opened. */
   private loadedHolds = new Set<string>();
   recoveryNotes: string[] = [];
+  /** Copies of the versions the author chose against when settling conflicts, newest first (see SavedCopy). */
+  savedCopies: SavedCopy[] = [];
   /** Set when the project is open for inspection only: nothing is ever written. */
   readOnly: ReadOnlyInfo | null = null;
   /** History retention: the oldest groups are pruned past this many bytes of history blobs (spec 18.4). */
@@ -467,6 +479,7 @@ export class ProjectSession extends EventEmitter {
     s.docs = stateToDocs(s.state);
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)).catch(() => null));
     await s.versions.load().catch(() => undefined);
+    await s.loadSavedCopies();
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
     return s;
@@ -475,6 +488,7 @@ export class ProjectSession extends EventEmitter {
   private async openLocked() {
     const s = this;
     const dir = this.dir;
+    await s.loadSavedCopies();
     await s.loadConflicts();
     // Both recoveries run before the documents are first read: a file a crash left broken may be one they restore.
     await s.recoverJournal();
@@ -800,7 +814,7 @@ export class ProjectSession extends EventEmitter {
   private holdConflict(path: string, builder: string | null, reason: string) {
     this.pending.set(path, builder);
     this.conflicts = this.conflicts.filter((c) => c.path !== path);
-    this.conflicts.push({ path, reason, kind: 'canonical' });
+    this.conflicts.push({ path, reason, kind: 'canonical', ...(builder === null ? { builderMissing: true } : {}) });
   }
 
   private releaseConflict(path: string) {
@@ -864,13 +878,24 @@ export class ProjectSession extends EventEmitter {
         return { ok: true };
       }
       const builder = this.pending.get(path) ?? null;
-      const disk = await this.diskContent(path);
-      const stamp = `${Date.now()}-${path.replace(/[\\/]/g, '__')}`;
       let changed: HistoryEntry['docs'] = {};
       if (choice === 'restore') {
-        if (disk !== null) await atomicWrite(this.local('recovery', `${stamp}.external`), disk);
-        if (builder === null) await this.removeCanonical(path);
-        else await atomicWrite(safeJoin(this.dir, path), builder);
+        const abs = safeJoin(this.dir, path);
+        // Kept byte for byte, and listed under Saved copies, before it is replaced; a file that cannot be read is
+        // never replaced unkept.
+        const disk = await readFileAt(abs);
+        if (disk === 'failed' || disk === 'changed') return { ok: false, message: `${path} could not be read, so it was not replaced. Check that it is a file you can open, then try again.` };
+        if (disk !== 'missing') await this.saveCopy(path, 'canonical', 'external', disk.bytes);
+        // Saved again while the copy was kept: that save is not replaced unkept either.
+        const unchanged = async () => {
+          // A file that was missing must still be missing, not merely one that cannot be looked at now.
+          if (disk === 'missing' ? await absent(abs) : (await handleStamp(abs)) === disk.stamp) return true;
+          throw new Error(`${path} changed while SiteOrigin Builder’s version was being put back, so it was not replaced. Try again.`);
+        };
+        if (builder === null) {
+          await unchanged();
+          await this.removeCanonical(path);
+        } else await atomicWrite(abs, builder, { beforeReplace: unchanged });
         this.releaseConflict(path);
       } else {
         const overlay = new Map(this.pending);
@@ -893,7 +918,7 @@ export class ProjectSession extends EventEmitter {
         }
         const pin = themePinProblem(next);
         if (pin) return { ok: false, message: `The external version of ${path} was not kept: ${pin}` };
-        if (builder !== null) await atomicWrite(this.local('recovery', `${stamp}.builder`), builder);
+        if (builder !== null) await this.saveCopy(path, 'canonical', 'builder', builder);
         const nextDocs = stateToDocs(next);
         changed = await this.diffDocs(this.docs, nextDocs);
         this.state = next;
@@ -910,6 +935,139 @@ export class ProjectSession extends EventEmitter {
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
       return { ok: true };
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Comparing conflict versions, and saved copies
+  // -------------------------------------------------------------------------
+
+  /** Both versions of a file in conflict, as text to compare: SiteOrigin Builder's, and the one on disk now. */
+  async compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; message?: string }> {
+    const conflict = this.conflicts.find((c) => c.path === path);
+    if (!conflict) return { ok: false, message: 'That file is no longer in conflict.' };
+    let builder: string | Buffer | null | undefined;
+    try {
+      builder = conflict.kind === 'canonical' ? (this.pending.get(path) ?? null) : await this.generatedContent(path);
+    } catch {
+      builder = undefined;
+    }
+    const disk = await readText(safeJoin(this.dir, path));
+    return { ok: true, builder: builder === undefined ? { state: 'unreadable' } : builder === null ? { state: 'missing' } : textOf(builder), disk };
+  }
+
+  /** What a saved copy holds. Only a copy on the list is read, and only as the plain file it was saved as. */
+  async readSavedCopy(id: string): Promise<{ ok: boolean; content?: FileText; message?: string }> {
+    const copy = this.savedCopies.find((c) => c.id === id);
+    if (!copy) return { ok: false, message: 'That saved copy is no longer listed.' };
+    // A link in the recovery folder could lead anywhere: only a plain file is read.
+    const abs = (() => {
+      try {
+        return safeJoin(this.dir, copy.file);
+      } catch {
+        return null;
+      }
+    })();
+    const plain = abs !== null && (await fs.lstat(abs).then((st) => st.isFile(), () => false));
+    return { ok: true, content: plain ? await readText(abs) : { state: 'missing' } };
+  }
+
+  /** Take a saved copy off the list. Its file stays in the recovery folder. */
+  dismissSavedCopy(id: string): Promise<{ ok: boolean; message?: string }> {
+    return this.serialize(async () => {
+      if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
+      if (!this.savedCopies.some((c) => c.id === id)) return { ok: true };
+      // The list on disk is the one to take it off.
+      let listed: SavedCopy[];
+      try {
+        listed = await this.loadSavedCopies({ forWrite: true });
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+      await atomicWrite(safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SAVED_COPIES}`), toJson({ copies: listed.filter((c) => c.id !== id) }));
+      this.savedCopies = this.savedCopies.filter((c) => c.id !== id);
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Keep one version of a file in conflict before the other replaces it, and list it under Saved copies so it can be
+   * found again, also after the project is reopened. The copy is listed before anything is replaced: a crash between
+   * the two leaves it in the recovery folder, never lost.
+   */
+  private async saveCopy(path: string, kind: Conflict['kind'], side: SavedCopy['side'], bytes: string | Buffer) {
+    const id = randomBytes(8).toString('hex');
+    const savedAt = Date.now();
+    // Named for its file, side and time, and made unique by its ID, so it never replaces an earlier copy. The file's
+    // own name is cut short: the list says where it came from in full, and a deep route must not make a name too
+    // long to save.
+    const name = `${savedAt}-${id}-${path.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80)}.${side}`;
+    // Only ever inside this project: a recovery folder that is a link elsewhere is not written through.
+    const file = `${LOCAL_DIR}/recovery/${name}`;
+    const list = safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SAVED_COPIES}`);
+    await atomicWrite(safeJoin(this.dir, file), bytes);
+    // Read again first: the list on disk is the one to add to, entries whose copy is away for now included.
+    const listed = await this.loadSavedCopies({ forWrite: true });
+    const copy = { id, path, kind, side, savedAt, file };
+    await atomicWrite(list, toJson({ copies: [copy, ...listed] }));
+    this.savedCopies = [copy, ...this.savedCopies];
+  }
+
+  /**
+   * The saved copies list as stored, keeping only well-formed entries whose copy is a plain file in the recovery
+   * folder. A list that cannot be read lists nothing. `forWrite` (before it is written again): a list that is not
+   * a list of copies is moved aside under another name first, and one that cannot be read now (locked, or no
+   * permission) refuses the write, so the entries either holds are never written over.
+   */
+  private async loadSavedCopies(opts: { forWrite?: boolean } = {}): Promise<SavedCopy[]> {
+    // Never through a recovery folder that is a link out of the project: not even to set a list aside.
+    const file = opts.forWrite ? safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SAVED_COPIES}`) : this.local('recovery', SAVED_COPIES);
+    let list: unknown = [];
+    let text: string | null = null;
+    try {
+      text = await fs.readFile(file, 'utf8');
+    } catch (e) {
+      if (!isMissing(e) && opts.forWrite) throw new Error(`The list of saved copies (${LOCAL_DIR}/recovery/${SAVED_COPIES}) could not be read, so nothing was changed: ${(e as Error).message}`);
+    }
+    if (text !== null) {
+      try {
+        list = JSON.parse(text).copies;
+      } catch {
+        list = undefined;
+      }
+      if (!Array.isArray(list)) {
+        list = [];
+        if (opts.forWrite) await fs.rename(file, this.local('recovery', `copies-unreadable-${Date.now()}.json`));
+      }
+    }
+    // Every well-formed entry is kept in the list as stored, so a copy that is away for a while (a sync tool moved
+    // it) is listed again once it is back; only those whose copy is a plain file here now are shown.
+    const all: SavedCopy[] = [];
+    const shown: SavedCopy[] = [];
+    for (const c of Array.isArray(list) ? list : []) {
+      if (!isSavedCopy(c) || all.some((x) => x.id === c.id)) continue;
+      const entry = { id: c.id, path: c.path, kind: c.kind, side: c.side, savedAt: c.savedAt, file: c.file };
+      all.push(entry);
+      // One entry that cannot be checked (it leads outside the project) is left out; the rest still are shown.
+      const plain = await (async () => (await fs.lstat(safeJoin(this.dir, c.file))).isFile())().catch(() => false);
+      if (plain) shown.push(entry);
+    }
+    this.savedCopies = shown.sort((a, b) => b.savedAt - a.savedAt);
+    return all;
+  }
+
+  /** What SiteOrigin Builder generates for a file now: the clean source, or a theme file copied from its pack. */
+  private async generatedContent(path: string): Promise<string | Buffer | undefined> {
+    const clean = this.generate(this.state, false);
+    const copy = packFileCopies(this.state).find((c) => c.path === path);
+    return clean.get(path) ?? (copy ? await readPackFile(copy.pack, copy.file) : undefined);
+  }
+
+  /**
+   * A change stopped because a file was saved outside the app: refused cleanly, to be tried again once the file is
+   * read, unless part of the change was already on disk, which only reopening the project can finish.
+   */
+  private diskConflict(e: DiskConflictError): NonNullable<ApplyResult['error']> {
+    return this.unsettled ? { code: 'CONFLICT', message: UNSETTLED, recoverable: false } : { code: 'CONFLICT', message: e.message, recoverable: true };
   }
 
   /** Before/after blobs for every document that differs between two document maps. */
@@ -1182,12 +1340,14 @@ export class ProjectSession extends EventEmitter {
     // Never overwrite a newer version on disk (for example an edit the file watcher has not delivered yet). A file
     // that already holds exactly what this change leaves there (a source kept when its definition was deleted
     // outside the app, say) is not overwritten by it.
-    for (const path of Object.keys(changed)) {
+    const unchangedOnDisk = async (path: string) => {
       const disk = await this.diskContent(path);
       const target = nextDocs.get(path);
       const already = !this.activeRun && target !== undefined && disk !== null && sameContent(path, disk, target);
       if (!sameContent(path, disk, this.docs.get(path) ?? null) && !already) throw new DiskConflictError(path);
-    }
+      return true;
+    };
+    for (const path of Object.keys(changed)) await unchangedOnDisk(path);
     if (this.activeRun) await this.writeRunMarker(nextDocs);
     // The undo position is part of the change: planned now, journaled with the documents, installed with them.
     const planned =
@@ -1198,11 +1358,22 @@ export class ProjectSession extends EventEmitter {
           : null;
     const journaled = !!(writes.length || deletes.length || planned);
     let changedFiles: string[];
+    // Files replaced or removed so far: a change stopped before the first one has changed nothing on disk.
+    let installed = 0;
     try {
       // Journal first, then replace files.
       if (journaled) await this.writeJournal({ writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1 });
-      for (const w of writes) await atomicWrite(safeJoin(this.dir, w.path), w.content);
-      for (const d of deletes) await this.removeCanonical(d.path);
+      // Each file is checked again just before it is replaced or removed: one saved outside the app since the check
+      // above (while the journal was being written) is never replaced unseen.
+      for (const w of writes) {
+        await atomicWrite(safeJoin(this.dir, w.path), w.content, { beforeReplace: () => unchangedOnDisk(w.path) });
+        installed++;
+      }
+      for (const d of deletes) {
+        await unchangedOnDisk(d.path);
+        await this.removeCanonical(d.path);
+        installed++;
+      }
       this.state = next;
       this.docs = nextDocs;
       changedFiles = await this.publishGenerated(false, generated);
@@ -1211,6 +1382,15 @@ export class ProjectSession extends EventEmitter {
       await this.saveLocalState();
       if (journaled) await removeDurable(this.local('journal.json'));
     } catch (e) {
+      // Stopped by a file saved outside the app before anything was replaced: nothing of this change is on disk, so
+      // its journal goes and the project carries on (an AI request's own recovery marker is left to its rollback).
+      if (journaled && installed === 0 && !this.activeRun && e instanceof DiskConflictError) {
+        const cleared = await removeDurable(this.local('journal.json')).then(
+          () => true,
+          () => false
+        );
+        if (cleared) throw e;
+      }
       // The journal on disk may now describe this change; a later save would replace it. Reopening finishes it.
       if (journaled) this.unsettled = true;
       throw e;
@@ -1471,19 +1651,18 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async restoreGeneratedLocked(path: string) {
-    const clean = this.generate(this.state, false);
-    const copy = packFileCopies(this.state).find((c) => c.path === path);
-    const content = clean.get(path) ?? (copy ? await readPackFile(copy.pack, copy.file) : undefined);
+    const content = await this.generatedContent(path);
     if (content === undefined) throw new Error('That file is no longer generated.');
     const abs = safeJoin(this.dir, path);
     // Kept byte for byte before it is replaced; a file that cannot be read is never replaced unkept.
     const disk = await readFileAt(abs);
     if (disk === 'failed' || disk === 'changed') throw new Error(`${path} could not be read, so it was not restored. Check that it is a file you can open, then try again.`);
-    if (disk !== 'missing') await atomicWrite(this.local('recovery', `${Date.now()}-${path.replace(/[\\/]/g, '__')}`), disk.bytes);
+    // A file that already is what SiteOrigin Builder makes has nothing of anyone else's to keep.
+    if (disk !== 'missing' && !disk.bytes.equals(typeof content === 'string' ? Buffer.from(content) : content)) await this.saveCopy(path, 'generated', 'external', disk.bytes);
     this.seenOnDisk.delete(abs);
     // Saved again while the copy was kept: that save is not replaced unkept either.
     const unchanged = async () => {
-      if ((await handleStamp(abs)) === (disk === 'missing' ? null : disk.stamp)) return true;
+      if (disk === 'missing' ? await absent(abs) : (await handleStamp(abs)) === disk.stamp) return true;
       throw new Error(`${path} changed while it was being restored, so it was not restored. Try again.`);
     };
     await atomicWrite(abs, content, { beforeReplace: unchanged });
@@ -1614,7 +1793,7 @@ export class ProjectSession extends EventEmitter {
       try {
         ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply') });
       } catch (e) {
-        if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: e.message, recoverable: true } };
+        if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
         throw e;
       }
       const result: ApplyResult = { ok: true, revision: this.revision, results, changed: ev.changedDocs, entryId: ev.entryId };
@@ -2610,7 +2789,7 @@ export class ProjectSession extends EventEmitter {
       // The cursor moves in the same journaled change as the documents, so a crash never separates them.
       await this.persist(next, { label: `${direction === 'undo' ? 'Undo' : 'Redo'} ${entry.label}`, history: false, cursor, source: 'user' });
     } catch (e) {
-      if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: e.message, recoverable: true } };
+      if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
       throw e;
     }
     this.emit('history');
@@ -2737,7 +2916,7 @@ export class ProjectSession extends EventEmitter {
     try {
       ev = await this.persist(next, { label: `Restore ${displayName(next, put.tree.nodes[put.rootId])}`, source: 'user' });
     } catch (e) {
-      if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: e.message, recoverable: true } };
+      if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
       throw e;
     }
     return { ok: true, revision: this.revision, changed: ev.changedDocs, entryId: ev.entryId };
@@ -3261,6 +3440,51 @@ function usableHistory(file: HistoryFile | null): HistoryFile {
 }
 
 /** Compare disk content with the expected document, ignoring JSON formatting and treating a missing authored source as empty. */
+/** The list of saved copies, in the recovery folder beside them. */
+const SAVED_COPIES = 'copies.json';
+/** The largest version shown as text when comparing or reading a saved copy. */
+const TEXT_LIMIT = 512 * 1024;
+
+function isSavedCopy(c: unknown): c is SavedCopy {
+  const o = c as Record<string, unknown> | null;
+  return (
+    !!o &&
+    typeof o.id === 'string' &&
+    /^[0-9a-f]{16}$/.test(o.id) &&
+    typeof o.path === 'string' &&
+    (o.kind === 'canonical' || o.kind === 'generated') &&
+    (o.side === 'external' || o.side === 'builder') &&
+    typeof o.savedAt === 'number' &&
+    Number.isFinite(o.savedAt) &&
+    typeof o.file === 'string' &&
+    // Only a file directly in the recovery folder: never a path that leads anywhere else.
+    /^\.siteorigin\/recovery\/[A-Za-z0-9._-]+$/.test(o.file) &&
+    !o.file.endsWith(`/${SAVED_COPIES}`)
+  );
+}
+
+/** A version of a file as text to show, or why it is not shown: too large, or not text (a font, an image). */
+function textOf(content: string | Buffer): FileText {
+  if (typeof content === 'string') return Buffer.byteLength(content) > TEXT_LIMIT ? { state: 'too-large' } : { state: 'text', text: content };
+  if (content.length > TEXT_LIMIT) return { state: 'too-large' };
+  const text = content.toString('utf8');
+  if (content.includes(0) || !Buffer.from(text, 'utf8').equals(content)) return { state: 'binary' };
+  return { state: 'text', text };
+}
+
+/** A file as text to show; one too large to show is never read whole. */
+async function readText(abs: string): Promise<FileText> {
+  const size = await fs.stat(abs).then(
+    (st) => st.size,
+    () => 0
+  );
+  if (size > TEXT_LIMIT) return { state: 'too-large' };
+  const read = await readFileAt(abs);
+  if (read === 'missing') return { state: 'missing' };
+  if (read === 'failed' || read === 'changed') return { state: 'unreadable' };
+  return textOf(read.bytes);
+}
+
 function sameContent(path: string, disk: string | null, expected: string | null): boolean {
   if (disk === expected) return true;
   if (path.endsWith('.json')) {

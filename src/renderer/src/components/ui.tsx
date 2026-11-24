@@ -3,7 +3,7 @@ import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, undoAvailable, useStore, type HeldEdit } from '../store';
+import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit } from '../store';
 import { afterSettle, isSettling, reportRefused } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { runPhase } from '../lib/savestate';
@@ -666,8 +666,10 @@ export function DraftInput({
   // What the author started from, recorded at the first keystroke: the text, the project, and the commit
   // as they were then. If the AI ran while they typed, the edit is built from exactly that and checked
   // against it before it is applied (at once when the AI is idle), so it never lands on a field or value
-  // the AI changed meanwhile. Otherwise it is applied now, built from the field as it is now. A field
-  // nobody typed in commits nothing. Text the project refused stays a draft, start and all.
+  // the AI changed meanwhile. Otherwise it is applied now, built from the field as it is now, but only while
+  // the field still holds what it held when typing began: one changed somewhere else meanwhile (its file
+  // saved outside the app) keeps both versions for the author to choose between. A field nobody typed in
+  // commits nothing. Text the project refused stays a draft, start and all.
   const startedAt = useRef<{ base: ProjectSnapshot | null; value: string; commit: (v: string) => unknown; ai: number } | null>(null);
   const forget = () => (startedAt.current = null);
   // A field follows the project until the author types in it, focused or not, so typing always starts
@@ -681,21 +683,26 @@ export function DraftInput({
   const commit = (): unknown => {
     const from = startedAt.current;
     if (!from || draft === from.value) return forget();
-    const result = aiRan(from) ? commitDraft(from.base, () => from.commit(draft), draft, { check: true }) : commitDraft(null, () => onCommit(draft), draft);
+    const result = aiRan(from) ? commitDraft(from.base, () => from.commit(draft), draft, { check: true }) : commitDraft(from.base, () => onCommit(draft), draft);
     if (result !== false) forget();
     return result;
   };
   // A field removed while the author is typing in it and the AI ran (it removed the page the field belongs
-  // to, so the panel moved on) keeps what was typed, checked before it is applied.
+  // to, so the panel moved on) keeps what was typed, checked before it is applied. Removed any other way (a
+  // file saved outside the app removed its page), what was typed is offered to copy: nothing is written for a
+  // field that is no longer there.
   const draftRef = useRef(draft);
   draftRef.current = draft;
   useEffect(
     () => () => {
       const from = startedAt.current;
       const text = draftRef.current;
-      if (!focused.current || !from || cancelled.current || text === from.value || !aiRan(from)) return;
+      if (!focused.current || !from || cancelled.current || text === from.value) return;
       const snap = useStore.getState().snapshot;
-      if (from.base && snap?.workspaceKey === from.base.workspaceKey) commitDraft(from.base, () => from.commit(text), text, { check: true });
+      if (!from.base || snap?.workspaceKey !== from.base.workspaceKey) return;
+      if (aiRan(from)) commitDraft(from.base, () => from.commit(text), text, { check: true });
+      else if (text.trim())
+        toast('What you were typing was not saved, because the field went away.', 'error', { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) });
     },
     []
   );
@@ -786,7 +793,8 @@ const HELD_LABELS: Record<HeldAction, string> = {
   discard: 'Discard'
 };
 
-/** A typed edit made while the AI was working: kept, with what can be done with it now. */
+/** A typed edit that could not be saved as it was made (the AI was working, or its field changed somewhere else
+ *  meanwhile): kept, with what can be done with it now. */
 function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
   const phase = useStore((s) => runPhase(editRunStatus(s)));
   const { message, actions } = heldPrompt(h, !!aiRunId, phase);

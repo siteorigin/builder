@@ -146,6 +146,27 @@ export type RuntimeState =
   /** No preview can run for this project here (a newer format); nothing to retry. */
   | { state: 'unavailable'; message: string };
 
+/**
+ * A copy of one version of a file in conflict, saved when the author chose the other version in Project health, so
+ * the version that was not used can still be found, read and taken back.
+ */
+export interface SavedCopy {
+  id: string;
+  /** The project file it is a copy of. */
+  path: string;
+  /** canonical: a project document; generated: a file SiteOrigin Builder makes from the pages. */
+  kind: 'canonical' | 'generated';
+  /** external: the file as it was edited outside the app; builder: SiteOrigin Builder's version. */
+  side: 'external' | 'builder';
+  /** When it was saved, in milliseconds since 1970. */
+  savedAt: number;
+  /** Where the copy is, relative to the project folder. */
+  file: string;
+}
+
+/** A version of a file as text to show, or why it is not shown as text. */
+export type FileText = { state: 'text'; text: string } | { state: 'missing' } | { state: 'binary' } | { state: 'too-large' } | { state: 'unreadable' };
+
 export interface ProjectSnapshot {
   dir: string;
   state: ProjectState;
@@ -161,7 +182,9 @@ export interface ProjectSnapshot {
   /** Library images whose files are missing from the project folder, as last checked. */
   missingAssets: MissingAssetFiles[];
   /** Files changed outside the app. canonical: a project document (keep or restore); generated: a derived file (restore). */
-  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated' }>;
+  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean }>;
+  /** Copies of the versions the author chose against when settling conflicts, newest first. */
+  savedCopies?: SavedCopy[];
   /** Set when the project is open for inspection only (a newer format, or another app is editing it). */
   readOnly?: { reason: string; canUnlock: boolean } | null;
   /** Installed theme components with a newer version in the theme. */
@@ -540,6 +563,11 @@ export interface BuilderApi {
   };
   project: {
     snapshot(): Promise<ProjectSnapshot | null>;
+    /**
+     * Read the project documents from disk now, as the file watcher does after a file is saved outside the app, so
+     * an edit refused because its file changed on disk can be checked against what is there.
+     */
+    reloadFromDisk(): Promise<{ ok: boolean; message?: string }>;
     /** `opening` is the snapshot's workspaceKey of the project the change was made in: any other refuses it. */
     apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string; opening?: string }): Promise<ApplyResult>;
     /**
@@ -615,6 +643,12 @@ export interface BuilderApi {
     generatedSource(kind: 'component' | 'page', id: string): Promise<string>;
     restoreGenerated(path: string): Promise<void>;
     resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }>;
+    /** Both versions of a file in conflict, to compare before choosing: SiteOrigin Builder's and the one on disk. */
+    compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; message?: string }>;
+    /** What a saved copy (`SavedCopy.id`) holds. */
+    readSavedCopy(id: string): Promise<{ ok: boolean; content?: FileText; message?: string }>;
+    /** Take a saved copy off the list in Project health. The file itself stays in the project's recovery folder. */
+    dismissSavedCopy(id: string): Promise<{ ok: boolean; message?: string }>;
     unlock(): Promise<{ ok: boolean; message?: string }>;
     /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
     saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;

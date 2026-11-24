@@ -870,7 +870,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
               // A typed name, like any typed edit: if the AI ran meanwhile, it is checked against the project as
               // it was when renaming began before it is applied (held while the AI works).
               const checked = !!from && (!!getState().snapshot?.aiBusy || aiActivity() !== from.ai);
-              const commit = (rename: () => void) => (checked ? commitDraft(from!.snap, rename, value, { check: true }) : commitDraft(null, rename, value));
+              // Otherwise written only while the name is still the one renaming began from (see commitOps).
+              const commit = (rename: () => void) => (checked ? commitDraft(from!.snap, rename, value, { check: true }) : commitDraft(from?.snap ?? null, rename, value));
               if (isDefRoot) {
                 if (value) commit(() => void applyOps([{ type: 'component.rename', definitionId: owner.id, name: value }], 'Rename component'));
               } else if (value !== (from?.name ?? n.name ?? '')) commit(() => void applyOps([{ type: 'node.rename', owner, nodeId: id, name: value }], 'Rename layer'));
