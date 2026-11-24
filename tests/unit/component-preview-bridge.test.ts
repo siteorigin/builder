@@ -65,12 +65,14 @@ async function alone(body: string, preview: object) {
     await page.route(`${origin}/**`, (route) => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/bridge.js') return route.fulfill({ contentType: 'text/javascript', body: bridge });
+      // An image that never arrives.
+      if (path === '/slow.png') return;
       return route.fulfill({
         contentType: 'text/html',
         body: `<!doctype html><html><head><style>body{margin:0}</style></head><body>${body}<script>window.__siteoriginPreview = ${JSON.stringify(preview)};</script><script type="module" src="/bridge.js"></script></body></html>`
       });
     });
-    await page.goto(`${origin}/__siteorigin/component/abcdefabcdefabcdef/`);
+    await page.goto(`${origin}/__siteorigin/component/abcdefabcdefabcdef/`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction('typeof window.__siteoriginThumb === "function"', null, { timeout: 8000 });
     return await page.evaluate<{ measured: Preview; editing: boolean; unlinked: string | null }>(`(async () => ({
       measured: await window.__siteoriginThumb(),
@@ -109,9 +111,29 @@ describe('the bridge in an isolated component preview', () => {
     expect((card as Preview & { ink: Box }).ink).toEqual({ x: 100, y: 0, width: 200, height: 80 });
   }, 20000);
 
+  it.skipIf(!browserInstalled)('opened on its own, leaves out what a box clips, and counts shadows and generated artwork', async () => {
+    const ink = async (body: string) => ((await alone(`<main id="main">${body}</main>`, { key: 'abcdefabcdefabcdef', mounted: true })).measured as Preview & { ink: Box | null }).ink;
+    // A red box clipped away by its 1px wrapper is not seen; the text below it is.
+    const clipped = await ink(`<div style="height:1px;overflow:hidden"><div style="margin-top:200px;height:30px;background:#f00"></div></div><p style="margin:0;font:16px/20px sans-serif">Hi</p>`);
+    expect(clipped!.y + clipped!.height).toBeLessThan(30);
+    // A hero painted by its ::before.
+    expect(await ink(`<style>.hero::before{content:'';position:absolute;inset:0;background:#00f}</style><div class="hero" style="position:relative;width:400px;height:300px"></div>`)).toEqual({ x: 0, y: 0, width: 400, height: 300 });
+    // A box drawn only by its shadow.
+    expect(await ink(`<div style="margin-left:100px;width:50px;height:50px;box-shadow:0 0 4px #000"></div>`)).toEqual({ x: 100, y: 0, width: 50, height: 50 });
+    // Too large to look through: its whole box is framed instead of part of it.
+    expect(await ink(`<div style="width:10px;height:10px;background:#000"></div>${'<span></span>'.repeat(5001)}<div style="height:100px;background:#f00"></div>`)).toBeNull();
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('opened on its own, says when an image had not arrived', async () => {
+    const { measured } = await alone('<main id="main"><img src="/slow.png" width="40" height="40"></main>', { key: 'abcdefabcdefabcdef', mounted: true });
+    expect((measured as Preview & { loaded: boolean }).loaded).toBe(false);
+    const { measured: done } = await alone('<main id="main"><p>Text</p></main>', { key: 'abcdefabcdefabcdef', mounted: true });
+    expect((done as Preview & { loaded: boolean }).loaded).toBe(true);
+  }, 20000);
+
   it.skipIf(!browserInstalled)('opened on its own, says why a component did not mount', async () => {
     const { measured } = await alone('<main id="main"><p data-so-unlinked>x</p></main>', { key: 'abcdefabcdefabcdef', mounted: false, error: 'boom' });
-    expect(measured).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '', ink: null });
+    expect(measured).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '', ink: null, loaded: true });
   }, 20000);
 
   it.skipIf(!browserInstalled)('reports the box a code component fills through its wrapper, and no page heading check', async () => {

@@ -303,7 +303,14 @@ await eventually(async () => assert.notEqual(await picture('Exhibitor card blue'
 // Insert closed: a brand change draws nothing until the tiles are shown again.
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
 await panel.locator('.insert-group[data-kind="component"]').waitFor({ state: 'hidden' });
-const closedAt = await captures();
+// Photographs asked for before it closed may still finish: counted once they have.
+let closedAt = await captures();
+for (let settledFor = 0; settledFor < 3; ) {
+  await win.waitForTimeout(700);
+  const n = await captures();
+  settledFor = n === closedAt ? settledFor + 1 : 0;
+  closedAt = n;
+}
 await apply([{ type: 'token.set', tokenId: 'color.brand', value: '#00aa00' }], 'Green brand');
 await win.waitForTimeout(2000);
 assert.equal(await captures(), closedAt, 'nothing is drawn while Insert is closed');

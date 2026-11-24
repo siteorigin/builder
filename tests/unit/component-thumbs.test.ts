@@ -12,6 +12,7 @@ import type { ComponentThumb } from '@shared/component-thumbs';
 import type { PreparedComponentPreview } from '@shared/component-preview';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { installComponent } from '@engine/install';
 import { ComponentThumbs, readThumb, thumbCrop, thumbKey, writeThumb, type CaptureResult, type ThumbHost } from '../../src/main/runtime/component-thumbs';
 
 const apply = (state: ProjectState, operations: unknown[]) => applyOperations(state, operations as Parameters<typeof applyOperations>[1]);
@@ -95,6 +96,24 @@ describe('a thumbnail’s key', () => {
     expect(thumbKey(french, card)).not.toBe(key);
   });
 
+  it('changes when a font of the project’s own is replaced, and when an article a list shows changes', () => {
+    const { state, card } = withCard();
+    const fonts = structuredClone(state);
+    fonts.assets.assets.f1 = { id: 'f1', name: 'House', file: 'house.woff2', mime: 'font/woff2', bytes: 10, hash: 'one', kind: 'font', createdAt: '2026-01-01T00:00:00.000Z' };
+    const before = thumbKey(fonts, card);
+    fonts.assets.assets.f1.hash = 'two';
+    expect(thumbKey(fonts, card)).not.toBe(before);
+    // A News list shows the site's articles as they are now.
+    const news = structuredClone(state);
+    const list = installComponent(news, 'content.news');
+    const made = apply(news, [{ type: 'page.create', title: 'Opening night', starter: 'article', articleDate: '2026-01-02' }]);
+    const article = made.results[0].pageId as string;
+    const listed = thumbKey(made.state, list);
+    expect(thumbKey(apply(made.state, [{ type: 'page.update', pageId: article, title: 'Opening night, again' }]).state, list)).not.toBe(listed);
+    // A component that shows no articles is not drawn again for one.
+    expect(thumbKey(apply(made.state, [{ type: 'page.update', pageId: article, title: 'Opening night, again' }]).state, card)).toBe(thumbKey(made.state, card));
+  });
+
   it('is null for a component the project does not have', () => {
     expect(thumbKey(withCard().state, 'no-such-component')).toBeNull();
   });
@@ -114,6 +133,8 @@ describe('the frame photographed', () => {
     expect(thumbCrop({ x: 20, y: 10, width: 300, height: 600 }, { x: 20, y: 10, width: 300, height: 600 })).toEqual({ x: 4, y: 0, width: 332, height: 208 });
     // Wider than the page: only what is in it.
     expect(thumbCrop({ x: -50, y: 0, width: 2000, height: 50 }, null)).toEqual({ x: 0, y: 0, width: 1280, height: 800 });
+    // A page view shorter than a full-width frame: the frame narrows to fit it, still 16:10.
+    expect(thumbCrop({ x: 0, y: 0, width: 1280, height: 1000 }, null, { width: 1280, height: 400 })).toEqual({ x: 320, y: 0, width: 640, height: 400 });
   });
 
   it('frames the component’s box when what it paints is not known', () => {
@@ -126,6 +147,8 @@ describe('the frame photographed', () => {
     expect(thumbCrop({ x: 0, y: 0, width: 0, height: 0 })).toBeNull();
     expect(thumbCrop({ x: 0, y: 900, width: 400, height: 100 })).toBeNull();
     expect(thumbCrop({ x: 1300, y: 0, width: 400, height: 100 })).toBeNull();
+    expect(thumbCrop({ x: -500, y: 0, width: 400, height: 100 })).toBeNull();
+    expect(thumbCrop({ x: 0, y: -300, width: 400, height: 100 })).toBeNull();
     expect(thumbCrop({ x: Number.NaN, y: 0, width: 400, height: 100 })).toBeNull();
   });
 });
@@ -173,7 +196,7 @@ describe('the project’s thumbnail cache', () => {
 });
 
 /** A host for the queue, with the project, the preview server and photographs under the test's control. */
-function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<CaptureResult | Promise<CaptureResult>> } = {}) {
+function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<CaptureResult | Promise<CaptureResult>>; settle?: () => void } = {}) {
   const host = {
     state,
     opening: 'open#1' as string | null,
@@ -188,7 +211,7 @@ function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<Capt
   const api: ThumbHost = {
     current: () => (host.opening ? { opening: host.opening, state: host.state, cacheRoot: opts.root ?? null, readRoot: opts.root ?? tempDir() } : null),
     previewServer: () => host.server,
-    settle: async () => undefined,
+    settle: async () => opts.settle?.(),
     prepare: async (definitionId): Promise<PreparedComponentPreview> => {
       const key = `p${host.prepared.length}`.padEnd(16, '0');
       host.prepared.push(definitionId);
@@ -222,6 +245,9 @@ describe('the thumbnail queue', () => {
     expect(existsSync(join(root, '.siteorigin/cache/thumbs', `${thumbKey(state, card)}.png`))).toBe(true);
     // Shown already: the answer leaves the picture out.
     expect(await thumbs.get(card, 'open#1', (a as { key: string }).key)).toEqual({ state: 'ready', key: (a as { key: string }).key });
+    // Asked again, it is answered from memory, even with the cache gone.
+    rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
+    expect(await thumbs.get(card, 'open#1')).toEqual(a);
     expect(host.captured).toBe(1);
   });
 
@@ -253,11 +279,14 @@ describe('the thumbnail queue', () => {
     expect(host.released).toHaveLength(3);
   });
 
-  it('answers nothing for another opening, an unknown component or a preview that is not running', async () => {
+  it('answers nothing for another opening, an unknown or theme component, or a preview that is not running', async () => {
     const { state, card } = withCard();
+    const theme = installComponent(state, 'content.news');
     const { host, thumbs } = fakeHost(state);
     expect(await thumbs.get(card, 'open#0')).toEqual({ state: 'unavailable' });
     expect(await thumbs.get('no-such-component', 'open#1')).toEqual({ state: 'unavailable' });
+    expect(state.components[theme].owner).not.toBe('project');
+    expect(await thumbs.get(theme, 'open#1')).toEqual({ state: 'unavailable' });
     expect(await thumbs.get(42, 'open#1')).toEqual({ state: 'unavailable' });
     host.server = null;
     expect(await thumbs.get(card, 'open#1')).toEqual({ state: 'unavailable' });
@@ -271,27 +300,45 @@ describe('the thumbnail queue', () => {
 
   it('remembers a component that cannot be pictured, and tries one that may have failed by chance once more', async () => {
     const { state, card } = withCard();
-    const { host, thumbs } = fakeHost(state, {
-      shots: [
-        { ok: false, message: 'Timed out drawing the component.', transient: true },
-        { ok: false, message: 'Timed out drawing the component.', transient: true }
-      ]
-    });
+    const timedOut: CaptureResult = { ok: false, message: 'Timed out drawing the component.', transient: true };
+    const { host, thumbs } = fakeHost(state, { shots: [timedOut, timedOut, timedOut] });
     expect(await thumbs.get(card, 'open#1')).toEqual({ state: 'unavailable' });
     expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'failed', message: 'Timed out drawing the component.' });
     expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'failed' });
     expect(host.captured).toBe(2);
-    // Code that throws is the component's own failure: not tried again until it changes.
+    // The preview server started again: what may have been its doing is tried again there.
+    host.server = 'http://127.0.0.1:5174';
+    expect(await thumbs.get(card, 'open#1')).toEqual({ state: 'unavailable' });
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready' });
+    expect(host.captured).toBe(4);
+    // Code that throws is the component's own failure: not tried again until it changes, even on another server.
     const made = apply(state, [{ type: 'component.createCode', name: 'Broken', source: '<p>x</p>\n' }]);
     const broken = made.results[0].definitionId as string;
     host.state = made.state;
     host.shots.push({ ok: false, message: 'The component could not be shown: Boom' });
     const failed: ComponentThumb = await thumbs.get(broken, 'open#1');
     expect(failed).toMatchObject({ state: 'failed', message: 'The component could not be shown: Boom' });
+    host.server = 'http://127.0.0.1:5175';
     expect(await thumbs.get(broken, 'open#1')).toEqual(failed);
-    expect(host.captured).toBe(3);
+    expect(host.captured).toBe(5);
     host.state = apply(made.state, [{ type: 'component.updateSource', definitionId: broken, source: '<p>Fixed</p>\n' }]).state;
     expect(await thumbs.get(broken, 'open#1')).toMatchObject({ state: 'ready' });
+    // Another opening of the project starts with nothing remembered.
+    host.state = made.state;
+    host.opening = 'open#2';
+    expect(await thumbs.get(broken, 'open#2')).toMatchObject({ state: 'ready' });
+  });
+
+  it('draws nothing for a component that changed while its files were being written', async () => {
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state, {
+      settle: () => {
+        host.state = styleRoot(host.state, card, 'background', '#ff0000');
+      }
+    });
+    expect(await thumbs.get(card, 'open#1')).toEqual({ state: 'unavailable' });
+    expect(host.prepared).toEqual([]);
+    expect(host.captured).toBe(0);
   });
 
   it('keeps nothing on disk for a project it may not write to', async () => {

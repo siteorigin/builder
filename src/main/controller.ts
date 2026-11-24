@@ -158,6 +158,9 @@ export async function readManifestSummary(dir: string): Promise<{ ok: true; name
   return { ok: true, name: typeof name === 'string' && name.trim() ? name : basename(dir) };
 }
 
+/** How long the preview server gets to notice files just written before a component is photographed. */
+const THUMB_SETTLE_MS = 400;
+
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -216,9 +219,11 @@ export class Controller {
     previewServer: () => (this.dev?.status.state === 'ready' ? (this.dev.status as { url: string }).url : null),
     settle: async () => {
       // Every write already queued (the generated tokens and styles the preview loads among them), then the private
-      // copy a read-only project is previewed from.
+      // copy a read-only project is previewed from, then a moment for the preview server to notice the files changed
+      // (as the AI's page measurements allow).
       await this.session?.exclusive(async () => undefined);
       await this.stageSync;
+      await new Promise((r) => setTimeout(r, THUMB_SETTLE_MS));
     },
     prepare: (definitionId) => this.prepareComponentPreview({ definitionId }),
     release: (key) => void this.releaseComponentPreview(key),

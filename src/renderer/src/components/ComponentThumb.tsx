@@ -17,6 +17,8 @@ let shownOpening: string | null = null;
 
 /** How long a change rests before its thumbnails are asked for, so typing or dragging a colour asks once. */
 const SETTLE_MS = 500;
+/** When a thumbnail that could not be drawn just now is asked for again, while nothing changes. */
+const RETRY_MS = [3000, 10000];
 
 function thumbState(opening: string | undefined, definitionId: string) {
   if (opening && opening !== shownOpening) {
@@ -38,30 +40,34 @@ export function useComponentThumb(definitionId: string, active: boolean): { url:
   useEffect(() => {
     if (!active || !ready || !opening) return;
     let live = true;
-    const timer = setTimeout(
-      () => {
-        const have = shown.get(id);
-        api.project.componentThumb(definitionId, opening, have?.key).then(
-          (r: Thumb) => {
-            if (!live || shownOpening !== opening) return;
-            if (r.state === 'ready') {
-              const url = r.url ?? (have?.key === r.key ? have.url : undefined);
-              if (!url) return;
-              shown.set(id, { key: r.key, url });
-              failed.delete(id);
-            } else if (r.state === 'failed') {
-              // The sketch, rather than a picture of an earlier version that no longer shows what it does.
-              shown.delete(id);
-              failed.add(id);
-            } else return;
-            redraw((n) => n + 1);
-          },
-          () => undefined
-        );
-      },
-      // A tile with no picture yet asks at once.
-      picture ? SETTLE_MS : 0
-    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let retries = 0;
+    const ask = () => {
+      const have = shown.get(id);
+      api.project.componentThumb(definitionId, opening, have?.key).then(
+        (r: Thumb) => {
+          if (!live || shownOpening !== opening) return;
+          if (r.state === 'ready') {
+            const url = r.url ?? (have?.key === r.key ? have.url : undefined);
+            if (!url) return;
+            shown.set(id, { key: r.key, url });
+            failed.delete(id);
+          } else if (r.state === 'failed') {
+            // The sketch, rather than a picture of an earlier version that no longer shows what it does.
+            shown.delete(id);
+            failed.add(id);
+          } else {
+            // Not now (the picture failed by chance, or the preview was busy): asked again a little later, a few times.
+            if (retries < RETRY_MS.length) timer = setTimeout(ask, RETRY_MS[retries++]);
+            return;
+          }
+          redraw((n) => n + 1);
+        },
+        () => undefined
+      );
+    };
+    // A tile with no picture yet asks at once.
+    timer = setTimeout(ask, picture ? SETTLE_MS : 0);
     return () => {
       live = false;
       clearTimeout(timer);

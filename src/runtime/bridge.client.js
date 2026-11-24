@@ -1892,14 +1892,17 @@ if (parentWin === window && previewAtStart) {
   document.documentElement.toggleAttribute('data-so-editing', false);
   window.__siteoriginThumb = async () => {
     await settled(Date.now() + 4000);
-    return { ...previewState(), ink: inkBounds() };
+    // Whether everything it shows had arrived: a picture taken with a font or image still on its way is not kept.
+    const loaded = [...document.images].every((i) => i.complete) && (!document.fonts || document.fonts.status === 'loaded');
+    return { ...previewState(), ink: inkBounds(), loaded };
   };
 }
 
 /**
  * Where the component paints something to see, so its thumbnail frames that rather than the empty width of a block:
- * its text, its media and controls, and every box with a background, a border or a shadow. Null when it paints
- * nothing.
+ * its text, its media and controls, and every box with a background, a border or a shadow (or a generated ::before or
+ * ::after that paints, counted as its element's box), each cut to what the boxes around it let show. Null when it
+ * paints nothing, or when it is too large to look through (the thumbnail then frames its whole box).
  */
 function inkBounds() {
   const main = document.getElementById('main');
@@ -1911,31 +1914,50 @@ function inkBounds() {
     cs.backgroundImage !== 'none' ||
     cs.boxShadow !== 'none' ||
     ['Top', 'Right', 'Bottom', 'Left'].some((s) => parseFloat(cs[`border${s}Width`]) > 0 && cs[`border${s}Style`] !== 'none' && !clear(cs[`border${s}Color`]));
+  const generated = (el, which) => {
+    const ps = getComputedStyle(el, which);
+    const content = ps.content;
+    return !!content && content !== 'none' && content !== 'normal' && ps.display !== 'none' && (painted(ps) || /^["']./.test(content) || /url\(/.test(content));
+  };
+  /** `r` cut to `clip` (null: nothing cuts it), as { x, y, right, bottom }, or null when nothing of it is left. */
+  const cut = (r, clip) => {
+    const out = { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+    if (clip) Object.assign(out, { x: Math.max(out.x, clip.x), y: Math.max(out.y, clip.y), right: Math.min(out.right, clip.right), bottom: Math.min(out.bottom, clip.bottom) });
+    return out.right - out.x >= 1 && out.bottom - out.y >= 1 ? out : null;
+  };
   let box = null;
   let left = 5000;
-  const add = (r) => {
-    if (!r || r.width < 1 || r.height < 1) return;
-    if (!box) box = { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
-    else Object.assign(box, { x: Math.min(box.x, r.left), y: Math.min(box.y, r.top), right: Math.max(box.right, r.right), bottom: Math.max(box.bottom, r.bottom) });
+  const add = (r, clip) => {
+    const c = r && cut(r, clip);
+    if (!c) return;
+    if (!box) box = c;
+    else Object.assign(box, { x: Math.min(box.x, c.x), y: Math.min(box.y, c.y), right: Math.max(box.right, c.right), bottom: Math.max(box.bottom, c.bottom) });
   };
-  const visit = (el, shown) => {
+  const visit = (el, shown, clip) => {
     for (const child of el.childNodes) {
       if (--left < 0) return;
       if (child.nodeType === Node.TEXT_NODE) {
         if (!shown || !child.textContent.trim()) continue;
         const range = document.createRange();
         range.selectNodeContents(child);
-        add(range.getBoundingClientRect());
+        add(range.getBoundingClientRect(), clip);
       } else if (child.nodeType === Node.ELEMENT_NODE) {
         const cs = getComputedStyle(child);
         if (cs.display === 'none' || cs.opacity === '0') continue;
         const visible = cs.visibility !== 'hidden';
-        if (visible && (MEDIA.has(child.localName) || painted(cs))) add(child.getBoundingClientRect());
-        if (!MEDIA.has(child.localName)) visit(child, visible);
+        const r = child.getBoundingClientRect();
+        // A fixed box is cut only by the viewport, whatever holds it.
+        const own = cs.position === 'fixed' ? null : clip;
+        if (visible && (MEDIA.has(child.localName) || painted(cs) || generated(child, '::before') || generated(child, '::after'))) add(r, own);
+        if (MEDIA.has(child.localName)) continue;
+        // What overflows a box that clips is not seen.
+        const clips = (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') && r.width + r.height > 0;
+        visit(child, visible, clips ? cut(r, own) ?? { x: 0, y: 0, right: 0, bottom: 0 } : own);
       }
     }
   };
-  visit(main, true);
+  visit(main, true, null);
+  if (left < 0) return null;
   return box && { x: box.x, y: box.y, width: box.right - box.x, height: box.bottom - box.y };
 }
 send('ready', { path: location.pathname, title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });

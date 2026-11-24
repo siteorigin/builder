@@ -8,6 +8,7 @@
 import { BrowserWindow, session as electronSession } from 'electron';
 import { THUMB_SIZE, THUMB_VIEW, thumbCrop, type Box, type CaptureResult } from './runtime/component-thumbs';
 import { sameOrigin } from './player-frames';
+import { previewKeyOf } from '@shared/component-preview';
 
 /** How long a preview gets to load, mount, settle and be measured; one that takes longer is not pictured. */
 const CAPTURE_MS = 20000;
@@ -16,9 +17,12 @@ const IDLE_MS = 30000;
 /** The window's own session: in memory, shared with nothing else. */
 const PARTITION = 'siteorigin-thumbs';
 
-/** What the bridge measured: whether the component mounted, why not, and the box it fills. */
+/** What the bridge measured: which preview, whether the component mounted, why not, and the box it fills. */
 interface Measured {
+  key?: unknown;
   mounted?: unknown;
+  /** Whether its fonts and images had all arrived. */
+  loaded?: unknown;
   error?: unknown;
   bounds?: Box | null;
   /** Where it paints something to see. */
@@ -35,7 +39,7 @@ const MEASURE = `(async () => {
     await new Promise((r) => setTimeout(r, 100));
   }
   const p = window.__siteoriginPreview;
-  return p && typeof p === 'object' ? { mounted: p.mounted === true, error: p.error ? String(p.error) : undefined } : null;
+  return p && typeof p === 'object' ? { key: String(p.key || ''), mounted: p.mounted === true, error: p.error ? String(p.error) : undefined } : null;
 })()`;
 
 /** Every animation and transition at its end at once, so nothing is photographed half way. */
@@ -49,7 +53,10 @@ export interface ThumbCapturer {
 }
 
 let guarded = false;
-/** The window's session refuses every permission and download, whatever a page asks. */
+/**
+ * The window's session refuses every permission and download, whatever a page asks, and its pages are sandboxed as
+ * the editor's preview frame is: scripts run, but nothing opens a dialog (a print, an alert) or anything else.
+ */
 function guardSession() {
   const ses = electronSession.fromPartition(PARTITION);
   if (guarded) return ses;
@@ -57,6 +64,13 @@ function guardSession() {
   ses.setPermissionRequestHandler((_wc, _permission, done) => done(false));
   ses.setPermissionCheckHandler(() => false);
   ses.on('will-download', (e) => e.preventDefault());
+  ses.webRequest.onHeadersReceived((details, done) => {
+    if (details.resourceType !== 'mainFrame' && details.resourceType !== 'subFrame') return done({});
+    const headers = { ...(details.responseHeaders ?? {}) };
+    const name = Object.keys(headers).find((k) => k.toLowerCase() === 'content-security-policy') ?? 'Content-Security-Policy';
+    headers[name] = [...(headers[name] ?? []), 'sandbox allow-scripts allow-same-origin'];
+    done({ responseHeaders: headers });
+  });
   return ses;
 }
 
@@ -145,14 +159,18 @@ export function createThumbCapturer(): ThumbCapturer {
       const measured = (await w.webContents.executeJavaScript(MEASURE, false)) as Measured | null;
       // Neither the component nor the bridge arrived: the preview server did not serve the page as it should.
       if (!measured) return { ok: false, message: 'The component preview did not load.', transient: true };
+      // Another preview answered (a redirect the server made): not this component.
+      if (measured.key !== previewKeyOf(path)) return { ok: false, message: 'The preview server showed another component.', transient: true };
       if (measured.mounted !== true) {
         const why = typeof measured.error === 'string' ? measured.error.slice(0, 500) : '';
         return { ok: false, message: why ? `The component could not be shown: ${why}` : 'The component could not be shown.' };
       }
+      // A font or image still on its way would be pictured missing, and kept so.
+      if (measured.loaded !== true) return { ok: false, message: 'The component was still loading.', transient: true };
       const crop = thumbCrop(measured.bounds ?? null, measured.ink ?? null);
       if (!crop) return { ok: false, message: 'The component shows nothing to picture.' };
       const image = await w.webContents.capturePage(crop, { stayHidden: true });
-      if (image.isEmpty()) return { ok: false, message: 'The component could not be pictured.' };
+      if (image.isEmpty()) return { ok: false, message: 'The component could not be pictured.', transient: true };
       return { ok: true, png: image.resize({ ...THUMB_SIZE, quality: 'best' }).toPNG() };
     };
     try {

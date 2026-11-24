@@ -13,6 +13,7 @@ import type { ComponentDefinition, ProjectState } from '@shared/types';
 import type { PreparedComponentPreview } from '@shared/component-preview';
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { siteLanguage } from '@shared/languages';
+import { articleRows } from '@shared/articles';
 import { getTheme } from '@catalogue/index';
 import { codeNeeds, directDependencies } from '@engine/definitions';
 import { generateTokensCss } from '@generator/index';
@@ -25,7 +26,7 @@ export const THUMB_VIEW = { width: 1280, height: 800 };
 /** The size of a thumbnail's picture, in pixels: twice the larger tile it is shown in. */
 export const THUMB_SIZE = { width: 320, height: 200 };
 /** Part of every key, so a change to how thumbnails are drawn draws them all again. */
-const RECIPE = `component-thumb-v2 ${THUMB_VIEW.width}x${THUMB_VIEW.height} ${THUMB_SIZE.width}x${THUMB_SIZE.height} png`;
+const RECIPE = `component-thumb-v3 ${THUMB_VIEW.width}x${THUMB_VIEW.height} ${THUMB_SIZE.width}x${THUMB_SIZE.height} png`;
 /** A key: SHA-256, in hex. */
 const THUMB_KEY = /^[0-9a-f]{64}$/;
 /** The thumbnails a project's cache keeps: older ones beyond this are removed after each new one. */
@@ -58,14 +59,22 @@ export function shownDefinitions(state: ProjectState, definitionId: string): Com
 
 /**
  * The site's brand as a preview shows it: its theme (and the release of it), the token stylesheet the preview loads
- * from the project (colours, type, spacing and the fonts' faces), and the theme's base styles.
+ * from the project (colours, type, spacing and the fonts' faces), the theme's base styles, and what is in the files
+ * of the project's own fonts (a font replaced under the same name is a new look).
  */
 export function brandFingerprint(state: ProjectState): string {
   const theme = getTheme(state.site.themeId);
+  const fonts = Object.values(state.assets.assets)
+    .filter((a) => a.kind === 'font')
+    .map((a) => [a.id, a.file, a.hash])
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1));
   return createHash('sha256')
-    .update(JSON.stringify([theme.id, theme.digest ?? theme.version ?? '', generateTokensCss(state), theme.baseCss]))
+    .update(JSON.stringify([theme.id, theme.digest ?? theme.version ?? '', generateTokensCss(state), theme.baseCss, fonts]))
     .digest('hex');
 }
+
+/** Whether a definition shows rows worked out from the site's pages (a list of articles), which its picture then shows too. */
+const readsPages = (d: ComponentDefinition) => Object.values(d.properties).some((p) => p.type === 'list' && !!p.feed) || (d.kind === 'code' && /\bso_pages\b/.test(d.source ?? ''));
 
 /**
  * The key of a project component's thumbnail as the project is now, or null when the project has no such
@@ -80,8 +89,10 @@ export function thumbKey(state: ProjectState, definitionId: string, brand = bran
     .filter((a) => json.includes(JSON.stringify(a.id)))
     .map((a) => [a.id, a.file, a.hash, a.variants ?? []])
     .sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  // A list of articles shows the articles as they are now: their titles, dates and pictures.
+  const rows = defs.some(readsPages) ? articleRows(state, 'articles', undefined) : null;
   return createHash('sha256')
-    .update(JSON.stringify([RECIPE, definitionId, siteLanguage(state.site), brand, json, assets]))
+    .update(JSON.stringify([RECIPE, definitionId, siteLanguage(state.site), brand, json, assets, rows]))
     .digest('hex');
 }
 
@@ -200,6 +211,15 @@ export interface ThumbHost {
 
 /** Thumbnails kept in memory for the opening, so a tile shown again never waits on the disk. */
 const MEMORY_KEPT = 200;
+/** Versions remembered as failed (or as tried once already) for the opening. */
+const FAILURES_KEPT = 500;
+
+/** Keep `key` → `value` as the newest of `map`, dropping the oldest beyond `kept`. */
+function keep<V>(map: Map<string, V>, key: string, value: V, kept: number) {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > kept) map.delete(map.keys().next().value!);
+}
 
 /**
  * Thumbnails of one editor: answered from memory, then the project's cache, else photographed, one at a time, in
@@ -209,10 +229,14 @@ const MEMORY_KEPT = 200;
 export class ComponentThumbs {
   private opening: string | null = null;
   private memory = new Map<string, string>();
-  private failed = new Map<string, string>();
+  /**
+   * Versions that could not be pictured, with why. One that failed in a way that may not be its own (`server`: on
+   * which preview server) is tried again on another server: a restart may have been what it needed.
+   */
+  private failed = new Map<string, { message: string; server?: string }>();
   private running = new Map<string, Promise<ComponentThumb>>();
-  /** Versions whose photograph failed in a way that may not be theirs, tried once more. */
-  private retried = new Set<string>();
+  /** Versions whose photograph failed in a way that may not be theirs, tried once more, by the server it was on. */
+  private retried = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
   /** How many thumbnails were photographed, for tests. */
   captures = 0;
@@ -230,9 +254,8 @@ export class ComponentThumbs {
   }
 
   private remember(key: string, url: string) {
-    this.memory.delete(key);
-    this.memory.set(key, url);
-    while (this.memory.size > MEMORY_KEPT) this.memory.delete(this.memory.keys().next().value!);
+    keep(this.memory, key, url, MEMORY_KEPT);
+    this.retried.delete(key);
   }
 
   /**
@@ -251,7 +274,10 @@ export class ComponentThumbs {
     const known = this.memory.get(key);
     if (known) return answer(known);
     const failure = this.failed.get(key);
-    if (failure !== undefined) return { state: 'failed', key, message: failure };
+    if (failure && failure.server !== undefined && failure.server !== this.host.previewServer()) {
+      this.failed.delete(key);
+      this.retried.delete(key);
+    } else if (failure) return { state: 'failed', key, message: failure.message };
     let run = this.running.get(key);
     if (!run) {
       run = this.make(definitionId, opening, key, now.readRoot).finally(() => {
@@ -293,16 +319,19 @@ export class ComponentThumbs {
     // Still the same project, component and preview server: a server that restarted meanwhile could show another.
     const same = () => this.still(definitionId, opening, key) && this.host.previewServer() === server;
     if (!same()) return gone;
-    const fail = (message: string): ComponentThumb => {
-      this.failed.set(key, message);
+    // A failure that may not be the component's own (the preview did not load, timed out, or its files could not be
+    // written) is tried once more before it is remembered, and again on another preview server; the component's own
+    // (code that throws) is remembered until the component changes.
+    const fail = (message: string, transient = false): ComponentThumb => {
+      if (transient && this.retried.get(key) !== server) {
+        keep(this.retried, key, server, FAILURES_KEPT);
+        return gone;
+      }
+      keep(this.failed, key, { message, ...(transient ? { server } : {}) }, FAILURES_KEPT);
       return { state: 'failed', key, message };
     };
     const prepared = await this.host.prepare(definitionId);
-    if (!prepared.ok) {
-      // A component that cannot be shown (it has nothing in it yet) is not tried again until it changes; a preview
-      // server that stopped meanwhile is.
-      return same() ? fail(prepared.message) : gone;
-    }
+    if (!prepared.ok) return same() ? fail(prepared.message, true) : gone;
     let shot: CaptureResult;
     try {
       this.captures++;
@@ -312,11 +341,7 @@ export class ComponentThumbs {
     }
     // Changed while it was photographed (an edit, the brand, another project, the server): the picture may show either.
     if (!same()) return gone;
-    if (!shot.ok) {
-      if (!shot.transient || this.retried.has(key)) return fail(shot.message);
-      this.retried.add(key);
-      return gone;
-    }
+    if (!shot.ok) return fail(shot.message, !!shot.transient);
     const url = dataUrl(shot.png);
     this.remember(key, url);
     const root = this.host.current()?.cacheRoot;
