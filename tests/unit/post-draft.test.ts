@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RichText } from '@shared/types';
-import { PostDraft, flushOpenPost, runWriterHistory, setOpenWriter, setWriterHistory, type DraftSaveOutcome } from '../../src/renderer/src/lib/post-draft';
+import { PostDraft, flushOpenPost, runWriterHistory, saveOpenPost, setOpenWriter, setWriterHistory, type DraftSaveOutcome } from '../../src/renderer/src/lib/post-draft';
 import { registerFlush, resetPendingForTests, settle } from '../../src/renderer/src/lib/pending';
 
 const para = (t: string): RichText => [{ type: 'p', spans: [{ text: t }] }];
@@ -224,6 +224,30 @@ describe('the post draft', () => {
     expect(await back).toBe(true);
   });
 
+  it('keeps saying a post has gone while it is gone, whatever a save on its way answers', async () => {
+    const h = harness();
+    h.type('Typed before it went');
+    const first = h.draft.flush();
+    h.draft.markGone();
+    h.saves[0].answer({ kind: 'changed' });
+    await first;
+    expect(h.draft.problem).toEqual({ kind: 'gone' });
+  });
+
+  it('sends the newer text when a step is refused after more was typed', async () => {
+    const h = harness();
+    h.type('Too long');
+    h.draft.checkpoint(true);
+    const first = h.draft.flush();
+    h.type('Shortened');
+    h.saves[0].answer({ kind: 'failed', message: 'text is too long.' });
+    await h.settled();
+    expect(h.saves.map((s) => s.body)).toEqual([para('Too long'), para('Shortened')]);
+    h.saves[1].answer({ kind: 'applied' });
+    expect(await first).toBe(true);
+    expect(h.draft.problem).toBeNull();
+  });
+
   it('starts a new undo step when asked (the writer was left, an Undo ran), saving what it holds as the step before', async () => {
     const h = harness();
     h.type('Before leaving');
@@ -263,6 +287,14 @@ describe('saving the open post from elsewhere', () => {
     expect(await flushOpenPost()).toBe(false);
     refusing();
     expect(await flushOpenPost()).toBe(true);
+    // Showing the post elsewhere (the toolbar's Preview) saves its fields too, when the writer says how.
+    const fields = setOpenWriter(
+      () => Promise.resolve(true),
+      () => Promise.resolve(false)
+    );
+    expect(await flushOpenPost()).toBe(true);
+    expect(await saveOpenPost()).toBe(false);
+    fields();
   });
 
   it('has Save and leaving the project save text the writer holds, focused or not', async () => {

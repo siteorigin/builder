@@ -22,6 +22,8 @@ import { setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
 
 const MAX_EXCERPT = 320;
+/** How long before an action a field's refusal still stops it: the blur its button press caused. */
+const REFUSAL_WINDOW_MS = 1500;
 const MAX_AUTHOR = 80;
 const MAX_CAPTION = 300;
 
@@ -107,9 +109,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const opening = useRef(snap.workspaceKey);
   /** This writer, among every one opened for the post: its undo steps never join another's. */
   const instance = useRef(newId('w'));
-  /** The changes to the post's fields (title, date, address…) on their way, and how many have been refused. */
+  /** The changes to the post's fields (title, date, address…) on their way, and when one was last refused. */
   const fieldCommits = useRef(new Set<Promise<unknown>>());
-  const fieldRefusals = useRef(0);
+  const fieldRefusedAt = useRef(-Infinity);
+  /** The latest saveAll, for the toolbar's Preview (see setOpenWriter). */
+  const saveAllRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
   /** Why the stored text cannot be edited here, if it cannot. */
   const unreadable = articleProblem(entry.body);
   /** The text the writer and the project last agreed on: what it showed from the project, or what it saved. */
@@ -194,14 +198,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   }, [entry.body]); // eslint-disable-line react-hooks/exhaustive-deps
   // Gone from the project: unsaved text stays, with a way to copy it or let it go; with nothing unsaved, the writer lets
   // go of the post. Back again (an Undo of its removal): its text is saved as usual.
+  // A save that answered 'gone' for a post that is here (it came back meanwhile) is saved again too.
   useEffect(() => {
     if (live) {
       if (draft.problem?.kind === 'gone') void draft.back();
       return;
     }
-    if (draft.dirty) draft.markGone();
-    else setState({ post: null, postView: 'write' });
-  }, [!!live, status.dirty]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (draft.dirty) {
+      if (draft.problem?.kind !== 'gone') draft.markGone();
+    } else setState({ post: null, postView: 'write' });
+  }, [!!live, status.dirty, status.problem?.kind]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pictures follow the library and the preview server (a file replaced, the preview started).
   useEffect(() => {
@@ -212,7 +218,10 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   useEffect(() => markDraft(draftKey, status.dirty, status.problem ? problemText(status.problem) : undefined), [draftKey, status.dirty, status.problem]);
   useEffect(() => {
     const offFlush = registerFlush(() => draft.flush());
-    const offOpen = setOpenWriter(() => draft.flush());
+    const offOpen = setOpenWriter(
+      () => draft.flush(),
+      () => saveAllRef.current()
+    );
     const offHistory = setWriterHistory((action) => void history(action));
     // Edit → Undo and Redo reach the text as the browser's own history: they are the project's here too.
     const el = root.current;
@@ -268,7 +277,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   /** Change fields of the post, followed so Publish and Save draft know whether it was saved. */
   const update = (fields: Record<string, unknown>, label: string) => {
     const p = applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
-      if (!r) fieldRefusals.current++;
+      if (!r) fieldRefusedAt.current = performance.now();
       return r;
     });
     fieldCommits.current.add(p);
@@ -277,7 +286,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   };
   /** A field's text the writer refuses itself (an empty title, a date that is not one): said, and counted. */
   const refuse = () => {
-    fieldRefusals.current++;
+    fieldRefusedAt.current = performance.now();
     return false;
   };
 
@@ -426,15 +435,18 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    * it loses focus. False, said beside the field or above the text, when any of it could not be.
    */
   const saveAll = async (): Promise<boolean> => {
-    const refusedBefore = fieldRefusals.current;
+    // The button pressed takes focus from the field being typed in, which commits it just before this runs: a refusal
+    // from that moment on (an address another page has, an empty title) stops what the button does.
+    const since = performance.now() - REFUSAL_WINDOW_MS;
     const at = document.activeElement;
     if (at instanceof HTMLElement && at.closest('.post-page') && !at.closest('.post-body')) at.blur();
     const saved = await draft.flush();
     await Promise.allSettled([...fieldCommits.current]);
     await appliesLanded();
-    // A field refused just now (an address another page has, an empty title), or text kept for being too long.
-    return saved && fieldRefusals.current === refusedBefore && !getState().refusedDrafts;
+    // Or text kept for being too long.
+    return saved && fieldRefusedAt.current < since && !getState().refusedDrafts;
   };
+  saveAllRef.current = saveAll;
   const publish = async (draftOn: boolean) => {
     if (!(await saveAll())) return toast(draftOn ? 'Part of the post is not saved yet, so it stays as it is. See the note beside it.' : 'Part of the post is not saved yet, so it was not published. See the note beside it.', 'error');
     const r = await update({ draft: draftOn }, draftOn ? 'Move post to drafts' : 'Publish post');
@@ -469,6 +481,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const now = getState().snapshot;
     const e = now && postAt(now.state, post);
     if (!el || !e || !now) return;
+    // Text the writer cannot show is never put in its place: the author keeps theirs.
+    const problem = articleProblem(e.body);
+    if (problem) return toast(problem, 'error');
     renderArticle(el, e.body, now.state, devUrl);
     agreed.current = e.body;
     draft.reset();

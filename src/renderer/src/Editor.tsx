@@ -6,7 +6,7 @@ import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState
 import { Toolbar } from './panels/Toolbar';
 import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
 import { entryRoute } from '@shared/collections';
-import { flushOpenPost } from './lib/post-draft';
+import { saveOpenPost } from './lib/post-draft';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
 import { PostsPanel } from './panels/PostsPanel';
@@ -491,7 +491,7 @@ export function Editor() {
         else if (prev.mode === 'edit' && s.mode === 'preview' && s.leftTab === 'posts' && s.postView === 'write') {
           if (!s.post) return setState({ postView: 'preview' });
           // The writer stays until what it holds is saved: text that could not be stays in view, with its note.
-          void flushOpenPost().then((saved) => {
+          void saveOpenPost().then((saved) => {
             const now = getState();
             if (now.mode !== 'preview' || now.leftTab !== 'posts' || now.postView !== 'write') return;
             if (!saved) {

@@ -63,6 +63,8 @@ export class PostDraft {
   private queued: Array<{ body: RichText; step: number; gen: number }> = [];
   /** Bumped by reset: a save that was on its way before it answers for text the writer no longer shows. */
   private epoch = 0;
+  /** The post is not in the project (see markGone): whatever a save on its way answers, that is the problem. */
+  private absent = false;
 
   constructor(private readonly deps: PostDraftDeps) {}
 
@@ -89,6 +91,8 @@ export class PostDraft {
    */
   checkpoint(changed: boolean): void {
     if (this.closed || this.composing) return;
+    // A command that corrects refused text (a picture removed) replaces the refused steps, as typing does.
+    if (changed && this.problemNow?.kind === 'failed') this.queued = [];
     if (changed) this.gen++;
     if (this.gen !== this.saved && !this.queued.some((q) => q.gen === this.gen)) this.queued.push({ body: this.deps.read(), step: this.stepNow, gen: this.gen });
     this.stepNow++;
@@ -150,12 +154,14 @@ export class PostDraft {
   /** The post is no longer in the project: nothing is saved, and the problem says so, whatever it said before. */
   markGone(): void {
     this.cancelTimer();
+    this.absent = true;
     this.problemNow = { kind: 'gone' };
     this.emit();
   }
 
-  /** The post is back (an Undo of its removal): its text is saved again as usual. */
+  /** The post is back (an Undo of its removal), or a save said it had gone when it had not: saved again as usual. */
   back(): Promise<boolean> {
+    this.absent = false;
     if (this.problemNow?.kind === 'gone') this.problemNow = null;
     this.emit();
     return this.flush();
@@ -215,7 +221,12 @@ export class PostDraft {
         this.close();
         return false;
       }
-      this.problemNow = outcome as DraftProblem;
+      // Refused, with newer text behind it (typed while it was on its way): that text is what goes now.
+      if (outcome.kind === 'failed' && item && this.queued[0] === item && this.gen !== item.gen) {
+        this.queued.shift();
+        continue;
+      }
+      this.problemNow = this.absent ? { kind: 'gone' } : (outcome as DraftProblem);
       this.emit();
       return false;
     }
@@ -243,15 +254,24 @@ export class PostDraft {
   }
 }
 
-/** How the writer on screen saves its post now: set while a post is open in it. */
-let openWriter: (() => Promise<boolean>) | null = null;
+/** How the writer on screen saves its post now: its text, and (`all`) its fields too. Set while a post is open in it. */
+let openWriter: { flush: () => Promise<boolean>; all?: () => Promise<boolean> } | null = null;
 
 /** The writer registers how its open post is saved; returns the unregister. */
-export function setOpenWriter(flush: () => Promise<boolean>): () => void {
-  openWriter = flush;
+export function setOpenWriter(flush: () => Promise<boolean>, all?: () => Promise<boolean>): () => void {
+  const mine = { flush, all };
+  openWriter = mine;
   return () => {
-    if (openWriter === flush) openWriter = null;
+    if (openWriter === mine) openWriter = null;
   };
+}
+
+/**
+ * Save everything the open post holds before it is shown somewhere (the toolbar's Preview): its text and the field
+ * being typed in. False when any of it could not be saved, which the writer says beside it.
+ */
+export function saveOpenPost(): Promise<boolean> {
+  return openWriter ? (openWriter.all ?? openWriter.flush)() : Promise.resolve(true);
 }
 
 /**
@@ -259,7 +279,7 @@ export function setOpenWriter(flush: () => Promise<boolean>): () => void {
  * true when it is saved; false when it could not be yet, in which case the writer keeps it and says why.
  */
 export function flushOpenPost(): Promise<boolean> {
-  return openWriter ? openWriter() : Promise.resolve(true);
+  return openWriter ? openWriter.flush() : Promise.resolve(true);
 }
 
 /** Undo and Redo as the writer runs them: its unsaved text first, then the project's history. */

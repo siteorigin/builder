@@ -437,6 +437,10 @@ export function Canvas() {
   }, [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
   // A new frame (another server, Try again) or another project starts a fresh journey, on the site as it is now.
   useEffect(() => setJourney({ ...NO_HISTORY, site: siteNow() }), [url, session, workspaceKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // An address visited in one opening of a project (a post previewed) is nothing to another.
+  useEffect(() => {
+    visitWanted = null;
+  }, [workspaceKey]);
   useEffect(() => () => endInlineEdit(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Bridge messages

@@ -215,7 +215,8 @@ export function readArticle(root: HTMLElement, state: ProjectState): RichText {
  * written by a newer version, which writing it back would lose.
  */
 export function articleProblem(body: unknown): string | null {
-  const LINKS = ['page', 'entry', 'url', 'email', 'tel', 'anchor', 'document'];
+  // Not a download: post text cannot keep one yet, so the writer could not write it back.
+  const LINKS = ['page', 'entry', 'url', 'email', 'tel', 'anchor'];
   // A link the writer can show: one of the kinds it knows, with an address that is text.
   const link = (l: unknown) => l === undefined || (!!l && typeof l === 'object' && LINKS.includes((l as LinkValue).type) && typeof (l as LinkValue).target === 'string' && ((l as LinkValue).anchor === undefined || typeof (l as LinkValue).anchor === 'string'));
   const spans = (v: unknown) => Array.isArray(v) && v.every((s) => !!s && typeof s === 'object' && typeof (s as { text?: unknown }).text === 'string' && link((s as { link?: unknown }).link));

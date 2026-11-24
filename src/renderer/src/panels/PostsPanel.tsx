@@ -6,7 +6,7 @@ import { commitOps, confirmDialog, getState, markDraft, setState, toast, undoAct
 import { Field, Modal } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { POST_SORTS, duplicatePostOps, newPostOps, postAt, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort } from '../lib/posts';
-import { orderedEntries } from '@shared/collections';
+import { findEntry, orderedEntries } from '@shared/collections';
 import type { ProjectState } from '@shared/types';
 import { flushOpenPost } from '../lib/post-draft';
 
@@ -27,11 +27,11 @@ function keptAddresses(state: ProjectState, entryId: string): number {
 }
 
 /** Remove a post, letting go of it in the writer only once it is gone. */
-async function deletePost(ref: PostRef, title: string, replacement: { replacementPageId?: string; replacementEntryId?: string }): Promise<boolean> {
-  const r = await commitOps([{ type: 'entry.remove', collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }], 'Delete post');
+async function deletePost(ref: PostRef, title: string, replacement: { replacementPageId?: string; replacementEntryId?: string }, revision: number): Promise<boolean> {
+  // Against the project as it was checked: a link or address added meanwhile, or a destination become a draft, means
+  // looking again. The writer lets go of the post itself once it is gone, keeping anything typed meanwhile.
+  const r = await commitOps([{ type: 'entry.remove', collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }], 'Delete post', undefined, revision);
   if (!r) return false;
-  const s = getState();
-  if (s.post?.entryId === ref.entryId) setState({ post: null, postView: 'write' });
   toast(`Deleted “${title}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
   return true;
 }
@@ -58,8 +58,13 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
     .flatMap((id) => orderedEntries(state.collections[id]).filter((x) => x.id !== target.entryId && x.draft === false));
   const confirm = async () => {
     const [kind, id] = [to.slice(0, to.indexOf(':')), to.slice(to.indexOf(':') + 1)];
+    // Checked again now: a destination that has become a draft (or gone) since it was chosen is chosen again.
+    const now = getState().snapshot;
+    if (!now) return;
+    const live = kind === 'entry' ? findEntry(now.state, id)?.entry.draft === false : Object.hasOwn(now.state.pages, id) && (now.state.pages[id].draft !== true || id === now.state.site.homePageId);
+    if (!live) return toast('That destination is no longer on the website. Choose another.', 'error');
     setBusy(true);
-    const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id });
+    const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id }, now.revision);
     setBusy(false);
     if (done) onClose();
   };
@@ -217,7 +222,12 @@ export function PostsPanel() {
       subject: e.title,
       details: [{ kind: 'undo', text: 'You can undo it.' }]
     });
-    if (ok) void deletePost({ collectionId: collection.settings.id, entryId }, e.title, {});
+    if (!ok) return;
+    // Linked to or given an old address while the question was open: where those go is asked first.
+    const now = getState().snapshot;
+    if (!now) return;
+    if (entryLinkUses(now.state, entryId).length || keptAddresses(now.state, entryId)) return setDeleting({ collectionId: collection.settings.id, entryId });
+    void deletePost({ collectionId: collection.settings.id, entryId }, e.title, {}, now.revision);
   };
 
   return (

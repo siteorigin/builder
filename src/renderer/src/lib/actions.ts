@@ -601,6 +601,8 @@ export function openLayout(collectionId: string, entryId?: string) {
  * page already shown selects the page itself too. In Preview nothing is selected.
  */
 export function selectPage(pageId: string, target?: ElementRef | null) {
+  // A page chosen while a post is previewed ends that preview: the canvas goes to the page (see Editor).
+  if (getState().postView === 'preview') setState({ postView: 'write' });
   const s = getState();
   const st = s.snapshot?.state;
   const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
