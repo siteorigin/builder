@@ -384,9 +384,16 @@ function collectTokens(v: unknown, out: Set<string>) {
   for (const x of Object.values(rec)) collectTokens(x, out);
 }
 
+/** Child IDs a node record lists; the rest follow it in the read's document order. */
+const CHILD_IDS_SHOWN = 100;
+const clipIds = (ids: unknown) => (Array.isArray(ids) && ids.length > CHILD_IDS_SHOWN ? [...ids.slice(0, CHILD_IDS_SHOWN), `…and ${ids.length - CHILD_IDS_SHOWN} more`] : ids);
+
 /** A design's node as stored (its child lists are IDs), with long literal content shortened and the parts it names. */
 function structureNode(state: ProjectState, n: GraphNode, parts: string[] | undefined, nested: (id: string) => ComponentDefinition | undefined): Record<string, unknown> {
   const rec: Record<string, unknown> = { ...n };
+  // A container of thousands of elements would fill a read on its own: its first IDs say how it is built.
+  if ('children' in n) rec.children = clipIds(n.children);
+  if (n.kind === 'instance' && n.slots) rec.slots = Object.fromEntries(Object.entries(n.slots).map(([k, ids]) => [k, clipIds(ids)]));
   if (n.kind === 'text' && !isBinding(n.text)) rec.text = summarizeValue(n.text, state.pages);
   if (n.kind === 'instance') {
     const def = nested(n.definitionId);

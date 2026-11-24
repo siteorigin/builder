@@ -436,7 +436,13 @@ export function Chat() {
     nearBottom.current = true;
     // Sent for the model the composer names now: if Settings or the local server would send it elsewhere by the time it
     // runs, nothing is sent and the turn says so.
-    const r = await api.ai.send(text.trim(), ctx, conversationId, next ? { provider: next.provider, model: next.id } : undefined);
+    let r: Awaited<ReturnType<typeof api.ai.send>>;
+    try {
+      r = await api.ai.send(text.trim(), ctx, conversationId, next ? { provider: next.provider, model: next.id } : undefined);
+    } catch (e) {
+      // A send that never got an answer leaves the composer usable, as a refused one does.
+      r = { ok: false, message: e instanceof Error && e.message ? e.message : 'Could not start the request.' };
+    }
     setSending(false);
     if (!r.ok) return (toast(r.message ?? 'Could not start the request.', 'error'), false);
     // A continuation was never typed, so whatever is in the composer is the user's own next message.
@@ -470,11 +476,13 @@ export function Chat() {
     if (!handed) return;
     if (handed.workspaceKey !== snap.workspaceKey) return void setState({ chatRequest: null });
     if (handed.held || !conversation || running || sending) return;
-    if (!configured || notice) return void setState({ chatRequest: { ...handed, held: true } });
+    // Earlier messages go with it, so it goes on its own only to a model known to have them: a server's model not known
+    // yet could be another one than they went to.
+    if (!configured || notice || (msgs.length > 0 && next?.id == null)) return void setState({ chatRequest: { ...handed, held: true } });
     sendHanded(handed);
     // `send` reads the state it needs when it runs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handed, conversation, running, sending, configured, notice, snap.workspaceKey]);
+  }, [handed, conversation, running, sending, configured, notice, msgs.length, next?.id, snap.workspaceKey]);
 
   /** Carry on with an unfinished request, with that request's own page and selection, leaving the draft alone. */
   const continueRequest = (user: ChatMessage | undefined) => {
@@ -745,14 +753,18 @@ export function Chat() {
           <span>{provider.warning}</span>
         </div>
       )}
-      {handed?.held && (
+      {handed && (
         <div className="scope-note held-request" role="status">
           <Component />
           <span>
-            <span>Waiting to send: {handed.text}</span>{' '}
-            <button className="link" disabled={running || sending || !conversation} title={running ? 'Available when the current request finishes' : undefined} onClick={() => sendHanded(handed)}>
-              Send
-            </button>{' '}
+            <span>
+              {handed.held ? 'Waiting to send' : 'About to send'}: {handed.text}
+            </span>{' '}
+            {handed.held && (
+              <button className="link" disabled={running || sending || !conversation} title={running ? 'Available when the current request finishes' : undefined} onClick={() => sendHanded(handed)}>
+                Send
+              </button>
+            )}{' '}
             <button className="link" disabled={sending} onClick={() => setState({ chatRequest: null })}>
               Discard
             </button>

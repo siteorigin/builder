@@ -223,7 +223,7 @@ describe('read_component with structure (#172)', () => {
     const big = structuredClone(catalogueComponent('foundation', 'features.grid')!);
     big.id = 'proj.big-abcde';
     big.owner = 'project';
-    for (let p = 0; p < 8; p++) big.properties[`choice${p}`] = { type: 'enum', label: `Choice ${p}`, default: 'v0', options: Array.from({ length: 40 }, (_, k) => ({ value: `v${k}-${'x'.repeat(50)}`, label: `Option ${k}` })) };
+    for (let p = 0; p < 10; p++) big.properties[`choice${p}`] = { type: 'enum', label: `Choice ${p}`, default: 'v0', options: Array.from({ length: 40 }, (_, k) => ({ value: `v${k}-${'x'.repeat(50)}`, label: `Option ${k}` })) };
     // A root holding hundreds of elements: one long node record before any other.
     const root = big.tree!.nodes[big.tree!.rootIds[0]] as ElementNode;
     for (let i = 0; i < 450; i++) {
@@ -237,6 +237,35 @@ describe('read_component with structure (#172)', () => {
     expect(first.properties).toBeUndefined();
     expect(first.note).toMatch(/without structure/);
     expect(first.structure.next).toBeGreaterThan(0);
+  });
+
+  it('lists the first hundred children of a container of thousands, so every read stays whole and goes on', async () => {
+    const s = createStarterState('blank', 'Expo', false);
+    const wide = structuredClone(catalogueComponent('foundation', 'features.grid')!);
+    wide.id = 'proj.wide-abcde';
+    wide.owner = 'project';
+    const root = wide.tree!.nodes[wide.tree!.rootIds[0]] as ElementNode;
+    for (let i = 0; i < 2000; i++) {
+      const id = `n_wide${i}`;
+      wide.tree!.nodes[id] = { id, kind: 'divider' };
+      root.children.push(id);
+    }
+    s.components[wide.id] = wide;
+    const seen: string[] = [];
+    let offset = 0;
+    for (let reads = 0; reads < 40; reads++) {
+      const out = await read(s, { definitionId: wide.id, structure: true, ...(offset ? { offset } : {}) });
+      expect(JSON.parse(serializeResult(out)).truncated).toBeUndefined();
+      if (!offset) {
+        const shown = out.structure.nodes[0].children as string[];
+        expect(shown).toHaveLength(101);
+        expect(shown.at(-1)).toBe(`…and ${root.children.length - 100} more`);
+      }
+      seen.push(...out.structure.nodes.map((n: { id: string }) => n.id));
+      if (out.structure.next === null) break;
+      offset = out.structure.next;
+    }
+    expect(seen.length).toBe(Object.keys(wide.tree!.nodes).length);
   });
 });
 
