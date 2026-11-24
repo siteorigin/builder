@@ -1,7 +1,10 @@
 // Design capture harness for the AI panel (the right dock's AI tab). Opt-in only, never part of
 // `npm run test:e2e`, and it never calls a real provider:
 //
-//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/ai-chat.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] [DESIGN_ONLY=regex] node tests/e2e/design/ai-chat.mjs
+//
+// DESIGN_ONLY limits the captures to states whose name matches it (`DESIGN_ONLY='^(no-provider|ready-)'` for the
+// empty states); the app is still driven through every step, so the states that are kept render as they would.
 //
 // Conversations are seeded through the project's own chat storage before the project opens, and a run in
 // progress is pushed through the same `ai:event` channel the agent uses. The API key is a placeholder that
@@ -22,6 +25,7 @@ const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-d
 mkdirSync(OUT, { recursive: true });
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-design-ai-')));
 const THEMES = ['light', 'dark'];
+const ONLY = process.env.DESIGN_ONLY ? new RegExp(process.env.DESIGN_ONLY) : null;
 
 const app = await electron.launch({
   args: ['.'],
@@ -53,6 +57,7 @@ async function setTheme(theme) {
 
 /** Capture the dock in each theme; `check` must be visible inside it at the moment of capture. */
 async function shot(state, check, { themes = THEMES, full = false } = {}) {
+  if (ONLY && !ONLY.test(state)) return;
   for (const theme of themes) {
     await setTheme(theme);
     await win.mouse.move(700, 450);
@@ -288,7 +293,7 @@ async function markUndoable(undoRunId) {
 /** Drag the dock's edge to a width, and confirm it took. */
 async function setDockWidth(width) {
   const box = await win.locator('.dock').boundingBox();
-  const handle = await win.locator('.dock .resizer').boundingBox();
+  const handle = await win.locator('.seam.right .resizer').boundingBox();
   const y = handle.y + handle.height / 2;
   await win.mouse.move(handle.x + handle.width / 2, y);
   await win.mouse.down();
@@ -348,17 +353,24 @@ await shot('long-scrolled', '.chat-log >> text=Add a call to action');
 await win.getByRole('button', { name: 'New conversation', exact: true }).click();
 await pause(400);
 await shot('ready-empty', '.chat-empty');
-await win.locator('.composer-foot .segmented button').nth(1).click();
-await pause(200);
+const pickMode = async (mode) => {
+  await win.getByRole('button', { name: /^What your next message does/ }).click();
+  await win.getByRole('menuitemradio', { name: new RegExp(`^${mode}`) }).click();
+  await pause(200);
+};
+await pickMode('Ask');
 await shot('ready-ask', '.chat-empty >> text=Ask how your site works');
-await win.locator('.composer-foot .segmented button').nth(0).click();
-await pause(200);
+await pickMode('Edit');
 await frame.locator('h1').first().click();
 await pause(500);
 await frame.locator('h1').first().click();
 await pause(700);
 await openAiTab();
 await shot('ready-selection', '.chat-empty');
+// The same at the dock's narrowest, where the starters wrap.
+await setDockWidth(300);
+await shot('ready-narrow', '.chat-empty .suggestion');
+await setDockWidth(340);
 const ta = win.getByRole('textbox', { name: 'Message' });
 await ta.click();
 await ta.pressSequentially('Make this heading shorter and more confident, and keep the line about family-run. Use sentence case.', { delay: 0 });

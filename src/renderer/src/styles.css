@@ -2620,17 +2620,28 @@ iframe { color-scheme: light dark; }
 .send-btn:hover:not(:disabled) { background: var(--accent-fill-hover); }
 .send-btn:disabled { background: var(--disabled-fill); color: var(--disabled-ink); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .send-btn svg { width: 15px; height: 15px; }
-.chat-empty { margin: auto 0; padding: 16px 8px; display: flex; flex-direction: column; gap: 12px; text-align: center; align-items: center; }
-.chat-empty .spark { width: 40px; height: 40px; border-radius: var(--r-md); display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); }
-.chat-empty h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.chat-empty p { margin: 0; color: var(--text-2); }
-.chat-empty .chat-privacy { font-size: 12px; color: var(--text-3); }
-.suggestions { display: flex; flex-direction: column; gap: 6px; width: 100%; }
-.suggestions-label { margin: 0 0 2px; font-size: 12px; color: var(--text-2); text-align: left; }
-.chat-not-ready { display: flex; flex-direction: column; gap: 10px; align-items: center; width: 100%; text-align: left; }
+/* The empty conversation: a heading, one line, and starters as quiet rows that sit just above the box they fill.
+   Left-aligned with the rows' text, so the eye runs heading → starter → composer without a centred detour. */
+.chat-empty { margin-top: auto; padding: 0 0 4px; display: flex; flex-direction: column; gap: 14px; align-items: stretch; text-align: left; }
+.chat-empty.top { margin-top: 0; padding-top: 6px; }
+.chat-empty-head { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+.chat-empty h3 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--text); }
+.chat-empty h3 svg { flex: none; width: 15px; height: 15px; color: var(--accent-text); }
+.chat-empty-head p { margin: 0; font-size: 13px; line-height: 18px; color: var(--text-2); }
+.chat-empty > .btn { align-self: flex-start; margin-left: 8px; }
+.chat-privacy { margin: 0; font-size: 12px; line-height: 16px; color: var(--text-3); }
+.chat-empty .chat-privacy { padding: 0 8px; }
+.chat-footnote { flex: none; margin: 0 14px 10px; }
+.composer:has(+ .chat-footnote) { margin-bottom: 6px; }
+.suggestions { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.suggestions-label { margin: 0 0 2px; padding: 0 8px; font-size: 12px; line-height: 16px; color: var(--text-3); }
+.chat-not-ready { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; width: 100%; text-align: left; }
 .chat-not-ready .scope-note { width: 100%; }
-.suggestion { padding: 9px 12px; border-radius: var(--r-sm); border: 1px solid var(--border-control); background: var(--raised); text-align: left; font-size: 13px; line-height: 1.4; color: var(--text); }
-.suggestion:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+/* A quiet filled row: a soft --panel-2 face marks it as something to press without the 3:1 edge of a form control, so
+   the rows never read as a second set of text fields competing with the composer. */
+.suggestion { min-height: 30px; padding: 6px 8px; border: 0; border-radius: var(--r-sm); background: var(--panel-2); text-align: left; font-size: 13px; line-height: 18px; color: var(--text); overflow-wrap: anywhere; }
+.suggestion:hover { background-image: linear-gradient(var(--hover), var(--hover)); }
+.suggestion:active { background-image: linear-gradient(var(--active), var(--active)); }
 .run-strip { flex: none; display: flex; align-items: center; gap: 8px; margin: 0 12px; padding: 6px 6px 6px 10px; border-radius: var(--r-md); background: var(--accent-soft); color: var(--text); }
 .run-icon { flex: none; display: grid; place-items: center; color: var(--accent-text); }
 .run-icon svg { width: 15px; height: 15px; }
