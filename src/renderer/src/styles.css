@@ -3714,6 +3714,8 @@ label.import-review-what { color: var(--text); cursor: pointer; }
 .import-review-refused { color: var(--text); }
 .import-review-refused svg { color: var(--red); }
 .import-review-rest { margin: 10px 0 0; font-size: 12px; }
+.post-import-notes { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.post-import-missing ul { columns: 1; }
 .asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .asset-size.asset-gone { background: rgb(150 32 28); }
 .asset-uses { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }

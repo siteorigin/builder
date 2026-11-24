@@ -25,6 +25,7 @@ import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal } from './panels/Dialogs';
 import { ImportReviewModal } from './panels/ImportReview';
+import { PostImportReviewModal } from './panels/PostImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
 import { DuplicateProjectModal, NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openComponentStudio, openSiteStyles, planLayers, setMode } from './lib/actions';
@@ -718,6 +719,7 @@ export function Editor() {
       {modal?.kind === 'history' && <HistoryModal />}
       {modal?.kind === 'health' && <HealthModal />}
       {modal?.kind === 'import-review' && <ImportReviewModal key={modal.id} id={modal.id} rows={modal.rows} />}
+      {modal?.kind === 'post-import' && <PostImportReviewModal key={modal.preview.id} preview={modal.preview} opening={modal.opening} />}
       {modal?.kind === 'paste-style' && <PasteStyleModal target={modal.ref} opening={modal.opening} />}
       {switching?.kind === 'new' && <NewProjectModal onClose={() => setSwitching(null)} />}
       {switching?.kind === 'duplicate' && (
