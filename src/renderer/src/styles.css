@@ -4075,7 +4075,6 @@ button.asset-use:hover svg.go { color: var(--text); }
 .seo-filters .select { width: auto; max-width: 100%; }
 .seo-filters .select + label { margin-left: 6px; }
 .seo-showing { margin-left: auto; font-variant-numeric: tabular-nums; }
-.seo-showing:empty { display: none; }
 .seo-pillar-count { margin-left: auto; font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .seo-readiness .health-row .health-hint { color: var(--text-2); }
 .health-copy { display: flex; align-items: center; gap: 8px; }

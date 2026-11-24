@@ -4,7 +4,7 @@
 // leaves focus on the section, never on another finding's action. The export dialog names the findings worth fixing
 // before the website goes out, with the way to each and to all of them, and a real website export still runs.
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { answerChoosers, createProject, eventually, launch, scratch, step } from './harness.mjs';
 
@@ -33,6 +33,24 @@ const closeDialog = async () => {
 const openRail = async (name) => {
   if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
 };
+const pageShown = () => win.locator('.toolbar .project-title').innerText();
+const openPage = async (title) => {
+  await openRail('Pages');
+  await win.locator('.pages-list [role="option"]', { hasText: title }).first().click();
+  await eventually(async () => assert.match(await pageShown(), new RegExp(title), `${title} is open`));
+};
+/** Which of the open post's pictures the writer shows (flashes) from now on, by their place in the post. */
+const watchPictures = () =>
+  win.evaluate(() => {
+    window.__shownPictures = [];
+    window.__pictureWatch?.disconnect();
+    window.__pictureWatch = new MutationObserver((changes) => {
+      for (const c of changes)
+        if (c.target.matches?.('figure.post-figure') && c.target.classList.contains('flash')) window.__shownPictures.push([...document.querySelectorAll('.post-writer-holder:not([hidden]) figure.post-figure')].indexOf(c.target) + 1);
+    });
+    window.__pictureWatch.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class'] });
+  });
+const picturesShown = () => win.evaluate(() => window.__shownPictures);
 
 step('a site with things left undone: no public URL, Home hidden from search, an unlinked page without a description, a post with an undescribed picture, a “Click here!” link');
 const png = await win.evaluate(() => {
@@ -55,7 +73,7 @@ const header = s0.site.shell.header.rootIds[0];
 const aboutItem = s0.site.shell.header.nodes[header].props.links.find((l) => l.label === 'About').id;
 await apply(
   [
-    { type: 'site.update', description: '' },
+    { type: 'site.update', baseUrl: '', description: '' },
     { type: 'page.update', pageId: homeId, noindex: true },
     { type: 'page.create', pageId: 'pg_kilns', title: 'Kiln hire', route: '/kiln-hire/', addToNavigation: false },
     { type: 'page.update', pageId: 'pg_kilns', seoTitle: 'Kiln hire by the hour · Riverside Studio', description: '' },
@@ -83,40 +101,59 @@ await apply(
 step('Project health counts Search & AI readiness on its own, by pillar, every count matching its rows');
 let health = await openHealth();
 const seo = health.getByTestId('health-seo');
-await seo.waitFor();
 const seoHeading = seo.getByRole('heading', { level: 3 });
-assert.match(await seoHeading.innerText(), /^Search & AI readiness\s+\d+$/);
-const total = Number((await seo.locator('h3 .health-count').innerText()).trim());
 const rows = seo.locator('.health-row');
-assert.equal(await rows.count(), total, 'the section’s count is its rows');
-const pillars = await seo.locator('.health-place').evaluateAll((els) => els.map((el) => ({ pillar: el.dataset.pillar, name: el.querySelector('h4').innerText.replace(/\s*\d+$/, '').trim(), count: Number(el.querySelector('.seo-pillar-count').textContent), rows: el.querySelectorAll('.health-row').length })));
-assert.deepEqual(
-  pillars.map((p) => [p.pillar, p.name]),
-  [
-    ['technical', 'Technical'],
-    ['agentic', 'Agentic readiness'],
-    ['content', 'Content & links'],
-    ['social', 'Social & performance']
-  ],
-  'the pillars with findings, in order'
-);
-for (const p of pillars) assert.equal(p.count, p.rows, `${p.name} counts its rows`);
-assert.equal(
-  pillars.reduce((n, p) => n + p.rows, 0),
-  total
-);
 const row = (text) => seo.locator('.health-row', { hasText: text });
-const technical = seo.locator('[data-pillar="technical"] .health-row');
-assert.equal(await technical.count(), 2);
+const seoCount = async () => Number((await seo.locator('h3 .health-count').innerText()).trim());
+// Each pillar's rows, as their tone and the finding's words (after what screen readers hear of its severity).
+const pillarRows = () =>
+  seo.locator('.health-place').evaluateAll((els) =>
+    els.map((el) => ({
+      pillar: el.dataset.pillar,
+      name: el.querySelector('h4').textContent.replace(/\d+$/, '').trim(),
+      count: Number(el.querySelector('.seo-pillar-count').textContent),
+      rows: [...el.querySelectorAll('.health-row')].map((r) => {
+        const said = [...r.querySelector('.health-text').childNodes].filter((n) => !n.classList?.contains('sr-only') && !n.classList?.contains('health-hint'));
+        return `${r.classList.contains('warn') ? 'warning' : 'note'}: ${said.map((n) => n.textContent).join('').trim()}`;
+      })
+    }))
+  );
+await eventually(async () => assert.equal(await seoCount(), 11, 'the site’s eleven findings are counted'));
+const total = 11;
+assert.match(await seoHeading.innerText(), /^Search & AI readiness\s+11$/);
+assert.equal(await rows.count(), total, 'the section’s count is its rows');
+const found = await pillarRows();
+assert.deepEqual(
+  found.map(({ pillar, name, count }) => [pillar, name, count]),
+  [
+    ['technical', 'Technical', 2],
+    ['agentic', 'Agentic readiness', 1],
+    ['content', 'Content & links', 6],
+    ['social', 'Social & performance', 2]
+  ],
+  'the pillars with findings, in order, each counting its rows'
+);
+for (const p of found) assert.equal(p.count, p.rows.length, `${p.name} counts its rows`);
+const expected = {
+  technical: [/^warning: No public site URL is set\.$/, /^warning: The Home page asks search engines not to list it\.$/],
+  agentic: [/^warning: Posts: “Spring pottery classes”: picture 2 in its text has no description\.$/],
+  content: [/^warning: “Kiln hire” has no description\.$/, /^warning: “Spring pottery classes” \(Posts\) has no description\.$/, /^warning: No link on the rest of the site leads to “Kiln hire”\.$/, /^note: “About” has a description of \d+ characters/, /^note: “Contact” has a description of \d+ characters/, /^note: A link says only “Click here!” in the shared header\.$/],
+  social: [/^warning: The site has no sharing image\.$/, /^note: The site has no icon of its own/]
+};
+for (const p of found) {
+  assert.equal(p.rows.length, expected[p.pillar].length, `${p.name}: ${p.rows.join(' | ')}`);
+  p.rows.forEach((text, i) => assert.match(text, expected[p.pillar][i], `${p.name} row ${i + 1}`));
+}
+assert.equal(await seo.locator('.seo-readiness-summary').innerText(), '7 warnings and 4 notes. Technical, Agentic readiness, Content & links and Social & performance need attention; 1 of 5 areas is ready.');
 assert.equal(await row('No public site URL is set.').getByRole('button', { name: 'Go to Public URL' }).count(), 1);
 assert.equal(await row('The Home page asks search engines not to list it.').getByRole('button', { name: 'Go to Search & sharing' }).count(), 1);
 assert.equal(await row('“Kiln hire” has no description.').getByRole('button', { name: 'Go to Search & sharing' }).count(), 1);
 assert.equal(await row('“Spring pottery classes” (Posts) has no description.').getByRole('button', { name: 'Open post' }).count(), 1);
 assert.equal(await row('picture 2 in its text has no description').getByRole('button', { name: 'Go to picture' }).count(), 1);
 assert.equal(await row('A link says only “Click here!” in the shared header.').getByRole('button', { name: 'Show on page' }).count(), 1);
+assert.equal(await row('The site has no sharing image.').getByRole('button', { name: 'Go to sharing image' }).count(), 1);
 // Fixed by a link from elsewhere, not on the page itself: said, with no button that would mislead.
 const unlinked = row('No link on the rest of the site leads to “Kiln hire”.');
-assert.equal(await unlinked.count(), 1);
 assert.equal(await unlinked.getByRole('button').count(), 0, 'an unlinked page has no single place to fix it');
 assert.match(await unlinked.innerText(), /Link to it from a menu or a related page\./, 'the row says why it matters and what to do');
 // The status bar's count stays the project's own: the readiness findings are not in it.
@@ -125,24 +162,31 @@ assert.equal(Number(await health.locator('[data-group="warnings"] h3 .health-cou
 // The entry's picture is also one of the project's own warnings, and leads to the same place there.
 const generalAlt = health.locator('[data-group="warnings"] .health-row', { hasText: 'picture 2 in its text has no description' });
 assert.equal(await generalAlt.getByRole('button', { name: 'Go to picture' }).count(), 1, 'the project’s own warning leads to the picture too');
-assert.equal(await health.locator('.health-jumps').getByRole('button', { name: /Search & AI/ }).count(), 1, 'the summary leads to the section');
 await health.screenshot({ path: join(SHOTS, 'seo-health.png') });
+await health.locator('.health-jumps').getByRole('button', { name: /Search & AI/ }).click();
+await eventually(async () => assert.equal(await isFocused(seoHeading), true, 'the summary’s jump goes to the section'));
 
 step('the filters show one pillar, one severity, or both; every count is what the choice lists');
 const pillarSelect = seo.getByLabel('Pillar', { exact: true });
 const severitySelect = seo.getByLabel('Severity', { exact: true });
-const content = Number((await pillarSelect.locator('option[value="content"]').innerText()).match(/\((\d+)\)/)[1]);
+const options = (select) => select.locator('option').allInnerTexts();
+assert.deepEqual(await options(pillarSelect), ['All pillars (11)', 'Technical (2)', 'Entity & structured data (0)', 'Agentic readiness (1)', 'Content & links (6)', 'Social & performance (2)']);
+assert.deepEqual(await options(severitySelect), ['All (11)', 'Warnings (7)', 'Notes (4)']);
 await pillarSelect.selectOption('content');
 await eventually(async () => assert.deepEqual(await seo.locator('.health-place').evaluateAll((els) => els.map((el) => el.dataset.pillar)), ['content']));
-assert.equal(await rows.count(), content, 'Content & links lists what its option counted');
-assert.equal(await seo.locator('.seo-showing').innerText(), `Showing ${content} of ${total}`);
-assert.equal(await technical.count(), 0, 'no technical finding is shown');
-const notes = Number((await severitySelect.locator('option[value="info"]').innerText()).match(/\((\d+)\)/)[1]);
+assert.equal(await rows.count(), 6, 'Content & links lists what its option counted');
+assert.equal(await seo.locator('.seo-showing').innerText(), `Showing 6 of ${total}`);
+// The severities, counted in Content & links.
+assert.deepEqual(await options(severitySelect), ['All (6)', 'Warnings (3)', 'Notes (3)']);
 await severitySelect.selectOption('info');
-await eventually(async () => assert.equal(await rows.count(), notes));
+await eventually(async () => assert.equal(await rows.count(), 3));
+assert.equal(await seo.locator('.health-row.warn').count(), 0, 'no warning is shown');
 assert.equal(await row('A link says only “Click here!”').count(), 1, 'the link’s note is shown');
-assert.equal(await row('“Kiln hire” has no description.').count(), 0, 'warnings are not');
-assert.equal(await seo.locator('.health-row.warn').count(), 0);
+// The pillars, counted among the notes.
+assert.deepEqual(await options(pillarSelect), ['All pillars (4)', 'Technical (0)', 'Entity & structured data (0)', 'Agentic readiness (0)', 'Content & links (3)', 'Social & performance (1)']);
+await pillarSelect.selectOption('social');
+await eventually(async () => assert.equal(await rows.count(), 1));
+assert.match(await rows.first().innerText(), /The site has no icon of its own/, 'Social & performance’s one note is the site icon');
 await pillarSelect.selectOption('entity');
 await eventually(async () => assert.equal(await rows.count(), 0));
 assert.match(await seo.locator('.seo-empty').innerText(), /No notes in Entity & structured data\./);
@@ -150,14 +194,19 @@ await seo.getByRole('button', { name: 'Clear filters' }).click();
 await eventually(async () => assert.equal(await rows.count(), total, 'clearing the filters shows every finding again'));
 assert.equal(await isFocused(pillarSelect), true, 'focus moves to the pillar filter');
 
-step('a finding fixed while the dialog is open takes its row with it, and focus stays in the section');
+step('a finding fixed while the dialog is open takes its row with it; focus elsewhere stays where it is');
+const footerClose = health.locator('.modal-foot').getByRole('button', { name: 'Close', exact: true });
+await footerClose.focus();
+await apply([{ type: 'page.update', pageId: Object.values(s0.pages).find((p) => p.title === 'Contact').id, description: 'Call in, write or visit the studio by the river: we answer every message within a day.' }], 'Describe Contact');
+await eventually(async () => assert.equal(await seoCount(), total - 1, 'the fixed note is gone'));
+assert.equal(await isFocused(footerClose), true, 'focus outside the section is left alone');
 const kilnAction = row('“Kiln hire” has no description.').getByRole('button', { name: 'Go to Search & sharing' });
 await kilnAction.focus();
 // A description too short replaces the missing one with a note about its length: as many findings as before.
 await apply([{ type: 'page.update', pageId: 'pg_kilns', description: 'Hire our kiln' }], 'Describe Kiln hire');
 await eventually(async () => assert.equal(await row('“Kiln hire” has no description.').count(), 0, 'the fixed finding is gone'));
 assert.equal(await row('“Kiln hire” has a description of 13 characters').count(), 1, 'its note took its place');
-assert.equal(Number((await seo.locator('h3 .health-count').innerText()).trim()), total, 'the count is the same');
+assert.equal(await seoCount(), total - 1, 'the count is the same');
 await eventually(async () => assert.equal(await isFocused(seoHeading), true, 'focus is on the section’s heading, not another finding’s action'));
 
 step('site: Go to Public URL opens Site details at the field');
@@ -166,43 +215,53 @@ await modal.waitFor({ state: 'detached' });
 const urlField = win.locator('#dock-panel-styles').getByRole('textbox', { name: 'Public URL', exact: true });
 await eventually(async () => assert.equal(await isFocused(urlField), true, 'the Public URL field has focus'));
 
-step('page: Go to Search & sharing selects Home with its search setting focused');
+step('page: from About, Go to Search & sharing opens Home with its search setting focused');
+const homeTitle = s0.pages[homeId].title;
+await openPage('About');
 health = await openHealth();
 await row('The Home page asks search engines not to list it.').getByRole('button', { name: 'Go to Search & sharing' }).click();
 await modal.waitFor({ state: 'detached' });
+await eventually(async () => assert.match(await pageShown(), new RegExp(homeTitle), 'Home is open'));
 await eventually(async () => assert.equal(await isFocused(win.locator('#page-seo-noindex')), true, 'the Home page’s search setting has focus'));
 
-step('entry: Go to picture opens the post at its second picture; Open post focuses its excerpt');
-health = await openHealth();
-await row('picture 2 in its text has no description').getByRole('button', { name: 'Go to picture' }).click();
-await modal.waitFor({ state: 'detached' });
+step('entry: from a page, Open post opens the post with its excerpt focused');
 const writer = win.locator('.post-writer-holder:not([hidden])');
-await writer.waitFor();
-assert.equal(await writer.locator('.post-title-input').inputValue(), 'Spring pottery classes');
-await eventually(async () => assert.equal(await writer.locator('figure.post-figure').nth(1).evaluate((el) => el.classList.contains('flash')), true, 'the second picture is shown'), 1500, 50);
+assert.equal(await writer.count(), 0, 'no post is open');
 health = await openHealth();
 await row('“Spring pottery classes” (Posts) has no description.').getByRole('button', { name: 'Open post' }).click();
 await modal.waitFor({ state: 'detached' });
-await eventually(async () => assert.equal(await isFocused(win.locator('.post-writer-holder:not([hidden]) [data-entry-field="excerpt"] textarea')), true, 'the excerpt has focus'));
+await writer.waitFor();
+assert.equal(await writer.locator('.post-title-input').inputValue(), 'Spring pottery classes');
+await eventually(async () => assert.equal(await isFocused(writer.locator('[data-entry-field="excerpt"] textarea')), true, 'the excerpt has focus'));
 
-step('element: Show on page selects the link’s menu in the shared header');
+step('entry: Go to picture, from the project’s own warning and from Search & AI readiness, shows the post’s second picture');
+for (const where of ['warnings', 'seo']) {
+  health = await openHealth();
+  await watchPictures();
+  const list = where === 'warnings' ? health.locator('[data-group="warnings"]') : health.getByTestId('health-seo');
+  await list.locator('.health-row', { hasText: 'picture 2 in its text has no description' }).getByRole('button', { name: 'Go to picture' }).click();
+  await modal.waitFor({ state: 'detached' });
+  await eventually(async () => assert.deepEqual(await picturesShown(), [2], `${where}: the second picture is shown`));
+}
+assert.equal(await writer.locator('.post-title-input').inputValue(), 'Spring pottery classes');
+
+step('element: from the post, Show on page selects the link’s menu in the shared header');
 health = await openHealth();
-await row('A link says only “Click here!”').getByRole('button', { name: 'Show on page' }).click();
+await row('A link says only “Click here!” in the shared header.').getByRole('button', { name: 'Show on page' }).click();
 await modal.waitFor({ state: 'detached' });
+await eventually(async () => assert.equal(await writer.count(), 0, 'the post writer gives way to the page'));
+// Opening Layers shows the selection; it never makes one.
 await openRail('Layers');
 await eventually(async () => assert.equal(await win.locator(`[role="treeitem"][data-owner="shell:header"][data-node="${header}"]`).getAttribute('aria-selected'), 'true', 'the header’s menu is selected'));
 
 step('the export dialog names what to fix before the website goes out, without stopping it');
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 const preflight = modal.getByTestId('export-seo-preflight');
-await preflight.waitFor();
-assert.match(await preflight.innerText(), /\d+ things keep the website from being found or shared well\./);
+const preRows = preflight.locator('.export-review-list > li .export-review-what');
+await eventually(async () => assert.match(await preflight.innerText(), /^6 things keep the website from being found or shared well\./));
 assert.match(await preflight.innerText(), /This won’t stop the export\./);
-const preRows = preflight.locator('.export-review-list > li');
-assert.ok((await preRows.count()) <= 4, 'a few are shown');
-assert.equal(await preRows.filter({ hasText: 'No public site URL is set.' }).count(), 1);
-assert.equal(await preRows.filter({ hasText: 'The Home page asks search engines not to list it.' }).count(), 1);
-assert.equal(await preRows.filter({ hasText: 'picture 2 in its text has no description' }).count(), 1, 'one of each kind before a second of any');
+assert.deepEqual(await preRows.allInnerTexts(), ['No public site URL is set.', 'The Home page asks search engines not to list it.', 'Posts: “Spring pottery classes”: picture 2 in its text has no description.', '“Spring pottery classes” (Posts) has no description.'], 'one of each kind, problems and warnings only, in the audit’s order');
+assert.match(await preflight.locator('.export-seo-more').innerText(), /^2 more are in Project health\./);
 const siteCard = modal.getByRole('button', { name: /Website files, ready to upload/ });
 assert.equal(await siteCard.getAttribute('aria-disabled'), null, 'the website export is still available');
 await modal.screenshot({ path: join(SHOTS, 'seo-preflight.png') });
@@ -210,6 +269,19 @@ await preflight.getByRole('button', { name: 'View all in Project health' }).clic
 health = win.getByRole('dialog', { name: 'Project health' });
 await health.waitFor();
 await eventually(async () => assert.equal(await isFocused(health.getByTestId('health-seo').getByRole('heading', { level: 3 })), true, 'Project health opens at Search & AI readiness'));
+await closeDialog();
+
+step('a real website export runs with every warning still there, the missing public URL among them');
+const exportsDir = join(WORK, 'exports');
+mkdirSync(exportsDir, { recursive: true });
+await win.getByRole('button', { name: 'Export', exact: true }).click();
+await preflight.locator('li', { hasText: 'No public site URL is set.' }).waitFor();
+await answerChoosers(app, [{ dialog: 'open', selection: 'folder', paths: [exportsDir] }]);
+await siteCard.click();
+const result = modal.locator('.export-result');
+await result.waitFor({ timeout: 300000 });
+assert.match(await result.innerText(), /^Exported \d+ pages/, `the website export succeeds: ${await modal.innerText()}`);
+assert.ok(existsSync(join(exportsDir, 'riverside-studio-site', 'kiln-hire', 'index.html')), 'the website was written, Kiln hire with it');
 await closeDialog();
 
 step('the preflight leads to the public URL; once it is saved, the export no longer names it');
@@ -221,18 +293,9 @@ await urlField.fill('https://riverside.example');
 await urlField.press('Tab');
 await eventually(async () => assert.equal((await snapshot()).state.site.baseUrl, 'https://riverside.example'));
 await win.getByRole('button', { name: 'Export', exact: true }).click();
-await preflight.waitFor();
-assert.equal(await preflight.locator('li', { hasText: 'No public site URL is set.' }).count(), 0, 'the public URL is no longer named');
-assert.equal(await preflight.locator('li', { hasText: 'The Home page asks search engines not to list it.' }).count(), 1, 'Home is still hidden from search');
-
-step('a real website export runs with the warnings still there');
-const exportsDir = join(WORK, 'exports');
-mkdirSync(exportsDir, { recursive: true });
-await answerChoosers(app, [{ dialog: 'open', selection: 'folder', paths: [exportsDir] }]);
-await siteCard.click();
-const result = modal.locator('.export-result');
-await result.waitFor({ timeout: 300000 });
-assert.match(await result.innerText(), /^Exported \d+ pages/, `the website export succeeds: ${await modal.innerText()}`);
+await eventually(async () => assert.match(await preflight.innerText(), /^5 things keep the website from being found or shared well\./));
+assert.deepEqual(await preRows.allInnerTexts(), ['The Home page asks search engines not to list it.', 'Posts: “Spring pottery classes”: picture 2 in its text has no description.', '“Spring pottery classes” (Posts) has no description.', 'No link on the rest of the site leads to “Kiln hire”.']);
+assert.match(await preflight.locator('.export-seo-more').innerText(), /^1 more is in Project health\./);
 await closeDialog();
 
 assert.deepEqual(errors, [], `no page errors: ${errors.join('\n')}`);

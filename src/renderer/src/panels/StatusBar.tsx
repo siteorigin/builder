@@ -621,7 +621,8 @@ export function HealthModal() {
   );
   // Settling a problem (or removing a saved copy) removes the row holding the focused button, and one that failed may
   // have left focus nowhere: carry on from the summary, which says what is left.
-  const listed = [snap?.diagnostics.length ?? 0, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, snap?.savedCopies?.length ?? 0, runtime.state, !!pageIssue].join();
+  // The Search & AI readiness count too: the summary's jump to it goes once its last finding is fixed.
+  const listed = [snap?.diagnostics.length ?? 0, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, snap?.savedCopies?.length ?? 0, runtime.state, !!pageIssue, seoAudit?.ok ? seoAudit.findings.length : -1].join();
   useEffect(() => {
     const active = document.activeElement;
     if (!active || active === document.body) summaryRef.current?.focus();

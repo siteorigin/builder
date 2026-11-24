@@ -106,9 +106,11 @@ export const PREFLIGHT_EXAMPLES = 4;
  */
 export function seoPreflight(findings: readonly SeoFinding[], limit = PREFLIGHT_EXAMPLES): { total: number; examples: SeoFinding[]; more: number; notes: number } {
   const due = [...findings.filter((f) => f.severity === 'error'), ...findings.filter((f) => f.severity === 'warning')];
-  const picked = new Set<SeoFinding>();
+  const cap = Math.max(0, Math.floor(limit));
+  // By place in the list, so a finding is shown (and counted) once for each time it is listed.
+  const picked = new Set<number>();
   const codes = new Set<string>();
-  for (const f of due) if (picked.size < limit && !codes.has(f.code)) (codes.add(f.code), picked.add(f));
-  for (const f of due) if (picked.size < limit) picked.add(f);
-  return { total: due.length, examples: due.filter((f) => picked.has(f)), more: due.length - picked.size, notes: findings.length - due.length };
+  due.forEach((f, i) => void (picked.size < cap && !codes.has(f.code) && (codes.add(f.code), picked.add(i))));
+  due.forEach((_, i) => void (picked.size < cap && picked.add(i)));
+  return { total: due.length, examples: due.filter((_, i) => picked.has(i)), more: due.length - picked.size, notes: findings.length - due.length };
 }
