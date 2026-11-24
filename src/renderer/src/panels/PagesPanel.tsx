@@ -1105,7 +1105,7 @@ export function PagesPanel() {
  * category has an archive of its own, and a way to see the index in the preview, as visitors get it.
  */
 /** The page sizes offered for a collection's index, besides its own (a size set in its settings file is kept). */
-const PAGE_SIZES = [2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 50, MAX_PAGE_SIZE];
+const PAGE_SIZES = [1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 50, MAX_PAGE_SIZE];
 
 function CollectionArchive({ collectionId, name, route, pageSize, categories }: { collectionId: string; name: string; route: string; pageSize: number; categories: boolean }) {
   const update = (patch: { pageSize?: number; categoryArchives?: boolean }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);

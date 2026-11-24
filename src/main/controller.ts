@@ -2218,8 +2218,9 @@ export class Controller {
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
-    for (const { route, draft } of withheldRoutes(state, live))
-      if (existsSync(join(out, route, 'index.html')) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
+    // An archive page the website has at such an address is its own (route/index.html); any other file there is not.
+    for (const { route, draft, archived } of withheldRoutes(state, live))
+      if ((!archived && existsSync(join(out, route, 'index.html'))) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
         return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${draft}. Remove the file that puts it there, then export again.`, warnings };
     // The not-found page, which hosts show at any address the site does not have.
     const notFound = await readNotFoundPage(out);

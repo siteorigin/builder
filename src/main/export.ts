@@ -605,17 +605,19 @@ export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ f
  * The addresses the website keeps back, each with the draft it would show: every draft page's and draft entry's own,
  * and each old address that leads to one. `live` is the published state of `state`.
  */
-export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string }> {
+export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string; archived?: true }> {
   if (live === state) return [];
   const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
   const shown = new Set(siteEntries(live).map((e) => e.route.toLowerCase()));
-  // A collection's archive page shows at a draft's address made before archive pages: nothing of the draft is there.
+  // A collection's archive page shows at a draft's address made before archive pages: its own page there is the
+  // archive's, so only another file at that address (a copy of the draft as route.html) would publish the draft.
   const archived = new Set(archivePages(live).map((p) => p.route.toLowerCase()));
-  return [
+  const routes: Array<{ route: string; draft: string }> = [
     ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
     ...siteEntries(state).filter((e) => !shown.has(e.route.toLowerCase())).map((e) => ({ route: e.route, draft: e.entry.title })),
     ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.title }))
-  ].filter((r) => !archived.has(r.route.toLowerCase()));
+  ];
+  return routes.map((r) => (archived.has(r.route.toLowerCase()) ? { ...r, archived: true as const } : r));
 }
 
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */

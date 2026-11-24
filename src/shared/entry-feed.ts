@@ -111,13 +111,31 @@ export function termNamed(collection: Collection, taxonomy: string, wanted: stri
 export function termsNamed(collection: Collection, taxonomy: string, wanted: string): string[] {
   const whole = termNamed(collection, taxonomy, wanted.trim());
   if (whole) return [whole];
+  const terms = own(collection.settings?.taxonomies, taxonomy)?.terms;
+  if (!terms || typeof terms !== 'object') return [];
+  // Each term by its ID and by its label, a label's commas compared without the spaces around them; and the most
+  // pieces any label has, so a run longer than that is never tried.
+  const norm = (t: string) =>
+    t
+      .split(',')
+      .map((w) => w.trim())
+      .join(',')
+      .toLowerCase();
+  const byName = new Map<string, string>();
+  let longest = 1;
+  for (const id of Object.keys(terms)) {
+    const label = typeof terms[id]?.label === 'string' ? terms[id].label : '';
+    if (label.trim() && !byName.has(norm(label))) byName.set(norm(label), id);
+    longest = Math.max(longest, label.split(',').length);
+  }
+  for (const id of Object.keys(terms)) byName.set(id.toLowerCase(), id);
   // A label may hold a comma itself ("Arts, Culture"): the longest run of pieces that names a term is taken first.
-  const pieces = wanted.split(',').map((w) => w.trim());
+  const pieces = wanted.split(',').map((w) => w.trim().toLowerCase());
   const found = new Set<string>();
   for (let i = 0; i < pieces.length; ) {
-    let j = pieces.length;
     let term: string | undefined;
-    for (; j > i; j--) if ((term = termNamed(collection, taxonomy, pieces.slice(i, j).join(', ')))) break;
+    let j = Math.min(pieces.length, i + longest);
+    for (; j > i; j--) if ((term = byName.get(pieces.slice(i, j).join(',')))) break;
     if (term) found.add(term);
     i = term ? j : i + 1;
   }

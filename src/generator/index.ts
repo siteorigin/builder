@@ -2513,11 +2513,16 @@ interface RowNeeds {
 function pageRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<string, RowNeeds | null> = new Map(), path: Set<string> = new Set()): RowNeeds | null {
   if (def.kind === 'code') {
     const source = def.source ?? '';
-    if (Object.hasOwn(def.properties, 'so_pages') || !/\bso_pages\b/.test(source)) return null;
+    if (Object.hasOwn(def.properties, 'so_pages') || !/\bso_pages\b/.test(source) || path.has(def.id)) return null;
     const entries = codeEntryNeeds(source);
-    // And what the designs it places need in turn: code converted from a design imports the designs inside it.
-    for (const d of Object.values(state.components))
-      if (d.kind === 'managed' && d.tree && d.id !== def.id && source.includes(`/${defKey(d.id)}.svelte`)) for (const [k, q] of treeRowNeeds(state, d, memo, path)?.entries ?? []) entries.set(k, q);
+    // And what the components it places need in turn: code converted from a design imports the designs (or code made
+    // from them) inside it, by their files' names.
+    path.add(def.id);
+    for (const d of Object.values(state.components)) {
+      if (d.id === def.id || !source.includes(`/${defFile(d).split('/').pop()}`)) continue;
+      for (const [k, q] of pageRowNeeds(state, d, memo, path)?.entries ?? []) entries.set(k, q);
+    }
+    path.delete(def.id);
     return { articles: Infinity, currentPage: true, entries };
   }
   return treeRowNeeds(state, def, memo, path);
@@ -2847,11 +2852,14 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   // An old address only sends visitors on: it shows no header or footer while it does. Worked out once per state in a
   // cached run, so the layout follows the list of old addresses, not every entry's details that decide it.
   const redirects = derived(state, 'redirectRouteIds', (s) => liveRedirects(s).map((r) => routeId(r.from)));
+  // An archive page shows both parts, even at the address of a draft made before archive pages.
+  const archived = archiveRouteIds(state);
   const without = (part: ShellPart) => {
     const hidden = state.site.pageOrder
       .filter((id) => Object.hasOwn(state.pages, id) && !showsPart(state.pages[id], part))
       .map((id) => routeId(state.pages[id].route))
-      .concat(redirects);
+      .concat(redirects)
+      .filter((id) => !archived.has(id));
     // The not-found page shows the part when a page does. Served at a missing address, it starts with no route at all.
     const shown = state.site.pageOrder.some((id) => Object.hasOwn(state.pages, id) && showsPart(state.pages[id], part));
     return (shown ? hidden : hidden.concat(routeId(NOT_FOUND_ROUTE), '')).sort();
@@ -2945,9 +2953,11 @@ export function generateAppHtml(state: ProjectState): string {
 export function routeLanguages(state: ProjectState): Array<[string, string]> {
   const site = siteLanguage(state.site);
   const out: Array<[string, string]> = [];
+  const archived = archiveRouteIds(state);
   for (const id of state.site.pageOrder) {
     const page = state.pages[id];
-    if (!page) continue;
+    // A draft whose address an archive page has is not what shows there.
+    if (!page || archived.has(routeId(page.route))) continue;
     const language = pageLanguage(state.site, page);
     if (!sameLanguage(language, site)) out.push([routeId(page.route), language]);
   }
@@ -2959,6 +2969,9 @@ function routeLanguagesJs(state: ProjectState, indent = ''): string {
   return JSON.stringify(Object.fromEntries(languagesByRoute(state)), null, '\t').replace(/\n/g, '\n' + indent);
 }
 
+/** The route IDs of the site's archive pages (see shared/archives.ts), worked out once per state in a cached run. */
+const archiveRouteIds = (state: ProjectState): ReadonlySet<string> => new Set(derived(state, 'archiveRouteIds', (s) => archivePages(s).map((p) => routeId(p.route))));
+
 /** routeLanguages as a file depends on it: on the list alone, not on every page that goes into it. */
 const languagesByRoute = (state: ProjectState) => derived(state, 'routeLanguages', routeLanguages);
 
@@ -2969,9 +2982,10 @@ const languagesByRoute = (state: ProjectState) => derived(state, 'routeLanguages
 export function routeDirections(state: ProjectState): Array<[string, string]> {
   const site = siteDirection(state.site);
   const out: Array<[string, string]> = [];
+  const archived = archiveRouteIds(state);
   for (const id of state.site.pageOrder) {
     const page = state.pages[id];
-    if (!page) continue;
+    if (!page || archived.has(routeId(page.route))) continue;
     const dir = pageDirection(state.site, page);
     if (dir !== site) out.push([routeId(page.route), dir]);
   }

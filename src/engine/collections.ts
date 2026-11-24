@@ -678,7 +678,15 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
     if (!archive || archive.kind !== 'collection' || (o.kind === 'entry' && o.collectionId === archive.collectionId)) continue;
     // A draft is left out of the website, where an archive page can show at its address instead; anything else there
     // stops the archive pages before it.
-    const draft = o.kind === 'page' ? state.pages[o.pageId]?.draft === true : o.kind === 'entry' ? state.collections[o.collectionId]?.entries[o.entryId]?.draft !== false : false;
+    const draftEntry = (id: string | undefined) => (id ? findEntry(state, id)?.entry.draft !== false : false);
+    const draft =
+      o.kind === 'page'
+        ? state.pages[o.pageId]?.draft === true
+        : o.kind === 'entry'
+          ? draftEntry(o.entryId)
+          : o.pageId !== undefined
+            ? state.pages[o.pageId]?.draft === true || !Object.hasOwn(state.pages, o.pageId)
+            : !findEntry(state, o.entryId) || draftEntry(o.entryId);
     out.push({
       severity: 'warning',
       code: 'ARCHIVE_ADDRESS_TAKEN',

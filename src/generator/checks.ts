@@ -1409,6 +1409,8 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
     )
   ]);
+  // A typed address an archive page answers at (a draft's, made before archive pages) leads to the archive.
+  for (const p of archivePages(state)) withheld.delete(p.route.toLowerCase());
   // An entry shows both shared parts, and its collection's layout; so does a collection's index (an archive page).
   const entryShown = entries.length > draftEntries.length || archivePages(state).length > 0;
   const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));

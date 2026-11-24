@@ -11,7 +11,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { normalizePropSchema } from '@engine/schema';
 import { validateState } from '@engine/validate';
-import { generateProject, pageFile, publishedState, resolveInstanceProps } from '@generator/index';
+import { generateLayout, generateProject, pageFile, publishedState, resolveInstanceProps, routeId } from '@generator/index';
 import { pageLinks } from '@generator/archive';
 import { GenerationCache } from '@generator/cache';
 import { archivePages } from '@shared/archives';
@@ -581,7 +581,8 @@ describe('after the focused review', () => {
     expect(routes(live)).toEqual(routes(s));
     // The archive page is what the website and the preview have there, and the export does not count it as the draft's.
     expect(generateProject(s).get(route('/blog/page/2/'))).toContain('so-archive');
-    expect(withheldRoutes(s, live).map((r) => r.route)).not.toContain('/blog/page/2/');
+    // Only a file of its own at that address besides the archive's page (route.html) would show the draft.
+    expect(withheldRoutes(s, live).find((r) => r.route === '/blog/page/2/')).toMatchObject({ archived: true });
     expect(validateState(s).find((d) => d.code === 'ARCHIVE_ADDRESS_TAKEN')?.message).toMatch(/can show one of them there instead/);
   });
 
@@ -658,5 +659,72 @@ describe('after the focused review', () => {
     const rows = placedFeedRows(s, def.properties.items as ListProp, POSTS, def.properties, (s.collections.posts.settings.template.nodes[n.id] as InstanceNode).props);
     expect(rows.map((r) => r.id)).toContain('en_barn');
     expect(rows.map((r) => r.id)).toContain('en_kiln');
+  });
+});
+
+describe('after the last review', () => {
+  const legacy = (s: ProjectState, extra: Record<string, unknown>) => {
+    const out = structuredClone(s);
+    const pg = structuredClone(Object.values(out.pages).find((p) => p.id !== out.site.homePageId)!);
+    Object.assign(pg, { id: 'pg_legacy', title: 'Legacy', route: '/blog/page/2/', ...extra });
+    out.pages[pg.id] = pg;
+    out.site.pageOrder.push(pg.id);
+    return out;
+  };
+  const sized = () => run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 2 } as EditOperation);
+
+  it('gives an old address leading nowhere no hold on an archive page, with or without drafts', () => {
+    const s = structuredClone(sized());
+    s.site.redirects = [{ from: '/blog/page/2/', pageId: 'pg_gone' }];
+    const index = (st: ProjectState) => archivePages(st).filter((p) => !p.category).map((p) => p.route);
+    expect(index(s)).toEqual(['/blog/', '/blog/page/2/', '/blog/page/3/']);
+    expect(index(publishedState(s))).toEqual(index(s));
+  });
+
+  it('matches labels with commas however they are spaced, and stays quick on long lists of them', () => {
+    const s = run(blog(), {
+      type: 'collection.update',
+      collectionId: 'posts',
+      taxonomies: { categories: { label: 'Categories', terms: { arts: { label: 'Arts,Culture' }, news: { label: 'News' } } }, tags: { label: 'Tags', terms: {} } }
+    } as EditOperation);
+    expect(termsNamed(s.collections.posts, 'categories', 'Arts,Culture, News')).toEqual(['arts', 'news']);
+    expect(termsNamed(s.collections.posts, 'categories', 'Arts , Culture,News')).toEqual(['arts', 'news']);
+    const terms = Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`t${i}`, { label: `t${String(i).padStart(2, '0')}${','.repeat(77)}` }]));
+    const many = run(blog(), { type: 'collection.update', collectionId: 'posts', taxonomies: { categories: { label: 'Categories', terms }, tags: { label: 'Tags', terms: {} } } } as EditOperation);
+    const wanted = Object.values(terms)
+      .map((t) => t.label)
+      .join(', ');
+    const started = Date.now();
+    termsNamed(many.collections.posts, 'categories', wanted);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('takes a typed address an archive page answers at for the archive, not the draft it was', () => {
+    let s = legacy(sized(), { draft: true });
+    const home = s.pages[s.site.homePageId];
+    const hero = home.nodes[home.rootIds[0]] as InstanceNode;
+    s = run(s, { type: 'instance.setProp', owner: page(home.id), nodeId: hero.id, prop: 'primaryLink', value: { type: 'url', target: 'https://example.com/blog/page/2/' } } as EditOperation);
+    expect(publicationPlan(s).draftLinks).toEqual([]);
+  });
+
+  it('shows the header, footer and site language on an archive page at a draft’s old address in the preview', () => {
+    const s = legacy(sized(), { draft: true, showHeader: false, showFooter: false });
+    const layout = generateLayout(s, { instrument: true });
+    expect(layout).not.toContain(JSON.stringify(routeId('/blog/page/2/')));
+  });
+
+  it('hands rows on through code that places code made from a design', () => {
+    const { s: placed } = onHome(blog(), 'blog.grid');
+    const s = structuredClone(placed);
+    const key = JSON.stringify(JSON.stringify(['', 'craft', '', 3, 24]));
+    const code = (id: string, path: string, source: string) =>
+      ({ schemaVersion: 1, id, componentId: id, contractVersion: 1, kind: 'code', owner: 'project', name: id, description: '', category: 'custom', tags: [], properties: {}, parts: { root: { nodeId: 'root', label: 'Root' } }, source, sourcePath: path }) as unknown as ComponentDefinition;
+    s.components['project.inner'] = code('project.inner', 'src/lib/siteorigin/custom/Inner-x.svelte', `<script>\n\tlet { so_pages } = $props();\n\tconst rows = so_pages?.entries?.[${key}] ?? [];\n</script>\n<p>{rows.length}</p>\n`);
+    s.components['project.outer'] = code('project.outer', 'src/lib/siteorigin/custom/Outer-x.svelte', `<script>\n\timport Inner from './Inner-x.svelte';\n\tlet { so_pages } = $props();\n</script>\n<Inner {so_pages} />\n`);
+    const home = s.site.homePageId;
+    s.pages[home].nodes.n_outer = { id: 'n_outer', kind: 'instance', definitionId: 'project.outer', props: {} };
+    s.pages[home].rootIds.push('n_outer');
+    const source = generateProject(publishedState(s)).get(pageFile(s.pages[home]))!;
+    expect(source).toMatch(/so_pages=\{\{[^\n]*"entries":\{[^\n]*"title":"Glaze night"/);
   });
 });

@@ -462,6 +462,7 @@ function checkBuiltArchives(root, label, base = '') {
   assert.deepEqual(cards(index), ['Spring open studio', 'Opening hours'], `${label}: the index's first page has the two newest posts, newest first`);
   assert.ok(!index.includes('Secret plans'), `${label}: the first page leaves the draft out`);
   assert.deepEqual(cards(second), ['New kiln'], `${label}: the second page has the backdated post alone`);
+  assert.ok(!index.includes('>New kiln<') && !second.includes('>Opening hours<') && !second.includes('>Spring open studio<'), `${label}: neither page shows the other's posts anywhere`);
   const head = (html, rel) => html.match(new RegExp(`<link rel="${rel}" href="([^"]*)"`))?.[1];
   assert.equal(at(index, '/blog/')(head(index, 'next')), `${base}/blog/page/2/`, `${label}: the index's first page names the next in its head`);
   assert.equal(head(index, 'prev'), undefined, `${label}: the first page has no previous page`);
@@ -474,6 +475,7 @@ function checkBuiltArchives(root, label, base = '') {
   const news = page('blog', 'category', 'news');
   assert.match(news, /<h1[^>]*>News<\/h1>/, `${label}: the category archive is headed with its category`);
   assert.deepEqual(cards(news), ['Opening hours', 'New kiln'], `${label}: the News archive lists the News posts alone, newest first`);
+  assert.ok(!news.includes('>Spring open studio<'), `${label}: the News archive shows no Craft post anywhere`);
   assert.deepEqual(cards(page('blog', 'category', 'craft')), ['Spring open studio'], `${label}: the Craft archive lists its post`);
   assert.ok(!files(root).some((f) => f.includes('category/events')), `${label}: a category with only a draft has no archive`);
 }

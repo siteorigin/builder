@@ -705,7 +705,10 @@ function autoRoute(state: ProjectState, title: string, fallback: string, forPage
   // Inside a collection's archive folders every address is kept for its archive pages: no number would free one.
   const archive = folder !== '/' ? archiveRouteOwner(state, `${folder}${slugify(title) || fallback}/`) : undefined;
   if (archive) fail(`Pages inside ${folder} would use addresses kept for ${archive.label}. Move the page there to another address first.`);
-  return suggestRoute(title, (r) => routeReserved(state, r, forPageId), fallback, folder).route;
+  const route = suggestRoute(title, (r) => routeReserved(state, r, forPageId), fallback, folder).route;
+  // The search is bounded: where every numbered address is taken, none is given out twice.
+  if (routeReserved(state, route, forPageId)) fail(`Every address for “${title.slice(0, 80)}” in ${folder} is taken. Give the page an address of its own.`);
+  return route;
 }
 
 /** Refuses an address a collection or one of its entries holds: a page can never take it over. */

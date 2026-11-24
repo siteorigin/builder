@@ -61,10 +61,11 @@ export function archivePages(state: ProjectState): ArchivePage[] {
   for (const e of siteEntries(state)) if (!isDraftEntry(e.entry)) held.add(e.route.toLowerCase());
   const kept: unknown = state.site?.redirects;
   for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown }>) : []) {
-    if (typeof r?.from !== 'string' || draftPage(r.pageId)) continue;
+    if (typeof r?.from !== 'string') continue;
+    // Only an old address the website keeps: one leading to a published page or entry (not a draft, nor one that is gone).
+    const page = typeof r.pageId === 'string' && Object.hasOwn(state.pages ?? {}, r.pageId) && !draftPage(r.pageId);
     const entry = typeof r.entryId === 'string' ? findEntry(state, r.entryId) : undefined;
-    if (entry && isDraftEntry(entry.entry)) continue;
-    held.add(r.from.toLowerCase());
+    if (page || (entry && !isDraftEntry(entry.entry))) held.add(r.from.toLowerCase());
   }
   // Each collection's own address is its index's, whichever collection's series comes first.
   const indexes = new Set(
