@@ -68,8 +68,9 @@ const HEADER_SOURCE = `<script>
 	 * and the brand row, the menu button and the menu stay on screen.
 	 */
 	function publishOffset(el) {
+		// Down to the notice's bottom edge, so the header's own padding and border above it scroll away too.
 		const notice = el.querySelector('.so-header__notice');
-		const noticeHeight = notice ? notice.getBoundingClientRect().height + 'px' : '';
+		const noticeHeight = notice ? notice.getBoundingClientRect().bottom - el.getBoundingClientRect().top + 'px' : '';
 		if (el.style.getPropertyValue('--so-header-notice') !== noticeHeight) {
 			if (noticeHeight) el.style.setProperty('--so-header-notice', noticeHeight);
 			else el.style.removeProperty('--so-header-notice');
