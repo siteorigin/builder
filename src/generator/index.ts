@@ -459,10 +459,11 @@ const WIDE_QUERY = '(min-width: 768px)';
 /**
  * Where each interactive state applies. `:where()` adds no weight, so a state rule is exactly as strong as the rule it
  * changes, and wins by coming after every resting rule. Focus is the keyboard's (`:focus-visible`), not a click's. A
- * linked card is wrapped in the runtime's link (`.so-card-link`), which is what takes focus and is pressed with the
- * keyboard, so the card it wraps shows those states with it.
+ * card with an action is wrapped in the runtime's link (`.so-action`), which is what takes focus and is pressed with the
+ * keyboard, so the card it wraps (its one child) shows those states with it. A card that is a link itself takes them
+ * on its own element.
  */
-const STATE_PSEUDO: Record<StyleState, string> = { hover: ':hover', focus: ':focus-visible, .so-card-link:focus-visible > *', active: ':active, .so-card-link:active > *' };
+const STATE_PSEUDO: Record<StyleState, string> = { hover: ':hover', focus: ':focus-visible, .so-action:focus-visible > *', active: ':active, .so-action:active > *' };
 /** Hover rules apply only where a pointer can hover, so a tap on a touch screen never leaves one stuck on. */
 const HOVER_QUERY = '(hover: hover)';
 

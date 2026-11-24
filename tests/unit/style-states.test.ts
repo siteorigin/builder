@@ -231,8 +231,8 @@ describe('the stylesheet', () => {
     const desktop = css.indexOf(`@media ${MEDIA_QUERIES.desktop} {\n\t${cls} {`);
     const hover = css.indexOf(`@media (hover: hover) {\n\t${cls}:where(:hover) {\n\t\tbackground: #0000ff;`);
     const phoneHover = css.indexOf(`@media ${MEDIA_QUERIES.phone} and (hover: hover) {\n\t${cls}:where(:hover) {\n\t\tbackground: #ff0000;`);
-    const focus = css.indexOf(`\n${cls}:where(:focus-visible, .so-card-link:focus-visible > *) {\n\tcolor: #00ff00;`);
-    const active = css.indexOf(`\n${cls}:where(:active, .so-card-link:active > *) {\n\tbox-shadow: var(--so-shadow-sm);`);
+    const focus = css.indexOf(`\n${cls}:where(:focus-visible, .so-action:focus-visible > *) {\n\tcolor: #00ff00;`);
+    const active = css.indexOf(`\n${cls}:where(:active, .so-action:active > *) {\n\tbox-shadow: var(--so-shadow-sm);`);
     expect([tablet, desktop, hover, phoneHover, focus, active].every((i) => i > 0), JSON.stringify([tablet, desktop, hover, phoneHover, focus, active])).toBe(true);
     expect(tablet).toBeLessThan(hover);
     expect(desktop).toBeLessThan(hover);
@@ -292,7 +292,7 @@ describe.runIf(BROWSER)('the stylesheet in a browser', () => {
     const tab = await browser!.newPage({ viewport: { width: 1200, height: 600 } });
     try {
       // The card as the runtime's link wraps it (see the Action runtime file).
-      await tab.setContent(`<!doctype html><html><head><style>${css}</style></head><body><a class="so-card-link" href="#x"><div class="${pageNodeClass('n_box')}">Card</div></a></body></html>`);
+      await tab.setContent(`<!doctype html><html><head><style>${css}</style></head><body><a class="so-card-link so-action" href="#x"><div class="${pageNodeClass('n_box')}">Card</div></a></body></html>`);
       const read = `getComputedStyle(document.querySelector('.${pageNodeClass('n_box')}')).color`;
       const resting = (await tab.evaluate(read)) as string;
       await tab.keyboard.press('Tab');
@@ -444,41 +444,48 @@ describe('copying and detaching', () => {
     expect(two.styles?.['base:hover']).toBeUndefined();
   });
 
-  it('folds each state of layers of rules on its own, a stronger layer first, then a state over the resting style', () => {
+  it('folds each state of layers of rules on its own, a stronger resting value over a weaker state', () => {
     const layers = [
-      { styles: { base: { color: '#000001' }, 'base:hover': { color: '#000002', opacity: 0.5 }, 'phone:hover': { color: '#000003' } } as ResponsiveStyles, strength: 1 },
-      { styles: { base: { opacity: 1 }, 'base:active': { color: '#000004' } } as ResponsiveStyles, strength: 2 }
+      { styles: { base: { color: '#000001' }, 'base:hover': { color: '#000002', opacity: 0.5 }, 'phone:hover': { color: '#000003' }, 'base:active': { background: '#000005' } } as ResponsiveStyles, strength: 1 },
+      { styles: { base: { opacity: 1 }, 'base:focus': { radius: '4px' } } as ResponsiveStyles, strength: 2 }
     ];
-    expect(flattenStates(layers)).toEqual({ 'base:hover': { color: '#000002' }, 'phone:hover': { color: '#000003' }, 'base:active': { color: '#000004' } });
+    expect(flattenStates(layers)).toEqual({ 'base:hover': { color: '#000002' }, 'phone:hover': { color: '#000003' }, 'base:focus': { radius: '4px' }, 'base:active': { background: '#000005' } });
     // Layers beneath stay in force: their states are not written again.
-    expect(flattenStates(layers, { beneath: 1 })).toEqual({ 'base:active': { color: '#000004' } });
+    expect(flattenStates(layers, { beneath: 1 })).toEqual({ 'base:focus': { radius: '4px' } });
+    // The same property in the same state, set by two layers: each size keeps the stronger one's.
+    const sized = [{ styles: { 'base:hover': { background: '#00000a' } } as ResponsiveStyles, strength: 1 }, { styles: { 'phone:hover': { background: '#00000b' } } as ResponsiveStyles, strength: 3 }];
+    expect(flattenStates(sized)).toEqual({ 'base:hover': { background: '#00000a' }, 'phone:hover': { background: '#00000b' } });
   });
 
-  it('writes a beneath layer’s winning state again where the result’s own resting value would now hide it', () => {
-    // An inner design's later block (a stronger tie) turns its root blue on desktop hover, over the outer design's red.
-    const layers = [
-      { styles: { 'desktop:hover': { color: '#0000ff' } } as ResponsiveStyles, strength: 2.02 },
-      { styles: { base: { color: '#ff0000' } } as ResponsiveStyles, strength: 2.01 }
-    ];
-    expect(flattenStates(layers, { beneath: 1 })).toEqual({});
-    expect(flattenStates(layers, { beneath: 1, resting: { base: { color: '#ff0000' } } })).toEqual({ 'desktop:hover': { color: '#0000ff' } });
+  it('refuses what one element’s rules cannot show exactly', () => {
+    // A beneath state (an inner design's later block) the result's resting value, now over it, would hide.
+    const masked = [{ styles: { 'desktop:hover': { color: '#0000ff' } } as ResponsiveStyles, strength: 2.02 }, { styles: { base: { color: '#ff0000' } } as ResponsiveStyles, strength: 2.01 }];
+    expect(flattenStates(masked, { beneath: 1 })).toBeNull();
+    expect(flattenStates(masked)).toEqual({ 'desktop:hover': { color: '#0000ff' } });
+    // Stronger resting custom CSS that sets what a state value does.
+    const custom = [{ styles: { 'base:hover': { opacity: 0.25 } } as ResponsiveStyles, strength: 1 }, { styles: { base: { customCss: 'opacity: 1' } } as ResponsiveStyles, strength: 3 }];
+    expect(flattenStates(custom)).toBeNull();
+    expect(flattenStates([...custom].reverse().map((l, i) => ({ ...l, strength: i + 1 })))).toEqual({ 'base:hover': { opacity: 0.25 } });
+    // A stronger resting side over a state's border.
+    expect(flattenStates([{ styles: { 'base:hover': { border: '1px solid #0000ff' } } as ResponsiveStyles, strength: 1 }, { styles: { base: { borderBlockStart: '3px solid #ff0000' } } as ResponsiveStyles, strength: 3 }])).toBeNull();
+    // Two layers' states on one property: which wins while both hold is the layers', not the states' order.
+    expect(flattenStates([{ styles: { 'base:hover': { color: '#ff0000' } } as ResponsiveStyles, strength: 3 }, { styles: { 'base:focus': { color: '#00ff00' } } as ResponsiveStyles, strength: 1 }])).toBeNull();
+    // One layer's own states and sides fold as they are: its rules keep their order.
+    expect(flattenStates([{ styles: { base: { borderBlockStart: '3px solid #ff0000' }, 'base:hover': { border: '1px solid #0000ff' }, 'base:focus': { color: '#00ff00' } } as ResponsiveStyles, strength: 1 }])).toEqual({
+      'base:hover': { border: '1px solid #0000ff' },
+      'base:focus': { color: '#00ff00' }
+    });
   });
 
-  it('lets a stronger resting rule’s custom CSS beat a weaker state value it sets too', () => {
-    const layers = [
-      { styles: { 'base:hover': { opacity: 0.25, color: '#000001' } } as ResponsiveStyles, strength: 1 },
-      { styles: { base: { customCss: 'opacity: 1' } } as ResponsiveStyles, strength: 3 }
-    ];
-    expect(flattenStates(layers)).toEqual({ 'base:hover': { color: '#000001' } });
-  });
-
-  it('keeps a stronger side over a state’s border, and drops a side a stronger state border overrides', () => {
-    const side = { styles: { base: { borderBlockStart: '3px solid #ff0000' } } as ResponsiveStyles, strength: 3 };
-    const hoverBorder = { styles: { 'base:hover': { border: '1px solid #0000ff' } } as ResponsiveStyles, strength: 1 };
-    expect(flattenStates([hoverBorder, side])).toEqual({ 'base:hover': { border: '1px solid #0000ff', borderBlockStart: '3px solid #ff0000' } });
-    const hoverSide = { styles: { 'base:hover': { borderBlockStart: '2px dashed #00ff00' } } as ResponsiveStyles, strength: 1 };
-    const strongBorder = { styles: { 'base:hover': { border: '1px solid #0000ff' } } as ResponsiveStyles, strength: 2 };
-    expect(flattenStates([hoverSide, strongBorder])).toEqual({ 'base:hover': { border: '1px solid #0000ff' } });
+  it('refuses to detach a placement whose state styles cannot be kept exactly, and changes nothing', () => {
+    let s = fresh();
+    const g = grid(s);
+    s = apply(s, [
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', scope: 'base', state: 'hover', property: 'border', value: '1px solid #0000ff' },
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', itemId: cards(s)[1].id, scope: 'base', property: 'borderBlockStart', value: '3px solid #ff0000' }
+    ]);
+    rejects(() => applyOperations(s, [{ type: 'component.detachInstance', owner: owner(s), nodeId: g.id } as EditOperation]), /hover, focus or pressed styles/);
+    expect(grid(s).id).toBe(g.id);
   });
 });
 

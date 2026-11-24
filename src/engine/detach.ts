@@ -5,7 +5,7 @@
  * set of styles per element that cascades the same. Slot content moves into place. Components placed inside the
  * design stay placements, given the values and styles they were shown with.
  */
-import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, stateInitial } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
@@ -84,6 +84,10 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   if (rootAnchor) anchors.add(rootAnchor);
   const slotUses = new Map<string, number>();
   const tooMuch = (): never => fail(`“${label}” has more custom CSS on one element, across its design, options and placement, than one element can hold. Shorten some of it first.`);
+  // State rules one element's own cannot reproduce: refused rather than detached into something that looks different.
+  const states = (layers: StyleLayer[], beneath = 0): ResponsiveStyles =>
+    flattenStates(layers, { beneath }) ??
+    fail(`“${label}” has hover, focus or pressed styles that its design, options and placement combine in a way one element’s styles cannot show exactly. Set each in one place (its design or this placement), as a whole property, first.`);
   const added: GraphNode[] = [];
   // Names the galleries this detach makes, so each stays its own viewer group, apart from any other on the page.
   const groups = newId('g');
@@ -236,7 +240,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         break;
     }
     const layers = layersFor(src.id, at, 0);
-    const styles = { ...flattenStyles(layers, { link: src.kind === 'link', shownDisplay: () => naturalDisplay(src), tooMuch }), ...flattenStates(layers) };
+    const styles = { ...flattenStyles(layers, { link: src.kind === 'link', shownDisplay: () => naturalDisplay(src), tooMuch }), ...states(layers) };
     if (Object.keys(styles).length) n.styles = styles;
     const from = provenance(src);
     // An action repeated in a list moved through the viewer with the list's other items (in each outer item apart).
@@ -341,7 +345,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       // What the stylesheet shows a placed component's root with: its own kind in this design (an instance: the browser's).
       shownDisplay: () => naturalDisplay(src)
     });
-    Object.assign(root, flattenStates(layers, { beneath: beneath.length, resting: structuredClone(root) }));
+    Object.assign(root, states(layers, beneath.length));
     const overrides = { ...(src.overrides ?? {}) };
     delete overrides.root;
     if (Object.keys(root).length) overrides.root = root;
