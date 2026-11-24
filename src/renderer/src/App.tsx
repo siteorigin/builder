@@ -160,6 +160,7 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     previewReturn: null,
     mode: 'edit',
     definitionMode: null,
+    variantStyle: null,
     heldEdits: [],
     aiOutcome: null,
     inspectorFocus: null,

@@ -1893,6 +1893,9 @@ export class ProjectSession extends EventEmitter {
       // Paste places what the editor copied; an AI run never sends it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'node.paste'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'node.paste is only for the editor. Use node.copy.', recoverable: true } };
+      // So is the order of a component's properties, set in Edit everywhere's property list.
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'component.orderProperties'))
+        return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'component.orderProperties is only for the editor.', recoverable: true } };
       // Collections have no tools of their own yet: the assistant neither sees nor changes them.
       if ((opts.source === 'ai' || opts.runId) && ops.some(isCollectionOperation))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections and their entries can only be changed in the editor for now.', recoverable: true } };

@@ -179,6 +179,11 @@ export interface State {
   toasts: Toast[];
   /** Definition editing mode: the project-owned definition being edited. */
   definitionMode: { definitionId: string; returnPageId: string } | null;
+  /**
+   * While editing a component everywhere: the variant option its Style section styles, across the layers the author
+   * selects; the base design when null or when it names another component or an option that no longer exists.
+   */
+  variantStyle: { definitionId: string; axis: string; variant: string } | null;
   conversation: Conversation | null;
   runStatus: RunStatus | null;
   activeRunId: string | null;
@@ -263,6 +268,7 @@ export const useStore = create<State>((set) => ({
   modal: null,
   toasts: [],
   definitionMode: null,
+  variantStyle: null,
   conversation: null,
   runStatus: null,
   activeRunId: null,
@@ -1058,6 +1064,18 @@ export function applyAiEvent(e: AiEvent) {
 // Held edits are unsaved work: saving or leaving the project says so, as it does for any open draft.
 useStore.subscribe((s, prev) => {
   if (s.heldEdits !== prev.heldEdits) markDraft(HELD_DRAFT, s.heldEdits.length > 0);
+});
+
+// The look Edit everywhere styles belongs to that one visit: leaving the component, or editing another, starts again
+// on its base design. A look that is gone (an Undo, a removal) is forgotten whatever is on screen, so one made again
+// later under the same ID is not styled without being chosen.
+useStore.subscribe((s, prev) => {
+  const v = s.variantStyle;
+  if (!v) return;
+  if (s.definitionMode?.definitionId !== prev.definitionMode?.definitionId) return void useStore.setState({ variantStyle: null });
+  if (s.snapshot === prev.snapshot) return;
+  const options = s.snapshot?.state.components[v.definitionId]?.variantAxes?.[v.axis]?.options;
+  if (!options || !Object.hasOwn(options, v.variant)) useStore.setState({ variantStyle: null });
 });
 
 export function markDraft(key: string, on: boolean, note?: string) {

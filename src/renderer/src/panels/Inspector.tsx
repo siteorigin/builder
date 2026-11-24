@@ -1,6 +1,6 @@
 import { axesOf, designLayers, designStyles, selectedVariants, selectedVariantStyles, startingVariants } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
-import { Children, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Children, Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
   ChevronDown,
@@ -72,6 +72,9 @@ import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '.
 import { teaserFieldNote } from '../lib/page-teasers';
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
+import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
+import { LivePreview } from './InsertPanel';
+import { isHeadingLevel, placementOrder, variantStylable, type StyleTarget } from '../lib/component-contract';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
@@ -100,7 +103,6 @@ function formServiceHint(service: FormServiceSetup, entered: boolean): ReactNode
 }
 
 /** A property choosing a heading's level (Heading 1 to 6): it sets the page outline, not the look. */
-const isHeadingLevel = (schema: PropSchema | ScalarPropSchema) => schema.type === 'enum' && schema.options.length > 1 && schema.options.every((o) => /^h[1-6]$/.test(o.value));
 const HEADING_LEVEL_HINT = 'Sets the page outline screen readers use, not the look. Use Heading 1 for the page title only.';
 
 /** A video field's hint, when it has one. */
@@ -444,7 +446,7 @@ function InspectorBody() {
     // placed in the design (its row in Layers) shows that part, as this design sets it.
     const view = definitionView(st, editingDef.id, selection);
     return (
-      <div className="panel-body insp" key={selection ? JSON.stringify(selection) : 'def-overview'}>
+      <div className="panel-body insp" key={selection ? JSON.stringify(selection) : `def-overview:${editingDef.id}`}>
         {view.kind === 'node' ? (
           <DefinitionNodeInspector state={st} def={editingDef} node={view.node} tokens={tokens} />
         ) : view.kind === 'nested-part' ? (
@@ -844,10 +846,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const service = formServiceSetup(def, node.props);
   // A heading level changes the page outline, not the look: it comes after the content rather than between a
   // heading and the words under it.
-  const entries = Object.entries(def.properties)
-    .filter(([key]) => !service?.hidden.includes(key))
-    .map(([key, schema]) => ({ key, schema, data: null }));
-  const fields = groupFields([...entries.filter((e) => !isHeadingLevel(e.schema)), ...entries.filter((e) => isHeadingLevel(e.schema))]);
+  const fields = groupFields(
+    placementOrder(def)
+      .filter((key) => !service?.hidden.includes(key))
+      .map((key) => ({ key, schema: def.properties[key], data: null }))
+  );
   // Buttons with no link are left out of the site: flag each at the field that sets its link. Hide is offered there
   // only when that field and the label belong to the same one button (not a link or label every item shares).
   const unlinked = unlinkedAt(state, owner, node.id);
@@ -1693,8 +1696,31 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
             ))}
         </div>
       </div>
+      {def.kind === 'managed' && def.tree && (
+        <>
+          <PropertiesSection def={def} level={LEVEL} />
+          <VariantsSection def={def} level={LEVEL} onStyle={(target) => styleLook(def, target)} />
+        </>
+      )}
     </>
   );
+}
+
+/**
+ * Style one look of a component (or its base design again). From the overview, the whole design is selected so its
+ * Style section is there to open; Style then opens once, where focus goes.
+ */
+function styleLook(def: ComponentDefinition, target: StyleTarget) {
+  styleVariant(def, target);
+  if (!target) return;
+  const rootId = def.tree?.rootIds[0];
+  const snap = getState().snapshot;
+  const onNode = !!snap && definitionView(snap.state, def.id, getState().selection).kind === 'node';
+  if (!onNode && rootId) setState({ selection: { owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: rootId } });
+  const chosen = getState().selection;
+  setTimeout(() => {
+    if (getState().selection === chosen) openSection('def-style', { scroll: true });
+  });
 }
 
 /** Who a change made while editing a component everywhere reaches. */
@@ -1746,7 +1772,9 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
   const iconId = useId();
   const fields = designContent(def, node);
   const tag = designTag(def, node);
-  if (!fields.length && !tag) return null;
+  // A tag each placement chooses, through whatever property: it can be made the design's own again.
+  const tagBinding = (node.kind === 'element' || (node.kind === 'text' && !node.rich)) && isBinding(node.tag) && '$prop' in node.tag ? node.tag : null;
+  if (!fields.length && !tag && !tagBinding) return null;
   const kind = elementKind(node).name;
   const set = (f: DesignContent, label: string) => (v: unknown, edit?: PendingEdit) => void applyWith(edit, [designContentOp(def, node.id, f.field, v)], label, `${def.id}:${node.id}:${f.field}`);
   // The design's own tag, or the default of the choice each placement makes: either way the node's tag edit.
@@ -1759,62 +1787,16 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
     <Section title="Content" id="def-content" level={LEVEL} scope={scope}>
       {tag?.source === 'design' && <TagField state={state} owner={{ kind: 'component', id: def.id }} node={tag.node} onChange={(v) => setTag(v)} hint={sources.size > 1 ? 'Same in every placement.' : undefined} />}
       {tag?.source === 'default' && <DefaultField state={state} def={def} prop={tag.prop} schema={tag.schema} label="Default tag" onChange={setTag} />}
+      {tagBinding && <TagBindingControl key={`${tagBinding.$prop}:${tagBinding.field ?? ''}`} def={def} node={node} binding={tagBinding} />}
       {fields.map((f) => {
         if (f.source === 'item') return null;
-        if (f.source === 'default') return <DefaultField key={f.field} state={state} def={def} prop={f.prop} schema={f.schema} label={f.field === 'label' ? `${kind} text` : undefined} onChange={set(f, `Edit ${f.schema.label} default`)} />;
-        const hint = sources.size > 1 ? 'Same in every placement.' : undefined;
-        switch (f.field) {
-          case 'text':
-            return (
-              <div key={f.field} data-field="text" style={{ display: 'contents' }}>
-                {node.kind === 'text' && node.rich ? (
-                  <Field label="Text" hint={hint} controlId={`${def.id}-${node.id}-text`}>
-                    <RichTextField id={`${def.id}-${node.id}-text`} describedBy={hint ? `${def.id}-${node.id}-text-note` : undefined} value={richTextToMarkdown(toRichText(f.value), state.pages)} onCommit={(v, edit) => void applyWith(edit, [designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} pages={state.pages} />
-                  </Field>
-                ) : (
-                  <Field label="Text" hint={hint}>
-                    <DraftInput multiline rows={2} value={Array.isArray(f.value) ? richTextToMarkdown(toRichText(f.value), state.pages) : String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} />
-                  </Field>
-                )}
-              </div>
-            );
-          case 'label':
-            return (
-              <div key={f.field} data-field="label" style={{ display: 'contents' }}>
-                <Field label={`${kind} text`} hint={hint}>
-                  <DraftInput value={String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'label', v)], 'Edit button text everywhere', `${def.id}:${node.id}:label`)} />
-                </Field>
-              </div>
-            );
-          case 'link':
-            // A destination fixed in the design: a button without one is left out of every placement.
-            return (
-              <div key={f.field} className="field" data-field="link" role="group" aria-labelledby={`${node.id}-def-dest`}>
-                <div className="field-label" id={`${node.id}-def-dest`}>
-                  Link
-                </div>
-                <LinkEditor value={f.value as LinkValue} onChange={set(f, 'Edit button link everywhere')} state={state} label={kind} everywhere />
-                {hint && <div className="field-hint">{hint}</div>}
-              </div>
-            );
-          case 'image':
-            return (
-              <div key={f.field} className="field" data-field="image" role="group" aria-label="Image">
-                <FieldHome root={`component:${def.id}:${node.id}:image`} alive={nodeAlive({ kind: 'component', id: def.id }, node.id)}>
-                  <ImageEditor value={f.value as ImageValue} onChange={set(f, 'Edit image everywhere')} state={state} />
-                </FieldHome>
-                {hint && <div className="field-hint">{hint}</div>}
-              </div>
-            );
-          case 'icon':
-            return (
-              <div key={f.field} data-field="icon" style={{ display: 'contents' }}>
-                <Field label="Icon" controlId={iconId} hint={hint}>
-                  <IconPicker id={iconId} value={String(f.value ?? '')} onChange={set(f, 'Edit icon everywhere')} />
-                </Field>
-              </div>
-            );
-        }
+        return (
+          <Fragment key={f.field}>
+            {editor(f)}
+            {/* Keyed by where the field's content comes from, so a form opened for one never shows for the other. */}
+            <BindingControl key={f.source === 'default' ? `default:${f.prop}` : f.source} def={def} node={node} content={f} />
+          </Fragment>
+        );
       })}
       {items.length > 0 && (
         <p className="muted insp-note">
@@ -1823,6 +1805,64 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
       )}
     </Section>
   );
+
+  /** The editor of one field: its property's default, or the value fixed in the design. */
+  function editor(f: Exclude<DesignContent, { source: 'item' }>) {
+    if (f.source === 'default') return <DefaultField key={f.field} state={state} def={def} prop={f.prop} schema={f.schema} label={f.field === 'label' ? `${kind} text` : undefined} onChange={set(f, `Edit ${f.schema.label} default`)} />;
+    const hint = sources.size > 1 ? 'Same in every placement.' : undefined;
+    switch (f.field) {
+      case 'text':
+        return (
+          <div key={f.field} data-field="text" style={{ display: 'contents' }}>
+            {node.kind === 'text' && node.rich ? (
+              <Field label="Text" hint={hint} controlId={`${def.id}-${node.id}-text`}>
+                <RichTextField id={`${def.id}-${node.id}-text`} describedBy={hint ? `${def.id}-${node.id}-text-note` : undefined} value={richTextToMarkdown(toRichText(f.value), state.pages)} onCommit={(v, edit) => void applyWith(edit, [designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} pages={state.pages} />
+              </Field>
+            ) : (
+              <Field label="Text" hint={hint}>
+                <DraftInput multiline rows={2} value={Array.isArray(f.value) ? richTextToMarkdown(toRichText(f.value), state.pages) : String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} />
+              </Field>
+            )}
+          </div>
+        );
+      case 'label':
+        return (
+          <div key={f.field} data-field="label" style={{ display: 'contents' }}>
+            <Field label={`${kind} text`} hint={hint}>
+              <DraftInput value={String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'label', v)], 'Edit button text everywhere', `${def.id}:${node.id}:label`)} />
+            </Field>
+          </div>
+        );
+      case 'link':
+        // A destination fixed in the design: a button without one is left out of every placement.
+        return (
+          <div key={f.field} className="field" data-field="link" role="group" aria-labelledby={`${node.id}-def-dest`}>
+            <div className="field-label" id={`${node.id}-def-dest`}>
+              Link
+            </div>
+            <LinkEditor value={f.value as LinkValue} onChange={set(f, 'Edit button link everywhere')} state={state} label={kind} everywhere />
+            {hint && <div className="field-hint">{hint}</div>}
+          </div>
+        );
+      case 'image':
+        return (
+          <div key={f.field} className="field" data-field="image" role="group" aria-label="Image">
+            <FieldHome root={`component:${def.id}:${node.id}:image`} alive={nodeAlive({ kind: 'component', id: def.id }, node.id)}>
+              <ImageEditor value={f.value as ImageValue} onChange={set(f, 'Edit image everywhere')} state={state} />
+            </FieldHome>
+            {hint && <div className="field-hint">{hint}</div>}
+          </div>
+        );
+      case 'icon':
+        return (
+          <div key={f.field} data-field="icon" style={{ display: 'contents' }}>
+            <Field label="Icon" controlId={iconId} hint={hint}>
+              <IconPicker id={iconId} value={String(f.value ?? '')} onChange={set(f, 'Edit icon everywhere')} />
+            </Field>
+          </div>
+        );
+    }
+  }
 }
 
 /**
@@ -1895,6 +1935,35 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const uses = instancesOf(state, def.id).length;
   const partId = Object.entries(def.parts).find(([, p]) => p.nodeId === node.id)?.[0];
   const isRoot = def.tree?.rootIds[0] === node.id;
+  // The look the Style section styles: one option of a choice placements make, or the base design.
+  const target = useVariantStyle(def);
+  const lookable = variantStylable(def, node);
+  const look = target && lookable ? target : null;
+  const lookAxis = look ? def.variantAxes![look.axis] : undefined;
+  const lookOption = look ? lookAxis!.options[look.variant] : undefined;
+  // Under a look's own rules: what the design gives this element at each size without them (its own styles and the
+  // default of every other choice), and for a component placed in the design, that component's design and the
+  // changes this design makes to it.
+  const lookInherited = look
+    ? node.kind === 'instance'
+      ? (() => {
+          const placed = state.components[node.definitionId];
+          const rootId = placed?.parts.root?.nodeId ?? placed?.tree?.rootIds[0];
+          // Its choices as the site starts them: one this design's state or property sets shows that one's default.
+          const chosen = Object.fromEntries(
+            Object.entries(startingVariants(node.variants, def) ?? {}).map(([axis, v]) => [axis, isBinding(v) && '$prop' in v ? ((propBindingSchema(def.properties, v)?.default as string | undefined) ?? v) : v])
+          );
+          const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, chosen) : [];
+          // The other choices of this design style the placed component too, as their defaults. Their rules and the
+          // placed design's own are equally specific, so the stylesheet's order decides: definitions by ID.
+          const outer = designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles && l.styles !== lookOption!.styles?.[node.id]);
+          const layers = def.id.localeCompare(node.definitionId) < 0 ? [...outer, ...inner] : [...inner, ...outer];
+          return cascadeStyles([...layers, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }]);
+        })()
+      : cascadeStyles(designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles !== lookOption!.styles?.[node.id]))
+    : undefined;
+  // The look's preview renders only while the Inspector is on screen: a hidden one would prepare it again on every change.
+  const inspecting = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   // Several layers selected together in Layers: Create would package only this one, so it is not offered.
   const several = useStore((s) => (s.layerSet ? (liveGroup(s)?.ids.length ?? 0) > 1 : false));
@@ -2021,6 +2090,9 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <DesignContentSection state={state} def={def} node={node} />
       {/* A component placed in the design: what it is given here, the same in every placement. */}
       {node.kind === 'instance' && placedDef && <NestedInputs state={state} def={def} node={node} placedDef={placedDef} />}
+      <PartSection def={def} node={node} level={LEVEL} />
+      {isRoot && <PropertiesSection def={def} level={LEVEL} />}
+      {isRoot && <VariantsSection def={def} level={LEVEL} onStyle={(t) => styleLook(def, t)} />}
       <ConditionControls def={def} node={node} level={LEVEL} />
       {(node.kind === 'element' || node.kind === 'repeat' || (node.kind === 'instance' && anchorCapable(state, placedDef))) && (
         <Section
@@ -2033,8 +2105,36 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           {node.kind === 'repeat' ? <StaggerSwitch owner={owner} node={node} /> : <EntranceField owner={owner} node={node} design={node.kind === 'instance' ? designAppear(state, placedDef) : undefined} />}
         </Section>
       )}
-      <Section title="Style" id="def-style" level={LEVEL} scope={repeated ? `Every ${itemWord ?? 'item'} · ${placements}` : placements}>
-        {node.kind === 'instance' ? (
+      <Section title="Style" id="def-style" level={LEVEL} scope={[look ? `${lookAxis!.label}: ${lookOption!.label}` : '', repeated ? `Every ${itemWord ?? 'item'}` : '', placements].filter(Boolean).join(' · ')}>
+        <StyleTargetField def={def} target={look} disabledReason={lookable ? undefined : 'A look styles the elements inside this, not this itself.'} />
+        {look ? (
+          <>
+            {inspecting && (
+              <div className="contract-preview" aria-label={`${def.name} with ${lookOption!.label}`}>
+                <LivePreview spec={{ definitionId: def.id, variants: { [look.axis]: look.variant } }} label={lookOption!.label} maxH={180} fallback={<span className="faint insp-note">{def.name}</span>} />
+              </div>
+            )}
+            <StyleControls
+              key={`${look.axis}:${look.variant}`}
+              styles={lookOption!.styles?.[node.id]}
+              inherited={lookInherited}
+              wideColumns
+              tokens={tokens}
+              allowed={node.kind === 'instance' ? (placedDef?.parts.root?.styleControls ?? styleSetFor(node)) : styleSetFor(node)}
+              onSet={(property, value, expectedRevision) =>
+                commitOps(
+                  [{ type: 'node.setStyle', owner, nodeId: node.id, variant: look.variant, axis: look.axis, scope, property, value }],
+                  `Edit ${lookOption!.label} look`,
+                  styleKey(property, `${def.id}:${node.id}:${look.axis}:${look.variant}:${scope}:${property}`),
+                  expectedRevision
+                )
+              }
+              onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, variant: look.variant, axis: look.axis, scope: sc }], `Clear ${lookOption!.label} look`)}
+              resetLabel={`Clear the ${lookOption!.label} look here`}
+              target={`the ${lookOption!.label} look of this element`}
+            />
+          </>
+        ) : node.kind === 'instance' ? (
           <StyleControls
             styles={node.overrides?.root}
             inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, def)) : undefined}

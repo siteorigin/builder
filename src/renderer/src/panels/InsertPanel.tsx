@@ -384,7 +384,7 @@ function codeMarks(source: string): ReactNode[] {
 const LIVE_W = 320;
 const LIVE_MAX_H = 232;
 const LIVE_MIN_SCALE = 0.16;
-function LivePreview({ spec, fallback, label, maxH = LIVE_MAX_H }: { spec: ComponentPreviewSpec; fallback: ReactNode; label?: string; maxH?: number }) {
+export function LivePreview({ spec, fallback, label, maxH = LIVE_MAX_H }: { spec: ComponentPreviewSpec; fallback: ReactNode; label?: string; maxH?: number }) {
   const runtime = useStore((s) => s.runtime);
   const revision = useStore((s) => s.snapshot?.revision);
   const width = useStore((s) => s.viewport) || 1280;

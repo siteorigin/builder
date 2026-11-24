@@ -258,10 +258,52 @@ function removeProp(state: ProjectState, def: ComponentDefinition, name: string)
   for (const { node } of instancesOf(state, def.id)) delete node.props[name];
 }
 
+/**
+ * A schema as JSON without its label, its own settings in any order. What they hold keeps its order: a list's or an
+ * object's fields in another order are another schema.
+ */
+const settingsJson = (schema: object): string => {
+  const rec = schema as Record<string, unknown>;
+  return JSON.stringify(
+    Object.keys(rec)
+      .filter((k) => k !== 'label' && rec[k] !== undefined)
+      .sort()
+      .map((k) => [k, rec[k]])
+  );
+};
+
 export function setPropSchema(state: ProjectState, op: Op<'component.setPropSchema'>): OpResult {
   const def = projectDef(state, op.definitionId);
+  // A schema that differs from the stored one only in its label renames what authors see and nothing else: the
+  // property keeps its name (even one older rules allowed), its bindings and every placement's value as stored.
+  const prev = own(def.properties, op.prop);
+  if (prev && settingsJson(op.schema) === settingsJson(prev)) {
+    const label = typeof op.schema.label === 'string' ? op.schema.label.trim().slice(0, 80) : '';
+    prev.label = label || op.prop;
+    return {};
+  }
   checkPropName(op.prop);
   applyPropSchema(state, def, op.prop, normalizePropSchema(op.schema, state, op.prop));
+  return {};
+}
+
+/**
+ * Put a managed component's properties in a new order: what each placement's Content lists them in. Every property
+ * keeps its schema, its bindings and each placement's value; only the order changes.
+ */
+export function orderProperties(state: ProjectState, op: Op<'component.orderProperties'>): OpResult {
+  const def = projectDef(state, op.definitionId);
+  if (def.kind !== 'managed') fail(`"${def.name}" is a code component; its properties are ordered in its source.`);
+  const keys = Object.keys(def.properties);
+  const seen = new Set<string>();
+  for (const name of op.order) {
+    if (!own(def.properties, name)) fail(`"${def.name}" has no property "${name}".`);
+    if (seen.has(name)) fail(`"${name}" is listed twice.`);
+    seen.add(name);
+  }
+  const missing = keys.filter((k) => !seen.has(k));
+  if (missing.length) fail(`The order leaves out ${missing.map((k) => `"${k}"`).join(', ')}. List every property of "${def.name}".`);
+  def.properties = Object.fromEntries(op.order.map((name) => [name, def.properties[name]]));
   return {};
 }
 
@@ -367,8 +409,9 @@ export function replaceProperties(state: ProjectState, def: ComponentDefinition,
 
 export function setPart(state: ProjectState, op: Op<'component.setPart'>): OpResult {
   const def = projectDef(state, op.definitionId);
-  if (!validId(op.partId)) fail(`Part IDs must be camelCase identifiers ("${op.partId}").`);
   const prev = own(def.parts, op.partId);
+  // A part the component has keeps the name it was loaded with; a new one needs a plain name.
+  if (!prev && !validId(op.partId)) fail(`Part IDs must be camelCase identifiers ("${op.partId}").`);
   let node: GraphNode | undefined;
   if (def.kind === 'managed' && def.tree) {
     node = getNode(def.tree, op.nodeId);
@@ -401,12 +444,14 @@ export function removePart(state: ProjectState, op: Op<'component.removePart'>):
 
 export function setVariant(state: ProjectState, op: Op<'component.setVariant'>): OpResult {
   const def = projectDef(state, op.definitionId);
-  if (!validId(op.variant, /^[a-z][a-z0-9-]{0,39}$/)) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${op.variant}").`);
   const existing = Object.keys(def.variantAxes ?? {});
   const holding = existing.filter((a) => Object.hasOwn(def.variantAxes![a].options, op.variant));
   // Without a named axis: the axis that already has this option, the only axis, or a first one.
   const axisId = op.axis ?? (holding.length === 1 ? holding[0] : existing.length === 1 ? existing[0] : existing.length ? fail(`"${def.name}" has several variant axes (${existing.join(', ')}). Name the axis.`) : 'style');
-  if (!validId(axisId)) fail(`Variant axis names must be camelCase identifiers ("${axisId}").`);
+  // An axis or option the component has keeps the ID it was loaded with; a new one needs a plain ID.
+  const had = own(def.variantAxes, axisId);
+  if (!had && !validId(axisId)) fail(`Variant axis names must be camelCase identifiers ("${axisId}").`);
+  if (!(had && own(had.options, op.variant)) && !validId(op.variant, /^[a-z][a-z0-9-]{0,39}$/)) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${op.variant}").`);
   def.variantAxes ??= {};
   // A new axis starts with a plain base option as its default, so placements keep the look they had and can choose the
   // new option (a picker needs two to choose between).

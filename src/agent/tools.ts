@@ -130,13 +130,15 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
 const describe = (name: ToolName) => ({ description: DESCRIPTIONS[name], ...(BRIEFS[name] !== undefined ? { brief: BRIEFS[name] } : {}) });
 
 /** Operations the assistant never sends: images and component packages are added only by the verified importer,
- *  theme updates by the user, and pastes come from the editor's own Copy. Collections get tools of their own later. */
+ *  theme updates by the user, pastes come from the editor's own Copy, and a component's properties are reordered
+ *  in Edit everywhere. Collections get tools of their own later. */
 const NEVER_OFFERED = new Set<OperationType>([
   'asset.add',
   'asset.relink',
   'component.import',
   'theme.refresh',
   'node.paste',
+  'component.orderProperties',
   'collection.create',
   'collection.update',
   'collection.remove',

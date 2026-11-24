@@ -410,6 +410,12 @@ export const OPERATION_SCHEMAS = {
     schema: z.record(z.string(), z.unknown()).describe('{ type, label, default, ... } as in component.createCode.')
   }),
   'component.removePropSchema': z.object({ type: z.literal('component.removePropSchema'), definitionId: z.string(), prop: z.string() }),
+  // The editor's property list in Edit everywhere. Not offered to the model.
+  'component.orderProperties': z.object({
+    type: z.literal('component.orderProperties'),
+    definitionId: z.string(),
+    order: z.array(z.string()).describe('Every property name of the component, each once, in the order placements list them.')
+  }),
   'component.setPropDefault': z.object({
     type: z.literal('component.setPropDefault'),
     definitionId: z.string(),

@@ -315,6 +315,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'component.import': 'wider',
   'component.setPropSchema': 'definition',
   'component.removePropSchema': 'wider',
+  // The order every placement's Content lists the properties in.
+  'component.orderProperties': 'wider',
   // A new default changes every placement without a value of its own.
   'component.setPropDefault': 'wider',
   'component.setPart': 'definition',
