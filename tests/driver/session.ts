@@ -986,7 +986,8 @@ export class Session {
         for (const k of Object.keys(a)) if (k !== 'after' && k !== 'limit') throw new DriverError('BAD_REQUEST', `evidence.log does not take "${k}".`);
         if (a.after !== undefined && (!Number.isInteger(a.after) || (a.after as number) < 0)) throw new DriverError('BAD_REQUEST', '"after" is a cursor: a whole number from 0.');
         if (a.limit !== undefined && (!Number.isInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 200)) throw new DriverError('BAD_REQUEST', '"limit" is a whole number from 1 to 200.');
-        return this.present(this.journal.read(a.after as number | undefined, (a.limit as number | undefined) ?? 100));
+        // Up to the request reading it: its own entry is not finished yet.
+        return this.present(this.journal.read(a.after as number | undefined, (a.limit as number | undefined) ?? 100, entry?.seq ?? Infinity));
       }
       case 'evidence.save': {
         const a = request.args ?? {};

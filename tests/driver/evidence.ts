@@ -150,9 +150,9 @@ export class Journal {
     }
   }
 
-  /** Entries after `after` (a seq), at most `limit` of them, and where to continue. */
-  read(after = 0, limit = 100): { entries: JournalEntry[]; next: number; dropped: number; first: number | null; last: number } {
-    const entries = this.list.filter((e) => e.seq > after).slice(0, limit);
+  /** Entries after `after` (a seq) and before `before`, at most `limit` of them, and where to continue. */
+  read(after = 0, limit = 100, before = Infinity): { entries: JournalEntry[]; next: number; dropped: number; first: number | null; last: number } {
+    const entries = this.list.filter((e) => e.seq > after && e.seq < before).slice(0, limit);
     return { entries, next: entries.length ? entries[entries.length - 1].seq : after, dropped: this.droppedCount, first: this.list[0]?.seq ?? null, last: this.seq };
   }
 
