@@ -36,7 +36,8 @@ import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, 
 import { newId } from '@shared/ids';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { checkPublicUrl } from '@shared/public-url';
-import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { feedRowFields } from '@shared/entry-feed';
 import { collectionRouteOwner } from '@shared/collections';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
 import { isListBlock, toRichText } from '@shared/richtext';
@@ -2813,7 +2814,7 @@ function promotePageLinks(state: ProjectState, def: ComponentDefinition) {
       for (const [k, schema] of Object.entries(nested.properties)) {
         // A list worked out from the site's pages takes no value, so its fields' defaults would be written into the code.
         // Fields every row supplies itself (a story's own page link) never show their default.
-        if (schema.type === 'list' && schema.feed && Object.entries(schema.fields).some(([f, fs]) => !Object.hasOwn(ARTICLE_ROW_FIELDS, f) && showsPageLink(fs, fs.default, code)))
+        if (schema.type === 'list' && schema.feed && Object.entries(schema.fields).some(([f, fs]) => !Object.hasOwn(feedRowFields(schema.feed), f) && showsPageLink(fs, fs.default, code)))
           fail(`"${def.name}" shows “${schema.label}”, a list filled in from pages, with a page link in a field's default. A code copy would keep that page's address of today: remove the link first.`);
         if (!Object.hasOwn(n.props, k) && showsPageLink(schema, schema.default, code)) n.props[k] = promote(schema, k, schema.default);
       }

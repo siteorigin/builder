@@ -3,7 +3,7 @@
  */
 import type { BindingRef, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema, StateRef, TokenGroup, UiStateSchema } from '@shared/types';
 import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
-import { ARTICLE_ROW_FIELDS } from '@shared/articles';
+import { feedRowFields } from '@shared/entry-feed';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
@@ -73,16 +73,18 @@ function pageTeaserSchema(raw: unknown, fields: Record<string, ScalarPropSchema>
 }
 
 /**
- * A computed list (see shared/articles.ts): which pages it holds, and fields of the right type for the row values
- * it fills by name. Its items come and go with the site's pages, so it cannot ask for a minimum.
+ * A computed list (see shared/articles.ts and shared/entry-feed.ts): which pages or entries it holds, and fields of
+ * the right type for the row values it fills by name. Its items come and go with the site's pages and entries, so it
+ * cannot ask for a minimum.
  */
 function feedSchema(raw: unknown, fields: Record<string, ScalarPropSchema>, min: number | undefined, label: string): ListFeed {
   if (typeof raw !== 'string' || !(LIST_FEEDS as readonly string[]).includes(raw)) fail(`${label}: feed must be one of ${LIST_FEEDS.map((f) => `"${f}"`).join(', ')}.`);
   if (min) fail(`${label}: a computed list cannot have a minimum, since its items come from the site's pages.`);
-  for (const [f, type] of Object.entries(ARTICLE_ROW_FIELDS)) {
+  const filled = feedRowFields(raw);
+  for (const [f, type] of Object.entries(filled)) {
     if (Object.hasOwn(fields, f) && fields[f].type !== type) fail(`${label}: the field "${f}" of a computed list must be a ${type} field.`);
   }
-  if (!Object.keys(fields).some((f) => Object.hasOwn(ARTICLE_ROW_FIELDS, f))) fail(`${label}: a computed list needs at least one field it fills (${Object.keys(ARTICLE_ROW_FIELDS).join(', ')}).`);
+  if (!Object.keys(fields).some((f) => Object.hasOwn(filled, f))) fail(`${label}: a computed list needs at least one field it fills (${Object.keys(filled).join(', ')}).`);
   return raw as ListFeed;
 }
 

@@ -6,7 +6,7 @@
 import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionTaxonomy, EntryDoc, GraphNode, LinkValue, NodeTree, ProjectState, ResponsiveStyles, RichText, SiteRedirect } from '@shared/types';
 import { COLLECTION_FIELD_TYPES, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
-import { POSTS_COLLECTION_ID, entryRoute, findEntry, isCollectionId, isEntryId, isTermId, routeOwners, type RouteOwner } from '@shared/collections';
+import { ARCHIVE_FOLDERS, MAX_PAGE_SIZE, POSTS_COLLECTION_ID, archiveRouteOwner, entryRoute, findEntry, isCollectionId, isEntryId, isTermId, routeOwners, underArchiveFolder, type RouteOwner } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
@@ -100,6 +100,32 @@ function autoSlug(state: ProjectState, collection: Collection, title: string, en
 function refuseTaken(state: ProjectState, route: string, except: Except, what: string) {
   const holder = routeHolder(state, route, except);
   if (holder) fail(`${route} is already the address of ${holder.label}. Choose another ${what}.`);
+}
+
+/**
+ * Refuses an address for collection `collectionId` where its archive pages could not have theirs: one inside another
+ * collection's archive folders, or one whose own archive folders (`page/`, `category/`) already hold a page, an old
+ * address or another collection (see ARCHIVE_FOLDERS).
+ */
+function refuseArchiveClash(state: ProjectState, route: string, collectionId: string) {
+  const key = route.toLowerCase();
+  for (const c of Object.values(state.collections)) {
+    if (c.settings.id === collectionId || typeof c.settings.route !== 'string') continue;
+    const folder = ARCHIVE_FOLDERS.find((f) => key.startsWith(`${c.settings.route.toLowerCase()}${f}/`));
+    if (folder) fail(`${route} is inside ${c.settings.route}${folder}/, which is kept for the ${c.settings.name} collection's archive pages. Choose another address for the collection.`);
+  }
+  const inside = archiveRouteOwner(state, route, collectionId);
+  if (inside) fail(`${route} is inside ${inside.label}. Choose another address for the collection.`);
+  const mine = (o: RouteOwner) => (o.kind === 'collection' || o.kind === 'entry') && o.collectionId === collectionId;
+  const clash = routeOwners(state).find((o) => !mine(o) && underArchiveFolder(route, o.route));
+  if (clash)
+    fail(`${clash.route} is the address of ${clash.label}, and the addresses under ${route}page/ and ${route}category/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
+}
+
+/** A page size as given: a whole number of entries from 1 to MAX_PAGE_SIZE. */
+function pageSizeOf(input: number): number {
+  if (!Number.isInteger(input) || input < 1 || input > MAX_PAGE_SIZE) fail(`A collection's page size must be a whole number from 1 to ${MAX_PAGE_SIZE}.`);
+  return input;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +265,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   const preset = op.collectionId === POSTS_COLLECTION_ID ? POSTS_PRESET : undefined;
   const route = prefixRoute(op.route ?? preset?.route ?? `/${op.collectionId}/`);
   refuseTaken(state, route, {}, 'address for the collection');
+  refuseArchiveClash(state, route, op.collectionId);
   const settings: CollectionDoc = {
     schemaVersion: SCHEMA_VERSION,
     id: op.collectionId,
@@ -248,6 +275,8 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
     fields: normalizeFields(op.fields ?? {}, state),
     template: themeArticleTemplate(state)
   };
+  if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
+  if (op.categoryArchives !== undefined) settings.categoryArchives = op.categoryArchives;
   state.collections[op.collectionId] = { settings, entries: {} };
   return { collectionId: op.collectionId, route };
 }
@@ -297,6 +326,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     // Nor one of its own entries' addresses, which the collection would take from under it.
     const under = Object.values(c.entries).find((e) => entryRoute(c, e).toLowerCase() === route.toLowerCase());
     if (under) fail(`${route} is the address of the entry “${under.title}”. Choose another address for the collection.`);
+    refuseArchiveClash(state, route, c.settings.id);
     for (const e of Object.values(c.entries)) {
       const holder = held(`${route}${e.slug}/`, { ...except, entryIds: new Set([e.id]) });
       if (holder) fail(`Moving the collection to ${route} would give “${e.title}” the address ${route}${e.slug}/, which is ${holder.label}'s. Change that entry's slug first, or choose another address.`);
@@ -309,6 +339,8 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     const kept = left.filter(({ e, from }) => keepsAddress(e.id, from, e.draft === false, atStart, holder)).map(({ e, from }): SiteRedirect => ({ from, entryId: e.id }));
     if (kept.length) setKeptAddresses(state, [...keptAddresses(state), ...kept]);
   }
+  if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
+  if (op.categoryArchives !== undefined) c.settings.categoryArchives = op.categoryArchives;
   if (op.taxonomies !== undefined || op.fields !== undefined) {
     const taxonomies = op.taxonomies !== undefined ? normalizeTaxonomies(op.taxonomies) : c.settings.taxonomies;
     const fields = op.fields !== undefined ? normalizeFields(op.fields, state) : c.settings.fields;

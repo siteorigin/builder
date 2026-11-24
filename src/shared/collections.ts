@@ -5,6 +5,7 @@
  * working, so nothing here lets two of them claim the same address.
  */
 import type { Collection, EntryDoc, ProjectState } from './types';
+import { validateRoute, validateSegment } from './routes';
 
 /** A collection's ID and folder name: a lowercase slug ("posts", "case-studies"). */
 export const COLLECTION_ID_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -14,6 +15,20 @@ export const ENTRY_ID_RE = /^en_[a-z0-9]{4,32}$/;
 export const TERM_ID_RE = /^[a-z0-9][a-z0-9-]{0,59}$/;
 /** The ID the ready-made blog collection takes. */
 export const POSTS_COLLECTION_ID = 'posts';
+/** How many entries a page of a collection's index or category archive lists, unless the collection says otherwise. */
+export const DEFAULT_PAGE_SIZE = 10;
+export const MAX_PAGE_SIZE = 100;
+
+/** How many entries each page of a collection's index and archives lists: its own page size, or the default for anything else a hand-edited document holds. */
+export function archivePageSize(settings: { pageSize?: unknown } | undefined): number {
+  const n = settings?.pageSize;
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_PAGE_SIZE ? n : DEFAULT_PAGE_SIZE;
+}
+
+/** Whether a collection's categories get archive pages of their own: yes unless it says no. */
+export function hasCategoryArchives(settings: { categoryArchives?: unknown } | undefined): boolean {
+  return settings?.categoryArchives !== false;
+}
 
 /** Names a folder may not have on every system that may open the project. */
 const DEVICE_NAMES = /^(con|prn|aux|nul|com\d|lpt\d)$/;
@@ -60,6 +75,47 @@ export function orderedEntries(collection: Collection): EntryDoc[] {
   return [...listed, ...byDate.filter((e) => !seen.has(e))];
 }
 
+/** A collection entry the site has a page for, and that page's address. */
+export interface SiteEntry {
+  collection: Collection;
+  entry: EntryDoc;
+  route: string;
+}
+
+/** Whether an entry's address is one the site can have: its collection's prefix and one valid segment. */
+export function isEntryPath(collection: Collection, entry: EntryDoc): boolean {
+  const prefix: unknown = collection?.settings?.route;
+  if (typeof prefix !== 'string' || prefix === '/' || validateRoute(prefix)) return false;
+  return typeof entry?.slug === 'string' && !validateSegment(entry.slug) && !validateRoute(entryRoute(collection, entry));
+}
+
+/**
+ * The entries the site has a page for, drafts included (as draft pages are, until the website leaves them out): the
+ * collections by ID, and each one's entries in its own order. An entry at an address the site cannot have (a slug or
+ * prefix edited by hand), or at one a page or an earlier entry holds, has none, so no two files share a place.
+ */
+export function siteEntries(state: ProjectState): SiteEntry[] {
+  const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
+  const out: SiteEntry[] = [];
+  for (const id of Object.keys(state.collections ?? {}).sort()) {
+    const collection = state.collections[id];
+    if (!collection?.entries || typeof collection.entries !== 'object' || collection.settings?.id !== id) continue;
+    for (const entry of orderedEntries(collection)) {
+      if (!entry || typeof entry !== 'object' || !isEntryPath(collection, entry)) continue;
+      const route = entryRoute(collection, entry);
+      if (used.has(route.toLowerCase())) continue;
+      used.add(route.toLowerCase());
+      out.push({ collection, entry, route });
+    }
+  }
+  return out;
+}
+
+/** Is the entry a draft, left out of the website? */
+export function isDraftEntry(entry: EntryDoc): boolean {
+  return entry.draft !== false;
+}
+
 /** Something that holds an address of the site. */
 export type RouteOwner =
   | { kind: 'page'; route: string; pageId: string; label: string }
@@ -95,8 +151,33 @@ export function routeOwners(state: ProjectState): RouteOwner[] {
   return [...out, ...collectionRoutes(state)];
 }
 
-/** The collection or entry holding `route` (compared as case-insensitive file systems do), if any. */
+/**
+ * The folders under a collection's address that its archive pages live in: `page/` for the later pages of its index
+ * (`/blog/page/2/`) and `category/` for each category's archive (`/blog/category/news/`, `/blog/category/news/page/2/`).
+ * Everything under them belongs to the collection, so no page, old address or other collection can sit there; the
+ * folder's own address stays free (an entry may be called "page").
+ */
+export const ARCHIVE_FOLDERS = ['page', 'category'] as const;
+
+/** Whether `route` is under one of the archive folders of a collection at `prefix` (both compared in lowercase). */
+export function underArchiveFolder(prefix: string, route: string): boolean {
+  const p = prefix.toLowerCase();
+  const r = route.toLowerCase();
+  return ARCHIVE_FOLDERS.some((f) => r.startsWith(`${p}${f}/`) && r.length > p.length + f.length + 1);
+}
+
+/** The collection whose archive pages may use `route`, if any (see ARCHIVE_FOLDERS). */
+export function archiveRouteOwner(state: ProjectState, route: string, exceptCollectionId?: string): RouteOwner | undefined {
+  for (const c of Object.values(state.collections ?? {})) {
+    const prefix: unknown = c?.settings?.route;
+    if (typeof prefix !== 'string' || c.settings.id === exceptCollectionId) continue;
+    if (underArchiveFolder(prefix, route)) return { kind: 'collection', route, collectionId: c.settings.id, label: `the ${c.settings.name} collection's archive pages` };
+  }
+  return undefined;
+}
+
+/** The collection or entry holding `route`, or the collection whose archive pages may use it (compared as case-insensitive file systems do), if any. */
 export function collectionRouteOwner(state: ProjectState, route: string): RouteOwner | undefined {
   const key = route.toLowerCase();
-  return collectionRoutes(state).find((o) => o.route.toLowerCase() === key);
+  return collectionRoutes(state).find((o) => o.route.toLowerCase() === key) ?? archiveRouteOwner(state, route);
 }

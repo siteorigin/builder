@@ -275,15 +275,20 @@ export interface ListProp extends PropBase {
   /** Items are cards for pages of the site: fields left empty show the linked page's own values (see shared/page-teasers.ts). */
   pageTeaser?: PageTeaser;
   /**
-   * Items are not stored: they are worked out from the site's pages where the list is placed, each time the site is
-   * generated (see shared/articles.ts). Fields named like a row's (`pageLink`, `title`, `date`, `dateLabel`,
-   * `byline`, `excerpt`) are filled from it; the stored value is ignored.
+   * Items are not stored: they are worked out from the site's pages (or a collection's entries) where the list is
+   * placed, each time the site is generated (see shared/articles.ts and shared/entry-feed.ts). Fields named like a
+   * row's (`pageLink`, `title`, `date`, `dateLabel`, `byline`, `excerpt`, and for entries `image` and `category`) are
+   * filled from it; the stored value is ignored.
    */
   feed?: ListFeed;
 }
-/** What a computed list holds: the site's dated articles, newest first, or the page it is placed on. */
-export type ListFeed = 'articles' | 'currentPage';
-export const LIST_FEEDS: readonly ListFeed[] = ['articles', 'currentPage'];
+/**
+ * What a computed list holds: the site's dated articles, newest first; the page it is placed on; or the published
+ * entries of a collection, newest first, chosen by the placement's own `collection`, `category`, `tag` and `count`
+ * properties (see shared/entry-feed.ts).
+ */
+export type ListFeed = 'articles' | 'currentPage' | 'entries';
+export const LIST_FEEDS: readonly ListFeed[] = ['articles', 'currentPage', 'entries'];
 /**
  * Which item fields of a page list follow the linked page. `link` names the item's link field; `title` (a text
  * field) shows the page's title, `description` (a text field) its description and `image` (an image field) its
@@ -886,6 +891,13 @@ export interface CollectionDoc {
    * `publishedAt` (then by ID), as dated articles do.
    */
   entryOrder?: string[];
+  /**
+   * How many entries each page of the collection's index (its own address, then `page/2/`, `page/3/`...) and of each
+   * category's archive lists, newest first. Absent: 10.
+   */
+  pageSize?: number;
+  /** Whether each category with a published entry gets an archive at `category/<term ID>/`. Absent: it does. */
+  categoryArchives?: boolean;
   /**
    * The layout every entry's page is shown with: a tree of sections and elements, edited like a page's, whose nodes
    * and placed sections read the entry they are shown for through `{ $entry: field }` bindings. Editing it changes
