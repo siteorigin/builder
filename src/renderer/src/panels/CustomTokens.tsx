@@ -8,6 +8,7 @@ import { applyOps } from '../store';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field } from '../components/ui';
 import { FontSelect, familyName } from './FontSelect';
+import { usePreviewStack } from '../lib/editor-fonts';
 
 /**
  * The project's own site styles (spec §7.2): create, rename, change and remove them, with how many places use
@@ -117,19 +118,20 @@ const OWN: Partial<Record<TokenGroup, string>> = { color: 'Its own color', font:
 
 /** A small sample of a non-colour style, the same size as a colour's swatch, so every row starts on one edge. */
 function Mark({ t, value, tokens }: { t: TokenDef; value: string; tokens: TokenDef[] }) {
+  const shownStack = usePreviewStack();
   if (t.group === 'text') {
     const v = textMetrics(tokens, t.id);
     const famRef = linkOf(v?.family);
     const stack = famRef ? followedText(tokens, famRef) : String(v?.family ?? '');
     return (
-      <span className="ss-custom-mark" style={{ fontFamily: stack || undefined, fontWeight: v?.weight }} aria-hidden="true">
+      <span className="ss-custom-mark" style={{ fontFamily: stack ? shownStack(stack) : undefined, fontWeight: v?.weight }} aria-hidden="true">
         Aa
       </span>
     );
   }
   if (t.group === 'font')
     return (
-      <span className="ss-custom-mark" style={{ fontFamily: value || undefined }} aria-hidden="true">
+      <span className="ss-custom-mark" style={{ fontFamily: value ? shownStack(value) : undefined }} aria-hidden="true">
         Aa
       </span>
     );

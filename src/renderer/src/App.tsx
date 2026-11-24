@@ -15,6 +15,7 @@ import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwne
 import { endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
 import { keepViewValid } from './lib/model';
 import { placeOn, readPlaces } from './lib/page-place';
+import { startEditorFonts } from './lib/editor-fonts';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -27,6 +28,9 @@ export function App() {
   // No screen is shown until the project that is open (if any) is known, so a File menu command waiting for this
   // window reaches the screen that will stay: Welcome, or the editor of a project left open with no window (macOS).
   const [booted, setBooted] = useState(false);
+
+  // The project's imported fonts, loaded into the editor for its samples.
+  useEffect(() => startEditorFonts(), []);
 
   useEffect(() => {
     void api.app.getSettings().then((settings) => setState({ settings }));

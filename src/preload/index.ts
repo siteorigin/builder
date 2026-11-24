@@ -55,6 +55,7 @@ const api: BuilderApi = {
     redo: invoke('project:redo'),
     reviewImport: invoke('project:reviewImport'),
     importAssets: invoke('project:importAssets'),
+    fontFile: invoke('project:fontFile'),
     webCopyPlan: invoke('project:webCopyPlan'),
     makeWebCopy: invoke('project:makeWebCopy'),
     photoMetadata: invoke('project:photoMetadata'),
