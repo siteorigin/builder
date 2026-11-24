@@ -505,6 +505,14 @@ describe('SEO and performance', () => {
     // As many as fit: how many is unknown, so the whole width.
     gridNode.styles = { base: { layout: 'grid', gridTemplate: 'auto-fit-sm' } };
     expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
+    gridNode.styles = { base: { layout: 'grid', gridTemplate: 'repeat(auto-fill, minmax(18rem, 1fr))' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
+    // Custom fr shares, repeats included, size like the presets (#352): an item may sit in the widest column.
+    gridNode.styles = { base: { layout: 'grid', gridTemplate: '2fr repeat(2, minmax(0, 1fr))' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 50vw, 100vw']);
+    // A fixed or content-sized column leaves the others' widths unknown: the whole width.
+    gridNode.styles = { base: { layout: 'grid', gridTemplate: '16rem 1fr 14rem' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
   });
 
   it('keeps a width the image holds whatever its column, even when it overflows the column', () => {

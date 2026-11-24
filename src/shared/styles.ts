@@ -486,8 +486,8 @@ type GridTemplate = { css: string; fr: Array<number | null> };
 /**
  * Parse a column-size value: a preset, a list of up to MAX_GRID_TRACKS columns (each a size or minmax(), with
  * repeat(count, columns) counted as every column it makes), or, for as many columns as fit,
- * repeat(auto-fit | auto-fill, minimum) with minimum a length or minmax(length, size). That length is capped at
- * the grid's own width, so a card never overflows a narrow screen. A message for anything else.
+ * repeat(auto-fit | auto-fill, minimum) with minimum a plain length above zero or minmax(that length, size). That
+ * length is capped at the grid's own width, so a card never overflows a narrow screen. A message for anything else.
  */
 export function parseGridTemplate(raw: string): GridTemplate | string {
   const value = raw.trim();
@@ -499,7 +499,11 @@ export function parseGridTemplate(raw: string): GridTemplate | string {
   if (auto && /^auto-(fit|fill)$/i.test(auto[0])) {
     if (auto.length !== 2) return bad;
     const fill = auto[0].toLowerCase();
-    const least = (len: string) => (isTokenLength(len, { negative: false }) && !TOKEN_ZERO_RE.test(len.trim()) ? `min(100%, ${len.trim()})` : null);
+    // A plain length above zero: a zero minimum (or math that works out to one) makes zero-width columns.
+    const least = (len: string) => {
+      const m = TOKEN_LENGTH_RE.exec(len.trim());
+      return m && m[1] !== '-' && parseFloat(len.trim().slice(m[1].length)) > 0 ? `min(100%, ${len.trim()})` : null;
+    };
     const single = least(auto[1]);
     if (single) return { css: `repeat(${fill}, ${single})`, fr: [] };
     const args = callArgs(auto[1], 'minmax');

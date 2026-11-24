@@ -284,6 +284,23 @@ describe('where Image focus is offered', () => {
     expect(style?.description).toContain('"X% Y%"');
     expect(JSON.stringify(style?.parameters)).toContain('"objectPosition"');
   });
+
+  it('tells the AI about custom column sizes, card widths and row spans (#352)', async () => {
+    const s = fresh();
+    const host = { state: () => s, revision: () => 1 } as unknown as ToolHost;
+    const listed = ((await executeTool('read_project', '{}', host, 'c1')).content as { styleProperties: string[] }).styleProperties;
+    const template = listed.find((p) => p.startsWith('gridTemplate '))!;
+    // The presets are still listed, then the grammar beyond them.
+    expect(template).toContain('[1fr 1fr|1fr 2fr|');
+    for (const part of ['up to 12 column sizes', '"16rem 1fr 14rem"', '"repeat(auto-fit, minmax(18rem, 1fr))"', 'auto-fill', 'scope phone']) expect(template).toContain(part);
+    expect(listed.find((p) => p.startsWith('rowSpan '))).toBe('rowSpan [1|2|3|4|5|6] (a grid child; above 1 for all sizes it applies from tablet up, set it at scope phone to span there)');
+    expect(listed.find((p) => p.startsWith('columnSpan '))).toContain('scope phone');
+    const inst = instanceOf(s, 'Home', 'hero.split');
+    const tools = selectionTools(s, selectionTarget({ owner: ownerOf(s, 'Home'), instancePath: [inst.id], nodeId: 'media', partId: 'media' }));
+    const style = tools?.find((t) => t.name === 'style_selected_element');
+    for (const part of ['repeat(auto-fit, minmax(18rem, 1fr))', 'rowSpan (1 to 6)', 'scope "phone"']) expect(style?.description).toContain(part);
+    expect(JSON.stringify(style?.parameters)).toContain('"rowSpan"');
+  });
 });
 
 describe('the rules a crop is worked out from', () => {

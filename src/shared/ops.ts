@@ -177,7 +177,7 @@ export const OPERATION_SCHEMAS = {
     axis: z.string().optional().describe('The variant axis, when the option ID is on several.'),
     scope,
     property: z.string().describe('Style property ID, e.g. paddingBlock, background, textStyle, gap, columns.'),
-    value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. objectPosition also takes a focal point "X% Y%" (each 0 to 100). null removes the override.')
+    value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. objectPosition also takes a focal point "X% Y%" (each 0 to 100). gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem" or "repeat(auto-fit, minmax(18rem, 1fr))"; rowSpan 1 to 6. null removes the override.')
   }),
   'node.resetStyles': z.object({
     type: z.literal('node.resetStyles'),

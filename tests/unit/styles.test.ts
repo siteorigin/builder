@@ -117,10 +117,119 @@ describe('column sizes for all sizes (#205)', () => {
   });
 });
 
+describe('grid tracks and row spans (#352)', () => {
+  const tracks = (v: string) => styleToCss('gridTemplate', v);
+
+  it('writes the presets exactly as before', () => {
+    expect(tracks('1fr 1fr')).toEqual(['grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)']);
+    expect(tracks('1fr 2fr')).toEqual(['grid-template-columns: minmax(0, 1fr) minmax(0, 2fr)']);
+    expect(tracks('2fr 1fr')).toEqual(['grid-template-columns: minmax(0, 2fr) minmax(0, 1fr)']);
+    expect(tracks('1fr 1.5fr')).toEqual(['grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr)']);
+    expect(tracks('1.5fr 1fr')).toEqual(['grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr)']);
+    expect(tracks('auto-fit-sm')).toEqual(['grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr))']);
+    expect(tracks('auto-fit-md')).toEqual(['grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr))']);
+    for (const o of STYLE_PROP_MAP.gridTemplate.options!) expect(validateStyleValue('gridTemplate', o.value), o.value).toBeNull();
+  });
+
+  it('takes a custom list of fr shares, lengths, auto, minmax() and repeat()', () => {
+    expect(tracks('16rem 1fr 14rem')).toEqual(['grid-template-columns: 16rem minmax(0, 1fr) 14rem']);
+    expect(tracks('2fr repeat(2, 1fr)')).toEqual(['grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr))']);
+    expect(tracks('minmax(10rem, 1fr) auto max-content')).toEqual(['grid-template-columns: minmax(10rem, 1fr) auto max-content']);
+    expect(tracks('minmax(0, 2fr) 25%')).toEqual(['grid-template-columns: minmax(0, 2fr) 25%']);
+    expect(tracks('clamp(12rem, 20vw, 16rem) 1fr')).toEqual(['grid-template-columns: clamp(12rem, 20vw, 16rem) minmax(0, 1fr)']);
+    // Case and spacing as typed change nothing but the spaces between columns.
+    expect(tracks('  1FR\t 16REM  AUTO ')).toEqual(['grid-template-columns: minmax(0, 1fr) 16REM auto']);
+    expect(tracks('minmax( 10rem ,1fr )')).toEqual(['grid-template-columns: minmax(10rem, 1fr)']);
+  });
+
+  it('takes a minimum card width for as many columns as fit, never wider than the grid', () => {
+    expect(tracks('repeat(auto-fit, minmax(18rem, 1fr))')).toEqual(['grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr))']);
+    expect(tracks('repeat(auto-fill, minmax(240px, 1fr))')).toEqual(['grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr))']);
+    expect(tracks('REPEAT(AUTO-FILL, 200px)')).toEqual(['grid-template-columns: repeat(auto-fill, min(100%, 200px))']);
+    expect(tracks('repeat(auto-fit, minmax(16rem, auto))')).toEqual(['grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), auto))']);
+  });
+
+  it('counts at most 12 columns, repeats included', () => {
+    expect(validateStyleValue('gridTemplate', Array(12).fill('1fr').join(' '))).toBeNull();
+    expect(validateStyleValue('gridTemplate', Array(13).fill('1fr').join(' '))).toMatch(/more than 12 columns/);
+    expect(validateStyleValue('gridTemplate', 'repeat(6, 1fr) repeat(3, 1fr 2fr)')).toBeNull();
+    expect(validateStyleValue('gridTemplate', 'repeat(6, 1fr) repeat(3, 1fr 2fr) auto')).toMatch(/more than 12 columns/);
+    expect(validateStyleValue('gridTemplate', 'repeat(7, 1fr 1fr)')).toMatch(/column sizes/);
+    expect(tracks('repeat(13, 1fr)')).toEqual([]);
+  });
+
+  it('refuses anything outside the grammar, and writes nothing for it from a hand-edited document', () => {
+    const bad = [
+      'minmax(10rem,, 1fr)', 'minmax(10rem, 1fr,)', 'minmax(10rem)', 'minmax(1fr, 2fr)', 'minmax(minmax(1px, 2px), 1fr)', '0fr 1fr', '-1fr', '-10px 1fr', '1fr 2',
+      '1fr var(--so-space-lg)', '[side] 16rem 1fr', 'subgrid', 'none', 'masonry', 'fit-content(10rem) 1fr', '1fr,2fr', 'repeat(0, 1fr)', 'repeat(2.5, 1fr)',
+      'repeat(2, repeat(2, 1fr))', 'repeat(2,)', 'repeat(auto-fit, minmax(0, 1fr))', 'repeat(auto-fit, 0px)', 'repeat(auto-fit, 1fr)', 'repeat(auto-fit, minmax(1fr, 2fr))',
+      'repeat(auto-fit, minmax(18rem, 1fr)) 1fr', '1fr repeat(auto-fill, 10rem)', 'repeat(auto-fit, minmax(18rem, 1fr), 2)', 'repeat(auto-fit, minmax(-4rem, 1fr))',
+      'repeat(auto-fill, calc(1px - 2px))', 'repeat(auto-fit, minmax(.0rem, 1fr))',
+      'minmax(10rem, 1fr', '1fr) (2fr', 'calc(1px + var(--x)) 1fr', 'attr(data-x) 1fr', '1fr; color: red', '1fr } body { display: none', ''
+    ];
+    for (const v of bad) {
+      expect(validateStyleValue('gridTemplate', v), v).not.toBeNull();
+      expect(tracks(v), v).toEqual([]);
+    }
+    expect(validateStyleValue('gridTemplate', 2 as never)).toMatch(/must be text/);
+    expect(validateStyleValue('gridTemplate', `${'1fr '.repeat(80)}`)).toMatch(/column sizes/);
+  });
+
+  it('spans one to six rows', () => {
+    for (const v of ['1', '2', '6', 3, ' 4 ']) expect(validateStyleValue('rowSpan', v as string), String(v)).toBeNull();
+    for (const v of ['0', '7', 'full', 1.5, '2 / 3']) expect(validateStyleValue('rowSpan', v as string), String(v)).not.toBeNull();
+    expect(styleToCss('rowSpan', 2)).toEqual(['grid-row: span 2 / span 2']);
+    expect(styleToCss('rowSpan', ' 6 ')).toEqual(['grid-row: span 6 / span 6']);
+    expect(styleToCss('rowSpan', 9)).toEqual([]);
+    for (const kind of ['text', 'image', 'link', 'icon', 'element']) expect(styleSetFor({ kind }), kind).toContain('rowSpan');
+  });
+
+  it('keeps custom columns and tall spans off phones unless set for phones', () => {
+    let s = createStarterState('blank', 'Blank', false);
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const host = home(s).rootIds[0];
+    const r = applyOperations(s, [{ type: 'node.insert', owner, parentId: host, slot: 'content', primitive: 'grid' }]);
+    const gridId = r.results[0].nodeId as string;
+    const c = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: gridId, primitive: 'stack' }]);
+    const itemId = c.results[0].nodeId as string;
+    const set = (nodeId: string, scope: 'base' | 'phone', property: string, value: string | number) => ({ type: 'node.setStyle' as const, owner, nodeId, scope, property, value });
+    s = applyOperations(c.state, [set(gridId, 'base', 'gridTemplate', 'repeat(auto-fit, minmax(18rem, 1fr))'), set(itemId, 'base', 'rowSpan', '2'), set(itemId, 'base', 'columnSpan', '2')]).state;
+    let text = css(s, 'site');
+    const grid = `.so-n-${gridId}`;
+    const item = `.so-n-${itemId}`;
+    expect(ruleOf(section(text, WIDE), grid)).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr))');
+    expect(ruleOf(section(text, WIDE), item)).toContain('grid-row: span 2 / span 2');
+    expect(ruleOf(section(text, WIDE), item)).toContain('grid-column: span 2 / span 2');
+    expect(section(text, null)).not.toContain('18rem');
+    expect(section(text, null)).not.toContain('grid-row');
+    expect(section(text, PHONE)).not.toContain('grid-row');
+    // Set for phones, they apply there too.
+    s = applyOperations(s, [set(gridId, 'phone', 'gridTemplate', '5rem 1fr'), set(itemId, 'phone', 'rowSpan', 3)]).state;
+    text = css(s, 'site');
+    expect(ruleOf(section(text, PHONE), grid)).toContain('grid-template-columns: 5rem minmax(0, 1fr)');
+    expect(ruleOf(section(text, PHONE), item)).toContain('grid-row: span 3 / span 3');
+    // A single-row span changes nothing on a phone, so it applies at every size.
+    s = applyOperations(s, [set(itemId, 'base', 'rowSpan', '1')]).state;
+    expect(ruleOf(section(css(s, 'site'), null), item)).toContain('grid-row: span 1 / span 1');
+  });
+
+  it('refuses a bad track list through node.setStyle and keeps the one stored', () => {
+    const s = createStarterState('blank', 'Blank', false);
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const r = applyOperations(s, [{ type: 'node.insert', owner, parentId: home(s).rootIds[0], slot: 'content', primitive: 'grid' }]);
+    const gridId = r.results[0].nodeId as string;
+    const ok = applyOperations(r.state, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: '16rem 1fr 14rem' }]).state;
+    expect(home(ok).nodes[gridId].styles?.base?.gridTemplate).toBe('16rem 1fr 14rem');
+    expect(() => applyOperations(ok, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: '1fr url(x)' }])).toThrow(/Invalid characters/);
+    expect(() => applyOperations(ok, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: 'minmax(1fr, 2fr)' }])).toThrow(/column sizes/);
+    expect(() => applyOperations(ok, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'rowSpan', value: 7 }])).toThrow(/must be one of/);
+  });
+});
+
 describe('style registry', () => {
   it('emits a declaration for every property it offers', () => {
     const sample: Record<string, unknown> = {
-      layout: 'grid', columns: 2, align: 'center', justify: 'center', order: 1, wrap: true, gridTemplate: '1fr 2fr', columnSpan: 2, alignSelf: 'center',
+      layout: 'grid', columns: 2, align: 'center', justify: 'center', order: 1, wrap: true, gridTemplate: '1fr 2fr', columnSpan: 2, rowSpan: 2, alignSelf: 'center',
       flexGrow: 1, flexShrink: 0, textStyle: 'text.h2', fontFamily: 'serif', fontWeight: '600', fontStyle: 'italic', textTransform: 'uppercase',
       textAlign: 'center', color: '#000', background: '#fff', shadow: '0 1px 2px #000', opacity: 0.5, marginInline: 'auto', aspectRatio: '16/9',
       objectFit: 'cover', objectPosition: 'top', overflow: 'clip', position: 'sticky', inset: '0', zIndex: 2, hidden: true, customCss: 'filter: blur(2px)',
@@ -146,7 +255,7 @@ describe('style registry', () => {
   });
 
   it('refuses what a property cannot hold', () => {
-    expect(validateStyleValue('gridTemplate', 'repeat(99, 1fr)')).toMatch(/must be one of/);
+    expect(validateStyleValue('gridTemplate', 'repeat(99, 1fr)')).toMatch(/column sizes/);
     expect(validateStyleValue('columnSpan', 13)).toMatch(/must be one of/);
     expect(validateStyleValue('position', 'fixed')).toMatch(/must be one of/);
     expect(validateStyleValue('zIndex', 1.5)).toMatch(/whole number/);

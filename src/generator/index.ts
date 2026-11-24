@@ -33,6 +33,7 @@ import {
   MEDIA_QUERIES,
   REDUCED_MOTION_QUERY,
   TRANSLATE_DECL,
+  gridTemplateShares,
   isSafeCssValue,
   isValidGradient,
   linkOf,
@@ -1328,9 +1329,10 @@ function sizingBoxes(walk: SizingWalk, tree: NodeTree, nodeId: string, placement
 
 /**
  * The fraction of a grid's content width one of its items takes in a range: an equal share for each column it
- * spans, or for uneven columns the widest run it could sit in. Columns that fit as many as they can stay whole,
- * since how many fit is unknown here. With both columns and column sizes set, the wider reading wins: a stronger
- * rule this walk cannot see (a placement's, an item's) may decide which one applies.
+ * spans, or for uneven columns the widest run it could sit in. Columns that fit as many as they can, or that mix fr
+ * shares with fixed widths, stay whole, since how wide each one is is unknown here. With both columns and column
+ * sizes set, the wider reading wins: a stronger rule this walk cannot see (a placement's, an item's) may decide
+ * which one applies.
  */
 function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRange): number {
   const spanValue = item ? boxStyle(item, 'columnSpan', range) : undefined;
@@ -1347,7 +1349,11 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
   // A column count that is not a whole number makes no columns in CSS: one implicit column holds everything.
   if (typeof columns === 'number' && columns >= 1) shares.push(Number.isInteger(columns) ? span(Array.from({ length: columns }, () => 1)) : 1);
   const template = boxStyle(grid, 'gridTemplate', range);
-  if (typeof template === 'string') shares.push(/^\d+(\.\d+)?fr( \d+(\.\d+)?fr)*$/.test(template) ? span(template.split(' ').map((t) => parseFloat(t))) : 1);
+  if (typeof template === 'string') {
+    // Shares of fr columns alone; a column of fixed or content width leaves the rest unknown, so the whole width.
+    const fr = gridTemplateShares(template);
+    shares.push(fr ? span(fr) : 1);
+  }
   return shares.length ? Math.max(...shares) : 1;
 }
 
