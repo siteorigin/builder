@@ -223,6 +223,7 @@ Viewport width changes the iframe's actual CSS layout viewport. Zoom only change
 | Undo / redo | Standard platform shortcuts; text editing receives its own undo while focused. |
 | Save | Flush pending local changes and show save status. |
 | Duplicate selected node | Cmd/Ctrl+D outside text inputs. |
+| Wrap in Stack / Ungroup | Cmd/Ctrl+G wraps the selected node, or sibling layers selected together with nothing between them, in a new Stack where they are; Cmd/Ctrl+Shift+G ungroups a plain container, putting what it holds in its place. Wrap in Row and Wrap in Grid are in the Canvas, Layers and Inspector menus. Each is one history entry. |
 | Delete | Delete/Backspace outside text inputs; preserve a history entry. |
 | Exit current interaction | Escape exits text editing, then nested selection/component mode as appropriate. |
 | Command menu | Cmd/Ctrl+K for pages, insert actions and editor commands. |

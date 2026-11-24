@@ -74,7 +74,8 @@ import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPa
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, createComponentTarget, definitionView, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
-import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planLayers, selectPage, setMode, structuralTarget } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
+import { wrapItems } from './WrapItems';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -709,6 +710,22 @@ function GroupScope({ plan, title }: { plan: ReturnType<typeof planLayers>; titl
  * The selection's commands, grouped by what they reach when several layers are selected together: the ones for
  * the selected layer alone under its name, then Duplicate and Delete under the count they act on.
  */
+/**
+ * Wrap in Stack, Row or Grid, and Ungroup, for what the Inspector's menu acts on (the layers selected together, or the
+ * selection), followed by a separator unless `trail` is false: planned again as one is chosen, as Duplicate and Delete are.
+ */
+function wrapMenu(plan: ReturnType<typeof planLayers>, trail = true): MenuItem[] {
+  const items = wrapItems(
+    plan,
+    {
+      wrap: (k) => void asPlanned(plan, async (p) => void (await wrapLayers(k, p)))(),
+      ungroup: () => void asPlanned(plan, async (p) => void (await ungroupLayers(p)))()
+    },
+    plan?.several ? groupCount(plan.group) : undefined
+  );
+  return items.length && trail ? [...items, { separator: true }] : items;
+}
+
 function groupedItems(plan: ReturnType<typeof planLayers>, title: string, own: MenuItem[], batch: MenuItem[]): MenuItem[] {
   const ownItems = own.filter((it, i, all) => !(it.separator && (i === 0 || i === all.length - 1 || all[i - 1]?.separator)));
   if (!plan?.several) return [...ownItems, ...(ownItems.length && batch.length ? [{ separator: true }] : []), ...batch];
@@ -924,6 +941,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     shell
       ? []
       : [
+          ...wrapMenu(plan),
           ...clipboard,
           // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
           { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
@@ -1643,6 +1661,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
     [...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }, { separator: true }] : []), ...styleItems],
     structural
       ? [
+          ...wrapMenu(plan),
           ...clipboard,
           // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
           { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
@@ -2091,6 +2110,20 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const several = useStore((s) => (s.layerSet ? (liveGroup(s)?.ids.length ?? 0) > 1 : false));
   // The design's own node, even when it was reached through a placement on the page.
   const create = several ? null : createComponentTarget({ state, readOnly }, { owner, instancePath: [], nodeId: node.id });
+  // Wrap and Ungroup act on the design's own node, also when it was reached through a placement on the page, or on the
+  // layers selected with it in Layers: followed, so the menu is rebuilt when they change.
+  useStore((s) => {
+    const g = s.layerSet ? liveGroup(s) : null;
+    return g ? g.ids.join(' ') : null;
+  });
+  const designRef: ElementRef = { owner, instancePath: [], nodeId: node.id };
+  const designPlan = isRoot ? null : planFor(designRef);
+  const designWraps = wrapMenu(designPlan, false);
+  const designItems: MenuItem[] = [
+    ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
+    ...(create && designWraps.length ? [{ separator: true }] : []),
+    ...designWraps
+  ];
   const title = partId && partId !== 'root' ? def.parts[partId].label : isRoot ? def.name : refLabel(state, { owner, instancePath: [], nodeId: node.id });
   // A copy of a theme component compares against the theme's design, so only real changes show as changes.
   const original = def.componentId ? catalogueComponent(state.site.themeId, def.componentId)?.tree?.nodes[node.id]?.styles : undefined;
@@ -2185,7 +2218,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         icon={isRoot ? <Component /> : elementKind(node).icon}
         actions={
           <>
-            {create && <SelectionActions title={title} selection={create} ask={false} items={[{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }]} />}
+            {designItems.length > 0 && <SelectionActions title={title} selection={create ?? designRef} ask={false} items={designItems} group={several ? groupCount(designPlan!.group) : undefined} />}
             <DoneButton />
           </>
         }

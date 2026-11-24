@@ -28,7 +28,7 @@ import { ImportReviewModal } from './panels/ImportReview';
 import { PostImportReviewModal } from './panels/PostImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
 import { DuplicateProjectModal, NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
-import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openComponentStudio, openSiteStyles, planLayers, setMode } from './lib/actions';
+import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openComponentStudio, openSiteStyles, planLayers, setMode, ungroupLayers, wrapLayers } from './lib/actions';
 import { StudioControls } from './panels/StudioControls';
 import { copySelection, pasteCopy } from './lib/clipboard';
 import { clipKeyIsEditors } from './lib/clip-keys';
@@ -101,6 +101,11 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   // Duplicate, delete and move act on every layer selected together in Layers, or on the selection alone.
   if (mod && key.toLowerCase() === 'd') {
     if (!writing) void duplicateLayers();
+    return true;
+  }
+  // Wrap them in a Stack (Group), and Ungroup a container, the same way (#386). Only while editing: Preview selects nothing.
+  if (mod && key.toLowerCase() === 'g') {
+    if (!writing && s.mode === 'edit') void (shift ? ungroupLayers() : wrapLayers('stack'));
     return true;
   }
   // Copy and paste sections and elements, also between pages. Only while editing, with no dialog or menu open: a key
@@ -422,6 +427,8 @@ export function Editor() {
       // loading) must not run a second time, or in Preview at all.
       if (document.activeElement instanceof HTMLIFrameElement) return;
       if (openDialogs.length && !(mod && e.key.toLowerCase() === 'k' && getState().modal?.kind === 'cmdk')) return;
+      // Wrap and Ungroup are Cmd/Ctrl+G and Shift+Cmd/Ctrl+G alone: with Alt it is another key (AltGr on some layouts).
+      if (mod && e.altKey && e.key.toLowerCase() === 'g') return;
       // Back and Forward through the visitor's journey in Preview, as a browser's keys do, outside text fields and
       // never for a key a control already used (a panel divider takes Alt+Left and Alt+Right to resize).
       const dir = visitorStepKey({ key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey }, api.platform === 'darwin');
