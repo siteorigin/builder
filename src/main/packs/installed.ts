@@ -11,11 +11,14 @@ import { loadPacks, type PackRoot } from './loader';
 
 let catalogue: PackCatalogue = { packs: [], refused: [], userDir: '' };
 
-/** Where packs are read from: the app's own, development fixtures when unpackaged, then the person's. */
-export function packRoots(resources: string, userData: string, packaged: boolean): PackRoot[] {
+/**
+ * Where packs are read from: the app's own, its development fixtures, then the person's. Fixtures ship too, so a
+ * project switched to one in development stays editable; they are only offered in development builds.
+ */
+export function packRoots(resources: string, userData: string): PackRoot[] {
   return [
     { dir: join(resources, 'resources', 'packs'), source: 'bundled' },
-    ...(packaged ? [] : [{ dir: join(resources, 'resources', 'packs-dev'), source: 'bundled' as const }]),
+    { dir: join(resources, 'resources', 'packs-dev'), source: 'bundled' },
     { dir: join(userData, 'packs'), source: 'user' }
   ];
 }

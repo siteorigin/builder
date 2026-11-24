@@ -28,11 +28,17 @@ const tmp = () => {
   return d;
 };
 
-/** A third-party pack: Foundation's components under another identity, with one font. */
-function studio(id = 'studio'): AuthoredPack {
+/** Code an installed pack writes itself, which must pass the policy for code the assistant writes. */
+const OWN_CODE = `<script>\n\tlet { siteName = 'Studio', class: className = '' } = $props();\n</script>\n\n<header class={['so-studio-header', className]}>{siteName}</header>\n`;
+
+/**
+ * A third-party pack: Foundation's components under another identity, with one font. `reuse` keeps Foundation's
+ * own code components as they are; otherwise the pack ships code of its own.
+ */
+function studio(id = 'studio', reuse = false): AuthoredPack {
   const { components, fonts, ...meta } = FOUNDATION_PACK;
   const author = createPack({ ...meta, id, name: 'Studio', version: '1.0.0', license: 'MIT', fonts: fonts.filter((f) => f.name === 'Lora') });
-  return author.define(components.map((c) => author.adopt(c)));
+  return author.define(components.map((c) => author.adopt(c.kind === 'code' && !reuse ? { ...c, source: OWN_CODE } : c)));
 }
 
 let light: Buffer;
@@ -93,7 +99,15 @@ describe('loading a theme pack release', () => {
     ['a component part with no element', (d) => edit(d, (m) => (Object.values(m.components[2].parts)[0].nodeId = 'ghost')), /refers to an element that does not exist/],
     ['base CSS that imports a stylesheet', (d) => edit(d, (m) => (m.baseCss += '\n@import "https://example.com/x.css";')), /@import/],
     ['base CSS that loads a resource', (d) => edit(d, (m) => (m.baseCss += '\nbody { background: url(https://example.com/pixel.gif); }')), /loads a resource/],
-    ['a code component with code that is not allowed', (d) => edit(d, (m) => (m.components[0].source = `<script>\n\timport { readFileSync } from 'node:fs';\n</script>\n<p>{readFileSync('/etc/hosts', 'utf8')}</p>`)), /shell\.header has code that is not allowed: "node:fs"/],
+    ['a code component with code that is not allowed', (d) => edit(d, (m) => (m.components[0].source = `<script>\n\timport { readFileSync } from 'node:fs';\n</script>\n<p>{readFileSync('/etc/hosts', 'utf8')}</p>`)), /shell\.header has code that is not allowed in an installed pack: "node:fs"/],
+    ['code a developer could write but an installed pack may not', (d) => edit(d, (m) => (m.components[0].source = `<p>{process.cwd()}</p>\n`)), /shell\.header has code that is not allowed in an installed pack/],
+    ['an element inside its own child', (d) => edit(d, (m) => {
+      const def = m.components[2];
+      const root = def.tree!.rootIds[0];
+      const child = (def.tree!.nodes[root] as { children: string[] }).children[0];
+      def.tree!.nodes[child] = { ...def.tree!.nodes[child], kind: 'element', tag: 'div', children: [root] } as never;
+    }), /contains itself/],
+    ['base CSS that loads a resource between two strings that look like a comment', (d) => edit(d, (m) => (m.baseCss += '\n.a::before { content: "/*"; } body { background: url(https://example.com/pixel.gif); } .b::after { content: "*/"; }')), /loads a resource/],
     ['a code component that names its own source file', (d) => edit(d, (m) => Object.assign(m.components[0], { sourcePath: 'src/routes/+layout.svelte' })), /names a source file/],
     ['a development fixture', (d) => edit(d, (m) => (m.devOnly = true)), /Development fixtures cannot be installed/],
     ['a file path that leaves the pack', (d) => edit(d, (m) => (m.files['fonts/../../../evil.woff2'] = { size: 1, sha256: '0'.repeat(64) })), /malformed at files/],
@@ -174,10 +188,18 @@ describe('loading a theme pack release', () => {
     }, /fonts\/face\.webp, which is not a \.woff2 file/]
   ];
 
-  it('accepts base CSS that only mentions url() in a comment', async () => {
+  it('accepts base CSS that only mentions url() in a comment or a string, and element IDs a generator can use', async () => {
     const root = tmp();
     const dir = await release(root);
-    edit(dir, (m) => (m.baseCss += '\n/* Fonts come from the pack, never url() or @import. */'));
+    edit(dir, (m) => {
+      m.baseCss += '\n/* Fonts come from the pack, never url() or @import. */\n.note::before { content: "\\75 rl() is not loaded here"; }';
+      const def = m.components[2];
+      const root = def.tree!.rootIds[0];
+      def.tree!.nodes['2up'] = { ...def.tree!.nodes[root], id: '2up' };
+      delete def.tree!.nodes[root];
+      def.tree!.rootIds[0] = '2up';
+      for (const part of Object.values(def.parts)) if (part.nodeId === root) part.nodeId = '2up';
+    });
     await expect(loadPackDir(dir, user(root))).resolves.toBeTruthy();
   });
 
@@ -228,10 +250,23 @@ describe('loading every installed pack', () => {
 
   it("keeps the built-in IDs for the app even when its own releases are missing", async () => {
     const mine = tmp();
-    const theirs = await release(mine, studio('foundation'));
+    const theirs = [await release(mine, studio('foundation')), await release(mine, studio('foundation-alt'))];
     const { packs, refused } = await loadPacks([{ dir: tmp(), source: 'bundled' }, user(mine)]);
     expect(packs).toEqual([]);
-    expect(refused).toEqual([{ dir: theirs, packId: 'foundation', reason: expect.stringMatching(/ships with SiteOrigin Builder/) }]);
+    expect(refused).toEqual(theirs.map((dir, i) => ({ dir, packId: ['foundation', 'foundation-alt'][i], reason: expect.stringMatching(/ships with SiteOrigin Builder/) })));
+  });
+
+  it("lets an installed pack reuse the app's own code unchanged, and only then", async () => {
+    const bundled = tmp();
+    const { pack, files } = buildPack(FOUNDATION_PACK);
+    writeRelease(join(bundled, 'foundation'), pack, files);
+    const mine = tmp();
+    const reuses = await release(mine, studio('atelier', true));
+    const loaded = await loadPacks([{ dir: bundled, source: 'bundled' }, user(mine)]);
+    expect(loaded.packs.map((p) => p.pack.id)).toEqual(['foundation', 'atelier']);
+    // Without the app's own pack to compare with, the same code is held to the assistant's policy, which it fails.
+    const alone = await loadPacks([user(mine)]);
+    expect(alone.refused).toEqual([{ dir: reuses, reason: expect.stringMatching(/has code that is not allowed in an installed pack/) }]);
   });
 
   it('loads neither of two installed packs that claim one ID', async () => {
@@ -252,7 +287,10 @@ describe('loading every installed pack', () => {
     expect(catalogue.refused[0].reason).toMatch(/built-in theme is missing/);
     expect(catalogue.userDir).toBe(mine);
     expect(findTheme('studio')?.source).toBe('user');
-    const shown = (url: string | null) => Buffer.from(url!.replace(/^data:image\/webp;base64,/, ''), 'base64');
+    const shown = (url: string | null) => {
+      expect(url).toMatch(/^data:image\/webp;base64,/);
+      return Buffer.from(url!.replace(/^data:image\/webp;base64,/, ''), 'base64');
+    };
     expect(shown(await packPreview('studio', 'previews/hero.split.webp')).equals(light)).toBe(true);
     expect(shown(await packPreview('studio', 'previews/hero.split--tone-inverse.webp')).equals(dark)).toBe(true);
     // Only listed preview images are served, never fonts or paths outside the pack.

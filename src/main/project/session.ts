@@ -1249,7 +1249,13 @@ export class ProjectSession extends EventEmitter {
         // A damaged or missing pack file costs that font's update, not the save: a copy already in the project stays,
         // still claimed, so it is neither replaced nor removed as obsolete.
         console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
-        if (known(c.path)) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
+        if (known(c.path)) {
+          // The claim is whichever of this app's hashes the file on disk has (a publication that stopped part way may
+          // have written the newer one).
+          const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
+          const h = disk === null ? null : sha(disk);
+          nextFiles[c.path] = h !== null && ours(c.path, h) ? h : (prev[c.path] ?? inflight[c.path]);
+        }
       }
     }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
@@ -1533,11 +1539,13 @@ export class ProjectSession extends EventEmitter {
       const resolve = componentSources(next.components);
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
-        // Placing a theme's own component (the contact form, say) authors no code: it ships with the app. A pack the
-        // person installed is not the app's, so its code is checked like any other.
-        if (def.owner === 'theme' && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
-        // Code the AI writes is held to a stricter policy than code a developer writes.
-        const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai', filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
+        // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
+        // whichever pack reuses it.
+        if (def.owner === 'theme' && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.kind === 'code' && c.source === def.source))) continue;
+        // Code the AI writes is held to a stricter policy than code a developer writes, and so is an installed pack's
+        // own code, which nobody here wrote or reviewed.
+        const installed = def.owner === 'theme' && listThemes().some((t) => t.source === 'user' && t.components.some((c) => c.id === def.id));
+        const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai' || installed, filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }

@@ -96,8 +96,10 @@ function fontSlots(state: ProjectState, components: unknown = state.components):
  * merely mentions the name, and the theme's own defaults, are not choices.
  */
 export function siteChoosesFamily(state: ProjectState, family: string, components = Object.values(state.components).filter((d) => d.owner === 'project')): boolean {
-  if (fontSlots(state, components).some((s) => stackUsesFamily(s.get(), family))) return true;
-  const name = family.toLowerCase();
+  // CSS reads a run of spaces in an unquoted name as one, and family names ignore case.
+  const key = (name: string) => unquote(name).replace(/\s+/g, ' ').toLowerCase();
+  const name = key(family);
+  if (fontSlots(state, components).some((s) => s.get().split(',').some((part) => key(part) === name))) return true;
   return components.some((d) => d.kind === 'code' && typeof d.source === 'string' && d.source.replace(/\s+/g, ' ').toLowerCase().includes(name));
 }
 

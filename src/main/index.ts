@@ -661,7 +661,7 @@ app.whenReady().then(async () => {
   electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
   electronSession.defaultSession.on('will-download', (e) => e.preventDefault());
   // Theme packs are loaded before anything can open a project or ask for the catalogue.
-  await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData'), app.isPackaged));
+  await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
   registerIpc();
   buildMenu();
   markStarted();

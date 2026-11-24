@@ -138,9 +138,10 @@ const manifestSchema = z.strictObject({
 /** CSS a pack writes into every site unchanged: no other stylesheets, no remote or local resources, no markup. */
 function checkCss(css: string, where: string) {
   if (/<\/?\s*(style|script)/i.test(css)) refuse(`${where} contains markup.`);
-  // Read as a browser would: comments say nothing, and an escaped letter ("\\75 rl(") is the letter itself.
+  // Read as a browser would. Strings and comments are found together, left to right: "/*" inside a string starts no
+  // comment, and text inside either (even the word url()) loads nothing. An escaped letter ("\\75 rl(") is the letter.
   const plain = css
-    .replace(/\/\*[\s\S]*?(\*\/|$)/g, ' ')
+    .replace(/("(?:[^"\\\n]|\\[\s\S])*"?|'(?:[^'\\\n]|\\[\s\S])*'?)|\/\*[\s\S]*?(?:\*\/|$)/g, (_, str: string | undefined) => (str ? '""' : ' '))
     .replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?/g, (_, hex: string) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd))
     .replace(/\\(.)/gs, '$1');
   if (/@import/i.test(plain)) refuse(`${where} imports another stylesheet (@import), which packs may not do.`);
@@ -149,7 +150,7 @@ function checkCss(css: string, where: string) {
 
 /** Every reference inside a managed definition's tree points at something the definition has. */
 /** Node, part and slot IDs become class names and attributes in generated source, so only plain ones are allowed. */
-const SAFE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const SAFE_ID = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
 
 function checkTree(def: ComponentDefinition) {
   const where = `Component ${def.componentId}`;
@@ -176,7 +177,7 @@ function checkTree(def: ComponentDefinition) {
   for (const [pid, part] of Object.entries(def.parts)) if (!nodes[part.nodeId]) refuse(`${where}: part "${pid}" refers to an element that does not exist.`);
 }
 
-async function checkComponents(m: PackManifest, source: PackRoot['source']) {
+async function checkComponents(m: PackManifest, source: PackRoot['source'], reviewed: ReadonlySet<string>) {
   const ids = new Set<string>();
   const files = new Map<string, string>();
   for (const def of m.components) {
@@ -204,10 +205,11 @@ async function checkComponents(m: PackManifest, source: PackRoot['source']) {
       checkTree(def);
     } else {
       if (typeof def.source !== 'string' || !def.source.trim()) refuse(`${where} is a code component without code.`);
-      // A pack the person installed is held to the policy for code a person writes in a project.
-      if (source === 'user') {
-        const errors = (await checkSvelteSource(def.source!, { filename: `src/lib/siteorigin/components/${def.componentId}.svelte`, resolve: () => null })).filter((p) => p.severity === 'error');
-        if (errors.length) refuse(`${where} has code that is not allowed: ${errors[0].message}`);
+      // An installed pack's code runs in the preview without anyone here having written or reviewed it: it is either
+      // code the app ships (reused as it is), or held to the policy for code the assistant writes.
+      if (source === 'user' && !reviewed.has(def.source!)) {
+        const errors = (await checkSvelteSource(def.source!, { strict: true, filename: `src/lib/siteorigin/components/${def.componentId}.svelte`, resolve: () => null })).filter((p) => p.severity === 'error');
+        if (errors.length) refuse(`${where} has code that is not allowed in an installed pack: ${errors[0].message}`);
       }
     }
   }
@@ -226,8 +228,11 @@ async function plain(abs: string, kind: 'dir' | 'file'): Promise<Stats> {
   return st;
 }
 
-/** Read and check one pack folder. Throws a refusal on the first problem. */
-export async function loadPackDir(dir: string, root: PackRoot): Promise<LoadedPack> {
+/**
+ * Read and check one pack folder. `reviewed` holds the code the app's own packs ship, which an installed pack may
+ * reuse as it is. Throws a refusal on the first problem.
+ */
+export async function loadPackDir(dir: string, root: PackRoot, reviewed: ReadonlySet<string> = new Set()): Promise<LoadedPack> {
   await plain(dir, 'dir');
   const manifestPath = join(dir, PACK_MANIFEST);
   const st = await plain(manifestPath, 'file');
@@ -252,7 +257,7 @@ export async function loadPackDir(dir: string, root: PackRoot): Promise<LoadedPa
   if (folder !== m.id) refuse(`The folder is named "${folder}" but holds the pack "${m.id}". Name the folder after the pack.`);
   if (!COMPONENT_LICENSES.has(m.license)) refuse(`The pack's licence "${m.license}" does not allow its components to be published in websites.`);
   checkCss(m.baseCss, 'Its base CSS');
-  await checkComponents(m, root.source);
+  await checkComponents(m, root.source, reviewed);
   if (m.devOnly && root.source === 'user') refuse('Development fixtures cannot be installed.');
 
   // Every file the pack uses is listed, and every listed file is used.
@@ -317,13 +322,17 @@ export async function loadPackDir(dir: string, root: PackRoot): Promise<LoadedPa
  */
 export async function loadPacks(roots: PackRoot[]): Promise<{ packs: LoadedPack[]; refused: PackRefusal[] }> {
   const found: Array<{ dir: string; root: PackRoot; loaded?: LoadedPack; refusal?: string }> = [];
-  for (const root of roots) {
+  // The app's own packs load first: their code is what an installed pack may reuse unchanged.
+  const reviewed = new Set<string>();
+  for (const root of [...roots.filter((r) => r.source === 'bundled'), ...roots.filter((r) => r.source !== 'bundled')]) {
     const names = await fs.readdir(root.dir).catch(() => [] as string[]);
     for (const name of names.sort()) {
       if (name.startsWith('.')) continue;
       const dir = join(root.dir, name);
       try {
-        found.push({ dir, root, loaded: await loadPackDir(dir, root) });
+        const loaded = await loadPackDir(dir, root, reviewed);
+        if (root.source === 'bundled') for (const c of loaded.pack.components) if (c.kind === 'code' && c.source) reviewed.add(c.source);
+        found.push({ dir, root, loaded });
       } catch (e) {
         found.push({ dir, root, refusal: e instanceof Refused ? e.message : `It could not be read: ${(e as Error).message}` });
       }

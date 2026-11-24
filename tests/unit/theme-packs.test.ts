@@ -156,7 +156,9 @@ describe('pinning an installed pack', () => {
     const state = (digest?: string) => ({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version: '1.0.0', ...(digest ? { digest } : {}) } } });
     withInstalled('d1');
     expect(themePinProblem(state('d1'))).toBeNull();
-    expect(themePinProblem(state())).toBeNull();
+    // An installed pack is only used with a recorded release.
+    expect(themePinProblem(state())).toMatch(/does not record which copy/);
+    expect(themePinProblem({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'foundation', version: '0.1.0' } } })).toMatch(/does not record which copy/);
     expect(themePinProblem(state('d0'))).toMatch(/the installed pack with that version is a different copy/);
     withInstalled('d2', { version: '1.1.0' });
     expect(themePinProblem(state('d0'))).toBeNull();
@@ -164,11 +166,10 @@ describe('pinning an installed pack', () => {
     expect(themePinProblem(state('d1'))).toMatch(/theme "studio" 1\.0\.0, which is not installed/);
   });
 
-  it('opens a project whose theme is not installed read-only, pinned or not', async () => {
+  it('opens a project whose theme is not installed read-only', async () => {
     const d = tmp();
     withInstalled('d1');
     const state = applyOperations(createStarterState('business', 'Gone', false), [{ type: 'theme.apply', themeId: 'studio' }]).state;
-    delete state.themeLock.theme.digest;
     await (await ProjectSession.create(d, state)).close();
     registerBuiltinPacks();
     const theme = readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8');
@@ -210,6 +211,16 @@ describe('pinning an installed pack', () => {
   });
 });
 
+describe('a new project', () => {
+  it('records the theme it is made with when the default is not installed', () => {
+    registerPacks([buildPack(FOUNDATION_ALT_PACK).pack]);
+    const s = createStarterState('blank', 'Fallback', false);
+    expect(s.site.themeId).toBe('foundation-alt');
+    expect(s.themeLock.theme.id).toBe('foundation-alt');
+    expect(themePinProblem(s)).toBeNull();
+  });
+});
+
 describe('switching to a pack with other fonts', () => {
   const inter = FOUNDATION_PACK.fonts.find((f) => f.name === 'Inter')!;
   // Studio ships Inter only, and sets its display font to it.
@@ -232,12 +243,22 @@ describe('switching to a pack with other fonts', () => {
     expect(applyOperations(own, [{ type: 'theme.apply', themeId: 'studio' }]).state.site.themeId).toBe('studio');
   });
 
-  it('is refused for a font chosen on an element', () => {
+  it.each([
+    ['on an element', 'Playfair Display, serif'],
+    ['on an element, spaced as CSS allows', 'Playfair  Display  Variable, serif']
+  ])('is refused for a font chosen %s', (_how, value) => {
     withInstalled('d1', onlyInter());
     const s = createStarterState('business', 'Fonts', false);
     const hero = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'instance')!;
-    const styled = applyOperations(s, [{ type: 'node.setStyle', owner: { kind: 'page', id: s.site.homePageId }, nodeId: hero.id, partId: 'heading', scope: 'base', property: 'fontFamily', value: 'Playfair Display, serif' }]).state;
+    const styled = applyOperations(s, [{ type: 'node.setStyle', owner: { kind: 'page', id: s.site.homePageId }, nodeId: hero.id, partId: 'heading', scope: 'base', property: 'fontFamily', value }]).state;
+    expect(packFileCopies(styled).some((c) => c.file.includes('playfair'))).toBe(true);
     expect(() => applyOperations(styled, [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Playfair Display: your site uses this font/);
+  });
+
+  it('is refused for a font chosen in a text style', () => {
+    withInstalled('d1', onlyInter());
+    const styled = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'token.set', tokenId: 'text.h1', value: { family: 'Space Grotesk' } }]).state;
+    expect(() => applyOperations(styled, [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Space Grotesk: your site uses this font/);
   });
 
   it('refuses, naming the font, when the site chose a font the new theme does not ship', () => {
@@ -277,7 +298,29 @@ describe("a site's theme fonts", () => {
     const onDisk = readdirSync(join(d, FONTS_DIR)).filter((f) => f.endsWith('.woff2')).map((f) => `${FONTS_DIR}/${f}`).sort();
     expect(onDisk).toEqual(packFileCopies(s.state).map((c) => c.path).sort());
     expect(Object.keys(manifest()).filter((p) => p.startsWith(`${FONTS_DIR}/`) && p.endsWith('.woff2')).sort()).toEqual(onDisk);
-    for (const c of packFileCopies(s.state)) expect(readFileSync(join(d, c.path)).equals(await readPackFile(c.pack, c.file))).toBe(true);
+    for (const c of packFileCopies(s.state)) {
+      const bytes = readFileSync(join(d, c.path));
+      expect(bytes.equals(await readPackFile(c.pack, c.file))).toBe(true);
+      expect(manifest()[c.path]).toBe(sha(bytes));
+    }
+    await s.close();
+  });
+
+  it('keep the claim a publication that stopped part way left, when the pack cannot supply the file again', async () => {
+    const d = tmp();
+    await (await ProjectSession.create(d, createStarterState('business', 'Fonts', false))).close();
+    const path = `${FONTS_DIR}/inter-latin-wght-normal.woff2`;
+    const disk = sha(readFileSync(join(d, path)));
+    // The older hash is still the settled one; the newer one, already on disk, is only pending.
+    const m = JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8'));
+    m.files[path] = 'a'.repeat(64);
+    m.pending = { [path]: disk };
+    writeFileSync(join(d, 'siteorigin/generated-manifest.json'), JSON.stringify(m));
+    const { files } = buildPack(FOUNDATION_PACK);
+    registerPackFiles('foundation', new Map([...files].map(([rel, abs]) => [rel, { ...fileSource(abs), ...(rel === 'fonts/inter-latin-wght-normal.woff2' ? { sha256: '0'.repeat(64) } : {}) }])));
+    const s = await ProjectSession.open(d, 'test');
+    expect(JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path]).toBe(disk);
+    expect(await editedGeneratedFile(d)).toBeNull();
     await s.close();
   });
 

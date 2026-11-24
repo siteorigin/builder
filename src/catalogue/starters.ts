@@ -46,6 +46,7 @@ function page(id: string, title: string, route: string, nodes: GraphNode[], seo:
 }
 
 function emptyState(name: string, themeId = 'foundation'): ProjectState {
+  // The theme the site records is the one it is made with, even when the one asked for is not installed here.
   const theme = getTheme(themeId);
   return {
     manifest: {
@@ -64,7 +65,7 @@ function emptyState(name: string, themeId = 'foundation'): ProjectState {
       description: '',
       homePageId: '',
       pageOrder: [],
-      themeId,
+      themeId: theme.id,
       shell: { header: { rootIds: [], nodes: {} }, footer: { rootIds: [], nodes: {} } }
     },
     pages: {},

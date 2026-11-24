@@ -41,6 +41,7 @@ interface Case {
 function withFixedIds<T>(fn: () => T): T {
   const crypto = globalThis.crypto;
   const real = crypto.getRandomValues;
+  const own = Object.hasOwn(crypto, 'getRandomValues');
   let seed = 0x5eed1e55;
   crypto.getRandomValues = (<A extends ArrayBufferView | null>(array: A): A => {
     if (!array) return array;
@@ -54,7 +55,8 @@ function withFixedIds<T>(fn: () => T): T {
   try {
     return fn();
   } finally {
-    crypto.getRandomValues = real;
+    if (own) crypto.getRandomValues = real;
+    else delete (crypto as { getRandomValues?: unknown }).getRandomValues;
   }
 }
 
@@ -148,16 +150,18 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   rmSync(dir, { recursive: true, force: true });
 
   const missing = docs.filter((d) => !existsSync(d.cached));
+  // The browser is only started when something needs drawing, and whether it can start is what counts.
   const { chromium } = await import('playwright');
-  const browserReady = existsSync(chromium.executablePath());
-  if (missing.length && !browserReady) {
-    const message = `Drawing ${missing.length} theme preview${missing.length === 1 ? '' : 's'} needs Playwright’s Chromium. Run "npx playwright install chromium", then build again.`;
-    if (opts.require) throw new Error(message);
-    // Development carries on without them: Insert shows a sketch where a thumbnail is missing.
-    console.warn(`${pack.id}: ${message} Building without them.`);
-  }
-  if (missing.length && browserReady) {
-    const browser = await chromium.launch();
+  const browser = missing.length
+    ? await chromium.launch().catch((e: Error) => {
+        const message = `Drawing ${missing.length} theme preview${missing.length === 1 ? '' : 's'} needs Playwright’s Chromium (${e.message.split('\n')[0]}). Run "npx playwright install chromium", then build again.`;
+        if (opts.require) throw new Error(message);
+        // Development carries on without them: Insert shows a sketch where a thumbnail is missing.
+        console.warn(`${pack.id}: ${message} Building without them.`);
+        return null;
+      })
+    : null;
+  if (browser) {
     try {
       const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 1, locale: 'en-US', colorScheme: 'light', reducedMotion: 'reduce' });
       let current = '';
@@ -192,5 +196,5 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   }
   // A variant's thumbnail is only listed beside its section's own.
   for (const [id, p] of Object.entries(previews)) if (!p.default) delete previews[id];
-  return { previews, bytes: new Map([...bytes].filter(([f]) => Object.values(previews).some((p) => p.default === f || Object.values(p.variants ?? {}).some((o) => Object.values(o).includes(f))))), drawn: browserReady ? missing.length : 0 };
+  return { previews, bytes: new Map([...bytes].filter(([f]) => Object.values(previews).some((p) => p.default === f || Object.values(p.variants ?? {}).some((o) => Object.values(o).includes(f))))), drawn: browser ? missing.length : 0 };
 }
