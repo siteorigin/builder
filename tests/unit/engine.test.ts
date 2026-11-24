@@ -1699,7 +1699,8 @@ describe('making another page Home keeps its old address working (#37)', () => {
     expect(applyOperations(two, [{ type: 'page.create', title: 'Team', route: '/about/' }]).state.site.redirects).toEqual([{ from: '/old/', pageId: about }]);
     expect(routeAt(chosen.state, 'about')).toBe('page');
     const moved = applyOperations(s, [{ type: 'page.update', pageId: byTitle(s, 'Contact').id, route: '/ABOUT/' }]);
-    expect(moved.state.site.redirects).toBeUndefined();
+    // Contact takes /about/ over; the address it leaves is kept working for it in turn (#169).
+    expect(moved.state.site.redirects).toEqual([{ from: '/contact/', pageId: byTitle(s, 'Contact').id }]);
     expect(errors(moved.state)).toEqual([]);
   });
 

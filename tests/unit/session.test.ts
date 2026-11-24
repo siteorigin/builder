@@ -120,11 +120,32 @@ describe('project session', () => {
     const again = await ProjectSession.open(dir, 'test');
     const r = await again.undo();
     expect(r.ok).toBe(false);
-    expect(r.error?.message).toMatch(/Cannot undo "Move Contact": .*\/contact\//);
+    // The move kept /contact/ working for Contact in site.json (#169), so the outside edit changed a document the
+    // undo restores, and it is refused before anything else is checked.
+    expect(r.error?.message).toMatch(/Cannot undo "Move Contact" because siteorigin\/site\.json has changed since/);
     expect(again.state.pages[contactId].route).toBe('/sales/');
+    expect(again.state.site.redirects).toEqual([{ from: '/contact/', pageId: aboutId }]);
     await again.close();
     // The project still opens.
     await (await ProjectSession.open(dir, 'test')).close();
+  });
+
+  it('refuses a redo that would put a page on an address taken outside the app (#37)', async () => {
+    const { dir, s } = await make();
+    const [, aboutId, contactId] = s.state.site.pageOrder;
+    await s.apply({ operations: [{ type: 'page.update', pageId: contactId, route: '/sales/' }] }, { label: 'Move Contact' });
+    expect((await s.undo()).ok).toBe(true);
+    await s.close();
+    // About moved to /sales/ by hand: a document the redo does not restore.
+    const aboutPath = join(dir, `siteorigin/pages/${aboutId}.json`);
+    writeFileSync(aboutPath, JSON.stringify({ ...JSON.parse(readFileSync(aboutPath, 'utf8')), route: '/sales/' }, null, 2) + '\n');
+    const again = await ProjectSession.open(dir, 'test');
+    const r = await again.redo();
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/Cannot redo "Move Contact": .*\/sales\//);
+    expect(again.state.pages[contactId].route).toBe('/contact/');
+    expect(again.state.pages[aboutId].route).toBe('/sales/');
+    await again.close();
   });
 
   it('waits for an outside edit the project has not loaded yet before undoing (#37)', async () => {
@@ -137,7 +158,9 @@ describe('project session', () => {
     writeFileSync(sitePath, JSON.stringify({ ...site, redirects: [{ from: '/contact/', pageId: aboutId }] }, null, 2) + '\n');
     const r = await s.undo();
     expect(r.ok).toBe(false);
-    expect(r.error?.message).toMatch(/siteorigin\/site\.json changed outside the app/);
+    // The move wrote site.json too (#169): the undo meets the outside edit as it writes, and keeps it.
+    expect(r.error?.message).toMatch(/siteorigin\/site\.json was changed outside SiteOrigin Builder/);
+    expect(JSON.parse(readFileSync(sitePath, 'utf8')).redirects).toEqual([{ from: '/contact/', pageId: aboutId }]);
     expect(JSON.parse(readFileSync(join(dir, `siteorigin/pages/${contactId}.json`), 'utf8')).route).toBe('/sales/');
     // A page file added outside the app counts too.
     writeFileSync(sitePath, JSON.stringify(site, null, 2) + '\n');

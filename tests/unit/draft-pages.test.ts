@@ -129,7 +129,11 @@ describe('what the website publishes', () => {
     const live = publishedState(s);
     expect(live.site.pageOrder).not.toContain(draft);
     expect(Object.hasOwn(live.pages, draft)).toBe(false);
-    expect(live.site.redirects).toEqual([{ from: '/old-books/', pageId: 'pg_books001' }]);
+    // Books moved with the draft it is inside and back (#169): its address while away still leads to it.
+    expect(live.site.redirects).toEqual([
+      { from: '/old-books/', pageId: 'pg_books001' },
+      { from: '/winter-shop/books/', pageId: 'pg_books001' }
+    ]);
     const full = generateProject(s);
     const published = generateProject(live);
     expect(full.has('src/routes/shop/+page.svelte')).toBe(true);
