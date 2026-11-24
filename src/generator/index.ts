@@ -7,6 +7,7 @@
  * portable project source.
  */
 import type {
+  AppearPreset,
   AssetRecord,
   Binding,
   ComponentDefinition,
@@ -29,7 +30,7 @@ import type {
   TokenDef,
   TokenValue
 } from '@shared/types';
-import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isBinding, isComparison, slotChildren, type Condition } from '@shared/types';
+import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isAppearPreset, isBinding, isComparison, slotChildren, type Condition } from '@shared/types';
 import {
   MEDIA_QUERIES,
   REDUCED_MOTION_QUERY,
@@ -69,6 +70,7 @@ import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 import { derived, isTracked, type GenerationCache } from './cache';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
+import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { notFoundSectionRoutes, structuredContent } from './checks';
 
@@ -124,9 +126,9 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'richList', 'thumbnail']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'richList', 'thumbnail']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
-const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', '__so_at', 'children']);
+const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'children']);
 
 /**
  * The key a managed component's property is passed under (instance attribute and `$props()` key). Names the
@@ -849,7 +851,9 @@ export function generateSiteCss(state: ProjectState): string {
       }
     }
   }
-  return `/* Page content styles and instance overrides. Generated from siteorigin/pages and siteorigin/site.json. */\n${emitRules(rules)}\n`;
+  // The entrance rules, while the site has entrances: they only ever animate what the entrance observer arms.
+  const appear = derived(state, 'usesAppear', usesAppear) ? `\n${APPEAR_CSS}` : '';
+  return `/* Page content styles and instance overrides. Generated from siteorigin/pages and siteorigin/site.json. */\n${emitRules(rules)}\n${appear}`;
 }
 
 /** The cards that must render as their plain container, in a stable order so an unchanged answer compares equal. */
@@ -896,6 +900,13 @@ interface EmitCtx {
   /** Whether the tree has an element with an action, and each node's parent, worked out once per file. */
   actions?: boolean;
   parents?: Map<string, string>;
+  /** The direct children of the repeat being emitted, while it staggers its items' entrances (`appearStagger`). */
+  staggered?: Set<string>;
+  /**
+   * A design written as a code component of its own (generateStandaloneComponent): its root shows the entrance its one
+   * placement chose (`appear`, or the design's own while that is unset), written in, since code takes none.
+   */
+  standalone?: { appear?: AppearPreset | 'none' };
 }
 
 function useImport(ctx: EmitCtx, name: string, path: string) {
@@ -975,6 +986,35 @@ function isDefRoot(ctx: EmitCtx, node: GraphNode): boolean {
 function anchorAttr(ctx: EmitCtx, node: GraphNode): string {
   if (isDefRoot(ctx, node)) return node.anchor ? ` id={so_id ?? ${js(node.anchor)}}` : ' id={so_id}';
   return node.anchor ? ` id=${attrJs(node.anchor)}` : '';
+}
+
+/**
+ * Whether the site has entrances (see generator/appear.ts). Only then do designs take one from their placements
+ * (`so_appear`) and an item's place in a staggered list (`so_stagger`), so a site without them is generated as
+ * before.
+ */
+function appearPlumbing(state: ProjectState): boolean {
+  return derived(state, 'usesAppear', usesAppear);
+}
+
+/**
+ * The entrance as data attributes (see generator/appear.ts): the container's own preset, and, for an item of a
+ * staggered list, the item it belongs to. A definition's root takes what its placement gives it first; `none` there
+ * turns the design's own entrance off.
+ */
+function appearAttrs(ctx: EmitCtx, node: GraphNode): string {
+  // A site no visitor can meet an entrance on (a design's only placement turned it off, nothing places it) shows none.
+  if (!ctx.standalone && !appearPlumbing(ctx.state)) return '';
+  const own = node.kind === 'element' && isAppearPreset(node.appear) ? node.appear : undefined;
+  let out = '';
+  if (isDefRoot(ctx, node) && ctx.standalone) {
+    const chosen = ctx.standalone.appear === 'none' ? undefined : isAppearPreset(ctx.standalone.appear) ? ctx.standalone.appear : own;
+    if (chosen) out = ` data-appear=${js(chosen)}`;
+  } else if (isDefRoot(ctx, node)) {
+    out = ` data-appear={so_appear === 'none' ? undefined : so_appear${own ? ` ?? ${js(own)}` : ''}} data-appear-stagger={so_stagger}`;
+  } else if (own) out = ` data-appear=${js(own)}`;
+  if (own && ctx.staggered?.has(node.id)) out += ` data-appear-stagger={${ctx.items[ctx.items.length - 1]}.id}`;
+  return out;
 }
 
 function pad(ctx: EmitCtx): string {
@@ -1512,7 +1552,7 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
 
 function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
   const p = pad(ctx);
-  const ids = idAttrs(ctx, node.id);
+  const ids = appearAttrs(ctx, node) + idAttrs(ctx, node.id);
   switch (node.kind) {
     case 'element': {
       const card = rendersAsCard(ctx, node);
@@ -1610,9 +1650,12 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       ctx.items.push(v);
       ctx.repeats = [...(ctx.repeats ?? []), node.id];
       ctx.lists = [...(ctx.lists ?? []), ...(listSchema ? [listSchema] : [])];
+      const outer = ctx.staggered;
+      ctx.staggered = node.appearStagger === true ? new Set(node.children) : undefined;
       ctx.indent++;
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
+      ctx.staggered = outer;
       ctx.items.pop();
       ctx.repeats = ctx.repeats.slice(0, -1);
       if (listSchema) ctx.lists = ctx.lists.slice(0, -1);
@@ -1714,6 +1757,21 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
+  // So does its entrance, and its place in a staggered list, when the site has entrances.
+  const ownAppear = node.appear === 'none' || isAppearPreset(node.appear) ? node.appear : undefined;
+  if (def.kind === 'managed' && isDefRoot(ctx, node) && ctx.standalone) {
+    // Written in: the code copy passes its one placement's choice (or its root's own) straight to the design inside.
+    const chosen = ctx.standalone.appear ?? ownAppear;
+    if (chosen) attrs.push(`so_appear=${attrJs(chosen)}`);
+  } else if (def.kind === 'managed' && (ctx.standalone || appearPlumbing(ctx.state))) {
+    // A code copy writes in what every placement inside it chose, whatever the site uses today.
+    const own = ownAppear;
+    if (isDefRoot(ctx, node)) attrs.push(own ? `so_appear={so_appear ?? ${js(own)}}` : 'so_appear={so_appear}', 'so_stagger={so_stagger}');
+    else {
+      if (own) attrs.push(`so_appear=${attrJs(own)}`);
+      if (ctx.staggered?.has(node.id)) attrs.push(`so_stagger={${ctx.items[ctx.items.length - 1]}.id}`);
+    }
+  }
   // A design with a computed list somewhere inside gets the page's rows: worked out here for a page (or, in the
   // shared header and footer, for none), and passed on unchanged by every design in between.
   const needs = pageRowNeeds(ctx.state, def);
@@ -1946,7 +2004,7 @@ function designRowsExpr(schema: ListProp, rctx: ResolveContext): string {
   return `${expr}.map((row) => ({ id: row.id${fields.map((f) => `, ${f}`).join('')} }))`;
 }
 
-export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions): string {
+export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions, standalone?: EmitCtx['standalone']): string {
   const file = defFile(def);
   const tree = def.tree!;
   const locals = propLocals(def);
@@ -1961,7 +2019,8 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     items: [],
     rctx: { state },
     indent: 0,
-    locals
+    locals,
+    standalone
   };
   const markup = emitNodes(ctx, tree.rootIds);
   const propDecls = Object.entries(def.properties)
@@ -1984,6 +2043,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   propDecls.push(`\t\tso_o = undefined,`);
   if (Object.keys(def.parts).some((pid) => repeatedPartList(def, pid))) propDecls.push(`\t\tso_oi = undefined,`);
   propDecls.push(`\t\tso_id = undefined,`);
+  if (appearPlumbing(state) && !standalone) propDecls.push(`\t\tso_appear = undefined,`, `\t\tso_stagger = undefined,`);
   // A converted copy is generated before its source exists, so its markup decides, not the source.
   if (treeTakesEager(state, def, new Map(), new Set())) propDecls.push(`\t\tso_eager = false,`);
   // A converted copy is generated before its source exists, so its tree decides, as for `so_eager`.
@@ -2001,10 +2061,11 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
 /**
  * A managed definition as one self-contained Svelte file: its markup plus a <style> block with every node,
  * responsive, nested-override and variant rule, under the definition's own class names. Used to convert a copy
- * to code, so the result keeps its appearance without the original definition's stylesheet.
+ * to code, so the result keeps its appearance without the original definition's stylesheet. `appear` is the entrance
+ * the placement being converted chose for the root (see EmitCtx.standalone), since a code component takes none.
  */
-export function generateStandaloneComponent(state: ProjectState, def: ComponentDefinition): string {
-  const body = generateManagedComponent(state, def, { instrument: false });
+export function generateStandaloneComponent(state: ProjectState, def: ComponentDefinition, appear?: AppearPreset | 'none'): string {
+  const body = generateManagedComponent(state, def, { instrument: false }, { appear });
   const css = emitRules(definitionRules(state, def, true));
   return css ? `${body}\n<style>\n${indentBlock(css)}\n</style>\n` : body;
 }
@@ -2178,6 +2239,11 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     : '';
   // Until the bridge is running, no form on the page can be sent: the editor never sends a message from the site on
   // the author's behalf (issue #193). The hold is in place before any form's own code, and the bridge removes it.
+  // Sections and containers with an entrance come in as they first scroll into view (see generator/appear.ts). The
+  // editor's layout already imports onMount for its bridge.
+  const appear = derived(state, 'usesAppear', usesAppear);
+  const appearImport = appear ? `${opts.instrument ? '' : `\n\timport { onMount } from 'svelte';`}\n\timport { observeAppear } from '../lib/siteorigin/runtime/${APPEAR_FILE}';` : '';
+  const appearStart = appear ? `\n\t// Sections and containers with an entrance fade or lift in as they first scroll into view.\n\tonMount(observeAppear);` : '';
   const devBridge = opts.instrument
     ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\timport('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => window.dispatchEvent(new CustomEvent('siteorigin:navigated')));`
     : '';
@@ -2190,12 +2256,12 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import '../lib/siteorigin/styles/site.css';
 	import { page } from '$app/state';
 	import { asset } from '$app/paths';
-	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
+	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}
 ${imports}${languages}${devBridge}
 
 	let { children } = $props();
 	// A message typed into a form and not sent comes back when the visitor returns with Back.
-	keepDrafts();
+	keepDrafts();${appearStart}
 	// Each page chooses the shared header and footer on its own.
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
@@ -2631,6 +2697,9 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
     files.set(`${RUNTIME_DIR}/${VIDEO_HELPER_FILE}`, VIDEO_JS);
     files.set(`${RUNTIME_DIR}/${VIDEO_PLAYER_FILE}`, videoPlayerSvelte(!!opts.instrument));
   }
+  // The entrance observer, while a page of the site can show an entrance (see generator/appear.ts); the layout that
+  // starts it is written after it. Like search, asked of the plain state: it decides only whether the file exists.
+  if (usesAppear(state)) files.set(`${RUNTIME_DIR}/${APPEAR_FILE}`, appearJs(!!opts.instrument));
   files.set(`${RUNTIME_DIR}/not-found.js`, NOT_FOUND_JS);
   files.set(`${STYLES_DIR}/tokens.css`, file('tokens.css', generateTokensCss));
   const fontNotice = file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '');

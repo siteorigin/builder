@@ -232,8 +232,8 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     field: z
-      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty'])
-      .describe('"collapseEmpty" (definition containers): true hides it when all children are hidden.'),
+      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger'])
+      .describe('"collapseEmpty" (definition containers): true hides it when all children are hidden. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({
