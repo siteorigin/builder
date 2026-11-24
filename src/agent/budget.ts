@@ -184,13 +184,15 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     return `${TOMBSTONE}inspect_component ${body?.definitionId ?? args.definitionId ?? args.componentId}${sample === 'defaults' ? '' : ` placed at ${sample}`}${offset ? ` from offset ${offset}` : ''}${rev}. Inspect it again if you need it.]`;
   }
   if (read.name === 'audit_seo') {
-    const scope = [body?.scope?.pageId ?? args.pageId ?? 'site', body?.scope?.pillar ?? args.pillar].filter(Boolean).join(' ');
+    // A page the model named that no result confirmed is shown as far as a line allows.
+    const scope = [String(body?.scope?.pageId ?? args.pageId ?? 'site').slice(0, 80), body?.scope?.pillar ?? args.pillar].filter(Boolean).join(' ');
     const offset = Number(args.offset ?? 0);
+    const linkOffset = Number(args.linkOffset ?? 0);
     // What it found, so the model knows what it saw without the findings themselves.
     const n = (v: unknown, one: string, many = `${one}s`) => `${Number(v ?? 0)} ${Number(v ?? 0) === 1 ? one : many}`;
     const counts = body?.counts && typeof body.counts === 'object' ? ` ${n(body.total, 'finding')} (${n(body.counts.error, 'error')}, ${n(body.counts.warning, 'warning')}, ${n(body.counts.info, 'info', 'info')})` : '';
     const orphans = Number(body?.links?.orphans ?? (body?.links?.orphan ? 1 : 0));
-    return `${TOMBSTONE}audit_seo ${scope}${offset ? ` from offset ${offset}` : ''}${rev}.${counts}${counts && orphans ? `, ${n(orphans, 'orphan page')}` : ''}${counts ? '.' : ''} Audit again for details.]`;
+    return `${TOMBSTONE}audit_seo ${scope}${offset ? ` from offset ${offset}` : ''}${linkOffset ? ` from linkOffset ${linkOffset}` : ''}${rev}.${counts}${counts && orphans ? `, ${n(orphans, 'orphan page')}` : ''}${counts ? '.' : ''} Audit again for details.]`;
   }
   const pages = Array.isArray(body?.pages) ? body!.pages : [];
   const list = pages.slice(0, 12).map((p: Record<string, unknown>) => `${p.id} ${p.route ?? ''}`.trim()).join(', ');

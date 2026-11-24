@@ -25,8 +25,16 @@ export const FINDINGS_PER_PART = 40;
 export const LINK_ROWS_PER_PART = 100;
 /** The longest message a finding shows: one quoting a long description is cut. */
 const MESSAGE_CHARS = 300;
+/**
+ * The most room the IDs that place one finding or row may take. Longer ones (a hand-edited file's) are left out, and
+ * said to be, never cut into an ID that names something else: the rest of the report still fits around them.
+ */
+const LOCATOR_CHARS = 1000;
 
 const SEVERITY = { error: 0, warning: 1, info: 2 } as const;
+
+/** How a report in parts is read on: each part counts on the project being as it was, so a change starts it again. */
+const CONTINUE = 'Call again with offset set to nextOffset, or linkOffset set to links.nextLinkOffset, for the next part. After a change to the site, audit again from the start.';
 
 const clip = (text: string) => {
   const chars = [...text];
@@ -38,17 +46,15 @@ const clip = (text: string) => {
  * the report's reasons, which `reason` indexes: findings of one code may differ (a title too long, or too short).
  */
 function compact(f: SeoFinding, reason: number) {
-  return {
-    code: f.code,
-    severity: f.severity,
-    pillar: f.pillar,
-    message: clip(f.message),
-    reason,
-    aiFixable: f.aiFixable,
-    ...(f.owner ? { owner: f.owner } : {}),
-    ...(f.nodeId ? { nodeId: f.nodeId } : {}),
-    ...(f.destination ? { fix: f.destination } : {})
-  };
+  const at = { ...(f.owner ? { owner: f.owner } : {}), ...(f.nodeId ? { nodeId: f.nodeId } : {}), ...(f.destination ? { fix: f.destination } : {}) };
+  return { code: f.code, severity: f.severity, pillar: f.pillar, message: clip(f.message), reason, aiFixable: f.aiFixable, ...(JSON.stringify(at).length > LOCATOR_CHARS ? { locatorOmitted: true } : at) };
+}
+
+/** A link overview row with an ID too long to show (see LOCATOR_CHARS) said to have one, and the rest of it kept. */
+function shownRow(row: Record<string, unknown>, key: 'pageId' | 'id'): Record<string, unknown> {
+  if (JSON.stringify(row[key] ?? '').length <= LOCATOR_CHARS) return row;
+  const { [key]: _id, ...rest } = row;
+  return { ...rest, idOmitted: true };
 }
 
 /** Whether a finding is about one page itself: its own settings, or something on it. A site-wide finding is not. */
@@ -107,7 +113,7 @@ export function seoReport(project: ProjectState, revision: number, args: AuditSe
   const orphans = new Set(findings.flatMap((f) => (f.code === 'SEO_PAGE_UNLINKED' && f.owner?.kind === 'page' ? [f.owner.id] : [])));
   const row = (id: string) => ({ pageId: id, incoming: into.get(id) ?? 0, outgoing: outOf.get(id) ?? 0, ...(orphans.has(id) ? { orphan: true } : {}) });
   // One page lists where the links to it are, a page, shared part or entry at a time; the site lists its pages.
-  const rows: unknown[] = pageId ? [...from.values()] : publishedPages.map(row);
+  const rows: unknown[] = pageId ? [...from.values()].map((r) => shownRow(r, 'id')) : publishedPages.map((id) => shownRow(row(id), 'pageId'));
 
   const offset = args.offset ?? 0;
   const linkOffset = args.linkOffset ?? 0;
@@ -131,6 +137,7 @@ export function seoReport(project: ProjectState, revision: number, args: AuditSe
       byPillar,
       findings: shown.map((f) => compact(f, reasons.indexOf(f.explanation))),
       ...(nextOffset !== null ? { nextOffset } : {}),
+      ...(nextOffset !== null || nextLinkOffset !== null ? { more: CONTINUE } : {}),
       ...(reasons.length ? { reasons } : {}),
       links
     };

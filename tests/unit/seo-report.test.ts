@@ -83,15 +83,19 @@ describe('audit_seo', () => {
   });
 
   it('narrows to one pillar, alone or with a page, and says so when it has nothing', async () => {
-    const { state, services } = seoSite();
-    const s = run(state, { type: 'site.update', baseUrl: '', favicon: null }, { type: 'page.update', pageId: services, seoTitle: 'Short' });
+    const { state, home, services } = seoSite();
+    // A content finding on Home too, which a narrower scope leaves out.
+    const s = run(state, { type: 'site.update', baseUrl: '', favicon: null }, { type: 'page.update', pageId: services, seoTitle: 'Short' }, { type: 'page.update', pageId: home, description: 'Too short.' });
     const technical = await audit(s, { pillar: 'technical' });
     expect(technical.content.scope).toEqual({ pillar: 'technical' });
     expect(technical.content.findings.map((f: { code: string }) => f.code)).toEqual(['SEO_BASE_URL_MISSING']);
     const social = await audit(s, { pillar: 'social' });
     expect(social.content.findings.map((f: { code: string }) => f.code)).toEqual(['SEO_FAVICON_MISSING']);
+    const content = await audit(s, { pillar: 'content' });
+    expect(content.content.findings.map((f: { code: string; owner?: { id: string } }) => `${f.code} ${f.owner?.id}`).sort()).toEqual([`SEO_DESCRIPTION_LENGTH ${home}`, `SEO_TITLE_LENGTH ${services}`]);
     const both = await audit(s, { pageId: services, pillar: 'content' });
     expect(both.content.findings.map((f: { code: string }) => f.code)).toEqual(['SEO_TITLE_LENGTH']);
+    expect(both.content).toMatchObject({ total: 1, byPillar: { content: 1 } });
     const none = await audit(s, { pageId: services, pillar: 'agentic' });
     expect(none.content).toMatchObject({ scope: { pageId: services, pillar: 'agentic' }, total: 0, findings: [] });
     // The link overview is the page's whatever the pillar.
@@ -117,13 +121,31 @@ describe('audit_seo', () => {
     expect(site.content.links).toMatchObject({ pages: 2, orphans: 0 });
   });
 
-  it('flags orphan pages in the whole site’s overview', async () => {
-    const { state } = seoSite();
-    const s = run(state, { type: 'page.create', pageId: 'pg_kilns', title: 'Kiln hire', route: '/kiln-hire/', starter: 'intro' }, { type: 'page.update', pageId: 'pg_kilns', seoTitle: 'Kiln hire for potters · Riverside Studio', description: 'Hire the studio kilns by the shelf or the whole firing, for bisque and glaze firings alike, any week.' });
+  it('flags orphan pages in the whole site’s overview, and counts a link from another page into and out of each', async () => {
+    const { state, home } = seoSite();
+    const s = run(
+      state,
+      { type: 'page.create', pageId: 'pg_kilns', title: 'Kiln hire', route: '/kiln-hire/', starter: 'intro' },
+      { type: 'page.update', pageId: 'pg_kilns', seoTitle: 'Kiln hire for potters · Riverside Studio', description: 'Hire the studio kilns by the shelf or the whole firing, for bisque and glaze firings alike, any week.' },
+      { type: 'page.create', pageId: 'pg_gallery', title: 'Gallery', route: '/gallery/', starter: 'intro' },
+      { type: 'page.update', pageId: 'pg_gallery', seoTitle: 'Gallery of student work · Riverside Studio', description: 'Bowls, cups and plates made by students in the studio this year, from first pots to finished sets.' }
+    );
     const { content } = await audit(s);
-    expect(content.links).toMatchObject({ pages: 3, orphans: 1 });
+    expect(content.links).toMatchObject({ pages: 4, orphans: 2 });
     expect(content.links.rows.find((r: { pageId: string }) => r.pageId === 'pg_kilns')).toEqual({ pageId: 'pg_kilns', incoming: 0, outgoing: 0, orphan: true });
-    expect(content.findings.map((f: { code: string }) => f.code)).toEqual(['SEO_PAGE_UNLINKED']);
+    expect(content.findings.map((f: { code: string; owner?: { id: string } }) => `${f.code} ${f.owner?.id}`)).toEqual(['SEO_PAGE_UNLINKED pg_kilns', 'SEO_PAGE_UNLINKED pg_gallery']);
+    // Nothing the AI can edit links a page in from the right place, so it says it cannot fix one.
+    expect(content.findings[0]).toMatchObject({ aiFixable: false, owner: { kind: 'page', id: 'pg_kilns' } });
+    // A link on Home to Kiln hire is one out of Home and one into Kiln hire, from Home.
+    const linked = copy(s);
+    linked.pages[home].nodes.kiln_link = { id: 'kiln_link', kind: 'link', label: 'Kiln hire prices', link: { type: 'page', target: 'pg_kilns' }, appearance: 'primary' } as never;
+    linked.pages[home].rootIds.push('kiln_link');
+    const after = await audit(linked);
+    expect(after.content.links).toMatchObject({ pages: 4, orphans: 1 });
+    expect(after.content.links.rows.find((r: { pageId: string }) => r.pageId === 'pg_kilns')).toEqual({ pageId: 'pg_kilns', incoming: 1, outgoing: 0 });
+    expect(after.content.links.rows.find((r: { pageId: string }) => r.pageId === home)).toMatchObject({ outgoing: 1 });
+    const kilns = await audit(linked, { pageId: '/kiln-hire/' });
+    expect(kilns.content.links).toEqual({ pageId: 'pg_kilns', incoming: 1, outgoing: 0, from: [{ kind: 'page', id: home, count: 1 }] });
   });
 
   it('has nothing to audit on a draft, and refuses a page the project does not have', async () => {
@@ -131,6 +153,7 @@ describe('audit_seo', () => {
     const s = run(state, { type: 'page.create', pageId: 'pg_draft', title: 'Coming soon', route: '/soon/' }, { type: 'page.update', pageId: 'pg_draft', draft: true });
     const draft = await audit(s, { pageId: 'pg_draft' });
     expect(draft).toMatchObject({ ok: true, content: { scope: { pageId: 'pg_draft' }, published: false, total: 0 } });
+    expect((await audit(s, { pageId: '/soon/' })).content).toEqual(draft.content);
     const missing = await audit(s, { pageId: '/nowhere/' });
     expect(missing).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT', message: expect.stringContaining('No page "/nowhere/"') } });
     expect((await audit(s, { pageId: '   ' })).ok).toBe(false);
@@ -141,9 +164,11 @@ describe('audit_seo', () => {
     const { state } = seoSite();
     const s = copy(state);
     (s.pages as Record<string, unknown>).pg_broken = null;
-    s.site.pageOrder.push('pg_broken');
+    (s.pages as Record<string, unknown>).pg_lost = { ...structuredClone(s.pages[s.site.homePageId]), id: 'pg_lost', route: undefined };
+    s.site.pageOrder.push('pg_broken', 'pg_lost');
     expect((await audit(s)).ok).toBe(true);
     expect((await audit(s, { pageId: 'pg_broken' })).ok).toBe(false);
+    expect((await audit(s, { pageId: 'pg_lost' })).ok).toBe(false);
     expect((await audit(s, { pageId: '/services/' })).ok).toBe(true);
   });
 
@@ -170,6 +195,8 @@ describe('audit_seo', () => {
       seen.push(...content.findings.map((f: { code: string; owner?: { id: string } }) => `${f.code}|${f.owner?.id ?? ''}`));
       // A part holds fewer than its most when the findings would not fit the result whole.
       if (content.nextOffset !== undefined && content.findings.length < FINDINGS_PER_PART) cut = true;
+      // A part that is not the last says how to read on, and to start again after a change.
+      if (content.nextOffset !== undefined) expect(content.more).toMatch(/offset set to nextOffset.*start/);
       offset = content.nextOffset;
       parts++;
     }
@@ -193,6 +220,27 @@ describe('audit_seo', () => {
     // Past the end is an error, never an empty report that reads as a clean one.
     expect(await audit(s, { offset: all.length })).toMatchObject({ ok: false, content: { message: expect.stringContaining('past the last') } });
     expect(await audit(s, { linkOffset: 152 })).toMatchObject({ ok: false, content: { message: expect.stringContaining('past the last') } });
+  });
+
+  it('leaves out an ID too long to show rather than the rest of the report', async () => {
+    const { state, home } = seoSite();
+    const s = copy(state);
+    // A hand-edited file: a "Read more" link whose node ID alone is longer than a result, and a page whose ID is too.
+    const longNode = `n_${'x'.repeat(30000)}`;
+    s.pages[home].nodes[longNode] = { id: longNode, kind: 'link', label: 'Read more', link: { type: 'url', target: 'https://example.org/' }, appearance: 'primary' } as never;
+    s.pages[home].rootIds.push(longNode);
+    const longPage = `pg_${'y'.repeat(30000)}`;
+    s.pages[longPage] = { ...structuredClone(s.pages[s.site.homePageId]), id: longPage, route: '/long/', title: 'Long', seo: {}, rootIds: [], nodes: {} };
+    s.site.pageOrder.push(longPage);
+    const { ok, content } = await audit(s);
+    expect(ok).toBe(true);
+    expect(content.truncated).toBeUndefined();
+    const generic = content.findings.find((f: { code: string }) => f.code === 'SEO_LINK_TEXT_GENERIC');
+    expect(generic).toMatchObject({ locatorOmitted: true, message: 'A link says only “Read more”.' });
+    expect(generic.nodeId).toBeUndefined();
+    expect(content.findings.filter((f: { locatorOmitted?: boolean }) => f.locatorOmitted).length).toBeGreaterThan(1);
+    expect(content.links.rows).toContainEqual(expect.objectContaining({ idOmitted: true, orphan: true }));
+    expect(content.links.rows.filter((r: { pageId?: string }) => r.pageId).length).toBe(2);
   });
 
   it('is offered to every run that may read the whole site, for every model, and changes nothing', () => {
@@ -224,6 +272,10 @@ describe('audit_seo', () => {
         const tool = run.tools.find((t) => t.name === 'audit_seo')!;
         expect(findForbiddenShapes(toStrictSchema(tool.parameters)), label).toEqual([]);
         expect(tool.parameters).toMatchObject({ type: 'object', properties: { pillar: { enum: ['technical', 'entity', 'agentic', 'content', 'social'] } } });
+        // What a constrained model's grammar is built from keeps every argument and pillar.
+        const strict = toStrictSchema(tool.parameters) as { properties: Record<string, { enum?: string[] }> };
+        expect(Object.keys(strict.properties).sort(), label).toEqual(['linkOffset', 'offset', 'pageId', 'pillar']);
+        expect(JSON.stringify(strict.properties.pillar), label).toMatch(/"technical","entity","agentic","content","social"/);
       }
     }
     expect(MUTATING_TOOLS.has('audit_seo')).toBe(false);
@@ -234,19 +286,27 @@ describe('audit_seo', () => {
 describe('projectSummary search settings', () => {
   it('says whether the site has its sharing image and icon, and which of its own settings each page has', () => {
     const { state, home, services } = seoSite();
-    const s = run(state, { type: 'page.create', pageId: 'pg_plain', title: 'Plain', route: '/plain/' }, { type: 'page.update', pageId: services, noindex: true, searchHidden: true });
+    const s = run(
+      state,
+      { type: 'page.create', pageId: 'pg_plain', title: 'Plain', route: '/plain/' },
+      { type: 'page.create', pageId: 'pg_hidden', title: 'Hidden', route: '/hidden/' },
+      { type: 'page.update', pageId: services, noindex: true },
+      { type: 'page.update', pageId: 'pg_hidden', searchHidden: true }
+    );
     const summary = projectSummary(s, 3);
     expect(summary.site.seo).toEqual({ socialImageSet: true, faviconSet: true });
     const page = (id: string) => summary.pages.find((p) => p.id === id) as Record<string, unknown>;
     expect(page(home).seo).toEqual({ titleSet: true, descriptionSet: true });
-    expect(page(services).seo).toEqual({ titleSet: true, descriptionSet: true, noindex: true, searchHidden: true });
+    expect(page(services).seo).toEqual({ titleSet: true, descriptionSet: true, noindex: true });
+    expect(page('pg_hidden').seo).toEqual({ searchHidden: true });
     // A page with none of its own settings says nothing.
     expect('seo' in page('pg_plain')).toBe(false);
   });
 
-  it('counts only what is really there: blank text, images gone from the library and other values are not set', () => {
+  it('counts only what is really there, and reads a search setting as the website does', () => {
     const { state, home } = seoSite();
     const s = copy(state);
+    // Blank text and a value that is not text are no title or description; any value kept from search keeps it out.
     s.pages[home].seo = { title: '   ', description: 42 as never, noindex: 'yes' as never };
     s.site.favicon = 'img_gone';
     s.site.socialImage = 'font_x';
@@ -257,7 +317,10 @@ describe('projectSummary search settings', () => {
     ] as never;
     const summary = projectSummary(s, 3);
     expect(summary.site.seo).toEqual({ socialImageSet: false, faviconSet: false, redirectCount: 2 });
-    expect('seo' in (summary.pages.find((p) => p.id === home) as object)).toBe(false);
+    expect((summary.pages.find((p) => p.id === home) as Record<string, unknown>).seo).toEqual({ noindex: true });
+    expect(runSeoAudit(s).map((f) => f.code)).toContain('SEO_HOME_NOINDEX');
+    s.site.redirects = 'two' as never;
+    expect(projectSummary(s, 3).site.seo).toEqual({ socialImageSet: false, faviconSet: false });
     (s.pages[home] as { seo?: unknown }).seo = undefined;
     expect('seo' in (projectSummary(s, 3).pages.find((p) => p.id === home) as object)).toBe(false);
   });

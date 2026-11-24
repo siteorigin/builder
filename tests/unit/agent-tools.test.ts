@@ -1540,6 +1540,7 @@ describe('context budget', () => {
         ...read('a4', { pillar: 'content' }, audit(3, { pillar: 'content' }, 2, { error: 0, warning: 1, info: 1 }, { pages: 4, orphans: 1, rows: [] }), 'audit_seo'),
         ...read('a5', { offset: 40 }, site(3), 'audit_seo'),
         ...read('a6', {}, site(3), 'audit_seo'),
+        ...read('a7', { linkOffset: 100 }, site(3), 'audit_seo'),
         ...filler('f1'),
         ...filler('f2')
       ];
@@ -1549,17 +1550,18 @@ describe('context budget', () => {
       expect(r.tombstoned).toBe(2);
       expect(at(current, 'a1')).toBe('[Superseded audit_seo site at rev 3. 5 findings (0 errors, 3 warnings, 2 info), 1 orphan page. Audit again for details.]');
       expect(at(current, 'a2')).toBe('[Superseded audit_seo pg_s at rev 3. 1 finding (0 errors, 1 warning, 0 info), 1 orphan page. Audit again for details.]');
-      for (const id of ['a3', 'a4', 'a5', 'a6']) expect(at(current, id), id).toBe(at(kept, id));
+      for (const id of ['a3', 'a4', 'a5', 'a6', 'a7']) expect(at(current, id), id).toBe(at(kept, id));
       // Once the project moved on, every audit made before says what is no longer certain.
       const moved = items();
       applyContextBudget(moved, optsWith(2000, { revision: 4 }));
       expect(at(moved, 'a4')).toBe('[Superseded audit_seo site content at rev 3. 2 findings (0 errors, 1 warning, 1 info), 1 orphan page. Audit again for details.]');
       expect(at(moved, 'a5')).toBe('[Superseded audit_seo site from offset 40 at rev 3. 5 findings (0 errors, 3 warnings, 2 info), 1 orphan page. Audit again for details.]');
       expect(at(moved, 'a6')).toMatch(/^\[Superseded audit_seo site at rev 3\./);
+      expect(at(moved, 'a7')).toBe('[Superseded audit_seo site from linkOffset 100 at rev 3. 5 findings (0 errors, 3 warnings, 2 info), 1 orphan page. Audit again for details.]');
       // At the same revision, a tight window keeps audits nothing replaced: what they say is still true.
       const still = items();
       applyContextBudget(still, optsWith(2000, { revision: 3 }));
-      for (const id of ['a3', 'a4', 'a5', 'a6']) expect(at(still, id), id).toBe(at(kept, id));
+      for (const id of ['a3', 'a4', 'a5', 'a6', 'a7']) expect(at(still, id), id).toBe(at(kept, id));
       // A refused audit is no read.
       const refused: CanonicalItem[] = [...read('e1', { pageId: '/nowhere/' }, JSON.stringify({ error: 'INVALID_ARGUMENT', message: pad }), 'audit_seo'), ...read('e2', { pageId: '/nowhere/' }, JSON.stringify({ error: 'INVALID_ARGUMENT', message: pad }), 'audit_seo'), ...filler('f1'), ...filler('f2')];
       (refused[1] as Extract<CanonicalItem, { kind: 'tool_result' }>).isError = true;

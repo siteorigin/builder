@@ -458,7 +458,7 @@ describe('read-only questions (#203)', () => {
 
   it('audits the site’s SEO in a question and in an edit, for the whole site and one page by its route (#593)', async () => {
     for (const mode of ['ask', 'edit'] as const) {
-      const { session, run, adapter, events } = await setup([() => [call('a1', 'audit_seo', {})], () => [call('a2', 'audit_seo', { pageId: '/about/', pillar: 'content' })], () => finish('Two pages have no description of their own.')]);
+      const { session, run, adapter, events } = await setup([() => [call('a1', 'audit_seo', {})], () => [call('a2', 'audit_seo', { pageId: '/about/', pillar: 'content' })], () => finish('Here is what the audit found.')]);
       const about = Object.values(session.state.pages).find((p) => p.route === '/about/')!;
       const asked = session.revision;
       const { result } = await run('How is my SEO?', mode === 'ask' ? { mode: 'ask' } : {});

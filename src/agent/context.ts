@@ -144,7 +144,8 @@ function siteSeoSummary(state: ProjectState) {
  */
 function pageSeoSummary(p: PageDoc): { seo?: Record<string, true> } {
   const seo = p.seo && typeof p.seo === 'object' ? p.seo : {};
-  const flags = { titleSet: !!seoText(seo.title), descriptionSet: !!seoText(seo.description), noindex: seo.noindex === true, searchHidden: seo.searchHidden === true };
+  // Read as the website reads them (generator/seo-metadata.ts): any value that is set keeps the page out.
+  const flags = { titleSet: !!seoText(seo.title), descriptionSet: !!seoText(seo.description), noindex: !!seo.noindex, searchHidden: !!seo.searchHidden };
   const set = Object.fromEntries(Object.entries(flags).filter(([, on]) => on)) as Record<string, true>;
   return Object.keys(set).length ? { seo: set } : {};
 }
