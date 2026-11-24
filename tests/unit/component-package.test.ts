@@ -37,6 +37,7 @@ const { applyOperations } = await import('@engine/apply');
 const { validateState } = await import('@engine/validate');
 const { generateProject } = await import('@generator/index');
 const { decodeComponentPackage } = await import('@shared/component-package');
+const { LATEST_SCHEMA_VERSION } = await import('@shared/migrations');
 const { importAsset, stopMediaWorker } = await import('../../src/main/project/assets');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { buildComponentPackage, preparePackageImport, readComponentPackage } = await import('../../src/main/project/component-package');
@@ -55,7 +56,7 @@ afterAll(() => stopMediaWorker());
 const sha = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
 const home = (s: Session) => ({ kind: 'page' as const, id: s.state.site.homePageId });
 const ok = <T extends { ok: boolean; error?: { message: string } }>(r: T): T => {
-  expect(r.error?.message ?? 'ok').toBe('ok');
+  expect(r.ok, r.error?.message).toBe(true);
   return r;
 };
 
@@ -267,6 +268,17 @@ describe('component packages: export and import (#371)', () => {
     const theme = await blank('Theme');
     const t = ok(await importInto(theme, writePackage(text)));
     expect(theme.state.tokens.custom).toEqual([expect.objectContaining({ id: 'color.custom-lagoon', label: 'Lagoon', value: '#123456' })]);
+    // Where a different Lagoon of the site's own is there, the stand-in takes the next name, and a second import of
+    // the same package uses that stand-in again rather than making a third.
+    const taken = await blank('Taken');
+    ok(await taken.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Lagoon', value: '#000000' }] }, { label: 'Add' }));
+    ok(await importInto(taken, writePackage(text)));
+    ok(await importInto(taken, writePackage(text)));
+    expect(taken.state.tokens.custom.map((x) => [x.id, x.value])).toEqual([
+      ['color.custom-lagoon', '#000000'],
+      ['color.custom-lagoon-2', '#123456']
+    ]);
+    await taken.close();
     expect([...refs(childOf(theme, theme.state.components[t.results!.at(-1)!.definitionId as string])).tokens].filter((x) => x.startsWith('color.'))).toEqual(['color.custom-lagoon']);
     await Promise.all([src.s.close(), same.close(), other.close(), theme.close()]);
   });
@@ -310,7 +322,13 @@ describe('component packages: export and import (#371)', () => {
     expect(badgeOf(first).sourcePath).not.toBe(badgeOf(second).sourcePath);
     expect(dest.state.tokens.custom.map((t) => t.id)).toEqual(['color.custom-sea']);
     expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
-    await Promise.all([s.close(), dest.close()]);
+
+    // Where Sea means another colour, the code's variable follows the style it was written for, under its new name.
+    const other = await blank('Other');
+    ok(await other.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#ff0000' }] }, { label: 'Add' }));
+    const moved = ok(await importInto(other, path));
+    expect(other.state.components[moved.results!.at(-1)!.definitionId as string].source).toContain('var(--so-color-custom-sea-2)');
+    await Promise.all([s.close(), dest.close(), other.close()]);
   });
 
   it('won’t export code that shows a library image by its address, which the other site would not have', async () => {
@@ -334,6 +352,11 @@ describe('component packages: export and import (#371)', () => {
     // A component that imports a file the package doesn't carry can't be checked, so it is refused.
     const missing = await importInto(dest, writePackage(codePackage(`<script>\n  import Other from './Other-zzzzz.svelte';\n</script>\n\n<Other />\n`)));
     expect(missing.ok).toBe(false);
+    expect(missing.error!.message).toMatch(/may not import "\.\/Other-zzzzz\.svelte", which is not a component in this project/);
+    // Nor may it reach a runtime helper the site doesn't have: compiling the component alone never notices.
+    const helper = await importInto(dest, writePackage(codePackage(`<script>\n  import Gone from '../runtime/Gone.svelte';\n</script>\n\n<Gone />\n`)));
+    expect(helper.ok).toBe(false);
+    expect(helper.error!.message).toMatch(/imports "\.\.\/runtime\/Gone\.svelte", which is not a file in this project/);
     expect(snapshot(dest)).toBe(untouched);
     // The same safe code lands.
     ok(await importInto(dest, writePackage(codePackage(`<script>\n  let { title = 'Hello' } = $props();\n</script>\n\n<h3>{title}</h3>\n`))));
@@ -356,6 +379,7 @@ describe('component packages: export and import (#371)', () => {
     ok(await importInto(dest, path));
     const stored = Object.values(dest.state.assets.assets).find((a) => a.mime === 'image/svg+xml')!;
     expect(stored.hash).toBe(src.state.assets.assets[imageId].hash);
+    expect(readFileSync(join(dest.dir, stored.file)).equals(readFileSync(join(src.dir, src.state.assets.assets[imageId].file)))).toBe(true);
 
     // The same package with a script in its SVG is refused, and no file or record is added.
     const pkg = JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage;
@@ -404,6 +428,52 @@ describe('component packages: export and import (#371)', () => {
     await dest.close();
   });
 
+  it('refuses a package whose definitions are damaged, share a file, or name images no longer in the library, before anything lands', async () => {
+    const good = JSON.parse(codePackage(`<h3>Hi</h3>\n`));
+    const dest = await blank('Dest');
+    const untouched = snapshot(dest);
+    const managed = (nodes: Record<string, unknown>) => ({
+      ...good.definitions[0],
+      id: 'proj.band-abcde',
+      kind: 'managed',
+      name: 'Band',
+      source: undefined,
+      sourcePath: undefined,
+      tree: { rootIds: ['root'], nodes },
+      parts: { root: { nodeId: 'root', label: 'Root' } }
+    });
+    // An element without its list of children: named, never a script error.
+    const noChildren = await importInto(dest, writePackage(JSON.stringify({ ...good, rootId: 'proj.band-abcde', definitions: [managed({ root: { id: 'root', kind: 'element', tag: 'div' } })] })));
+    expect(noChildren.error?.message).toMatch(/“Band” is damaged: the element "root" has no list of children/);
+    // Two code components saved as one file would land as one.
+    const twin = { ...good.definitions[0], id: 'code.twin-fghij', name: 'Twin' };
+    const shared = await importInto(dest, writePackage(JSON.stringify({ ...good, definitions: [good.definitions[0], twin] })));
+    expect(shared.error?.message).toMatch(/two components saved as the same file/);
+    // A design whose generated code would not compile (two slots that become the same name) is refused.
+    const slots = managed({
+      root: { id: 'root', kind: 'element', tag: 'div', children: ['s1', 's2'] },
+      s1: { id: 's1', kind: 'slot', slot: 'hero-title' },
+      s2: { id: 's2', kind: 'slot', slot: '_hero_title' }
+    });
+    const clash = await importInto(dest, writePackage(JSON.stringify({ ...good, rootId: slots.id, definitions: [{ ...slots, slots: { 'hero-title': { label: 'Title' }, _hero_title: { label: 'Title too' } } }] })));
+    expect(clash.error?.message).toMatch(/“Band” can't be imported: its design doesn't compile \(Identifier 'slot__hero_title' has already been declared\)/);
+    expect(snapshot(dest)).toBe(untouched);
+    await dest.close();
+  });
+
+  it('refuses an import whose image left the library after it was stored', async () => {
+    const src = await pricingCard();
+    const { path } = await exportTo(src.s, src.rootId);
+    const dest = await blank('Dest');
+    const pkg = await readComponentPackage(path);
+    const prepared = await preparePackageImport(dest.dir, dest.state, pkg, { codeAllowed: true });
+    // The image record the import was to add never lands with it (an undo removed it meanwhile, say).
+    const r = await dest.apply({ operations: [{ type: 'component.import', importId: prepared.input.id }] }, { label: 'Import', source: 'user', componentImport: prepared.input });
+    expect(r.ok).toBe(false);
+    expect(r.error!.message).toMatch(/The image “Waves” is no longer in this project's library/);
+    await Promise.all([src.s.close(), dest.close()]);
+  });
+
   it('lets only the editor import: the assistant, and an edit without the checked package, land nothing', async () => {
     const dest = await blank('Dest');
     const pkg = await readComponentPackage(writePackage(codePackage(`<h3>Hi</h3>\n`)));
@@ -415,6 +485,14 @@ describe('component packages: export and import (#371)', () => {
     const bare = await dest.apply({ operations: [op] }, { label: 'Edit', source: 'user' });
     expect(bare.ok).toBe(false);
     expect(bare.error!.message).toMatch(/no longer open/);
+    // A package checked for another import is not this one's.
+    const stale = await dest.apply({ operations: [{ ...op, importId: 'imp_zzzzzzzz' }] }, { label: 'Edit', source: 'user', componentImport: prepared.input });
+    expect(stale.ok).toBe(false);
+    expect(stale.error!.message).toMatch(/no longer open/);
+    // An import is a change of its own.
+    const mixed = await dest.apply({ operations: [op, { type: 'page.create', title: 'Extra' }] }, { label: 'Edit', source: 'user', componentImport: prepared.input });
+    expect(mixed.ok).toBe(false);
+    expect(mixed.error!.message).toMatch(/change of its own/);
     expect(Object.values(dest.state.components).some((d) => d.name === 'Card')).toBe(false);
     await dest.close();
   });
@@ -432,7 +510,10 @@ describe('component packages: export and import (#371)', () => {
     expect(notes).toEqual(["A link to this site's pages or documents was left out, as another site doesn't have them."]);
     expect(readFileSync(path, 'utf8')).not.toContain(about);
     const dest = await blank('Dest');
-    ok(await importInto(dest, path));
+    const r = ok(await importInto(dest, path));
+    const landed = dest.state.components[r.results!.at(-1)!.definitionId as string];
+    // The button keeps a link that goes nowhere, so it never falls back to another link.
+    expect(Object.values(landed.tree!.nodes).flatMap((n) => (n.kind === 'link' ? [n.link] : []))).toEqual([{ type: 'none', target: '' }]);
     expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
     await Promise.all([src.s.close(), dest.close()]);
   });
@@ -441,7 +522,7 @@ describe('component packages: export and import (#371)', () => {
     // A package saved in the first format: the pipeline stamps and upgrades it like any old document.
     const text = codePackage(`<h3>Hi</h3>\n`);
     const pkg = await readComponentPackage(writePackage(text));
-    expect(pkg.definitions[0].schemaVersion).toBeGreaterThan(1);
+    expect(pkg.definitions[0].schemaVersion).toBe(LATEST_SCHEMA_VERSION);
     const state: ProjectState = createStarterState('blank', 'Engine', false);
     const prepared = { id: 'imp_abcdefgh', pkg, images: {} };
     const r = applyOperations(state, [{ type: 'component.import', importId: 'imp_abcdefgh' }], { componentImport: prepared });
