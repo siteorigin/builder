@@ -15,18 +15,20 @@ import type {
   TokenGroup,
   TokenValue,
   RichSpan,
-  RichText
+  RichText,
+  VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
 import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
-import type { EditOperation, Op } from '@shared/ops';
+import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageClash, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
 import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { isListBlock, toRichText } from '@shared/richtext';
-import { findVariant, variantOptions } from '@shared/variants';
+import { axesOf, findVariant, variantOptions } from '@shared/variants';
+import { teaserFields } from '@shared/page-teasers';
 import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { catalogueComponent, getTheme, listThemes, themeLockEntry } from '@catalogue/index';
@@ -63,7 +65,7 @@ import {
   setVariant,
   uniqueCopyName
 } from './definitions';
-import { contractConflicts, themeRefresh } from './theme-updates';
+import { contractConflicts, hiddenSlotContent, themeRefresh } from './theme-updates';
 
 export type OpResult = Record<string, unknown>;
 
@@ -244,6 +246,9 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       if (def.kind !== 'code') fail(`"${def.name}" is a managed component. Convert a copy to code before editing source.`);
       if (op.expectedHash && op.expectedHash !== sourceHash(def.source ?? '')) throw new EngineError('CONFLICT', 'The source changed since it was read. Read it again before patching.');
       if (op.renames?.length && !op.properties) fail('renames needs the whole new schema in properties.');
+      // A whole schema edited from an older one (undo or an outside edit landed meanwhile) would silently replace the newer.
+      if (op.expectedPropertiesHash !== undefined && op.expectedPropertiesHash !== propertiesHash(def.properties))
+        throw new EngineError('CONFLICT', `The properties of "${def.name}" changed since they were opened. Review them again before saving.`);
       if (op.properties) replaceProperties(state, def, op.properties, op.renames);
       def.source = op.source;
       return { hash: sourceHash(op.source) };
@@ -2269,6 +2274,85 @@ function createCode(state: ProjectState, op: Op<'component.createCode'>): OpResu
   return { definitionId: id, sourcePath: def.sourcePath, hash: sourceHash(op.source) };
 }
 
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const isItem = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Whether the generator shows a schema's default for what a placement (or a list item) stores: nothing, null, or a
+ * value of the wrong kind where `resolveValue` falls back (a boolean that is not one, a list that is not an array).
+ */
+function showsDefault(schema: PropSchema, has: boolean, v: unknown): boolean {
+  if (!has || v == null) return true;
+  if (schema.type === 'boolean') return typeof v !== 'boolean';
+  if (schema.type === 'list') return !Array.isArray(v);
+  return false;
+}
+
+/**
+ * The values a placement shows from `was` without setting them, wherever `next` would show something else: properties
+ * it leaves unset, list item fields left empty, and variant axes it has not chosen on. Each is written as `was`
+ * stores it (never resolved). An item field that follows its linked page is left alone unless it is missing, where
+ * the old default decides whether it follows. A value `next` cannot hold is a conflict, named for the placement.
+ */
+function inheritedValues(state: ProjectState, node: InstanceNode, was: ComponentDefinition, next: ComponentDefinition, label: string) {
+  const props: Record<string, unknown> = {};
+  const variants: Record<string, string> = {};
+  const conflicts: string[] = [];
+  const check = (schema: PropSchema, value: unknown, what: string) => {
+    try {
+      // Stored as the old theme has it, so a value only the editor would refuse to take in afresh still counts.
+      normalizeProp(schema, value, state, `${label}: ${was.name} → ${what}`, value);
+      return true;
+    } catch (e) {
+      conflicts.push(e instanceof EngineError ? e.message : `${label}: ${was.name} shows a “${what}” the new theme cannot keep.`);
+      return false;
+    }
+  };
+  for (const [name, schema] of Object.entries(was.properties)) {
+    const now = own(next.properties, name);
+    // A list that fills itself (articles, the current page) ignores what is stored, so nothing is kept for it.
+    if (!now || isBinding(node.props[name]) || (schema.type === 'list' && schema.feed)) continue;
+    const inherited = showsDefault(schema, Object.hasOwn(node.props, name), node.props[name]);
+    let value = inherited ? schema.default : node.props[name];
+    if (inherited && value !== undefined && !sameValue(value, now.default)) {
+      if (!check(now, value, now.label)) continue;
+      // Styles a placement keeps for items its inherited list does not show now wait for them; once the list is its
+      // own, they would be dropped as styles of removed items.
+      const rows = new Set((Array.isArray(value) ? value : []).map((it) => (isItem(it) ? it.id : undefined)));
+      const waiting = Object.values(node.itemOverrides ?? {}).some((e) => e?.list === name && Object.keys(e.items ?? {}).some((id) => !rows.has(id)));
+      if (schema.type === 'list' && waiting) {
+        conflicts.push(`${label}: ${was.name} keeps styles for “${now.label}” items its list does not show now, which the switch would drop.`);
+        continue;
+      }
+      value = props[name] = clone(value);
+    }
+    // Item fields left empty show their field's default, which the new version may have changed too.
+    if (schema.type !== 'list' || now.type !== 'list' || !Array.isArray(value)) continue;
+    const follows = new Set(schema.pageTeaser ? teaserFields(schema.pageTeaser).map(([f]) => f) : []);
+    const empty = (it: Record<string, unknown>, f: string, field: PropSchema) => (follows.has(f) ? !Object.hasOwn(it, f) : showsDefault(field, Object.hasOwn(it, f), it[f]));
+    const fill = Object.entries(schema.fields).filter(([f, field]) => {
+      const nf = own(now.fields, f);
+      return nf && field.default !== undefined && !sameValue(field.default, nf.default) && value.some((it: unknown) => isItem(it) && empty(it, f, field));
+    });
+    if (!fill.length || !fill.every(([f, field]) => check(now.fields[f], field.default, `${now.label} → ${now.fields[f].label}`))) continue;
+    const items = (props[name] ?? clone(value)) as unknown[];
+    for (const it of items) if (isItem(it)) for (const [f, field] of fill) if (empty(it, f, field)) it[f] = clone(field.default);
+    props[name] = items;
+  }
+  const nextAxes = new Map(axesOf(next));
+  for (const [axis, a] of axesOf(was)) {
+    const chosen = node.variants && Object.hasOwn(node.variants, axis) ? node.variants[axis] : undefined;
+    // A bound axis is the placement's own; a code placement's choice naming no option passes nothing at all.
+    if (isBinding(chosen) || (was.kind === 'code' && typeof chosen === 'string' && !Object.hasOwn(a.options, chosen))) continue;
+    const now = nextAxes.get(axis);
+    if (!now) continue;
+    const pick = (x: VariantAxis) => (typeof chosen === 'string' && Object.hasOwn(x.options, chosen) ? chosen : x.default);
+    const shown = pick(a);
+    if (pick(now) !== shown && Object.hasOwn(now.options, shown)) variants[axis] = shown;
+  }
+  return { props, variants, conflicts };
+}
+
 /**
  * Switch to a compatible theme: theme-owned definitions are replaced by the new theme's implementation of the
  * same public contract and every use is rebound. Project-owned components, content, list IDs, overrides and
@@ -2288,6 +2372,22 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
     }
     conflicts.push(...contractConflicts(state, def, next));
     mapping.set(def.id, next);
+  }
+  // What placements on pages and in the shell show without setting it themselves (a property, an item's field, a
+  // variant) comes from their definition. The new theme's defaults would silently change it, so those placements
+  // are given the value they show now, wherever the new default differs.
+  const kept = new Map<InstanceNode, ReturnType<typeof inheritedValues>>();
+  for (const t of allTrees(state)) {
+    if (t.owner.kind === 'component') continue;
+    for (const n of Object.values(t.tree.nodes)) {
+      if (n.kind !== 'instance' || !mapping.has(n.definitionId)) continue;
+      const next = mapping.get(n.definitionId)!;
+      const values = inheritedValues(state, n, state.components[n.definitionId], next, t.label);
+      conflicts.push(...values.conflicts);
+      // Content in a slot the new version shows only inside a list this placement leaves empty would disappear.
+      conflicts.push(...hiddenSlotContent(state.components[n.definitionId], next, { ...n, props: { ...n.props, ...values.props } }, t.label));
+      kept.set(n, values);
+    }
   }
   // Fonts ship with their theme. One the site chose itself (a site style, a text style, an element's font, a project
   // component's code) would silently fall back to a system font under a theme without it.
@@ -2316,7 +2416,15 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
   // dependencies, and theme definitions retained for them stay exactly as they were.
   for (const t of allTrees(state)) {
     if (t.owner.kind === 'component') continue;
-    for (const n of Object.values(t.tree.nodes)) if (n.kind === 'instance' && mapping.has(n.definitionId)) n.definitionId = mapping.get(n.definitionId)!.id;
+    for (const n of Object.values(t.tree.nodes)) {
+      if (n.kind !== 'instance' || !mapping.has(n.definitionId)) continue;
+      const values = kept.get(n);
+      if (values) {
+        Object.assign(n.props, values.props);
+        if (Object.keys(values.variants).length) n.variants = { ...(n.variants ?? {}), ...values.variants };
+      }
+      n.definitionId = mapping.get(n.definitionId)!.id;
+    }
   }
   // Old theme definitions are dropped once nothing places or needs them, repeating until the set is stable
   // because dropping one can free the definitions it placed.

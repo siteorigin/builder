@@ -113,7 +113,45 @@ assert.equal(await saveButton.isDisabled(), false, 'typing a label enables Save 
 await saveButton.click();
 await eventually(async () => assert.equal((await counter()).saved.properties.prop1.label, 'Tone', 'the saved schema has the new label'), 15000);
 await eventually(async () => assert.equal(await saveButton.isDisabled(), true, 'nothing is left unsaved after saving'));
-// A rename is saved only onto the project it was made against: one changed meanwhile refuses it, and nothing moves.
+
+step('a schema that changes under unsaved rows is not overwritten by them (#103)');
+const storedLabel = async () => Object.values((await win.evaluate(() => window.builder.project.snapshot())).state.components).find((d) => d.name === 'Counter').properties.prop1.label;
+await label.fill('Mood');
+await label.press('Enter');
+// The saved schema edit is undone while the rows hold unsaved edits made from it.
+assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true);
+await eventually(async () => assert.notEqual(await storedLabel(), 'Tone', 'the schema edit is undone'));
+const stale = win.getByRole('alert').filter({ hasText: 'These properties changed since you started editing them.' });
+await stale.waitFor();
+await win.screenshot({ path: join(OUT, '40c-code-properties-stale.png') });
+await win.getByRole('button', { name: 'Save' }).click();
+await win.waitForTimeout(500);
+assert.ok(await stale.isVisible(), 'saving is refused, with the notice still showing');
+assert.notEqual(await storedLabel(), 'Mood', 'the newer schema is kept');
+await win.getByRole('button', { name: 'Reload properties' }).click();
+await stale.waitFor({ state: 'detached' });
+assert.equal(await label.inputValue(), await storedLabel(), 'the rows show the stored schema again');
+await eventually(async () => assert.equal(await win.getByRole('button', { name: 'Save' }).isDisabled(), true, 'nothing is left unsaved after reloading'));
+// A label still being typed in (its field keeps focus, nothing committed yet) when the schema changes is kept and
+// flagged, never dropped or saved over the newer schema.
+await label.fill('Mood again');
+assert.equal((await win.evaluate(() => window.builder.project.redo())).ok, true);
+await stale.waitFor();
+assert.equal(await label.inputValue(), 'Mood again', 'the label being typed is kept');
+assert.equal(await storedLabel(), 'Tone', 'the redone schema is stored');
+await win.getByRole('button', { name: 'Reload properties' }).click();
+await stale.waitFor({ state: 'detached' });
+assert.equal(await label.inputValue(), 'Tone', 'reloading shows the stored label');
+// Undo the redone schema edit again: clean rows follow it.
+assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true);
+await eventually(async () => assert.equal(await label.inputValue(), await storedLabel(), 'clean rows follow the undo'));
+await eventually(async () => assert.equal(await win.getByRole('button', { name: 'Save' }).isDisabled(), true, 'nothing is left unsaved after the undo'));
+// Redo it again, so the steps below start from the saved label as before; clean rows follow the redo too.
+assert.equal((await win.evaluate(() => window.builder.project.redo())).ok, true);
+await eventually(async () => assert.equal(await label.inputValue(), 'Tone', 'clean rows follow the redo'));
+
+step('a rename is saved only onto the project it was made against');
+// One changed meanwhile refuses it, and nothing moves.
 await win.getByLabel('text name').fill('body');
 await win.getByLabel('text name').press('Enter');
 await win.evaluate(([pageId, nodeId]) => window.builder.project.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId, prop: 'text', value: 'Changed meanwhile' }] }, { label: 'Other edit' }), [at.pageId, at.node.id]);

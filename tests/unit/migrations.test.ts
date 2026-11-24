@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import type { InstanceNode, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
+import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
 import { definitionHash, matchesLock, migrateProject, MIGRATIONS, type Migration } from '@shared/migrations';
 import { sha256Hex } from '@shared/sha256';
@@ -400,6 +401,45 @@ describe('opening an older project', () => {
     expect(read(dir, SITE).description).toBe('Edited at the last moment');
   });
 
+  it('reads the documents again when one changes while they are read, instead of failing (#103)', async () => {
+    const dir = copyFixture();
+    const realRead = fsp.readFile.bind(fsp) as (...a: unknown[]) => Promise<string>;
+    let edited = false;
+    vi.spyOn(fsp, 'readFile').mockImplementation((async (...args: unknown[]) => {
+      const update = /publishMigration[\s\S]*openLocked/.test(new Error().stack ?? '');
+      const text = await realRead(...args);
+      // The update's own reading of site.json: the file changes right after it, while the other documents are read.
+      if (!edited && update && String(args[0]) === join(dir, SITE)) {
+        edited = true;
+        write(dir, SITE, { ...JSON.parse(text), description: 'Edited while it was read' });
+      }
+      return text;
+    }) as typeof fsp.readFile);
+    const s = await session(dir);
+    vi.restoreAllMocks();
+    expect(edited).toBe(true);
+    expect(read(dir, SITE)).toMatchObject({ description: 'Edited while it was read', schemaVersion: SCHEMA_VERSION });
+    expect(s.state.site.description).toBe('Edited while it was read');
+    for (const p of canonicalJson(dir)) expect(read(dir, p).schemaVersion, p).toBe(SCHEMA_VERSION);
+  });
+
+  it('stops reading again after a few changes in a row, keeping the files as they are (#103)', async () => {
+    const dir = copyFixture();
+    const realRead = fsp.readFile.bind(fsp) as (...a: unknown[]) => Promise<string>;
+    let reads = 0;
+    vi.spyOn(fsp, 'readFile').mockImplementation((async (...args: unknown[]) => {
+      const update = /publishMigration[\s\S]*openLocked/.test(new Error().stack ?? '') && !/unloadedEdit/.test(new Error().stack ?? '');
+      const text = await realRead(...args);
+      if (update && String(args[0]) === join(dir, SITE)) write(dir, SITE, { ...JSON.parse(text), description: `Edited ${++reads}` });
+      return text;
+    }) as typeof fsp.readFile);
+    await expect(ProjectSession.open(dir, 'busy')).rejects.toThrow(/changed outside/);
+    vi.restoreAllMocks();
+    expect(reads).toBe(3);
+    expect(read(dir, SITE)).toMatchObject({ description: 'Edited 3', schemaVersion: 1 });
+    expect(existsSync(join(dir, '.siteorigin/recovery')) && readdirSync(join(dir, '.siteorigin/recovery')).some((f) => f.startsWith('migration-'))).toBe(false);
+  });
+
   it('stays blocked after a failed update even if a reload finds nothing left to migrate', async () => {
     const dir = copyFixture();
     const s = await session(dir);
@@ -456,6 +496,136 @@ describe('opening an older project', () => {
     for (const p of canonicalJson(dir)) expect(read(dir, p).schemaVersion, p).toBe(SCHEMA_VERSION);
     expect(read(dir, SITE).description).toBe('Builder version');
     expect((await s.apply({ operations: [{ type: 'site.update', name: 'After' }] }, { label: 'x' })).ok).toBe(true);
+  });
+
+  it('refuses a component put back from an older copy that lacks an option a placement chose (#103)', async () => {
+    const dir = copyFixture();
+    const s = await session(dir);
+    const GRID = 'siteorigin/components/foundation.features.grid/component.json';
+    const homeFile = `siteorigin/pages/${readdirSync(join(dir, 'siteorigin/pages')).find((f) => read(dir, `siteorigin/pages/${f}`).id === s.state.site.homePageId)}`;
+    const chosen = Object.values(s.state.pages[s.state.site.homePageId].nodes).find((n) => n.kind === 'instance' && n.variants?.layout === 'four-columns') as InstanceNode;
+    expect(chosen).toBeTruthy();
+    const loaded = toJson(s.state);
+    const pageBytes = readFileSync(join(dir, homeFile), 'utf8');
+    // A copy in the first format, from before the theme had the option the page chose: its axes are rebuilt without it.
+    const legacy = JSON.parse(readFileSync(join(FIXTURE, GRID), 'utf8'));
+    delete legacy.variants['four-columns'];
+    write(dir, GRID, legacy);
+    const r = await s.reloadFromDisk();
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/uses the layout “four-columns” of “Services grid”, which the changed component no longer has/);
+    expect(toJson(s.state)).toBe(loaded);
+    expect(readFileSync(join(dir, homeFile), 'utf8')).toBe(pageBytes);
+    // The same in the current format: a copy from before an update added the option.
+    const current = JSON.parse(toJson(s.state.components['foundation.features.grid']));
+    delete current.variantAxes.layout.options['four-columns'];
+    write(dir, GRID, current);
+    const again = await s.reloadFromDisk();
+    expect(again.ok).toBe(false);
+    expect(again.message).toMatch(/uses the layout “four-columns” of “Services grid”, which the changed component no longer has/);
+    expect(toJson(s.state)).toBe(loaded);
+    // Put back beside a copy of its page from a later format (already on axes, a step behind), it is refused too.
+    const stamped = read(dir, homeFile);
+    write(dir, homeFile, { ...stamped, schemaVersion: SCHEMA_VERSION - 1 });
+    expect((await s.reloadFromDisk()).ok).toBe(false);
+    expect(toJson(s.state)).toBe(loaded);
+    write(dir, homeFile, stamped);
+    // Dropping an option nobody chose loads, and so does a page that changes its own choice.
+    const unused = JSON.parse(toJson(s.state.components['foundation.features.grid']));
+    delete unused.variantAxes.layout.options['two-columns'];
+    write(dir, GRID, unused);
+    expect((await s.reloadFromDisk()).ok).toBe(true);
+    const page = read(dir, homeFile);
+    page.nodes[chosen.id].variants = { layout: 'default' };
+    write(dir, homeFile, page);
+    write(dir, GRID, current);
+    expect((await s.reloadFromDisk()).ok).toBe(true);
+    expect((s.state.pages[s.state.site.homePageId].nodes[chosen.id] as InstanceNode).variants).toEqual({ layout: 'default' });
+  });
+
+  it('opens a project whose component was put back from an older copy while it was closed, keeping the page’s choice (#103)', async () => {
+    const dir = copyFixture();
+    const first = await session(dir);
+    const chosen = Object.values(first.state.pages[first.state.site.homePageId].nodes).find((n) => n.kind === 'instance' && n.variants?.layout === 'four-columns') as InstanceNode;
+    await first.close();
+    open.splice(0);
+    const GRID = 'siteorigin/components/foundation.features.grid/component.json';
+    const legacy = JSON.parse(readFileSync(join(FIXTURE, GRID), 'utf8'));
+    delete legacy.variants['four-columns'];
+    write(dir, GRID, legacy);
+    // Nothing tells the copy apart from a choice that was already stale, so the project opens: the page keeps its
+    // choice in its own file, and Project health says it names an option the component does not have.
+    const s = await session(dir, 'again');
+    expect((s.state.pages[s.state.site.homePageId].nodes[chosen.id] as InstanceNode).variants).toEqual({ layout: 'four-columns' });
+    expect(s.diagnostics().some((d) => /four-columns/.test(d.message))).toBe(true);
+  });
+
+  it('loads a page and its component put back together from the same older copy (#103)', async () => {
+    const dir = copyFixture();
+    // The first-format project has a code component whose page placement names a variant it does not have, so its
+    // code shows its own fallback.
+    const NOTE = 'siteorigin/components/code.fixture-note-ta3js/component.json';
+    const note = read(dir, NOTE);
+    note.variants = { default: { label: 'Default' } };
+    note.defaultVariant = 'default';
+    write(dir, NOTE, note);
+    const pageFile = `siteorigin/pages/${readdirSync(join(dir, 'siteorigin/pages')).find((f) => read(dir, `siteorigin/pages/${f}`).route === '/')}`;
+    const page = read(dir, pageFile);
+    page.nodes.n_note = { id: 'n_note', kind: 'instance', definitionId: note.id, props: { text: 'Note' }, variant: 'wide' };
+    page.rootIds.push('n_note');
+    write(dir, pageFile, page);
+    const olderPage = readFileSync(join(dir, pageFile), 'utf8');
+    const olderNote = readFileSync(join(dir, NOTE), 'utf8');
+    // The component alone put back while the project is closed opens: its placement's choice named nothing before.
+    await (await session(dir)).close();
+    open.splice(0);
+    writeFileSync(join(dir, NOTE), olderNote);
+    // Opened, then given the option it named.
+    const s = await session(dir);
+    expect((s.state.pages[page.id].nodes.n_note as InstanceNode).variants).toEqual({ tone: 'wide' });
+    expect((await s.apply({ operations: [{ type: 'component.setVariant', definitionId: note.id, axis: 'tone', variant: 'wide', label: 'Wide' }] }, { label: 'wide' })).ok).toBe(true);
+    // Both files put back from the copy: the choice names nothing again, as it did there.
+    writeFileSync(join(dir, pageFile), olderPage);
+    writeFileSync(join(dir, NOTE), olderNote);
+    const r = await s.reloadFromDisk();
+    expect(r).toEqual({ ok: true });
+    expect(Object.keys(s.state.components[note.id].variantAxes!.tone.options)).toEqual(['default']);
+    expect((s.state.pages[page.id].nodes.n_note as InstanceNode).variants).toEqual({ tone: 'wide' });
+  });
+
+  it('publishes a format update only for the project a reload checked (#103)', async () => {
+    const dir = copyFixture();
+    const s = await session(dir);
+    const GRID = 'siteorigin/components/foundation.features.grid/component.json';
+    const loaded = toJson(s.state.components['foundation.features.grid']);
+    // A harmless file put back in an older format; while the format update reads it, the grid loses an option a
+    // page chose, which the reload never saw.
+    const tokens = read(dir, 'siteorigin/tokens.json');
+    write(dir, 'siteorigin/tokens.json', { ...tokens, schemaVersion: 1 });
+    const lacking = JSON.parse(loaded);
+    delete lacking.variantAxes.layout.options['four-columns'];
+    const realRead = fsp.readFile.bind(fsp) as (...a: unknown[]) => Promise<string>;
+    let edited = false;
+    vi.spyOn(fsp, 'readFile').mockImplementation((async (...args: unknown[]) => {
+      const update = /publishMigration/.test(new Error().stack ?? '');
+      const text = await realRead(...args);
+      if (!edited && update && String(args[0]) === join(dir, SITE)) {
+        edited = true;
+        write(dir, GRID, lacking);
+      }
+      return text;
+    }) as typeof fsp.readFile);
+    expect((await s.reloadFromDisk()).ok).toBe(true);
+    vi.restoreAllMocks();
+    expect(edited).toBe(true);
+    // The update waits: the grid the reload did not check is not adopted, and the tokens stay as they were put back.
+    expect(toJson(s.state.components['foundation.features.grid'])).toBe(loaded);
+    expect(read(dir, 'siteorigin/tokens.json').schemaVersion).toBe(1);
+    // The next reload checks it, and refuses it.
+    const r = await s.reloadFromDisk();
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/no longer has/);
+    expect(toJson(s.state.components['foundation.features.grid'])).toBe(loaded);
   });
 
   it('stores a single file put back from an older copy, keeping undo', async () => {
@@ -640,6 +810,125 @@ describe('theme component updates', () => {
     const { state: next } = applyOperations(state, [{ type: 'theme.refresh' }]);
     expect(next.themeLock.components[hero.id].hash).toBe(definitionHash(current(hero.id)));
     expect(next.themeLock.components[hero.id].hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('waits for an outside edit the watcher has not delivered before updating or switching (#103)', async () => {
+    const HERO = 'foundation.hero.centered';
+    const state = await outdated();
+    const dir = mkdtempSync(join(tmpdir(), 'so-refresh-'));
+    dirs.push(dir);
+    const s = await ProjectSession.create(dir, state);
+    open.push(s);
+    expect(themeUpdates(s.state).available.map((u) => u.id)).toContain(HERO);
+    // The manifest, which the watcher does not see change and which says nothing an update reads, never holds it up.
+    write(dir, 'siteorigin.project.json', { ...read(dir, 'siteorigin.project.json'), name: 'Renamed outside' });
+    // Outside the app, the project's code component starts importing the hero; the watcher has not run yet.
+    const code = Object.values(s.state.components).find((d) => d.kind === 'code' && d.owner === 'project')!;
+    const codeFile = `siteorigin/components/${code.id}/component.json`;
+    write(dir, codeFile, { ...read(dir, codeFile), dependencies: [HERO] });
+    const heroFile = `siteorigin/components/${HERO}/component.json`;
+    const before = { hero: readFileSync(join(dir, heroFile), 'utf8'), lock: readFileSync(join(dir, 'siteorigin/theme-lock.json'), 'utf8') };
+    for (const op of [{ type: 'theme.refresh' as const }, { type: 'theme.apply' as const, themeId: 'foundation-alt' }]) {
+      const r = await s.apply({ operations: [op] }, { label: op.type });
+      expect(r.ok, op.type).toBe(false);
+      expect(r.error).toMatchObject({ code: 'CONFLICT', recoverable: true });
+      expect(r.error!.message).toMatch(new RegExp(`^${codeFile} was changed outside SiteOrigin Builder`));
+    }
+    expect(readFileSync(join(dir, heroFile), 'utf8')).toBe(before.hero);
+    expect(readFileSync(join(dir, 'siteorigin/theme-lock.json'), 'utf8')).toBe(before.lock);
+    // Once it is loaded, the update sees that the code builds on this hero and keeps it.
+    expect((await s.reloadFromDisk()).ok).toBe(true);
+    expect(themeUpdates(s.state).kept.find((k) => k.id === HERO)?.reason).toMatch(/built on/);
+    // An edit to the code itself, not yet loaded, holds a theme switch too.
+    const sourceFile = code.sourcePath!;
+    writeFileSync(join(dir, sourceFile), readFileSync(join(dir, sourceFile), 'utf8') + '\n<!-- edited outside -->\n');
+    const r = await s.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation-alt' }] }, { label: 'switch' });
+    expect(r.error?.message).toMatch(new RegExp(`^${sourceFile} was changed outside SiteOrigin Builder`));
+    expect(s.state.site.themeId).toBe('foundation');
+  });
+
+  describe('a filled slot that the new version moves inside a repeat (#103)', () => {
+    const SECTION = 'foundation.layout.section';
+    const theme = getTheme('foundation');
+    const at = theme.components.findIndex((c) => c.id === SECTION);
+    const shipped = theme.components[at];
+    afterEach(() => {
+      theme.components[at] = shipped;
+    });
+    const rows = (defaultRows: Array<Record<string, unknown>>): ComponentDefinition['properties'][string] =>
+      ({ type: 'list', label: 'Rows', itemLabel: 'Row', fields: { text: { type: 'string', label: 'Text', default: '' } }, default: defaultRows }) as unknown as ComponentDefinition['properties'][string];
+    /**
+     * A project whose section is the theme's own, given a list property, holding content in its slot; the theme's next
+     * version shows that slot once per item of the list instead.
+     */
+    function project(defaultRows: Array<Record<string, unknown>>, setRows?: Array<Array<Record<string, unknown>>>) {
+      let s = createStarterState('blank', 'Slots', false);
+      const installed = structuredClone(shipped);
+      installed.properties.rows = rows(defaultRows);
+      installed.description = 'An older description';
+      s.components[SECTION] = installed;
+      s.themeLock.components[SECTION].hash = definitionHash(installed);
+      const next = structuredClone(shipped);
+      next.properties.rows = rows(defaultRows);
+      const slotId = Object.values(next.tree!.nodes).find((n) => n.kind === 'slot')!.id;
+      const parent = Object.values(next.tree!.nodes).find((n) => (n.kind === 'element' || n.kind === 'repeat') && n.children.includes(slotId)) as { children: string[] };
+      parent.children = parent.children.map((c) => (c === slotId ? 'each' : c));
+      next.tree!.nodes.each = { id: 'each', kind: 'repeat', list: { $prop: 'rows' }, children: [slotId] };
+      theme.components[at] = next;
+      const page = s.site.homePageId;
+      // Only the placements made here: the starter's own section would be held too.
+      s.pages[page].rootIds = [];
+      s.pages[page].nodes = {};
+      const sections: string[] = [];
+      for (const value of setRows ?? [undefined as never]) {
+        const ins = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: page }, definitionId: SECTION }]);
+        s = ins.state;
+        const id = ins.results[0].nodeId as string;
+        s = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: page }, parentId: id, slot: 'content', primitive: 'paragraph', text: 'My words' }]).state;
+        const node = s.pages[page].nodes[id] as InstanceNode;
+        if (value === undefined) delete node.props.rows;
+        else node.props.rows = value;
+        sections.push(id);
+      }
+      return { state: s, sections };
+    }
+
+    it('holds the update when a placement’s list is empty, so its content would not show', () => {
+      const { state, sections } = project([]);
+      const held = themeUpdates(state).kept.find((k) => k.id === SECTION);
+      expect(held?.reason).toMatch(/would no longer show the content in its "content" slot/);
+      expect(themeUpdates(state).available.map((u) => u.id)).not.toContain(SECTION);
+      expect(() => applyOperations(state, [{ type: 'theme.refresh', definitionIds: [SECTION] }])).toThrow(/cannot be updated/);
+      const { state: after } = applyOperations(state, [{ type: 'theme.refresh' }]);
+      expect(after.components[SECTION].description).toBe('An older description');
+      expect(after.themeLock.components[SECTION].hash).toBe(state.themeLock.components[SECTION].hash);
+      expect((after.pages[after.site.homePageId].nodes[sections[0]] as InstanceNode).slots!.content).toHaveLength(1);
+    });
+
+    it('offers it when every placement has an item to show its content in, its own or the new default', () => {
+      expect(themeUpdates(project([], [[{ id: 'i_1', text: 'One' }]]).state).available.map((u) => u.id)).toContain(SECTION);
+      expect(themeUpdates(project([{ id: 'i_d', text: 'Default' }]).state).available.map((u) => u.id)).toContain(SECTION);
+      // A stored value that is not a list shows the default's items, as the generator reads it: whatever else holds
+      // such a placement back, its slot content is not said to disappear.
+      expect(themeUpdates(project([{ id: 'i_d', text: 'Default' }], [null as never]).state).kept.find((k) => k.id === SECTION)?.reason ?? '').not.toMatch(/slot/);
+    });
+
+    it('does not hold an update over a slot the installed version already leaves out (#103)', () => {
+      const { state } = project([]);
+      // The installed copy already shows the slot only inside the list; the update changes nothing about that.
+      const installed = structuredClone(theme.components[at]);
+      installed.description = 'An older description';
+      state.components[SECTION] = installed;
+      state.themeLock.components[SECTION].hash = definitionHash(installed);
+      expect(themeUpdates(state).kept.find((k) => k.id === SECTION)?.reason ?? '').not.toMatch(/slot/);
+    });
+
+    it('holds it for a placement that empties a list the others inherit items from', () => {
+      for (const order of [[undefined as never, []], [[], undefined as never]]) {
+        const { state } = project([{ id: 'i_d', text: 'Default' }], order);
+        expect(themeUpdates(state).kept.find((k) => k.id === SECTION)?.reason, JSON.stringify(order)).toMatch(/"content" slot/);
+      }
+    });
   });
 
   it('treats a definition that no longer matches its old 32-bit lock entry as edited', async () => {

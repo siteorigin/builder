@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
+import { sha256Hex } from './sha256';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -12,6 +13,11 @@ const RICH_TEXT_VALUE = 'For richtext: a string or string[] with **bold**, *ital
 const TABLE_VALUE = 'For table: { "columns": ["Day", "Workshop"], "rows": [["Monday", "Clay basics"]] }; to change one cell, row or column use instance.editTable.';
 
 export const OPS_VERSION = 1;
+
+/** The identity of a definition's property schema, which a whole-schema save names to prove it saw the latest one. */
+export function propertiesHash(properties: Record<string, unknown> | undefined): string {
+  return `sha256:${sha256Hex(JSON.stringify(properties ?? {}))}`;
+}
 
 const owner = z
   .object({
@@ -310,7 +316,8 @@ export const OPERATION_SCHEMAS = {
       .array(z.object({ from: z.string(), to: z.string() }))
       .max(60)
       .optional()
-      .describe('With properties: stored properties that properties keeps under a new name (from the stored name, to its name in properties). Every placement keeps its value for them. All pairs apply at once, so two names can swap.')
+      .describe('With properties: stored properties that properties keeps under a new name (from the stored name, to its name in properties). Every placement keeps its value for them. All pairs apply at once, so two names can swap.'),
+    expectedPropertiesHash: z.string().optional().describe('propertiesHash() of the schema `properties` was edited from. Refused when the stored schema has changed since.')
   }),
   'component.remove': z.object({ type: z.literal('component.remove'), definitionId: z.string() }),
   'component.setPropSchema': z.object({

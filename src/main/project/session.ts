@@ -9,6 +9,8 @@ import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { RestoreVersionResult, StorageInfo, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
+import { choicesLost } from '@shared/variants';
+import { AXES_FORMAT, formatOf } from '@shared/migrations';
 import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '@engine/apply';
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
@@ -330,6 +332,8 @@ export interface SessionEvent {
 }
 
 /** A canonical file changed on disk since the app last read or wrote it. */
+const MANIFEST = 'siteorigin.project.json';
+
 export class DiskConflictError extends Error {
   constructor(public path: string) {
     super(`${path} was changed outside SiteOrigin Builder. Your edit was not saved so the external change is kept.`);
@@ -503,9 +507,12 @@ export class ProjectSession extends EventEmitter {
    * Store a project read in an older format in the current one. A copy of the old documents goes to the recovery
    * folder, then the update is published through the journal, so a crash leaves the old or new project, never a mix.
    */
-  private async publishMigration() {
+  private async publishMigration(attempts = 3, approved?: ProjectState): Promise<void> {
     if (this.migrationFailed) return;
     const read = await readProject(this.dir);
+    // After a reload, only the project that reload checked is published. A file changed since is loaded, and checked,
+    // by the next reload, which updates the format then. The manifest is left out: the watcher never reloads it.
+    if (approved && !sameDocs(stateToDocs(read.state), stateToDocs(approved), MANIFEST)) return;
     if (!read.migration) {
       this.migrationDue = false;
       return;
@@ -520,17 +527,30 @@ export class ProjectSession extends EventEmitter {
     const before = new Map<string, string>();
     for (const path of stateToDocs(read.stored).keys()) {
       const stored = read.raw.get(path);
-      if (stored === undefined) continue;
-      before.set(path, stored);
-      await atomicWrite(this.local('recovery', backup, path), stored);
+      if (stored !== undefined) before.set(path, stored);
     }
     const held = this.docs;
+    // The update is worked out from one reading of every document, and a step can read documents it does not rewrite
+    // (a page's values by its component's schema). A file changed or added while they were read (an edit the watcher
+    // has not delivered yet) would leave that reading inconsistent, so it is read again instead of published.
+    this.docs = before;
+    const unloaded = await this.unloadedEdit(new Set()).finally(() => (this.docs = held));
+    if (unloaded) {
+      if (attempts > 1) return this.publishMigration(attempts - 1, approved);
+      // After a reload, the files still changing bring another reload, which updates the format once they settle.
+      if (approved) return;
+      throw new DiskConflictError(unloaded);
+    }
+    for (const [path, stored] of before) await atomicWrite(this.local('recovery', backup, path), stored);
     this.docs = before;
     try {
-      await this.persist(read.state, { label: 'Update project format', history: false, source: 'system' });
+      await this.persist(read.state, { label: 'Update project format', history: false, source: 'system', wholeProject: true });
     } catch (e) {
       this.docs = held;
-      this.migrationFailed = true;
+      // A file changed outside the app is found before anything is written. After a reload, the change it made brings
+      // the next reload, which updates the format then; nothing is lost, so the session is not held back for it.
+      if (e instanceof DiskConflictError && approved) return;
+      this.migrationFailed = !(e instanceof DiskConflictError);
       throw e;
     }
     this.migrationDue = false;
@@ -1126,7 +1146,7 @@ export class ProjectSession extends EventEmitter {
    * Persist a new canonical state, regenerate derived files and record history. `cursor` moves the undo position
    * instead of recording a new step (undo and redo).
    */
-  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number }): Promise<SessionEvent> {
+  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
     // A state whose theme is not available here would be generated from the wrong pack.
     const pin = themePinProblem(next);
     if (pin) throw new Error(pin);
@@ -1150,6 +1170,15 @@ export class ProjectSession extends EventEmitter {
     // Authored sources go before the definitions that name them, so a component's definition is never missing
     // beside its source part way through a delete: recovery can then tell that from a definition deleted outside.
     deletes.sort((a, b) => Number(!CUSTOM_SOURCE_RE.test(a.path)) - Number(!CUSTOM_SOURCE_RE.test(b.path)));
+    // A change worked out from the whole project (a theme update or switch, a format update) also depends on files it
+    // does not write: what builds on a component, what its placements hold. One changed outside the app since it was
+    // read (an edit the watcher has not delivered yet) makes those checks stale, so the change waits for it. The
+    // manifest says nothing they read, and the watcher does not see it change. The files it writes are checked after
+    // this, last, so an edit to one of them while this reads is still caught.
+    if (opts.wholeProject) {
+      const unloaded = await this.unloadedEdit(new Set([...Object.keys(changed), MANIFEST]));
+      if (unloaded) throw new DiskConflictError(unloaded);
+    }
     // Never overwrite a newer version on disk (for example an edit the file watcher has not delivered yet). A file
     // that already holds exactly what this change leaves there (a source kept when its definition was deleted
     // outside the app, say) is not overwritten by it.
@@ -1584,7 +1613,7 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
       try {
-        ev = await this.persist(next, opts);
+        ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply') });
       } catch (e) {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: e.message, recoverable: true } };
         throw e;
@@ -2896,10 +2925,12 @@ export class ProjectSession extends EventEmitter {
       if (settled) await this.saveConflicts();
       let next: ProjectState;
       let migrated: boolean;
+      let stored: ProjectState;
       try {
         // Files still in conflict are read as SiteOrigin Builder's version until the user chooses.
         const read = await readProject(this.dir, { overlay: this.pending });
         next = read.state;
+        stored = read.stored;
         migrated = !!read.migration;
       } catch (e) {
         if (settled) this.emit('history');
@@ -2909,6 +2940,15 @@ export class ProjectSession extends EventEmitter {
       if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
       const pin = themePinProblem(next);
       if (pin) return { ok: false, message: `The changed files were not loaded: ${pin}` };
+      // A component put back from an older copy (or one from before a theme update) can lack an option placements
+      // chose since: loading it would quietly show them its default instead.
+      // Documents put back from before variant axes come with their own choices, converted (and checked) by that step.
+      const older = (doc: { schemaVersion?: unknown } | undefined) => !!doc && formatOf(doc) < AXES_FORMAT;
+      const lost = choicesLost(this.state, next, (owner) => {
+        const [kind, id] = owner.split(/:(.*)/s);
+        return older(kind === 'shell' ? stored.site : kind === 'page' ? stored.pages[id] : stored.components[id]);
+      });
+      if (lost.length) return { ok: false, message: `The changed files were not loaded: ${lost[0]} Put back the matching page files too, or choose another option first.` };
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
         const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
@@ -2921,7 +2961,7 @@ export class ProjectSession extends EventEmitter {
       const srcSame = JSON.stringify([...stateToAuthoredSources(next)]) === JSON.stringify([...stateToAuthoredSources(this.state)]);
       if (same && srcSame) {
         // Only the stored format differs (a file put back from an older copy): store it in the current one.
-        if (this.migrationDue && !this.pending.size) await this.publishMigration();
+        if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
         if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
         return { ok: true };
       }
@@ -2942,7 +2982,7 @@ export class ProjectSession extends EventEmitter {
       this.revision++;
       if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'External change', source: 'system' });
       await this.saveLocalState();
-      if (this.migrationDue && !this.pending.size) await this.publishMigration();
+      if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'External change', source: 'system' } satisfies SessionEvent);
       return { ok: true };
     });
@@ -3226,6 +3266,12 @@ function sameContent(path: string, disk: string | null, expected: string | null)
     }
   }
   return (disk ?? '') === (expected ?? '');
+}
+
+/** Whether two document maps hold the same documents with the same text, `except` one path. */
+function sameDocs(a: Map<string, string>, b: Map<string, string>, except?: string): boolean {
+  for (const p of new Set([...a.keys(), ...b.keys()])) if (p !== except && a.get(p) !== b.get(p)) return false;
+  return true;
 }
 
 /** Rebuild state from a document map (used by undo/redo). */
