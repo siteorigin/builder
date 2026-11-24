@@ -20,7 +20,7 @@ export function RenameOffer() {
   const arrived = !!offer && snap?.workspaceKey === offer.opening && snap.revision >= offer.revision;
   const page = arrived && Object.hasOwn(snap!.state.pages, offer!.pageId) ? snap!.state.pages[offer!.pageId] : undefined;
   const live = !!page && page.title === offer?.to;
-  const found = useMemo(() => (offer && snap && live ? renameLabels(snap.state, offer.pageId, offer.from) : []), [offer, snap, live]);
+  const found = useMemo(() => (offer && snap && live ? renameLabels(snap.state, offer.pageId, offer.also ? [offer.from, offer.also] : offer.from) : []), [offer, snap, live]);
   // Once the project shows the rename, the offer lasts while it has something to offer and the page keeps that name: a
   // label written later with the old name is the author's own, and a page renamed again (or the rename undone) has
   // moved on, so neither brings this card back.
@@ -45,7 +45,7 @@ export function RenameOffer() {
         <span className="rename-offer-title" id={`${id}-title`}>
           Renamed to “{offer.to}”
         </span>
-        <span role="status">{found.length === 1 ? `This still says “${offer.from}”:` : `These still say “${offer.from}”:`}</span>
+        <span role="status">{`${found.length === 1 ? 'This still says' : 'These still say'} ${[...new Set(found.map((l) => `“${l.text}”`))].join(' or ')}:`}</span>
         <ul className="rename-offer-list">
           {found.map((l) => (
             <li key={l.key}>

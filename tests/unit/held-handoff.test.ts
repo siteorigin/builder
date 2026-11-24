@@ -696,6 +696,26 @@ describe('the labels a page rename leaves behind (#28)', () => {
     expect(store.getState().renameOffer).toMatchObject({ pageId: about, from: 'About', to: 'Our story' });
   });
 
+  it('offers the labels of a title changed elsewhere that the rename replaced, as well as the author’s', async () => {
+    const { session, about } = await setup([]);
+    const header = session.state.site.shell.header;
+    const menu = header.nodes[header.rootIds[0]] as unknown as { id: string; props: { links: Array<{ id: string; label: string }> } };
+    const aboutLink = menu.props.links.find((l) => l.label === 'About')!;
+    const base = snapshot();
+    // While the author types, the title and its header link are changed somewhere else.
+    await session.apply({ operations: [{ type: 'page.update', pageId: about, title: 'Team' }, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: menu.id, prop: 'links', itemId: aboutLink.id, field: 'label', value: 'Team' }] }, { label: 'Elsewhere', source: 'user' });
+    store.setState({ snapshot: snapshot() });
+    let result: Promise<unknown> = Promise.resolve();
+    store.commitDraft(base, () => (result = store.renamePage(about, 'About', 'Our story')), 'Our story');
+    await result;
+    const held = store.getState().heldEdits.at(-1)!;
+    expect(held).toMatchObject({ phase: 'changed', currentText: 'Team' });
+    expect(store.getState().renameOffer).toBeNull();
+    await store.applyHeld(held.id, { replace: true });
+    expect(session.state.pages[about].title).toBe('Our story');
+    expect(store.getState().renameOffer).toMatchObject({ pageId: about, from: 'About', also: 'Team', to: 'Our story', revision: session.revision });
+  });
+
   it('offers nothing for a rename that was refused', async () => {
     const { about } = await setup([]);
     await rename(about, 'About', '');

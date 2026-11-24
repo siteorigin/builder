@@ -18,6 +18,8 @@ export interface RenameLabel {
   where: string;
   /** Chosen to update unless the author unticks it. A label that may have been the author's own choice starts unticked. */
   preselect: boolean;
+  /** What it says now: one of the old names. */
+  text: string;
   /** The edit that makes it read the page's current title. */
   op: EditOperation;
 }
@@ -43,25 +45,31 @@ const pageLink = (v: unknown, pageId: string): v is LinkValue => !!v && typeof v
  * links on purpose, so with one the links are offered unticked, and a menu label that is the old name is offered
  * (unticked) to give up for the title. The address is never part of it.
  */
-export function renameLabels(state: ProjectState, pageId: string, from: string): RenameLabel[] {
+export function renameLabels(state: ProjectState, pageId: string, from: string | readonly string[]): RenameLabel[] {
   const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
-  if (!page || !from || page.title === from) return [];
+  if (!page) return [];
   const to = page.title;
+  // The page's old names (more than one when the rename replaced a title changed elsewhere), never its current one.
+  const names = new Set((typeof from === 'string' ? [from] : from).filter((n) => n && n !== to));
+  if (!names.size) return [];
+  const old = (v: unknown): v is string => typeof v === 'string' && names.has(v);
   const out: RenameLabel[] = [];
   const owner: OwnerRef = { kind: 'page', id: pageId };
   // The headings visitors read as the page's title, by the section that shows them (the outline reads spaces as one).
-  const words = from.replace(/\s+/g, ' ').trim();
+  const words = (t: string) => t.replace(/\s+/g, ' ').trim();
+  const shown = new Set([...names].map(words));
   const titles = new Set(
     pageHeadings(state, pageId, { shell: false })
-      .outline.filter((h) => h.level === 1 && h.text === words && h.owner.kind === 'page' && h.owner.id === pageId)
+      .outline.filter((h) => h.level === 1 && shown.has(h.text) && h.owner.kind === 'page' && h.owner.id === pageId)
       .map((h) => h.nodeId)
   );
   for (const id of titles) {
     const n = page.nodes[id];
-    if (n?.kind !== 'instance' || n.props.heading !== from) continue;
+    const text = n?.kind === 'instance' ? n.props.heading : undefined;
+    if (n?.kind !== 'instance' || !old(text)) continue;
     const def = state.components[n.definitionId];
     if (def?.properties.heading?.type !== 'string') continue;
-    out.push({ key: `heading:${id}`, where: `${def.name} heading`, preselect: true, op: { type: 'instance.setProp', owner, nodeId: id, prop: 'heading', value: to } });
+    out.push({ key: `heading:${id}`, where: `${def.name} heading`, preselect: true, text, op: { type: 'instance.setProp', owner, nodeId: id, prop: 'heading', value: to } });
   }
   const nav = typeof page.navLabel === 'string' && page.navLabel ? page.navLabel : undefined;
   const chosen = nav !== undefined;
@@ -71,16 +79,17 @@ export function renameLabels(state: ProjectState, pageId: string, from: string):
     if (!menu || !items) continue;
     const where = part === 'header' ? 'Header menu link' : 'Footer link';
     for (const item of items) {
-      if (!item || typeof item.id !== 'string' || item.label !== from || !pageLink(item.link, pageId)) continue;
+      if (!item || typeof item.id !== 'string' || !old(item.label) || !pageLink(item.link, pageId)) continue;
       out.push({
         key: `${part}:${menu.node.id}:${item.id}`,
         where,
         preselect: !chosen,
+        text: item.label,
         op: { type: 'instance.setProp', owner: { kind: 'shell', id: part }, nodeId: menu.node.id, prop: 'links', itemId: item.id, field: 'label', value: to }
       });
     }
   }
-  if (nav === from) out.push({ key: 'navLabel', where: 'Menu label for new menu links', preselect: false, op: { type: 'page.update', pageId, navLabel: '' } });
+  if (old(nav)) out.push({ key: 'navLabel', where: 'Menu label for new menu links', preselect: false, text: nav, op: { type: 'page.update', pageId, navLabel: '' } });
   return out;
 }
 

@@ -122,6 +122,20 @@ describe('labels a page rename leaves behind', () => {
     expect(renameLabels(s, 'pg_missing', 'Lookbook')).toEqual([]);
   });
 
+  it('offers labels with any of the page’s old names, saying which each one holds', () => {
+    // The title was changed elsewhere to Team (and the header link with it) before the author's rename replaced it.
+    const { s, id } = lookbook((s) => [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: menuOf(s, 'header').id, prop: 'links', itemId: links(s, 'header')[3].id, field: 'label', value: 'Team' }]);
+    expect(renameLabels(s, id, 'Lookbook').map((l) => [l.where, l.text])).toEqual([['Page introduction heading', 'Lookbook']]);
+    const found = renameLabels(s, id, ['Lookbook', 'Team']);
+    expect(found.map((l) => [l.where, l.text])).toEqual([
+      ['Page introduction heading', 'Lookbook'],
+      ['Header menu link', 'Team']
+    ]);
+    expect(labels(apply(s, found.map((l) => l.op)).state, 'header')[3]).toBe('Portfolio');
+    // The current title is never an old name.
+    expect(renameLabels(s, id, ['Portfolio'])).toEqual([]);
+  });
+
   it('finds a title written with doubled spaces, and a hero’s Heading 1 as well as an introduction’s', () => {
     let s = apply(fresh(), [{ type: 'page.create', title: 'Case  Studies', route: '/case-studies/', starter: 'intro', pageId: 'pg_cases01' }]).state;
     s = apply(s, [{ type: 'page.update', pageId: 'pg_cases01', title: 'Projects' }]).state;

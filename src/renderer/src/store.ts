@@ -96,6 +96,8 @@ export interface RenameOffer {
   to: string;
   /** The project's revision once the rename was saved: a snapshot older than that does not show it yet. */
   revision: number;
+  /** A title the rename replaced that was not `from`: one changed elsewhere while the author typed. Its labels are old too. */
+  also?: string;
 }
 
 /** A rename on its way, for the edit to carry if it is held (see renamePage): its offer, before it is saved. */
@@ -771,7 +773,7 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
     // The project closed while the save was on its way.
     if (!live()) return setState({ pendingSave });
     // In one update, so the toolbar goes straight from the AI to "your edit was saved".
-    if (r.ok) return setState({ pendingSave, heldEdits: removeHeld(id), ...outcome('saved'), ...landedRename(id, r.revision) });
+    if (r.ok) return setState({ pendingSave, heldEdits: removeHeld(id), ...outcome('saved'), ...landedRename(id, r.revision, shownField(h.operations[0], expected[0])) });
     setState({ pendingSave });
     // Something else changed the project between the check and the write: check again.
     if (r.error?.code === 'STALE_REVISION' && tries < 2) {
@@ -787,9 +789,12 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
 }
 
 /** A rename held while the AI worked is saved now: its offer shows. */
-function landedRename(heldId: number, revision: number): Partial<State> {
+function landedRename(heldId: number, revision: number, replaced: unknown): Partial<State> {
   const rename = heldById(heldId)?.rename;
-  return rename ? { renameOffer: { ...rename, revision } } : {};
+  if (!rename) return {};
+  // Replacing a title changed elsewhere meanwhile: labels with that title are as old as the ones with the author's.
+  const also = typeof replaced === 'string' && replaced && replaced !== rename.from && replaced !== rename.to ? { also: replaced } : {};
+  return { renameOffer: { ...rename, revision, ...also } };
 }
 
 /**
