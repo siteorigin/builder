@@ -47,6 +47,9 @@ interface Active {
 }
 
 const drafts = new Set<string>();
+/** Fields keeping text they refused after the author left them (a public URL without https://), by draft key:
+ *  what a later settle says about each, and where Keep editing returns. */
+const retained = new Map<string, { message: string; field: Refocusable | null }>();
 const draftListeners = new Set<() => void>();
 const inflight = new Set<Promise<ApplyOutcome>>();
 const active: Active[] = [];
@@ -96,6 +99,13 @@ export function reportRefused(message: string, draftKey?: string, field?: Refocu
     if (draftKey) s.explained.add(draftKey);
     if (field && !s.refused) s.refused = field;
   }
+}
+
+/** A field keeps text it refused as an unsaved draft, with its reason beside it, after the author has left it: a
+ *  settle started later says so and returns there. Null once the text is corrected, saved or discarded. */
+export function retainRefused(draftKey: string, message: string | null, field?: Refocusable): void {
+  if (message) retained.set(draftKey, { message, field: field ?? null });
+  else retained.delete(draftKey);
 }
 
 function report(message: string) {
@@ -192,7 +202,9 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
     // (a backstop) a field typed in meanwhile.
     for (const key of drafts) {
       if (s.explained.has(key)) continue;
-      report(LEFT_OPEN[key] ?? 'A change you were typing has not been saved.');
+      const kept = retained.get(key);
+      if (kept && !s.refused && kept.field?.isConnected) s.refused = kept.field;
+      report(kept?.message ?? LEFT_OPEN[key] ?? 'A change you were typing has not been saved.');
     }
     // The barrier's answer is this settle's alone, kept out of what an overlapping one (a Close) copies.
     const problems = unconfirmed && !s.problems.includes(unconfirmed) ? [...s.problems, unconfirmed] : [...s.problems];
@@ -206,6 +218,7 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
 /** Test helper: forget every draft, change and settle. */
 export function resetPendingForTests(): void {
   drafts.clear();
+  retained.clear();
   inflight.clear();
   active.length = 0;
   deferred = [];

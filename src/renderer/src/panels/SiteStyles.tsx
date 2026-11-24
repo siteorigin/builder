@@ -1,5 +1,5 @@
 import { variantOptions } from '@shared/variants';
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Globe, Link2, RotateCcw } from 'lucide-react';
 import type { ProjectState, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
@@ -10,15 +10,18 @@ import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRol
 import { allTrees, instancesOf } from '@engine/tree';
 import { forEachTokenPropRef } from '@engine/tokens';
 import { api, applyOps, useStore } from '../store';
+import { openSiteStyles } from '../lib/actions';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { ColorPick } from '../components/ColorPick';
-import { DraftInput, Field, Section, openSection } from '../components/ui';
+import { DraftInput, Field, Section, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { CustomTokens } from './CustomTokens';
 import { FontSelect, familyName } from './FontSelect';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ForegroundSuggestion } from '@shared/contrast';
 import { NOT_FOUND_DEFAULTS, NOT_FOUND_LIMITS, clipText } from '@shared/not-found';
 import { itemStyleRecords } from '@shared/item-styles';
+import { checkPublicUrl } from '@shared/public-url';
+import { LANGUAGE_CODE_ERROR, siteLanguageProblem } from '@shared/languages';
 
 /**
  * What the Foundation theme uses each colour for, checked against its base CSS and component styles, so an
@@ -407,6 +410,59 @@ function ResetDot({ label, theme, onReset }: { label: string; theme: string; onR
     >
       <RotateCcw />
     </button>
+  );
+}
+
+/** Site details, wherever the author has gone since: Keep editing returns to a field in it. */
+const revealSiteDetails = () => {
+  openSiteStyles();
+  openSection('site-settings', { scroll: false });
+};
+
+/** Why the Public URL field can't save this text, with the address most likely meant. */
+function publicUrlProblem(text: string): DraftProblem | null {
+  const c = checkPublicUrl(text);
+  if (c.ok) return null;
+  return c.suggestion ? { message: c.message, suggestion: c.suggestion, fix: /^http:/i.test(text.trim()) ? 'Use https://' : 'Add https://' } : { message: c.message };
+}
+
+/**
+ * A site setting checked before it is saved. Text it can't take stays in the field as an unsaved draft, with the
+ * reason, the value still saved, and a correction when there is one, until it is corrected or discarded (Escape).
+ * A saved value that can't be used (saved by hand or by an earlier version) is pointed out the same way.
+ */
+function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder }: { label: string; hint: string; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string }) {
+  // A value of another kind (written by hand into the project's files) is shown as text, to be corrected.
+  const value = typeof saved === 'string' ? saved : saved == null ? '' : JSON.stringify(saved);
+  const [problem, setProblem] = useState<DraftProblem | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const handle = useRef<DraftHandle | null>(null);
+  // What is wrong with the saved value describes the field only while it shows that value.
+  const shown = problem ?? (value && !dirty ? check(value) : null);
+  const fix = shown?.suggestion;
+  const error = shown && (
+    <>
+      <span role={problem ? 'alert' : undefined}>
+        {shown.message}{' '}
+        {problem ? (
+          <span className="field-saved">
+            Not saved. {value ? <>The saved value is still <bdi>{value}</bdi>.</> : 'Nothing is saved here yet.'}
+          </span>
+        ) : (
+          unusable
+        )}
+      </span>
+      {fix && (
+        <button type="button" className="link-btn field-fix" onClick={() => handle.current?.commit(fix)}>
+          {shown.fix ?? `Use ${fix}`}
+        </button>
+      )}
+    </>
+  );
+  return (
+    <Field label={label} hint={hint} error={error}>
+      <DraftInput className={className} value={value} placeholder={placeholder} check={check} onProblem={setProblem} onDirty={setDirty} reveal={revealSiteDetails} handle={handle} onCommit={onCommit} />
+    </Field>
   );
 }
 
@@ -1286,19 +1342,38 @@ export function SiteStyles() {
         <CustomTokens state={st} say={say} whereUsed={(id) => usesOf(id).lines.flatMap(([, names]) => names)} onEditText={(id) => (setOpenText(id), openSection('tok-text', { focus: `[data-token-id="${CSS.escape(id)}"] .ss-text-toggle` }))} />
       </Section>
 
-      <Section title="Site details" id="site-settings" defaultOpen={false}>
+      <Section title="Site details" id="site-settings" defaultOpen={false} keepMounted>
         <Field label="Site name">
           <DraftInput value={site.name} onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
         </Field>
         <Field label="Default description" hint="Used by pages without their own description.">
           <DraftInput multiline value={site.description} onCommit={(v) => updSite({ description: v })} />
         </Field>
-        <Field label="Public URL" hint="For canonical links and the sitemap.">
-          <DraftInput value={site.baseUrl ?? ''} placeholder="https://example.com" onCommit={(v) => updSite({ baseUrl: v.trim() })} />
-        </Field>
-        <Field label="Language" hint="A language code, such as en or en-GB.">
-          <DraftInput className="input ss-lang" value={site.language} onCommit={(v) => updSite({ language: v.trim() })} />
-        </Field>
+        {/* Keyed by the project's opening: text one project refused never shows in the next. */}
+        <CheckedField
+          key={`url-${snap?.workspaceKey}`}
+          label="Public URL"
+          hint="For canonical links and the sitemap."
+          value={site.baseUrl}
+          placeholder="https://example.com"
+          check={publicUrlProblem}
+          unusable="The website is built without it until it is corrected."
+          onCommit={(v) => updSite({ baseUrl: v.trim() })}
+        />
+        <CheckedField
+          key={`lang-${snap?.workspaceKey}`}
+          label="Language"
+          hint="A language code, such as en or en-GB."
+          className="input ss-lang"
+          value={site.language}
+          check={(v) => {
+            const code = v.trim();
+            const problem = code.length > 20 ? LANGUAGE_CODE_ERROR : siteLanguageProblem(st, code);
+            return problem ? { message: problem } : null;
+          }}
+          unusable="The website is built in English (en) until it is corrected."
+          onCommit={(v) => updSite({ language: v.trim() })}
+        />
         <Field label="Favicon">
           <select className="select" value={site.favicon ?? ''} onChange={(e) => updSite({ favicon: e.target.value || null })}>
             <option value="">None</option>

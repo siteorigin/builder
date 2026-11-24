@@ -27,8 +27,9 @@ import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isBindin
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
-import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageClash, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
+import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
+import { checkPublicUrl } from '@shared/public-url';
 import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { isListBlock, toRichText } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -1976,18 +1977,16 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
   if (op.name !== undefined) s.name = op.name.trim();
   if (op.language !== undefined) {
-    if (!isLanguageCode(op.language)) fail(LANGUAGE_CODE_ERROR);
-    // Pages that use the site language follow it: none may end up in the language of one of its translations. A set
-    // that already had two versions in one language (written by hand) is reported elsewhere and does not stop this.
-    const clash = siteLanguageClash(state, op.language);
-    if (clash) fail(`${translationClashMessage(clash)} Pages without a language of their own use the site language.`);
+    const problem = siteLanguageProblem(state, op.language);
+    if (problem) fail(problem);
     s.language = op.language;
   }
   if (op.description !== undefined) s.description = op.description;
   if (op.baseUrl !== undefined) {
-    const b = op.baseUrl.trim();
-    if (b && !/^https:\/\/[a-z0-9.-]+(:\d+)?(\/[\w./-]*)?$/i.test(b)) fail('The public URL must start with https://.');
-    s.baseUrl = b || undefined;
+    // Checked and stored the way browsers and the site build read it, so every generated link agrees with it.
+    const check = checkPublicUrl(op.baseUrl);
+    if (!check.ok) fail(check.message);
+    s.baseUrl = check.url || undefined;
   }
   if (op.favicon !== undefined) {
     if (op.favicon && own(state.assets.assets, op.favicon)?.kind !== 'image') fail('Favicon asset not found.');

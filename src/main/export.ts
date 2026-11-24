@@ -8,6 +8,7 @@ import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, PageDoc, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
 import { declaredLanguage, pageLanguage, sameLanguage } from '@shared/languages';
+import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
@@ -774,6 +775,19 @@ export async function rivalHookStop(dir: string, state: ProjectState): Promise<s
   const claimed = Object.hasOwn(manifest.files ?? {}, SERVER_HOOK_FILE) || Object.hasOwn(manifest.pending ?? {}, SERVER_HOOK_FILE);
   const own = ownServerHook(dir, claimed);
   return own ? `Pages written in another language need SiteOrigin Builder's ${SERVER_HOOK_FILE}, and this project has a server hook of its own (${own}): SvelteKit runs only one of them. Rename or remove yours, then export again.` : null;
+}
+
+/**
+ * Why the exported site has no canonical links, social image URLs or sitemap: no public URL is set, or the one saved
+ * can't be used (saved by hand or by an earlier version). Null when the site has a public URL it was built from.
+ */
+export function publicUrlWarning(state: ProjectState): string | null {
+  // A value of another kind (a number written by hand) is a URL that can't be used, not a missing one.
+  const raw: unknown = state.site.baseUrl;
+  const saved = typeof raw === 'string' ? raw.trim() : raw == null ? '' : JSON.stringify(raw);
+  const check = checkPublicUrl(saved);
+  if (!check.ok) return `The public site URL “${saved}” can’t be used, so canonical links, social image URLs and the sitemap were omitted. ${check.message} Correct it in Site settings.`;
+  return check.url ? null : 'No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.';
 }
 
 /**

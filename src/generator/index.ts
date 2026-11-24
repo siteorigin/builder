@@ -55,6 +55,7 @@ import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, 
 import { routeDir, validateRoute } from '@shared/routes';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageLanguage, sameLanguage, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
+import { publicUrl } from '@shared/public-url';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { asParagraphList, isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
@@ -2055,7 +2056,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   if (description) head.push(`\t<meta property="og:description" content={${js(description)}} />`);
   const socialId = page.seo.socialImage ?? site.socialImage;
   const social = socialId ? state.assets.assets[socialId] : undefined;
-  const base = site.baseUrl?.replace(/\/+$/, '');
+  const base = publicUrl(site);
   if (base) {
     head.push(`\t<link rel="canonical" href={${js(base + page.route)}} />`);
     head.push(`\t<meta property="og:url" content={${js(base + page.route)}} />`);
@@ -2352,7 +2353,7 @@ export function redirectFile(from: string): string {
  * page. Either way it works from the prerendered HTML alone, on any static host.
  */
 export function generateRedirect(state: ProjectState, from: string, page: PageDoc): string {
-  const base = state.site.baseUrl?.replace(/\/+$/, '');
+  const base = publicUrl(state.site);
   const canonical = base ? `\n\t<link rel="canonical" href={${js(base + page.route)}} />` : '';
   return (
     HEADER_NOTE('siteorigin/site.json') +
@@ -2391,13 +2392,13 @@ export function routeId(route: string): string {
  */
 export function generateRobots(state: ProjectState): string {
   const lines = ['User-agent: *', 'Allow: /'];
-  const base = state.site.baseUrl?.replace(/\/+$/, '');
+  const base = publicUrl(state.site);
   if (base) lines.push('', `Sitemap: ${base}/sitemap.xml`);
   return lines.join('\n') + '\n';
 }
 
 export function generateSitemap(state: ProjectState): string | null {
-  const base = state.site.baseUrl?.replace(/\/+$/, '');
+  const base = publicUrl(state.site);
   if (!base) return null;
   const urls = state.site.pageOrder
     .map((id) => state.pages[id])
@@ -2581,14 +2582,9 @@ export function generateFaviconSvg(state: ProjectState): string {
 
 /** Sub-path the site is published under, from the public URL ("https://example.com/my-site" -> "/my-site"). */
 export function basePath(state: ProjectState): string {
-  const url = state.site.baseUrl;
-  if (!url) return '';
-  try {
-    const path = new URL(url).pathname.replace(/\/+$/, '');
-    return /^(\/[\w.-]+)*$/.test(path) && !path.split('/').some((s) => s === '.' || s === '..') ? path : '';
-  } catch {
-    return '';
-  }
+  // A public URL is only used once checked, and its path then has segments SvelteKit takes as they are.
+  const url = publicUrl(state.site);
+  return url ? new URL(url).pathname.replace(/\/+$/, '') : '';
 }
 
 /** Read by vite.config.js: SvelteKit's paths.base for production builds. */

@@ -7,6 +7,7 @@ import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, slotChildren, type 
 import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
+import { publicUrl } from '@shared/public-url';
 import { anchorCapable, anchorsInUse, displayName, findParent } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
 import { codeTakesBlocks, isDraftPage, liveRedirects, resolveLink } from './index';
@@ -1120,11 +1121,12 @@ export interface PublicationPlan {
  * old address that leads to a draft. `withheld` maps those addresses, lowercased, to the draft.
  */
 function draftAtAddress(state: ProjectState, target: string, withheld: Map<string, string>): { pageId: string; anchor?: string } | null {
-  if (!state.site.baseUrl || !withheld.size) return null;
-  let site: URL;
+  // Only a public URL the site is built from makes an address the site's own.
+  const base = publicUrl(state.site);
+  if (!base || !withheld.size) return null;
+  const site = new URL(base);
   let url: URL;
   try {
-    site = new URL(state.site.baseUrl);
     url = new URL(target);
   } catch {
     return null;

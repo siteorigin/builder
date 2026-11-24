@@ -217,6 +217,11 @@ describe('what the website publishes', () => {
     expect(typed('https://books.example/shop/about/')).toEqual([]);
     s.site.baseUrl = undefined;
     expect(typed('https://books.example/shop/winter/')).toEqual([]);
+    // A saved address the site can't be built from (written by hand) makes no address the site's own.
+    s.site.baseUrl = 'http://books.example/shop';
+    expect(typed('http://books.example/shop/winter/')).toEqual([]);
+    s.site.baseUrl = 'https://books.example/shop?preview';
+    expect(typed('https://books.example/shop/winter/')).toEqual([]);
   });
 
   it('stops a website export when the pages it publishes are not the ones the author was shown', () => {

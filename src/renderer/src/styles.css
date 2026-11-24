@@ -250,6 +250,9 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
    inline children such as links flow as normal text) and its control takes a red edge. */
 .field-error { position: relative; padding-left: 18px; font-size: 12px; line-height: 1.4; color: var(--red); }
 .field-error::before { content: ''; position: absolute; left: 0; top: 2px; width: 13px; height: 13px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E") center / contain no-repeat; }
+/* A checked field's refusal: what is still saved reads as plain text, and the correction sits under it. */
+.field-error .field-saved { color: var(--text-2); }
+.field-error .field-fix { display: block; margin-top: 4px; font-size: 12px; }
 
 /* Segmented: a --r-sm tray with --r-xs options (concentric across its 2px padding). The selected option takes
    the raised face in both of Segmented's modes, toggle buttons (aria-pressed) and radios (aria-checked). */
@@ -1309,6 +1312,8 @@ iframe { color-scheme: light dark; }
 .section-head svg.chev { width: 12px; height: 12px; color: var(--text-3); transition: transform 120ms; }
 .section-head[aria-expanded='false'] svg.chev { transform: rotate(-90deg); }
 .section-body { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 11px; }
+/* A closed section that keeps its fields (Section keepMounted) hides them: its flex layout must not show them. */
+.section-body[hidden] { display: none; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 /* Component authoring. Where a shared design is used, and the property editor: one compact row per property
    (label, code name, type, a summary of its settings), with the rest behind the row's disclosure. */

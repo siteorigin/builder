@@ -1,10 +1,10 @@
 import { isImeComposing } from '../lib/ime';
-import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
+import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
 import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit } from '../store';
-import { afterSettle, isSettling, reportRefused } from '../lib/pending';
+import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { runPhase } from '../lib/savestate';
 import type { ProjectSnapshot } from '@shared/api';
@@ -470,7 +470,7 @@ export function Tabs<T extends string>({
  * level, so assistive technology can move between sections by heading. The controlled region always exists
  * (hidden while closed) so aria-controls resolves; its children mount only while open.
  */
-export function Section({ title, children, defaultOpen = true, actions, id, scope, level, remember = true }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean; actions?: ReactNode; id?: string; scope?: ReactNode; level?: number; remember?: boolean }) {
+export function Section({ title, children, defaultOpen = true, actions, id, scope, level, remember = true, keepMounted }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean; actions?: ReactNode; id?: string; scope?: ReactNode; level?: number; remember?: boolean; /** Keep the fields inside while closed, so text kept in one (refused, unsaved) is still there when it opens. */ keepMounted?: boolean }) {
   // `remember: false` for a section with nothing in it: closing it says nothing about the others that share its ID.
   const key = id && remember ? `section:${id}` : null;
   const bodyId = useId();
@@ -532,8 +532,8 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
         </button>
         {actions}
       </div>
-      {open ? (
-        <div className="section-body" id={bodyId}>
+      {open || keepMounted ? (
+        <div className="section-body" id={bodyId} hidden={!open}>
           {children}
         </div>
       ) : (
@@ -541,6 +541,26 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
       )}
     </div>
   );
+}
+
+/** A field to return to, opening the closed Section that keeps it first (Keep editing after leaving a project). */
+function revealable(el: HTMLElement, reveal?: () => void): Refocusable {
+  return {
+    get isConnected() {
+      return el.isConnected;
+    },
+    focus: () => {
+      reveal?.();
+      const body = el.closest<HTMLElement>('.section-body[hidden]');
+      if (body?.id) document.querySelector<HTMLButtonElement>(`.section-head[aria-controls="${CSS.escape(body.id)}"]`)?.click();
+      // What shows it renders over the next frames: keep trying until the field can take focus.
+      const tryFocus = (frames: number) => {
+        el.focus();
+        if (document.activeElement !== el && frames > 0) requestAnimationFrame(() => tryFocus(frames - 1));
+      };
+      tryFocus(10);
+    }
+  };
 }
 
 /** A labelled field. The label, hint and error are wired to the single control child (id, aria-describedby). */
@@ -552,7 +572,7 @@ export function openSection(id: string, opts: { scroll?: boolean; focus?: string
   window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: { id, scroll: opts.scroll ?? true, focus: opts.focus } }));
 }
 
-export function Field({ label, children, hint, error, extra, controlId: explicitId }: { label?: ReactNode; children: ReactNode; hint?: ReactNode; error?: string | null; extra?: ReactNode; controlId?: string }) {
+export function Field({ label, children, hint, error, extra, controlId: explicitId }: { label?: ReactNode; children: ReactNode; hint?: ReactNode; error?: ReactNode; extra?: ReactNode; controlId?: string }) {
   const generated = useId();
   const id = explicitId ?? generated;
   const noteId = `${id}-note`;
@@ -651,8 +671,26 @@ export function SwitchRow({ checked, onChange, label, hint }: { checked: boolean
   );
 }
 
+/** Why text typed in a checked field can't be saved, and a correction to offer ("Add https://"). */
+export interface DraftProblem {
+  message: string;
+  /** The text most likely meant, for a button beside the field to save instead. */
+  suggestion?: string;
+  /** That button's label. */
+  fix?: string;
+}
+
+/** What a control beside a checked field can do with it. */
+export interface DraftHandle {
+  /** Put this text in the field and save it, as typing it and leaving the field would. */
+  commit: (text: string) => void;
+}
+
 /** Text input that commits on blur/Enter and keeps a local draft while focused. `onCommit` returns false when
- *  it refuses the value (its own check, such as a page with no title), so leaving the project can say so. */
+ *  it refuses the value (its own check, such as a page with no title), so leaving the project can say so.
+ *  With `check`, text it refuses is never sent: it stays in the field as an unsaved draft, its reason given to
+ *  `onProblem` for beside the field, until it is corrected (checked again as it is typed), saved or discarded
+ *  with Escape, instead of the saved value coming back. */
 export function DraftInput({
   value,
   onCommit,
@@ -667,7 +705,12 @@ export function DraftInput({
   type,
   maxLength,
   'aria-describedby': describedBy,
-  'aria-invalid': invalid
+  'aria-invalid': invalid,
+  check,
+  onProblem,
+  onDirty,
+  reveal,
+  handle
 }: {
   id?: string;
   /** For a single-line field: the input type, such as "date". */
@@ -685,14 +728,28 @@ export function DraftInput({
   rows?: number;
   ariaLabel?: string;
   autoFocus?: boolean;
+  check?: (v: string) => DraftProblem | null;
+  onProblem?: (problem: DraftProblem | null) => void;
+  /** Hears whether the field holds text other than the saved value. */
+  onDirty?: (dirty: boolean) => void;
+  /** Shows the field (its panel may be closed) before leaving the project's Keep editing returns to it. */
+  reveal?: () => void;
+  handle?: RefObject<DraftHandle | null>;
 }) {
   const [draft, setDraft] = useState(value);
+  const input = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
   const focused = useRef(false);
   const cancelled = useRef(false);
   // Report an uncommitted edit to the toolbar, so it never says "Saved" over text that is still a draft.
   const draftKey = useId();
   const mark = (on: boolean) => markDraft(draftKey, on);
-  useEffect(() => () => markDraft(draftKey, false), [draftKey]);
+  useEffect(
+    () => () => {
+      markDraft(draftKey, false);
+      retainRefused(draftKey, null);
+    },
+    [draftKey]
+  );
   // A commit the project rejects (an empty title) leaves the stored value unchanged: show it again.
   const valueRef = useRef(value);
   valueRef.current = value;
@@ -705,18 +762,58 @@ export function DraftInput({
   // commits nothing. Text the project refused stays a draft, start and all.
   const startedAt = useRef<{ base: ProjectSnapshot | null; value: string; commit: (v: string) => unknown; ai: number } | null>(null);
   const forget = () => (startedAt.current = null);
+  // Text `check` refused, kept as a draft after the field was left, and the reason shown for it.
+  const kept = useRef(false);
+  const shown = useRef<DraftProblem | null>(null);
+  const showProblem = (p: DraftProblem | null) => {
+    if (p?.message === shown.current?.message && p?.suggestion === shown.current?.suggestion) return;
+    shown.current = p;
+    onProblem?.(p);
+  };
+  const release = () => {
+    kept.current = false;
+    showProblem(null);
+    retainRefused(draftKey, null);
+  };
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   // A field follows the project until the author types in it, focused or not, so typing always starts
-  // from what the project holds.
+  // from what the project holds. Refused text it keeps stays while the saved value changes under it (an undo,
+  // the AI), until the project holds that very text.
   useEffect(() => {
+    if (kept.current && startedAt.current) {
+      if (draftRef.current === value) {
+        forget();
+        release();
+        mark(false);
+        return;
+      }
+      // The saved value it was refused against is gone, and the refusal beside the field says what is saved
+      // instead: the edit that corrects it starts from that. Text already corrected shows no saved value, so it
+      // keeps its start, and a change made meanwhile is still caught as one.
+      if (shown.current) startedAt.current = { base: useStore.getState().snapshot, value, commit: onCommit, ai: aiActivity() };
+      return;
+    }
     if (!focused.current) forget();
     if (!startedAt.current) setDraft(value);
   }, [value]);
+  useEffect(() => onDirty?.(draft !== value), [draft, value, onDirty]);
+  // Text once refused is checked again as it is corrected and as the project changes (the translations it named
+  // unlinked, or linked again): its reason comes and goes with it.
+  useEffect(() => {
+    const el = input.current;
+    if (!kept.current || !check || !el) return;
+    const p = draftRef.current === valueRef.current ? null : check(draftRef.current);
+    showProblem(p);
+    if (p) retainRefused(draftKey, named(el), revealable(el, reveal));
+    else retainRefused(draftKey, null);
+  });
   const aiRan = (from: { ai: number }) => !!useStore.getState().snapshot?.aiBusy || aiActivity() !== from.ai;
   /** Commit what was typed; returns what the commit returned (false: the project refused it). */
-  const commit = (): unknown => {
+  const commit = (text: string): unknown => {
     const from = startedAt.current;
-    if (!from || draft === from.value) return forget();
-    const result = aiRan(from) ? commitDraft(from.base, () => from.commit(draft), draft, { check: true }) : commitDraft(from.base, () => onCommit(draft), draft);
+    if (!from || text === from.value) return forget();
+    const result = aiRan(from) ? commitDraft(from.base, () => from.commit(text), text, { check: true }) : commitDraft(from.base, () => onCommit(text), text);
     if (result !== false) forget();
     return result;
   };
@@ -724,8 +821,6 @@ export function DraftInput({
   // to, so the panel moved on) keeps what was typed, checked before it is applied. Removed any other way (a
   // file saved outside the app removed its page), what was typed is offered to copy: nothing is written for a
   // field that is no longer there.
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
   useEffect(
     () => () => {
       const from = startedAt.current;
@@ -744,7 +839,66 @@ export function DraftInput({
   const edit = useRef(0);
   const held = useRef(false);
   const refusedLast = useRef(false);
+  const named = (el: HTMLInputElement | HTMLTextAreaElement) => {
+    const label = el.labels?.[0];
+    const name = (label?.querySelector('.grow')?.textContent ?? label?.textContent ?? ariaLabel ?? '').trim();
+    return name ? `What you typed in ${name} can’t be saved.` : 'Something you typed can’t be saved.';
+  };
+  /** Leave the field with this text: commit it, or (refused) say so; the saved value comes back after, unless
+   *  `check` refused it, which keeps it. */
+  const leave = (text: string, el: HTMLInputElement | HTMLTextAreaElement) => {
+    const from = startedAt.current;
+    const problem = check && from && text !== from.value ? check(text) : null;
+    if (problem) {
+      // Nothing is sent: the text stays, unsaved, with its reason beside it, until it is corrected or discarded.
+      edit.current++;
+      kept.current = true;
+      refusedLast.current = true;
+      held.current = false;
+      mark(true);
+      showProblem(problem);
+      retainRefused(draftKey, named(el), revealable(el, reveal));
+      reportRefused(named(el), draftKey, revealable(el, reveal));
+      return;
+    }
+    const refused = commit(text) === false;
+    refusedLast.current = refused;
+    if (!refused) release();
+    // While the project is being left, refused text stays a draft until the author decides about it.
+    held.current = isSettling();
+    mark(refused && held.current);
+    if (refused) reportRefused(named(el), draftKey, el);
+    // The saved value comes back once the change has landed or been refused. While the project is being
+    // left, the typed text stays until the author decides, so Keep editing returns to it intact.
+    const at = edit.current;
+    afterSettle(() =>
+      setTimeout(() => {
+        if (focused.current || edit.current !== at) return;
+        held.current = false;
+        mark(false);
+        forget();
+        setDraft(valueRef.current);
+      }, 400)
+    );
+  };
+  if (handle)
+    handle.current = {
+      commit: (text) => {
+        const el = input.current;
+        if (!el) return;
+        // Still in the field (a click that took no focus): leave it first, as moving to the button would have.
+        if (focused.current) el.blur();
+        startedAt.current ??= { base: useStore.getState().snapshot, value: draftRef.current, commit: onCommit, ai: aiActivity() };
+        edit.current++;
+        draftRef.current = text;
+        setDraft(text);
+        leave(text, el);
+        // The button that did this goes with the problem it fixed: focus stays with the field.
+        el.focus();
+      }
+    };
   const common = {
+    ref: input,
     value: draft,
     placeholder,
     'aria-label': ariaLabel,
@@ -766,28 +920,7 @@ export function DraftInput({
         mark(false);
         return;
       }
-      const refused = commit() === false;
-      refusedLast.current = refused;
-      // While the project is being left, refused text stays a draft until the author decides about it.
-      held.current = isSettling();
-      mark(refused && held.current);
-      if (refused) {
-        const label = e.currentTarget.labels?.[0];
-        const name = (label?.querySelector('.grow')?.textContent ?? label?.textContent ?? ariaLabel ?? '').trim();
-        reportRefused(name ? `What you typed in ${name} can’t be saved.` : 'Something you typed can’t be saved.', draftKey, e.currentTarget);
-      }
-      // The saved value comes back once the change has landed or been refused. While the project is being
-      // left, the typed text stays until the author decides, so Keep editing returns to it intact.
-      const at = edit.current;
-      afterSettle(() =>
-        setTimeout(() => {
-          if (focused.current || edit.current !== at) return;
-          held.current = false;
-          mark(false);
-          forget();
-          setDraft(valueRef.current);
-        }, 400)
-      );
+      leave(draft, e.currentTarget);
     },
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       edit.current++;
@@ -804,6 +937,8 @@ export function DraftInput({
         e.preventDefault();
         cancelled.current = true;
         forget();
+        release();
+        refusedLast.current = false;
         setDraft(value);
         (e.target as HTMLElement).blur();
       }
