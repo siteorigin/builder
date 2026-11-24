@@ -14,7 +14,7 @@ import { dropAt, moveIndex } from '../lib/reorder';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
-import { boundaryOf, computedAt, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, showsInlineText, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
@@ -699,8 +699,8 @@ export function Canvas() {
   function openContextMenu(x: number, y: number, ref: ElementRef | null, trigger?: HTMLElement, focusLast?: boolean) {
     if (!ref || !state) return;
     const t = structuralTarget(ref);
-    const r = resolveRef(state, boundaryOf(state, ref));
-    const isInstance = r.node?.kind === 'instance';
+    // Elements and basic elements, and a section together with its content: the same as Layers and the inspector.
+    const create = createComponentTarget(getState().snapshot, t);
     const parent = ref.instancePath.length ? { owner: ref.owner, instancePath: ref.instancePath.slice(0, -1), nodeId: ref.instancePath[ref.instancePath.length - 1] } : null;
     const locked = !t || t.owner.kind === 'shell';
     const sib = siblings(state, t);
@@ -721,7 +721,7 @@ export function Canvas() {
         { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: () => askAiAbout(ref) },
         ...(t
           ? [
-              ...(reorderable || !locked || !isInstance ? [{ separator: true }] : []),
+              ...(reorderable || !locked || create ? [{ separator: true }] : []),
               ...(reorderable
                 ? [
                     { label: 'Move up', icon: <ArrowUp />, shortcut: keys('⇧⌘↑'), disabled: sib!.index === 0, onSelect: on(() => moveSelection(-1)) },
@@ -729,7 +729,7 @@ export function Canvas() {
                   ]
                 : []),
               ...(locked ? [] : [{ label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
-              ...(!isInstance ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: t } }) }] : []),
+              ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: on(() => setState({ modal: { kind: 'create-component' as const, ref: create } })) }] : []),
               ...(locked ? [] : [{ separator: true }, { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: on(deleteSelection) }])
             ]
           : [])

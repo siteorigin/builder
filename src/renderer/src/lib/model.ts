@@ -123,6 +123,33 @@ export function boundaryOf(state: ProjectState, ref: ElementRef): ElementRef {
   return b;
 }
 
+/**
+ * What Create component… turns into a component, if anything: one element or basic element of a page, or of a
+ * project component being edited everywhere (not its root, which is the component itself), or a placed section
+ * whose slots hold content, which goes into the component together with that content. Never a slot or a repeat, the
+ * shared header or footer, a part inside a placed component, a plain or empty placement (nothing of its own to
+ * package), or anything while the project is read-only. Canvas, Layers and the inspector all ask this, so the
+ * command is offered on the same things everywhere.
+ */
+export function createComponentTarget(snap: { state: ProjectState; readOnly?: boolean } | null | undefined, ref: ElementRef | null): ElementRef | null {
+  if (!snap || !ref || snap.readOnly || ref.instancePath.length || ref.owner.kind === 'shell') return null;
+  const { state } = snap;
+  const tree = treeFor(state, ref.owner);
+  if (!tree) return null;
+  if (ref.owner.kind === 'component') {
+    const def = own(state.components, ref.owner.id);
+    if (def?.owner !== 'project' || def.kind !== 'managed' || def.tree?.rootIds[0] === ref.nodeId) return null;
+  }
+  const node = own(tree.nodes, ref.nodeId);
+  if (!node || node.kind === 'slot' || node.kind === 'repeat' || !findParent(tree, node.id)) return null;
+  if (node.kind === 'instance') {
+    const def = own(state.components, node.definitionId);
+    const declared = def?.kind === 'managed' ? (def.slots ?? {}) : {};
+    if (!Object.entries(node.slots ?? {}).some(([slot, ids]) => Object.hasOwn(declared, slot) && ids.length > 0)) return null;
+  }
+  return { owner: ref.owner, instancePath: [], nodeId: node.id };
+}
+
 /** Is this reference a useful selection target (a primitive, a declared part or bound content)? */
 function selectable(state: ProjectState, ref: ElementRef): boolean {
   if (!ref.instancePath.length) return true;

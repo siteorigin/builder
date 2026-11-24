@@ -51,7 +51,7 @@ import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
-import { assetUrl, definitionView, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
+import { assetUrl, createComponentTarget, definitionView, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, structuralTarget } from '../lib/actions';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
@@ -473,13 +473,15 @@ function PartsButton({ title, parts }: { title: string; parts: Array<{ label: st
 }
 
 /** Ask AI, plus a menu of everything else that can be done to the selection. */
-function SelectionActions({ title, selection, items }: { title: string; selection: ElementRef; items: MenuItem[] }) {
+function SelectionActions({ title, selection, items, ask = true }: { title: string; selection: ElementRef; items: MenuItem[]; ask?: boolean }) {
   const menu = useMenu();
   return (
     <>
-      <button className="icon-btn" aria-label={`Ask AI about ${title}`} title="Ask AI about this (⌘J)" onClick={() => askAiAbout(selection)}>
-        <Sparkles />
-      </button>
+      {ask && (
+        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title="Ask AI about this (⌘J)" onClick={() => askAiAbout(selection)}>
+          <Sparkles />
+        </button>
+      )}
       {items.length > 0 && (
         <button className="icon-btn" aria-haspopup="menu" aria-expanded={menu.isOpen} aria-label={`More actions for ${title}`} title="More actions" onClick={(e) => menu.openAt(e.currentTarget, items, `Actions for ${title}`)}>
           <Ellipsis />
@@ -500,6 +502,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const plan = planLayers();
   const scope = useStore((s) => s.styleScope);
   const dev = useStore((s) => !!s.settings?.developerMode);
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   const devUrl = useDevUrl();
   // Which declared part of a code component the Style section edits.
   const [codePart, setCodePart] = useState('root');
@@ -539,6 +542,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
   const makeUnique = () => setState({ modal: { kind: 'make-unique', owner, nodeId: node.id, definitionId: def.id } });
+  // A section holding content of its own (not a copy of its design, which Make unique makes) becomes a component
+  // with that content. Not while other layers are selected with it: the menu's other commands act on them all.
+  const create = plan?.several ? null : createComponentTarget({ state, readOnly }, selection);
   const viewSource = () => setState({ modal: { kind: 'source', definitionId: def.id } });
   // The copy's structure is now edited in source, so offer to open it straight away.
   const convertToCode = async () => {
@@ -549,6 +555,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const items: MenuItem[] = [
     ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
     ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique }] : []),
+    ...(create ? [{ label: 'Create component…', icon: <Component />, hint: 'With its content', onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
     ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
     ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
     ...(styleItems.length ? [...(def.kind === 'managed' || canMakeUnique ? [{ separator: true }] : []), ...styleItems] : []),
@@ -1132,6 +1139,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
   });
   const plan = planLayers();
   const scope = useStore((s) => s.styleScope);
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   const devUrl = useDevUrl();
   const content = (field: Extract<EditOperation, { type: 'node.setContent' }>['field'], value: unknown, edit?: PendingEdit) => void applyWith(edit, [{ type: 'node.setContent', owner, nodeId: node.id, field, value }], `Edit ${field}`, `${node.id}:${field}`);
   const t = structuralTarget(selection);
@@ -1144,8 +1152,10 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
   const removable = !!t && owner.kind !== 'shell' && !node.anchor;
   const styleItems = useStyleCopyItems(selection);
   const structural = !!t && owner.kind !== 'shell';
+  // Not while other layers are selected with this one: the menu's other commands act on them all.
+  const create = plan?.several ? null : createComponentTarget({ state, readOnly }, selection);
   const items: MenuItem[] = [
-    ...(t && structural && node.kind === 'element' ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: t } }) }, { separator: true }] : []),
+    ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }, { separator: true }] : []),
     ...styleItems,
     ...(structural
       ? [
@@ -1455,6 +1465,9 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const uses = instancesOf(state, def.id).length;
   const partId = Object.entries(def.parts).find(([, p]) => p.nodeId === node.id)?.[0];
   const isRoot = def.tree?.rootIds[0] === node.id;
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
+  // The design's own node, even when it was reached through a placement on the page.
+  const create = createComponentTarget({ state, readOnly }, { owner, instancePath: [], nodeId: node.id });
   const title = partId && partId !== 'root' ? def.parts[partId].label : isRoot ? def.name : refLabel(state, { owner, instancePath: [], nodeId: node.id });
   // A copy of a theme component compares against the theme's design, so only real changes show as changes.
   const original = def.componentId ? catalogueComponent(state.site.themeId, def.componentId)?.tree?.nodes[node.id]?.styles : undefined;
@@ -1517,7 +1530,18 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   );
   return (
     <>
-      <Header title={title} kind={kindLine} tone="definition" icon={isRoot ? <Component /> : elementKind(node).icon} actions={<DoneButton />}>
+      <Header
+        title={title}
+        kind={kindLine}
+        tone="definition"
+        icon={isRoot ? <Component /> : elementKind(node).icon}
+        actions={
+          <>
+            {create && <SelectionActions title={title} selection={create} ask={false} items={[{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }]} />}
+            <DoneButton />
+          </>
+        }
+      >
         <EverywhereScope state={state} def={def} />
       </Header>
       <DesignContentSection state={state} def={def} node={node} />
