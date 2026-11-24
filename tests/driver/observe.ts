@@ -580,6 +580,8 @@ export interface Shots {
 }
 
 export interface Shot {
+  /** Names the image for `evidence.read` until the session closes. */
+  id: string;
   path: string;
   /** In CSS pixels, as the image's own pixels are (one image pixel is one CSS pixel of the window). */
   width: number;
@@ -807,7 +809,8 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   // A capture that outlived its request leaves nothing behind.
   aborted(signal);
   await mkdir(dir, { recursive: true });
-  const stem = join(dir, String(id).padStart(4, '0'));
+  const base = String(id).padStart(4, '0');
+  const stem = join(dir, base);
   const written: string[] = [];
   try {
     aborted(signal);
@@ -827,8 +830,8 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   const still = !!before && !!after && !sceneChange(before, after);
   const f = still ? after!.frame : null;
   const out: Shots = {
-    editor: { path: `${stem}-editor.png`, width: vp.width, height: vp.height },
-    preview: previewPng && clip ? { path: `${stem}-preview.png`, width: clip.width, height: clip.height, clip, ...(f ? { origin: f.origin, scale: f.scale.x } : {}) } : null
+    editor: { id: `${base}-editor`, path: `${stem}-editor.png`, width: vp.width, height: vp.height },
+    preview: previewPng && clip ? { id: `${base}-preview`, path: `${stem}-preview.png`, width: clip.width, height: clip.height, clip, ...(f ? { origin: f.origin, scale: f.scale.x } : {}) } : null
   };
   // Points on the images stand for what they show only if nothing moved while they were taken.
   if (token && env.shots && still && after!.editor.viewport.width === vp.width && after!.editor.viewport.height === vp.height) {
@@ -842,13 +845,13 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
 // ui.locate
 // ---------------------------------------------------------------------------
 
-export function parseLocateArgs(a: Record<string, unknown> = {}): LocateArgs {
-  known(a, 'ui.locate', ['ref', 'role', 'name', 'exact', 'region', 'within', 'scope']);
+export function parseLocateArgs(a: Record<string, unknown> = {}, op = 'ui.locate'): LocateArgs {
+  known(a, op, ['ref', 'role', 'name', 'exact', 'region', 'within', 'scope']);
   if (a.ref !== undefined) {
-    if (Object.keys(a).length > 1) throw new DriverError('BAD_REQUEST', 'ui.locate takes a "ref" alone, or a "role" to find.');
+    if (Object.keys(a).length > 1) throw new DriverError('BAD_REQUEST', `${op} takes a "ref" alone, or a "role" to find.`);
     return { ref: argRef(a.ref, 'ref') };
   }
-  if (typeof a.role !== 'string' || !/^[a-z]+$/.test(a.role)) throw new DriverError('BAD_REQUEST', 'ui.locate needs a "ref", or an ARIA "role" (such as "button") to find.');
+  if (typeof a.role !== 'string' || !/^[a-z]+$/.test(a.role)) throw new DriverError('BAD_REQUEST', `${op} needs a "ref", or an ARIA "role" (such as "button") to find.`);
   const out: LocateArgs = { role: a.role, scope: argScope(a.scope) };
   if (a.name !== undefined) {
     if (typeof a.name !== 'string' || !a.name.trim()) throw new DriverError('BAD_REQUEST', '"name" is a non-empty string.');
@@ -882,6 +885,100 @@ const CANDIDATE_LIMIT = 10_000;
 
 export function uiLocate(env: ObserveEnv, args: LocateArgs): Promise<Located> {
   return sealed((seen) => locateIn(env, args, seen));
+}
+
+// ---------------------------------------------------------------------------
+// ui.waitFor
+// ---------------------------------------------------------------------------
+
+/** What `ui.waitFor` accepts: a search as `ui.locate` takes it, and whether to wait for a match or for none. */
+export interface WaitArgs {
+  search: LocateArgs;
+  state: 'present' | 'absent';
+}
+
+export function parseWaitArgs(a: Record<string, unknown> = {}): WaitArgs {
+  const { state = 'present', ...rest } = a;
+  if (state !== 'present' && state !== 'absent') throw new DriverError('BAD_REQUEST', '"state" is "present" or "absent".');
+  const search = parseLocateArgs(rest, 'ui.waitFor');
+  // A ref names an element already seen: it can only go (a stale ref never comes back), so there is nothing to wait for.
+  if (search.ref && state === 'present') throw new DriverError('BAD_REQUEST', 'A ref waits only for "state": "absent"; to wait for an element to appear, search for it by "role" (and "name").');
+  return { search, state };
+}
+
+export interface WaitResult {
+  state: 'present' | 'absent';
+  /** For `present`: the element, as `ui.locate` answers it. */
+  scope?: Scope;
+  region?: string[];
+  node?: UiNode;
+  /** For an awaited ref that went: why it no longer names an element (STALE_REF's reason). */
+  reason?: string;
+  waitedMs: number;
+  /** How many times it looked. */
+  checks: number;
+}
+
+export const WAIT_LIMITS = {
+  /** Between looks. */
+  intervalMs: 250,
+  /** Kept back from the request's deadline, so a wait that runs out answers with what it last saw. */
+  marginMs: 300
+};
+
+/** STALE_REF reasons that mean the element a ref named is no longer there. */
+const GONE = new Set(['gone', 'changed', 'document', 'project', 'window']);
+
+/**
+ * Look again and again until the search matches (`present`) or matches nothing (`absent`), with `locate` as
+ * `ui.locate` runs it. Only "not there yet" (or a preview still loading) is waited out: anything else, such as an
+ * ambiguous search, a ref that is no longer good to search within, or a replaced window, is answered at once. One that
+ * runs out of time is TIMEOUT, and since it only reads, the session goes on.
+ */
+export async function waitFor(locate: (args: LocateArgs) => Promise<Located>, args: WaitArgs, o: { deadline: number; signal: AbortSignal; now?: () => number; intervalMs?: number }): Promise<WaitResult> {
+  const now = o.now ?? Date.now;
+  const interval = o.intervalMs ?? WAIT_LIMITS.intervalMs;
+  const began = now();
+  const until = o.deadline - WAIT_LIMITS.marginMs;
+  let checks = 0;
+  let last: DriverError | null = null;
+  const loading = (e: DriverError) => e.code === 'STALE_REF' && e.details?.reason === 'loading';
+  for (;;) {
+    aborted(o.signal);
+    checks++;
+    try {
+      const found = await locate(args.search);
+      if (args.state === 'present') return { state: 'present', ...found, waitedMs: now() - began, checks };
+      last = null;
+    } catch (e) {
+      if (!(e instanceof DriverError)) throw e;
+      if (args.state === 'present') {
+        if (e.code !== 'TARGET_NOT_FOUND' && !loading(e)) throw e;
+      } else {
+        if (e.code === 'TARGET_NOT_FOUND') return { state: 'absent', waitedMs: now() - began, checks };
+        const reason = e.details?.reason;
+        if (args.search.ref && e.code === 'STALE_REF' && typeof reason === 'string' && GONE.has(reason)) return { state: 'absent', reason, waitedMs: now() - began, checks };
+        // Several matches are still there.
+        if (e.code !== 'AMBIGUOUS_TARGET' && !loading(e)) throw e;
+      }
+      last = e;
+    }
+    if (now() + interval > until) {
+      const what = args.search.ref ?? `${args.search.role}${args.search.name ? ` "${args.search.name}"` : ''}`;
+      throw new DriverError('TIMEOUT', args.state === 'present' ? `No ${what} appeared in time.` : `${what} was still there when the wait ran out.`, {
+        details: { phase: 'ui.waitFor', sessionState: 'ready', state: args.state, waitedMs: now() - began, checks, ...(last ? { last: { code: last.code, message: last.message } } : {}) }
+      });
+    }
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, interval);
+      function done() {
+        clearTimeout(timer);
+        o.signal.removeEventListener('abort', done);
+        resolve();
+      }
+      o.signal.addEventListener('abort', done, { once: true });
+    });
+  }
 }
 
 async function locateIn(env: ObserveEnv, args: LocateArgs, seen: string[]): Promise<Located> {
