@@ -15,6 +15,7 @@ import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree'
 import { isDraftPage } from '@generator/index';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { headerOrderPlan, inHeaderMenu } from '../lib/page-navigation';
+import { pageClicks } from '../lib/page-clicks';
 
 /** Addresses are at most four levels deep, so a page four levels down cannot have pages inside it. */
 const MAX_DEPTH = 4;
@@ -353,19 +354,60 @@ export function PagesPanel() {
     const t = setTimeout(() => setJustAdded(null), 1600);
     return () => clearTimeout(t);
   }, [justAdded]);
-  // The rename field sits over the row's title but outside the listbox, so it is an ordinary text field.
-  useLayoutEffect(() => {
-    if (!renaming) return setRenameBox(null);
+  // The rename field sits over the row's title but outside the listbox, so it is an ordinary text field. It is placed
+  // again each time the list is drawn (a page moved or added above it) and as the sidebar or the rows change size.
+  // Scrolling moves it with its row, since both are in the panel's scroller.
+  const placeRename = () => {
     const wrap = wrapRef.current?.getBoundingClientRect();
-    const row = listRef.current?.querySelector<HTMLElement>(`[data-page="${renaming}"]`);
+    const row = renaming ? listRef.current?.querySelector<HTMLElement>(`[data-page="${renaming}"]`) : null;
     const t = row?.querySelector('.page-title')?.getBoundingClientRect();
     const r = row?.getBoundingClientRect();
-    if (wrap && t && r) setRenameBox({ top: t.top - wrap.top - 2, left: t.left - wrap.left - 5, width: r.right - 6 - t.left + 5 });
-  }, [renaming]);
-  // Focus once the field is placed (a hidden field cannot take focus).
+    if (!wrap || !t || !r) return;
+    const box = { top: t.top - wrap.top - 2, left: t.left - wrap.left - 5, width: r.right - 6 - t.left + 5 };
+    setRenameBox((was) => (was && was.top === box.top && was.left === box.left && was.width === box.width ? was : box));
+  };
+  useLayoutEffect(() => {
+    if (renaming) placeRename();
+    else if (renameBox) setRenameBox(null);
+  });
   useEffect(() => {
-    if (renameBox) renameInput.current?.focus({ preventScroll: true });
-  }, [renameBox]);
+    if (!renaming) return;
+    const sized = new ResizeObserver(() => placeRename());
+    for (const el of [wrapRef.current, listRef.current, listRef.current?.querySelector(`[data-page="${renaming}"]`)]) if (el) sized.observe(el);
+    return () => sized.disconnect();
+  }, [renaming]);
+  // Focus once the field is placed (a hidden field cannot take focus), and only then: being placed again as the list
+  // changes leaves the caret and the selection where the author put them.
+  const placed = renameBox !== null;
+  useEffect(() => {
+    if (placed) renameInput.current?.focus({ preventScroll: true });
+  }, [renaming, placed]);
+  // A pointer click on a row opens its page once no second click follows; a double click renames the page where it is
+  // (see pageClicks). Anything else done meanwhile, a key or a press anywhere but that row, shows the click was single,
+  // and the page opens first, so what comes next (Layers, a shortcut) acts on it.
+  const clickActions = useRef<{ open: (id: string) => void; rename: (id: string) => void }>({ open: () => {}, rename: () => {} });
+  const [clicks] = useState(() => pageClicks({ open: (id) => clickActions.current.open(id), rename: (id) => clickActions.current.rename(id) }));
+  const opening = snap?.workspaceKey;
+  useEffect(() => {
+    const press = (e: PointerEvent) => {
+      const id = clicks.waiting();
+      if (!id) return;
+      const t = e.target instanceof Element ? e.target : null;
+      // The second click of a double click on the row itself, not on its options button.
+      const row = t?.closest<HTMLElement>('[data-page]');
+      if (e.button === 0 && row?.dataset.page === id && listRef.current?.contains(row) && !t?.closest('button')) return;
+      clicks.settle();
+    };
+    const key = () => clicks.settle();
+    document.addEventListener('pointerdown', press, true);
+    document.addEventListener('keydown', key, true);
+    return () => {
+      document.removeEventListener('pointerdown', press, true);
+      document.removeEventListener('keydown', key, true);
+      // Another project, or no Pages list: the click waiting is for a page that is no longer here.
+      clicks.drop();
+    };
+  }, [clicks, opening]);
   // The peek card goes under its row when the visible part of the list has room for it as drawn, else over the row
   // when there is more room there.
   useLayoutEffect(() => {
@@ -440,6 +482,8 @@ export function PagesPanel() {
       if (focus) rowEl(id)?.focus({ preventScroll: true });
     });
   };
+  // A page clicked a moment ago opens only while it is still in the project.
+  clickActions.current = { open: (id) => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id) && open(id), rename: setRenaming };
 
   const closeForm = () => {
     addFrom.current = null;
@@ -936,6 +980,8 @@ export function PagesPanel() {
                   title={`${p.title}\n${p.route}${status ? ` · ${status}` : ''}`}
                   draggable={!renaming && !finding}
                   onDragStart={(e) => {
+                    // Dragging shows the click before it was single: its page opens before the drag goes on.
+                    clicks.settle();
                     e.dataTransfer.effectAllowed = 'move';
                     setPeek(null);
                     setDragId(id);
@@ -960,9 +1006,9 @@ export function PagesPanel() {
                     if (dragId && o) void moveTo(dragId, o, 'moved', false);
                     endDrag();
                   }}
-                  // The second click of a double-click renames the page it opened, which keeps its place.
-                  onClick={(e) => (e.detail < 2 || getState().pageId !== id) && open(id)}
-                  onDoubleClick={() => setRenaming(id)}
+                  // One click opens the page, once no second click follows; a double click renames it without
+                  // opening it, so Edit everywhere and the page on the canvas stay as they are.
+                  onClick={(e) => clicks.click(id, e.detail)}
                   onKeyDown={(e) => {
                     if (e.target !== e.currentTarget) return;
                     if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), open(id, true));
