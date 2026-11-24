@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
+import { addressSlug, normalizeRoute, numberedSlug, readablePath, routeUrl, slugify, suggestRoute, validateRoute } from '@shared/routes';
 
 describe('slugify', () => {
   it('never ends in a hyphen once cut to 60 characters', () => {
@@ -53,5 +53,100 @@ describe('normalizeRoute', () => {
     expect(normalizeRoute('/\u0301/')).not.toBe('/');
     expect(normalizeRoute('/a/\u0301/b/')).toBe('/a/\u0301/b/');
     expect(validateRoute(normalizeRoute('/\u0301/'))).toMatch(/may only contain/);
+  });
+});
+
+/** Titles in Latin script, whose addresses must stay exactly what they were before addresses took other scripts. */
+const LATIN_TITLES = ['About Us', '  Café & Bar!  ', 'Oﬃce Hours', 'Crème Brûlée', 'Straße 12', 'Đà Nẵng', 'Liên hệ', 'Ｆｕｌｌ Ｗｉｄｔｈ', 'Q&A — 2026', 'İstanbul', 'Ærø', '---', `${'a'.repeat(59)} b`, 'b'.repeat(70)];
+
+describe('addresses in any script (#36)', () => {
+  it('gives a page titled in Japanese, or other scripts, its natural address', () => {
+    expect(addressSlug('お問い合わせ')).toBe('お問い合わせ');
+    expect(addressSlug('FAQ よくある質問')).toBe('faq-よくある質問');
+    expect(addressSlug('会社概要・沿革')).toBe('会社概要-沿革');
+    expect(addressSlug('コーヒー')).toBe('コーヒー');
+    expect(addressSlug('Привет Мир')).toBe('привет-мир');
+    // Marks that make letters of their own are kept: "й" is not "и", nor "ά" just "α".
+    expect(addressSlug('Мой дом')).toBe('мой-дом');
+    expect(addressSlug('Επικοινωνία')).toBe('επικοινωνία');
+    expect(addressSlug('한국어 페이지')).toBe('한국어-페이지');
+    expect(addressSlug('हिन्दी पृष्ठ')).toBe('हिन्दी-पृष्ठ');
+    expect(addressSlug('اتصل بنا')).toBe('اتصل-بنا');
+    for (const t of ['お問い合わせ', 'Привет Мир', 'Мой дом', 'Επικοινωνία', 'ΟΔΟΣ ΕΡΜΟΥ', '한국어 페이지', 'हिन्दी पृष्ठ', 'ภาษาไทย', 'צור קשר', '联系我们', '𠮷野家', 'ｶﾌｪ', 'Ἀθῆναι ᾳ']) {
+      expect(validateRoute(`/${addressSlug(t)}/`), t).toBeNull();
+    }
+  });
+
+  it('keeps every Latin title\'s address exactly as slugify makes it', () => {
+    for (const t of LATIN_TITLES) expect(addressSlug(t), t).toBe(slugify(t));
+    expect(addressSlug('Café & Bar!')).toBe('cafe-and-bar');
+  });
+
+  it('spells two titles that read the same with the same address', () => {
+    // Half-width katakana, and kana written with a separate voicing mark, are the same words.
+    expect(addressSlug('ｶﾌｪ')).toBe('カフェ');
+    expect(addressSlug('ガイド'.normalize('NFD'))).toBe('ガイド');
+    expect(addressSlug('ПРИВЕТ')).toBe(addressSlug('привет'));
+    // Letters a case-insensitive file system reads as one are spelled one way: sigma by its place in the word.
+    expect(addressSlug('ΟΔΟΣ')).toBe('οδος');
+    expect(addressSlug('οδοσ')).toBe('οδος');
+    expect(addressSlug('ᾳ')).toBe('αι');
+    const taken = new Set(['/カフェ/']);
+    expect(suggestRoute('ｶﾌｪ', (r) => taken.has(r))).toEqual({ route: '/カフェ-2/', base: '/カフェ/' });
+  });
+
+  it('cuts at 60 characters, not UTF-16 units, and keeps a cut or numbered address valid', () => {
+    const astral = addressSlug('𠮷'.repeat(70));
+    expect(Array.from(astral)).toHaveLength(60);
+    expect(validateRoute(`/${astral}/`)).toBeNull();
+    expect(validateRoute(`/${'𠮷'.repeat(61)}/`)).toMatch(/60 characters/);
+    const numbered = numberedSlug(astral, 12);
+    expect(Array.from(numbered)).toHaveLength(60);
+    expect(numbered.endsWith('𠮷-12')).toBe(true);
+    // The cut can leave a sigma ending the word, which is then spelled as one.
+    const greek = `${'a'.repeat(57)}σβ`;
+    expect(numberedSlug(addressSlug(greek), 2)).toBe(`${'a'.repeat(57)}ς-2`);
+    expect(validateRoute(`/${numberedSlug(addressSlug(greek), 2)}/`)).toBeNull();
+    expect(validateRoute(`/${numberedSlug('a'.repeat(60), 2)}/`)).toBeNull();
+  });
+
+  it('accepts a typed or pasted address in another script, spelled as addresses are', () => {
+    expect(normalizeRoute('/お問い合わせ/')).toBe('/お問い合わせ/');
+    expect(normalizeRoute('お問い合わせ')).toBe('/お問い合わせ/');
+    expect(normalizeRoute(encodeURI('/お問い合わせ/'))).toBe('/お問い合わせ/');
+    expect(normalizeRoute('/Привет Мир/')).toBe('/привет-мир/');
+    expect(normalizeRoute('/ｶﾌｪ/')).toBe('/カフェ/');
+    expect(normalizeRoute('/ＡＢＯＵＴ/')).toBe('/about/');
+    expect(normalizeRoute('/οσ/')).toBe('/ος/');
+    for (const typed of ['/お問い合わせ/', encodeURI('/会社/概要/'), '/Привет Мир/', '/ｶﾌｪ/', '/οσ/']) expect(validateRoute(normalizeRoute(typed)), typed).toBeNull();
+    // An escaped slash is not a folder, and a malformed escape is refused rather than guessed at.
+    expect(validateRoute(normalizeRoute('/a%2Fb/'))).toMatch(/may only contain/);
+    expect(validateRoute(normalizeRoute('/%E3%81/'))).toMatch(/may only contain/);
+  });
+
+  it('refuses any other spelling of an address, naming the one to use', () => {
+    expect(validateRoute('/お問い合わせ/')).toBeNull();
+    expect(validateRoute('/会社/お問い合わせ/')).toBeNull();
+    expect(validateRoute('/ｶﾌｪ/')).toBe('"ｶﾌｪ" must be written "カフェ".');
+    expect(validateRoute('/Привет/')).toBe('"Привет" must be written "привет".');
+    expect(validateRoute(`/${'ガイド'.normalize('NFD')}/`)).toMatch(/must be written "ガイド"/);
+    expect(validateRoute('/οσ/')).toMatch(/must be written "ος"/);
+    expect(validateRoute('/ᾳ/')).toMatch(/must be written "αι"/);
+    // Latin letters are plain a–z, as they always were; punctuation and a word that starts with a mark are refused.
+    expect(validateRoute('/café/')).toMatch(/may only contain/);
+    expect(validateRoute('/About/')).toMatch(/may only contain/);
+    expect(validateRoute('/お・問/')).toMatch(/may only contain/);
+    expect(validateRoute('/-お/')).toMatch(/may only contain/);
+    expect(validateRoute('/\u3099お/')).toMatch(/may only contain/);
+    expect(validateRoute('/_お問い合わせ/')).toMatch(/may only contain/);
+  });
+
+  it('escapes an address for a URL and reads an escaped one back', () => {
+    expect(routeUrl('/お問い合わせ/')).toBe('/%E3%81%8A%E5%95%8F%E3%81%84%E5%90%88%E3%82%8F%E3%81%9B/');
+    expect(routeUrl('/services/web-design/')).toBe('/services/web-design/');
+    expect(readablePath(routeUrl('/お問い合わせ/'))).toBe('/お問い合わせ/');
+    // Escapes of a slash stay escaped, and a malformed one leaves the path as it is.
+    expect(readablePath('/a%2Fb/')).toBe('/a%2Fb/');
+    expect(readablePath('/%E3%81/')).toBe('/%E3%81/');
   });
 });

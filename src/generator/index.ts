@@ -62,7 +62,7 @@ import {
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
-import { routeDir, validateRoute, validateSegment } from '@shared/routes';
+import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
 import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
@@ -2657,8 +2657,8 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   if (description) head.push(`\t<meta property="og:description" content={${js(description)}} />`);
   const base = publicUrl(site);
   if (base) {
-    head.push(`\t<link rel="canonical" href={${js(base + page.route)}} />`);
-    head.push(`\t<meta property="og:url" content={${js(base + page.route)}} />`);
+    head.push(`\t<link rel="canonical" href={${js(base + routeUrl(page.route))}} />`);
+    head.push(`\t<meta property="og:url" content={${js(base + routeUrl(page.route))}} />`);
     if (social) {
       head.push(`\t<meta property="og:image" content={${js(base + '/' + social.file.replace(/^static\//, ''))}} />`);
       if (social.width && social.height) {
@@ -2674,7 +2674,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   // The same page in other languages, and this one among them: each version lists the same set.
   // Without a public address they are site paths, resolved as authored links are, so they hold under any sub-path.
   const alternates = pageAlternates(state, page);
-  for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${base ? js(base + alt.route) : `resolve(${js(alt.route)})`}} />`);
+  for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${base ? js(base + routeUrl(alt.route)) : `resolve(${js(alt.route)})`}} />`);
   // `<` is escaped inside the JSON, so no text can end the script.
   const ldScript = (ld: Record<string, unknown>) => `\t{@html ${js(`<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`)}}`;
   // Structured data: the home page describes the website itself, once a public URL is known.
@@ -2696,7 +2696,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   }
   // On a site in more than one language, every page also says which language it is in.
   if (base && !page.seo.noindex && languagesByRoute(state).length) {
-    head.push(ldScript({ '@context': 'https://schema.org', '@type': 'WebPage', name: page.seo.title || page.title, url: base + page.route, inLanguage: pageLanguage(site, page) }));
+    head.push(ldScript({ '@context': 'https://schema.org', '@type': 'WebPage', name: page.seo.title || page.title, url: base + routeUrl(page.route), inLanguage: pageLanguage(site, page) }));
   }
   const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : ''].filter(Boolean).join('\n');
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
@@ -3106,8 +3106,8 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   const social = featured ?? asset(site.socialImage);
   const base = publicUrl(site);
   if (base) {
-    head.push(`\t<link rel="canonical" href={${js(base + route)}} />`);
-    head.push(`\t<meta property="og:url" content={${js(base + route)}} />`);
+    head.push(`\t<link rel="canonical" href={${js(base + routeUrl(route))}} />`);
+    head.push(`\t<meta property="og:url" content={${js(base + routeUrl(route))}} />`);
     if (social) {
       head.push(`\t<meta property="og:image" content={${js(base + '/' + social.file.replace(/^static\//, ''))}} />`);
       if (social.width && social.height) {
@@ -3237,7 +3237,7 @@ export function redirectFile(from: string): string {
  */
 export function generateRedirect(state: ProjectState, from: string, page: Pick<PageDoc, 'route'>): string {
   const base = publicUrl(state.site);
-  const canonical = base ? `\n\t<link rel="canonical" href={${js(base + page.route)}} />` : '';
+  const canonical = base ? `\n\t<link rel="canonical" href={${js(base + routeUrl(page.route))}} />` : '';
   return (
     HEADER_NOTE('siteorigin/site.json') +
     `<script>
@@ -3286,12 +3286,12 @@ export function generateSitemap(state: ProjectState): string | null {
   const urls = state.site.pageOrder
     .map((id) => state.pages[id])
     .filter((p) => p && !p.seo.noindex && !isDraftPage(state, p))
-    .map((p) => `\t<url><loc>${escapeHtmlAttr(base + p.route)}</loc></url>`);
+    .map((p) => `\t<url><loc>${escapeHtmlAttr(base + routeUrl(p.route))}</loc></url>`);
   // Published entries follow, each with the day it last changed: its revision date, or else its publication date.
   for (const { entry, route } of siteEntries(state)) {
     if (isDraftEntry(entry)) continue;
     const changed = isArticleDate(entry.updatedAt) ? entry.updatedAt : isArticleDate(entry.publishedAt) ? entry.publishedAt : undefined;
-    urls.push(`\t<url><loc>${escapeHtmlAttr(base + route)}</loc>${changed ? `<lastmod>${changed}</lastmod>` : ''}</url>`);
+    urls.push(`\t<url><loc>${escapeHtmlAttr(base + routeUrl(route))}</loc>${changed ? `<lastmod>${changed}</lastmod>` : ''}</url>`);
   }
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 }

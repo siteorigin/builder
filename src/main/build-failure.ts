@@ -5,6 +5,7 @@
  */
 import type { PageDoc, ProjectState } from '@shared/types';
 import { basePath, defFile, pageFile } from '@generator/index';
+import { readablePath } from '@shared/routes';
 import { errorChain, maskSecrets, REQUEST_LINE, STRONG_ERROR, stripTerminal, type BuildErrorInfo } from '../runtime/build-diagnostics';
 
 /** What a failed build reported: the message it ended with, what it threw, and every line it printed. */
@@ -116,7 +117,7 @@ const sourceFile = (t: string | undefined) => (t ? SOURCE_FILE.exec(` ${t}`) : n
 
 function pageForRoute(state: ProjectState, route: string): PageDoc | undefined {
   const base = basePath(state);
-  let r = route.split(/[?#]/)[0];
+  let r = readablePath(route.split(/[?#]/)[0]);
   if (base && (r === base || r.startsWith(`${base}/`))) r = r.slice(base.length) || '/';
   const same = (x: string) => x.replace(/\/+$/, '') + '/';
   return Object.values(state.pages).find((p) => same(p.route) === same(r));

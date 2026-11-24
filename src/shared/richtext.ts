@@ -1,4 +1,5 @@
 import type { LinkValue } from './types';
+import { readablePath } from './routes';
 
 /**
  * Structured rich text: the canonical stored form of every rich text value.
@@ -186,7 +187,9 @@ export function linkFromTarget(raw: string, pages: RichPages, newTab = false): L
   const anchored = anchor ? { anchor } : {};
   if (Object.hasOwn(pages, path)) return { type: 'page', target: path, ...anchored, ...tab };
   if (!path.startsWith('/') || path.startsWith('//')) return null;
-  const wanted = path === '/' ? '/' : `/${path.replace(/^\/+|\/+$/g, '')}/`;
+  // A page's address as it is written, or escaped as a browser copies it ("/%E3%81%8A…/").
+  const readable = readablePath(path);
+  const wanted = readable === '/' ? '/' : `/${readable.replace(/^\/+|\/+$/g, '')}/`;
   const page = Object.values(pages).find((p) => p.route === wanted);
   return page ? { type: 'page', target: page.id, ...anchored, ...tab } : null;
 }

@@ -159,6 +159,28 @@ export function validateRoute(route: string): string | null {
   return null;
 }
 
+/**
+ * A route as an absolute URL carries it, after the site's public address: "/お問い合わせ/" escaped as
+ * "/%E3%81%8A…/" (sitemaps require it, and crawlers and social sites read it reliably), ASCII routes as they are.
+ * Page links inside the site keep the route as written; browsers escape those themselves.
+ */
+export function routeUrl(route: string): string {
+  return encodeURI(route);
+}
+
+/**
+ * A path as routes spell it: escapes a browser or a copied address added decoded ("/%E3%81%8A…/" is "/お…/"),
+ * except those of a slash, "?" or "#", so it never names another place. A path that is not valid UTF-8 stays as
+ * it is, and matches no route.
+ */
+export function readablePath(path: string): string {
+  try {
+    return decodeURI(path);
+  } catch {
+    return path;
+  }
+}
+
 /** Directory under src/routes for a route ("" for home). */
 export function routeDir(route: string): string {
   return route.replace(/^\/+|\/+$/g, '');

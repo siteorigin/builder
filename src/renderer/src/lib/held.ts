@@ -7,7 +7,7 @@ import { displayName, enclosingRepeatProp } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
 import { followsPage, inheritedValue } from '@shared/page-teasers';
 import { pagesWithin } from '@shared/page-tree';
-import { normalizeRoute } from '@shared/routes';
+import { normalizeRoute, readablePath } from '@shared/routes';
 import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-styles';
 import { ownVisitorTextFor } from '@shared/visitor-text';
 
@@ -85,7 +85,7 @@ function withRoutes(state: ProjectState, value: unknown, read: Record<string, un
   const paths = [...value.matchAll(/\]\((\/[^)\s#?]*)/g)].map((m) => m[1]);
   if (!paths.length) return found(read);
   const slash = (r: string) => (r.endsWith('/') ? r : `${r}/`);
-  const pageAt = (path: string) => Object.values(state.pages).find((p) => slash(p.route) === slash(path))?.id ?? null;
+  const pageAt = (path: string) => Object.values(state.pages).find((p) => slash(p.route) === slash(readablePath(path)))?.id ?? null;
   return found({ ...read, links: Object.fromEntries(paths.map((p) => [p, pageAt(p)])) });
 }
 
