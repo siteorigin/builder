@@ -352,25 +352,25 @@ const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /**
  * Each sample detail as visitors may read it, found generously so none goes out unreviewed: the address not inside a
  * longer mailbox or domain (myhello@…, …example.com.au), the number's digits in order with any spacing, the street
- * address with any spacing and not run into another name (Millbrook-East).
+ * address with any spacing.
  */
 const SAMPLE_PATTERNS: Record<SampleContactKind, RegExp> = {
   email: new RegExp(`(?<![\\p{L}\\p{N}_.+-])${escapeRe(SAMPLE_CONTACT.email)}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`, 'giu'),
   phone: new RegExp(`(?<![\\p{L}\\p{N}_+])(?:\\+${DIAL_GAP})?${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?![\\p{L}\\p{N}_])`, 'gu'),
-  address: new RegExp(`(?<![\\p{L}\\p{N}_]|[\\p{L}\\p{N}]\\p{Pd})${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_]|\\p{Pd}[\\p{L}\\p{N}])`, 'giu')
+  address: new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_])`, 'giu')
 };
 
 /**
- * Why a sample found in words is not replaced from here: it runs into more of an address or number, so it may be part
- * of someone else's (o'hello@example.com, +44 (20) 1555 0134, +1 555 0134-5). It is still reviewed and opened.
+ * Why a sample in words is not replaced from here: it runs into more of an address, number or name, so it may be part
+ * of someone else's (o'hello@example.com, +44 (20) 1555 0134, Millbrook-East). It is still reviewed and opened.
  */
 function joinedReason(kind: SampleContactKind, text: string, start: number, end: number): string | undefined {
-  if (kind === 'email' && /[!#$%&'*/=?^`{|}~]$/.test(text.slice(0, start)))
-    return 'This address runs into other characters, so it may be someone else’s. Check it in the inspector.';
-  if (kind !== 'phone') return undefined;
-  const before = text[start] !== '+' && /\d[\s()./\p{Pd}]{1,3}$/u.test(text.slice(Math.max(0, start - 4), start));
-  const after = /^[\s./\p{Pd}]\d/u.test(text.slice(end, end + 2));
-  return before || after ? 'This number runs into other digits, so it may be a different number. Check it in the inspector.' : undefined;
+  const before = text.slice(0, start);
+  const after = text.slice(end);
+  if (kind === 'email' && /[!#$%&'*/=?^`{|}~@]$/.test(before)) return 'This address runs into other characters, so it may be someone else’s. Check it in the inspector.';
+  if (kind === 'address' && (/[\p{L}\p{N}]\p{Pd}+$/u.test(before) || /^\p{Pd}+[\p{L}\p{N}]/u.test(after))) return 'This address runs into another name, so it may be a different place. Check it in the inspector.';
+  const joined = (text[start] !== '+' && /\d[\s()./\p{Pd}]*$/u.test(before)) || /^[\s./\p{Pd}]+\d/u.test(after);
+  return kind === 'phone' && joined ? 'This number runs into other digits, so it may be a different number. Check it in the inspector.' : undefined;
 }
 
 /** Whether a number dials the sample: its digits, as a telephone link sends them, with or without the leading +. */
@@ -384,14 +384,16 @@ const dialsSample = (t: string) => {
  * other recipients, the subject and the rest stay as they are), or a telephone link that dials the sample number, as
  * a whole.
  */
-function sampleInLink(kind: SampleContactKind, type: 'email' | 'tel', target: string): Array<[number, number]> {
+function sampleInLink(kind: SampleContactKind, type: 'email' | 'tel', target: string): Array<[number, number, string?]> {
   if (kind === 'email' && type === 'email') {
-    const out: Array<[number, number]> = [];
+    const out: Array<[number, number, string?]> = [];
     const to = target.split('?')[0];
+    // A link to several recipients (as a pasted mailto: names them) is changed in the inspector, which can keep it.
+    const held = to.includes(',') ? 'This link has other recipients too. Change it in the inspector.' : undefined;
     for (const m of to.matchAll(/[^,]+/g)) {
       const lead = m[0].length - m[0].trimStart().length;
       const address = m[0].trim();
-      if (address.toLowerCase() === SAMPLE_CONTACT.email) out.push([(m.index ?? 0) + lead, (m.index ?? 0) + lead + address.length]);
+      if (address.toLowerCase() === SAMPLE_CONTACT.email) out.push([(m.index ?? 0) + lead, (m.index ?? 0) + lead + address.length, held]);
     }
     return out;
   }
@@ -432,7 +434,7 @@ export function sampleContactMatches(state: ProjectState): SampleContactGroup[] 
       for (const part of partsOf(live, f)) {
         if (part.kind === 'link') {
           const type = linkKind(f, part);
-          for (const [start, end] of type ? sampleInLink(sample.kind, type, part.text) : []) matches.push(matchAt(f, part, start, end));
+          for (const [start, end, held] of type ? sampleInLink(sample.kind, type, part.text) : []) matches.push(matchAt(f, part, start, end, held));
           continue;
         }
         for (const m of part.text.matchAll(SAMPLE_PATTERNS[sample.kind])) {
