@@ -12,6 +12,7 @@ import { isDraftPage, liveRedirects, resolveLink, takesParagraphs } from './inde
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
+import { parseVideoUrl } from '@shared/video';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
@@ -395,7 +396,7 @@ export interface RenderedContent {
  */
 function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
   if (def.owner === 'theme')
-    return def.componentId === 'shell.header' || def.componentId === 'data.table' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
+    return def.componentId === 'shell.header' || def.componentId === 'data.table' || def.componentId === 'media.video' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
   // Back through every copy (a copy of a copy) to where it started.
   let from = def.provenance?.forkedFrom;
   for (let guard = 0; from && guard < 20; guard++) {
@@ -422,6 +423,9 @@ function shippedCodeShows(state: ProjectState, which: string, props: Record<stri
   if (which === 'contact.form') return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
   // The table's words around it. Its cells are a table value, edited in the inspector's table editor.
   if (which === 'data.table') return new Set(['eyebrow', 'heading', 'lead', 'caption']);
+  // The video's words around it, and its title on the Play button, which shows only for a video it can play. The
+  // address is a setting: visitors never read it.
+  if (which === 'media.video') return new Set(['eyebrow', 'heading', 'lead', ...(parseVideoUrl(props.url) ? ['title'] : [])]);
   // As the header's markup reads them: `!!name && (showSiteName || !logo?.src)`, `ctaLabel && ctaLink?.href`, the
   // notice's words once they are more than spaces, and its link beside them with a label and somewhere to go.
   const out = new Set(['links.label', 'links.link']);
@@ -1203,8 +1207,8 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
         const which = shippedCode(state, def);
         // Other code's headings are not known here: the page's review cannot say it has no title.
         if (!which) uninspected ||= owner.kind === 'page';
-        // The shipped contact form and data table show their heading as an `<h2>`.
-        if ((which !== 'contact.form' && which !== 'data.table') || typeof props.heading !== 'string' || !props.heading.trim()) return;
+        // The shipped contact form, data table and video show their heading as an `<h2>`.
+        if ((which !== 'contact.form' && which !== 'data.table' && which !== 'media.video') || typeof props.heading !== 'string' || !props.heading.trim()) return;
         add({ level: 2, text: props.heading.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}) }, scope);
       }
     });

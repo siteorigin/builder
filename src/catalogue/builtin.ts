@@ -12,6 +12,7 @@ import { footer, header } from './foundation/shell';
 import { contactForm } from './foundation/form';
 import { dataTable } from './foundation/table';
 import { siteSearch } from './foundation/search';
+import { video } from './foundation/video';
 import { makeAltPack } from './foundation-alt';
 
 export const FOUNDATION_PACK: AuthoredPack = FOUNDATION.define([
@@ -32,6 +33,7 @@ export const FOUNDATION_PACK: AuthoredPack = FOUNDATION.define([
   faq,
   pageList,
   gallery,
+  video,
   cta,
   contact,
   contactForm,

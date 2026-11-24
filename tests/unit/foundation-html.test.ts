@@ -32,7 +32,8 @@ const COMPONENTS = [
   'content.media',
   'cta.banner',
   'content.pages',
-  'data.table'
+  'data.table',
+  'media.video'
 ] as const;
 type ComponentId = (typeof COMPONENTS)[number];
 
@@ -616,5 +617,49 @@ describe('data.table', () => {
     const odder = bare(html('data.table', { table: { columns: [{ id: 'col_a', label: { toString: null } }], rows: [{ id: 'row_1', cells: { col_a: { toString: null } } }] } }));
     expect(rowsOf(odder)).toEqual([['td:']]);
     expect(() => html('data.table', { table: null })).not.toThrow();
+  });
+});
+
+describe('media.video (issue #73)', () => {
+  const bare = (out: string) => out.replace(/ class="svelte-[a-z0-9]+"/g, '').replace(/ svelte-[a-z0-9]+(?=")/g, '');
+  const rendered = (props: Record<string, unknown>) => bare(authoredHtml('media.video', props));
+  const YT = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+
+  it('shows a Play button naming the video and the host it loads from, and loads nothing from the host until it is pressed', () => {
+    const out = rendered({ heading: 'Take a tour', title: 'Tour of our studio', url: YT });
+    expect(tags(out, 'h2')).toEqual(['Take a tour']);
+    const [button] = tags(out, 'button');
+    expect(button).toContain('Play video');
+    expect(button).toContain('Tour of our studio');
+    expect(button).toContain('Loads the player from YouTube');
+    expect(out).toMatch(/<button type="button" class="so-video__play"/);
+    // No player, thumbnail or anything else from the host before the visitor asks for it.
+    expect(out).not.toMatch(/<iframe|youtube\.com|youtube-nocookie|ytimg|vimeo\.com/);
+    expect(rendered({ title: 'Kiln firing', url: 'https://vimeo.com/76979871' })).toContain('Loads the player from Vimeo');
+  });
+
+  it('names a video without a title by its host, so the button is never unnamed', () => {
+    expect(tags(rendered({ title: '   ', url: YT }), 'button')[0]).toContain('Video from YouTube');
+  });
+
+  it('shows no player for an empty or unsupported address, and no editor note on the exported page', () => {
+    for (const url of ['', 'https://example.com/tour.mp4', 'javascript:alert(1)']) {
+      const out = rendered({ heading: 'Take a tour', title: 'Tour', url });
+      expect(tags(out, 'h2')).toEqual(['Take a tour']);
+      expect(out).not.toMatch(/<button|<iframe|so-video__|data-so-/);
+    }
+  });
+
+  it('shows text as text', () => {
+    const out = rendered({ heading: '<b>Tour</b> & {x}', title: '<img src=x onerror=alert(1)>', url: YT });
+    expect(out).toContain('&lt;b>Tour&lt;/b> &amp; {x}');
+    expect(out).toContain('&lt;img src=x onerror=alert(1)>');
+    expect(out).not.toContain('<img');
+  });
+
+  it('keeps a 16:9 frame as wide as its column', () => {
+    const helper = bundle.files.get('src/lib/siteorigin/runtime/VideoPlayer.svelte')!;
+    expect(helper).toMatch(/aspect-ratio: 16 \/ 9/);
+    expect(helper).toMatch(/\.so-video \{[^}]*width: 100%/);
   });
 });

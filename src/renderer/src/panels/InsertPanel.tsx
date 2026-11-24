@@ -83,6 +83,13 @@ export function SectionSketch({ id }: { id: string }) {
           {bar('24%', 6, 'cta')}
         </span>
       );
+    case 'media.video':
+      return (
+        <span className="sketch">
+          {bar('45%', 5, 'hi')}
+          <i className="img play" />
+        </span>
+      );
     case 'faq.list':
       return <span className="sketch">{[...Array(4)].map((_, i) => <i key={i} className="row-line" />)}</span>;
     case 'data.table':

@@ -21,6 +21,7 @@ import { LocalAdapter, listLocalModels, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
+import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
@@ -182,15 +183,6 @@ function isEditorUrl(url: string): boolean {
     const u = new URL(url);
     if (u.protocol === 'app:' && u.host === 'editor') return true;
     return !!DEV_URL && u.origin === new URL(DEV_URL).origin;
-  } catch {
-    return false;
-  }
-}
-
-function sameOrigin(a: string, b: string): boolean {
-  try {
-    const ua = new URL(a);
-    return (ua.protocol === 'http:' || ua.protocol === 'https:') && ua.origin === new URL(b).origin;
   } catch {
     return false;
   }
@@ -463,13 +455,17 @@ async function createWindow() {
   });
   // The preview iframe must not navigate away from the project origin or open popups.
   win.webContents.on('did-attach-webview', (e) => e.preventDefault());
+  const editorContents = win.webContents;
+  const previewUrl = () => (controller.dev?.status.state === 'ready' ? (controller.dev.status as { url: string }).url : null);
   const previewNavigationAllowed = (target: string) => {
-    const devUrl = controller.dev?.status.state === 'ready' ? (controller.dev.status as { url: string }).url : null;
+    const devUrl = previewUrl();
     // Compare origins, not string prefixes: http://127.0.0.1:5173 must not admit http://127.0.0.1:51730.
     return (!!devUrl && sameOrigin(target, devUrl)) || target.startsWith('about:');
   };
   win.webContents.on('will-frame-navigate', (e) => {
     if (e.isMainFrame) return;
+    // A video section's player, which a press of Play in Preview adds to the previewed page. Its redirects are not.
+    if (playerFrameAllowed(e.url, e.frame, editorContents.mainFrame, previewUrl())) return;
     if (!previewNavigationAllowed(e.url)) e.preventDefault();
   });
   // A server-side redirect is a navigation too: the preview cannot bounce a frame to another origin.

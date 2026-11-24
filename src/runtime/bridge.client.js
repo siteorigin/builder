@@ -1388,10 +1388,10 @@ if (import.meta.hot) {
 
 const style = document.createElement('style');
 // A button with no destination is left out of the site: Edit shows it flagged so it can be fixed, Preview leaves it
-// out as visitors will see the page.
+// out as visitors will see the page. A note only for the author (a video section with no video yet) is the same.
 style.textContent =
   'html[data-so-editing] a, html[data-so-editing] summary, html[data-so-editing] button { cursor: default; } html[data-so-editing] [contenteditable] { cursor: text; }' +
-  ' html:not([data-so-editing]) [data-so-unlinked] { display: none !important; }' +
+  ' html:not([data-so-editing]) [data-so-unlinked], html:not([data-so-editing]) [data-so-editor-only] { display: none !important; }' +
   ' html[data-so-editing] [data-so-unlinked] { cursor: default; box-shadow: none; opacity: 0.6; outline: 2px dashed #d97706; outline-offset: 2px; }';
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);

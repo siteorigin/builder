@@ -41,6 +41,7 @@ import { actionWraps, brokenCardKeys, cardKey, isCardLink } from './card-links';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 import { derived, isTracked, type GenerationCache } from './cache';
+import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -1949,6 +1950,12 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
   if (usesSiteSearch(state)) {
     files.set(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, SEARCH_JS);
     files.set(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, file('search-index.js', generateSearchIndex));
+  }
+  // The video player, while a component of the site shows a video; also written ahead of what imports it. Like
+  // search, whether the site shows one decides only which files exist, and the files themselves read nothing else.
+  if (usesVideo(state)) {
+    files.set(`${RUNTIME_DIR}/${VIDEO_HELPER_FILE}`, VIDEO_JS);
+    files.set(`${RUNTIME_DIR}/${VIDEO_PLAYER_FILE}`, videoPlayerSvelte(!!opts.instrument));
   }
   files.set(`${STYLES_DIR}/tokens.css`, file('tokens.css', generateTokensCss));
   const fontNotice = file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '');
