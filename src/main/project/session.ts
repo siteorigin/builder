@@ -3312,22 +3312,36 @@ export class ProjectSession extends EventEmitter {
     const versions = await this.stepVersions(entry);
     const applied = at < h.cursor;
     const reverter = h.entries.slice(0, h.cursor).find((e) => e.revertsRunId === entry.runId);
-    // What the turn made that taking it back takes away, and what it changed that later work may build on.
-    const made = new Map<string, string>();
+    // What the turn made or published that taking it back takes away (by page, and by the address it answers at), and
+    // the designs it changed that later work may build on.
+    const made = new Map<string, { title: string; how: 'added' | 'published' }>();
     const addresses = new Set<string>();
     const designs = new Set<string>();
     let siteBefore: unknown = null;
     for (const v of versions ?? []) {
       const page = v.path.match(PAGE_DOC)?.[1];
       const [b, a] = [v.before as Partial<PageDoc> | null, v.after as Partial<PageDoc> | null];
-      if (page && a && typeof a === 'object' && !b) made.set(page, typeof a.title === 'string' ? a.title : 'a page');
-      if (page && a && typeof a === 'object' && typeof a.route === 'string' && (!b || b.route !== a.route)) addresses.add(asRoute(a.route).toLowerCase());
+      const title = a && typeof a === 'object' && typeof a.title === 'string' ? a.title : 'a page';
+      const published = !!b && typeof b === 'object' && b.draft === true && !!a && typeof a === 'object' && a.draft !== true;
+      if (page && a && typeof a === 'object' && (!b || published)) made.set(page, { title, how: b ? 'published' : 'added' });
+      if (page && a && typeof a === 'object' && typeof a.route === 'string' && (!b || published || b.route !== a.route)) addresses.add(asRoute(a.route).toLowerCase());
       const design = v.path.match(COMPONENT_DOC)?.[1] ?? Object.values(this.state.components).find((d) => d.sourcePath === v.path)?.id;
       if (design && v.before !== null && v.after !== null) designs.add(design);
       if (v.path === `${DOC_DIR}/site.json`) siteBefore = v.before;
     }
     // A link typed as the site's own address names it by the public URL the site has now, or had before the turn.
     const bases = siteBases(this.state.site, siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : null);
+    const pageIds = new Set(made.keys());
+    /** A document as it is now, read the way stepVersions reads a step's. */
+    const now = (path: string): unknown => {
+      const text = this.docs.get(path);
+      if (text === undefined || !path.endsWith('.json')) return text ?? null;
+      try {
+        return (JSON.parse(text) as unknown) ?? text;
+      } catch {
+        return text;
+      }
+    };
     const later: TurnLaterChange[] = [];
     for (const e of h.entries.slice(at + 1, h.cursor)) {
       const own = await this.stepVersions(e);
@@ -3335,11 +3349,18 @@ export class ProjectSession extends EventEmitter {
       const shared = paths.find((p) => entry.docs[p].before === null && entry.docs[p].after !== null) ?? paths[0];
       let reason: string | undefined;
       if (shared) reason = entry.docs[shared].before === null ? `It changes ${this.docName(shared)}, which this turn added.` : `It changes ${this.docName(shared)}, which this turn changed too.`;
-      // Only what this change itself added counts: a link it kept, or a placement it left alone, is not its doing.
+      // Only what this change itself added, and what of it is still there, counts: a link it kept or that a later
+      // change took out again, or a placement it left alone or deleted, is no reason.
       for (const v of own ?? []) {
         if (reason) break;
-        if (linksInto(v.after, new Set(made.keys()), addresses, bases) > linksInto(v.before, new Set(made.keys()), addresses, bases)) reason = `It adds a link to ${made.size === 1 ? `“${[...made.values()][0]}”` : 'a page'}, which this turn added.`;
-        else if (placementsOf(v.before, designs) !== placementsOf(v.after, designs)) {
+        const current = now(v.path);
+        if (linksInto(v.after, pageIds, addresses, bases) > linksInto(v.before, pageIds, addresses, bases) && linksInto(current, pageIds, addresses, bases) > 0) {
+          const one = made.size === 1 ? [...made.values()][0] : null;
+          reason = one ? `It adds a link to “${one.title}”, which this turn ${one.how}.` : 'It adds a link to a page this turn added or published.';
+          continue;
+        }
+        const [was, became, stays] = [placementsOf(v.before, designs), placementsOf(v.after, designs), placementsOf(current, designs)];
+        if ([...became].some(([id, text]) => stays.has(id) && was.get(id) !== text)) {
           const names = [...designs].map((id) => this.state.components[id]?.name).filter(Boolean);
           reason = `It changes where ${names.length === 1 ? `“${names[0]}”` : 'a component'} is used, after this turn changed its design.`;
         }
@@ -3401,15 +3422,29 @@ export class ProjectSession extends EventEmitter {
     for (const a of siteAddresses(next)) gone.delete(a);
     const url = ownUrlLinks(next, new Set([...gone].map((a) => a.toLowerCase())), siteBases(this.state.site, next.site))[0];
     if (url) return problem(`${url.where} links to ${url.url}, which would no longer be there.`);
-    // A published page left linking to one the turn published, now a draft again, would stop the website export.
-    const stranded = new Set(publicationPlan(this.state).draftLinks.map((l) => JSON.stringify(l)));
-    const draft = publicationPlan(next).draftLinks.find((l) => !stranded.has(JSON.stringify(l)));
+    // A published page left linking to one the turn published, now a draft again, would stop the website export. A
+    // typed address is read on the public URL the site has now too, when the turn is what set it. Told apart by where
+    // the link is and where it goes, not by its words.
+    const where = (l: { owner: object; nodeId: string; inText: boolean; pageId?: string; entryId?: string; anchor?: string }) => JSON.stringify([l.owner, l.nodeId, l.inText, l.pageId, l.entryId, l.anchor]);
+    const stranded = new Set(publicationPlan(this.state).draftLinks.map(where));
+    const withBase = next.site.baseUrl || !this.state.site.baseUrl ? next : { ...next, site: { ...next.site, baseUrl: this.state.site.baseUrl } };
+    const draft = [...publicationPlan(next).draftLinks, ...(withBase === next ? [] : publicationPlan(withBase).draftLinks)].find((l) => !stranded.has(where(l)));
     if (draft) return problem(`a published page would link to a draft${draft.label ? ` (“${draft.label}”)` : ''}, which stops the website export.`);
     // Code that needs a component the turn added, which nothing above reads.
     for (const id of Object.keys(this.state.components)) {
       if (next.components[id]) continue;
       const needs = Object.values(next.components).find((d) => codeNeeds(this.state, d, id));
       if (needs) return problem(`“${needs.name}” needs “${this.state.components[id].name}”, which this turn added.`);
+    }
+    // Code the turn changed comes back as it was, and must still build with the components there are now: one it
+    // imported may have been deleted since. Only the site's own components are looked for; the rest of src/lib is
+    // the app's, there whatever was undone.
+    const resolve = componentSources(next.components);
+    const modules = (path: string) => !path.startsWith('src/lib/siteorigin/custom/') || resolve(path) !== undefined;
+    for (const def of Object.values(next.components)) {
+      if (def.kind !== 'code' || def.source === undefined || def.source === this.state.components[def.id]?.source) continue;
+      const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve, modules })).filter((p) => p.severity === 'error');
+      if (bad.length) return problem(`the code for “${def.name}” would have problems: ${bad[0].message}`);
     }
     return { review, next, entry };
   }

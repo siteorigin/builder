@@ -201,7 +201,7 @@ export function docChanges({ path, before, after }: DocVersions, state: ProjectS
   }
   const component = path.match(COMPONENT_DOC);
   if (component) return existence(words((b ?? a)?.name) ?? component[1], 'Component');
-  if (CUSTOM_SOURCE_RE.test(path)) return existence(path.split('/').at(-1)!.replace(/\.svelte$/, ''), 'Component code');
+  if (CUSTOM_SOURCE_RE.test(path)) return existence(Object.values(state.components).find((d) => d.sourcePath === path)?.name ?? path.split('/').at(-1)!.replace(/\.svelte$/, ''), 'Component code');
   const collection = collectionPathOf(path);
   if (collection) return existence(words((b ?? a)?.title) ?? words((b ?? a)?.name) ?? collection.entryId ?? collection.collectionId, collection.entryId ? 'Entry' : 'Collection');
   return existence(path, 'File');
@@ -264,16 +264,17 @@ export function siteBases(...sites: Array<Pick<SiteDoc, 'baseUrl'> | null | unde
 }
 
 /**
- * The site address a typed web address opens, when it is on one of the site's own public URLs `bases`: as a route,
- * the way a static host serves it ("/winter/index.html" is "/winter/"). Null for any other address.
+ * The site addresses a typed web address opens, on each of the site's own public URLs `bases` it is on: as routes,
+ * lowercased, the way a static host serves them ("/winter/index.html" is "/winter/"). Empty for any other address.
  */
-export function ownAddress(target: string, bases: readonly URL[]): string | null {
+export function ownAddresses(target: string, bases: readonly URL[]): string[] {
   let url: URL;
   try {
     url = new URL(target);
   } catch {
-    return null;
+    return [];
   }
+  const out: string[] = [];
   for (const base of bases) {
     if (url.origin !== base.origin) continue;
     const prefix = base.pathname.replace(/\/+$/, '');
@@ -284,10 +285,13 @@ export function ownAddress(target: string, bases: readonly URL[]): string | null
     } catch {
       // Kept as typed: a malformed escape names no page.
     }
-    return asRoute(path.replace(/\/index\.html$/i, '/')).toLowerCase();
+    out.push(asRoute(path.replace(/\/index\.html$/i, '/')).toLowerCase());
   }
-  return null;
+  return out;
 }
+
+/** The first site address a typed web address opens (see ownAddresses), or null. */
+export const ownAddress = (target: string, bases: readonly URL[]): string | null => ownAddresses(target, bases)[0] ?? null;
 
 /**
  * How many links a document holds into what a turn made: links to one of the pages `pageIds`, and links typed as the
@@ -300,27 +304,47 @@ export function linksInto(doc: unknown, pageIds: ReadonlySet<string>, addresses:
     if (Array.isArray(x)) return x.forEach(walk);
     if (!isObj(x)) return;
     if (x.type === 'page' && typeof x.target === 'string' && pageIds.has(x.target)) n++;
-    else if (x.type === 'url' && typeof x.target === 'string' && addresses.size) {
-      const a = ownAddress(x.target, bases);
-      if (a && addresses.has(a)) n++;
-    }
+    else if (x.type === 'url' && typeof x.target === 'string' && addresses.size && ownAddresses(x.target, bases).some((a) => addresses.has(a))) n++;
     for (const y of Object.values(x)) walk(y);
   };
   walk(doc);
   return n;
 }
 
-/** Every placement of one of the components `defIds` in a document, by node ID, as text to compare two versions by. */
-export function placementsOf(doc: unknown, defIds: ReadonlySet<string>): string {
-  const found: Array<[string, string]> = [];
-  const walk = (x: unknown) => {
-    if (Array.isArray(x)) return x.forEach(walk);
+/**
+ * Every placement of one of the components `defIds` in a document, by node ID, as text to compare versions by: the
+ * placement with everything inside it (its slots' content too), which is what the component's design shows.
+ */
+export function placementsOf(doc: unknown, defIds: ReadonlySet<string>): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!defIds.size) return out;
+  const trees: Array<Record<string, unknown>> = [];
+  const find = (x: unknown) => {
+    if (Array.isArray(x)) return x.forEach(find);
     if (!isObj(x)) return;
-    if (x.kind === 'instance' && typeof x.definitionId === 'string' && defIds.has(x.definitionId)) found.push([String(x.id), JSON.stringify(x)]);
-    for (const y of Object.values(x)) walk(y);
+    if (isObj(x.nodes)) trees.push(x.nodes);
+    for (const y of Object.values(x)) find(y);
   };
-  if (defIds.size) walk(doc);
-  return JSON.stringify(found.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  find(doc);
+  for (const nodes of trees)
+    for (const [id, n] of Object.entries(nodes)) {
+      if (!isObj(n) || n.kind !== 'instance' || typeof n.definitionId !== 'string' || !defIds.has(n.definitionId)) continue;
+      const inside: unknown[] = [];
+      const seen = new Set<string>([id]);
+      const queue = [n];
+      while (queue.length) {
+        const x = queue.shift()!;
+        const kids = [...(Array.isArray(x.children) ? x.children : []), ...Object.values(isObj(x.slots) ? x.slots : {}).flatMap((v) => (Array.isArray(v) ? v : []))];
+        for (const k of kids) {
+          if (typeof k !== 'string' || seen.has(k) || !isObj(nodes[k])) continue;
+          seen.add(k);
+          inside.push(nodes[k]);
+          queue.push(nodes[k] as Obj);
+        }
+      }
+      out.set(id, JSON.stringify([n, ...inside]));
+    }
+  return out;
 }
 
 /**
@@ -334,10 +358,7 @@ export function ownUrlLinks(state: ProjectState, addresses: ReadonlySet<string>,
   const walk = (x: unknown, where: string, path: string) => {
     if (Array.isArray(x)) return x.forEach((y) => walk(y, where, path));
     if (!isObj(x)) return;
-    if (x.type === 'url' && typeof x.target === 'string') {
-      const a = ownAddress(x.target, bases);
-      if (a && addresses.has(a)) out.push({ where, path, url: x.target });
-    }
+    if (x.type === 'url' && typeof x.target === 'string' && ownAddresses(x.target, bases).some((a) => addresses.has(a))) out.push({ where, path, url: x.target });
     for (const y of Object.values(x)) walk(y, where, path);
   };
   const site = `${DOC_DIR}/site.json`;

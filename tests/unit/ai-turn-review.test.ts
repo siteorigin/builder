@@ -16,7 +16,7 @@ import type { ChatMessage } from '@shared/api';
 import { ProjectSession } from '../../src/main/project/session';
 import { reviewEntryId, reviewNote, standingNote, undoableId } from '../../src/renderer/src/lib/result';
 import { reviewPlan, stepChangeText, turnName } from '../../src/renderer/src/lib/turn-review';
-import { ownAddress, stepChanges } from '../../src/main/project/turn-review';
+import { ownAddress, ownAddresses, stepChanges } from '../../src/main/project/turn-review';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -204,6 +204,8 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
     expect(ownAddress('https://books.example/other/staff-picks/', shop)).toBeNull();
     expect(ownAddress('http://books.example/shop/staff-picks/', shop)).toBeNull();
     expect(ownAddress('not a url', shop)).toBeNull();
+    // Read on every public URL the site has had, not only the first that fits.
+    expect(ownAddresses('https://books.example/shop/staff-picks/', [new URL('https://books.example'), ...shop])).toEqual(['/shop/staff-picks/', '/staff-picks/']);
   });
 
   it('tells a later separate change on the same page from one there that links to the turn’s page', async () => {
@@ -211,26 +213,82 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
     const entryId = await addStaffPicks(s);
     await setHomeTitle(s, 'Kept');
     await linkHero(s, { type: 'page', target: PICKS });
+    await setHomeTitle(s, 'Kept again');
     const { review } = await s.reviewAiEntry(entryId);
+    // The later title change keeps the link without adding it.
     expect(review!.later.map((l) => [l.label, l.relation])).toEqual([
       ['Change browser title (Home)', 'separate'],
-      ['Change button link', 'depends']
+      ['Change button link', 'depends'],
+      ['Change browser title (Home)', 'separate']
     ]);
+  });
+
+  it('no longer counts a link to the turn’s page once a later change has taken it out again', async () => {
+    const { s } = await make();
+    const entryId = await addStaffPicks(s);
+    await linkHero(s, { type: 'page', target: PICKS });
+    await linkHero(s, { type: 'page', target: s.state.site.pageOrder[1] });
+    const { review } = await s.reviewAiEntry(entryId);
+    expect(review!.later.map((l) => l.relation)).toEqual(['separate', 'separate']);
+    expect(review!.revert).toEqual({ ok: true });
+    await ok(s.revertAiEntry(entryId, { revision: review!.revision, history: review!.history }));
+    expect(s.state.pages[PICKS]).toBeUndefined();
+  });
+
+  it('treats a later link typed to a page the turn published, on a public URL it set, as depending on it', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'page.create', pageId: PICKS, title: 'Staff picks', route: '/staff-picks/' }] }, { label: 'Add page' }));
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, draft: true }] }, { label: 'Make draft' }));
+    expect(await s.beginRun('run_launch')).toBeNull();
+    await ok(
+      s.apply({ operations: [{ type: 'site.update', baseUrl: 'https://books.example' }, { type: 'page.update', pageId: PICKS, draft: false }] }, { label: 'AI', source: 'ai', runId: 'run_launch', history: false })
+    );
+    expect(await s.completeRun('AI: Launch Staff picks')).toBe(true);
+    const entryId = s.historyInfo().entries.at(-1)!.id;
+    await linkHero(s, { type: 'url', target: 'https://books.example/staff-picks/' });
+    const { review } = await s.reviewAiEntry(entryId);
+    expect(review!.later[0]).toMatchObject({ relation: 'depends', reason: 'It adds a link to “Staff picks”, which this turn published.' });
+    expect(review!.revert.ok).toBe(false);
+  });
+
+  it('refuses when code the turn changed would come back importing a component deleted since', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Badge', source: '<p>badge</p>\n' }] }, { label: 'Add Badge' }));
+    const badge = Object.values(s.state.components).find((d) => d.name === 'Badge')!;
+    const file = badge.sourcePath!.split('/').at(-1)!;
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Card', source: `<script>\n\timport Badge from './${file}';\n</script>\n<Badge />\n` }] }, { label: 'Add Card' }));
+    const card = Object.values(s.state.components).find((d) => d.name === 'Card')!;
+    expect(await s.beginRun('run_code')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: card.id, source: '<p>card</p>\n' }] }, { label: 'AI', source: 'ai', runId: 'run_code', history: false }));
+    expect(await s.completeRun('AI: Simplify Card')).toBe(true);
+    const entryId = s.historyInfo().entries.at(-1)!.id;
+    // Card no longer needs Badge, so it can go.
+    await ok(s.apply({ operations: [{ type: 'component.remove', definitionId: badge.id }] }, { label: 'Remove Badge' }));
+    const { review } = await s.reviewAiEntry(entryId);
+    expect(review!.changes).toEqual([{ owner: 'Card', property: 'Component code', change: 'changed' }]);
+    expect(review!.later.map((l) => l.relation)).toEqual(['separate']);
+    expect(review!.revert).toEqual({ ok: false, reason: expect.stringMatching(/^Undoing it on its own would leave a problem: the code for “Card” would have problems: It imports/) });
   });
 
   it('refuses when taking back a page the turn published would leave a published page linking to a draft', async () => {
     const { s } = await make();
     await ok(s.apply({ operations: [{ type: 'page.create', pageId: PICKS, title: 'Staff picks', route: '/staff-picks/' }] }, { label: 'Add page' }));
     await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, draft: true }] }, { label: 'Make draft' }));
+    // Linked while it was a draft: publishing it is what let the website export go ahead.
+    await linkHero(s, { type: 'page', target: PICKS });
     expect(await s.beginRun('run_publish')).toBeNull();
     await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, draft: false }] }, { label: 'AI', source: 'ai', runId: 'run_publish', history: false }));
     expect(await s.completeRun('AI: Publish Staff picks')).toBe(true);
     const entryId = s.historyInfo().entries.at(-1)!.id;
-    await linkHero(s, { type: 'page', target: PICKS });
+    await setHomeTitle(s, 'Kept');
     const { review } = await s.reviewAiEntry(entryId);
     expect(review!.changes).toEqual([{ owner: 'Staff picks', property: 'Draft', change: 'changed', before: 'Yes', after: 'No' }]);
     expect(review!.later.map((l) => l.relation)).toEqual(['separate']);
     expect(review!.revert).toEqual({ ok: false, reason: expect.stringMatching(/^Undoing it on its own would leave a problem: a published page would link to a draft/) });
+    // A link added after the turn to the page it published depends on it.
+    await linkHero(s, { type: 'page', target: s.state.site.pageOrder[1] });
+    await linkHero(s, { type: 'page', target: PICKS });
+    expect((await s.reviewAiEntry(entryId)).review!.later.at(-1)).toMatchObject({ relation: 'depends', reason: 'It adds a link to “Staff picks”, which this turn published.' });
   });
 
   it('treats a later change to where a component is used as depending on a turn that changed its design', async () => {
@@ -251,6 +309,13 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
       ['Change heading', 'depends', 'It changes where “Shop hero” is used, after this turn changed its design.']
     ]);
     expect(review!.later[1].changes).toEqual([expect.objectContaining({ owner: 'Home', property: 'Heading', after: 'Read with us' })]);
+
+    // A placement deleted since is no reason: the design it showed has nothing left to show there.
+    await ok(s.undo());
+    await ok(s.apply({ operations: [{ type: 'node.remove', owner: { kind: 'page', id: homeId(s) }, nodeId: hero(s) }] }, { label: 'Remove hero' }));
+    const removed = await s.reviewAiEntry(entryId);
+    expect(removed.review!.later.map((l) => l.relation)).toEqual(['separate', 'separate']);
+    expect(removed.review!.revert).toEqual({ ok: true });
   });
 
   it('treats a later change to the site settings the turn also changed as depending on it', async () => {
