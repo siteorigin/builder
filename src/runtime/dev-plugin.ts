@@ -92,7 +92,9 @@ await import('virtual:siteorigin-bridge');
 
 type Middleware = (req: { url?: string; method?: string }, res: { statusCode: number; setHeader(k: string, v: string): unknown; end(body?: string): unknown }, next: (e?: unknown) => void) => void;
 /** What the plugin uses of a Vite module graph: modules by ID, and dropping one's transformed code. */
-type ModuleGraph = { idToModuleMap?: Map<string, unknown>; invalidateModule(mod: unknown): void };
+type ModuleGraph = { idToModuleMap?: Map<string, object>; invalidateModule(mod: object): void };
+/** Vite's own resolution, from a plugin's resolveId. */
+type Resolve = (id: string, importer?: string, options?: object) => Promise<{ id: string } | null>;
 type PreviewServer = {
   middlewares: { use(fn: Middleware): unknown };
   transformIndexHtml(url: string, html: string): Promise<string>;
@@ -100,10 +102,20 @@ type PreviewServer = {
   moduleGraph?: ModuleGraph;
 };
 
-/** The preview a request of its page's modules belongs to (a file of its folder, or its entry), by key; else null. */
+/**
+ * The preview a request of its page's modules belongs to (a file of its folder, or its entry), by key; else null.
+ * Read as Vite reads the address (decoded, with repeated slashes and dot segments resolved), so no other spelling of
+ * it gets past.
+ */
 export function previewModuleKey(url: string | undefined): string | null {
-  const path = (url ?? '').split(/[?#]/)[0];
-  const m = /^\/\.siteorigin\/cache\/dev\/isolated\/([^/]+)\//.exec(path) ?? /^\/@id\/(?:__x00__)?virtual:siteorigin-component-preview\/([^/]+)\.js$/.exec(path);
+  let path = (url ?? '').split(/[?#]/)[0];
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // Vite cannot read it either.
+  }
+  path = posix.normalize(path.replace(/\\/g, '/'));
+  const m = /^\/+\.siteorigin\/cache\/dev\/isolated\/([^/]+)\//i.exec(path) ?? /^\/+@id\/(?:__x00__|\0)?virtual:siteorigin-component-preview\/([^/]+)\.js$/.exec(path);
   return m && PREVIEW_KEY.test(m[1]) ? m[1] : null;
 }
 
@@ -169,8 +181,10 @@ export function devPlugin(dir: string) {
         const released = (key: string) => gone.get(key) ?? (gone.set(key, !previewFolder(key)), gone.get(key)!);
         for (const graph of graphs) {
           for (const [id, mod] of graph.idToModuleMap ?? []) {
+            if (forgotten.has(mod)) continue;
             const key = isolatedPreviewPath(names, id, ISOLATED_DIR, PREVIEW_KEY)?.key ?? previewModuleKey(`/@id/${id.replace(/^\0/, '')}`);
             if (key && released(key)) {
+              forgotten.add(mod);
               try {
                 graph.invalidateModule(mod);
               } catch {
@@ -180,6 +194,8 @@ export function devPlugin(dir: string) {
           }
         }
       };
+      /** Modules already dropped: a key is never used again, so they are never looked at twice. */
+      const forgotten = new WeakSet<object>();
       // Registered ahead of Vite's own middleware and SvelteKit's pages: the address is never a page of the site.
       server.middlewares.use((req, res, next) => {
         if (req.method !== 'GET' && req.method !== 'HEAD') return next();
@@ -209,26 +225,26 @@ export function devPlugin(dir: string) {
         }, next);
       });
     },
-    resolveId(id: string, importer?: string) {
+    resolveId(this: unknown, id: string, importer?: string, options?: object) {
       if (id === VIRTUAL) return '\0' + VIRTUAL + '.js';
       if (id.startsWith(PREVIEW_ENTRY)) {
         const key = id.slice(PREVIEW_ENTRY.length).replace(/\.js$/, '');
         return PREVIEW_KEY.test(key) ? '\0' + PREVIEW_ENTRY + key + '.js' : null;
       }
       // An import made by a preview's own files (relative, or through $lib, which Vite has made a project path by
-      // now): what the preview has its own copy of comes from that copy, so its pieces fit each other; anything
-      // else, such as a helper a code component imports, from the project, as on a page.
+      // now): a file the preview has its own copy of comes from that copy, so its pieces fit each other. Anything
+      // else (a helper a code component imports, a folder's index, a path without its extension) is resolved by Vite
+      // as the project's own copy of the importing file would import it, as on a page.
       const from = importer ? isolatedPreviewPath(names, importer, ISOLATED_DIR, PREVIEW_KEY) : null;
       if (!from) return null;
       const q = id.indexOf('?');
       const path = q < 0 ? id : id.slice(0, q);
-      const query = q < 0 ? '' : id.slice(q);
       const rel = path.startsWith('./') || path.startsWith('../') ? posix.normalize(posix.join(posix.dirname(from.rel), path)) : projectSrcPath(names, path);
-      if (!rel || !rel.startsWith('src/')) return null;
-      const own = previewFile(from.key, rel);
-      if (own) return viteId(own) + query;
-      const project = join(dir, ...rel.split('/'));
-      return existsSync(project) && realFileInside(dir, project) ? viteId(project) + query : null;
+      const own = rel?.startsWith('src/') ? previewFile(from.key, rel) : null;
+      if (own && statSync(own).isFile()) return viteId(own) + (q < 0 ? '' : id.slice(q));
+      const resolve = (this as { resolve?: Resolve } | undefined)?.resolve;
+      if (!from.rel.startsWith('src/') || typeof resolve !== 'function') return null;
+      return resolve.call(this, id, viteId(join(dir, ...from.rel.split('/'))), { ...options, skipSelf: true });
     },
     load(id: string) {
       if (id === '\0' + VIRTUAL + '.js') return bridgeSource;

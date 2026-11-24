@@ -174,6 +174,7 @@ describe('isolated previews stay out of the website', () => {
     for (const instrument of [false, true]) {
       for (const [path, content] of generateProject(state, { instrument })) {
         expect(path).not.toBe(PREVIEW_MODULE);
+        expect(path).not.toMatch(/preview\.json$/);
         expect(path).not.toMatch(/__siteorigin|\/preview\//);
         expect(content).not.toContain(COMPONENT_PREVIEW_ROUTE);
         expect(content).not.toMatch(/preview:/);
@@ -186,7 +187,7 @@ describe('isolated previews stay out of the website', () => {
     expect(previewKeyOf(`${COMPONENT_PREVIEW_ROUTE}${key}/`)).toBe(key);
     expect(previewKeyOf(`${COMPONENT_PREVIEW_ROUTE}${key}/?x=1`)).toBe(key);
     expect(previewKeyOf(`${COMPONENT_PREVIEW_ROUTE}${key}`)).toBe(key);
-    for (const bad of [`${COMPONENT_PREVIEW_ROUTE}../${key}/`, `${COMPONENT_PREVIEW_ROUTE}${key}/x`, `${COMPONENT_PREVIEW_ROUTE}${key.toUpperCase()}/`, `${COMPONENT_PREVIEW_ROUTE}abc/`, '/about/', undefined]) expect(previewKeyOf(bad)).toBeNull();
+    for (const bad of [`${COMPONENT_PREVIEW_ROUTE}../${key}/`, `${COMPONENT_PREVIEW_ROUTE}${key}/x`, `${COMPONENT_PREVIEW_ROUTE}${key.toUpperCase()}/`, `${COMPONENT_PREVIEW_ROUTE}abc/`, `${COMPONENT_PREVIEW_ROUTE}${'a'.repeat(65)}/`, '/about/', undefined]) expect(previewKeyOf(bad)).toBeNull();
   });
 });
 
@@ -241,6 +242,7 @@ describe('serving an isolated preview', () => {
     expect(res.body).toContain('<!--transformed-->');
     expect(res.body).toContain('<html lang="de-AT">');
     expect(res.body).toContain('<meta name="viewport" content="width=device-width, initial-scale=1" />');
+    expect(res.body).toContain('<meta name="robots" content="noindex" />');
     const head = await request(path, 'HEAD');
     if (head === 'next') throw new Error('passed on');
     expect([head.statusCode, head.body, head.headers['content-type']]).toEqual([200, undefined, 'text/html; charset=utf-8']);
@@ -259,14 +261,15 @@ describe('serving an isolated preview', () => {
     const gone = await request(path);
     if (gone === 'next') throw new Error('passed on');
     expect(gone.statusCode).toBe(404);
+    expect(gone.headers['cache-control']).toBe('no-store');
   });
 
   it('starts with the site’s tokens and base styles, then mounts the preview, then the bridge', async () => {
     const { key, plugin } = await served();
-    const id = plugin.resolveId(`virtual:siteorigin-component-preview/${key}.js`);
+    const id = plugin.resolveId(`virtual:siteorigin-component-preview/${key}.js`) as string;
     expect(id).toBe(`\0virtual:siteorigin-component-preview/${key}.js`);
     expect(plugin.resolveId('virtual:siteorigin-component-preview/../x.js')).toBeNull();
-    const entry = plugin.load(id!) as string;
+    const entry = plugin.load(id) as string;
     const base = `/.siteorigin/cache/dev/isolated/${key}`;
     const order = ['"/src/lib/siteorigin/styles/tokens.css"', '"/src/lib/siteorigin/styles/theme.css"', `"${base}/${PREVIEW_COMPONENT_STYLES}"`, `import("${base}/${PREVIEW_MODULE}")`, "import('virtual:siteorigin-bridge')"].map((s) => entry.indexOf(s));
     expect(order.every((at) => at >= 0)).toBe(true);
@@ -282,7 +285,7 @@ describe('serving an isolated preview', () => {
     // A reload stamp names the same, unchanging file; a stylesheet derived from it goes to the Svelte plugin.
     for (const stamp of ['t=1700000000000', 'import', 'v=3f9a1c2e', 'import&t=1']) expect(plugin.load(`${at(PREVIEW_MODULE)}?${stamp}`), stamp).toBe(made.files.get(PREVIEW_MODULE));
     expect(plugin.load(`${at(PREVIEW_MODULE)}?svelte&type=style&lang.css`)).toBeNull();
-    expect(plugin.load(`${at(PREVIEW_MODULE)}?raw`)).toBeNull();
+    for (const derived of ['raw', 'url', 'inline', 'worker', 'import&raw']) expect(plugin.load(`${at(PREVIEW_MODULE)}?${derived}`), derived).toBeNull();
     expect(plugin.load(`${dir}/.siteorigin/cache/dev/isolated/${key}/../${key}/${PREVIEW_MODULE}`)).toBeNull();
     // A link planted in a preview's folder never serves what it leads to.
     writeFileSync(join(dir, 'secret.txt'), 'secret');
@@ -366,6 +369,9 @@ describe('serving an isolated preview', () => {
     expect(await ask(`/.siteorigin/cache/dev/isolated/${key}/${PREVIEW_MODULE}?t=1`)).toBe(404);
     expect(await ask(`/@id/virtual:siteorigin-component-preview/${key}.js`)).toBe(404);
     expect(await ask(`/@id/__x00__virtual:siteorigin-component-preview/${key}.js`)).toBe(404);
+    // However the address is spelled.
+    for (const spelling of [`/.siteorigin/cache/dev/isolated/%${key.charCodeAt(0).toString(16)}${key.slice(1)}/x.js`, `//.siteorigin//cache/dev/isolated/${key}/x.js`, `/.siteorigin/cache/dev/./isolated/${key}/x.js`, `/src/../.siteorigin/cache/dev/isolated/${key}/x.js`])
+      expect(await ask(spelling), spelling).toBe(404);
     expect(invalidated).toEqual([]);
     // Showing the next preview drops the released one's modules, and only those.
     expect(await ask(other.path)).toBe(200);
@@ -380,14 +386,17 @@ describe('serving an isolated preview', () => {
     expect(plugin.resolveId('../runtime/Icon.svelte', importer)).toBe(at('src/lib/siteorigin/runtime/Icon.svelte'));
     expect(plugin.resolveId(`${dir}/src/lib/siteorigin/runtime/icons.js`, at('src/lib/siteorigin/custom/Note.svelte'))).toBe(at('src/lib/siteorigin/runtime/icons.js'));
     expect(plugin.resolveId('../runtime/Icon.svelte?svelte&type=style&lang.css', importer)).toBe(`${at('src/lib/siteorigin/runtime/Icon.svelte')}?svelte&type=style&lang.css`);
-    // A file only the project has (a helper a code component imports) comes from the project.
-    mkdirSync(join(dir, 'src/lib/siteorigin/custom'), { recursive: true });
-    writeFileSync(join(dir, 'src/lib/siteorigin/custom/helper.js'), 'export const x = 1;');
-    expect(plugin.resolveId('./helper.js', at('src/lib/siteorigin/custom/Note.svelte'))).toBe(`${dir}/src/lib/siteorigin/custom/helper.js`);
-    // Neither has it, or it is outside src/: Vite resolves it as it would.
-    expect(plugin.resolveId('./missing.js', at('src/lib/siteorigin/custom/Note.svelte'))).toBeNull();
-    expect(plugin.resolveId('svelte', importer)).toBeNull();
-    expect(plugin.resolveId('../../../../../package.json', importer)).toBeNull();
+    // Anything the preview has no file of (a helper only the project has, a folder's index, a path without its
+    // extension) is resolved by Vite as the project's own copy of the importing file would import it.
+    const asked: Array<[string, string | undefined, unknown]> = [];
+    const vite = { resolve: async (id: string, from?: string, options?: object) => (asked.push([id, from, options]), { id: `vite:${id}` }) };
+    const note = at('src/lib/siteorigin/custom/Note.svelte');
+    expect(await plugin.resolveId.call(vite, './helper.js', note)).toEqual({ id: 'vite:./helper.js' });
+    expect(asked.at(-1)).toEqual(['./helper.js', `${dir}/src/lib/siteorigin/custom/Note.svelte`, { skipSelf: true }]);
+    // A folder of the preview is never taken for a module.
+    expect(await plugin.resolveId.call(vite, `${dir}/src/lib/siteorigin/runtime`, note)).toEqual({ id: `vite:${dir}/src/lib/siteorigin/runtime` });
+    expect(await plugin.resolveId.call(vite, 'svelte', importer)).toEqual({ id: 'vite:svelte' });
+    expect(asked.at(-1)![1]).toBe(`${dir}/${PREVIEW_MODULE}`);
     // An import from anywhere else is not the preview's business.
     expect(plugin.resolveId('../runtime/Icon.svelte', `${dir}/src/lib/siteorigin/preview/Preview.svelte`)).toBeNull();
   });

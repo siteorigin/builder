@@ -62,7 +62,7 @@ const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
 
 /**
  * Show components in isolated preview frames in the editor window, step by step (see ComponentPreviewStep), and give
- * back what each frame reported. Each step may take a load and a measurement (about 20s at most).
+ * back what each frame reported.
  */
 function previewComponents(steps: ComponentPreviewStep[]): Promise<ComponentPreviewResult[]> {
   return new Promise((resolve, reject) => {
@@ -72,7 +72,8 @@ function previewComponents(steps: ComponentPreviewStep[]): Promise<ComponentPrev
         pendingComponentPreviews.delete(requestId);
         reject(new Error('The preview did not respond in time.'));
       },
-      25000 * Math.max(1, steps.length)
+      // A step may wait for its files (15s), its page (12s) and its measurement (8s).
+      40000 * Math.max(1, steps.length)
     );
     pendingComponentPreviews.set(requestId, (r) => {
       clearTimeout(timer);

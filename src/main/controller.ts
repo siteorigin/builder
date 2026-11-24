@@ -941,6 +941,8 @@ export class Controller {
     const made = generateComponentPreview(session.state, spec);
     if ('error' in made) return { ok: false, message: made.error };
     const root = this.stage ?? session.dir;
+    // The lock is read again before writing into the project: a takeover the heartbeat has not seen yet gets nothing.
+    if (!this.stage && !(await session.stillOwner())) return { ok: false, message: 'The preview is not running.' };
     let written: { key: string; path: string };
     try {
       written = await writeComponentPreview(root, made.files);
