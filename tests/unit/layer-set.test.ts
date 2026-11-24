@@ -3,7 +3,7 @@ import type { ElementRef, InstanceNode, NodeTree, OwnerRef, ProjectState } from 
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { onGonePage } from '../../src/renderer/src/lib/model';
+import { keepViewValid } from '../../src/renderer/src/lib/model';
 import { inGroup, duplicateOps, extendTo, groupOf, liveSet, moveIntoOps, moveStepOps, moveToPageOps, rangeOf, removeOps, toggle, besideOf, type LayerSet, type PickResult } from '../../src/renderer/src/lib/layer-set';
 
 /** The Business starter: Home holds hero, logos, features, media, stats, gallery, testimonials, cta. */
@@ -172,11 +172,20 @@ describe('picking several layers in Layers', () => {
     const dup = apply(t.s, [{ type: 'page.duplicate', pageId: t.homeId }]);
     const copyId = dup.results[0].pageId as string;
     const sel = at({ kind: 'page', id: copyId }, dup.state.pages[copyId].rootIds[0]);
-    expect(onGonePage(dup.state, sel)).toBe(false);
-    expect(onGonePage(t.s, sel)).toBe(true);
-    expect(onGonePage(t.s, at(t.owner, t.gallery))).toBe(false);
-    expect(onGonePage(t.s, { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: 'x' })).toBe(false);
-    expect(onGonePage(t.s, null)).toBe(false);
+    const kept = (st: ProjectState, selection: ElementRef | null, pageId = t.homeId) => keepViewValid(st, { pageId, selection, definitionMode: null });
+    expect(kept(dup.state, sel, copyId)).not.toHaveProperty('selection');
+    // Selected on the copy while Home shows: kept while the copy is there, gone with it.
+    expect(kept(dup.state, sel)).not.toHaveProperty('selection');
+    expect(kept(t.s, sel)).toStrictEqual({ pageId: t.homeId, definitionMode: null, selection: null });
+    // Undone: the copy has gone, so Home shows and the selection goes with the page.
+    const undone = kept(t.s, sel, copyId);
+    expect(undone).toStrictEqual({ pageId: t.homeId, definitionMode: null, selection: null });
+    // Redone: the copy is back, and nothing on it is selected while Home shows.
+    expect(kept(dup.state, undone.selection ?? null, undone.pageId)).toStrictEqual({ pageId: t.homeId, definitionMode: null });
+    expect(kept(t.s, at(t.owner, t.gallery))).not.toHaveProperty('selection');
+    expect(kept(t.s, { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: t.s.site.shell.header.rootIds[0] })).not.toHaveProperty('selection');
+    expect(kept(t.s, { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: 'n_gone' })).toHaveProperty('selection', null);
+    expect(kept(t.s, null)).not.toHaveProperty('selection');
   });
 
   it('a layer moved away from the others (an Undo, the AI) leaves the set; the ones still beside the selection stay', () => {

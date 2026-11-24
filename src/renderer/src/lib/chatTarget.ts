@@ -5,7 +5,7 @@
  */
 import type { ChatContext } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { inDefinition, placementsOn, refLabel, resolveRef } from './model';
+import { inDefinition, placementsOn, refExists, refLabel } from './model';
 
 type DefinitionMode = { definitionId: string; returnPageId: string } | null;
 
@@ -19,9 +19,10 @@ export interface ComposerScope {
   selectionLabel: string | null;
 }
 
+// A request's selection is read back from disk, so a malformed one is no target either.
 const resolves = (state: ProjectState, ref: ElementRef) => {
   try {
-    return !!resolveRef(state, ref).node;
+    return refExists(state, ref);
   } catch {
     return false;
   }
@@ -50,7 +51,9 @@ export function composerScope(state: ProjectState, view: { pageId: string | null
     const selection = view.selection && inDefinition(view.selection, def.id) && resolves(state, view.selection) ? view.selection : null;
     return { page, component: { id: def.id, name: def.name }, selection, selectionLabel: selection ? refLabel(state, selection) : null };
   }
-  return { page, component: null, selection: view.selection, selectionLabel: view.selection ? refLabel(state, view.selection) : null };
+  // A selection that names something gone (until the editor lets it go) is never offered, nor sent.
+  const selection = view.selection && resolves(state, view.selection) ? view.selection : null;
+  return { page, component: null, selection, selectionLabel: selection ? refLabel(state, selection) : null };
 }
 
 /** The context a message is sent with, frozen at send time. `enabled` holds the composer's page and selection switches. */

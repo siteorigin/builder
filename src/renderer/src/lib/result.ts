@@ -2,7 +2,7 @@
 import type { ChatChange, ChatContext, ChatMessage, FieldLocation } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { locateField } from '@engine/locate';
-import { resolveRef } from './model';
+import { refExists, resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
 import { editableDesign, requestComponentId } from './chatTarget';
 
@@ -98,7 +98,8 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
   if (ctx.selection) {
     let found = false;
     try {
-      found = !!resolveRef(state, ctx.selection).node;
+      // Its part and list item too: Continue never sends a request about a card that has gone.
+      found = refExists(state, ctx.selection);
     } catch {
       found = false;
     }

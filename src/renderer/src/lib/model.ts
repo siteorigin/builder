@@ -251,8 +251,94 @@ export function keepPagesValid(state: ProjectState, pageId: string | null, defin
   };
 }
 
-/** Whether the selection is on a page the project no longer has (an Undo took it away): it goes with that page. */
-export const onGonePage = (state: ProjectState, selection: ElementRef | null) => selection?.owner.kind === 'page' && !Object.hasOwn(state.pages, selection.owner.id);
+/**
+ * The IDs of a list's items as the preview names them (each `id` made a string, so a hand-edited 42 is "42"), or
+ * undefined when the value is not a list (one passed down from further out).
+ */
+function idsOf(items: unknown): string[] | undefined {
+  if (!Array.isArray(items)) return undefined;
+  return items.flatMap((i) => (i === null || i === undefined ? [] : [String((i as { id?: unknown }).id)]));
+}
+
+/** The trees components are placed in: every page, the shared header and footer, and every component's design. */
+function allTrees(state: ProjectState): NodeTree[] {
+  const shell = [state.site.shell.header, state.site.shell.footer];
+  return [...Object.values(state.pages), ...shell, ...Object.values(state.components).map((d) => d.tree)].filter((t): t is NodeTree => !!t);
+}
+
+/**
+ * The IDs of the items a repeated element can be selected in, where they can be told. Through a placement: that
+ * placement's own list (or the design's defaults while it has none), or for a News list, the articles it lists where
+ * it is placed (a shared header or footer lists them for no page in particular). In a design edited everywhere, an
+ * element picked on the canvas is named by an item of the placement it was picked through, so there: the design's
+ * defaults and every placement's own items. Undefined for an element outside every list, and wherever the items come
+ * from further out (a component placed in another, a list passed down from the component around it).
+ */
+function selectableItemIds(state: ProjectState, ref: ElementRef, r: ReturnType<typeof resolveRef>): string[] | undefined {
+  const design = ref.owner.kind === 'component';
+  const def = design ? (ref.instancePath.length ? undefined : own(state.components, ref.owner.id)) : ref.instancePath.length === 1 ? r.def : undefined;
+  if (!def || (!design && !r.instance)) return undefined;
+  const list = listPropFor(def, ref.nodeId);
+  const schema = list ? own(def.properties, list) : undefined;
+  if (!list || schema?.type !== 'list') return undefined;
+  if (schema.feed) {
+    if (design) return undefined;
+    const limit = feedLimit(schema);
+    return articleRows(state, schema.feed, ref.owner.kind === 'page' ? ref.owner.id : undefined, Number.isFinite(limit) ? limit : undefined).map((row) => row.id);
+  }
+  const stored = (n: InstanceNode) => {
+    const v = own(n.props as Record<string, unknown>, list);
+    return v === undefined ? schema.default : v;
+  };
+  if (!design) return idsOf(stored(r.instance!));
+  const ids = new Set(idsOf(schema.default) ?? []);
+  for (const tree of allTrees(state))
+    for (const n of Object.values(tree.nodes)) {
+      if (n.kind !== 'instance' || n.definitionId !== def.id) continue;
+      const placed = idsOf(stored(n));
+      if (!placed) return undefined;
+      placed.forEach((id) => ids.add(id));
+    }
+  return [...ids];
+}
+
+/**
+ * Whether a reference still names something the project has: its page, shared header or footer, or component, each
+ * component on its path, its element, the part it names and, for an element of a list, its item. An Undo, a Redo, the
+ * AI or the files changing on disk can take any of them away while it stays selected.
+ */
+export function refExists(state: ProjectState, ref: ElementRef): boolean {
+  const r = resolveRef(state, ref);
+  // A code component has no tree: its parts are the ones its contract declares, never one item of a list.
+  if (!r.node) return !!r.instance && r.def?.kind === 'code' && !!ref.partId && !ref.itemPath?.length && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId;
+  if (r.node.kind === 'instance' && !own(state.components, r.node.definitionId)) return false;
+  // A part is named by the component it belongs to: the one placed, or the one edited everywhere.
+  const partOf = ref.instancePath.length ? r.def : ref.owner.kind === 'component' ? own(state.components, ref.owner.id) : undefined;
+  if (ref.partId && partOf && own(partOf.parts, ref.partId)?.nodeId !== ref.nodeId) return false;
+  // Every reader of an item path names the item by its last ID: the item of the innermost list around the element.
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  const items = itemId === undefined ? undefined : selectableItemIds(state, ref, r);
+  return !items || items.includes(itemId!);
+}
+
+type DefinitionMode = { definitionId: string; returnPageId: string } | null;
+
+/**
+ * The page shown, the selection and Edit everywhere kept to what the project still has after it changes (an Undo, a
+ * Redo, the AI, a theme refresh, the files changing on disk). A selection naming something that has gone is let go,
+ * never moved to what held it, so neither the Inspector nor the AI acts on a target the author did not pick. A
+ * component edited everywhere that has gone (its copy undone) ends that mode, back on the page it was entered from.
+ * `selection` is in the result only when it changes, so a selection that still holds is kept as it is.
+ */
+export function keepViewValid(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode }): { pageId: string; definitionMode: DefinitionMode; selection?: null } {
+  const dm = view.definitionMode;
+  if (dm && !own(state.components, dm.definitionId)) {
+    const pageId = keepPagesValid(state, dm.returnPageId, null).pageId;
+    return view.selection ? { pageId, definitionMode: null, selection: null } : { pageId, definitionMode: null };
+  }
+  const pages = keepPagesValid(state, view.pageId, dm);
+  return view.selection && !refExists(state, view.selection) ? { ...pages, selection: null } : pages;
+}
 
 /**
  * Where a selected shared header or footer shows: on how many pages, and whether the page on screen is one. An Undo
