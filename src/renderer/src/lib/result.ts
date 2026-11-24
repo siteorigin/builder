@@ -5,6 +5,7 @@ import { locateField } from '@engine/locate';
 import { refExists, resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
 import { editableDesign, requestComponentId } from './chatTarget';
+import { resultAsSaid, turnState, type TurnHistory } from '@shared/turns';
 
 /** Checks that need attention, read from the wording of results stored before checks carried a status. */
 const ISSUE = /wider than the screen|overflows its box|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)|^stopped at /i;
@@ -68,11 +69,25 @@ export function locationTarget(state: ProjectState, currentPageId: string | null
 
 /**
  * The result that offers Continue: the conversation's last message, when it is a request that ended unfinished.
- * An older unfinished card does not, since a newer request has moved on from it.
+ * An older unfinished card does not, since a newer request has moved on from it, and neither does one whose changes
+ * were undone since: there is nothing left to carry on from until it is redone.
  */
-export function resumableId(messages: ChatMessage[]): string | undefined {
+export function resumableId(messages: ChatMessage[], history?: TurnHistory | null): string | undefined {
   const last = messages.at(-1);
-  return last?.role === 'assistant' && last.result?.incomplete && (last.result.status === 'completed' || last.result.status === 'no-changes') ? last.id : undefined;
+  if (last?.role !== 'assistant' || !last.result?.incomplete || (last.result.status !== 'completed' && last.result.status !== 'no-changes')) return undefined;
+  const turn = turnState(last, history);
+  return turn?.standing === 'undone' || turn?.undoneEarlier ? undefined : last.id;
+}
+
+/**
+ * The turn that offers Undo turn: the one whose step is the newest applied in History, whichever way History got
+ * there. History undoes in order, so any later edit, manual or AI, takes it away, and a Redo from the toolbar or
+ * History that reapplies the turn brings it back (issue 276).
+ */
+export function undoableId(messages: ChatMessage[], history: (TurnHistory & { canUndo: boolean }) | null | undefined): string | undefined {
+  if (!history?.canUndo) return undefined;
+  const top = [...history.entries].reverse().find((e) => e.applied)?.runId;
+  return top ? messages.find((m) => m.role === 'assistant' && m.runId === top && !!m.result && resultAsSaid(m.result).result.canUndo)?.id : undefined;
 }
 
 /**

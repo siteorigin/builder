@@ -130,6 +130,8 @@ export function statTrusted(st: Pick<BigIntStats, 'mtimeNs' | 'ctimeNs'>, now: n
   return settled(st.mtimeNs) && settled(st.ctimeNs);
 }
 const HISTORY_LIMIT = 100;
+/** How many let-go AI runs History remembers the standing of (see HistoryFile.droppedRuns). */
+const DROPPED_RUN_LIMIT = 200;
 /** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */
 export const LOCK_HEARTBEAT_MS = 30_000;
 export const LOCK_STALE_MS = 2 * 60_000;
@@ -289,7 +291,15 @@ interface HistoryFile {
   entries: HistoryEntry[];
   /** Number of entries currently applied (entries beyond this are redoable). */
   cursor: number;
+  /**
+   * AI runs whose step History has let go, and whether that step was applied or undone when it went, so the chat
+   * turn that made it still shows where its change stands (issue 276). Oldest first, at most DROPPED_RUN_LIMIT.
+   */
+  droppedRuns?: Record<string, DroppedRun>;
 }
+
+/** Where an AI run's step stood when History let it go: still in the site, or undone. */
+type DroppedRun = 'applied' | 'undone';
 
 /**
  * The publication journal: everything one change does, written durably before any of it is. Recovery rolls it
@@ -1935,6 +1945,7 @@ export class ProjectSession extends EventEmitter {
    */
   private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }, revision: number): { history: HistoryFile; pruned: boolean; entryId: string } {
     const h = structuredClone(this.history);
+    noteDropped(h, h.entries.slice(h.cursor), 'undone');
     h.entries = h.entries.slice(0, h.cursor);
     const last = h.entries[h.entries.length - 1];
     let id: string;
@@ -1960,7 +1971,10 @@ export class ProjectSession extends EventEmitter {
       });
     }
     const pruned = h.entries.length > HISTORY_LIMIT;
-    if (pruned) h.entries = h.entries.slice(h.entries.length - HISTORY_LIMIT);
+    if (pruned) {
+      noteDropped(h, h.entries.slice(0, h.entries.length - HISTORY_LIMIT), 'applied');
+      h.entries = h.entries.slice(h.entries.length - HISTORY_LIMIT);
+    }
     h.cursor = h.entries.length;
     return { history: h, pruned, entryId: id };
   }
@@ -2071,9 +2085,13 @@ export class ProjectSession extends EventEmitter {
       // The oldest applied group goes first. With nothing applied, trim redo from its far end instead:
       // dropping the first redo group would leave the next one expecting documents that never return.
       if (this.history.cursor > 0) {
+        noteDropped(this.history, this.history.entries.slice(0, 1), 'applied');
         this.history.entries.shift();
         this.history.cursor--;
-      } else this.history.entries.pop();
+      } else {
+        noteDropped(this.history, this.history.entries.slice(-1), 'undone');
+        this.history.entries.pop();
+      }
       dropped++;
     }
     if (dropped) {
@@ -2367,6 +2385,8 @@ export class ProjectSession extends EventEmitter {
         if (!drop || info.reclaim?.key !== key) return { ok: false, message: 'The project changed since the space was worked out. Check what will be freed, then try again.' };
         const h = this.history;
         const next: HistoryFile = { ...h, entries: h.entries.slice(drop.from, drop.to), cursor: h.cursor - drop.from };
+        noteDropped(next, h.entries.slice(0, drop.from), 'applied');
+        noteDropped(next, h.entries.slice(drop.to), 'undone');
         await atomicWrite(this.local('history', 'history.json'), toJson(next));
         this.history = next;
         this.emit('history');
@@ -2398,7 +2418,8 @@ export class ProjectSession extends EventEmitter {
       canRedo: h.cursor < h.entries.length && !this.activeRun,
       undoLabel: h.entries[h.cursor - 1]?.label,
       redoLabel: h.entries[h.cursor]?.label,
-      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId }))
+      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId })),
+      ...(h.droppedRuns ? { droppedRuns: { ...h.droppedRuns } } : {})
     };
   }
 
@@ -3505,7 +3526,33 @@ function emptyHistory(): HistoryFile {
  * older format is dropped when it is read, which also covers a crash partway through updating the project.
  */
 function usableHistory(file: HistoryFile | null): HistoryFile {
-  return file && file.schemaVersion === SCHEMA_VERSION ? file : emptyHistory();
+  if (file && file.schemaVersion === SCHEMA_VERSION) return file;
+  // The steps go, but where each AI step stood when they went is still true of the site: its chat turn keeps it.
+  const h = emptyHistory();
+  if (file && typeof file === 'object' && Array.isArray(file.entries)) {
+    const entries = file.entries.filter((e): e is HistoryEntry => !!e && typeof e === 'object');
+    const cursor = Number.isInteger(file.cursor) ? Math.min(Math.max(file.cursor, 0), entries.length) : 0;
+    const before = file.droppedRuns && typeof file.droppedRuns === 'object' ? Object.entries(file.droppedRuns) : [];
+    for (const [runId, status] of before) if (status === 'applied' || status === 'undone') noteDropped(h, [{ runId } as HistoryEntry], status);
+    noteDropped(h, entries.slice(0, cursor), 'applied');
+    noteDropped(h, entries.slice(cursor), 'undone');
+  }
+  return h;
+}
+
+/** Note in `h` each AI step of `dropped`, which History is letting go, as standing `status` (see HistoryFile.droppedRuns). */
+function noteDropped(h: HistoryFile, dropped: HistoryEntry[], status: DroppedRun) {
+  const runs = dropped.flatMap((e) => (typeof e?.runId === 'string' && e.runId ? [e.runId] : []));
+  if (!runs.length) return;
+  const map: Record<string, DroppedRun> = { ...h.droppedRuns };
+  for (const runId of runs) {
+    // The newest standing goes last, so the oldest are the first let go past the limit.
+    delete map[runId];
+    map[runId] = status;
+  }
+  const ids = Object.keys(map);
+  for (const runId of ids.slice(0, Math.max(0, ids.length - DROPPED_RUN_LIMIT))) delete map[runId];
+  h.droppedRuns = map;
 }
 
 /** Compare disk content with the expected document, ignoring JSON formatting and treating a missing authored source as empty. */

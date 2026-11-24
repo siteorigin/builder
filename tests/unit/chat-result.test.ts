@@ -3,7 +3,8 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatMessage } from '@shared/api';
 import type { InstanceNode, ListItem } from '@shared/types';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId } from '../../src/renderer/src/lib/result';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, undoableId } from '../../src/renderer/src/lib/result';
+import { resultAsSaid, runStanding, turnState, type TurnHistory } from '@shared/turns';
 
 describe('AI result card', () => {
   it('counts only passing checks as passed, keeping unchecked ones apart from site problems', () => {
@@ -193,5 +194,74 @@ describe('opening a shared header field the AI located (#203)', () => {
     expect(locationTarget(state, about.id, location)).toEqual({ pageId: about.id, selection: { owner, instancePath: [], nodeId } });
     about.showHeader = false;
     expect(locationTarget(state, about.id, location)).toEqual({ pageId: state.site.homePageId, selection: { owner, instancePath: [], nodeId } });
+  });
+});
+
+describe('where an AI turn stands, read from History (issue 276)', () => {
+  type Entry = { runId?: string; applied: boolean };
+  const steps = (entries: Entry[], droppedRuns?: TurnHistory['droppedRuns']) => ({ canUndo: entries.some((e) => e.applied), entries, ...(droppedRuns ? { droppedRuns } : {}) });
+  const turn = (id: string, runId: string, result: Partial<NonNullable<ChatMessage['result']>> = {}): ChatMessage => ({
+    id,
+    role: 'assistant',
+    text: 'Swapped the hero photo.',
+    time: '',
+    runId,
+    result: { status: 'completed', summary: 'Swapped the hero photo.', changes: [{ label: 'Changed the Home hero image' }], validation: [], canUndo: true, ...result }
+  });
+  const ask = (id: string): ChatMessage => ({ id, role: 'user', text: 'Use the reading nook photo', time: '' });
+  /** What an earlier version saved for a turn undone from chat. */
+  const marked = (id: string, runId: string) => turn(id, runId, { summary: 'Swapped the hero photo. (Undone.)', canUndo: false });
+
+  it('reads a turn as applied or undone from its step, wherever History moved it from', () => {
+    const t = turn('a1', 'r1');
+    expect(turnState(t, steps([{ runId: 'r1', applied: true }]))).toMatchObject({ standing: 'applied', undoneEarlier: false, result: { summary: 'Swapped the hero photo.', canUndo: true } });
+    expect(turnState(t, steps([{ runId: 'r1', applied: false }]))?.standing).toBe('undone');
+    // History let the step go: what it noted then still says where the change stands.
+    expect(turnState(t, steps([], { r1: 'undone' }))?.standing).toBe('undone');
+    expect(turnState(t, steps([], { r1: 'applied' }))?.standing).toBe('applied');
+    // The step itself wins over an older note.
+    expect(runStanding('r1', steps([{ runId: 'r1', applied: true }], { r1: 'undone' }))).toBe('applied');
+    expect(runStanding('r1', steps([]))).toBe('unknown');
+    expect(runStanding('r1', null)).toBe('unknown');
+    expect(runStanding(undefined, steps([{ applied: true }]))).toBe('unknown');
+    // A turn that changed nothing has no step to stand by.
+    expect(turnState(turn('a2', 'r2', { status: 'no-changes', canUndo: false, changes: [] }), steps([{ runId: 'r2', applied: false }]))?.standing).toBe('unknown');
+  });
+
+  it('offers Undo turn only on the newest applied step, and again once a Redo reapplies it', () => {
+    const msgs = [ask('u1'), turn('a1', 'r1'), ask('u2'), turn('a2', 'r2')];
+    expect(undoableId(msgs, steps([{ runId: 'r1', applied: true }, { runId: 'r2', applied: true }]))).toBe('a2');
+    // Undone from chat, the toolbar or History: the turn before it is now the newest applied step.
+    expect(undoableId(msgs, steps([{ runId: 'r1', applied: true }, { runId: 'r2', applied: false }]))).toBe('a1');
+    expect(undoableId(msgs, steps([{ runId: 'r1', applied: false }, { runId: 'r2', applied: false }]))).toBeUndefined();
+    // A manual edit after the turn stands in the way.
+    expect(undoableId(msgs, steps([{ runId: 'r1', applied: true }, { runId: 'r2', applied: true }, { applied: true }]))).toBeUndefined();
+    // Nothing can be undone while an edit run holds the project.
+    expect(undoableId(msgs, { ...steps([{ runId: 'r2', applied: true }]), canUndo: false })).toBeUndefined();
+  });
+
+  it('reads a turn an earlier version marked "(Undone.)" as it was said, by where its step stands now', () => {
+    const old = marked('a1', 'r1');
+    expect(resultAsSaid(old.result!)).toEqual({ result: { ...old.result, summary: 'Swapped the hero photo.', canUndo: true }, undoneOnce: true });
+    // Redone from the toolbar since: applied, and offered Undo again.
+    expect(turnState(old, steps([{ runId: 'r1', applied: true }]))).toMatchObject({ standing: 'applied', undoneEarlier: false, result: { summary: 'Swapped the hero photo.' } });
+    expect(undoableId([ask('u1'), old], steps([{ runId: 'r1', applied: true }]))).toBe('a1');
+    expect(turnState(old, steps([{ runId: 'r1', applied: false }]))).toMatchObject({ standing: 'undone', undoneEarlier: false });
+    // History has nothing on it: undone once, and not called either applied or undone now.
+    expect(turnState(old, steps([]))).toMatchObject({ standing: 'unknown', undoneEarlier: true });
+    // Only the mark that earlier versions wrote is read so: a summary of a turn that changed nothing, or one that
+    // can still be undone, keeps its words.
+    expect(resultAsSaid(turn('a2', 'r2', { summary: 'Removed the note (Undone.)', canUndo: true }).result!).undoneOnce).toBe(false);
+    expect(resultAsSaid(turn('a3', 'r3', { status: 'no-changes', summary: 'Nothing to do. (Undone.)', canUndo: false }).result!)).toMatchObject({ undoneOnce: false, result: { summary: 'Nothing to do. (Undone.)' } });
+  });
+
+  it('offers Continue on an unfinished turn only while its changes are in the site', () => {
+    const msgs = [ask('u1'), turn('a1', 'r1', { incomplete: true })];
+    expect(resumableId(msgs, steps([{ runId: 'r1', applied: true }]))).toBe('a1');
+    expect(resumableId(msgs, steps([{ runId: 'r1', applied: false }]))).toBeUndefined();
+    expect(resumableId(msgs, steps([], { r1: 'undone' }))).toBeUndefined();
+    // Nothing known either way: it is offered as before.
+    expect(resumableId(msgs, steps([]))).toBe('a1');
+    expect(resumableId([ask('u1'), marked('a1', 'r1')].map((m) => (m.result ? { ...m, result: { ...m.result, incomplete: true } } : m)), steps([]))).toBeUndefined();
   });
 });

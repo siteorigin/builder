@@ -5,6 +5,7 @@ import { turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type Ch
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
+import { turnState, type TurnHistory } from '@shared/turns';
 import { getTheme } from '@catalogue/index';
 import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
@@ -75,7 +76,7 @@ export interface RunSession {
   apply(batch: { operations: EditOperation[]; expectedRevision?: number }, opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string }): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
   diagnostics(): Diagnostic[];
   undoGroup(runId: string): Promise<{ ok: boolean; error?: { message: string } }>;
-  historyInfo(): { entries: Array<{ runId?: string; applied: boolean }> };
+  historyInfo(): TurnHistory;
 }
 
 export interface OrchestratorDeps {
@@ -629,21 +630,15 @@ export class Orchestrator {
     return true;
   }
 
+  /**
+   * Undo a turn's change, when it is the newest step in History. The transcript keeps the turn as it was said:
+   * whether its change is applied is History's to say, and a Redo from the toolbar or History reapplies it (issue 276).
+   */
   async undoTurn(runId: string): Promise<{ ok: boolean; message?: string }> {
     const session = this.deps.session();
     if (!session) return { ok: false };
     const r = await session.undoGroup(runId);
-    if (!r.ok) return { ok: false, message: r.error?.message };
-    const msg = this.conversation?.messages.find((m) => m.runId === runId);
-    if (msg?.result) {
-      msg.result.canUndo = false;
-      msg.result.summary += ' (Undone.)';
-      // Sent as a transcript update only: a question may be running meanwhile, and the request being worked on is its.
-      this.emitMessage(msg);
-      // Queued behind any other write of the transcript: an undo during a question must not land after its answer.
-      await this.queueSave();
-    }
-    return { ok: true };
+    return r.ok ? { ok: true } : { ok: false, message: r.error?.message };
   }
 
   private async execute(runId: string, userMsg: ChatMessage, msg: ChatMessage, history: ChatMessage[], request?: string) {
@@ -700,6 +695,8 @@ export class Orchestrator {
     const startState = structuredClone(session.state);
     // A question reads the site as it was asked about, even while the author goes on editing it.
     const startRevision = session.revision;
+    /** History as the request starts: whether each earlier turn's change is in the site it reads. */
+    const steps = session.historyInfo();
     /** The project the run reads: as asked about for a question, as it is now for an edit. */
     const readState = () => (ask ? startState : session.state);
     const readRevision = () => (ask ? startRevision : session.revision);
@@ -762,8 +759,11 @@ export class Orchestrator {
     /** Pages this request tried to create in a change that never landed. */
     const wanted: WantedPage[] = [];
     // "Continue" after an unfinished request still owes the pages that one never created.
-    const previous = [...history].reverse().find((h) => h.role === 'assistant')?.result;
-    const continuing = !ask && CONTINUE.test(userMsg.text) && !!previous?.incomplete;
+    const before = [...history].reverse().find((h) => h.role === 'assistant');
+    const previousTurn = before ? turnState(before, steps) : null;
+    const previous = previousTurn?.result;
+    // An unfinished request that was undone since has nothing left to carry on from.
+    const continuing = !ask && CONTINUE.test(userMsg.text) && !!previous?.incomplete && previousTurn?.standing !== 'undone' && !previousTurn?.undoneEarlier;
     if (continuing) {
       for (const p of previous!.unfinished ?? []) rememberPage(wanted, { title: p.title, ...(p.route ? { route: p.route } : {}), ...(p.existing ? { existing: p.existing } : {}), reason: 'carried' });
       // Links that were waiting for a missing page; each is connected only if its slot is still empty.
@@ -798,9 +798,14 @@ export class Orchestrator {
           const picked = images.find((i) => i.assetId === q.answeredAssetId);
           items.push({ kind: 'user', text: picked ? imageAnswer(picked) : q.answered.length > MAX_REPLAYED_ANSWER ? `${q.answered.slice(0, MAX_REPLAYED_ANSWER)}…` : q.answered });
         }
+        // The turn as it was said, with where its change stands now: History's to say, not the summary's.
+        const turn = h.result ? turnState(h, steps) : null;
+        const r = turn?.result;
+        const undone = turn?.standing === 'undone';
         // A run stopped at its budget lists what it already did, so "continue" picks up where it left off.
-        const done = h.result?.incomplete && h.result.canUndo && h.result.changes.length ? ` Changes made so far: ${h.result.changes.map((c) => c.label).join('; ')}.` : '';
-        const said = h.result?.summary || h.text ? (h.result?.summary || h.text) + done : '';
+        const done = r?.incomplete && r.canUndo && r.changes.length && !undone && !turn?.undoneEarlier ? ` Changes made so far: ${r.changes.map((c) => c.label).join('; ')}.` : '';
+        const standing = undone ? ' These changes were undone afterwards.' : turn?.undoneEarlier ? ' These changes were undone afterwards, and may have been redone since.' : '';
+        const said = r?.summary || h.text ? (r?.summary || h.text) + done + standing : '';
         const text = [said, ...unanswered].filter(Boolean).join(' ');
         if (text) items.push({ kind: 'assistant', text, toolCalls: [] });
       }

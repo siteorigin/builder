@@ -173,6 +173,29 @@ describe('project storage', () => {
     expect(s.state.site.name).toBe('Storage');
   });
 
+  it('remembers whether each AI step it drops was applied or undone, so its chat turn still says (issue 276)', async () => {
+    const ai = async (s: ProjectSession, runId: string, name: string) => {
+      expect(await s.beginRun(runId)).toBeNull();
+      await ok(s.apply({ operations: [{ type: 'site.update', name }] }, { label: 'AI', source: 'ai', runId, history: false }));
+      expect(await s.completeRun(`AI: ${name}`)).toBe(true);
+    };
+    const { dir, s } = await make();
+    const { asset } = image(dir, 'photo', '1a2b3c4d');
+    await ai(s, 'run_before', 'Before');
+    await add(s, [asset], 'Import image');
+    await remove(s, [asset], 'Remove image');
+    await site(s, { name: 'Middle' }, 'Rename site');
+    await add(s, [asset], 'Import image again');
+    await ai(s, 'run_after', 'After');
+    await ok(s.undo());
+    await ok(s.undo());
+    const plan = (await s.storageInfo()).reclaim!;
+    expect(plan).toMatchObject({ undo: ['AI: Before', 'Import image', 'Remove image'], redo: ['Import image again', 'AI: After'] });
+    expect((await s.reclaimStorage(plan.key)).ok).toBe(true);
+    expect(labels(s)).toEqual(['Rename site']);
+    expect(s.historyInfo().droppedRuns).toEqual({ run_before: 'applied', run_after: 'undone' });
+  });
+
   it('keeps every size of an image the project still names in any file, and drops a later step whose undo would name a deleted one', async () => {
     const { dir, s } = await make();
     const styled = image(dir, 'photo', '1a2b3c4d');

@@ -21,6 +21,8 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { diagnosticKey, validateState } from '@engine/validate';
 import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
+import { turnState } from '@shared/turns';
+import { undoableId } from '../../src/renderer/src/lib/result';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -388,10 +390,51 @@ describe('read-only questions (#203)', () => {
     const { runId } = await run('What is the site called?', { mode: 'ask' });
     expect(undone).toEqual({ ok: true });
     expect(session.state.site.name).toBe('Test');
-    // The undone turn is updated in the transcript without claiming to be the request being worked on.
-    const update = events.slice(from).find((e) => e.kind === 'message' && e.message?.runId === editRun);
-    expect(update?.runId).toBe('');
+    // The undone turn keeps what it said and History says it is undone, so nothing is sent for it: every event while
+    // the question runs is the question's.
+    expect(events.slice(from).some((e) => e.kind === 'message' && e.message?.runId === editRun)).toBe(false);
+    expect(orch.conversation?.messages.find((m) => m.role === 'assistant' && m.runId === editRun)?.result).toMatchObject({ summary: 'Renamed the site.', canUndo: true });
     expect(events.slice(from).filter((e) => e.kind === 'status').every((e) => e.runId === runId)).toBe(true);
+  });
+
+  it('keeps the turn as it was said when it is undone from chat and redone from the toolbar, also after reopening (issue 276)', async () => {
+    const { session, run, orch, adapter } = await setup([
+      () => [call('e1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'site.update', name: 'Renamed' }] })],
+      () => finish('Renamed the site.'),
+      () => finish('It is called Test.'),
+      () => finish('It is called Renamed.')
+    ]);
+    const { runId } = await run('Rename the site');
+    const turn = (c: Conversation | null) => c?.messages.find((m) => m.role === 'assistant' && m.runId === runId);
+    /** What the model was told the assistant said in earlier turns, in its latest request. */
+    const replayed = () => adapter.requests.at(-1)!.items.flatMap((i) => (i.kind === 'assistant' ? [i.text] : [])).join('\n');
+
+    expect(await orch.undoTurn(runId)).toEqual({ ok: true });
+    expect(session.state.site.name).toBe('Test');
+    expect(turnState(turn(orch.conversation)!, session.historyInfo())).toMatchObject({ standing: 'undone', result: { summary: 'Renamed the site.', canUndo: true } });
+    expect(undoableId(orch.conversation!.messages, session.historyInfo())).toBeUndefined();
+    await run('What is the site called?', { mode: 'ask' });
+    expect(replayed()).toContain('Renamed the site. These changes were undone afterwards.');
+
+    // Redo from the toolbar puts the change back, and the turn with it: applied, and offered Undo turn again.
+    expect((await session.redo()).ok).toBe(true);
+    expect(session.state.site.name).toBe('Renamed');
+    expect(turn(orch.conversation)?.result).toMatchObject({ summary: 'Renamed the site.', canUndo: true });
+    expect(turnState(turn(orch.conversation)!, session.historyInfo())?.standing).toBe('applied');
+    expect(undoableId(orch.conversation!.messages, session.historyInfo())).toBe(turn(orch.conversation)!.id);
+    await run('And now?', { mode: 'ask' });
+    expect(replayed()).toContain('Renamed the site.');
+    expect(replayed()).not.toContain('undone');
+
+    // Closed and opened again, the turn reads the same as the site.
+    await session.close();
+    const again = await ProjectSession.open(session.dir, 'test');
+    const reopened = new Orchestrator({ session: () => again, adapter: async () => ({ error: 'unused' }), emit: () => undefined, compileAll: async () => [], inspectLayout: async () => ({ issues: [] }), onBusyChange: () => undefined });
+    const conv = (await reopened.loadConversations()).active;
+    expect(again.state.site.name).toBe('Renamed');
+    expect(turnState(turn(conv)!, again.historyInfo())).toMatchObject({ standing: 'applied', result: { summary: 'Renamed the site.', canUndo: true } });
+    expect(undoableId(conv.messages, again.historyInfo())).toBe(turn(conv)!.id);
+    await again.close();
   });
 
   it('stops without undoing anything, since a question changed nothing', async () => {
@@ -2232,6 +2275,27 @@ describe('requests that create pages over several steps (#88)', () => {
     const staff = pageAt(session.state, '/staff-picks/')!;
     const cta = staff.nodes[staff.rootIds[0]] as unknown as { props: Record<string, unknown> };
     expect(cta.props.primaryLink).toEqual({ type: 'page', target: pageAt(session.state, '/reader-requests/')!.id });
+  });
+
+  it('carries nothing on from an unfinished request that was undone since (issue 276)', async () => {
+    const { session, run, orch, adapter } = await setup([
+      () => [calls(['s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks', '/reader-requests/')] }], ['r', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.create', title: 'Reader requests', route: '/reader-requests/' }] }])],
+      () => finish('Added Staff picks.'),
+      () => finish('Done.'),
+      () => finish('There is nothing to carry on with: that request was undone.')
+    ]);
+    const first = await run('Add Staff picks with a link to a new Reader requests page');
+    expect(first.result).toMatchObject({ incomplete: true, unfinished: [{ title: 'Reader requests', route: '/reader-requests/' }] });
+    expect(await orch.undoTurn(first.runId)).toEqual({ ok: true });
+    expect(pageAt(session.state, '/staff-picks/')).toBeUndefined();
+    const { result } = await run('Continue');
+    // Neither the missing page nor the link waiting for it is owed any more, and the model is told why.
+    expect(adapter.requests).toHaveLength(4);
+    expect(result).toMatchObject({ status: 'no-changes', summary: 'There is nothing to carry on with: that request was undone.' });
+    expect(result?.incomplete).toBeUndefined();
+    const said = adapter.requests[3].items.flatMap((i) => (i.kind === 'assistant' ? [i.text] : [])).join('\n');
+    expect(said).toContain('These changes were undone afterwards.');
+    expect(said).not.toContain('Changes made so far');
   });
 
   it('keeps a blank page blank when the request is continued', async () => {
