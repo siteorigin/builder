@@ -1,4 +1,4 @@
-import type { ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep, PreparedComponentPreview } from '@shared/component-preview';
+import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep, PreparedComponentPreview } from '@shared/component-preview';
 import { api, getState } from '../store';
 import { acceptMessage, newSessionId, postToFrame, type BridgeMessage } from './bridge';
 import { attributeFindings, failedImages, missingImages, missingSections, staleImages } from './inspect-check';
@@ -106,8 +106,9 @@ export interface ComponentFrame {
   /**
    * Show `spec` at `width` CSS pixels wide and measure it. Only what changed is redone: a new width is measured in
    * place, while new variants, sample values or project changes load a newly prepared preview. Calls run in turn.
+   * `measure` asks for the checks the AI's component inspection adds.
    */
-  update(spec: ComponentPreviewSpec, width: number): Promise<ComponentPreviewResult>;
+  update(spec: ComponentPreviewSpec, width: number, measure?: ComponentPreviewMeasure): Promise<ComponentPreviewResult>;
   /** Remove the frame and the preview it shows; a call still running ends with an error. */
   dispose(): void;
 }
@@ -178,7 +179,7 @@ export function componentFrame(): ComponentFrame {
       );
     });
 
-  async function show(spec: ComponentPreviewSpec, width: number): Promise<ComponentPreviewResult> {
+  async function show(spec: ComponentPreviewSpec, width: number, measure?: ComponentPreviewMeasure): Promise<ComponentPreviewResult> {
     // A request names its own component: one that cannot be prepared is never reported as the one shown before.
     let definitionId: string | undefined;
     const fail = (error: string): ComponentPreviewResult => ({ state: 'error', error, width, ...(definitionId ? { definitionId } : {}) });
@@ -228,7 +229,7 @@ export function componentFrame(): ComponentFrame {
     const measured = await next(
       (m) => m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === requestId,
       PREVIEW_MEASURE_MS,
-      () => postToFrame(target, origin, sessionId, 'inspect', { requestId })
+      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}) })
     );
     if (disposed) return fail('The component preview was closed.');
     if (!measured) return fail('Timed out measuring the component preview.');
@@ -239,8 +240,8 @@ export function componentFrame(): ComponentFrame {
   }
 
   return {
-    update(spec, width) {
-      const run = queue.then(() => show(spec, width));
+    update(spec, width, measure) {
+      const run = queue.then(() => show(spec, width, measure));
       queue = run.catch(() => undefined);
       return run;
     },
@@ -260,18 +261,23 @@ export function componentFrame(): ComponentFrame {
 
 /**
  * Show components in isolated preview frames step by step, as the main process asked, and answer with what each
- * frame reported. Every frame is removed afterwards.
+ * frame reported. Every frame is removed afterwards. With `measure.budgetMs`, no step starts once that has passed:
+ * the answer then ends with the last step started.
  */
-export async function runComponentPreviews(req: { requestId: string; steps: ComponentPreviewStep[] }) {
+export async function runComponentPreviews(req: { requestId: string; steps: ComponentPreviewStep[]; measure?: ComponentPreviewMeasure }) {
   const frames = new Map<number, ComponentFrame>();
   const results: ComponentPreviewResult[] = [];
+  const measure = req.measure && typeof req.measure === 'object' ? req.measure : undefined;
+  const until = Number.isFinite(measure?.budgetMs) ? Date.now() + Math.max(0, measure!.budgetMs!) : Infinity;
   try {
     for (const step of (Array.isArray(req.steps) ? req.steps : []).slice(0, 50)) {
+      if (Date.now() > until) break;
       const n = Number.isInteger(step?.frame) && step.frame! >= 0 && step.frame! < 4 ? step.frame! : 0;
       const width = Number.isFinite(step?.width) ? Math.min(4000, Math.max(200, Math.round(step.width))) : 1280;
       let f = frames.get(n);
       if (!f) frames.set(n, (f = componentFrame()));
-      results.push(await f.update(step.spec, width));
+      // A step that throws is answered as a failure, so the batch is always answered.
+      results.push(await f.update(step.spec, width, measure).catch((e: unknown): ComponentPreviewResult => ({ state: 'error', error: `The component preview failed: ${e instanceof Error ? e.message : String(e)}`, width })));
     }
   } finally {
     for (const f of frames.values()) f.dispose();

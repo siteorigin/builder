@@ -3100,11 +3100,73 @@ function pickIssues(lists, max) {
   return lists.flatMap((l, i) => l.slice(0, taken[i]));
 }
 
+/** Stacked pairs one inspection reports at most. */
+const MAX_GAPS = 400;
+
+/**
+ * For the AI's component inspection: each two elements of the editor's markup that follow one another stacked in
+ * their container, and the space between them, so a preview with content left empty can be compared with the same
+ * preview with it shown. Each is named by where it rendered and which of the elements rendered there it is, in
+ * document order (`n` of `of`): list items take new IDs in every preview.
+ */
+function stackGaps() {
+  const main = document.getElementById('main');
+  if (!main) return [];
+  const children = Object.getOwnPropertyDescriptor(Element.prototype, 'children').get;
+  const ends = new Map();
+  const totals = new Map();
+  for (const el of main.querySelectorAll('[data-so-node]')) {
+    const d = descOf(el);
+    const base = `${d.ctx}\u0000${d.node}`;
+    const n = totals.get(base) || 0;
+    totals.set(base, n + 1);
+    ends.set(el, { ctx: d.ctx, node: d.node, n, base });
+  }
+  const end = (e) => ({ ctx: e.ctx, node: e.node, n: e.n, of: totals.get(e.base) });
+  /** The boxes a container lays out in the flow, in order, looking through wrappers that take no box. */
+  const laidOut = (parent) => {
+    const out = [];
+    for (const c of children.call(parent)) {
+      const s = getComputedStyle(c);
+      if (s.display === 'none') continue;
+      if (s.display === 'contents') {
+        out.push(...laidOut(c));
+        continue;
+      }
+      if (s.position === 'absolute' || s.position === 'fixed') continue;
+      const r = Element.prototype.getBoundingClientRect.call(c);
+      if (r.width || r.height) out.push({ el: c, r });
+    }
+    return out;
+  };
+  const gaps = [];
+  try {
+    for (const parent of [main, ...main.querySelectorAll('*')]) {
+      if (gaps.length >= MAX_GAPS) break;
+      if (getComputedStyle(parent).display === 'contents') continue;
+      const boxes = laidOut(parent);
+      for (let i = 1; i < boxes.length && gaps.length < MAX_GAPS; i++) {
+        const a = boxes[i - 1];
+        const b = boxes[i];
+        const ea = ends.get(a.el);
+        const eb = ends.get(b.el);
+        // Stacked: the second below the first, sharing some of its width (not the next card of a row).
+        if (!ea || !eb || b.r.top < a.r.bottom - 1 || b.r.left >= a.r.right || b.r.right <= a.r.left) continue;
+        gaps.push({ a: end(ea), b: end(eb), gap: Math.round((b.r.top - a.r.bottom) * 2) / 2 });
+      }
+    }
+  } catch {
+    // Markup whose own properties are hidden (a form's named controls) ends the list early rather than the report.
+  }
+  return gaps;
+}
+
 /**
  * Measure the page. Images get until `deadline` to be requested again; the readability checks stop at
- * `readableBy`, so the report always reaches the editor before it stops waiting.
+ * `readableBy`, so the report always reaches the editor before it stops waiting. `opts.readability` measures a
+ * component shown on its own as a page is measured; `opts.gaps` adds the space between stacked elements.
  */
-async function inspect(deadline, readableBy = deadline + 1500) {
+async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
   // Images first: one that arrives while they are requested again can still change the layout measured below.
   const images = await imageReport(deadline);
   const vw = document.documentElement.clientWidth;
@@ -3142,8 +3204,8 @@ async function inspect(deadline, readableBy = deadline + 1500) {
   if (h1 !== 1 && !preview) issues.push({ kind: 'heading-structure', message: `The page has ${h1} h1 headings (expected 1).` });
   for (const a of document.querySelectorAll('a')) if (!a.textContent.trim() && !a.getAttribute('aria-label')) issues.push({ kind: 'empty-link', ...at(a), message: 'A link has no accessible name.' });
   // The readability checks measure pages of the site: a component shown on its own has sample content in a
-  // made-up page, with nothing there an edit could address.
-  const readable = preview ? null : readability(vw, readableBy);
+  // made-up page, with nothing there an edit could address, unless the AI asks for it to check the design itself.
+  const readable = preview && !opts.readability ? null : readability(vw, readableBy);
   // One list per kind, in the order found, so the cap keeps a finding of every kind.
   const byKind = new Map();
   for (const i of issues) {
@@ -3167,7 +3229,8 @@ async function inspect(deadline, readableBy = deadline + 1500) {
     ...(readable ? { checks: readable.checks } : {}),
     issues: listed,
     runtimeErrors: errors.slice(-10),
-    ...(preview ? { preview } : {})
+    ...(preview ? { preview } : {}),
+    ...(opts.gaps ? { gaps: stackGaps() } : {})
   };
 }
 
@@ -3360,7 +3423,7 @@ window.addEventListener('message', async (e) => {
       let report;
       try {
         await settled(started + 4000);
-        report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000);
+        report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000, { readability: m.payload.readability === true, gaps: m.payload.gaps === true });
       } catch (err) {
         // A failed measurement is answered as one, never left for the editor to time out on.
         report = { error: `The page could not be measured: ${String((err && err.message) || err).slice(0, 200)}` };
