@@ -648,6 +648,7 @@ export function Canvas() {
             syncPage(path);
             followed(nav.current, viewKey(getState()));
           }
+          notePostPreviewAt(path);
           break;
         }
         case 'history': {
@@ -668,6 +669,7 @@ export function Canvas() {
           // The page the frame is showing, so following it below does not send the frame back there (which would
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
+          notePostPreviewAt(path);
           // In Preview the page the frame is on is a visit, also when the editor opened it (the page picker).
           const at = journeyRef.current.at;
           if (getState().mode === 'preview' && at && samePath(addressPath(at.address), path)) setJourney(observe(journeyRef.current, at, true));
@@ -938,6 +940,16 @@ export function Canvas() {
     const s = getState();
     return s.zoom === 'fit' ? Math.min(1, (size.w - 56) / s.viewport) : s.zoom;
   };
+
+  /**
+   * While a post is previewed, the address the frame is now on, for the toolbar and the Inspector to name (lib/posts
+   * postShown): the post, or wherever a visitor's link went on to. Not while the editor's own request is on its way,
+   * so the page being left is never named in the post's place.
+   */
+  function notePostPreviewAt(path: string) {
+    const s = getState();
+    if (s.postView === 'preview' && !nav.current.request && s.postPreviewAt !== path) setState({ postPreviewAt: path });
+  }
 
   function syncPage(path: string) {
     const st = getState().snapshot?.state;

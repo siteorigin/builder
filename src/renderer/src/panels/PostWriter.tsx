@@ -463,6 +463,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     setMode('preview');
     // Once the canvas shows again; a preview still starting opens the post once it is ready.
     requestAnimationFrame(() => {
+      // The preview ended before it began (a page chosen): the canvas stays on the page the editor names (#578).
+      if (getState().postView !== 'preview' || getState().post?.entryId !== post.entryId) return;
       const c = getState().snapshot?.state.collections[post.collectionId];
       const e = c && Object.hasOwn(c.entries, post.entryId) ? c.entries[post.entryId] : undefined;
       if (c && e && !visitAddress(entryRoute(c, e))) toast('The preview is starting: the post opens in it once it is ready.', 'info');

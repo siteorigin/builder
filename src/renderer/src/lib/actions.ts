@@ -605,11 +605,15 @@ export function openLayout(collectionId: string, entryId?: string) {
  * page already shown selects the page itself too. In Preview nothing is selected.
  */
 export function selectPage(pageId: string, target?: ElementRef | null) {
-  // A page chosen while a post is previewed ends that preview: the canvas goes to the page (see Editor).
+  // A page chosen while a post is previewed ends that preview: the canvas goes to the page (see Editor). One chosen
+  // while the post writer covers the canvas puts the writer away, so the page shows and the editor names it (#578);
+  // the page was not on screen, so it opens at its place as another page does.
+  const covered = getState().leftTab === 'posts' && getState().postView === 'write';
   if (getState().postView === 'preview') setState({ postView: 'write', ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}) });
+  else if (covered) setState({ leftTab: 'pages' });
   const s = getState();
   const st = s.snapshot?.state;
-  const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
+  const itself = target === null || (target === undefined && !covered && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
   const selection = target !== undefined ? target : s.mode === 'edit' && !itself && st ? placeOn(st, s.pagePlaces, pageId) : null;
   // A page opened while previewing is where Edit opens: what was selected before Preview is not selected again.
   setState({ pageId, selection, definitionMode: null, templateMode: null, previewReturn: null, ...(itself ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });

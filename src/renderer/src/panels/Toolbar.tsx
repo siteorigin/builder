@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Sparkles, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Sparkles, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
 import { api, editRunStatus, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
@@ -11,6 +11,7 @@ import { toolbarAnnouncement, useTransitionAnnouncement, type SaveStatus } from 
 import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
 import { runPhase, settledState } from '../lib/savestate';
+import { postShown, postWorkspace } from '../lib/posts';
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
@@ -19,6 +20,11 @@ export function Toolbar() {
   const zoom = useStore((s) => s.zoom);
   const mode = useStore((s) => s.mode);
   const leftTab = useStore((s) => s.leftTab);
+  // The Posts workspace in front: the toolbar names the post (or where its preview's visitor went), not the page under
+  // the writer, and the canvas's width and zoom wait while the writer covers it (#578).
+  const posting = useStore(postWorkspace);
+  const post = useStore((s) => s.post);
+  const postPreviewAt = useStore((s) => s.postPreviewAt);
   const pending = useStore((s) => s.pendingSave);
   const drafting = useStore((s) => s.drafting > 0);
   const refused = useStore((s) => s.refusedDrafts > 0);
@@ -157,9 +163,12 @@ export function Toolbar() {
   // What the author calls this project: a working copy's own name (#176), otherwise the site's.
   const projectName = projectDisplayName(state);
   const named = projectName === siteName ? projectName : `${projectName} (site name: ${siteName})`;
-  const defName = definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
-  const placeName = defName ?? page?.title ?? '';
-  const isHome = !definitionMode && page?.id === state.site.homePageId;
+  const shown = posting ? postShown(state, posting, post, postPreviewAt) : null;
+  const shownPage = shown?.kind === 'page' && Object.hasOwn(state.pages, shown.pageId) ? state.pages[shown.pageId] : null;
+  const covered = posting === 'write';
+  const defName = !shown && definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
+  const placeName = shown ? (shown.kind === 'post' ? shown.title : shown.kind === 'page' ? (shownPage?.title ?? '') : shown.path) : (defName ?? page?.title ?? '');
+  const isHome = shown ? !!shownPage && shownPage.id === state.site.homePageId : !definitionMode && page?.id === state.site.homePageId;
   // The width is a whole number from 240 to 2560. Anything else is not applied: the field says why and
   // keeps focus after Enter so it can be corrected, or goes back to the current width when left.
   const validWidth = (raw: string) => {
@@ -167,10 +176,11 @@ export function Toolbar() {
     return raw.trim() !== '' && Number.isInteger(v) && v >= VIEWPORT_LIMITS.min && v <= VIEWPORT_LIMITS.max ? v : null;
   };
   const zoomItems: MenuItem[] = [
-    { label: 'Fit to window', checked: zoom === 'fit', onSelect: () => setZoom('fit') },
-    ...ZOOM_LEVELS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, onSelect: () => setZoom(z) }))
+    { label: 'Fit to window', checked: zoom === 'fit', disabled: covered, onSelect: () => setZoom('fit') },
+    ...ZOOM_LEVELS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, disabled: covered, onSelect: () => setZoom(z) }))
   ];
   const openSettings = () => setState({ modal: { kind: 'settings' } });
+  const widthCovered = 'The post writer covers the canvas. Preview in site shows the post at this width and zoom.';
   const commitWidth = (fromEnter: boolean, el: HTMLInputElement) => {
     const v = validWidth(widthDraft);
     if (v !== null) {
@@ -217,7 +227,7 @@ export function Toolbar() {
                   { heading: 'Pages' },
                   ...pageChoices(state).map((p) => ({
                     label: p.title,
-                    checked: !definitionMode && p.id === pageId,
+                    checked: shown ? p.id === shownPage?.id : !definitionMode && p.id === pageId,
                     hint: p.home ? 'Home page · /' : p.address,
                     onSelect: () => selectPage(p.id)
                   })),
@@ -248,7 +258,21 @@ export function Toolbar() {
             <span className="sep" aria-hidden="true">/</span>
             <span className={`page${defName ? ' def' : ''}`}>
               {/* The house names the home page, unless the page's own name already says so. */}
-              {defName ? <Component role="img" aria-label="Component" /> : isHome ? /\bhome\b/i.test(placeName) ? <House aria-hidden="true" /> : <House role="img" aria-label="Home page" /> : null}
+              {defName ? (
+                <Component role="img" aria-label="Component" />
+              ) : shown?.kind === 'post' ? (
+                shown.ref ? (
+                  <Newspaper role="img" aria-label="Post" />
+                ) : (
+                  <Newspaper aria-hidden="true" />
+                )
+              ) : isHome ? (
+                /\bhome\b/i.test(placeName) ? (
+                  <House aria-hidden="true" />
+                ) : (
+                  <House role="img" aria-label="Home page" />
+                )
+              ) : null}
               <span className="ellipsis">{placeName}</span>
             </span>
             <ChevronDown className="chev" aria-hidden="true" />
@@ -286,21 +310,22 @@ export function Toolbar() {
             if (e.button === 0 && e.target !== e.currentTarget && (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) && at.closest('#dock-panel-inspect')) e.preventDefault();
           }}
         >
-          <button aria-pressed={preset === 'desktop'} title="Desktop, 1280 px" aria-label="Desktop" onClick={() => setViewport(VIEWPORT_PRESETS.desktop)}>
+          <button aria-pressed={preset === 'desktop'} disabled={covered} title={covered ? widthCovered : 'Desktop, 1280 px'} aria-label="Desktop" onClick={() => setViewport(VIEWPORT_PRESETS.desktop)}>
             <Monitor />
           </button>
-          <button aria-pressed={preset === 'tablet'} title="Tablet, 834 px" aria-label="Tablet" onClick={() => setViewport(VIEWPORT_PRESETS.tablet)}>
+          <button aria-pressed={preset === 'tablet'} disabled={covered} title={covered ? widthCovered : 'Tablet, 834 px'} aria-label="Tablet" onClick={() => setViewport(VIEWPORT_PRESETS.tablet)}>
             <Tablet />
           </button>
-          <button aria-pressed={preset === 'phone'} title="Phone, 390 px" aria-label="Phone" onClick={() => setViewport(VIEWPORT_PRESETS.phone)}>
+          <button aria-pressed={preset === 'phone'} disabled={covered} title={covered ? widthCovered : 'Phone, 390 px'} aria-label="Phone" onClick={() => setViewport(VIEWPORT_PRESETS.phone)}>
             <Smartphone />
           </button>
         </div>
-        <label className="width-field" title={`Preview width, from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} px`}>
+        <label className="width-field" title={covered ? widthCovered : `Preview width, from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} px`}>
           <input
             className="width-input"
             aria-label="Preview width in pixels"
             type="number"
+            disabled={covered}
             min={VIEWPORT_LIMITS.min}
             max={VIEWPORT_LIMITS.max}
             value={widthDraft}
@@ -337,7 +362,8 @@ export function Toolbar() {
             className="btn btn-sm btn-ghost zoom-btn"
             aria-haspopup="menu"
             aria-expanded={false}
-            title="Zoom"
+            disabled={covered}
+            title={covered ? widthCovered : 'Zoom'}
             aria-label={`Zoom: ${zoom === 'fit' ? 'fit to window' : `${Math.round(zoom * 100)}%`}`}
             onClick={(e) => menu.openAt(e.currentTarget, zoomItems, 'Zoom')}
           >

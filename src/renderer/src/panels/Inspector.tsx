@@ -3,6 +3,7 @@ import { propBindingSchema } from '@shared/bindings';
 import { Children, Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
+  ArrowLeft,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -20,6 +21,7 @@ import {
   Link as LinkIcon,
   List,
   MousePointerClick,
+  Newspaper,
   Palette,
   PanelBottom,
   PanelTop,
@@ -42,6 +44,7 @@ import { validateRoute } from '@shared/routes';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
+import { postAt, postShown, postWorkspace } from '../lib/posts';
 import { cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
@@ -461,9 +464,12 @@ function InspectorBody() {
   const pageId = useStore((s) => s.pageId);
   const definitionMode = useStore((s) => s.definitionMode);
   const templateMode = useStore((s) => s.templateMode);
+  const posting = useStore(postWorkspace);
   const tokens = useMemo(() => (snap ? effectiveTokens(snap.state) : []), [snap?.state.tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!snap) return null;
   const st = snap.state;
+  // The post writer, or a post previewed: the post is what is in front, never the page under it (#578).
+  if (posting) return <PostOverview state={st} workspace={posting} />;
   const editingDef = definitionMode ? st.components[definitionMode.definitionId] : undefined;
   // While editing a component everywhere, every route (canvas, Layers, nothing selected) shows that component.
   const throughPlacement = !!selection && selection.instancePath.length > 0 && (() => {
@@ -2657,6 +2663,65 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         </span>
         <ChevronRight aria-hidden="true" className="chev" />
       </button>
+    </div>
+  );
+}
+
+/**
+ * The Inspector while the Posts workspace is in front (#578): the post being written or previewed, or where a visitor
+ * went on to from its preview. The page under the writer, its sections and its settings stay out of reach until it
+ * shows again, so nothing changed here lands on it. The post's own details are edited in the writer.
+ */
+function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'write' | 'preview' }) {
+  const post = useStore((s) => s.post);
+  const at = useStore((s) => s.postPreviewAt);
+  const shown = postShown(state, workspace, post, at);
+  const opened = postAt(state, post);
+  const openedTitle = opened ? `“${opened.title || 'Untitled'}”` : 'the post';
+  // The writer shows again even when the sidebar was hidden or showed another panel during the preview.
+  const back = (
+    <button className="btn btn-sm" onClick={() => setState({ postView: 'write', leftTab: 'posts' })}>
+      <ArrowLeft aria-hidden="true" /> Back to writing
+    </button>
+  );
+  const key = `post:${workspace}:${post?.collectionId ?? ''}:${post?.entryId ?? ''}`;
+  if (shown.kind === 'post' && !shown.ref)
+    return (
+      <div className="panel-body insp" key={key}>
+        <Header title="Posts" kind="No post open" icon={<Newspaper />} />
+        <div className="insp-empty">
+          <Newspaper aria-hidden="true" />
+          <p>Choose a post in the list, or start a new one. A post’s text and details are edited in the writer.</p>
+        </div>
+      </div>
+    );
+  if (shown.kind === 'post') {
+    const other = workspace === 'preview' && !!post && (shown.ref!.entryId !== post.entryId || shown.ref!.collectionId !== post.collectionId);
+    return (
+      <div className="panel-body insp" key={key}>
+        <Header title={shown.title} kind={`${shown.draft ? 'Draft post' : 'Published post'}${workspace === 'preview' ? ' · preview' : ''}`} icon={<Newspaper />} actions={workspace === 'preview' ? back : undefined} />
+        <div className="insp-empty">
+          <Newspaper aria-hidden="true" />
+          <p>
+            {workspace === 'write'
+              ? 'Its text, address, date, author, excerpt and featured image are edited in the writer. Nothing here changes a page.'
+              : other
+                ? `A visitor’s link went on from ${openedTitle}. Back to writing returns to it.`
+                : 'Showing the post as visitors see it. Back to writing to change it.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+  const page = shown.kind === 'page' && Object.hasOwn(state.pages, shown.pageId) ? state.pages[shown.pageId] : undefined;
+  const home = !!page && page.id === state.site.homePageId;
+  return (
+    <div className="panel-body insp" key={key}>
+      <Header title={page ? page.title : shown.kind === 'address' ? shown.path : ''} kind={page ? (home ? 'Home page · preview' : 'Page · preview') : 'Preview'} icon={home ? <House /> : page ? <FileText /> : <Eye />} actions={back} />
+      <div className="insp-empty">
+        <Eye aria-hidden="true" />
+        <p>A visitor’s link went on from {openedTitle}. Back to writing returns to it; pages are changed once the preview ends.</p>
+      </div>
     </div>
   );
 }

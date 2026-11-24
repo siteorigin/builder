@@ -7,6 +7,7 @@ import { Toolbar } from './panels/Toolbar';
 import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
 import { entryRoute } from '@shared/collections';
 import { saveOpenPost } from './lib/post-draft';
+import { postWorkspace } from './lib/posts';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
 import { PostsPanel } from './panels/PostsPanel';
@@ -92,9 +93,12 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     void saveNow();
     return true;
   }
+  // What is selected on the page under the post writer is out of sight: no key changes it, copies it or asks the AI about
+  // it until that page shows again (#578).
+  const writing = postWorkspace(s) === 'write';
   // Duplicate, delete and move act on every layer selected together in Layers, or on the selection alone.
   if (mod && key.toLowerCase() === 'd') {
-    void duplicateLayers();
+    if (!writing) void duplicateLayers();
     return true;
   }
   // Copy and paste sections and elements, also between pages. Only while editing, with no dialog or menu open: a key
@@ -102,12 +106,12 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   // paste. Selected text keeps the ordinary copy, and a copy is taken from a page, never from inside a component edited
   // everywhere. A paste goes where the author is editing (a page, or the component edited everywhere), whatever text
   // is selected: the editor's own fields never get here (see Editor's key handler).
-  if (mod && !shift && s.mode === 'edit' && !s.modal && !openDialogs.length && !openMenus.count) {
+  if (mod && !shift && s.mode === 'edit' && !writing && !s.modal && !openDialogs.length && !openMenus.count) {
     if (key.toLowerCase() === 'c' && !textSelected() && !s.definitionMode) return copySelection();
     if (key.toLowerCase() === 'v') return pasteCopy();
   }
   if (mod && key.toLowerCase() === 'j') {
-    askAiAbout(s.selection);
+    askAiAbout(writing ? null : s.selection);
     return true;
   }
   // With Shift held, macOS reports the backslash key as "|".
@@ -120,7 +124,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     setState({ modal: { kind: 'export' } });
     return true;
   }
-  if (!mod && (key === 'Delete' || key === 'Backspace') && s.selection) {
+  if (!mod && (key === 'Delete' || key === 'Backspace') && s.selection && !writing) {
     void deleteLayers();
     return true;
   }
@@ -141,7 +145,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (mod && shift && (key === 'ArrowUp' || key === 'ArrowDown')) {
-    void moveLayers(key === 'ArrowUp' ? -1 : 1);
+    if (!writing) void moveLayers(key === 'ArrowUp' ? -1 : 1);
     return true;
   }
   return false;
@@ -489,6 +493,8 @@ export function Editor() {
   useEffect(
     () =>
       useStore.subscribe((s, prev) => {
+        // Where the last preview's visitor went is not where the next one starts: the post is on its way again.
+        if (s.postView !== prev.postView && s.postPreviewAt !== null) setState({ postPreviewAt: null });
         if (prev.postView === 'preview' && s.postView === 'write') {
           if (s.mode === 'preview') setMode('edit');
           showEditedPage();
@@ -507,7 +513,8 @@ export function Editor() {
             setState({ postView: 'preview' });
             const c = now.post && now.snapshot?.state.collections[now.post.collectionId];
             const e = c && now.post && Object.hasOwn(c.entries, now.post.entryId) ? c.entries[now.post.entryId] : undefined;
-            if (c && e) requestAnimationFrame(() => visitAddress(entryRoute(c, e)));
+            // Unless the preview ended meanwhile (a page chosen): the canvas stays on that page, which the editor names.
+            if (c && e) requestAnimationFrame(() => getState().postView === 'preview' && getState().post?.entryId === e.id && visitAddress(entryRoute(c, e)));
           });
         }
       }),
@@ -558,7 +565,7 @@ export function Editor() {
 
   const defining = useStore((s) => s.definitionMode);
   // The page row is outlined only while the page itself is what the inspector shows, on screen.
-  const pageInspected = useStore((s) => s.mode === 'edit' && !s.selection && !s.definitionMode && s.dockOpen && s.rightTab === 'inspect');
+  const pageInspected = useStore((s) => s.mode === 'edit' && !s.selection && !s.definitionMode && s.dockOpen && s.rightTab === 'inspect' && !postWorkspace(s));
   const defName = useStore((s) => (s.definitionMode ? s.snapshot?.state.components[s.definitionMode.definitionId]?.name ?? 'component' : null));
   // Where the component is used, by page name, bounded so the band stays one line: "Home and About", "4 pages".
   const defPlaces = useStore((s) => {

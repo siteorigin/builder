@@ -8,6 +8,7 @@ import { api, projectHistory, setState, setViewport, toast, useStore } from '../
 import { pageShowing, partName } from '@shared/page-shell';
 import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers } from '../lib/actions';
 import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
+import { postWorkspace } from '../lib/posts';
 import { platformKeys } from './CopyPaste';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
@@ -262,10 +263,13 @@ export function CommandMenu() {
   const editing = useStore((s) => s.mode === 'edit');
   const copyable = useStore((s) => s.mode === 'edit' && !s.definitionMode && planLayers(s)?.group.owner.kind === 'page');
   const pasteable = useStore((s) => !!copiedHere(s));
+  // The page under the post writer is out of sight: nothing is copied from it or pasted into it (#578).
+  const writing = useStore((s) => postWorkspace(s) === 'write');
   const readOnly = !!snap?.readOnly;
   const unavailable = (c: Cmd) => {
     if (c.id === 'undo') return history?.canUndo ? undefined : 'Nothing to undo';
     if (c.id === 'redo') return history?.canRedo ? undefined : 'Nothing to redo';
+    if ((c.id === 'copy' || c.id === 'paste') && writing) return 'Not while writing a post';
     if (c.id === 'copy') return !editing ? 'Edit mode only' : copyable ? undefined : 'Nothing to copy';
     if (c.id === 'paste') return !editing ? 'Edit mode only' : !pasteable ? 'Nothing copied' : readOnly ? 'Read-only' : undefined;
     return undefined;

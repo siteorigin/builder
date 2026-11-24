@@ -166,6 +166,7 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     // The Posts workspace opens on its list: a post of the last project is never this one's.
     post: null,
     postView: 'write',
+    postPreviewAt: null,
     postReveal: null,
     definitionMode: null,
     templateMode: null,
