@@ -9,12 +9,14 @@ import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
-import { chainOf, descOrNull, measuredRects, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
+import { chainOf, descOrNull, measuredRects, pointedAt, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { insertOps, insertRole, whereFor, type InsertAt } from '../lib/insert-at';
 import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, measuredLists, measureIds, savingProblems, type DropList, type Measured } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
+import { setAssetDropTarget, type AssetDrag } from '../lib/asset-drag';
+import { descKey, imageDropTargets, resolveImageDrop, type ImageTarget } from '../lib/image-drop';
 import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
 import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
@@ -24,7 +26,7 @@ import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
-import { askAiAbout, writePageWithAi, canInlineEdit, commitText, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
+import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -271,6 +273,12 @@ export function Canvas() {
     const a = document.activeElement;
     if (!a || a === document.body) canvasRef.current?.focus({ preventScroll: true });
   });
+  /** While an image from Assets is dragged: where the pointer is, the image a drop there changes (outlined, in page
+   *  pixels; none where no image takes it), and what the strip says. */
+  const [imageDrop, setImageDrop] = useState<{ name: string; x: number; y: number; over: boolean; outline: Rect | null; label: string } | null>(null);
+  const assetDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
+  /** The project revision the page shows: as it loads, the one the editor has; then each one it says it has applied. */
+  const shownRevision = useRef(0);
   const url = runtime.state === 'ready' ? runtime.url : null;
   const origin = url ? new URL(url).origin : null;
   const state = snapshot?.state;
@@ -631,6 +639,9 @@ export function Canvas() {
           }
           // A page loaded in full inside the same frame while previewing (a visitor's Back across documents) is
           // followed, so the editor and the frame agree on the page.
+          // A page loaded again while an image from Assets is dragged over it will answer nothing the drag asked: it ends.
+          assetDrag.current?.end(false);
+          shownRevision.current = getState().snapshot?.revision ?? 0;
           const sameFrame = readySession.current === session;
           const reloaded = sameFrame && s.mode === 'preview';
           readySession.current = session;
@@ -956,6 +967,7 @@ export function Canvas() {
           setRetrying(false);
           break;
         case 'revisionApplied':
+          if (typeof p.revision === 'number' && Number.isSafeInteger(p.revision)) shownRevision.current = p.revision;
           // A change shown by the page clears its own error, not the canvas's report that a page never arrived.
           if (!timedOut.current) setFrameError(null);
           // The page now shows the latest change (a last section deleted): what is measured on it is measured again.
@@ -985,6 +997,14 @@ export function Canvas() {
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
             w(p.px);
+          }
+          break;
+        }
+        case 'pointed': {
+          const w = measureWaiters.current.get(String(p.requestId));
+          if (w) {
+            measureWaiters.current.delete(String(p.requestId));
+            w(p);
           }
           break;
         }
@@ -1514,7 +1534,7 @@ export function Canvas() {
   function startInsertDrag(drag: InsertDrag, start: { x: number; y: number; pointerId: number }): boolean {
     const s = getState();
     const snap = s.snapshot;
-    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || resizeDrag.current) return false;
+    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current) return false;
     const st = snap.state;
     const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
     const role = insertRole(st, drag.spec);
@@ -1758,6 +1778,252 @@ export function Canvas() {
   // The page now shows a newer version: what a drag measured on it is measured again.
   useEffect(() => insertDrag.current?.remeasure(), [applied]);
 
+  /**
+   * Drag an image from Assets onto an image on the page (#505). As the pointer moves the page is asked what is under it,
+   * and the image a drop there changes (lib/image-drop) is outlined: the image itself, or off any image, the one empty
+   * image of the component or list item the pointer is in. The release puts the dragged image there as one change,
+   * planned on the project as the drag found it; released where no image takes it, nothing changes. Escape, leaving
+   * the window, or releasing off the page cancels. Only the pointer that started it moves or drops it. Returns false
+   * when the canvas can't take a drag now.
+   */
+  function startAssetDrag(drag: AssetDrag, start: { x: number; y: number; pointerId: number }): boolean {
+    const s = getState();
+    const snap = s.snapshot;
+    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || s.templateMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current) return false;
+    const st = snap.state;
+    const opening = snap.workspaceKey;
+    const revision = snap.revision;
+    const targets = imageDropTargets(st, s.pageId);
+    // What is outlined for an empty image the pointer is not on (its own box, or the card that will show it); an empty
+    // image whose box the page does not show now (in a tab not chosen) is not counted.
+    const boxes = [...new Map(targets.filter((t) => t.unfilled).map((t) => [descKey(t.box), t.box])).values()];
+    const boxOf = (t: ImageTarget) => {
+      const m = measured?.get(descKey(t.box));
+      // An image shown more than once can't say which copy would be outlined.
+      return m && !m.many ? { x: m.x, y: m.y, width: m.width, height: m.height } : null;
+    };
+    // Shown now, once or more: every such empty image counts, though only one shown once can be outlined.
+    const showing = (t: ImageTarget) => !!measured?.get(descKey(t.box));
+    let measured: Map<string, Measured | null> | null = boxes.length ? null : new Map();
+    let point = { x: start.x, y: start.y };
+    let done = false;
+    // The page's latest answer, and the point it was asked about.
+    let pointed: (NonNullable<ReturnType<typeof pointedAt>> & { at: { x: number; y: number } }) | null = null;
+    // Released on the page: the drop waits for the page's answer about the release point, asked after the release (the
+    // page may have moved under a pointer that did not), and for the boxes it needs.
+    let released = false;
+    let fresh = false;
+    let aim: { target: ImageTarget | null; over: boolean } = { target: null, over: false };
+    const requests: string[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let asking = false;
+    let askAgain = false;
+    let measuring = false;
+    let measureAgain = false;
+    // The page's scroll the boxes were measured at (as the latest answer had it): the page scrolled since, they are
+    // measured again.
+    let scrolled: string | null = null;
+    let measuredAt: string | null = null;
+    const word = drag.name;
+    /** The window point in the page's own pixels, when it is over the page on screen, and nothing of the editor's (a menu,
+     *  a note) covers it there. The page takes no pointer while the drag runs, so the window finds what is over it. */
+    const onPage = (): { x: number; y: number } | null => {
+      const wrap = wrapRef.current?.getBoundingClientRect();
+      const view = canvasRef.current?.querySelector('.canvas-scroll')?.getBoundingClientRect();
+      const inBox = (b: DOMRect | undefined) => !!b && point.x >= b.left && point.x <= b.right && point.y >= b.top && point.y <= b.bottom;
+      if (!wrap || !inBox(wrap) || !inBox(view)) return null;
+      const top = document.elementFromPoint(point.x, point.y);
+      if (!top || !wrapRef.current?.contains(top)) return null;
+      const z = wrap.width / getState().viewport;
+      return { x: (point.x - wrap.left) / z, y: (point.y - wrap.top) / z };
+    };
+    const show = () => {
+      const over = !!onPage();
+      let target: ImageTarget | null = null;
+      let outline: Rect | null = null;
+      if (over && pointed) {
+        const picture = pointed.picture ? { src: pointed.picture.src, own: pointed.picture.own } : null;
+        const hit = resolveImageDrop(st, targets, { chain: pointed.chain, picture }, showing);
+        // On the image, the element under the pointer; off it, the empty image's box.
+        if (hit) outline = hit.direct ? (hit.target.code ? (pointed.picture?.rect ?? null) : pointed.rect) : boxOf(hit.target);
+        if (outline) target = hit!.target;
+      }
+      aim = { target, over };
+      const label = !over ? `Drag ${word} onto an image on the page` : target ? (target.unfilled ? `Place ${word} as ${target.label}` : `Replace ${target.label} with ${word}`) : `Point at an image to put ${word} there`;
+      setImageDrop({ name: word, x: point.x, y: point.y, over, outline, label });
+    };
+    const ready = () => released && fresh && !!pointed && pointed.at.x === point.x && pointed.at.y === point.y && !!measured && !asking;
+    /** Ask the page what is under the pointer; one question on its way at a time, the latest place asked after it. */
+    const ask = () => {
+      if (done) return;
+      if (asking) {
+        askAgain = true;
+        return;
+      }
+      const at = onPage();
+      if (!at) {
+        pointed = null;
+        show();
+        if (released) end(false);
+        return;
+      }
+      asking = true;
+      askAgain = false;
+      const asked = { ...point };
+      const late = released;
+      const requestId = Math.random().toString(36).slice(2);
+      requests.push(requestId);
+      measureWaiters.current.set(requestId, (raw) => {
+        measureWaiters.current.delete(requestId);
+        asking = false;
+        if (done) return;
+        // An answer from a page still showing an older version of the project than the drag found counts for nothing
+        // (its elements may show other fields): the page is asked again once it shows that version (see `applied`).
+        const p = shownRevision.current >= revision ? pointedAt(raw) : null;
+        pointed = p ? { ...p, at: asked } : null;
+        if (late && p) fresh = true;
+        if (p) scrolled = p.scroll;
+        if (p && p.scroll !== measuredAt) measure();
+        if (askAgain) ask();
+        show();
+        if (ready()) end(true);
+      });
+      post('pointAt', { requestId, x: at.x, y: at.y });
+    };
+    /** Measure the boxes outlined for empty images, in batches the page answers (it reads at most 200 at a time). */
+    const measure = () => {
+      if (!boxes.length || done) return;
+      measured = null;
+      if (measuring) {
+        measureAgain = true;
+        return;
+      }
+      measuring = true;
+      measureAgain = false;
+      measuredAt = scrolled;
+      const next = new Map<string, Measured | null>();
+      const batches: BridgeDesc[][] = [];
+      for (let i = 0; i < boxes.length; i += 200) batches.push(boxes.slice(i, i + 200));
+      void Promise.all(
+        batches.map(
+          (batch) =>
+            new Promise<void>((resolve) => {
+              const requestId = Math.random().toString(36).slice(2);
+              requests.push(requestId);
+              measureWaiters.current.set(requestId, (raw) => {
+                measureWaiters.current.delete(requestId);
+                const rects = measuredRects(raw, batch.length);
+                batch.forEach((d, i) => next.set(descKey(d), rects?.[i] ?? null));
+                resolve();
+              });
+              post('measure', { requestId, descs: batch.map((d) => ({ ctx: d.ctx, node: d.node, items: d.items })) });
+            })
+        )
+      ).then(() => {
+        measuring = false;
+        if (done) return;
+        if (measureAgain) return measure();
+        measured = next;
+        show();
+        if (ready()) end(true);
+      });
+    };
+    const listen = (on: boolean) => {
+      if (on) {
+        window.addEventListener('pointermove', move, true);
+        window.addEventListener('pointerup', up, true);
+        window.addEventListener('pointercancel', cancel, true);
+      } else {
+        window.removeEventListener('pointermove', move, true);
+        window.removeEventListener('pointerup', up, true);
+        window.removeEventListener('pointercancel', cancel, true);
+      }
+    };
+    const end = (commit: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const id of requests) measureWaiters.current.delete(id);
+      listen(false);
+      window.removeEventListener('blur', cancel);
+      window.removeEventListener('keydown', key, true);
+      window.removeEventListener('wheel', wheel, true);
+      document.documentElement.classList.remove('insert-dragging');
+      assetDrag.current = null;
+      setDragging(false);
+      setImageDrop(null);
+      const target = aim.target;
+      if (!commit || !aim.over || !target || getState().snapshot?.workspaceKey !== opening) return;
+      void dropAsset(drag.assetId, target, revision);
+    };
+    const mine = (ev: PointerEvent) => ev.pointerId === start.pointerId;
+    const move = (ev: PointerEvent) => {
+      if (!mine(ev)) return;
+      point = { x: ev.clientX, y: ev.clientY };
+      show();
+      ask();
+    };
+    const up = (ev: PointerEvent) => {
+      if (!mine(ev)) return;
+      point = { x: ev.clientX, y: ev.clientY };
+      released = true;
+      listen(false);
+      // Let go off the page (or over the editor's own menus and notes): nothing changes.
+      if (!onPage()) return end(false);
+      // The drop goes where it was let go, once the page has said what is there now.
+      timer = setTimeout(() => {
+        if (done) return;
+        end(false);
+        toast(`The page didn’t answer, so ${word} wasn’t placed. Drag it again.`, 'info');
+      }, 3000);
+      ask();
+    };
+    const cancel = (ev?: Event) => {
+      if (ev instanceof PointerEvent && !mine(ev)) return;
+      end(false);
+    };
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      end(false);
+    };
+    // The page scrolls inside its frame, which takes no pointer while a drag runs: the wheel over the canvas scrolls it
+    // there, and the page is asked again where it now shows (its answer says it scrolled, so the boxes are measured
+    // again).
+    const wheel = (ev: WheelEvent) => {
+      if (released || !onPage() || !ev.deltaY) return;
+      ev.preventDefault();
+      post('scrollBy', { y: ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY });
+      ask();
+    };
+    listen(true);
+    window.addEventListener('blur', cancel);
+    window.addEventListener('keydown', key, true);
+    window.addEventListener('wheel', wheel, { capture: true, passive: false });
+    document.documentElement.classList.add('insert-dragging');
+    assetDrag.current = {
+      end,
+      remeasure: () => {
+        measure();
+        ask();
+      }
+    };
+    setDragging(true);
+    show();
+    // The boxes are measured once the page has said where it is scrolled to.
+    ask();
+    return true;
+  }
+  useEffect(() => {
+    setAssetDropTarget(startAssetDrag);
+    return () => setAssetDropTarget(null);
+  });
+  // As for a drag from Insert: it ends with the canvas, and with the page, project or editing it was planned on.
+  useEffect(() => () => assetDrag.current?.end(false), []);
+  useEffect(() => assetDrag.current?.end(false), [view?.key, mode, session, snapshot?.workspaceKey, !!definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => assetDrag.current?.remeasure(), [applied]);
+
   // Drag-to-resize viewport. The frame stays centered, so both edges follow the pointer, within the widths the
   // toolbar's width field accepts. The handle captures the pointer (as the panel splitters do), so the drag always
   // hears its release; the width is remembered once, for the opening it was made in. One drag at a time: a second
@@ -1995,7 +2261,7 @@ export function Canvas() {
   // then not at all, whichever fits beside the chip. While the frame is being resized it always shows in full.
   // The same goes for what the strip says on its left (a page opening, a section moving), which never takes more
   // room than leaves the width itself.
-  const chipEnd = placement === 'strip' && !reorder && !resizing && firstSel ? Math.max(0, Math.min(firstSel.left, frameW - chipW)) + chipW + 12 : 0;
+  const chipEnd = placement === 'strip' && !reorder && !resizing && !imageDrop && firstSel ? Math.max(0, Math.min(firstSel.left, frameW - chipW)) + chipW + 12 : 0;
   const leftEnd = chipEnd || (stripLeftW ? stripLeftW + 12 : 0);
   const labelMode = resizing || leftEnd + labelW.full <= frameW ? 'full' : scalePct !== 100 && leftEnd + labelW.mid <= frameW ? 'mid' : leftEnd + labelW.short <= frameW ? 'short' : 'gone';
   const stripRoom = Math.max(80, frameW - labelW.short - 12);
@@ -2022,13 +2288,13 @@ export function Canvas() {
       </button>
     );
   // The strip offers the first steps when there is no room for the card, or on a page that has only its title.
-  const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !(placement === 'strip' && firstSel) && ((emptyPage && emptyTop !== null && !emptyFits) || titleOnly);
+  const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !imageDrop && !(placement === 'strip' && firstSel) && ((emptyPage && emptyTop !== null && !emptyFits) || titleOnly);
 
   return (
     <main
       ref={canvasRef}
       tabIndex={-1}
-      className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`}
+      className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop || imageDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`}
       aria-label="Website preview"
       // Read by the test driver's UI snapshots (tests/driver): which opening of a project this is, whether the frame's
       // page is ready, the selection as the editor holds it, and where it shows on the page as the page's own element
@@ -2174,7 +2440,7 @@ export function Canvas() {
               </div>
             )}
             {/* Stays while another entry opens, so the entry picker keeps focus as the author steps through entries. */}
-            {templateMode && mode === 'edit' && state && !resizing && !insertDrop && !reorder && <TemplateStrip state={state} mode={templateMode} maxWidth={stripRoom} opening={opening} />}
+            {templateMode && mode === 'edit' && state && !resizing && !insertDrop && !imageDrop && !reorder && <TemplateStrip state={state} mode={templateMode} maxWidth={stripRoom} opening={opening} />}
             {templateMode && state && !view?.route && <TemplateNoEntries state={state} mode={templateMode} />}
             <div className={`frame-width-label${labelMode === 'gone' ? ' gone' : ''}${resizing ? ' live' : ''}`} title={scalePct !== 100 ? `${viewport} px wide, shown at ${scalePct}%` : `${viewport} px wide, shown at actual size`}>
               <b>{viewport}</b>&nbsp;px
@@ -2230,6 +2496,14 @@ export function Canvas() {
               <div className={`ov-moving ov-placing${insertDrop.refused ? ' refused' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} title={insertDrop.refused ?? undefined} data-testid="insert-drop-label">
                 <Plus />
                 <span className="what">{insertDrop.label}</span>
+                <span className="sep">·</span>
+                <span className="hint">Esc to cancel</span>
+              </div>
+            )}
+            {imageDrop && (
+              <div className={`ov-moving ov-placing${imageDrop.over && !imageDrop.outline ? ' idle' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} data-testid="image-drop-label">
+                <Image />
+                <span className="what">{imageDrop.label}</span>
                 <span className="sep">·</span>
                 <span className="hint">Esc to cancel</span>
               </div>
@@ -2360,6 +2634,7 @@ export function Canvas() {
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" />;
                   })()}
                 {insertDrop?.outline && <div className={`ov-box ov-drop-target${insertDrop.refused ? ' refused' : ''}`} style={toBox(insertDrop.outline)} data-testid="insert-drop-target" />}
+                {imageDrop?.outline && <div className="ov-box ov-image-drop" style={toBox(imageDrop.outline)} data-testid="image-drop-target" />}
                 {insertDrop?.line &&
                   (() => {
                     const d = dropBox(insertDrop.line);
@@ -2381,7 +2656,7 @@ export function Canvas() {
                   </div>
                 </div>
               )}
-              {firstSel && selection && state && placement && !reorder && !resizing && (
+              {firstSel && selection && state && placement && !reorder && !resizing && !imageDrop && (
                 <SelectionChip
                   box={firstSel}
                   frameWidth={viewport * z}
@@ -2419,6 +2694,15 @@ export function Canvas() {
       </div>
       {menu.node}
       {adding && <QuickInsert point={adding.point} items={adding.items} anchor={adding.anchor} trigger={adding.trigger} refused={adding.refused} onChoose={chooseAdd} onClose={closeAdd} />}
+      {/* The image a drag from Assets carries, beside the pointer wherever it is in the window. */}
+      {imageDrop &&
+        createPortal(
+          <div className="insert-ghost" style={{ left: imageDrop.x + 14, top: imageDrop.y + 12 }} aria-hidden="true">
+            <Image />
+            <span>{imageDrop.name}</span>
+          </div>,
+          document.body
+        )}
       {/* What a drag from Insert carries, beside the pointer wherever it is in the window. */}
       {insertDrop &&
         createPortal(

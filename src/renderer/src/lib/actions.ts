@@ -8,8 +8,9 @@ import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { applyOperations } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
+import { api, applyOps, commitOps, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
 import { postWorkspace } from './posts';
+import { imageDropOps, type ImageTarget } from './image-drop';
 import { flushOpenPost } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
@@ -414,6 +415,71 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
 /** Where Place on page puts a library image (`key` tells two placements apart), or why it can't be placed now. */
 export type ImagePlacement = { at: InsertAt; where: NonNullable<Where>; page: string; key: string } | { at: null; reason: string };
 
+/** Why no library image can be put on a page now, wherever it would go (null when one can). */
+function placingRefusal(snap: ProjectSnapshot | null): string | null {
+  const s = getState();
+  if (!snap) return 'No project is open.';
+  if (snap.readOnly) return 'This project is open read-only, so the image can’t be placed.';
+  if (snap.aiBusy) return 'The AI is making changes. Stop it to place the image.';
+  if (s.definitionMode) return 'Finish editing this component to place the image on a page.';
+  if (s.mode === 'preview') return 'Switch to Edit to place the image on a page.';
+  return null;
+}
+
+/**
+ * Why a library image can't be dragged onto the page being edited now, in the words Place on page uses (null when it
+ * can): Preview, a component edited everywhere, the AI working, a read-only project, no page on the canvas (a
+ * collection's layout is not one), or the picture gone from Assets or any of its files missing. As on the Place on page
+ * button, a picture whose smaller copies are missing waits for them to be made again: the page shows those copies.
+ */
+export function assetDropRefusal(assetId: string, snap: ProjectSnapshot | null = getState().snapshot): string | null {
+  const why = placingRefusal(snap);
+  if (why || !snap) return why ?? 'No project is open.';
+  const s = getState();
+  if (s.templateMode || !s.pageId || !Object.hasOwn(snap.state.pages, s.pageId)) return 'Open a page to place the image on it.';
+  const asset = Object.hasOwn(snap.state.assets.assets, assetId) ? snap.state.assets.assets[assetId] : undefined;
+  if (asset?.kind !== 'image') return 'That image is no longer in Assets.';
+  const gone = snap.missingAssets?.find((m) => m.assetId === assetId);
+  if (gone?.original) return 'Locate the file to place this image.';
+  if (gone) return `Make the missing ${gone.variants.length === 1 ? 'copy' : 'copies'} again to place this image.`;
+  return null;
+}
+
+/**
+ * Put a library image in one image on the page (see lib/image-drop): an empty one is filled, a chosen one replaced for
+ * that use alone, with the image's suggested alt text. One change, written only on `revision`, the project the drag
+ * found the image in; the element is then selected with its inspector open at the field, while the author is still
+ * where it was dropped. Returns whether the image was put there.
+ */
+export async function dropAsset(assetId: string, target: ImageTarget, revision: number): Promise<boolean> {
+  const start = getState();
+  const snap = start.snapshot;
+  const why = assetDropRefusal(assetId, snap);
+  if (why || !snap) {
+    toast(why ?? 'No project is open.', 'error');
+    return false;
+  }
+  const field = target.field;
+  if (!field) return false;
+  const name = snap.state.assets.assets[assetId].name.trim() || 'the image';
+  const owner = target.owner;
+  const r = await commitOps(imageDropOps(owner, field, assetId), target.unfilled ? `Place ${name}` : `Replace with ${name}`, undefined, revision);
+  // Refused, and said why (the project changed meanwhile, the AI started): that change's own record reports it.
+  if (!r) return false;
+  const now = getState();
+  if (now.snapshot?.workspaceKey === r.workspaceKey && now.pageId === start.pageId && now.mode === 'edit' && !now.definitionMode && !now.templateMode && now.selection === start.selection) {
+    const ref: ElementRef = { owner, instancePath: [], nodeId: field.nodeId };
+    markArrival(ref);
+    // Its inspector opens, at the field (in a gallery or team, the changed item's row), only if the author has not
+    // moved the dock meanwhile (to the AI, say).
+    const dock = now.rightTab === start.rightTab && now.dockOpen === start.dockOpen;
+    const focus = dock && field.prop !== undefined ? inspectorFocusRequest({ opening: r.workspaceKey, owner, nodeId: field.nodeId, prop: field.prop, ...(field.itemId !== undefined ? { itemId: field.itemId } : {}), ...(field.field !== undefined ? { field: field.field } : {}), label: target.label }) : undefined;
+    setState({ selection: ref, ...(dock ? { rightTab: 'inspect' as const, dockOpen: true } : {}), ...(focus ? { inspectorFocus: focus } : {}) });
+  }
+  toast(target.unfilled ? `Placed “${name}” as ${target.label}.` : `Replaced ${target.label} with “${name}”.`, 'info', undoAction(r));
+  return true;
+}
+
 /**
  * Where Place on page puts a library image: on the page being edited, by the rule an inserted image element follows,
  * in the project as this window has it (or as `snap` has it). A picture or part inside a placed component counts as
@@ -422,11 +488,8 @@ export type ImagePlacement = { at: InsertAt; where: NonNullable<Where>; page: st
  */
 export function imagePlacement(snap: ProjectSnapshot | null = getState().snapshot): ImagePlacement {
   const s = getState();
-  if (!snap) return { at: null, reason: 'No project is open.' };
-  if (snap.readOnly) return { at: null, reason: 'This project is open read-only, so the image can’t be placed.' };
-  if (snap.aiBusy) return { at: null, reason: 'The AI is making changes. Stop it to place the image.' };
-  if (s.definitionMode) return { at: null, reason: 'Finish editing this component to place the image on a page.' };
-  if (s.mode === 'preview') return { at: null, reason: 'Switch to Edit to place the image on a page.' };
+  const why = placingRefusal(snap);
+  if (why || !snap) return { at: null, reason: why ?? 'No project is open.' };
   const page = s.pageId ? snap.state.pages[s.pageId] : undefined;
   if (!page) return { at: null, reason: 'Open a page to place the image on it.' };
   const sel = s.selection;

@@ -3,7 +3,7 @@
  */
 import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
-import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
+import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
 import { isImageBlock, isListBlock, isRichBlock, richTextToPlain, spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -65,6 +65,13 @@ export interface Scope {
   fedLists?: Set<string>;
   /** The instance node rendering the definition walked, wherever it is placed (the page, the shell or a design). */
   instance?: GraphNode & { kind: 'instance' };
+  /** The placements entered from the page or shell tree down to the definition walked (an ElementRef's instancePath). */
+  instances?: string[];
+  /**
+   * For slot content: the design that shows it, where the slot is (its placements from the tree, the lists around the
+   * slot in that design and their items). The content belongs to the frame that supplied it; this is where it shows.
+   */
+  shownIn?: { instances: string[]; repeats: string[]; path: string[] };
 }
 
 export function evaluate(v: unknown, scope: Scope): unknown {
@@ -113,6 +120,11 @@ interface Visit {
   again?: (slot: string) => void;
   /** An image node about to render. */
   image?: (n: GraphNode & { kind: 'image' }, scope: Scope, reportId: string) => void;
+  /**
+   * A design's image node left out of the page only because it has no image yet: its sole condition is its own image
+   * (`when` reads the value the image shows, with no `unless`). Everything around it renders.
+   */
+  hiddenImage?: (n: GraphNode & { kind: 'image' }, scope: Scope, reportId: string) => void;
   /** A text node about to render; `def` is the definition it belongs to, for a component's node. */
   text?: (n: GraphNode & { kind: 'text' }, scope: Scope, reportId: string, inDef: boolean, def?: ComponentDefinition) => void;
   /** An `id` attribute the generated markup will carry. */
@@ -173,6 +185,13 @@ export function effectiveProps(state: ProjectState, def: ComponentDefinition, n:
     // is placed. A list bound from the design around this one arrives as that design was given it.
     const filled = schema.type === 'list' && schema.pageTeaser && !(own && isBinding(n.props[name])) && Array.isArray(value);
     props[name] = filled ? (value as unknown[]).map((it) => (it && typeof it === 'object' ? effectiveItem(state, schema, it as Record<string, unknown>) : it)) : value;
+    // An object's field it has no value for shows the property's own default for it (or the field's), as the
+    // generator fills it in.
+    if (schema.type === 'object' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const v = value as Record<string, unknown>;
+      const d = (schema.default ?? {}) as Record<string, unknown>;
+      props[name] = { ...v, ...Object.fromEntries(Object.entries(schema.fields).filter(([k]) => !Object.hasOwn(v, k)).map(([k, f]) => [k, Object.hasOwn(d, k) ? d[k] : f.default])) };
+    }
   }
   return props;
 }
@@ -242,7 +261,11 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     if (!n || path.has(key)) return;
     const kept = !!frame.kept?.has(id);
     const shows = !frame.def || ((!n.when || lets(n.when, false, frame.scope, state)) && (!n.unless || lets(n.unless, true, frame.scope, state)));
-    if (!shows && !kept) return;
+    if (!shows && !kept) {
+      // An image its own condition leaves out while no image is chosen (a team member with no portrait yet).
+      if (visit.hiddenImage && n.kind === 'image' && hidesWhileEmpty(n)) visit.hiddenImage(n, frame.scope, frame.reportId ?? n.id);
+      return;
+    }
     // A kept panel its state hides is walked as hidden content, and so is everything inside it.
     if (!shows && !frame.scope.keptHidden) frame = { ...frame, scope: { ...frame.scope, keptHidden: true } };
     if (frame.def && n.kind === 'element' && n.collapseEmpty && !childRenders(state, frame, n, new Set())) return;
@@ -303,7 +326,9 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         // Shown through this slot and every slot the receiving frame is itself shown through (a slot handed on into
         // another design's slot shows again wherever that one does).
         const slots = [...new Set([...(from.frame.scope.slots ?? []), ...(frame.scope.slots ?? []), slot])];
-        const target = { ...from.frame, origin: supplier, scope: { ...from.frame.scope, multiple, slots } };
+        // A slot handed on into another design's slot shows its content in that other design (the innermost one).
+        const shownIn = frame.scope.shownIn ?? (frame.def?.tree ? { instances: frame.scope.instances ?? [], repeats: repeatsAbove(frame.def.tree, n.id), path: frame.scope.path ?? [] } : undefined);
+        const target = { ...from.frame, origin: supplier, scope: { ...from.frame.scope, multiple, slots, ...(shownIn ? { shownIn } : {}) } };
         for (const c of slotChildren({ slots: from.content }, n.slot)) walk(target, c, inner);
         break;
       }
@@ -331,7 +356,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
           const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, stateInitial(def, k)])) : undefined;
           const chosen = startingVariants(n.variants, frame.def);
-          const child: Frame = { tree: def.tree, def, ...(visit.kept ? { kept: keptOf(def) } : {}), scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const child: Frame = { tree: def.tree, def, ...(visit.kept ? { kept: keptOf(def) } : {}), scope: { props, trail, instance: n, instances: [...(frame.scope.instances ?? []), n.id], ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);
@@ -601,6 +626,9 @@ function followsPageField(state: ProjectState, tree: NodeTree, placementId: stri
 
 const sameBinding = (a: unknown, b: unknown) =>
   isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop && a.field === b.field : '$item' in a ? '$item' in b && a.$item === b.$item : '$entry' in b && a.$entry === b.$entry);
+
+/** Whether an image node's only condition is its own image: it shows once it has one, and nothing else hides it. */
+const hidesWhileEmpty = (n: GraphNode & { kind: 'image' }) => !!n.when && !n.unless && !isComparison(n.when) && sameBinding(n.when, n.image);
 
 /**
  * Buttons that will render with a label but no destination. The site leaves them out, which is easy to miss in
@@ -917,6 +945,247 @@ export function placeholderImageCount(state: ProjectState): number {
       }
     });
   return count;
+}
+
+/** Where one use of an image is stored, as an edit names it: the tree's own image node, or a field of a placement in it. */
+export type ImageField = { nodeId: string } & Partial<PlacementField>;
+
+/** One image a page or shell tree shows, or would show once it has one (see renderedImages). */
+export interface RenderedImage {
+  /** Its node: the tree's own, a design's, or a code placement that draws its one image itself. */
+  nodeId: string;
+  /** The placements entered from the tree down to the design the node belongs to (an ElementRef's instancePath). */
+  instancePath: string[];
+  /** The items of that design's lists it is shown for, outermost first (an ElementRef's itemPath). */
+  itemPath: string[];
+  /** Those lists' repeats in the design, outermost first, beside `itemPath`. */
+  repeats: string[];
+  /**
+   * The field a new image for this use alone is written to; null when no field of the tree holds it: an image fixed in
+   * a design, an entry's or a computed row's picture, or an item whose ID its list does not give it alone.
+   */
+  field: ImageField | null;
+  /** No image is chosen, or the one chosen is no longer in Assets. */
+  unfilled: boolean;
+  /** Left out of the page until it has an image (see Visit.hiddenImage): its parent element in the design shows it. */
+  box?: string;
+  /**
+   * A code placement's one image property: `drawn` when its markup shows exactly that property with its one SoImage
+   * (see showsWithSoImage), and the files its picture can show now (the original and its smaller copies; none with no
+   * image chosen).
+   */
+  code?: { drawn: boolean; files: string[] };
+  /** For content placed in a design's slot (an Image in a Section): the design it shows in, as `instancePath`,
+   *  `itemPath` and `repeats` name an image's own. */
+  shownIn?: { instancePath: string[]; itemPath: string[]; repeats: string[] };
+  /** The field it shows, whether or not one use of it can be written (see `field`): uses of one field are counted. */
+  reads: ImageField | null;
+  /** Shown more than once from one walk (slot content a design repeats in each item, or code places as it likes). */
+  multiple?: true;
+  /** Its layer name, and the title of the item it is shown for. */
+  name: string;
+  item?: string;
+}
+
+/** Whether an image value shows a picture from the library. */
+const imageChosen = (state: ProjectState, v: unknown): boolean => {
+  const id = (v as ImageValue | undefined)?.assetId;
+  return typeof id === 'string' && !!id && Object.hasOwn(state.assets.assets, id);
+};
+
+/** The repeats above a node in a design, outermost first. */
+export function repeatsAbove(tree: NodeTree, nodeId: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (let p = findParent(tree, nodeId); p?.parentId && !seen.has(p.parentId); p = findParent(tree, p.parentId)) {
+    seen.add(p.parentId);
+    if (tree.nodes[p.parentId]?.kind === 'repeat') out.unshift(p.parentId);
+  }
+  return out;
+}
+
+/** A code component's one image property, when it has exactly one and no list or group holds an image field. */
+export function codeImageProp(def: ComponentDefinition): string | null {
+  const props = Object.entries(def.properties ?? {});
+  const images = props.filter(([, s]) => s?.type === 'image');
+  const nested = props.some(([, s]) => (s?.type === 'list' || s?.type === 'object') && Object.values(s.fields ?? {}).some((f) => f?.type === 'image'));
+  return images.length === 1 && !nested ? images[0][0] : null;
+}
+
+/** The value branches of an expression: each outcome of a `cond ? a : b` (nested too), or the expression itself. */
+function outcomes(whole: string): string[] {
+  const expr = bare(whole);
+  const top = (from: number, to: number, at: (i: number, c: string) => boolean | void) => {
+    let depth = 0;
+    for (let i = from; i < to; i++) {
+      const c = expr[i];
+      if ('([{'.includes(c)) depth++;
+      else if (')]}'.includes(c)) depth--;
+      else if (depth === 0 && at(i, c)) return i;
+    }
+    return -1;
+  };
+  // A `?` that asks, not one of `?.` or `??`.
+  const asks = (i: number, c: string) => c === '?' && expr[i + 1] !== '.' && expr[i + 1] !== '?' && expr[i - 1] !== '?';
+  const q = top(0, expr.length, asks);
+  if (q < 0) return [expr];
+  let nested = 0;
+  const colon = top(q + 1, expr.length, (i, c) => {
+    if (asks(i, c)) nested++;
+    else if (c === ':') return nested-- === 0;
+  });
+  return colon < 0 ? [expr] : [...outcomes(expr.slice(q + 1, colon)), ...outcomes(expr.slice(colon + 1))];
+}
+
+/**
+ * Whether code markup shows `prop` with its one SoImage, and nothing else with it: exactly one `<SoImage>`, whose
+ * `image={...}` gives, whichever way it goes, the property itself, a copy with settings added
+ * (`{ ...logo, decorative: true }`) or its thumbnail. Only then is the one SoImage picture on the page the property's.
+ */
+export function showsWithSoImage(source: string, prop: string): boolean {
+  const tags = [...source.matchAll(/<SoImage\b/g)];
+  if (tags.length !== 1 || !/^[A-Za-z_$][\w$]*$/.test(prop)) return false;
+  const at = source.indexOf('image={', tags[0].index);
+  if (at < 0 || source.slice(tags[0].index, at).includes('/>')) return false;
+  let depth = 0;
+  let i = at + 'image='.length;
+  for (; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}' && --depth === 0) break;
+  }
+  if (i >= source.length) return false;
+  const p = prop.replace(/\$/g, '\\$');
+  const thumb = new RegExp(`^thumbnail\\(\\s*${p}\\s*\\)$`);
+  const copy = new RegExp(`^\\{\\s*\\.\\.\\.${p}\\s*(?:,([^{}]*))?\\}$`);
+  const shows = (o: string) => {
+    const e = bare(o);
+    if (e === prop || thumb.test(e)) return true;
+    // Settings added to a copy of it, never its picture: no other source, and nothing spread in that could be one.
+    const m = e.match(copy);
+    const keys = (m?.[1] ?? '').split(',').map((part) => part.trim()).filter(Boolean);
+    return !!m && keys.every((part) => !part.startsWith('...') && !/^['"]?(?:src|srcset)['"]?\s*(?::|$)/.test(part));
+  };
+  return outcomes(source.slice(at + 'image={'.length, i)).every(shows);
+}
+
+/** An expression without the parentheses around the whole of it (`(photo)` is `photo`). */
+function bare(expr: string): string {
+  let e = expr.trim();
+  while (e.startsWith('(') && e.endsWith(')')) {
+    let depth = 0;
+    let whole = true;
+    for (let i = 0; i < e.length - 1; i++) {
+      if (e[i] === '(') depth++;
+      else if (e[i] === ')' && --depth === 0) {
+        whole = false;
+        break;
+      }
+    }
+    if (!whole) break;
+    e = e.slice(1, -1).trim();
+  }
+  return e;
+}
+
+/**
+ * Every image a page or shell tree shows, the way the generated pages show them, with the field one use of it is stored
+ * in: a page's own image, a placement's image property or the image field of one of its list items (also through a
+ * component placed in its design), or a code placement's one image property. Images a design leaves out until they have
+ * one are listed too, shown by their parent element, and so are those in a panel the design's UI state can show (a tab
+ * not chosen at first), which the page may show now. Code placed inside a design is not.
+ */
+export function renderedImages(state: ProjectState, tree: NodeTree): RenderedImage[] {
+  const out: RenderedImage[] = [];
+  /** Whether exactly one item of a placement's list has the ID: an edit names the item by it. */
+  const unique = (placementId: string, prop: string, itemId: string) => {
+    const inst = tree.nodes[placementId];
+    if (inst?.kind !== 'instance') return false;
+    const schema = state.components[inst.definitionId]?.properties[prop];
+    const list = Object.hasOwn(inst.props, prop) ? inst.props[prop] : schema?.default;
+    return Array.isArray(list) && list.filter((x) => !!x && typeof x === 'object' && (x as { id?: unknown }).id === itemId).length === 1;
+  };
+  const push = (n: GraphNode & { kind: 'image' }, scope: Scope, reportId: string, hidden: boolean) => {
+    const def = scope.instance && Object.hasOwn(state.components, scope.instance.definitionId) ? state.components[scope.instance.definitionId] : undefined;
+    // An object's field it has no value for shows the property's own default for it, as the page does: an image its
+    // condition seemed to leave out is then shown.
+    let value = evaluate(n.image, scope);
+    const b = n.image;
+    if (value === undefined && def && isBinding(b) && '$prop' in b && b.field !== undefined) {
+      const schema = def.properties[b.$prop];
+      if (schema?.type === 'object') value = Object.hasOwn(schema.default ?? {}, b.field) ? schema.default[b.field] : schema.fields[b.field]?.default;
+    }
+    if (hidden && imageChosen(state, value)) hidden = false;
+    let box: string | undefined;
+    if (hidden) {
+      const p = def?.tree ? findParent(def.tree, n.id) : null;
+      const parent = p?.parentId ? def?.tree?.nodes[p.parentId] : undefined;
+      if (parent?.kind !== 'element') return;
+      box = parent.id;
+    }
+    let field: ImageField | null = null;
+    let reads: ImageField | null = null;
+    // A page's (or the shell's) own image is its node's; an entry's picture in a collection layout is not one.
+    if (!scope.instance) field = reads = isBinding(n.image) ? null : { nodeId: n.id };
+    else {
+      const f = placementField(n.image, scope);
+      reads = f && fieldSchema(state, tree, reportId, f)?.type === 'image' ? { nodeId: reportId, ...f } : null;
+      // A computed row's picture is a page's; and inside a list of a design around this one (a card placed in each
+      // item), the page tells the items' copies of the image apart by nothing of its own.
+      const apart = !(scope.computed && isBinding(n.image) && '$item' in n.image) && (scope.repeats ?? 0) <= (scope.path?.length ?? 0);
+      if (reads && apart && (!f!.itemId || unique(reportId, f!.prop, f!.itemId))) field = reads;
+    }
+    const list = scope.list && def ? def.properties[scope.list] : undefined;
+    const titleField = list?.type === 'list' ? list.titleField : undefined;
+    const title = titleField ? scope.item?.[titleField] : undefined;
+    shownThrough.set(out.length, scope);
+    out.push({
+      nodeId: n.id,
+      instancePath: scope.instances ?? [],
+      itemPath: scope.path ?? [],
+      repeats: def?.tree ? repeatsAbove(def.tree, n.id) : [],
+      field,
+      reads,
+      unfilled: hidden || !imageChosen(state, value),
+      ...(box ? { box } : {}),
+      ...(scope.shownIn ? { shownIn: { instancePath: scope.shownIn.instances, itemPath: scope.shownIn.path, repeats: scope.shownIn.repeats } } : {}),
+      name: n.name?.trim() || 'Image',
+      ...(typeof title === 'string' && title.trim() ? { item: title.trim() } : {})
+    });
+  };
+  // Slot content shown again (by a design that shows its slot once per list item): each image's slots, by its place in
+  // `out`, are checked once the walk has found every slot shown more than once.
+  const again = new Set<string>();
+  const shownThrough = new Map<number, Scope>();
+  walkRendered(state, tree, {
+    everyState: true,
+    again: (slot) => again.add(slot),
+    image: (n, scope, reportId) => push(n, scope, reportId, false),
+    hiddenImage: (n, scope, reportId) => push(n, scope, reportId, true),
+    code: (def, props, _reportId, _placement, n, scope, inDef) => {
+      const prop = inDef ? null : codeImageProp(def);
+      if (!prop) return;
+      const value = props[prop] as ImageValue | undefined;
+      const chosen = imageChosen(state, value);
+      const asset = chosen ? state.assets.assets[value!.assetId!] : undefined;
+      const file = (f: string) => f.replace(/^static\//, '');
+      shownThrough.set(out.length, scope);
+      out.push({
+        nodeId: n.id,
+        instancePath: scope.instances ?? [],
+        itemPath: [],
+        repeats: [],
+        field: { nodeId: n.id, prop },
+        reads: { nodeId: n.id, prop },
+        unfilled: !chosen,
+        // The page names a picture by its file (see resolveImage): the picture under the pointer is this one only if
+        // it shows one of this image's files.
+        code: { drawn: showsWithSoImage(def.source ?? '', prop), files: asset ? [file(asset.file), ...(asset.variants ?? []).map((v) => file(v.file))] : [] },
+        name: def.properties[prop].label?.trim() || 'Image'
+      });
+    }
+  });
+  for (const [i, scope] of shownThrough) if (scope.codeSlot || (scope.slots ?? []).some((k) => again.has(k))) out[i].multiple = true;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
