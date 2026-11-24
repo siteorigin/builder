@@ -1,12 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookmarkPlus, ChevronDown, ClipboardCopy, ClipboardPaste, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
+import { BookmarkPlus, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
 import { api, projectHistory, setState, setViewport, toast, useStore } from '../store';
 import { pageShowing, partName } from '@shared/page-shell';
-import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, planLayers } from '../lib/actions';
+import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers } from '../lib/actions';
 import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
 import { platformKeys } from './CopyPaste';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
@@ -143,6 +143,11 @@ export function CommandMenu() {
       ...pageChoices(st).map((p) => ({ id: `page:${p.id}`, verb: 'Go to ', label: `Go to ${p.title}`, detail: p.address, group: 'Page', icon: p.home ? <House /> : <FileText />, run: () => selectPage(p.id) })),
       ...catalogueEntries(st.site.themeId).map((e) => ({ id: `ins:${e.componentId}`, verb: 'Insert ', label: `Insert ${e.name}`, group: 'Insert', icon: <LucideIcon name={e.icon} />, run: () => void insert({ componentId: e.componentId }, e.name) })),
       { id: 'newpage', label: 'Add page…', keywords: 'new create', action: 'Add a page', group: 'Page', icon: <Plus />, run: () => (setState({ leftTab: 'pages' }), setTimeout(() => window.dispatchEvent(new Event('builder-add-page')), 0)) },
+      // Every component of the project's own, placed or not, opens in Component Studio (issue #367).
+      ...Object.values(st.components)
+        .filter((d) => d.owner === 'project')
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((d) => ({ id: `studio:${d.id}`, label: `Open ${d.name} in Component Studio`, keywords: 'component studio design variants edit everywhere', action: 'Open in Component Studio', group: 'Your components', icon: <SquareDashed />, run: () => void openComponentStudio(d.id) })),
       { id: 'newcomponent', label: 'Create component…', keywords: 'new component reusable design build ai', action: 'Start a new component, blank or built by AI', group: 'Insert', icon: <Component />, run: () => setState({ modal: { kind: 'new-component' } }) },
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', action: 'Open the AI chat', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
       { id: 'styles', label: 'Site styles', keywords: 'colors colours fonts typography spacing theme', action: 'Open site styles', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
@@ -291,7 +296,8 @@ export function CommandMenu() {
         ...restRows(searched.filter((c) => c.id.startsWith('page:') && c.id !== `page:${pageId}`), REST_PAGES, allPages, (n) => ({ id: 'page:more', label: `Show ${n} more ${n === 1 ? 'page' : 'pages'}`, group: 'Page', stay: true, icon: <ChevronDown />, run: () => setAllPages(true) })),
         ...searched.filter((c) => c.group === 'Page' && !c.id.startsWith('page:')),
         ...restRows(searched.filter((c) => c.group === 'Insert'), REST_INSERTS, allInserts, (n) => ({ id: 'ins:more', label: `Show ${n} more to insert`, group: 'Insert', stay: true, icon: <ChevronDown />, run: () => setAllInserts(true) })),
-        ...searched.filter((c) => c.group !== 'Page' && c.group !== 'Insert')
+        // Opening a component in Component Studio is found by its name: one row per component would bury the commands.
+        ...searched.filter((c) => c.group !== 'Page' && c.group !== 'Insert' && !c.id.startsWith('studio:'))
       ];
   // An address typed exactly finds just that page. Otherwise a command named exactly, that can run now, comes first.
   // Pages never leave Pages, so "Go to Portfolio" typed in full still lists both Portfolio pages there.

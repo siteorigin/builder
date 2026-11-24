@@ -5,7 +5,8 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatContext, ChatMessage } from '@shared/api';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
-import { chatContextFor, composerScope, editScope, retryView, targetOf } from '../../src/renderer/src/lib/chatTarget';
+import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../../src/renderer/src/lib/chatTarget';
+import { NEW_STUDIO } from '../../src/renderer/src/lib/studio';
 import { continueContext } from '../../src/renderer/src/lib/result';
 
 /** A starter project with the home hero and the closing banner each forked, as "Edit everywhere" does. */
@@ -106,6 +107,21 @@ describe('the composer while a component is edited everywhere (#191)', () => {
   });
 });
 
+describe('a code component open in Component Studio (#367)', () => {
+  it('is named as one the AI does not edit, so no edit is sent to the page behind it', () => {
+    const { state, home, hero } = project();
+    const made = applyOperations(state, [{ type: 'component.createCode', name: 'Note', source: '<p>Hi</p>\n', properties: {} }]);
+    const code = made.results[0].definitionId as string;
+    expect(uneditableDesign(made.state, { definitionId: code, returnPageId: home, studio: NEW_STUDIO })).toBe('Note');
+    // The composer's scope never names the code component, so it would fall back to the page.
+    expect(composerScope(made.state, { pageId: home, selection: null, definitionMode: { definitionId: code, returnPageId: home, studio: NEW_STUDIO } }).component).toBeNull();
+    // A design the AI does edit, and no component at all, send as they always have.
+    expect(uneditableDesign(made.state, { definitionId: hero, returnPageId: home, studio: NEW_STUDIO })).toBeNull();
+    expect(uneditableDesign(made.state, null)).toBeNull();
+    expect(uneditableDesign(made.state, { definitionId: 'gone', returnPageId: home })).toBeNull();
+  });
+});
+
 describe('trying a request about a component again (#191)', () => {
   it('goes back to editing that component everywhere, on a page that shows it, from wherever the author is', () => {
     const p = project();
@@ -123,9 +139,13 @@ describe('trying a request about a component again (#191)', () => {
     expect(retryView(moved, ctx, { pageId: contact, definitionMode: null }).pageId).toBe(home);
     const onContact = applyOperations(moved, [{ type: 'node.insert', owner: { kind: 'page', id: contact }, definitionId: hero }]).state;
     expect(retryView(onContact, ctx, { pageId: contact, definitionMode: null }).pageId).toBe(contact);
-    // Placed nowhere: it stays on the request's page, where Layers still shows the design.
+    // Placed nowhere: it opens in Component Studio, which shows the design on its own (issue #367).
     const nowhere = applyOperations(moved, [{ type: 'node.remove', owner: { kind: 'page', id: home }, nodeId: moved.pages[home].rootIds[0] }]).state;
-    expect(retryView(nowhere, ctx, { pageId: contact, definitionMode: null })).toMatchObject({ pageId: about, definitionMode: { definitionId: hero } });
+    expect(retryView(nowhere, ctx, { pageId: contact, definitionMode: null })).toMatchObject({ pageId: about, definitionMode: { definitionId: hero, studio: NEW_STUDIO } });
+    // Already looking at it in the studio, the look chosen there stays; another component's look never carries over.
+    const looking = { variants: { tone: 'inverse' }, sample: 'long' as const };
+    expect(retryView(state, ctx, { pageId: contact, definitionMode: { definitionId: hero, returnPageId: home, studio: looking } }).definitionMode).toEqual({ definitionId: hero, returnPageId: home, studio: looking });
+    expect(retryView(nowhere, ctx, { pageId: contact, definitionMode: { definitionId: banner, returnPageId: home, studio: looking } }).definitionMode).toEqual({ definitionId: hero, returnPageId: home, studio: NEW_STUDIO });
   });
 
   it('drops a component or element that has gone, and says which', () => {
@@ -143,7 +163,7 @@ describe('trying a request about a component again (#191)', () => {
     // The page it was shown on has gone, and with it the only placement: it opens on the page open now.
     const { state: noHome } = applyOperations(state, [{ type: 'page.setHome', pageId: about }]);
     const { state: removed } = applyOperations(noHome, [{ type: 'page.remove', pageId: home, replacementPageId: about }]);
-    expect(retryView(removed, ctx, { pageId: about, definitionMode: null })).toEqual({ pageId: about, definitionMode: { definitionId: hero, returnPageId: about }, selection: null, scope: 'site', missing: null });
+    expect(retryView(removed, ctx, { pageId: about, definitionMode: null })).toEqual({ pageId: about, definitionMode: { definitionId: hero, returnPageId: about, studio: NEW_STUDIO }, selection: null, scope: 'site', missing: null });
   });
 
   it('leaves Edit everywhere to try a request about a page, and reads older requests about a component', () => {

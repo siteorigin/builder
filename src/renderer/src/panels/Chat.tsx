@@ -8,7 +8,7 @@ import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, sel
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
-import { chatContextFor, composerScope, editScope, retryView, targetOf } from '../lib/chatTarget';
+import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId as undoableTurn } from '../lib/result';
@@ -428,6 +428,10 @@ export function Chat() {
     // The assistant has no tools for collections yet: an edit sent from a layout would land on the page behind it.
     if (getState().templateMode && (context ? context.mode !== 'ask' : !askMode))
       return (toast('The assistant can’t change a collection’s layout yet. Click Done to go back to the page, or ask it a question.', 'info'), false);
+    // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
+    // it. A question changes nothing, so it is still asked.
+    const code = !context && !askMode ? uneditableDesign(st, definitionMode) : null;
+    if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;

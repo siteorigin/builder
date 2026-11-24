@@ -21,7 +21,8 @@ import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { ARRIVAL_MS, arrivalShown, markArrival, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
-import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
@@ -234,7 +235,34 @@ export function Canvas() {
   const view = state ? shownView(state, pageId, templateMode) : null;
   // A layout with no entry to show it on keeps the page behind it, under its note, so the frame is there for what comes next.
   const initialRoute = view?.route ?? page?.route;
-  const initialSrc = useMemo(() => (url && initialRoute ? url + initialRoute : null), [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
+  /**
+   * Component Studio (see lib/studio): the component edited everywhere shown on its own, in an isolated preview the
+   * editor prepares for what the studio shows and the project as it is now. Each one is a new preview, loaded in a
+   * frame of its own (a new session), so nothing the last one reports is taken for it. `studioAt` is the preview the
+   * frame was given, and on which server; `studioLoads` numbers the requests, so only the latest is shown, and releases
+   * every other preview's files.
+   */
+  const studioAt = useRef<{ url: string; path: string; revision: number | undefined; definitionId: string } | null>(null);
+  /** What the preview in the frame (or on its way there) was made from, so the same request is never made twice. */
+  const studioFrom = useRef<string | null>(null);
+  /** The studio has stopped the frame taking picks until its first preview of the component arrives. */
+  const studioPending = useRef(false);
+  const studioLoads = useRef<StudioLoads | null>(null);
+  studioLoads.current ??= new StudioLoads((key) => void api.project.releaseComponentPreview(key).catch(() => undefined));
+  const [studioRetry, setStudioRetry] = useState(0);
+  const studioView = useStore((s) => (s.definitionMode?.studio ? s.definitionMode : null));
+  const variantStyle = useStore((s) => s.variantStyle);
+  const studioDef = studioView && state && Object.hasOwn(state.components, studioView.definitionId) ? state.components[studioView.definitionId] : null;
+  const studioRequest = useMemo(() => (studioView?.studio && studioDef ? JSON.stringify(studioSpec(studioDef, studioView.studio, variantStyle)) : null), [studioView, studioDef, variantStyle]);
+  /** The frame shows (or is being given) a component preview, on the server running now. */
+  const showsStudio = () => !!studioAt.current && studioAt.current.url === url;
+  /** The name of the component edited everywhere, for what the canvas says about its preview. */
+  const studioDefName = () => {
+    const s = getState();
+    const id = s.definitionMode?.definitionId;
+    return id && s.snapshot && Object.hasOwn(s.snapshot.state.components, id) ? s.snapshot.state.components[id].name : undefined;
+  };
+  const initialSrc = useMemo(() => (url && studioAt.current?.url === url ? url + studioAt.current.path : url && initialRoute ? url + initialRoute : null), [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
   // A new frame (another server, or Try again) is not ready until it says so: nothing is sent to it before then.
   useEffect(() => {
     setState({ frameReady: false });
@@ -314,7 +342,8 @@ export function Canvas() {
       setRetrying(false);
       const s = getState();
       const shown = s.snapshot ? shownView(s.snapshot.state, s.pageId, s.templateMode) : null;
-      setFrameError(`${shown?.template ? `The ${shown.title}` : shown ? `The ${shown.title} page` : 'The page'} took too long to open.`);
+      const name = s.definitionMode?.studio ? studioDefName() : undefined;
+      setFrameError(`${name ?? (shown?.template ? `The ${shown.title}` : shown ? `The ${shown.title} page` : 'The page')} took too long to open.`);
       markTimedOut(true);
     }, 20000);
     return () => clearTimeout(t);
@@ -398,6 +427,12 @@ export function Canvas() {
   /** Start editing an element's text on the page (a double-click, or Edit text in its menu). A double-click passes
    *  its gesture id (`hit`) so the edit starts at the word clicked. */
   function beginTextEdit(ref: ElementRef, desc: BridgeDesc, hit?: string) {
+    // A Component Studio preview made before the project's latest change shows text that may be gone: typing over it
+    // would put it back. The next preview is on its way.
+    if (showsStudio() && studioAt.current!.revision !== getState().snapshot?.revision) {
+      toast('The preview is catching up with the latest change. Try again in a moment.', 'info');
+      return;
+    }
     const editId = Math.random().toString(36).slice(2);
     pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]), base: getState().snapshot, ai: aiActivity() });
     inlineEdit.active = true;
@@ -443,6 +478,79 @@ export function Canvas() {
   }, [workspaceKey]);
   useEffect(() => () => endInlineEdit(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Component Studio: a preview of what it shows, prepared again whenever that or the project changes (a quick run of
+  // changes is one preview). While an inline text edit is open the frame is left as it is, since replacing it would
+  // lose what is being typed: the edit's own commit changes the project, and the preview after it follows.
+  useEffect(() => {
+    const loads = studioLoads.current!;
+    if (!studioRequest || !url || editing) return void loads.supersede();
+    const revision = getState().snapshot?.revision;
+    // The preview shown already (an inline edit cancelled, say, changes nothing) is kept, with what the author opened in it.
+    const from = JSON.stringify([studioRequest, revision, url, workspaceKey, studioRetry]);
+    if (from === studioFrom.current && showsStudio()) {
+      // Back to what is shown (Long copy, then Starting content again, before it arrived): what was on its way is
+      // dropped, and the preview on screen takes picks again.
+      loads.supersede();
+      if (studioPending.current && readySession.current === session) {
+        studioPending.current = false;
+        setState({ frameReady: true });
+      }
+      return;
+    }
+    const request = loads.begin();
+    const spec = JSON.parse(studioRequest) as { definitionId: string };
+    // Until the first preview of this component is there, what the frame shows (the page, or another component) is
+    // not what is being edited: it takes no picks.
+    const first = !showsStudio() || studioAt.current!.definitionId !== spec.definitionId;
+    if (first) {
+      studioPending.current = true;
+      setState({ frameReady: false });
+    }
+    const server = url;
+    const failed = (message: string) => {
+      if (!loads.latest(request)) return;
+      setFrameError(message);
+      setRetrying(false);
+    };
+    const timer = setTimeout(
+      () =>
+        api.project.prepareComponentPreview(spec).then(
+          (prepared) => {
+            if (!prepared.ok) return failed(prepared.message);
+            if (!loads.prepared(request, prepared.key)) return;
+            studioAt.current = { url: server, path: prepared.path, revision, definitionId: prepared.definitionId };
+            studioFrom.current = from;
+            setSession(newSessionId());
+          },
+          (e: unknown) => failed(`The component preview could not be prepared: ${e instanceof Error ? e.message : String(e)}`)
+        ),
+      first ? 0 : 120
+    );
+    return () => clearTimeout(timer);
+  }, [studioRequest, snapshot?.revision, url, workspaceKey, editing, studioRetry]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Leaving the studio releases its preview, and the frame opens the page again.
+  // An inline edit still open there is finished first (committed, or kept for the author when it no longer can be), so
+  // leaving never loses what was typed; a preview that does not answer is left without it after a while.
+  const inStudio = !!studioView;
+  useEffect(() => {
+    if (inStudio) return;
+    studioLoads.current!.end();
+    studioFrom.current = null;
+    // Left before the first preview arrived: the page it stopped taking picks is opened again.
+    const pending = studioPending.current;
+    studioPending.current = false;
+    if (!studioAt.current) return void (pending && setSession(newSessionId()));
+    if (editing) {
+      post('commitTextEdit');
+      // A preview that does not answer at all can no longer give the text back.
+      const t = setTimeout(() => endInlineEdit(), 10000);
+      return () => clearTimeout(t);
+    }
+    studioAt.current = null;
+    setSession(newSessionId());
+  }, [inStudio, editing]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => studioLoads.current?.end(), []);
+
   // Bridge messages
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
@@ -454,6 +562,26 @@ export function Canvas() {
       switch (m.type) {
         case 'ready': {
           const path = String(p.path);
+          // A component preview reports whether the component is on the page; only the one the frame was last given counts.
+          const studio = showsStudio();
+          // A preview of a component the author has since moved on from is set up, but takes no picks until they come
+          // back to it (or the next preview replaces it).
+          let elsewhere = false;
+          if (studio) {
+            const shown = p.preview as { key?: unknown; mounted?: unknown; error?: unknown } | undefined;
+            if (!studioLoads.current!.shows(shown?.key)) break;
+            elsewhere = studioAt.current!.definitionId !== s.definitionMode?.definitionId;
+            if (shown?.mounted !== true) {
+              // Another component's failure is not this one's to report.
+              if (elsewhere) break;
+              const name = studioDefName() ?? 'The component';
+              setFrameError(`${name} couldn’t be shown${typeof shown?.error === 'string' && shown.error ? `: ${shown.error.slice(0, 300)}` : '.'}`);
+              setRetrying(false);
+              markTimedOut(false);
+              break;
+            }
+            if (!elsewhere) studioPending.current = false;
+          }
           // A page loaded in full inside the same frame while previewing (a visitor's Back across documents) is
           // followed, so the editor and the frame agree on the page.
           const sameFrame = readySession.current === session;
@@ -462,14 +590,18 @@ export function Canvas() {
           // The visitor left the page they were on.
           if (reloaded && s.previewReturn) setState({ previewReturn: null });
           setReady(true);
-          setState({ frameReady: true });
-          setFrameError(null);
-          setRetrying(false);
-          markTimedOut(false);
+          // A page that arrives after Component Studio was opened, before its first preview, takes no picks either.
+          setState({ frameReady: !elsewhere && (studio || !studioPending.current) });
+          // What is reported about the preview on its way (it could not be prepared) stays until that one arrives.
+          if (!elsewhere) {
+            setFrameError(null);
+            setRetrying(false);
+            markTimedOut(false);
+          }
           frameAt.current = path;
           // A page loaded in full while the frame was already up (Try again, a load that could not go in place) shows the
           // selection, as an arrival in place does (`navigated`); the first load scrolls to it once the frame is ready.
-          if (ready && getState().mode !== 'preview' && view?.route && samePath(view.route, path)) {
+          if ((studio || ready) && getState().mode !== 'preview' && (studio || (view?.route && samePath(view.route, path)))) {
             const desc = descFor(getState().selection);
             if (desc) post('scrollTo', { desc });
           }
@@ -486,6 +618,8 @@ export function Canvas() {
           // A new page starts with nothing revealed.
           sentReveal.current = null;
           syncReveal();
+          // A component preview has no address of its own to go to: the frame stays on it.
+          if (studio) break;
           const request = nav.current.request;
           if (!sameFrame) {
             // A new frame (another server, Try again) opened the page shown when it was made, and a request sent
@@ -516,12 +650,14 @@ export function Canvas() {
           break;
         }
         case 'history': {
+          if (showsStudio()) break;
           const at = frameEntry(p);
           if (at && getState().mode === 'preview') visitorAt(at);
           if (at) setJourney(observe(journeyRef.current, at, getState().mode === 'preview'));
           break;
         }
         case 'navigated': {
+          if (showsStudio()) break;
           // Only the report for the page the editor last asked for counts while that request is on its way: a late
           // report for an earlier one must not switch back to a page the author has since left. In Preview, a
           // visitor's own link clicks then move the editor along with them; while editing, the page goes
@@ -536,7 +672,7 @@ export function Canvas() {
           if (getState().mode === 'preview' && at && samePath(addressPath(at.address), path)) setJourney(observe(journeyRef.current, at, true));
           // An open edit is not ended here: one in the shared header outlives the page change, and the page
           // ends any other (its element goes away) with its own cancel.
-          setState({ frameReady: true });
+          setState({ frameReady: !studioPending.current });
           // A page that arrived after the canvas reported it as too slow is no longer a problem.
           if (timedOut.current) {
             markTimedOut(false);
@@ -602,7 +738,10 @@ export function Canvas() {
           if (!st || !s.frameReady) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
-          const desc = ref && canInlineEdit(ref) ? descFor(ref) : null;
+          // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
+          // the selection leaves out (one only a sample has, or one inside another list's item) is still that item.
+          const clicked = ref && s.definitionMode?.studio ? studioClicked(chain, ref) : null;
+          const desc = ref && canInlineEdit(ref) ? (clicked ?? descFor(ref)) : null;
           if (ref && desc) {
             setState({ selection: ref });
             // The double-click it answers, so the edit starts at the word clicked (and not after a newer one).
@@ -880,7 +1019,7 @@ export function Canvas() {
     const show = shownFor.current !== showSelection;
     shownFor.current = showSelection;
     const quiet = takeUnscrolled(selection);
-    const desc = ready && view?.route && samePath(view.route, frameAt.current) ? descFor(selection) : null;
+    const desc = ready && (showsStudio() || (view?.route && samePath(view.route, frameAt.current))) ? descFor(selection) : null;
     if (desc && (show || !quiet)) post('scrollTo', show ? { desc, show } : { desc });
   }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -892,8 +1031,10 @@ export function Canvas() {
     const s = getState();
     const st = s.snapshot?.state;
     const r = s.revealedItem;
-    const at = st && r && s.mode === 'edit' && s.dockOpen && s.rightTab === 'inspect' ? pageRefFor(r.ref) : null;
-    const ctx = st && at ? designCtx(st, at) : undefined;
+    const dm = s.definitionMode;
+    const shown = !!st && !!r && s.mode === 'edit' && s.dockOpen && s.rightTab === 'inspect';
+    const at = shown && !dm?.studio ? pageRefFor(r.ref) : null;
+    const ctx = !shown ? undefined : dm?.studio ? (studioDesignCtx(st, dm.definitionId, r.ref) ?? undefined) : at ? designCtx(st, at) : undefined;
     const target = st && r && ctx ? revealTarget(st, r, ctx) : null;
     if (sameTarget(target, sentReveal.current)) return;
     sentReveal.current = target;
@@ -987,6 +1128,8 @@ export function Canvas() {
 
   /** Ask the frame for the page the editor shows, unless it is there already or already asked for. */
   function openShownPage() {
+    // The frame shows a component on its own in Component Studio: it opens the page again when that ends.
+    if (showsStudio()) return;
     // The editor's page is what the frame shows from now on, not an address visited before.
     visitWanted = null;
     const s = getState();
@@ -1024,7 +1167,7 @@ export function Canvas() {
     shownBefore.current = key;
     // Another page chosen is what the frame shows from now on, even before it is ready.
     if (moved && !first) visitWanted = null;
-    if (ready && view?.route && (moved || !visitWanted)) openShownPage();
+    if (ready && view?.route && !showsStudio() && (moved || !visitWanted)) openShownPage();
   }, [view?.key, view?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
@@ -1039,6 +1182,8 @@ export function Canvas() {
     if (!st || !chain.length) return null;
     const dm = s.definitionMode;
     if (!dm) return selectionFromChain(st, chain, s.selection, deep);
+    // In Component Studio the component is not placed anywhere on screen: its own nodes are picked directly.
+    if (dm.studio) return studioPick(st, dm.definitionId, chain);
     const hit = definitionPick(st, dm.definitionId, chain);
     if (hovering) hoverPlacement.current = hit?.placement ?? null;
     else if (hit) placementRef.current = hit.placement;
@@ -1048,9 +1193,17 @@ export function Canvas() {
   /** The element the page shows for a reference: a component's own node is shown through one of its
    *  placements (the one it was picked through, else the first on this page); null when there is none. */
   function descFor(ref: ElementRef | null, via: ElementRef | null = null): BridgeDesc | null {
+    const dm = getState().definitionMode;
     const st = getState().snapshot?.state;
+    if (dm?.studio) return st ? studioDescOf(st, dm.definitionId, ref) : null;
     const at = pageRefFor(ref, via);
     return st && at ? descOf(st, at) : null;
+  }
+
+  /** In Component Studio, the element of a pick's chain that a reference of the design names, as the preview names it. */
+  function studioClicked(chain: BridgeDesc[], ref: ElementRef): BridgeDesc | null {
+    const want = descFor({ ...ref, itemPath: [] });
+    return want ? (chain.find((d) => d.ctx === want.ctx && d.node === want.node) ?? null) : null;
   }
 
   /** Where a reference shows on the page: itself, or while editing everywhere, through a placement there. */
@@ -1076,6 +1229,15 @@ export function Canvas() {
   useEffect(() => {
     if (definitionMode && state && !state.components[definitionMode.definitionId]) setState({ definitionMode: null, pageId: definitionMode.returnPageId, selection: null });
   }, [definitionMode, state]);
+  // Editing everywhere a component the page no longer places (its last placement there removed or undone): Component
+  // Studio shows it on its own, so the canvas still has it to edit. Not while previewing, where a visitor's link moves
+  // the page on: back in Edit, it is shown there.
+  useEffect(() => {
+    const s = getState();
+    // A request the AI is still working on can take a placement away and put it back (stopped, it is rolled back): the
+    // view follows the project once it settles.
+    if (state && s.mode === 'edit' && !s.snapshot?.aiBusy && needsStudio(state, s.definitionMode, s.pageId)) setState({ definitionMode: { ...s.definitionMode!, studio: NEW_STUDIO } });
+  }, [definitionMode, state, pageId, mode, snapshot?.aiBusy]);
   // A new component being edited starts without a remembered placement (declared first: it runs before the
   // effect below, which may set one).
   useEffect(() => {
@@ -1759,7 +1921,9 @@ export function Canvas() {
             onClick={() => {
               if (retrying) return;
               setRetrying(true);
-              setSession(newSessionId());
+              // In Component Studio the preview is prepared again, from the project as it is now.
+              if (getState().definitionMode?.studio) setStudioRetry((n) => n + 1);
+              else setSession(newSessionId());
             }}
           >
             Try again
@@ -1824,7 +1988,7 @@ export function Canvas() {
             {opening && !resizing && !templateMode && (
               <div className="frame-status" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
                 <Spinner decorative />
-                <span>Opening {view?.title ?? 'the page'}…</span>
+                <span>Opening {(studioView && studioDef?.name) ?? view?.title ?? 'the page'}…</span>
               </div>
             )}
             {/* Stays while another entry opens, so the entry picker keeps focus as the author steps through entries. */}

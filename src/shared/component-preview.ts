@@ -20,6 +20,12 @@ export interface ComponentPreviewSpec {
 /** Where the preview server shows a prepared preview: this, then its key, then "/". A page's address never starts with "_". */
 export const COMPONENT_PREVIEW_ROUTE = '/__siteorigin/component/';
 
+/** The ID of the one instance a preview shows. */
+export const PREVIEW_NODE_ID = 'preview';
+
+/** The identity context of a preview's markup (`data-so-ctx`), told apart from a page's ("page:…") and the shell's. */
+export const previewCtx = (definitionId: string) => `preview:${definitionId}`;
+
 /** The folder in the dev cache (.siteorigin/cache/dev) that holds each prepared preview's files, a folder per key. */
 export const ISOLATED_DIR = 'isolated';
 

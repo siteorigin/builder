@@ -6,9 +6,8 @@
  */
 import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { inDefinition, placementsOn, refExists, refLabel } from './model';
-
-type DefinitionMode = { definitionId: string; returnPageId: string } | null;
+import { inDefinition, placementsOn, refExists, refLabel, studioRef } from './model';
+import { NEW_STUDIO, type DefinitionMode } from './studio';
 
 export interface ComposerScope {
   /** The page the editor shows; while a component is edited everywhere, the page it is shown on. */
@@ -34,6 +33,16 @@ const resolves = (state: ProjectState, ref: ElementRef) => {
 export function editableDesign(state: ProjectState, id: unknown) {
   const def = typeof id === 'string' && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
   return def?.kind === 'managed' && def.owner === 'project' && def.tree ? def : null;
+}
+
+/**
+ * The component edited everywhere when it is one the AI does not edit (a code component, open in Component Studio),
+ * by name; null otherwise. The composer then refuses to send an edit, which would otherwise reach the page behind it.
+ */
+export function uneditableDesign(state: ProjectState, definitionMode: DefinitionMode): string | null {
+  const id = definitionMode?.definitionId;
+  const def = id !== undefined && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+  return def && !editableDesign(state, id) ? def.name : null;
 }
 
 /** The component a saved request was about: named, or (saved before requests named it) owning its selection. */
@@ -118,14 +127,18 @@ export function retryView(
     if (!def) return { ...leave, definitionMode: null, selection: null, scope, missing: ctx.component?.name ?? ctx.selectionLabel ?? 'The component' };
     const selOk = !!ctx.selection && inDefinition(ctx.selection, def.id) && resolves(state, ctx.selection);
     // The canvas shows the design through a placement: on the request's page, else the one open now, else the first
-    // page that has one. A design placed nowhere stays on the request's page, editable through Layers.
+    // page that has one. A design placed nowhere opens in Component Studio, which shows it on its own; so does one
+    // the author is looking at there already, as they were looking at it.
     const shows = (id: string | null | undefined): id is string => !!id && Object.hasOwn(state.pages, id) && placementsOn(state, def.id, id).length > 0;
     const fallback = pageOk ? ctx.pageId : (now.pageId ?? state.site.homePageId);
-    const pageId = [ctx.pageId, now.pageId, ...state.site.pageOrder].find(shows) ?? fallback;
+    const placed = [ctx.pageId, now.pageId, ...state.site.pageOrder].find(shows);
+    const pageId = placed ?? fallback;
+    const studio = (now.definitionMode?.definitionId === def.id ? now.definitionMode.studio : undefined) ?? (placed ? undefined : NEW_STUDIO);
     return {
       pageId,
-      definitionMode: { definitionId: def.id, returnPageId: now.definitionMode?.returnPageId ?? now.pageId ?? pageId },
-      selection: selOk ? ctx.selection : null,
+      definitionMode: { definitionId: def.id, returnPageId: now.definitionMode?.returnPageId ?? now.pageId ?? pageId, ...(studio ? { studio } : {}) },
+      // The studio shows the design's own items only: one of a placement's is the design's node, in every item.
+      selection: selOk ? (studio ? studioRef(state, def.id, ctx.selection!) : ctx.selection) : null,
       scope,
       missing: ctx.selection && !selOk ? (ctx.selectionLabel ?? 'The selected element') : null
     };

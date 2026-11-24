@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Check, Component, FileText, Images, Layers, Newspaper, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
+import { Check, Component, FileText, Images, Layers, Newspaper, Plus, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
 import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
@@ -26,7 +26,8 @@ import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModa
 import { ImportReviewModal } from './panels/ImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
-import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openSiteStyles, planLayers, setMode } from './lib/actions';
+import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openComponentStudio, openSiteStyles, planLayers, setMode } from './lib/actions';
+import { StudioControls } from './panels/StudioControls';
 import { copySelection, pasteCopy } from './lib/clipboard';
 import { clipKeyIsEditors } from './lib/clip-keys';
 import { focusedSurface } from './lib/history';
@@ -562,6 +563,9 @@ export function Editor() {
   });
   const defUses = useStore((s) => (s.definitionMode && s.snapshot ? instancesOf(s.snapshot.state, s.definitionMode.definitionId).length : 0));
   const defInfo = defName ? { name: defName, uses: defUses, places: defPlaces } : null;
+  // Component Studio shows the component on its own (see lib/studio); a project component edited on a page can open there.
+  const studio = useStore((s) => !!s.definitionMode?.studio);
+  const studied = useStore((s) => (s.definitionMode && s.snapshot && Object.hasOwn(s.snapshot.state.components, s.definitionMode.definitionId) ? s.snapshot.state.components[s.definitionMode.definitionId] : undefined));
   // Entering and leaving the mode is announced from a region that is always mounted, so it is heard.
   const modeAnnouncement = useTransitionAnnouncement(defName, (prev, next) => (next ? `Editing ${next} everywhere. Layout and style changes apply wherever it is used.` : prev ? `Finished editing ${prev} everywhere` : null));
 
@@ -569,18 +573,27 @@ export function Editor() {
     <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}${leftTab ? '' : ' no-sidebar'}`} inert={leaving || undefined}>
       <Toolbar />
       {defining && defInfo && (
-        <div className="mode-band" role="region" aria-label="Editing a component everywhere">
-          <Component aria-hidden="true" />
+        <div className={`mode-band${studio ? ' studio' : ''}`} role="region" aria-label={studio ? 'Component Studio' : 'Editing a component everywhere'}>
+          {studio ? <SquareDashed aria-hidden="true" /> : <Component aria-hidden="true" />}
           <p className="mode-band-text">
-            <strong>Editing {defInfo.name} everywhere</strong>
+            <strong>{studio ? `${defInfo.name} in Component Studio` : `Editing ${defInfo.name} everywhere`}</strong>
             <span>
-              {defInfo.uses === 0
-                ? 'Layout and style changes apply wherever you add it.'
-                : defInfo.uses === 1
-                  ? `Layout and style changes apply to this component on ${defInfo.places}. Its text stays the same.`
-                  : `Layout and style changes apply to all ${defInfo.uses} uses, on ${defInfo.places}. Each keeps its own text.`}
+              {studio
+                ? `${defInfo.uses === 0 ? 'Not placed anywhere yet.' : defInfo.uses === 1 ? `Used on ${defInfo.places}.` : `Used ${defInfo.uses} times, on ${defInfo.places}.`} Changes apply everywhere; the look and content shown here are only for trying it.`
+                : defInfo.uses === 0
+                  ? 'Layout and style changes apply wherever you add it.'
+                  : defInfo.uses === 1
+                    ? `Layout and style changes apply to this component on ${defInfo.places}. Its text stays the same.`
+                    : `Layout and style changes apply to all ${defInfo.uses} uses, on ${defInfo.places}. Each keeps its own text.`}
             </span>
           </p>
+          {studio && studied && <StudioControls def={studied} />}
+          {!studio && studied?.owner === 'project' && (
+            <button className="btn btn-sm mode-band-studio" title="Show the component on its own, to try its variants, long or empty content and widths" onClick={() => openComponentStudio(studied.id)}>
+              <SquareDashed aria-hidden="true" />
+              Open in Component Studio
+            </button>
+          )}
           <button className="btn btn-sm mode-band-done" title="Finish editing everywhere. Esc also finishes once nothing is selected." onClick={leaveDefinitionMode}>
             <Check aria-hidden="true" />
             Done editing

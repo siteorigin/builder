@@ -60,6 +60,38 @@ describe('isolated component preview files', () => {
     for (const path of out.files.keys()) expect(path).not.toMatch(/styles\/(tokens|theme|site)\.css$|\/fonts\//);
   });
 
+  it('shows the design’s own list items under their own IDs, the same in every preview of it', () => {
+    const state = starter();
+    const id = installComponent(state, 'features.grid');
+    const def = state.components[id];
+    const list = Object.entries(def.properties).find(([, s]) => s.type === 'list' && !s.feed && s.default.length);
+    expect(list).toBeDefined();
+    const ids = (list![1].default as Array<{ id: string }>).map((it) => it.id);
+    const first = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
+    const second = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
+    // Component Studio keeps an item picked across edits only while the next preview names it the same way.
+    expect(second).toBe(first);
+    for (const itemId of ids) expect(first).toContain(`{"id":${JSON.stringify(itemId)},`);
+  });
+
+  it('gives starting items a hand-edited document left without an ID, or sharing one, IDs of the preview’s own', () => {
+    const state = starter();
+    const id = installComponent(state, 'features.grid');
+    const def = state.components[id];
+    const [name, schema] = Object.entries(def.properties).find(([, s]) => s.type === 'list' && !s.feed && s.default.length >= 2)!;
+    const [a, b] = schema.default as Array<{ id: string }>;
+    // A row without an ID, then one that repeats another's.
+    def.properties[name] = { ...schema, default: [{ ...b, id: undefined }, { ...a }, { ...a }, { ...b }] } as typeof schema;
+    const first = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
+    expect(preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)).toBe(first);
+    const shown = [...first.matchAll(/\{"id":"([^"]+)",/g)].map((m) => m[1]);
+    expect(shown).toEqual(['preview-item-0', a.id, 'preview-item-2', b.id]);
+    // An ID of the preview's own never takes one a later row really has.
+    def.properties[name] = { ...schema, default: [{ ...a, id: undefined }, { ...b, id: 'preview-item-0' }] } as typeof schema;
+    const again = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
+    expect([...again.matchAll(/\{"id":"([^"]+)",/g)].map((m) => m[1])).toEqual(['preview-item-1', 'preview-item-0']);
+  });
+
   it('renders each variant choice, and an axis left out keeps its default', () => {
     const state = starter();
     const id = installComponent(state, 'features.grid');

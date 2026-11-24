@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate } from 'lucide-react';
+import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate, SquareDashed } from 'lucide-react';
 import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import type { ComponentExportResult, ComponentImportResult } from '@shared/api';
@@ -9,7 +9,7 @@ import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
-import { insert, insertionPoint, insertPlan, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
+import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, searchItems } from '../lib/insert-search';
 import { beginInsertDrag } from '../lib/insert-drag';
@@ -1453,12 +1453,12 @@ export function InsertPanel() {
       return ids.map((nodeId, i) => ({ label: tree ? `${label} · ${whereIn(st, p.owner, tree, nodeId)}` : label, icon, hint: `${i + 1} of ${ids.length}`, onSelect: () => void showPlacement(def.id, p.owner, nodeId) }));
     };
     const onPage = places.some((p) => p.owner.kind !== 'component');
+    // Component Studio shows any component on its own, placed or not (issue #367); Edit everywhere shows it on a page.
+    const studio: MenuItem = { label: 'Open in Component Studio', icon: <SquareDashed />, hint: count ? undefined : 'Not placed yet', onSelect: () => void openComponentStudio(def.id) };
     const edit: MenuItem[] =
       def.kind === 'code'
-        ? dev
-          ? [{ label: 'Edit code', icon: <FileCode2 />, onSelect: () => setState({ modal: { kind: 'source', definitionId: def.id } }) }]
-          : []
-        : [{ label: 'Edit everywhere', icon: <Component />, hint: onPage ? undefined : count ? 'Only inside designs' : 'Place it first', disabled: !onPage, onSelect: () => editEverywhere(def.id) }];
+        ? [studio, ...(dev ? [{ label: 'Edit code', icon: <FileCode2 />, onSelect: () => setState({ modal: { kind: 'source', definitionId: def.id } }) }] : [])]
+        : [studio, ...(onPage ? [{ label: 'Edit everywhere', icon: <Component />, hint: 'On a page', onSelect: () => editEverywhere(def.id) }] : [])];
     const from = def.provenance?.forkedFrom ? st.components[def.provenance.forkedFrom] : undefined;
     const source = from?.owner === 'project' ? `Copy of ${from.name}` : from?.owner === 'theme' ? `Copy of the theme’s ${from.name}` : null;
     return [

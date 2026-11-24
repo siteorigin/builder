@@ -9,8 +9,10 @@ import type { InspectionDesc, InspectionRef } from '@shared/inspection';
 import { placementItems, repeatedPartList } from '@shared/item-styles';
 import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
 import { isDraftPage } from '@generator/index';
+import { PREVIEW_NODE_ID, previewCtx } from '@shared/component-preview';
 import { layerLabel } from './layers';
 import { keepTemplateValid, type TemplateMode } from './template-view';
+import type { DefinitionMode } from './studio';
 
 export interface BridgeDesc {
   ctx: string;
@@ -356,7 +358,7 @@ export function refLabel(state: ProjectState, ref: ElementRef): string {
  * The page shown, and the page that editing everywhere returns to, kept to pages the project still has: an Undo or
  * the AI may remove either, and both fall back to Home.
  */
-export function keepPagesValid(state: ProjectState, pageId: string | null, definitionMode: { definitionId: string; returnPageId: string } | null) {
+export function keepPagesValid(state: ProjectState, pageId: string | null, definitionMode: DefinitionMode) {
   const valid = (id: string | null | undefined): id is string => !!id && Object.hasOwn(state.pages, id);
   return {
     pageId: valid(pageId) ? pageId : state.site.homePageId,
@@ -434,7 +436,6 @@ export function refExists(state: ProjectState, ref: ElementRef): boolean {
   return !items || items.includes(itemId!);
 }
 
-type DefinitionMode = { definitionId: string; returnPageId: string } | null;
 type View = { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; templateMode?: TemplateMode | null };
 
 /**
@@ -664,6 +665,108 @@ export function definitionPick(state: ProjectState, definitionId: string, chain:
     return hit;
   }
   return null;
+}
+
+/*
+ * Component Studio: the component edited everywhere shown on its own, in the editor's isolated preview (see
+ * @shared/component-preview), placed nowhere. Its design renders there inside the preview's one instance, so the
+ * design's own nodes carry the context "preview:<id>|preview" where a placement's carry "<owner>|<placement>". The
+ * selection still names the design's own nodes; only what the frame is told and what it reports are translated.
+ */
+
+/** The context the studio's preview renders a component's design in. */
+export const studioCtx = (definitionId: string) => `${previewCtx(definitionId)}|${PREVIEW_NODE_ID}`;
+
+/** A context that begins with `head` (as a whole segment), with it swapped for `to`; null for any other context. */
+function swapHead(ctx: string, head: string, to: string): string | null {
+  return ctx === head || ctx.startsWith(`${head}|`) ? to + ctx.slice(head.length) : null;
+}
+
+/** The descriptor the studio's preview finds one of the edited component's references by; null for anything else. */
+export function studioDescOf(state: ProjectState, definitionId: string, ref: ElementRef | null | undefined): BridgeDesc | null {
+  if (!ref || !inDefinition(ref, definitionId)) return null;
+  const d = descOf(state, ref);
+  const ctx = swapHead(d.ctx, `component:${definitionId}`, studioCtx(definitionId));
+  return ctx === null ? null : { ...d, ctx };
+}
+
+/** The context the design around one of the edited component's references renders in, in the studio's preview (see designCtx). */
+export function studioDesignCtx(state: ProjectState, definitionId: string, ref: ElementRef): string | null {
+  return inDefinition(ref, definitionId) ? swapHead(designCtx(state, ref), `component:${definitionId}`, studioCtx(definitionId)) : null;
+}
+
+/**
+ * One of the edited component's references as the studio's preview can show it: an item of a list is kept only when
+ * it is one of the design's own starting items, the only ones every preview shows under the same ID (sample content
+ * adds its own, and a placement's items are that placement's). An item of a list inside another list's item is let
+ * go too, since the outer item may be one only a sample has: the node is then outlined in every item.
+ */
+export function studioRef(state: ProjectState, definitionId: string, ref: ElementRef): ElementRef {
+  const itemId = ref.itemPath?.length === 1 ? ref.itemPath[0] : undefined;
+  if (!ref.itemPath?.length) return ref;
+  const def = own(state.components, definitionId);
+  const list = def ? listPropFor(def, ref.nodeId) : undefined;
+  const schema = def && list ? own(def.properties, list) : undefined;
+  const shown = itemId !== undefined && schema?.type === 'list' && !schema.feed && (idsOf(schema.default) ?? []).includes(itemId) && refExists(state, ref);
+  if (shown) return ref;
+  const out = { ...ref };
+  delete out.itemPath;
+  return out;
+}
+
+/**
+ * What a pick in the studio's preview selects, as definitionPick does on a page: the innermost of the component's own
+ * nodes under the pointer, a component placed in the design picked whole, or null outside it (the code component's
+ * own wrapper among it: a code component has no nodes to pick). An item of a list is kept only when it is one of the
+ * design's own (see studioRef), so a pick never names an item the next preview may not show.
+ */
+export function studioPick(state: ProjectState, definitionId: string, chain: BridgeDesc[]): ElementRef | null {
+  const def = own(state.components, definitionId);
+  if (!def?.tree) return null;
+  const owner: OwnerRef = { kind: 'component', id: definitionId };
+  const inDesign = (d: BridgeDesc) => {
+    const ctx = swapHead(d.ctx, studioCtx(definitionId), `component:${definitionId}`);
+    const r = ctx === null ? null : refFromDesc(state, { ...d, ctx });
+    return r && resolveRef(state, r).node ? r : null;
+  };
+  for (const [i, d] of chain.entries()) {
+    const r = inDesign(d);
+    if (!r) continue;
+    const nested = r.instancePath[0];
+    let hit: ElementRef = { owner, instancePath: [], nodeId: nested ?? r.nodeId };
+    if (!nested && r.itemPath?.length) hit.itemPath = r.itemPath;
+    if (nested) {
+      // Picked on its own root, a component inside the design keeps the items of the design it is repeated in; picked
+      // by something inside it, its root further out says which.
+      const b = boundaryOf(state, r);
+      if (b.itemPath?.length && !b.instancePath.length && b.nodeId === nested) hit.itemPath = b.itemPath;
+      else
+        for (const outer of chain.slice(i + 1)) {
+          const o = inDesign(outer);
+          const ob = o && boundaryOf(state, o);
+          if (!ob || (ob.instancePath.length ? ob.instancePath[0] : ob.nodeId) !== nested) break;
+          if (!ob.instancePath.length && ob.itemPath?.length) {
+            hit.itemPath = ob.itemPath;
+            break;
+          }
+        }
+    }
+    const partId = partIdFor(def, hit.nodeId);
+    if (partId) hit = { ...hit, partId };
+    return studioRef(state, definitionId, hit);
+  }
+  return null;
+}
+
+/**
+ * Whether editing a component everywhere has to show it in Component Studio: the page on screen no longer places it
+ * (its last placement there removed or undone), so the canvas would show the page without it. Only a component of
+ * the project's own: a theme's original is never edited.
+ */
+export function needsStudio(state: ProjectState, definitionMode: DefinitionMode, pageId: string | null): boolean {
+  if (!definitionMode || definitionMode.studio) return false;
+  const def = own(state.components, definitionMode.definitionId);
+  return def?.owner === 'project' && !(pageId && placementsOn(state, def.id, pageId).length);
 }
 
 /** The component's placements on a page (its own content, then the shared header and footer it shows). */
