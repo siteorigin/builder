@@ -140,6 +140,10 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     partId: z.string().optional().describe('For component instances: the public part to style. Defaults to "root".'),
+    itemId: z
+      .string()
+      .optional()
+      .describe('For a repeated part (one card of a grid, one plan, one testimonial): style only the list item with this stable ID, leaving its siblings on the shared style. Needs partId. Omit to style every item.'),
     variant: z.string().optional().describe('Component definitions only: set the rule for this variant option.'),
     axis: z.string().optional().describe('The variant axis, when the option ID is on several.'),
     scope,
@@ -151,6 +155,7 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     partId: z.string().optional(),
+    itemId: z.string().optional().describe('Reset only this repeated item\'s own styles for the part, so it shows the shared style again. Needs partId. Without it the shared part styles are reset and item styles stay.'),
     variant: z.string().optional(),
     axis: z.string().optional(),
     scope: scope.optional()

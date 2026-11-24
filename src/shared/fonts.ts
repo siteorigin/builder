@@ -79,7 +79,8 @@ function fontSlots(state: ProjectState, components: unknown = state.components, 
     else if (v && typeof v === 'object') {
       const o = v as Record<string, unknown>;
       for (const k of Object.keys(o)) {
-        if (k === 'fontFamily') add(o, k);
+        // Only a string is a family: item styles are keyed by item ID, which can be any word, even this one.
+        if (k === 'fontFamily' && typeof o[k] === 'string') add(o, k);
         else walk(o[k]);
       }
     }

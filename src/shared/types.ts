@@ -310,8 +310,25 @@ export interface InstanceNode extends NodeBase {
   variants?: Record<string, Bindable<string>>;
   /** Instance style overrides keyed by public part ID ("root" is the instance boundary). */
   overrides?: Record<string, ResponsiveStyles>;
+  /**
+   * Styles for one repeated item only (one card of a grid), keyed by public part ID. They apply over `overrides` for
+   * that part, so an item keeps the shared style for everything it does not set, and follow the item, by its stable
+   * ID, when the list is reordered. Only a part inside exactly one repeat of a managed definition takes them.
+   */
+  itemOverrides?: Record<string, ItemStyles>;
   /** Content placed into the definition's declared slots. */
   slots?: Record<string, string[]>;
+}
+
+/** One part's styles for single items of a list. */
+export interface ItemStyles {
+  /**
+   * The list property the part repeated over when these were set. Item IDs are unique only within one list, so the
+   * styles apply only while the part still repeats over this list.
+   */
+  list: string;
+  /** Styles keyed by stable item ID. */
+  items: Record<string, ResponsiveStyles>;
 }
 
 export type GraphNode =

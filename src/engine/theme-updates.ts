@@ -21,6 +21,7 @@ import { EngineError, fail, instancesOf, subtreeIds } from './tree';
 import { codeNeeds, directDependencies } from './definitions';
 import { normalizeProp } from './values';
 import { cardKey, cardLinkProblems, type CardProblem } from '@generator/card-links';
+import { liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 
 function own<T>(rec: Record<string, T>, key: string): T | undefined {
   return Object.hasOwn(rec, key) ? rec[key] : undefined;
@@ -63,7 +64,29 @@ export function contractConflicts(state: ProjectState, def: ComponentDefinition,
   for (const p of Object.keys(def.parts)) if (!own(next.parts, p)) conflicts.push(`${def.name}: part "${p}" is missing.`);
   for (const { axis, id } of variantOptions(def)) if (!own(own(next.variantAxes ?? {}, axis)?.options ?? {}, id)) conflicts.push(`${def.name}: ${axis} variant "${id}" is missing.`);
   for (const sl of Object.keys(def.slots ?? {})) if (!own(next.slots ?? {}, sl)) conflicts.push(`${def.name}: slot "${sl}" is missing.`);
+  conflicts.push(...itemStyleConflicts(state, def, next));
   return conflicts;
+}
+
+/**
+ * Placements whose single-item styles `next` would stop showing (for a theme switch and an update alike): the part
+ * must still repeat over the same list, and items shown from the definition's defaults must keep their IDs.
+ */
+function itemStyleConflicts(state: ProjectState, def: ComponentDefinition, next: ComponentDefinition): string[] {
+  const out = new Set<string>();
+  for (const { node, owner, label } of instancesOf(state, def.id)) {
+    if (owner.kind === 'component' || !node.itemOverrides) continue;
+    for (const partId of Object.keys(node.itemOverrides)) {
+      const live = liveItemStyles(def, node, partId);
+      if (!live) continue;
+      // Only items shown now count: styles of a default item the current version no longer has show nothing anyway.
+      const shown = new Set(placementItems(def, node, live.list).map((i) => i.id));
+      const after = new Set(placementItems(next, node, live.list).map((i) => i.id));
+      const kept = repeatedPartList(next, partId) === live.list && Object.keys(live.items).every((id) => !shown.has(id) || after.has(id));
+      if (!kept) out.add(`${label}: ${def.name} would lose the styles set on a single item of its "${partId}" part.`);
+    }
+  }
+  return [...out];
 }
 
 export interface ThemeUpdates {

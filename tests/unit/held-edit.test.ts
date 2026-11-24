@@ -131,6 +131,22 @@ describe('held edit field check', () => {
     expect(check(repointed, s, [styleOp]).kind).toBe('changed');
   });
 
+  it('holds one card\'s own style: a reorder keeps it, a change to it conflicts, and a removed card is gone (#81)', () => {
+    const s = fresh();
+    const home = s.pages[s.site.homePageId];
+    const grid = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId].componentId === 'features.grid')!;
+    const owner = { kind: 'page' as const, id: home.id };
+    const [first, second] = (grid.props.items as Array<{ id: string }>).map((i) => i.id);
+    const op: EditOperation = { type: 'node.setStyle', owner, nodeId: grid.id, partId: 'card', itemId: second, scope: 'base', property: 'background', value: '#dbeeff' };
+    expect(check(s, apply(s, [{ type: 'instance.listMove', owner, nodeId: grid.id, prop: 'items', itemId: second, index: 0 }]), [op])).toEqual({ kind: 'apply' });
+    // A sibling's own style is a different field.
+    expect(check(s, apply(s, [{ ...op, itemId: first, value: '#ffeeee' }]), [op])).toEqual({ kind: 'apply' });
+    expect(check(s, apply(s, [{ ...op, value: '#ffeeee' }]), [op]).kind).toBe('changed');
+    expect(check(s, apply(s, [{ type: 'instance.listRemove', owner, nodeId: grid.id, prop: 'items', itemId: second }]), [op])).toEqual({ kind: 'gone', what: 'list item' });
+    expect(fieldKey([op])).not.toBe(fieldKey([{ ...op, itemId: undefined }]));
+    expect(fieldKey([op])).not.toBe(fieldKey([{ ...op, itemId: first }]));
+  });
+
   it('reads the routes for text with a link, a custom style whole, and the project for a font rename', () => {
     const s = fresh();
     const { owner, node, prop, items } = listInstance(s);

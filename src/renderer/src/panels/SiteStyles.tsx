@@ -15,6 +15,7 @@ import { FontSelect, familyName } from './FontSelect';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ForegroundSuggestion } from '@shared/contrast';
 import { NOT_FOUND_DEFAULTS, NOT_FOUND_LIMITS, clipText } from '@shared/not-found';
+import { itemStyleRecords } from '@shared/item-styles';
 
 /**
  * What the Foundation theme uses each colour for, checked against its base CSS and component styles, so an
@@ -121,7 +122,7 @@ function tokenUses(state: ProjectState): Map<string, TokenUse> {
     }
     for (const n of Object.values(t.tree.nodes)) {
       scan(n.styles, mark);
-      if (n.kind === 'instance') for (const o of Object.values(n.overrides ?? {})) scan(o, mark);
+      if (n.kind === 'instance') for (const o of [...Object.values(n.overrides ?? {}), ...itemStyleRecords(n)]) scan(o, mark);
     }
   }
   return uses;

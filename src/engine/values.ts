@@ -271,8 +271,11 @@ export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectStat
     if (schema.min !== undefined && v.length < schema.min) fail(`${label}: at least ${schema.min} items.`);
     const seen = new Set<string>();
     const before = new Map(Array.isArray(stored) ? (stored as ListItem[]).filter((x) => x && typeof x.id === 'string').map((x) => [x.id, x]) : []);
+    // The editor joins the item IDs of nested lists with commas to say which repeated element was clicked, so a new
+    // ID with a comma would select another item; such an item gets an ID of its own. One already stored keeps its ID.
+    const usable = (id: string) => !seen.has(id) && (!id.includes(',') || before.has(id));
     return v.map((it) => {
-      const base = it && typeof it === 'object' && typeof (it as ListItem).id === 'string' && !seen.has((it as ListItem).id) ? (it as ListItem) : undefined;
+      const base = it && typeof it === 'object' && typeof (it as ListItem).id === 'string' && usable((it as ListItem).id) ? (it as ListItem) : undefined;
       const n = normalizeItem(schema, it as Record<string, unknown>, state, label, base ? { id: base.id } as ListItem : undefined, base ? before.get(base.id) : undefined);
       seen.add(n.id);
       return n;

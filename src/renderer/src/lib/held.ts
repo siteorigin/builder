@@ -3,6 +3,7 @@ import type { GraphNode, NodeTree, OwnerRef, ProjectState, TableValue } from '@s
 import { getTheme } from '@catalogue/index';
 import { displayName } from '@engine/tree';
 import { followsPage, inheritedValue } from '@shared/page-teasers';
+import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-styles';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -142,8 +143,13 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (node.kind === 'instance') {
         // A part is a name for one element of the component: which element it names is part of the field.
         const partId = op.partId ?? 'root';
-        const part = has(has(state.components, node.definitionId)?.parts, partId);
-        return found({ definitionId: node.definitionId, part, value: at(node.overrides, [partId, op.scope, op.property]) });
+        const def = has(state.components, node.definitionId);
+        const part = has(def?.parts, partId);
+        if (op.itemId === undefined) return found({ definitionId: node.definitionId, part, value: at(node.overrides, [partId, op.scope, op.property]) });
+        // One item's own value: the item must still be in the list the part repeats over (reordering keeps it).
+        const list = def ? repeatedPartList(def, partId) : undefined;
+        if (!def || !list || !placementItems(def, node, list).some((i) => i.id === op.itemId)) return gone('list item');
+        return found({ definitionId: node.definitionId, part, list, value: at(itemStylesOf(def, node, partId, op.itemId), [op.scope, op.property]) });
       }
       return found({ kind: node.kind, value: at((node as { styles?: unknown }).styles, [op.scope, op.property]) });
     }

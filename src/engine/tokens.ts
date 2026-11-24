@@ -3,6 +3,7 @@ import type { ProjectState, ResponsiveStyles, TokenDef } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { linkOf } from '@shared/styles';
 import { allTrees } from './tree';
+import { itemStyleRecords } from '@shared/item-styles';
 
 export interface TokenRefSite {
   /** Where the reference is, in words ("Home", "Feature card", "Site styles"). */
@@ -18,9 +19,9 @@ const refOf = (v: unknown): string | null =>
   v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : null;
 
 /**
- * Visit every `{ token }` reference held in project-owned data: page and shell node styles, instance overrides,
- * project component trees and variant rules, token overrides and custom token values (including text-style
- * families). Theme-owned definitions and theme defaults are fixed data, so they are not visited.
+ * Visit every `{ token }` reference held in project-owned data: page and shell node styles, instance overrides
+ * (shared and per item), project component trees and variant rules, token overrides and custom token values
+ * (including text-style families). Theme-owned definitions and theme defaults are fixed data, so they are not visited.
  */
 export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site: TokenRefSite) => void) {
   const styles = (rs: ResponsiveStyles | undefined, label: string) => {
@@ -40,7 +41,7 @@ export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site:
     }
     for (const n of Object.values(t.tree.nodes)) {
       styles(n.styles, t.label);
-      if (n.kind === 'instance') for (const o of Object.values(n.overrides ?? {})) styles(o, t.label);
+      if (n.kind === 'instance') for (const o of [...Object.values(n.overrides ?? {}), ...itemStyleRecords(n)]) styles(o, t.label);
     }
   }
   const groups = new Map(declaredTokens(state).map((t) => [t.id, t.group]));

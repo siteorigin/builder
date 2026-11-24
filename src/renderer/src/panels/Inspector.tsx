@@ -33,7 +33,7 @@ import { isBinding } from '@shared/types';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
-import { partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
+import { cascadeStyles, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens, isDraftPage } from '@generator/index';
@@ -43,7 +43,8 @@ import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetu
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { applyOps, applyWith, commitOps, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
-import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { DraftInput, Field, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { useStyleCopyItems } from './StylePaste';
@@ -163,6 +164,19 @@ function focusImage(state: ProjectState, devUrl: string | null, value: unknown, 
   const asset = assetId && Object.hasOwn(state.assets.assets, assetId) ? state.assets.assets[assetId] : undefined;
   if (!asset) return { src: null, below, own, missing: 'No picture is chosen yet.' };
   return { src: assetUrl(devUrl, asset.file), width: asset.width, height: asset.height, below, own };
+}
+
+/**
+ * What a single item shows under its own styles: the part's design, then the placement's shared changes, which win
+ * over the design at every size (a shared all-sizes value beats the design's phone value). Cascaded the way the
+ * stylesheet writes them, so each size carries the whole cascade.
+ */
+function sharedPartStyles(def: ComponentDefinition, nodeId: string, inst: InstanceNode, partId: string): ResponsiveStyles {
+  const design = designStyles(def, nodeId, inst.variants);
+  return cascadeStyles([
+    { styles: design, strength: 1 },
+    { styles: inst.overrides?.[partId], strength: 2, wideColumns: true, unhides: [design] }
+  ]);
 }
 
 /** The selection one level up: the component a part belongs to (what Escape selects). */
@@ -782,13 +796,29 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const itemIndex = itemId ? listItems.findIndex((x) => x.id === itemId) : -1;
   const partName = (part?.label ?? 'part').toLowerCase();
   const n = listItems.length;
-  // Style reach, worded the same in the header and on the Style heading.
-  const styleReach = n === 1 ? `the 1 ${partName}` : `all ${n} ${partName}s`;
   const instOwner = owner;
   const instNodeId = selection.instancePath[0];
   // Edits join the same field's last edit. In a component's design the same node IDs can recur in another design
   // copied from it, so the key names the design too, as its row in Layers does.
   const keyAt = everywhere ? `${everywhere.id}:${instNodeId}` : instNodeId;
+  // A part shown once per item of the list (a card) can also be styled for the selected item alone.
+  const itemList = !nested && partId && owner.kind !== 'component' ? repeatedPartList(def, partId) : undefined;
+  const canStyleItem = !!itemList && itemList === listProp && !!itemId && itemIndex >= 0;
+  // The selected item has left the list (removed, or an undo took it back): neither its own style nor the shared
+  // one is what the author picked, so nothing is offered until they select again.
+  const itemGone = !!itemList && itemList === listProp && !!itemId && itemIndex < 0;
+  const ownItemStyles = canStyleItem ? itemStylesOf(def, inst, partId!, itemId!) : undefined;
+  const [reach, setReach] = useState<'all' | 'item'>(ownItemStyles ? 'item' : 'all');
+  const oneItem = canStyleItem && reach === 'item';
+  const itemName = (it: Record<string, unknown> | undefined, i: number) => {
+    const t = listSchema?.titleField ? it?.[listSchema.titleField] : undefined;
+    return typeof t === 'string' && t.trim() ? `“${t.trim()}”` : `${listSchema?.itemLabel ?? 'Item'} ${i + 1}`;
+  };
+  const thisItem = itemIndex >= 0 ? itemName(listItems[itemIndex], itemIndex) : '';
+  // Items of this placement that keep styles of their own, listed under the shared style so they can be found again.
+  const styledItems = itemList && itemList === listProp && partId ? Object.keys(liveItemStyles(def, inst, partId)?.items ?? {}).map((id) => ({ id, index: listItems.findIndex((x) => x.id === id) })).filter((x) => x.index >= 0) : [];
+  // Style reach, worded the same in the header and on the Style heading.
+  const styleReach = oneItem ? `this ${partName} only` : n === 1 ? `the 1 ${partName}` : `all ${n} ${partName}s`;
   const kind = elementKind(node);
   const parentName = inst.name ?? def.name;
   const parentLink = (
@@ -830,6 +860,13 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
     part && node.kind === 'image'
       ? focusImage(state, devUrl, shownImage(state, selection, node.image), [selectedVariantStyles(def, inst.variants, part.nodeId), [def.tree?.nodes[part.nodeId]?.styles]], listSchema && !itemId ? `Select one ${itemLabel} on the page to see its picture here.` : 'This picture can’t be shown here.')
       : undefined;
+  // One item's picture: the style every item shares is the strongest rule under the item's own.
+  const itemImage =
+    part && node.kind === 'image' && oneItem
+      ? focusImage(state, devUrl, shownImage(state, selection, node.image), [[inst.overrides?.[partId!]], selectedVariantStyles(def, inst.variants, part.nodeId), [def.tree?.nodes[part.nodeId]?.styles]], 'This picture can’t be shown here.')
+      : undefined;
+  // Rows the shared style uses show for one item too, so the item can change what every item was given.
+  const sharedRows = (controls: string[] | undefined) => controls && [...new Set([...controls, ...Object.values(inst.overrides?.[partId!] ?? {}).flatMap((sc) => Object.keys(sc ?? {}))])];
 
   return (
     <>
@@ -923,19 +960,96 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
         </Section>
       )}
       {part && !nested && def.kind === 'managed' && (
-        <Section title="Style" id="part-style" level={LEVEL} scope={[listSchema ? styleReach.charAt(0).toUpperCase() + styleReach.slice(1) : '', countStyles(inst.overrides?.[partId!]) ? changes(countStyles(inst.overrides?.[partId!])) : ''].filter(Boolean).join(' · ') || undefined}>
-          <StyleControls
-            styles={inst.overrides?.[partId!]}
-            inherited={designStyles(def, part.nodeId, inst.variants)}
-            wideColumns
-            allowed={partStyleControls(def, partId!)}
-            tokens={tokens}
-            image={partImage}
-            onSet={(property, value, expectedRevision) =>
-              commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], `Style ${part.label}`, styleKey(property, `${keyAt}:${partId}:${scope}:${property}`), expectedRevision)
-            }
-            onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, scope: sc }], 'Reset part overrides')}
-          />
+        <Section
+          title="Style"
+          id="part-style"
+          level={LEVEL}
+          scope={[listSchema ? styleReach.charAt(0).toUpperCase() + styleReach.slice(1) : '', countStyles(oneItem ? ownItemStyles : inst.overrides?.[partId!]) ? changes(countStyles(oneItem ? ownItemStyles : inst.overrides?.[partId!])) : ''].filter(Boolean).join(' · ') || undefined}
+        >
+          {canStyleItem && (
+            <Segmented
+              full
+              label={`Style which ${partName}s`}
+              value={reach}
+              onChange={setReach}
+              options={[
+                // Named by their visible text: a title would replace it as the accessible name.
+                { value: 'all', label: n === 1 ? `The ${partName}` : `All ${n} ${partName}s` },
+                { value: 'item', label: `This ${partName}` }
+              ]}
+            />
+          )}
+          {itemGone ? (
+            <p className="muted insp-note">
+              This {itemLabel} is no longer in the list. Select another {itemLabel}, or{' '}
+              <button className="link-btn" onClick={() => selectAndFocus(parent)}>
+                select {parentName}
+              </button>
+              .
+            </p>
+          ) : oneItem ? (
+            <>
+              <p className="muted insp-note">
+                Changes here apply to {thisItem} only. Anything it does not change follows the style all {listLabel} share.
+              </p>
+              <StyleControls
+                key={`item:${itemId}`}
+                styles={ownItemStyles}
+                inherited={sharedPartStyles(def, part.nodeId, inst, partId!)}
+                wideColumns
+                // Rows the shared style uses show here too, so the item can change what every item was given.
+                allowed={sharedRows(partStyleControls(def, partId!))}
+                tokens={tokens}
+                image={itemImage}
+                resetLabel="Reset to shared style"
+                target={thisItem}
+                onSet={(property, value, expectedRevision) =>
+                  commitOps(
+                    [{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, itemId, scope, property, value }],
+                    `Style ${thisItem}`,
+                    styleKey(property, JSON.stringify([keyAt, partId, itemId, scope, property])),
+                    expectedRevision
+                  )
+                }
+                onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, itemId, scope: sc }], `Reset ${thisItem} to shared style`)}
+              />
+            </>
+          ) : (
+            <>
+              {styledItems.length > 0 && (
+                <p className="muted insp-note">
+                  {styledItems.length === 1 ? 'Styled on its own: ' : 'Styled on their own: '}
+                  {styledItems.map((x, i) => (
+                    <span key={x.id}>
+                      {i > 0 ? ', ' : ''}
+                      <button
+                        className="link-btn"
+                        // The selected card's own style is one choice away; any other card is selected.
+                        onClick={() => (x.id === itemId && canStyleItem ? setReach('item') : selectAndFocus({ ...selection, itemPath: [x.id] }))}
+                        title={`Show ${itemName(listItems[x.index], x.index)}’s own style, to change or reset it`}
+                      >
+                        {itemName(listItems[x.index], x.index)}
+                      </button>
+                    </span>
+                  ))}
+                  . Their own changes win over the shared style.
+                </p>
+              )}
+              <StyleControls
+                key="all"
+                styles={inst.overrides?.[partId!]}
+                inherited={designStyles(def, part.nodeId, inst.variants)}
+                wideColumns
+                allowed={partStyleControls(def, partId!)}
+                tokens={tokens}
+                image={partImage}
+                onSet={(property, value, expectedRevision) =>
+                  commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], `Style ${part.label}`, styleKey(property, `${keyAt}:${partId}:${scope}:${property}`), expectedRevision)
+                }
+                onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, scope: sc }], 'Reset part overrides')}
+              />
+            </>
+          )}
         </Section>
       )}
     </>
