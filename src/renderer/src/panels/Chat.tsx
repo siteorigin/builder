@@ -13,7 +13,7 @@ import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
-import { composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
@@ -564,9 +564,9 @@ export function Chat() {
         // Scrolling by hand during a jump ends it, so the way back can show again.
         onWheel={() => (jumping.current = false)}
         onPointerDown={() => (jumping.current = false)}
-        // Busy for the whole run, through a pause for a question too: the question is outside the log and is announced on
-        // its own, and the log's updates are read once the run settles rather than alongside it.
-        aria-busy={running || undefined}
+        // Busy while the AI works, so its updates are read once they settle rather than piece by piece. A pause for a
+        // question is not busy: the author is the one to act, and the question and its answer box sit outside the log.
+        aria-busy={chatBusy(running, waiting)}
         onScroll={(e) => {
           const el = e.currentTarget;
           const below = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -1139,7 +1139,7 @@ function AssistantMessage({
   // The model this turn went to, as fixed when it started; old transcripts and turns that never reached one show none.
   const recipient = turnRecipient(m);
   return (
-    <div className="msg-ai" aria-busy={live || undefined}>
+    <div className="msg-ai" aria-busy={chatBusy(live, waitingHere)}>
       {!r && taken.length > 0 && <Steps items={taken} waiting={waitingHere} recent={4} />}
       {!r && m.text && (
         <div className="text">

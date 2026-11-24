@@ -51,6 +51,15 @@ export function isPaused(asking: WaitingQuestion | null, messageId: string, live
 }
 
 /**
+ * The `aria-busy` of the conversation log and of a live turn: set while the AI works, and cleared while the run
+ * waits for the author, so an assistive client reads the chat as ready for an answer rather than as something to
+ * wait on. It comes back once the run's status says the work has resumed, not when the answer is recorded.
+ */
+export function chatBusy(active: boolean, paused: boolean): true | undefined {
+  return (active && !paused) || undefined;
+}
+
+/**
  * Whether a live turn with nothing to show yet says "Getting started…" with a spinner. A turn that holds the
  * open question is not starting: it waits for the author, so it shows nothing that moves and is not busy.
  */
