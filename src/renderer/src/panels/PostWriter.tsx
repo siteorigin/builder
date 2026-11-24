@@ -444,7 +444,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     await Promise.allSettled([...fieldCommits.current]);
     await appliesLanded();
     // Or text kept for being too long.
-    return saved && fieldRefusedAt.current < since && !getState().refusedDrafts;
+    return saved && fieldRefusedAt.current < since && !document.querySelector('.post-page [aria-invalid="true"]');
   };
   saveAllRef.current = saveAll;
   const publish = async (draftOn: boolean) => {

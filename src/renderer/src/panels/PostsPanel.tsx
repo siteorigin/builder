@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Copy, Newspaper, Plus, Search, Trash2, X } from 'lucide-react';
 import { formatArticleDate } from '@shared/articles';
 import { entryLinkUses } from '@engine/page-links';
-import { commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
+import { api, commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
 import { Field, Modal } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { POST_SORTS, duplicatePostOps, newPostOps, postAt, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort } from '../lib/posts';
@@ -30,8 +30,17 @@ function keptAddresses(state: ProjectState, entryId: string): number {
 async function deletePost(ref: PostRef, title: string, replacement: { replacementPageId?: string; replacementEntryId?: string }, revision: number): Promise<boolean> {
   // Against the project as it was checked: a link or address added meanwhile, or a destination become a draft, means
   // looking again. The writer lets go of the post itself once it is gone, keeping anything typed meanwhile.
-  const r = await commitOps([{ type: 'entry.remove', collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }], 'Delete post', undefined, revision);
-  if (!r) return false;
+  const ops = [{ type: 'entry.remove' as const, collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }];
+  let r = await commitOps(ops, 'Delete post', undefined, revision, { replanStale: true });
+  // Only moved on (a save landing): sent again if what was checked still holds — the same links and old addresses.
+  if (r && !r.ok) {
+    const was = getState().snapshot;
+    const now = await api.project.snapshot().catch(() => null);
+    const same = (s: typeof now) => (s ? `${entryLinkUses(s.state, ref.entryId).length}/${keptAddresses(s.state, ref.entryId)}` : '');
+    r = now && was && same(now) === same(was) ? await commitOps(ops, 'Delete post', undefined, now.revision) : null;
+    if (!r && now) toast('Something now links to this post. Delete it again to choose where those links go.', 'error');
+  }
+  if (!r?.ok) return false;
   toast(`Deleted “${title}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
   return true;
 }
