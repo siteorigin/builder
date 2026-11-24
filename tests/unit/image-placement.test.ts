@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectSnapshot } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
-import type { AssetRecord, GraphNode, ImageNode, ImageValue, InstanceNode, OwnerRef } from '@shared/types';
+import type { AssetRecord, ElementNode, GraphNode, ImageNode, ImageValue, InstanceNode, OwnerRef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { assetUsages } from '@engine/apply';
 import { ProjectSession } from '../../src/main/project/session';
@@ -716,6 +716,58 @@ describe('placing a library image from Assets (issue #13)', () => {
       expect(node.kind === 'text' && node.text).toEqual([{ type: kind, items: words.map((text) => [{ text }]) }]);
       expect(store.getState().selection).toMatchObject({ owner });
     }
+  });
+
+  it('inserts a column layout as one change and selects its Grid; each column then takes content as one change of its own (#514)', async () => {
+    const { owner, page, entries } = await library();
+    const sections = page().rootIds.length;
+    const history = entries();
+    await actions.insert(basicSpec(BASICS.find((b) => b.name === '2 columns')!), '2 columns');
+    expect(applyCalls).toBe(1);
+    expect(entries()).toBe(history + 1);
+    // Nothing selected: the Grid goes in the page's last Section that takes content, and is what is selected, not
+    // its last column.
+    const gridId = store.getState().selection!.nodeId;
+    const grid = page().nodes[gridId] as ElementNode;
+    expect(grid).toMatchObject({ kind: 'element', name: 'Columns', styles: { desktop: { columns: 2 } } });
+    expect(store.getState().selection).toEqual({ owner, instancePath: [], nodeId: gridId });
+    const [left, right] = grid.children;
+    // A click on a column's frame selects it (#511), and Insert fills it.
+    for (const [column, text] of [[left, 'Left words'], [right, 'Right words']]) {
+      store.setState({ selection: { owner, instancePath: [], nodeId: column } });
+      const before = entries();
+      await actions.insert({ primitive: 'paragraph', text }, 'Paragraph');
+      expect(entries()).toBe(before + 1);
+      const [added] = (page().nodes[column] as ElementNode).children;
+      expect(page().nodes[added]).toMatchObject({ kind: 'text', text });
+      expect(store.getState().selection).toEqual({ owner, instancePath: [], nodeId: added });
+    }
+    // Undo takes back one paragraph at a time, then the whole layout.
+    await session!.undo();
+    expect((page().nodes[right] as ElementNode).children).toEqual([]);
+    expect((page().nodes[left] as ElementNode).children).toHaveLength(1);
+    await session!.undo();
+    expect((page().nodes[left] as ElementNode).children).toEqual([]);
+    await session!.undo();
+    expect(page().nodes[gridId]).toBeUndefined();
+    expect(page().nodes[left]).toBeUndefined();
+    expect(page().rootIds).toHaveLength(sections);
+  });
+
+  it('inserts a column layout on a page with no Section to take it, in a new Section that one Undo takes away with it (#514)', async () => {
+    const { owner, page, gallery, entries } = await library();
+    // The gallery takes no content: the columns go in a new Section after it.
+    store.setState({ selection: { owner, instancePath: [], nodeId: gallery } });
+    const roots = [...page().rootIds];
+    const history = entries();
+    await actions.insert({ primitive: 'grid', columns: 3 }, '3 columns');
+    expect(entries()).toBe(history + 1);
+    const gridId = store.getState().selection!.nodeId;
+    const wrapper = page().rootIds[roots.indexOf(gallery) + 1];
+    expect((page().nodes[wrapper] as InstanceNode).slots?.content).toEqual([gridId]);
+    expect((page().nodes[gridId] as ElementNode).children).toHaveLength(3);
+    await session!.undo();
+    expect(page().rootIds).toEqual(roots);
   });
 
   it('inserts into the Section whose Container is picked in Layers, not the page’s last Section (#185)', async () => {

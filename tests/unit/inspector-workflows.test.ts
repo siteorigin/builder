@@ -5,6 +5,7 @@ import { applyOperations, captureClipboard } from '@engine/apply';
 import { EngineError, codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, overrideClass } from '@generator/index';
+import { columnLayoutPart } from '@shared/styles';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -541,5 +542,61 @@ describe('multi-list definitions', () => {
     expect(enclosingRepeatProp(footer, 'contact-link')).toBe('contact');
     expect(enclosingRepeatProp(footer, 'explore-link')).toBe('links');
     expect(enclosingRepeatProp(footer, 'copyright')).toBeUndefined();
+  });
+});
+
+describe('a Section’s columns, arranged from the placement (#514)', () => {
+  /** A blank site with one Section placed, and the Section's installed definition. */
+  const withSection = () => {
+    const s = createStarterState('blank', 'Blank', false);
+    const r = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'layout.section' }]);
+    return { s: r.state, def: r.state.components['foundation.layout.section'], id: r.results[0].nodeId as string };
+  };
+
+  it('offers Column sizes and separate row and column gaps on its Container, beside its layout and columns', () => {
+    const { def } = withSection();
+    expect(def.parts.container.styleControls).toEqual(expect.arrayContaining(['layout', 'columns', 'gridTemplate', 'rowGap', 'columnGap']));
+    // The placement's inspector reaches them without Parts: the one part that holds the section's slot.
+    expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] });
+  });
+
+  it('offers what an older installed Section has, and nothing for a design without one part holding its slot', () => {
+    const { s, def: installed } = withSection();
+    const def = structuredClone(installed);
+    def.parts.container.styleControls = ['maxWidth', 'gap', 'layout', 'columns', 'align', 'justify', 'textAlign'];
+    expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gap', 'align', 'justify'] });
+    // Its layout locked: nothing to arrange.
+    def.parts.container.styleControls = ['maxWidth', 'gap'];
+    expect(columnLayoutPart(def)).toBeNull();
+    // A section of the theme with no slot (a split hero), and a design whose root holds the slot itself.
+    const hero = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'hero.split' }]).state.components['foundation.hero.split'];
+    expect(columnLayoutPart(hero)).toBeNull();
+    const rooted = structuredClone(installed);
+    delete (rooted.parts as Record<string, unknown>).container;
+    expect(columnLayoutPart(rooted)).toBeNull();
+    // Two parts each holding a slot: which one is meant can't be told, so neither is offered.
+    const two = structuredClone(installed);
+    two.parts.other = { nodeId: 'inner', label: 'Other', styleControls: ['layout'] };
+    expect(columnLayoutPart(two)).toBeNull();
+  });
+
+  it('splits one Section into asymmetric columns with separate gaps, leaving the other Section and the design alone', () => {
+    const { s: one, id: split } = withSection();
+    const at = owner(one);
+    const r = applyOperations(one, [{ type: 'node.insert', owner: at, parentId: null, componentId: 'layout.section' }]);
+    const plain = r.results[0].nodeId as string;
+    const design = structuredClone(r.state.components['foundation.layout.section']);
+    const set = (property: string, value: unknown) => ({ type: 'node.setStyle' as const, owner: at, nodeId: split, partId: 'container', scope: 'base' as const, property, value: value as never });
+    const s = applyOperations(r.state, [set('layout', 'grid'), set('gridTemplate', '1fr 2fr'), set('rowGap', '32px'), set('columnGap', { token: 'space.xl' })]).state;
+    expect((home(s).nodes[split] as InstanceNode).overrides?.container?.base).toEqual({ layout: 'grid', gridTemplate: '1fr 2fr', rowGap: '32px', columnGap: { token: 'space.xl' } });
+    expect((home(s).nodes[plain] as InstanceNode).overrides).toBeUndefined();
+    expect(s.components['foundation.layout.section']).toEqual(design);
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+    const css = generateProject(s).get('src/lib/siteorigin/styles/site.css')!;
+    const rules = css.split('}').filter((rule) => rule.includes(`.${overrideClass(split, 'container')}`)).join('}');
+    expect(rules).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 2fr)');
+    expect(rules).toContain('row-gap: 32px');
+    expect(rules).toContain('column-gap: var(--so-space-xl)');
+    expect(css).not.toContain(overrideClass(plain, 'container'));
   });
 });
