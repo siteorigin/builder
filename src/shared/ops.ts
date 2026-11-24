@@ -205,11 +205,7 @@ export const OPERATION_SCHEMAS = {
     nodeId: z.string(),
     field: z
       .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger'])
-      .describe(
-        '"collapseEmpty" (definition containers): true hides it when all children are hidden. ' +
-          '"appear" (sections and containers): how it enters when first scrolled into view, "fade", "lift" or "scale-subtle"; "none" or null removes it (on a section, "none" also turns off its design\'s own entrance, null goes back to it). Content stays visible without JavaScript, in print and for reduced motion. ' +
-          '"appearStagger" (a repeat in a component\'s design): true starts the entrances of items that scroll in together one after another.'
-      ),
+      .describe('"collapseEmpty" (definition containers): true hides it when all children are hidden. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({
