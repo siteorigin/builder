@@ -1242,7 +1242,9 @@ describe('placing a library image from Assets (issue #13)', () => {
       expect(page().nodes[content[1]]).toMatchObject({ kind: 'image', image: { assetId: photo.id, alt: photo.altSuggestion } });
       expect(lastToast()!.text).toBe('Placed “Studio at sunrise.png” after Text in Section on Home.');
 
+      store.setState({ rightTab: 'chat', dockOpen: false });
       expect(await actions.dropAssetAt(nook.id, { owner, parentId: column, index: 0 }, revision())).toBe(true);
+      expect(store.getState()).toMatchObject({ rightTab: 'inspect', dockOpen: true });
       const inColumn = (page().nodes[column] as ElementNode).children;
       expect(inColumn).toHaveLength(1);
       expect(page().nodes[inColumn[0]]).toMatchObject({ kind: 'image', image: { assetId: nook.id, alt: nook.altSuggestion } });
@@ -1299,8 +1301,8 @@ describe('placing a library image from Assets (issue #13)', () => {
       expect(actions.assetDropRefusal(photo.id)).toBeNull();
       const toasts = store.getState().toasts.length;
       expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(false);
-      // Nor is a place that is on no page.
-      expect(await actions.dropAssetAt(photo.id, { owner: { kind: 'shell', id: 'header' }, parentId: null }, revision())).toBe(false);
+      // Nor is a place that is on no page, even one named like the page now open.
+      expect(await actions.dropAssetAt(photo.id, { owner: { kind: 'template', id: about }, parentId: null }, revision())).toBe(false);
       expect(applyCalls).toBe(calls + 1);
       expect(store.getState().toasts).toHaveLength(toasts);
       expect(placed(page(), photo.id)).toEqual([]);
@@ -1314,13 +1316,17 @@ describe('placing a library image from Assets (issue #13)', () => {
       beforeApply = async () => store.setState({ selection: picked });
       expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(true);
       expect(store.getState().selection).toBe(picked);
+      // The new image is still selected when only the tab or the dock changed.
+      const selectedImage = () => page().nodes[(store.getState().selection as { nodeId: string }).nodeId]?.kind;
       beforeApply = async () => store.setState({ rightTab: 'chat' });
       expect(await actions.dropAssetAt(nook.id, at, revision())).toBe(true);
       expect(store.getState()).toMatchObject({ rightTab: 'chat', dockOpen: true });
-      store.setState({ rightTab: 'inspect' });
+      expect(selectedImage()).toBe('image');
+      store.setState({ rightTab: 'inspect', selection: picked });
       beforeApply = async () => store.setState({ dockOpen: false });
       expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(true);
       expect(store.getState()).toMatchObject({ rightTab: 'inspect', dockOpen: false });
+      expect(selectedImage()).toBe('image');
       // Each was placed all the same.
       expect(placed(page(), photo.id)).toHaveLength(2);
       expect(placed(page(), nook.id)).toHaveLength(1);

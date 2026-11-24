@@ -1827,8 +1827,12 @@ export function Canvas() {
     // What a release now does, and whether the pointer is on the page.
     let aim: AssetAim = { kind: 'none' };
     let over = false;
-    // What the drag showed a release would do as it was let go.
+    // What the drag last showed a drop on the page would do, once known (an aim pending a moment, after a wheel step,
+    // leaves it on screen until the next is drawn), and what it showed as it was let go.
+    let seen: AssetAim = { kind: 'pending' };
     let shown: AssetAim = { kind: 'pending' };
+    // Let go anywhere but on an image: the page is measured again once, after its answer about the release point.
+    let remeasured = false;
     // Counts the wheel steps: the page's answer to a question asked before the latest one says what was there before it
     // scrolled.
     let scrolls = 0;
@@ -1861,7 +1865,7 @@ export function Canvas() {
       if (done) return;
       const page = onPage();
       over = !!page;
-      aim = { kind: over ? 'pending' : 'none' };
+      aim = { kind: 'pending' };
       if (page && pointed) {
         const picture = pointed.picture ? { src: pointed.picture.src, own: pointed.picture.own } : null;
         const hit = resolveImageDrop(st, targets, { chain: pointed.chain, picture }, showing);
@@ -1869,6 +1873,9 @@ export function Canvas() {
         const outline = hit ? (hit.direct ? (hit.target.code ? (pointed.picture?.rect ?? null) : pointed.rect) : boxOf(hit.target)) : null;
         aim = assetAim(hit, outline, !!measured && !!lists, () => (lists ? dest.aim(lists, page.x, page.y, page.z) : null));
       }
+      // Off the page nothing is shown to go anywhere.
+      if (!over) seen = { kind: 'pending' };
+      else if (aim.kind !== 'pending') seen = aim;
       const ins = aim.kind === 'insert' ? aim.aim : null;
       const label = !over
         ? `Drag ${word} onto the page`
@@ -1887,7 +1894,7 @@ export function Canvas() {
       setImageDrop({ name: word, x: point.x, y: point.y, over, idle, outline: aim.kind === 'image' ? aim.outline : null, line: ins?.line ?? null, list: ins?.outline ?? null, label, refused: ins?.refused ?? null });
     };
     // An image the page says is at the release point needs nothing measured; anywhere else, what was measured after the
-    // release (see `up`).
+    // page's answer about it (see `ask`).
     const ready = () => released && fresh && !!pointed && pointed.at.x === point.x && pointed.at.y === point.y && !asking && (aim.kind === 'image' || (!!measured && !!lists));
     /** Ask the page what is under the pointer; one question on its way at a time, the latest place asked after it. */
     const ask = () => {
@@ -1921,10 +1928,18 @@ export function Canvas() {
         pointed = p ? { ...p, at: asked } : null;
         if (late && p) fresh = true;
         if (p) scrolled = p.scroll;
-        if (p && p.scroll !== measuredAt) measure();
+        const moved = !!p && p.scroll !== measuredAt;
+        if (moved) measure();
         if (askAgain) ask();
         if (done) return;
         show();
+        // Let go anywhere but on an image: the place goes by the page as it lays out now (a picture or font that loaded
+        // while the pointer was still can move it without a scroll), measured again after this answer, never ahead of it.
+        if (late && p && !remeasured && aim.kind !== 'image') {
+          remeasured = true;
+          if (!moved) measure();
+          return;
+        }
         if (ready()) end(true);
       });
       post('pointAt', { requestId, x: at.x, y: at.y });
@@ -1998,21 +2013,20 @@ export function Canvas() {
     };
     const up = (ev: PointerEvent) => {
       if (!mine(ev)) return;
-      // What the drag shows as it is let go: a release does that, or nothing.
-      shown = aim;
       point = { x: ev.clientX, y: ev.clientY };
       released = true;
       listen(false);
       // Let go off the page (or over the editor's own menus and notes): nothing changes.
       if (!onPage()) return end(false);
-      // The drop goes where it was let go, once the page has said what is there now, measured where it now lays out (a
-      // picture or font that loaded meanwhile can move it without a scroll).
+      // What the drag shows where it is let go: a release does that, or nothing.
+      show();
+      shown = seen;
+      // The drop goes where it was let go, once the page has said what is there now.
       timer = setTimeout(() => {
         if (done) return;
         end(false);
         toast(`The page didn’t answer, so ${word} wasn’t placed. Drag it again.`, 'info');
       }, 3000);
-      measure();
       ask();
     };
     const cancel = (ev?: Event) => {
