@@ -33,13 +33,17 @@ const clip = (text: string) => {
   return chars.length > MESSAGE_CHARS ? `${chars.slice(0, MESSAGE_CHARS - 1).join('')}…` : text;
 };
 
-/** A finding as the assistant acts on it: what it is, how serious, and where it is fixed. Why it matters is said once per code. */
-function compact(f: SeoFinding) {
+/**
+ * A finding as the assistant acts on it: what it is, how serious, and where it is fixed. Why it matters is said once in
+ * the report's reasons, which `reason` indexes: findings of one code may differ (a title too long, or too short).
+ */
+function compact(f: SeoFinding, reason: number) {
   return {
     code: f.code,
     severity: f.severity,
     pillar: f.pillar,
     message: clip(f.message),
+    reason,
     aiFixable: f.aiFixable,
     ...(f.owner ? { owner: f.owner } : {}),
     ...(f.nodeId ? { nodeId: f.nodeId } : {}),
@@ -113,8 +117,7 @@ export function seoReport(project: ProjectState, revision: number, args: AuditSe
   let shown = ordered.slice(offset, offset + FINDINGS_PER_PART);
   let rowsShown = rows.slice(linkOffset, linkOffset + LINK_ROWS_PER_PART);
   const build = () => {
-    const explain: Record<string, string> = {};
-    for (const f of shown) explain[f.code] ??= f.explanation;
+    const reasons = [...new Set(shown.map((f) => f.explanation))];
     const nextOffset = offset + shown.length < ordered.length ? offset + shown.length : null;
     const nextLinkOffset = linkOffset + rowsShown.length < rows.length ? linkOffset + rowsShown.length : null;
     const links = pageId
@@ -126,9 +129,9 @@ export function seoReport(project: ProjectState, revision: number, args: AuditSe
       total: ordered.length,
       counts,
       byPillar,
-      findings: shown.map(compact),
+      findings: shown.map((f) => compact(f, reasons.indexOf(f.explanation))),
       ...(nextOffset !== null ? { nextOffset } : {}),
-      ...(Object.keys(explain).length ? { why: explain } : {}),
+      ...(reasons.length ? { reasons } : {}),
       links
     };
   };

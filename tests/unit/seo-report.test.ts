@@ -34,7 +34,7 @@ describe('audit_seo', () => {
     expect(ok).toBe(true);
     expect(content).toMatchObject({ revision: 7, scope: {}, total: 0, counts: { error: 0, warning: 0, info: 0 }, byPillar: {}, findings: [] });
     expect(content.nextOffset).toBeUndefined();
-    expect(content.why).toBeUndefined();
+    expect(content.reasons).toBeUndefined();
     expect(content.links.pages).toBe(2);
     expect(content.links.orphans).toBe(0);
     expect(content.links.rows.map((r: { pageId: string }) => r.pageId)).toEqual([home, services]);
@@ -47,7 +47,7 @@ describe('audit_seo', () => {
   it('lists findings most serious first, counted whole, each with where it is fixed and why its code matters', async () => {
     const { state, services } = seoSite();
     // No public URL (a site-wide warning), a Services title Home already has (a warning on each) and a short one (info).
-    const s = run(state, { type: 'site.update', baseUrl: '' }, { type: 'page.update', pageId: services, seoTitle: 'Riverside Studio · Pottery classes and handmade work' }, { type: 'page.update', pageId: state.site.homePageId, description: 'Too short.' });
+    const s = run(state, { type: 'site.update', baseUrl: '' }, { type: 'page.update', pageId: services, seoTitle: 'Riverside Studio · Pottery classes and handmade work', description: `Weekly wheel classes, private lessons and commissions. ${'More words about the classes. '.repeat(6)}` }, { type: 'page.update', pageId: state.site.homePageId, description: 'Too short.' });
     const all = runSeoAudit(s);
     const { content } = await audit(s);
     expect(content.total).toBe(all.length);
@@ -57,7 +57,13 @@ describe('audit_seo', () => {
     const duplicate = content.findings.find((f: { code: string; owner?: { id: string } }) => f.code === 'SEO_TITLE_DUPLICATE' && f.owner?.id === services);
     expect(duplicate).toMatchObject({ severity: 'warning', pillar: 'content', aiFixable: true, owner: { kind: 'page', id: services }, fix: { kind: 'pageSeo', pageId: services, field: 'title' } });
     expect(duplicate.explanation).toBeUndefined();
-    expect(content.why.SEO_TITLE_DUPLICATE).toMatch(/compete with each other/);
+    expect(content.reasons[duplicate.reason]).toMatch(/compete with each other/);
+    // Each reason is said once, and each finding's is its own: a title too short and one too long are told apart.
+    expect(new Set(content.reasons).size).toBe(content.reasons.length);
+    for (const f of content.findings) expect(content.reasons[f.reason]).toBe(all.find((g) => g.code === f.code && g.owner?.id === f.owner?.id)!.explanation);
+    const lengths = content.findings.filter((f: { code: string }) => f.code === 'SEO_DESCRIPTION_LENGTH');
+    expect(lengths).toHaveLength(2);
+    expect(lengths[0].reason).not.toBe(lengths[1].reason);
     expect(content.findings.find((f: { code: string }) => f.code === 'SEO_BASE_URL_MISSING')).toMatchObject({ fix: { kind: 'site', field: 'baseUrl' }, aiFixable: false });
   });
 
