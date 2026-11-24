@@ -174,6 +174,10 @@ describe('choosing images', () => {
     const slides = carousel.properties.slides as ListProp;
     expect(emptyPickNote(slides)).toBe('No slides yet. Choose images from Assets.');
     expect(emptyPickNote(slides)).not.toMatch(/gallery/i);
+    // A label of the author's own is used as written; one left blank, or lost, falls back to images.
+    expect(emptyPickNote({ label: '  Project photos ' })).toBe('No project photos yet. Choose images from Assets.');
+    expect(emptyPickNote({ label: '   ' })).toBe('No images yet. Choose images from Assets.');
+    expect(emptyPickNote({} as ListProp)).toBe('No images yet. Choose images from Assets.');
   });
 
   it('uses each image’s suggested description, and names the change', () => {

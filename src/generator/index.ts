@@ -2397,7 +2397,7 @@ const LIST_PLACEHOLDER_TAGS = new Set(['ul', 'ol', 'div']);
 /**
  * The placeholder that stands in for a hiding element (`collapseEmpty`) while its list of images is empty: a Gallery's
  * grid, a Carousel's track. It names the list, says where its images come from and that visitors never see it. Only
- * for a list that takes several images from Assets (see pickImagesField), repeated as the element's one child with no
+ * for a list that takes several images from Assets (see pickImagesField) and is not filled by a feed, repeated as the element's one child with no
  * condition of its own, so the element hides exactly while the list is empty. Editor variants only (rendered only
  * while editing, styled by the bridge); a clean file never has one.
  */
@@ -2406,8 +2406,10 @@ function emptyImageListMarker(ctx: EmitCtx, node: GraphNode & { kind: 'element' 
   const child = ctx.tree.nodes[node.children[0]];
   if (child?.kind !== 'repeat' || child.when || child.unless) return '';
   const schema = propSchemaFor(ctx, child.list);
-  if (schema?.type !== 'list' || !pickImagesField(ctx.def, child.list.$prop, schema)) return '';
-  const label = (schema.label.trim() || 'Images').toLowerCase();
+  // A list a feed fills has no images to choose: the Inspector shows its entries instead.
+  if (schema?.type !== 'list' || schema.feed || !pickImagesField(ctx.def, child.list.$prop, schema)) return '';
+  // A definition saved by hand may have lost its label.
+  const label = ((typeof schema.label === 'string' && schema.label.trim()) || 'Images').toLowerCase();
   return `<div class="so-list-empty" data-so-editor-only="" data-so-list-empty={${js(child.list.$prop)}}><strong>{${js(`No ${label} yet`)}}</strong><span>{${js('Choose images from Assets in the inspector. Visitors won’t see this box.')}}</span></div>`;
 }
 

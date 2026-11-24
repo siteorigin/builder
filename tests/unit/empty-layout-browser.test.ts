@@ -26,7 +26,8 @@ const HOME = 'src/routes/+page.svelte';
 
 /**
  * A blank site whose Home has a Section holding an empty Grid and an empty Row, then a component of the site's own
- * (with a property called "document") holding an empty Section, a Section left empty, and an empty Gallery and Carousel.
+ * (with a property called "document") holding an empty Section, a Section left empty, an empty Gallery and Carousel,
+ * and a Gallery with one row.
  */
 function site() {
   let s: ProjectState = createStarterState('blank', 'Frames', false);
@@ -50,7 +51,9 @@ function site() {
     { type: 'component.setPropSchema', definitionId: r.results[0].definitionId as string, prop: 'document', schema: { type: 'string', label: 'Document', default: 'Brochure' } },
     { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' },
     { type: 'node.insert', owner, parentId: null, componentId: 'media.gallery' },
-    { type: 'node.insert', owner, parentId: null, componentId: 'media.carousel' }
+    { type: 'node.insert', owner, parentId: null, componentId: 'media.carousel' },
+    // A Gallery with a row shows its grid, and no placeholder, in Edit as in Preview.
+    { type: 'node.insert', owner, parentId: null, componentId: 'media.gallery', props: { heading: 'Filled', images: [{ image: { assetId: null, alt: '' }, caption: 'The one row' }] } }
   ]).state;
   return { s, grid, row };
 }
@@ -268,6 +271,9 @@ describe.skipIf(!browserInstalled)('empty containers and slots in the editor pre
       await mode(page, site, 'edit');
       expect((await box(site, ids.grid)).height).toBeGreaterThanOrEqual(72);
       await expect.poll(() => site.evaluate<number>(MARKERS)).toBe(4);
+      // Both slot placeholders are back, as tall as before.
+      const again = await site.evaluate<number[]>(`[...document.querySelectorAll('[data-so-slot-empty]')].map((m) => m.getBoundingClientRect().height)`);
+      expect(again.length === 2 && again.every((h) => h >= 72), JSON.stringify(again)).toBe(true);
     } finally {
       await close();
     }
@@ -290,11 +296,21 @@ describe.skipIf(!browserInstalled)('empty containers and slots in the editor pre
         expect(l.text).toContain('Visitors won’t see this box.');
       }
 
+      // The Gallery with a row shows its grid and the row in Edit: the placeholder stands only in place of an empty list.
+      const filled = `(() => { const c = [...document.querySelectorAll('figcaption')].find((f) => f.textContent === 'The one row'); return !!c && !!c.closest('ul') && !c.closest('section').querySelector('[data-so-list-empty]'); })()`;
+      expect(await site.evaluate<boolean>(filled)).toBe(true);
+
       await mode(page, site, 'preview');
       await expect.poll(() => site.evaluate<number>(`document.querySelectorAll('[data-so-list-empty]').length`)).toBe(0);
+      expect(await site.evaluate<boolean>(filled)).toBe(true);
 
       await mode(page, site, 'edit');
       await expect.poll(() => site.evaluate<number>(`document.querySelectorAll('[data-so-list-empty]').length`)).toBe(2);
+      // Drawn as before, not merely back in the page.
+      for (const l of await site.evaluate<List[]>(LISTS)) {
+        expect(l.height, JSON.stringify(l)).toBeGreaterThanOrEqual(160);
+        expect(l.border).toBe('dashed');
+      }
     } finally {
       await close();
     }

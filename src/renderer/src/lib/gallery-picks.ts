@@ -70,7 +70,8 @@ export function startingSamples(schema: Pick<ListProp, 'fields' | 'default'>, it
 
 /** What an empty list that takes several images says, in its own words: a Gallery's "No images yet", a Carousel's "No slides yet". */
 export function emptyPickNote(schema: Pick<ListProp, 'label'>): string {
-  return `No ${schema.label.trim().toLowerCase() || 'images'} yet. Choose images from Assets.`;
+  const label = typeof schema.label === 'string' ? schema.label.trim().toLowerCase() : '';
+  return `No ${label || 'images'} yet. Choose images from Assets.`;
 }
 
 /** How many images can be added: the list's room once the `replacing` rows are gone. */

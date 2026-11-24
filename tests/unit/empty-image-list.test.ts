@@ -48,10 +48,33 @@ describe('an empty list of images in the editor preview', () => {
     expect(src).not.toContain('so-list-empty');
   });
 
-  it('stands only in place of the list, under the list’s own condition', () => {
-    const { s, file } = withSection('media.gallery', 'images', [{ image: { assetId: null, alt: '' }, caption: 'One' }]);
+  it('stays with a Gallery made unique, which keeps its list of images', () => {
+    const start = createStarterState('blank', 'Lists', false);
+    const owner = { kind: 'page' as const, id: start.site.homePageId };
+    let r = applyOperations(start, [{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'media.gallery' }]);
+    const nodeId = r.results[0].nodeId as string;
+    r = applyOperations(r.state, [{ type: 'component.makeUnique', owner, nodeId, name: 'Our work' }]);
+    const node = r.state.pages[owner.id].nodes[nodeId] as InstanceNode;
+    const def = r.state.components[node.definitionId];
+    expect(def.componentId).not.toBe('media.gallery');
+    const src = generateProject(r.state, { instrument: true }).get(defFile(def))!;
+    expect(src).toContain('data-so-list-empty={"images"}><strong>{"No images yet"}</strong>');
+  });
+
+  it('is left out of a list a feed fills, which has no images to choose', () => {
+    const { s, file } = withSection('media.carousel', 'slides');
+    const def = Object.values(s.components).find((d) => defFile(d) === file)!;
+    const slides = def.properties.slides;
+    if (slides.type !== 'list') throw new Error('slides is a list');
+    slides.feed = 'entries';
+    expect(generateProject(s, { instrument: true }).get(file)).not.toContain('so-list-empty');
+  });
+
+  it('still names a list whose saved definition lost its label', () => {
+    const { s, file } = withSection('media.carousel', 'slides');
+    const def = Object.values(s.components).find((d) => defFile(d) === file)!;
+    delete (def.properties.slides as { label?: string }).label;
     const src = generateProject(s, { instrument: true }).get(file)!;
-    // The placeholder is in the file, for when the list is emptied, but stands only in place of an empty list.
-    expect(src).toMatch(/\{#if has\(images\)\}[\s\S]*\{:else if so_editing\}/);
+    expect(src).toContain('<strong>{"No images yet"}</strong>');
   });
 });
