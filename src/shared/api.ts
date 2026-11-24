@@ -15,6 +15,11 @@ export interface RecentProject {
   dir: string;
   name: string;
   openedAt: string;
+  /**
+   * The project's own ID from its manifest, kept so an entry whose folder has gone can be told apart from another
+   * project of the same name when the author finds where it went (#217). Absent on entries listed before it was kept.
+   */
+  projectId?: string;
   missing?: boolean;
 }
 
@@ -655,11 +660,15 @@ export interface BuilderApi {
     cancelCreate(): Promise<void>;
     /** Whether creating a project downloads website tools, checked the way setup checks it. */
     websiteTools(): Promise<WebsiteTools>;
-    /** Open a project folder or project ZIP file; with no path the author chooses one (`folder`: a folder, on Windows and Linux). */
-    open(dir?: string, opts?: { folder?: boolean }): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }>;
+    /**
+     * Open a project folder or project ZIP file; with no path the author chooses one (`folder`: a folder, on Windows and
+     * Linux). `replaces` is a missing recent entry's folder: once the chosen project opens, the entry is dropped if it
+     * listed the same project (#217). Pass it on to trustAndOpen when the project asks for trust first.
+     */
+    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }>;
     /** Call off a project ZIP file being unpacked: the open then answers { ok: false } and nothing is left behind. */
     cancelOpen(): Promise<void>;
-    trustAndOpen(dir: string): Promise<{ ok: boolean; message?: string }>;
+    trustAndOpen(dir: string, opts?: { replaces?: string }): Promise<{ ok: boolean; message?: string }>;
     /** ok is false when the author chose to keep editing a change that could not be saved. */
     close(): Promise<{ ok: boolean }>;
     /** Copy the open project's source to a new folder, which is trusted and listed in Recent projects; the open project stays open. */

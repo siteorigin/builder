@@ -133,6 +133,16 @@ function openProjectDialog(folder: boolean): OpenDialogOptions {
   };
 }
 
+/**
+ * Find folder… on a missing recent project (#217): a folder, on every platform. A ZIP file would unpack a new copy, never
+ * the folder the project was moved to.
+ */
+function findFolderDialog(name: string | undefined): OpenDialogOptions {
+  const defaultPath = existsSync(defaultProjectsFolder()) ? defaultProjectsFolder() : undefined;
+  const message = name ? `Choose the folder ${name} is in now.` : 'Choose the folder the project is in now.';
+  return { title: name ? `Find ${name}` : 'Find a project folder', message, defaultPath, properties: ['openDirectory'] };
+}
+
 /** Is `path` a ZIP file (a folder that happens to end in .zip is still a folder)? */
 async function isZipFile(path: string): Promise<boolean> {
   if (!/\.zip$/i.test(path)) return false;
@@ -508,7 +518,7 @@ export class Controller {
       await this.attach(staged, {}, toolsMissing);
       // The project is open and working: a recent-projects list that cannot be saved must not undo it.
       // Under the name it has by now: the editor shows it from the moment it is attached, and may have renamed it.
-      await addRecent(dir, projectDisplayName(staged.state)).catch(() => undefined);
+      await addRecent(dir, projectDisplayName(staged.state), staged.state.manifest.projectId).catch(() => undefined);
       progress({ step: 'done', message: 'Ready' });
       return { ok: true };
     } catch (e) {
@@ -563,14 +573,17 @@ export class Controller {
     return starterTools(templateFiles());
   }
 
-  /** Open a project folder, or a project ZIP file (#263). With no path, the author chooses one (`folder`: a folder). */
-  async open(dirArg?: string, opts: { folder?: boolean } = {}): Promise<OpenResult> {
+  /**
+   * Open a project folder, or a project ZIP file (#263). With no path, the author chooses one (`folder`: a folder).
+   * `replaces` is the missing recent entry the author is finding this project for (#217): see addRecent.
+   */
+  async open(dirArg?: string, opts: { folder?: boolean; replaces?: string } = {}): Promise<OpenResult> {
     // Called off from the start, so a window that goes while its picker is up never gets a ZIP file unpacked for it.
     const abort = new AbortController();
     this.openAborts.add(abort);
     // Every exit is a structured result: a thrown error would reject the IPC call and leave the Welcome screen busy.
     try {
-      return await this.openChosen(dirArg, opts.folder === true, abort);
+      return await this.openChosen(dirArg, opts.folder === true, abort, opts.replaces);
     } catch (e) {
       return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
     } finally {
@@ -578,16 +591,20 @@ export class Controller {
     }
   }
 
-  private async openChosen(dirArg: string | undefined, folder: boolean, abort: AbortController): Promise<OpenResult> {
+  private async openChosen(dirArg: string | undefined, folder: boolean, abort: AbortController, replaces?: string): Promise<OpenResult> {
     let dir = dirArg;
     if (!dir) {
       const win = this.getWindow();
-      const r = await dialog.showOpenDialog(win!, openProjectDialog(folder));
+      const finding = replaces === undefined ? undefined : (await loadSettings()).recents.find((r) => r.dir === replaces)?.name;
+      const r = await dialog.showOpenDialog(win!, replaces === undefined ? openProjectDialog(folder) : findFolderDialog(finding));
       if (r.canceled || !r.filePaths[0]) return { ok: false };
       dir = r.filePaths[0];
       if (basename(dir) === MANIFEST_FILE) dir = join(dir, '..');
     }
-    if (await isZipFile(dir)) return this.openZip(dir, abort);
+    if (await isZipFile(dir)) {
+      if (replaces !== undefined) return { ok: false, message: 'Choose the folder the project is in now. A ZIP file would make a new copy of it.' };
+      return this.openZip(dir, abort);
+    }
     if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' };
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
@@ -598,7 +615,7 @@ export class Controller {
       if (!manifest.ok) return { ok: false, message: manifest.message };
       return { ok: false, needsTrust: { dir, name: manifest.name } };
     }
-    return this.openTrusted(dir);
+    return this.openTrusted(dir, { replaces });
   }
 
   /**
@@ -671,17 +688,17 @@ export class Controller {
     for (const abort of this.openAborts) abort.abort();
   }
 
-  async trustAndOpen(opened: string): Promise<{ ok: boolean; message?: string }> {
+  async trustAndOpen(opened: string, opts: { replaces?: string } = {}): Promise<{ ok: boolean; message?: string }> {
     try {
       const dir = canonicalDir(opened);
       await trust(dir, await configHash(dir));
-      return await this.openTrusted(dir);
+      return await this.openTrusted(dir, { replaces: opts.replaces });
     } catch (e) {
       return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
     }
   }
 
-  private async openTrusted(dir: string, opts: { force?: boolean | string } = {}): Promise<{ ok: boolean; message?: string }> {
+  private async openTrusted(dir: string, opts: { force?: boolean | string; replaces?: string } = {}): Promise<{ ok: boolean; message?: string }> {
     // Opening the folder that is open now (an unlock, say) reopens it: this app holds a folder's lock only once, so it
     // is left (what is being typed in it saved first) and closed before it opens again.
     if (this.session?.dir === dir) {
@@ -696,7 +713,7 @@ export class Controller {
     const since = this.closings;
     let session: ProjectSession;
     try {
-      session = await ProjectSession.open(dir, INSTANCE_ID, opts);
+      session = await ProjectSession.open(dir, INSTANCE_ID, { force: opts.force });
     } catch (e) {
       // A newer format, or a project another app is editing, opens for inspection instead (spec 16.6, 18.1).
       const locked = e instanceof ProjectLockedError;
@@ -735,7 +752,8 @@ export class Controller {
       else await session.close();
       this.send('runtime:status', { state: 'error', message: `The project could not be opened: ${(e as Error).message}` });
     });
-    if (!session.readOnly) await addRecent(dir, projectDisplayName(session.state)).catch(() => undefined);
+    // Only an opening that is listed takes over a missing entry: one open read-only leaves the list as it was.
+    if (!session.readOnly) await addRecent(dir, projectDisplayName(session.state), session.state.manifest.projectId, opts.replaces).catch(() => undefined);
     return { ok: true };
   }
 
@@ -1310,6 +1328,8 @@ export class Controller {
     // The claim is this attempt's to remove until the move begins: Windows lets go of it then, and a folder made in
     // its place meanwhile is someone else's.
     let claimed = true;
+    // The copy is its own project, under its own ID.
+    const projectId = newId('p', 12);
     try {
       // Made beside the claim, never with folders above it: a parent moved meanwhile is not made again.
       await fs.mkdir(tmp);
@@ -1321,7 +1341,7 @@ export class Controller {
       });
       const manifestPath = join(tmp, MANIFEST_FILE);
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-      manifest.projectId = newId('p', 12);
+      manifest.projectId = projectId;
       manifest.name = name;
       manifest.workingCopyName = name;
       manifest.createdAt = new Date().toISOString();
@@ -1348,7 +1368,7 @@ export class Controller {
         if (await isTrusted(s.dir, hash)) await trust(dir, hash);
       })
       .catch(() => undefined);
-    await addRecent(dir, name).catch(() => undefined);
+    await addRecent(dir, name, projectId).catch(() => undefined);
     return { ok: true, dir, name };
   }
 

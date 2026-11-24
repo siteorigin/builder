@@ -210,7 +210,8 @@ function StarterArt({ starter, siteName }: { starter: StarterId; siteName: strin
 // ---------- Trust ----------
 
 /** Ask before running a project's own website tools; Trust and open records the trust, then opens it. */
-export function TrustProjectModal({ project, onClose, onOpened }: { project: { dir: string; name: string }; onClose: () => void; onOpened?: () => void }) {
+/** `project.replaces`: the missing recent entry the project was chosen for, which it takes over once open (#217). */
+export function TrustProjectModal({ project, onClose }: { project: { dir: string; name: string; replaces?: string }; onClose: () => void }) {
   const [trusting, setTrusting] = useState(false);
   return (
     <Modal
@@ -240,9 +241,8 @@ export function TrustProjectModal({ project, onClose, onOpened }: { project: { d
               keepFocusInDialog(e.currentTarget);
               setTrusting(true);
               try {
-                const r = await api.projects.trustAndOpen(project.dir);
-                if (r.ok) onOpened?.();
-                else {
+                const r = await api.projects.trustAndOpen(project.dir, project.replaces ? { replaces: project.replaces } : undefined);
+                if (!r.ok) {
                   // The project behind the dialog, if any, is still open and takes input again.
                   endEditingHold();
                   if (r.message) toast(r.message, 'error');
