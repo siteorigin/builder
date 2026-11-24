@@ -2,8 +2,9 @@
  * Responsive copies of an imported picture. Runs in the media worker (a utility process), never on the
  * editor's main process: decoding and resizing a large photo takes long enough to freeze the window.
  */
+import { readFile } from 'node:fs/promises';
 import sharp from 'sharp';
-import { MAX_VARIANT_PIXELS, type VariantReply, type VariantRequest } from './media-client';
+import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type VariantReply, type VariantRequest } from './media-client';
 import { isAnimatedPng } from './media';
 
 /** Widths of the smaller copies, each made only when it is meaningfully smaller than the picture. */
@@ -38,6 +39,34 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, w
     out.push({ width: w, data: await (mime === 'image/png' ? img.png() : img.jpeg({ quality: 82 })).toBuffer() });
   }
   return out;
+}
+
+export { WEB_EDGE };
+
+export interface WebCopy {
+  data: Buffer;
+  mime: 'image/jpeg' | 'image/png';
+  width: number;
+  height: number;
+}
+
+/**
+ * A copy of a photo a browser can show and a page can carry: turned the way its orientation says, no larger than
+ * WEB_EDGE on its longest side (never enlarged), in sRGB and without metadata. A picture with see-through pixels
+ * stays a PNG; any other becomes a JPEG at the quality of the responsive copies. Deterministic.
+ */
+export async function renderWebCopy(buf: Buffer, maxEdge = WEB_EDGE): Promise<WebCopy> {
+  const open = () => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' });
+  // An alpha channel that is fully opaque everywhere (screenshots, many exported photos) is no reason to stay a PNG.
+  const clear = !(await isOpaque(buf));
+  const meta = await open().metadata();
+  const shown = { width: meta.autoOrient?.width ?? meta.width ?? 0, height: meta.autoOrient?.height ?? meta.height ?? 0 };
+  // Exactly the size webCopySize gives (as an import review shows it), never enlarged.
+  const size = webCopySize(shown.width, shown.height, maxEdge);
+  const img = open().autoOrient();
+  if (size.width !== shown.width || size.height !== shown.height) img.resize({ width: size.width, height: size.height, fit: 'fill' });
+  const { data, info } = await (clear ? img.png() : img.flatten({ background: '#ffffff' }).jpeg({ quality: 82 })).toBuffer({ resolveWithObject: true });
+  return { data, mime: clear ? 'image/png' : 'image/jpeg', width: info.width, height: info.height };
 }
 
 /**
@@ -76,10 +105,24 @@ function avifBrands(buf: Buffer): string[] {
   return brands;
 }
 
+/** Whether every pixel is opaque: a picture without an alpha channel always is. */
+export async function isOpaque(buf: Buffer): Promise<boolean> {
+  const img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' });
+  if (!(await img.metadata()).hasAlpha) return true;
+  return (await img.stats()).isOpaque;
+}
+
 /** What the media worker does with one request; the worker process only carries messages to and from it. */
 export async function handleVariantRequest(m: VariantRequest): Promise<VariantReply> {
   try {
-    const buf = Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
+    const buf = m.path ? await readFile(m.path) : Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
+    if (m.kind === 'opaque') return { id: m.id, ok: true, variants: [], opaque: await isOpaque(buf) };
+    if (m.kind === 'web') {
+      // A picture the decoder refuses is said to be unreadable; anything failing after that is the copy failing.
+      if (!(await isReadable(buf, m.path ? 'image/tiff' : m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
+      const web = await renderWebCopy(buf, m.maxEdge);
+      return { id: m.id, ok: true, variants: [], web: { ...web, data: new Uint8Array(web.data.buffer, web.data.byteOffset, web.data.byteLength) } };
+    }
     if (m.check && !(await isReadable(buf, m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
     const variants = await renderVariants(buf, m.mime, m.width, m.widths);
     return { id: m.id, ok: true, variants: variants.map((v) => ({ width: v.width, data: new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.byteLength) })) };

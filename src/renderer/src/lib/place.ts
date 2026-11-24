@@ -2,6 +2,7 @@ import type { ProjectSnapshot } from '@shared/api';
 import type { AssetRecord } from '@shared/types';
 import { api, commitIfUnchanged, errorText, getState, setState, toast } from '../store';
 import { trackApply, type ApplyOutcome } from './pending';
+import { reviewImport } from './import-review';
 
 /** Asks the Assets panel to open on one image. `detail`: { opening, assetId }. */
 export const SHOW_ASSET_EVENT = 'builder-show-asset';
@@ -34,12 +35,17 @@ const sentenceEnd = (t: string) => (/[.!?]$/.test(t) ? t : `${t}.`);
  * placement is still owed, and saving or leaving the project waits for it and hears if it was not made.
  */
 export async function importAndPlace(opts: { paths?: string[]; base: ProjectSnapshot | null; place: (asset: AssetRecord) => string | void; holds?: (asset: AssetRecord) => boolean; shown: () => boolean }): Promise<PlaceResult> {
+  // Choosing the files, and the review of HEIC or large photos, come first: nothing is owed until the author confirms,
+  // so leaving the project never waits on a question. The field is still the one captured in `base` and `place`.
+  const plan = await reviewImport(opts.paths, 'image').catch((e: Error) => (toast(`The image couldn’t be added: ${e.message}`, 'error'), null));
+  if (!plan) return { kind: 'none' };
   let landed!: (o: ApplyOutcome) => void;
   trackApply(new Promise<ApplyOutcome>((r) => (landed = r)));
   setState({ pendingSave: getState().pendingSave + 1 });
   let outcome: ApplyOutcome = { ok: true };
   try {
-    const r = await api.project.importAssets(opts.paths, 'image').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
+    const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, 'image', plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
+    if (r.note) toast(r.note, 'info');
     if (r.message) toast(r.message, r.assetIds.length ? 'info' : 'error');
     // Nothing arrived and the import said why (closing the picker says nothing): the image the author asked for is not here.
     if (!r.assetIds.length && r.message) outcome = { ok: false, message: r.message };

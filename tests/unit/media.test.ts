@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { brotliCompressSync, constants as zlib, deflateSync } from 'node:zlib';
-import { fontInfo, imageInfo, isAnimatedPng } from '../../src/main/project/media';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng } from '../../src/main/project/media';
 
 const u16 = (n: number) => Buffer.from([n >> 8, n & 255]);
 const u32 = (n: number) => Buffer.from([n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255]);
@@ -41,6 +43,19 @@ describe('image dimensions', () => {
   it('reads the primary AVIF item’s extent, not a thumbnail’s, and applies its rotation', () => {
     expect(imageInfo(avif(), 'image/avif')).toMatchObject({ width: 1200, height: 800 });
     expect(imageInfo(avif(1), 'image/avif')).toMatchObject({ width: 800, height: 1200 });
+    // HEIC shares the container: its primary item is read the same way, a thumbnail first or not.
+    const heic = Buffer.from(avif(1));
+    heic.write('heic', 8, 'ascii');
+    expect(imageInfo(heic, 'image/heic')).toMatchObject({ width: 800, height: 1200 });
+    expect(heifBrands(heic)).toEqual(['heic']);
+    const photo = readFileSync(join(import.meta.dirname, 'fixtures/portrait-rotated.heic'));
+    expect(imageInfo(photo, 'image/heic')).toMatchObject({ width: 1200, height: 1600 });
+    expect(heifBrands(photo).slice(0, 2)).toEqual(['heic', 'mif1']);
+    expect([heifHasAlpha(photo), imageProblem(photo, 'image/heic'), imageProblem(photo.subarray(0, photo.length - 10), 'image/heic')]).toEqual([false, null, 'incomplete']);
+    const withAlpha = Buffer.concat([box('ftyp', Buffer.from('heic\0\0\0\0mif1', 'latin1')), full('meta', box('auxC', Buffer.from('\0\0\0\0urn:mpeg:mpegB:cicp:systems:auxiliary:alpha\0', 'latin1')))]);
+    expect(heifHasAlpha(withAlpha)).toBe(true);
+    // HEVC names its alpha plane by an older URN.
+    expect(heifHasAlpha(Buffer.concat([box('ftyp', Buffer.from('heic\0\0\0\0mif1', 'latin1')), full('meta', box('auxC', Buffer.from('\0\0\0\0urn:mpeg:hevc:2015:auxid:1\0', 'latin1')))]))).toBe(true);
   });
 
   it('turns a PNG by the orientation in its eXIf chunk', async () => {

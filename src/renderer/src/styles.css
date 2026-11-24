@@ -1537,6 +1537,19 @@ body.dialog-open .toast .btn { visibility: hidden; }
 .asset-note b { color: var(--text); font-weight: 600; }
 .asset-note.asset-missing { background: var(--red-soft); }
 .asset-note.asset-missing > svg { color: var(--red); }
+.asset-note-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.import-review-lead { margin: 0 0 10px; }
+.import-review { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.import-review-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
+.import-review-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 13px; }
+.import-review-name b { overflow-wrap: anywhere; font-weight: 600; color: var(--text); }
+.import-review-name .muted { font-size: 12px; font-variant-numeric: tabular-nums; }
+.import-review-what { display: flex; align-items: flex-start; gap: 6px; margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.import-review-what svg { flex: none; width: 13px; height: 13px; margin-top: 2px; }
+.import-review-what input { flex: none; margin: 2px 0 0; }
+.import-review-refused { color: var(--text); }
+.import-review-refused svg { color: var(--red); }
+.import-review-rest { margin: 10px 0 0; font-size: 12px; }
 .asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .asset-size.asset-gone { background: rgb(150 32 28 / 0.88); }
 .asset-uses { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }

@@ -362,6 +362,44 @@ export interface AiEvent {
   message?: ChatMessage;
 }
 
+/** One file in an import review: what it is, and what importing it would add to Assets. */
+export interface ImportReviewRow {
+  path: string;
+  name: string;
+  bytes: number;
+  /** The SHA-256 of the content a convert, offer or refuse row describes: a file that changes before the author confirms is skipped. */
+  fingerprint?: string;
+  /**
+   * import: added as it is. convert: a photo browsers can't show (HEIC), always added as a web-sized copy.
+   * offer: a large photo that can be added as a web-sized copy instead. refuse: can't be added here (`reason`).
+   */
+  action: 'import' | 'convert' | 'offer' | 'refuse';
+  /** The file's format ("HEIC", "JPEG", "PNG") and displayed size, when they could be read. */
+  format?: string;
+  width?: number;
+  height?: number;
+  /** What a convert or offer produces: its format and displayed size. */
+  copy?: { format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number };
+  /** offer: the original is too large to add as it is, so only the copy can be. */
+  copyOnly?: boolean;
+  /** refuse: why, and what to do instead. */
+  reason?: string;
+}
+
+export interface ImportReview {
+  /** Every file chosen, in order; rows say what each one would be. */
+  paths: string[];
+  rows: ImportReviewRow[];
+}
+
+/** What the author confirmed in an import review. */
+export interface ImportChoices {
+  /** The opening of the project the files were reviewed in (its snapshot's workspaceKey); any other refuses the import. */
+  opening: string;
+  /** The reviewed photos (convert or offer), with the fingerprint of what the review saw: one that has changed since is skipped. */
+  files: Array<{ path: string; fingerprint: string; webCopy: boolean }>;
+}
+
 export interface BuilderApi {
   platform: string;
   app: {
@@ -411,7 +449,25 @@ export interface BuilderApi {
      */
     undoEntry(entryId: string, workspaceKey: string): Promise<ApplyResult>;
     redo(): Promise<ApplyResult>;
-    importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;
+    /**
+     * Choose files to import (the file chooser, unless `paths` are given) and say what importing each would produce,
+     * without writing anything. Null when the chooser was closed or no project is open.
+     */
+    reviewImport(paths?: string[], only?: 'image' | 'font'): Promise<ImportReview | null>;
+    /**
+     * Import files (the file chooser, unless `paths` are given). `choices` carries what the author confirmed in a
+     * review: which photos become web-sized copies, and the opening the review was made in. `note` says what was
+     * done differently from what was asked (a copy that would be no smaller), without anything having failed.
+     */
+    importAssets(paths?: string[], only?: 'image' | 'font', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }>;
+    /** What a web-sized copy of a large library image would be, or null when none can be made from it. */
+    webCopyPlan(assetId: string): Promise<{ format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number } | null>;
+    /**
+     * Add a web-sized copy of a large library image to Assets, and with `replace` show it in every place the image
+     * is used, in one change that can be undone. The original stays in Assets. `opening` is the snapshot's
+     * workspaceKey the author asked in; any other refuses it.
+     */
+    makeWebCopy(assetId: string, opts: { replace: boolean; opening: string }): Promise<{ ok: boolean; assetId?: string; entryId?: string; revision?: number; message?: string }>;
     /** What private metadata an image asset's original carries, which website exports leave out. Null when it cannot be read. */
     photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null>;
     /** Find the file of a library image whose original is missing (a dialog, unless `path` is given). */

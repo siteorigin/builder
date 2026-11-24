@@ -35,7 +35,8 @@ export function imageInfo(buf: Buffer, mime: string): ImageInfo | null {
         return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1, orientation: 1 };
       }
     }
-    if (mime === 'image/avif') return avifInfo(buf);
+    // HEIC shares AVIF's container: the primary item's extent and rotation are read the same way.
+    if (mime === 'image/avif' || mime === 'image/heic') return avifInfo(buf);
     if (mime === 'image/svg+xml') {
       const t = buf.toString('utf8', 0, 2000);
       const vb = t.match(/viewBox=["']\s*[\d.-]+[\s,]+[\d.-]+[\s,]+([\d.]+)[\s,]+([\d.]+)/);
@@ -79,7 +80,7 @@ export function imageProblem(buf: Buffer, mime: string): ImageProblem | null {
   let problem: ImageProblem | null;
   try {
     problem =
-      mime === 'image/jpeg' ? jpegProblem(buf) : mime === 'image/png' ? pngProblem(buf) : mime === 'image/gif' ? gifProblem(buf) : mime === 'image/webp' ? webpProblem(buf) : mime === 'image/avif' ? avifProblem(buf) : 'unreadable';
+      mime === 'image/jpeg' ? jpegProblem(buf) : mime === 'image/png' ? pngProblem(buf) : mime === 'image/gif' ? gifProblem(buf) : mime === 'image/webp' ? webpProblem(buf) : mime === 'image/avif' || mime === 'image/heic' ? avifProblem(buf) : 'unreadable';
   } catch {
     // A read past the end: the structure promised more bytes than the file has.
     return 'incomplete';
@@ -183,6 +184,23 @@ function avifProblem(buf: Buffer): ImageProblem | null {
     p += size;
   }
   return null;
+}
+
+/** The brands a HEIF-family file (AVIF, HEIC) declares in its file-type box: its major brand, then the compatible ones. */
+export function heifBrands(buf: Buffer): string[] {
+  if (buf.length < 16 || buf.toString('latin1', 4, 8) !== 'ftyp') return [];
+  const end = Math.min(buf.readUInt32BE(0), buf.length);
+  const brands = [buf.toString('latin1', 8, 12)];
+  for (let p = 16; p + 4 <= end; p += 4) brands.push(buf.toString('latin1', p, p + 4));
+  return brands;
+}
+
+/** Whether a HEIF file holds an alpha plane (an auxiliary image naming itself alpha), going by its metadata box. */
+export function heifHasAlpha(buf: Buffer): boolean {
+  const meta = [...boxes(buf, 0, buf.length)].find((b) => b.type === 'meta');
+  if (!meta) return false;
+  const text = buf.toString('latin1', meta.body, meta.end);
+  return text.includes('auxiliary:alpha') || text.includes('auxid:1');
 }
 
 /** Back-compatible dimensions only. */
