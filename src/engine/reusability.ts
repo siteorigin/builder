@@ -242,15 +242,15 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
       }
   };
   /**
-   * Capped at or below the accessory size across or down at every width and in every variant: styles apply as they
-   * cascade (the node's base, a variant's base, then the node's and the variant's rules for that width), so a maximum
-   * still caps a larger width, and a variant's larger maximum lifts it.
+   * Capped at or below the accessory size across or down at every width and in every variant: styles apply as the
+   * generated rules cascade (the node's base and its rule for that width, then the variant's, which are more specific),
+   * so a maximum still caps a larger width, and a variant's larger maximum lifts it.
    */
   const isAccessory = (n: GraphNode) => {
     const own = Object.fromEntries(scopesOf(n.styles));
     const variants = [{}, ...(variantStyles.get(n.id) ?? []).map((rs) => Object.fromEntries(scopesOf(rs)))];
     const widths = new Set(['base', ...Object.keys(own), ...variants.flatMap((v) => Object.keys(v))]);
-    const applied = variants.flatMap((v) => [...widths].map((w) => ({ ...own.base, ...v.base, ...own[w], ...v[w] })));
+    const applied = variants.flatMap((v) => [...widths].map((w) => ({ ...own.base, ...own[w], ...v.base, ...v[w] })));
     const capped = (props: Record<string, unknown>, axis: string[]) =>
       axis.some((p) => {
         const px = lengthPx(props[p]);

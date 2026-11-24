@@ -1110,8 +1110,8 @@ export class Orchestrator {
      * can make. A narrower request never is; what it leaves is listed on the result.
      */
     const canFix = (d: Diagnostic) => d.owner?.kind === 'component' && (authority.kind === 'site' || (authority.kind === 'component' && authority.definitionId === d.owner.id));
-    /** Room for a fix and another finish, so the advice never pushes a finished run into a limit. */
-    const roomToFix = () => turns + 2 <= LIMITS.modelTurns && toolCalls + 4 <= LIMITS.toolCalls && activeMs + (Date.now() - lastResume) < limitMs * 0.75;
+    /** Room for a read, a fix, a check and another finish, so the advice never pushes a finished run into a limit. */
+    const roomToFix = () => turns + 4 <= LIMITS.modelTurns && toolCalls + 6 <= LIMITS.toolCalls && activeMs + (Date.now() - lastResume) < limitMs * 0.75;
 
     try {
       outer: while (true) {
