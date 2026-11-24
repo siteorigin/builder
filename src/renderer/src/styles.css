@@ -1677,9 +1677,10 @@ button.code-problem:hover { background: var(--active); }
 .status-bar > button.row { height: 24px; }
 
 /* ---------- Insert panel ---------- */
-/* A pinned search and a "where it goes" line, then the palette: section tiles with layout sketches, compact
-   element and component tiles, each grid one tab stop with arrow keys (gridKeys). While searching, one ranked
-   list replaces the palette and the search field drives it (APG combobox). */
+/* A pinned search and a "where it goes" strip, then the palette: section tiles with their theme thumbnails, compact
+   element and component tiles, each grid one tab stop with arrow keys (gridKeys). Resting on a section, or
+   highlighting one in search, opens a larger preview beside the panel. While searching, one ranked list replaces
+   the palette and the search field drives it (APG combobox). */
 .insert-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 /* Line the field up with the tiles, whose column stops at the body's scrollbar gutter. */
 .insert-search.search { margin-right: 21px; }
@@ -1691,51 +1692,98 @@ button.code-problem:hover { background: var(--active); }
 .insert-panel .panel-head .insert-jump svg { width: 13px; height: 13px; }
 .insert-panel .panel-head .insert-variants { flex: none; color: var(--text-2); }
 .insert-panel .panel-head .insert-variants svg { width: 13px; height: 13px; }
-.insert-panel .panel-head .insert-variants[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent-text); }
+/* Pressed: a full accent ring, so the state reads at 3:1 and not only as a faint fill. */
+.insert-panel .panel-head .insert-variants[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent); }
+/* A narrow sidebar keeps both header actions whole as icons (named by aria-label and title). */
+.insert-panel.narrow .panel-head .insert-variants .lbl { display: none; }
+.insert-panel.narrow .panel-head .insert-variants { width: 28px; padding: 0; }
 /* A section's thumbnail, drawn from its real implementation when the theme pack was built: the top of the section at desktop width. */
-.insert-shot { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
+.insert-shot { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border-strong); }
 .insert-thumb .insert-shot { width: 56px; height: 36px; aspect-ratio: auto; border-radius: var(--r-xs); }
-.insert-tile .insert-variant { margin-top: -5px; padding: 0 4px; font-size: 11px; color: var(--text-3); }
-/* Room for two lines at all times, so the list never moves when the line's wording changes. */
-.insert-where { display: flex; align-items: center; gap: 7px; margin: 0 21px 8px 10px; padding: 5px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.4; color: var(--text-2); min-height: 44px; }
-.insert-where > span { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* A sketch shown in place of near-empty artwork sits in the frame as any sketch does. */
+.insert-panel .sparse { display: contents; }
+/* While a thumbnail loads, or when there is none, its sketch takes the same frame, so rows never shift. */
+.insert-tile.section .sketch { height: auto; aspect-ratio: 16 / 10; }
+/* The destination strip: a fixed height, so the list never moves when its wording changes. Normally one line of up
+   to two rows (what goes where); after an insert, the confirmation with its Undo above the next destination. */
+.insert-where { display: flex; flex-direction: column; justify-content: center; gap: 2px; height: 54px; margin: 0 21px 8px 10px; padding: 4px 6px 4px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.insert-where-done, .insert-where-next { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.insert-where .txt { flex: 1; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .insert-where svg { width: 13px; height: 13px; flex: none; color: var(--accent-text); }
 .insert-where b { color: var(--text); font-weight: 600; }
-.insert-where.added { background: var(--accent-soft); color: var(--text); animation: insert-added 200ms ease-out; }
+.insert-where .kbd { flex: none; color: var(--text-2); }
+.insert-where.added { background: var(--accent-soft); }
+.insert-where.added .txt { -webkit-line-clamp: 1; }
+/* An item's line: the item on one row, its placement on the other. A placement row keeps its relation whole and
+   shortens the place's name if it must; the full sentence is in the title and the tile's description. */
+.insert-where .txt.split { display: flex; flex-direction: column; }
+.insert-where .nm, .insert-where .rl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insert-where .rl { display: flex; gap: 0.3em; }
+.insert-where .rl .rel { flex: 0 0 auto; max-width: 75%; overflow: hidden; text-overflow: ellipsis; }
+.insert-where .rl .tgt { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.insert-where-done { color: var(--text); animation: insert-added 200ms ease-out; }
+.insert-where .insert-undo { flex: none; height: 24px; padding: 0 7px; gap: 4px; color: var(--accent-text); }
+.insert-panel.narrow .insert-where .insert-undo { width: 24px; padding: 0; }
+.insert-panel.narrow .insert-where .insert-undo .lbl { display: none; }
+.insert-where .insert-undo svg { width: 13px; height: 13px; color: inherit; }
+.insert-where .insert-undo:hover { background: var(--raised); }
 @keyframes insert-added { from { opacity: 0.4; } to { opacity: 1; } }
-.insert-body { padding-top: 2px; border-top: 1px solid var(--border); }
+@media (prefers-reduced-motion: reduce) { .insert-where-done { animation: none; } }
+.insert-body { padding-top: 2px; border-top: 1px solid var(--border); scrollbar-gutter: stable; }
 /* The search and destination line are pinned outside this scroll area, so a focused tile only needs a little room. */
 .insert-body.panel-body :is(button) { scroll-margin-top: 10px; scroll-margin-bottom: 10px; }
-.insert-more { margin: -2px 10px 6px; color: var(--text-2); }
+/* Full row width, so the grid's Up and Down keys reach it from the rows above. */
+.insert-more { justify-self: stretch; justify-content: flex-start; gap: 5px; color: var(--text-2); }
+.insert-more svg { width: 13px; height: 13px; transition: transform 120ms; }
+.insert-more[aria-expanded='true'] svg { transform: rotate(180deg); }
 .insert-group { padding: 0 0 4px; }
 .insert-head { display: flex; align-items: center; gap: 6px; margin: 0; padding: 12px 14px 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
 .insert-head .count { font-weight: 500; color: var(--text-3); }
 
 .insert-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 10px 8px; }
 .insert-row, .insert-cell { display: contents; }
-.insert-tile { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 7px; min-width: 0; padding: 6px 6px 8px; border: 0; border-radius: var(--r-md); background: var(--raised); text-align: left; color: var(--text); box-shadow: 0 0 0 1px var(--border-strong), 0 1px 2px rgb(28 39 66 / 0.05); transition: box-shadow 120ms, transform 120ms; }
-.insert-tile strong { padding: 0 4px; font-size: 12px; font-weight: 600; line-height: 1.3; }
-.insert-tile:hover { box-shadow: 0 0 0 1px var(--accent), 0 6px 16px -8px rgb(28 39 66 / 0.28); }
+.insert-tile { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 7px; min-width: 0; padding: 6px 6px 8px; border: 0; border-radius: var(--r-md); background: var(--raised); text-align: left; color: var(--text); box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-sm); transition: box-shadow 120ms, transform 120ms; }
+.insert-tile strong { padding: 0 4px; font-size: 12px; font-weight: 600; line-height: 1.3; overflow-wrap: break-word; }
+.insert-tile:hover { box-shadow: 0 0 0 1px var(--accent), var(--shadow-md); }
 .insert-tile:active { transform: scale(0.98); }
+@media (prefers-reduced-motion: reduce) { .insert-tile:active { transform: none; } }
 .insert-tile .ico { width: 26px; height: 26px; flex: none; border-radius: var(--r-sm); display: grid; place-items: center; background: var(--active); color: var(--text-2); }
 .insert-tile .ico svg { width: 15px; height: 15px; }
-.insert-tile:is(:hover, :focus-visible) .ico { color: var(--accent-text); background: var(--accent-soft); }
-/* A small add badge on the tile under the pointer or keyboard: clicking adds it. */
-.insert-add { position: absolute; top: 9px; right: 9px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-fill); color: var(--on-accent); opacity: 0; transform: scale(0.85); transition: opacity 120ms, transform 120ms; pointer-events: none; }
-.insert-add svg { width: 12px; height: 12px; stroke-width: 2.5; }
-.insert-tile:is(:hover, :focus-visible) .insert-add { opacity: 1; transform: none; }
+.insert-tile:is(:hover, :focus-visible) .ico, .insert-tile .ico.done { color: var(--accent-text); background: var(--accent-soft); }
+.insert-label { display: flex; min-width: 0; }
+.insert-label strong { flex: 1; min-width: 0; }
+/* The add badge shows on the tile under the pointer or keyboard (clicking adds it), and turns to a check on the tile
+   just added while its confirmation shows. It sits on the tile's corner, clear of the thumbnail and the name. */
+.insert-add { position: absolute; top: -5px; right: -5px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-fill); color: var(--on-accent); box-shadow: 0 0 0 2px var(--panel); opacity: 0; transform: scale(0.85); transition: opacity 120ms, transform 120ms; pointer-events: none; }
+.insert-add svg { width: 11px; height: 11px; stroke-width: 2.75; }
+.insert-tile:is(:hover, :focus-visible, .just-added) .insert-add { opacity: 1; transform: none; }
+.insert-tile.just-added:not(:hover, :focus-visible) { box-shadow: 0 0 0 1px var(--accent), var(--shadow-sm); }
+/* A narrow sidebar gives a section's name the tile's full width, and breaks a word only when it cannot fit at all. */
+.insert-panel.narrow .insert-tile.section { padding: 5px 4px 7px; }
+.insert-panel.narrow .insert-grid:not(.compact) { padding: 0 8px 8px; gap: 5px; }
+.insert-panel.narrow .insert-tile.section strong { padding: 0; font-size: 11.5px; line-height: 1.25; hyphens: auto; }
+/* In Variants, the theme's own look names its defaults under "Theme default". */
+.insert-defaults { margin-top: -5px; padding: 0 4px; font-size: 11px; line-height: 1.3; color: var(--text-3); }
+/* Variants: each section's options start a row under the section's name. */
+/* Quieter than the category heading above it: the category groups, the section names a band. */
+.insert-band { grid-column: 1 / -1; padding: 10px 4px 0; font-size: 11.5px; font-weight: 500; color: var(--text-3); }
+.insert-grid.banded > .insert-row:first-child .insert-band { padding-top: 0; }
 .insert-grid.compact .insert-tile { flex-direction: row; align-items: center; gap: 8px; min-height: 40px; padding: 6px 8px; }
 .insert-grid.compact .insert-tile strong { padding: 0; flex: 1; min-width: 0; }
 .insert-grid.list { grid-template-columns: 1fr; }
 /* The library: each component's tile, then its manage button in the same row. */
 /* The button takes the row's full height, so it lines up with its tile for the grid's Home, End and arrow keys. */
 .insert-grid.managed { grid-template-columns: minmax(0, 1fr) auto; column-gap: 2px; }
-.insert-grid.managed .insert-tile.new { grid-column: 1 / -1; }
+.insert-grid.managed :is(.insert-tile.new, .insert-more) { grid-column: 1 / -1; }
 .insert-manage { width: 28px; height: auto; color: var(--text-3); }
 .insert-manage:is(:hover, :focus-visible, [aria-expanded='true']) { color: var(--text); }
+/* The open menu's row: its button keeps a ring, so the menu reads as this component's. */
+.insert-manage[aria-expanded='true'] { box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent-text); }
 .insert-tile.project .txt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .insert-tile.project strong { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.insert-tile.project small { font-size: 11px; color: var(--text-3); }
+.insert-tile.project small { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A saved component is a component definition, marked plum as in Layers. */
+.insert-tile.project .ico:not(.done), .insert-tile.project:is(:hover, :focus-visible) .ico:not(.done) { background: var(--plum-soft); color: var(--plum); }
 .insert-tile.new { background: transparent; box-shadow: none; border: 1px dashed var(--border-control); color: var(--text-2); }
 .insert-grid.compact .insert-tile.new { padding: 5px 7px; }
 .insert-tile.new:hover { border-color: var(--accent); color: var(--accent-text); box-shadow: none; }
@@ -1750,13 +1798,13 @@ button.code-problem:hover { background: var(--active); }
 .insert-result small { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .insert-result .ico { width: 56px; height: 36px; flex: none; border-radius: var(--r-xs); display: grid; place-items: center; background: var(--panel-2); color: var(--text-2); }
 .insert-result .ico svg { width: 15px; height: 15px; }
-.insert-result .kbd { flex: none; }
-.insert-result.active .kbd { color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
 .insert-result.active { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
 .insert-result.active .ico { color: var(--accent-text); background: var(--raised); }
 .insert-result.active small { color: var(--text-2); }
 /* The same sketch drawn small at its real size (never scaled), so every edge stays a whole pixel. */
-.insert-thumb { width: 56px; height: 36px; flex: none; overflow: hidden; border-radius: var(--r-xs); }
+/* The hairline is on the frame, which clips the image's own. */
+.insert-thumb { width: 56px; height: 36px; flex: none; overflow: hidden; border-radius: var(--r-xs); box-shadow: 0 0 0 1px var(--border-strong); }
+.insert-thumb .insert-shot { box-shadow: none; }
 .insert-thumb .sketch { height: 100%; padding: 4px 5px; gap: 2px; border-radius: var(--r-xs); }
 .insert-thumb .sketch .col-s { gap: 2px; }
 .insert-thumb .sketch.split { gap: 4px; }
@@ -1764,6 +1812,32 @@ button.code-problem:hover { background: var(--active); }
 .insert-thumb .sketch .col-s.card { padding: 2px; }
 .insert-thumb .sketch.grid3 { gap: 2px; padding: 4px; }
 .insert-thumb .sketch.open { padding: 4px; }
+
+/* The larger look beside the panel, over the canvas: the thumbnail at its own size, what the section is for, and where
+   it lands among the sections around it. The pointer can rest on it to read it; it adds nothing when clicked. */
+.insert-peek { position: fixed; z-index: 30; width: 336px; display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 10px; border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-lg); cursor: default; font-size: 12px; line-height: 1.45; color: var(--text-2); animation: insert-peek 140ms ease-out; }
+@keyframes insert-peek { from { opacity: 0; transform: translateX(-4px); } }
+@media (prefers-reduced-motion: reduce) { .insert-peek { animation: none; } }
+.insert-peek-shot { position: relative; display: block; }
+/* Artwork that shows little beyond a heading gets its layout sketch in the corner. */
+.insert-peek-inset { position: absolute; right: 8px; bottom: 8px; display: flex; flex-direction: column; gap: 3px; padding: 4px; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-sm); }
+.insert-peek-inset .sketch { width: 72px; height: 44px; padding: 5px; gap: 2px; }
+.insert-peek-inset > span:last-child { padding: 0 2px; font-size: 11px; line-height: 1.2; color: var(--text-2); }
+/* Without artwork the sketch stands in, and says so. */
+.insert-peek-note { position: absolute; right: 8px; bottom: 8px; padding: 1px 6px; border-radius: var(--r-sm); background: var(--raised); font-size: 11px; color: var(--text-2); }
+.insert-peek-shot .insert-shot { width: 320px; height: 200px; aspect-ratio: auto; }
+/* A sketch is drawn at tile size and doubled, so its marks keep their proportions. */
+.insert-peek-shot > .sketch { width: 160px; height: 100px; zoom: 2; }
+.insert-peek-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 2px 4px 0; }
+.insert-peek-name strong { font-size: 13px; font-weight: 600; color: var(--text); }
+.insert-peek-option { font-size: 12px; color: var(--text-3); }
+.insert-peek-desc { padding: 0 4px; }
+.insert-peek-map { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; padding: 6px; border-radius: var(--r-sm); background: var(--panel-2); }
+.insert-peek-map > span { height: 22px; padding: 0 8px; border-radius: var(--r-sm); font-size: 11.5px; line-height: 22px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.insert-peek-map .ctx { background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-strong); color: var(--text-2); }
+.insert-peek-map .new { display: flex; align-items: center; gap: 5px; background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent-text); font-weight: 600; }
+.insert-peek-map .new svg { width: 12px; height: 12px; flex: none; stroke-width: 2.5; }
+.insert-peek-map .new span { overflow: hidden; text-overflow: ellipsis; }
 
 /* Nothing matched: say so, and offer the way back. */
 .insert-none { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 10px 10px 0; padding: 24px 16px; border-radius: var(--r-md); background: var(--panel-2); text-align: center; font-size: 12px; line-height: 1.45; color: var(--text-2); }

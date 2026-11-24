@@ -1,15 +1,16 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown } from 'lucide-react';
 import type { ComponentDefinition, OwnerRef, ProjectState } from '@shared/types';
 import { placementCounts, placesOf } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
-import { commitOps, getState, setState, toast, undoAction, useStore } from '../store';
+import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { elementWhere, insert, insertionPoint, nodeBefore, nodeLabel, selectPage, type Primitive, type Where } from '../lib/actions';
-import { ownerLabel } from '../lib/model';
+import { ownerLabel, treeFor } from '../lib/model';
 import { gridKeys, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
-import { usePackPreview } from '../components/PackPreview';
+import { usePackPreview, usePreviewExtent } from '../components/PackPreview';
 import { axesOf } from '@shared/variants';
 
 export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
@@ -201,6 +202,8 @@ interface Item {
   preview?: { pack: string; file: string };
   /** A section shown in one of its variants: the option's name ("Dark"), and its axis ("Tone"). */
   variant?: { option: string; axis: string };
+  /** A section as the theme ships it, in Variants: the default options that have names of their own ("Soft background"). */
+  defaults?: string;
   icon?: string;
   code?: boolean;
   /** Project components: how many times it is placed. */
@@ -216,19 +219,77 @@ function sectionWhere(st: ProjectState): Where {
   return { lead: at.index === 0 ? 'at the top of' : 'at the end of', target: ownerLabel(st, at.owner) };
 }
 
+/** The sections either side of where a new section lands, from the same insertion point, for the preview's page map. */
+type Neighbours = { owner: string; before: string | null; after: string | null };
+function sectionNeighbours(st: ProjectState): Neighbours | null {
+  const at = insertionPoint('section');
+  if (!at || at.parentId) return null;
+  const tree = treeFor(st, at.owner);
+  if (!tree) return null;
+  const index = at.index ?? tree.rootIds.length;
+  const label = (nodeId: string | undefined) => (nodeId ? nodeLabel(st, at.owner, nodeId) : null);
+  return { owner: ownerLabel(st, at.owner), before: label(tree.rootIds[index - 1]), after: label(tree.rootIds[index]) };
+}
+
 /** Saved components shown before "Show all", so a large library never buries the built-in catalogue. */
 const MINE_SHOWN = 4;
 
 const KIND_SUBJECT: Record<Kind, string> = { section: 'Sections go', element: 'Elements go', component: 'Components go' };
 
-function Phrase({ kind, where }: { kind: Kind; where: Where }) {
-  if (!where) return null;
+/** How the confirmation stays up after an insert, unless the selection moves on first. */
+const ADDED_MS = 6000;
+
+/** A section's choice in Variants: its option, or the section as the theme ships it. */
+const optionLabel = (it: Item) => it.variant?.option ?? 'Theme default';
+/** The name an inserted item is called by in history and the confirmation: "Centered hero (Dark)". */
+const fullName = (it: Item) => (it.variant ? `${it.name} (${it.variant.option})` : it.name);
+
+/** One line of the destination strip: an item in bold, what happens, and the place in bold. */
+type Line = { name?: string; verb: string; target?: string; full?: string };
+const lineText = (l: Line) => l.full ?? [l.name, l.verb, l.target].filter(Boolean).join(' ');
+/** A placement on a row of its own, compact: "New section after", "After", "Inside", "At the end of". */
+const placeLead = (lead: string) => {
+  const short = lead.replace(/^in a new section /, 'new section ');
+  return short[0].toUpperCase() + short.slice(1);
+};
+/**
+ * A line with no item is a sentence over up to two rows. An item's line gives the item one row and its placement the
+ * other, and a placement row keeps its relation ("new section after") whole and shortens the place's name if it must.
+ */
+function Placement({ verb, target }: { verb: string; target?: string }) {
+  return (
+    <span className="rl">
+      <span className="rel">{verb}</span>
+      {target && <b className="tgt">{target}</b>}
+    </span>
+  );
+}
+function LineText({ line, row }: { line: Line; row?: boolean }) {
+  if (row) return <Placement verb={line.verb} target={line.target} />;
+  if (line.name)
+    return (
+      <>
+        <span className="nm">
+          <b>{line.name}</b>
+        </span>
+        <Placement verb={line.verb} target={line.target} />
+      </>
+    );
   return (
     <>
-      {KIND_SUBJECT[kind]} {where.lead} <b>{where.target}</b>
+      {line.verb} {line.target && <b>{line.target}</b>}
     </>
   );
 }
+
+/** Artwork that is all but blank (an empty Section) shows its layout sketch instead. */
+const SPARSE = 0.05;
+/**
+ * Sections that are inserted without their media, so their artwork shows little more than a heading. The larger
+ * preview adds their layout sketch in a corner, so both the theme's look and the section's shape are visible. A
+ * measured threshold cannot pick them out: Statistics' useful artwork reaches no further down than Gallery's heading.
+ */
+const STARTS_EMPTY = new Set(['media.gallery', 'media.video']);
 
 function ItemIcon({ it }: { it: Item }) {
   if (it.kind === 'component') return <span className="ico">{it.code ? <Code /> : <LucideIcon name="component" />}</span>;
@@ -239,11 +300,86 @@ function ItemIcon({ it }: { it: Item }) {
   );
 }
 
-/** A section's thumbnail from its theme pack, or a sketch of its layout while that loads or when there is none. */
+/**
+ * A section's thumbnail from its theme pack, or a sketch of its layout while that loads, when there is none, or when
+ * the thumbnail is almost all empty background.
+ */
 function SectionThumb({ it }: { it: Item }) {
   const url = usePackPreview(it.preview?.pack, it.preview?.file);
   const [broken, setBroken] = useState<string | null>(null);
-  return url && url !== broken ? <img className="insert-shot" src={url} alt="" draggable={false} onError={() => setBroken(url)} /> : <SectionSketch id={it.spec.componentId!} />;
+  const shot = url && url !== broken ? url : null;
+  const extent = usePreviewExtent(it.preview?.pack, it.preview?.file, shot);
+  if (shot && extent >= SPARSE) return <img className="insert-shot" src={shot} alt="" draggable={false} onError={() => setBroken(shot)} />;
+  // Marked when the sketch is chosen over loaded artwork, rather than standing in while it loads.
+  return shot ? (
+    <span className="sparse">
+      <SectionSketch id={it.spec.componentId!} />
+    </span>
+  ) : (
+    <SectionSketch id={it.spec.componentId!} />
+  );
+}
+
+/**
+ * A larger look at the section under the pointer or keyboard, beside the panel over the canvas: the pack's thumbnail
+ * at its own size, what the section is for, and a map of where it lands among the sections around it. It is never
+ * a target (the tile stays the one thing to click), so it is hidden from assistive technology, which hears the same
+ * description and destination from the tile itself.
+ */
+function InsertPeek({ it, anchor, panel, option, map, onEnter, onLeave }: { it: Item; anchor: DOMRect; panel: DOMRect; option: string | null; map: Neighbours | null; onEnter: () => void; onLeave: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState<number | null>(null);
+  const url = usePackPreview(it.preview?.pack, it.preview?.file);
+  const [broken, setBroken] = useState<string | null>(null);
+  // A short section gets a tighter frame: its figures or logos, not the empty background below them. One that is
+  // nearly all background shows its layout sketch, as its tile does.
+  const extent = usePreviewExtent(it.preview?.pack, it.preview?.file, url && url !== broken ? url : null);
+  const shot = url && url !== broken && extent >= SPARSE ? url : null;
+  const frame = extent < 0.75 ? Math.max(100, Math.round(200 * extent) + 16) : 200;
+  // Level with the top of its tile, kept inside the window.
+  useLayoutEffect(() => {
+    const h = ref.current?.offsetHeight ?? 0;
+    setTop(Math.round(Math.max(panel.top + 8, Math.min(anchor.top - 8, window.innerHeight - h - 12))));
+  }, [anchor.top, panel.top, it.key, frame, !!shot]);
+  const left = Math.round(Math.min(panel.right + 10, window.innerWidth - 346 - 8));
+  return createPortal(
+    <div ref={ref} className="insert-peek" style={{ left, top: top ?? Math.round(anchor.top), visibility: top === null ? 'hidden' : undefined }} aria-hidden="true" onMouseEnter={onEnter} onMouseLeave={onLeave}>
+      <span className="insert-peek-shot">
+        {shot ? (
+          <>
+            <img className="insert-shot" src={shot} alt="" draggable={false} style={{ height: frame }} onError={() => setBroken(shot)} />
+            {STARTS_EMPTY.has(it.spec.componentId!) && (
+              <span className="insert-peek-inset">
+                <SectionSketch id={it.spec.componentId!} />
+                <span>Layout</span>
+              </span>
+            )}
+          </>
+        ) : (
+          <>
+            <SectionSketch id={it.spec.componentId!} />
+            <span className="insert-peek-note">Layout sketch</span>
+          </>
+        )}
+      </span>
+      <span className="insert-peek-name">
+        <strong>{it.name}</strong>
+        {option && <span className="insert-peek-option">{option}</span>}
+      </span>
+      {it.description && <span className="insert-peek-desc">{it.description}</span>}
+      {map && (
+        <span className="insert-peek-map">
+          <span className="ctx">{map.before ?? `Top of ${map.owner}`}</span>
+          <span className="new">
+            <Plus />
+            <span>{it.name}</span>
+          </span>
+          <span className="ctx">{map.after ?? `End of ${map.owner}`}</span>
+        </span>
+      )}
+    </div>,
+    document.body
+  );
 }
 
 /** Whether the Insert panel lists every variant of a section, remembered on this computer. */
@@ -278,23 +414,44 @@ const usedTimes = (n: number) => (n === 1 ? 'once' : `${n} times`);
 
 /**
  * Tiles in a two-column APG grid: one tab stop, arrow keys between tiles, Enter or Space to add. With `aside`, each
- * tile is followed in its row by a cell of its own (the library's manage button), reached with the arrow keys.
+ * tile is followed in its row by a cell of its own (the library's manage button), reached with the arrow keys. With
+ * `bands`, each band starts a new row under a row header naming it (a section's variants under the section's name).
+ * Each of `extra` is a full-width cell of its own after the tiles.
  */
-function TileGrid({ items, labelledBy, className = '', cols = 2, render, aside, extra }: { items: Item[]; labelledBy: string; className?: string; cols?: 1 | 2; render: (it: Item) => ReactNode; aside?: (it: Item) => ReactNode; extra?: ReactNode }) {
+function TileGrid({ items, bands, labelledBy, className = '', cols = 2, render, aside, extra = [] }: { items?: Item[]; bands?: Array<{ key: string; label: string; items: Item[] }>; labelledBy: string; className?: string; cols?: 1 | 2; render: (it: Item) => ReactNode; aside?: (it: Item) => ReactNode; extra?: ReactNode[] }) {
   const cell = (key: string, content: ReactNode) => (
     <div role="gridcell" className="insert-cell" key={key}>
       {content}
     </div>
   );
-  const units: ReactNode[][] = items.map((it) => [cell(it.key, render(it)), ...(aside ? [cell(`${it.key}:aside`, aside(it))] : [])]);
-  if (extra) units.push([cell('extra', extra)]);
-  const rows: ReactNode[] = [];
-  for (let i = 0; i < units.length; i += cols)
+  const unitsOf = (list: Item[]) => list.map((it) => [cell(it.key, render(it)), ...(aside ? [cell(`${it.key}:aside`, aside(it))] : [])]);
+  const rowsOf = (units: ReactNode[][], base: string) => {
+    const rows: ReactNode[] = [];
+    for (let i = 0; i < units.length; i += cols)
+      rows.push(
+        <div role="row" className="insert-row" key={`${base}:${i}`}>
+          {units.slice(i, i + cols).flat()}
+        </div>
+      );
+    return rows;
+  };
+  const rows = bands
+    ? bands.flatMap((b) => [
+        <div role="row" className="insert-row" key={`${b.key}:head`}>
+          <div role="rowheader" className="insert-band">
+            {b.label}
+          </div>
+        </div>,
+        ...rowsOf(unitsOf(b.items), b.key)
+      ])
+    : rowsOf(unitsOf(items ?? []), 'tiles');
+  extra.forEach((x, i) =>
     rows.push(
-      <div role="row" className="insert-row" key={i}>
-        {units.slice(i, i + cols).flat()}
+      <div role="row" className="insert-row" key={`extra:${i}`}>
+        {cell(`extra:${i}`, x)}
       </div>
-    );
+    )
+  );
   return (
     <div role="grid" aria-labelledby={labelledBy} className={`insert-grid ${className}`}>
       {rows}
@@ -312,11 +469,11 @@ export function InsertPanel() {
   const open = useStore((s) => s.leftTab === 'insert');
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
-  // What the destination line describes: the tile under the pointer, else the one with keyboard focus, else
-  // the group scrolled to the top of the list.
-  // 'new' is the New code component action, which opens an editor instead of inserting anywhere.
-  const [pointed, setPointed] = useState<Kind | 'new' | null>(null);
-  const [focused, setFocused] = useState<Kind | 'new' | null>(null);
+  // What the destination line describes: the item under the pointer, else the one with keyboard focus (by key), else
+  // the group scrolled to the top of the list. 'new' is the New code component action, which opens an editor instead
+  // of inserting anywhere.
+  const [pointed, setPointed] = useState<string | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
   const [scrolled, setScrolled] = useState<Kind | null>(null);
   const [allMine, setAllMine] = useState(false);
   const [narrow, setNarrow] = useState(false);
@@ -331,7 +488,19 @@ export function InsertPanel() {
     }
   };
   const browseTop = useRef(0);
-  const [added, setAdded] = useState<{ name: string; where: Where; n: number; selection: unknown } | null>(null);
+  // The last insert, confirmed in the strip with an Undo for it. `known`: the history entries before it, so its own
+  // entry can be told from any other change with the same name.
+  const [added, setAdded] = useState<{ key: string; kind: Kind; name: string; where: Where; n: number; selection: unknown; known: string[] } | null>(null);
+  // The section shown larger beside the panel, and the tile or result it is for.
+  const [peek, setPeek] = useState<{ key: string; rect: DOMRect } | null>(null);
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The pointer, or focus, is on the confirmation (its Undo): it stays up until both have left.
+  const [holdPointer, setHoldPointer] = useState(false);
+  const [holdFocus, setHoldFocus] = useState(false);
+  const hold = holdPointer || holdFocus;
+  const adding = useRef(false);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [typing, setTyping] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const id = useId();
@@ -357,22 +526,37 @@ export function InsertPanel() {
   // Opening the panel puts the cursor in search, so typing a name finds it straight away.
   useEffect(() => {
     if (open) searchRef.current?.focus({ preventScroll: true });
+    else setPeek(null);
   }, [open]);
+  useEffect(() => () => clearTimeout(peekTimer.current), []);
   // A new list (another query, or variants shown or hidden) starts at its first result, so Enter adds what is highlighted.
   useEffect(() => setActive(0), [q, showVariants]);
-  // Keep the highlighted result in view, so Enter never adds something off screen.
+  // Keep the highlighted result in view, so Enter never adds something off screen. `reveal` asks again on an arrow
+  // press that leaves the highlight where it was (at either end of the list, after the list was scrolled).
+  const [reveal, setReveal] = useState(0);
   useEffect(() => {
     if (q.trim()) document.getElementById(`${id}-r${active}`)?.scrollIntoView({ block: 'nearest' });
-  }, [active, q, id]);
+  }, [active, q, id, reveal]);
+  // While search has the cursor, the highlighted section result is shown larger beside it.
+  const peekResult = () => {
+    const el = q.trim() ? document.getElementById(`${id}-r${active}`) : null;
+    if (el?.dataset.kind === 'section' && (document.activeElement === searchRef.current || el.matches(':hover'))) setPeek({ key: el.dataset.key!, rect: el.getBoundingClientRect() });
+    else if (q.trim()) setPeek(null);
+  };
+  useEffect(peekResult, [active, q, showVariants, id, reveal]);
   // Searching keeps the place in the catalogue: leaving search returns to where browsing was.
   const searching = !!q.trim();
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
     if (searching) body.scrollTop = 0;
-    else body.scrollTop = browseTop.current;
+    else {
+      body.scrollTop = browseTop.current;
+      setPeek(null);
+    }
   }, [searching]);
-  // A narrow sidebar gives element tiles one column (and the grid one cell per row), so names never clip.
+  // A narrow sidebar gives element tiles one column (and the grid one cell per row), so names never clip, and the
+  // header's actions become icons.
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
@@ -381,16 +565,25 @@ export function InsertPanel() {
     return () => ro.disconnect();
   }, []);
   useEffect(() => {
-    if (!added) return;
-    const t = setTimeout(() => setAdded(null), 3200);
+    if (!added) {
+      setHoldPointer(false);
+      setHoldFocus(false);
+      return;
+    }
+    if (hold) return;
+    const t = setTimeout(() => setAdded(null), ADDED_MS);
     return () => clearTimeout(t);
-  }, [added]);
-  // The confirmation gives way as soon as the next destination matters: another selection, another tile,
-  // another result or another query.
+  }, [added, hold]);
+  // Undone some other way (the toolbar, the keyboard, History): the confirmation goes with it.
+  useEffect(() => {
+    const entry = added && snap?.history.entries.find((e) => e.label === `Insert ${added.name}` && !added.known.includes(e.id));
+    if (entry && !entry.applied) setAdded(null);
+  }, [snap?.revision, added]);
+  // The confirmation gives way when the selection moves on to something else: its Undo would no longer be about
+  // what is in front of the author.
   useEffect(() => {
     if (added && selection !== added.selection) setAdded(null);
   }, [selection, added]);
-  useEffect(() => setAdded(null), [q, active]);
   if (!snap) return null;
   const st = snap.state;
 
@@ -410,37 +603,48 @@ export function InsertPanel() {
     };
     if (!showVariants) return [base];
     const def = catalogueComponent(st.site.themeId, e.componentId);
+    const axes = def ? axesOf(def) : [];
     // The options the engine accepts, so every tile inserts.
-    const options = (def ? axesOf(def) : []).flatMap(([axis, a]) =>
+    const options = axes.flatMap(([axis, a]) =>
       Object.entries(a.options)
         .filter(([option]) => option !== a.default)
         .map(([option, o]): Item => {
           const file = shots?.variants?.[axis]?.[option];
+          // An option named "Default" that is not the theme's default says which default it is ("Default tone").
+          const label = o.label.trim().toLowerCase() === 'default' ? `Default ${a.label.toLowerCase()}` : o.label;
           return {
             ...base,
             key: `s:${e.componentId}~${axis}=${option}`,
-            hay: `${base.hay} ${a.label} ${o.label} variant`.toLowerCase(),
+            hay: `${base.hay} ${a.label} ${label} variant`.toLowerCase(),
             spec: { componentId: e.componentId, variants: { [axis]: option } },
-            variant: { option: o.label, axis: a.label },
+            variant: { option: label, axis: a.label },
             preview: file ? { pack: theme.id, file } : undefined
           };
         })
     );
-    return [base, ...options];
+    // The theme's default look, named where its options have names of their own (Page introduction: Soft background).
+    const named = axes.map(([, a]) => a.options[a.default]?.label).filter((l): l is string => !!l && l.trim().toLowerCase() !== 'default');
+    const shipped: Item = { ...base, hay: `${base.hay} theme default ${named.join(' ')}`.toLowerCase().trim(), ...(named.length ? { defaults: named.join(' · ') } : {}) };
+    return [shipped, ...options];
   });
   const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: `${b.name} ${b.tags} element`.toLowerCase(), group: 'Basic elements', spec: { primitive: b.id }, icon: b.icon }));
   // Code components show only in Developer mode, as its setting promises.
   const mine: Item[] = Object.values(st.components)
     .filter((d) => d.owner === 'project' && d.category !== 'shell' && (dev || d.kind !== 'code'))
     .map((d) => ({ key: `c:${d.id}`, kind: 'component', name: d.name, description: d.description ?? '', hay: `${d.name} ${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.toLowerCase(), group: 'Your components', spec: { definitionId: d.id }, code: d.kind === 'code', uses: uses[d.id] ?? 0 }));
+  const byKey = new Map([...mine, ...sections, ...elements].map((it) => [it.key, it]));
 
   // Search: every word must match; exact names first, then names that start with the query, then names
   // that contain every word, then description and tag matches. Ties keep the panel's own order.
   const query = q.toLowerCase().trim();
   const words = query.split(/\s+/).filter(Boolean);
+  // A section in Variants is ranked by the name it shows ("Centered hero Dark"), and by its own name, so typing the
+  // section's name still finds it first.
+  const shown = (it: Item) => (it.kind === 'section' && showVariants ? `${it.name} ${optionLabel(it)}` : it.name).toLowerCase();
   const rank = (it: Item) => {
     const n = it.name.toLowerCase();
-    return n === query ? 0 : n.startsWith(query) ? 1 : words.every((w) => n.includes(w)) ? 2 : 3;
+    const full = shown(it);
+    return n === query || full === query ? 0 : n.startsWith(query) || full.startsWith(query) ? 1 : words.every((w) => full.includes(w)) ? 2 : 3;
   };
   const results = query
     ? [...mine, ...sections, ...elements]
@@ -455,22 +659,51 @@ export function InsertPanel() {
   // Project components insert the way sections do.
   const where: Record<Kind, Where> = { section: sectionTo, element: elementWhere(st, insertionPoint('element')), component: sectionTo };
   const topKind: Kind = mine.length ? 'component' : 'section';
-  const stripKind: Kind | 'new' = query ? (current?.kind ?? 'section') : (pointed ?? focused ?? scrolled ?? topKind);
 
+  // One insert at a time: a second click or Enter before the first has landed would read the same insertion point
+  // and put both in one place.
   const add = async (it: Item) => {
-    const to = where[it.kind];
-    const before = getState().selection;
-    const name = it.variant ? `${it.name} (${it.variant.option})` : it.name;
-    await insert(it.spec, name);
-    const after = getState().selection;
-    if (after && after !== before) setAdded((a) => ({ name, where: to, n: (a?.n ?? 0) + 1, selection: after }));
+    if (adding.current) return;
+    adding.current = true;
+    clearTimeout(peekTimer.current);
+    setPeek(null);
+    try {
+      const to = where[it.kind];
+      const before = getState().selection;
+      const prior = getState().snapshot;
+      const project = prior?.workspaceKey;
+      const known = getState().snapshot?.history.entries.map((e) => e.id) ?? [];
+      const name = fullName(it);
+      await insert(it.spec, name);
+      const s = getState();
+      const after = s.selection;
+      // Landed: the selection moved to a node of this project that exists now and did not before the insert.
+      const landed = !!(after && after !== before && s.snapshot && s.snapshot.workspaceKey === project && treeFor(s.snapshot.state, after.owner)?.nodes[after.nodeId] && !(prior && treeFor(prior.state, after.owner)?.nodes[after.nodeId]));
+      if (!landed || !after) return;
+      setAdded((a) => ({ key: it.key, kind: it.kind, name, where: to, n: (a?.n ?? 0) + 1, selection: after, known }));
+      if (stripRef.current?.matches(':hover')) setHoldPointer(true);
+    } finally {
+      adding.current = false;
+    }
   };
+  // The insert's own history entry, while it is still applied: what the confirmation's Undo takes back.
+  const addedEntry = added && snap.history.entries.find((e) => e.applied && e.label === `Insert ${added.name}` && !added.known.includes(e.id));
+  const undo = addedEntry ? undoAction({ entryId: addedEntry.id, revision: snap.revision, workspaceKey: snap.workspaceKey }) : undefined;
+  const undoKeys = api.platform === 'darwin' ? '⌘Z' : 'Ctrl+Z';
   const clear = () => {
     setQ('');
     searchRef.current?.focus();
   };
   // Escape anywhere in the panel clears a search first, before the editor's own Escape (deselect) runs.
   const onPanelKey = (e: React.KeyboardEvent<HTMLElement>) => {
+    // While browsing, Escape first puts away the larger preview and leaves focus on its tile.
+    if (e.key === 'Escape' && peek && !q) {
+      e.preventDefault();
+      e.stopPropagation();
+      clearTimeout(peekTimer.current);
+      setPeek(null);
+      return;
+    }
     if (e.key === 'Escape' && q && !(e.target as HTMLElement).closest('.insert-body [role="grid"]')) {
       e.preventDefault();
       e.stopPropagation();
@@ -485,16 +718,45 @@ export function InsertPanel() {
       setQ('');
     } else if (e.key === 'Enter' && current) {
       e.preventDefault();
+      // Scrolled out of view, the highlighted result is shown first rather than added unseen.
+      const row = document.getElementById(`${id}-r${results.indexOf(current)}`);
+      const box = row?.getBoundingClientRect();
+      const view = bodyRef.current?.getBoundingClientRect();
+      if (row && box && view && (box.top < view.top - 1 || box.bottom > view.bottom + 1)) {
+        row.scrollIntoView({ block: 'nearest' });
+        return;
+      }
       if (!e.repeat) void add(current);
     } else if (query && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       e.preventDefault();
       setActive((a) => Math.max(0, Math.min(results.length - 1, a + (e.key === 'ArrowDown' ? 1 : -1))));
+      setReveal((r) => r + 1);
     } else if (!query && e.key === 'ArrowDown') {
       // Down from an empty search goes into the palette.
       e.preventDefault();
       bodyRef.current?.querySelector<HTMLElement>('[role="gridcell"] > [tabindex="0"]')?.focus();
     }
   };
+  // The larger preview opens after a short rest on a tile, and moves straight to the next tile once it is open.
+  const showPeek = (key: string, el: HTMLElement, wait: number) => {
+    clearTimeout(peekTimer.current);
+    const go = () => el.isConnected && setPeek({ key, rect: el.getBoundingClientRect() });
+    if (wait && !peek) peekTimer.current = setTimeout(go, wait);
+    else go();
+  };
+  // Long enough to cross from the tile onto the preview, which keeps it open (and the strip on its tile) while the
+  // pointer is on it.
+  const hidePeek = (key?: string) => {
+    clearTimeout(peekTimer.current);
+    peekTimer.current = setTimeout(() => {
+      setPointed(null);
+      // A section that still has keyboard focus gets its preview back once the pointer has gone.
+      const f = document.activeElement as HTMLElement | null;
+      if (f && bodyRef.current?.contains(f) && f.dataset.kind === 'section' && f.matches(':focus-visible')) setPeek({ key: f.dataset.key!, rect: f.getBoundingClientRect() });
+      else setPeek((p) => (key === undefined || p?.key === key ? null : p));
+    }, 200);
+  };
+  const keepPeek = () => clearTimeout(peekTimer.current);
   // The strip above the list follows the tile under the pointer or the keyboard, so it always says where
   // the thing you are about to add will go.
   const onBodyFocus = (e: React.FocusEvent<HTMLElement>) => {
@@ -506,14 +768,28 @@ export function InsertPanel() {
       c.tabIndex = c === cell ? 0 : -1;
     }
     setPointed(null);
-    setAdded(null);
-    setFocused((cell.dataset.kind as Kind | 'new') || null);
+    setFocused(cell.dataset.key || null);
+    clearTimeout(peekTimer.current);
+    if (cell.dataset.kind === 'section' && cell.matches(':focus-visible')) showPeek(cell.dataset.key!, cell, 0);
+    else setPeek(null);
   };
   const onBodyBlur = (e: React.FocusEvent<HTMLElement>) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) setFocused(null);
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setFocused(null);
+    if (!searching) hidePeek();
   };
   const onBodyScroll = (e: React.UIEvent<HTMLElement>) => {
     const body = e.currentTarget;
+    // The preview follows a tile or result that is still in view (keyboard focus scrolls its tile into view), and
+    // goes when its tile scrolls away.
+    if (peek) {
+      const anchor = searching ? document.getElementById(`${id}-r${active}`) : body.querySelector<HTMLElement>(`[data-key="${CSS.escape(peek.key)}"]`);
+      const box = anchor?.getBoundingClientRect();
+      const view = body.getBoundingClientRect();
+      const held = anchor && (searching || anchor === document.activeElement);
+      if (held && box && box.bottom > view.top && box.top < view.bottom) setPeek({ key: peek.key, rect: box });
+      else setPeek(null);
+    }
     if (searching) return;
     browseTop.current = body.scrollTop;
     // At the very top the first group speaks; scrolled to the end, the last one does (it may never reach the top).
@@ -536,25 +812,63 @@ export function InsertPanel() {
     // A remembered tile further down the group must end up on screen too.
     if (cell) setTimeout(() => cell.scrollIntoView({ block: 'nearest' }), smooth ? 350 : 0);
   };
-  const hover = (k: Kind | 'new') => ({
-    onMouseEnter: () => {
-      setPointed(k);
-      setAdded(null);
+  // With a preview open, a section tile crossed on the way to it takes a moment to replace it, so the pointer can
+  // reach the preview it opened.
+  const hover = (key: string, section = false) => ({
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
+      const el = e.currentTarget;
+      if (section && peek) {
+        clearTimeout(peekTimer.current);
+        peekTimer.current = setTimeout(() => {
+          if (!el.isConnected) return;
+          setPointed(key);
+          setPeek({ key, rect: el.getBoundingClientRect() });
+        }, 140);
+        return;
+      }
+      if (!section) {
+        clearTimeout(peekTimer.current);
+        setPeek(null);
+      }
+      setPointed(key);
+      if (section) showPeek(key, el, 320);
     },
-    onMouseLeave: () => setPointed(null)
+    onMouseLeave: () => {
+      if (section) hidePeek(key);
+      else setPointed((p) => (p === key ? null : p));
+    }
   });
+  const descId = (it: Item) => `${id}-d-${it.key}`;
+  const describedBy = (it: Item) => `${id}-to-${it.kind}${it.description ? ` ${descId(it)}` : ''}`;
+  const description = (it: Item) =>
+    it.description ? (
+      <span hidden id={descId(it)}>
+        {it.description}
+      </span>
+    ) : null;
   const tileProps = (it: Item) => ({
     'data-kind': it.kind,
-    'aria-describedby': `${id}-to-${it.kind}`,
+    'data-key': it.key,
+    'aria-describedby': describedBy(it),
     onClick: () => void add(it),
-    ...hover(it.kind)
+    ...hover(it.key, it.kind === 'section')
   });
-  const plus = (
+  const justAdded = (it: Item) => added?.key === it.key;
+  const badge = (it: Item) => (
     <span className="insert-add" aria-hidden="true">
-      <Plus />
+      {justAdded(it) ? <Check /> : <Plus />}
     </span>
   );
-  // The library's own menu: rename, where each copy is placed (choosing one shows it), and delete once unused.
+  const iconFor = (it: Item) =>
+    justAdded(it) ? (
+      <span className="ico done">
+        <Check />
+      </span>
+    ) : (
+      <ItemIcon it={it} />
+    );
+  // The library's own menu, named for the component it manages: rename, where each copy is placed (choosing one
+  // shows it), and delete once unused.
   const manageItems = (def: ComponentDefinition): MenuItem[] => {
     const places = placesOf(st, def.id);
     const needs = dependentsOf(st, def.id);
@@ -570,7 +884,8 @@ export function InsertPanel() {
       return { label: `In ${p.label}`, icon: <Component />, hint: n ?? 'Design', disabled: true };
     };
     return [
-      { label: 'Rename…', icon: <Pencil />, onSelect: () => setState({ modal: { kind: 'rename-component', definitionId: def.id } }) },
+      { heading: def.name },
+      { label: 'Rename', icon: <Pencil />, onSelect: () => setState({ modal: { kind: 'rename-component', definitionId: def.id } }) },
       { separator: true },
       { heading: count ? `Used ${usedTimes(count)}` : needs.length ? 'Not placed anywhere' : 'Not used anywhere' },
       ...places.map(placeItem),
@@ -594,16 +909,52 @@ export function InsertPanel() {
 
   const groups = new Map<string, Item[]>();
   for (const it of sections) groups.set(it.group, [...(groups.get(it.group) ?? []), it]);
+  // In Variants each section's options sit together, under the section's name.
+  const bandsOf = (list: Item[]) => {
+    const bands: Array<{ key: string; label: string; items: Item[] }> = [];
+    for (const it of list) {
+      const last = bands.at(-1);
+      if (last && last.key === it.spec.componentId) last.items.push(it);
+      else bands.push({ key: it.spec.componentId!, label: it.name, items: [it] });
+    }
+    return bands;
+  };
   const found = query ? (results.length ? `${results.length} result${results.length === 1 ? '' : 's'} for ${q.trim()}` : `No matches for ${q.trim()}`) : '';
   const confirmed = added ? `Added ${added.name} ${added.where?.lead ?? ''} ${added.where?.target ?? ''}` : '';
-  const stripWhere = stripKind === 'new' ? null : where[stripKind];
-  const stripText = added ? confirmed : stripWhere ? `${KIND_SUBJECT[stripKind as Kind]} ${stripWhere.lead} ${stripWhere.target}` : '';
+
+  // What the strip says next: the item about to be added and where it goes, else where the next one goes.
+  // Under a confirmation there is room for one short line, so it names only the place: the tile in view says what.
+  const aim = query ? (current?.key ?? null) : (pointed ?? focused);
+  const aimItem = aim && aim !== 'new' ? byKey.get(aim) : undefined;
+  const next = !!added;
+  const fallback: Kind = next ? added.kind : query ? 'section' : (scrolled ?? topKind);
+  const kindNow: Kind = aimItem?.kind ?? fallback;
+  const line: Line =
+    aim === 'new'
+      ? { verb: 'Opens the code editor to write a new component' }
+      : next && where[kindNow]
+        ? { verb: `Next: ${where[kindNow]!.lead.replace(/^in a new section /, 'new section ')}`, target: where[kindNow]!.target, full: `The next one goes ${where[kindNow]!.lead} ${where[kindNow]!.target}` }
+        : aimItem && where[aimItem.kind]
+          ? { name: fullName(aimItem), verb: placeLead(where[aimItem.kind]!.lead), target: where[aimItem.kind]!.target, full: `${fullName(aimItem)} goes ${where[aimItem.kind]!.lead} ${where[aimItem.kind]!.target}` }
+          : where[fallback]
+            ? { verb: `${KIND_SUBJECT[fallback]} ${where[fallback]!.lead}`, target: where[fallback]!.target }
+            : { verb: '' };
+
+  const peekItem = peek && byKey.get(peek.key);
+  const panelRect = peekItem ? bodyRef.current?.closest('.side-panel')?.getBoundingClientRect() : undefined;
+
   const newCode = dev && (
-    <button className="insert-tile new" data-kind="new" onClick={() => setState({ modal: { kind: 'new-code' } })} {...hover('new')}>
+    <button className="insert-tile new" data-kind="new" data-key="new" onClick={() => setState({ modal: { kind: 'new-code' } })} {...hover('new')}>
       <span className="ico">
         <Plus />
       </span>
       <strong>New code component</strong>
+    </button>
+  );
+  const showAll = mine.length > MINE_SHOWN && (
+    <button className="btn btn-sm btn-ghost insert-more" aria-expanded={allMine} onClick={() => setAllMine(!allMine)}>
+      <ChevronDown aria-hidden="true" />
+      {allMine ? 'Show fewer' : `Show all ${mine.length} components`}
     </button>
   );
   const yours = (
@@ -618,10 +969,10 @@ export function InsertPanel() {
           labelledBy={`${id}-yours`}
           className="compact list managed"
           cols={1}
-          extra={newCode || undefined}
+          extra={[showAll, newCode].filter(Boolean) as ReactNode[]}
           render={(it) => (
             <button
-              className="insert-tile project"
+              className={`insert-tile project${justAdded(it) ? ' just-added' : ''}`}
               title={it.description ? `${it.name}: ${it.description}` : it.name}
               {...tileProps(it)}
               onContextMenu={(e) => {
@@ -629,13 +980,13 @@ export function InsertPanel() {
                 menu.open(e.clientX, e.clientY, manage(it), `Manage ${it.name}`, e.currentTarget);
               }}
             >
-              <ItemIcon it={it} />
+              {iconFor(it)}
               <span className="txt">
                 <strong>{it.name}</strong>
-                <small>
-                  {it.code ? 'Code component' : 'Component'} · {it.uses ? `Used ${usedTimes(it.uses)}` : 'Not used'}
-                </small>
+                <small>{it.uses ? `Used ${usedTimes(it.uses)}` : 'Not used'}</small>
+                <span className="sr-only">, {it.code ? 'code component' : 'component'}</span>
               </span>
+              {description(it)}
             </button>
           )}
           aside={(it) => (
@@ -645,26 +996,23 @@ export function InsertPanel() {
           )}
         />
       )}
-      {mine.length > MINE_SHOWN && (
-        <button className="btn btn-sm btn-ghost insert-more" aria-expanded={allMine} onClick={() => setAllMine(!allMine)}>
-          {allMine ? 'Show fewer' : `Show all ${mine.length} components`}
-        </button>
-      )}
-      <p className="insert-empty-note">{mine.length ? 'To make another, right-click a group of elements on the page and choose Create component.' : 'Your own components appear here. To make one, right-click a group of elements on the page and choose Create component.'}</p>
+      {!mine.length && <p className="insert-empty-note">Your own components appear here. To make one, right-click a group of elements on the page and choose Create component.</p>}
     </section>
   );
 
   return (
-    <div className="insert-panel" onKeyDown={onPanelKey}>
+    <div className={`insert-panel${narrow ? ' narrow' : ''}`} onKeyDown={onPanelKey}>
       {menu.node}
       <div className="panel-head">
         <h3>Insert</h3>
-        <button className="btn btn-sm btn-ghost insert-variants" aria-pressed={showVariants} title="List each section's variants (tone, layout) as their own items" onClick={toggleVariants}>
-          <SwatchBook aria-hidden="true" /> Variants
+        <button className="btn btn-sm btn-ghost insert-variants" aria-pressed={showVariants} aria-label={narrow ? 'Variants' : undefined} title="List each section's variants (tone, layout) as their own items" onClick={toggleVariants}>
+          <SwatchBook aria-hidden="true" />
+          <span className="lbl">Variants</span>
         </button>
         {!query && (
-          <button className="btn btn-sm btn-ghost insert-jump" onClick={jumpToElements}>
-            <ArrowDown aria-hidden="true" /> Elements
+          <button className="btn btn-sm btn-ghost insert-jump" title="Jump to the basic elements" onClick={jumpToElements}>
+            <ArrowDown aria-hidden="true" />
+            <span className="lbl">Elements</span>
           </button>
         )}
       </div>
@@ -684,46 +1032,77 @@ export function InsertPanel() {
           spellCheck={false}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={onSearchKey}
+          onFocus={() => {
+            setTyping(true);
+            peekResult();
+          }}
+          onBlur={() => {
+            setTyping(false);
+            if (query) setPeek(null);
+          }}
         />
         {q && (
-          <button
-            className="icon-btn sm insert-clear"
-            aria-label="Clear search"
-            title="Clear search (Esc)"
-            onClick={clear}
-          >
+          <button className="icon-btn sm insert-clear" aria-label="Clear search" title="Clear search (Esc)" onClick={clear}>
             <X />
           </button>
         )}
       </div>
-      {!(query && !results.length) && (
-        <p className={`insert-where${added ? ' added' : ''}`} key={added?.n ?? 0} title={stripText || undefined}>
-          {added ? <Check aria-hidden="true" /> : <CornerDownRight aria-hidden="true" />}
-          <span>
-            {added ? (
-              <>
-                Added <b>{added.name}</b> {added.where?.lead} <b>{added.where?.target}</b>
-              </>
-            ) : stripKind === 'new' ? (
-              <>Opens the code editor to write a new component</>
-            ) : (
-              <Phrase kind={stripKind} where={where[stripKind]} />
+      <div
+        ref={stripRef}
+        className={`insert-where${added ? ' added' : ''}`}
+        onMouseEnter={() => added && setHoldPointer(true)}
+        onMouseLeave={() => setHoldPointer(false)}
+        onFocus={() => added && setHoldFocus(true)}
+        onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setHoldFocus(false)}
+      >
+        {added && (
+          <div className="insert-where-done" key={added.n}>
+            <Check aria-hidden="true" />
+            <span className="txt" title={confirmed}>
+              Added <b>{added.name}</b>
+            </span>
+            {undo && (
+              <button
+                className="btn btn-sm btn-ghost insert-undo"
+                aria-label={`Undo adding ${added.name}`}
+                title={`Undo adding ${added.name} (${undoKeys})`}
+                onClick={() => {
+                  undo.run();
+                  setAdded(null);
+                  searchRef.current?.focus({ preventScroll: true });
+                }}
+              >
+                <Undo2 aria-hidden="true" />
+                <span className="lbl">Undo</span>
+              </button>
             )}
+          </div>
+        )}
+        <div className="insert-where-next" title={lineText(line) || undefined}>
+          <CornerDownRight aria-hidden="true" />
+          <span className={`txt${next || line.name ? ' split' : ''}`}>
+            <LineText line={line} row={next} />
           </span>
-        </p>
-      )}
+          {query && current && typing && (
+            <kbd className="kbd" title="Enter adds it">
+              ↵
+            </kbd>
+          )}
+        </div>
+      </div>
       <p className="sr-only" role="status">
         {found}
       </p>
       <p className="sr-only" role="status">
         {confirmed}
+        {added && added.n % 2 ? '\u00a0' : ''}
       </p>
       {(['section', 'element', 'component'] as const).map((k) => (
         <span key={k} id={`${id}-to-${k}`} hidden>
           {where[k] ? `${KIND_SUBJECT[k]} ${where[k]!.lead} ${where[k]!.target}` : ''}
         </span>
       ))}
-      <div className="panel-body insert-body" ref={bodyRef} onKeyDown={gridKeys} onFocus={onBodyFocus} onBlur={onBodyBlur} onScroll={onBodyScroll} onMouseLeave={() => setPointed(null)}>
+      <div className="panel-body insert-body" ref={bodyRef} onKeyDown={gridKeys} onFocus={onBodyFocus} onBlur={onBodyBlur} onScroll={onBodyScroll}>
         {query ? (
           results.length ? (
             <div className="insert-results" role="listbox" id={`${id}-results`} aria-label="Results">
@@ -732,30 +1111,31 @@ export function InsertPanel() {
                   key={it.key}
                   id={`${id}-r${i}`}
                   role="option"
+                  data-kind={it.kind}
+                  data-key={it.key}
                   aria-selected={it === current}
-                  aria-describedby={`${id}-to-${it.kind}`}
+                  aria-describedby={describedBy(it)}
                   className={`insert-result${it === current ? ' active' : ''}`}
-                  title={it.description || undefined}
+                  title={it.kind !== 'section' && it.description ? it.description : undefined}
                   onMouseDown={(e) => e.preventDefault()}
-                  onMouseMove={() => i !== active && setActive(i)}
-                  onClick={() => void add(it)}
+                  onMouseMove={() => (i !== active ? setActive(i) : !peek && peekResult())}
+                  onClick={() => {
+                    searchRef.current?.focus({ preventScroll: true });
+                    void add(it);
+                  }}
                 >
                   {it.kind === 'section' ? (
                     <span className="insert-thumb" aria-hidden="true">
                       <SectionThumb it={it} />
                     </span>
                   ) : (
-                    <ItemIcon it={it} />
+                    iconFor(it)
                   )}
                   <span className="txt">
-                    <strong>{it.variant ? `${it.name} · ${it.variant.option}` : it.name}</strong>
-                    <small>{it.kind === 'section' ? `Section · ${it.variant ? `${it.variant.axis} variant` : it.group}` : it.kind === 'element' ? 'Basic element' : it.code ? 'Your code component' : 'Your component'}</small>
+                    <strong>{it.kind === 'section' && showVariants ? `${it.name} · ${optionLabel(it)}` : it.name}</strong>
+                    <small>{it.kind === 'section' ? (it.variant ? `${it.group} · ${it.variant.axis}` : showVariants && it.defaults ? `${it.group} · ${it.defaults}` : it.group) : it.kind === 'element' ? 'Basic element' : it.code ? 'Your code component' : 'Your component'}</small>
                   </span>
-                  {it === current && (
-                    <kbd className="kbd" aria-hidden="true">
-                      ↵
-                    </kbd>
-                  )}
+                  {description(it)}
                 </div>
               ))}
             </div>
@@ -778,14 +1158,18 @@ export function InsertPanel() {
                   {group}
                 </h4>
                 <TileGrid
-                  items={list}
+                  {...(showVariants ? { bands: bandsOf(list) } : { items: list })}
                   labelledBy={`${id}-g${gi}`}
+                  className={showVariants ? 'banded' : ''}
                   render={(it) => (
-                    <button className="insert-tile section" title={it.variant ? `${it.name}, ${it.variant.axis.toLowerCase()}: ${it.variant.option}` : it.description} {...tileProps(it)}>
+                    <button className={`insert-tile section${justAdded(it) ? ' just-added' : ''}`} aria-label={showVariants ? [it.name, optionLabel(it), it.defaults].filter(Boolean).join(', ') : undefined} {...tileProps(it)}>
                       <SectionThumb it={it} />
-                      <strong>{it.name}</strong>
-                      {it.variant && <small className="insert-variant">{it.variant.option}</small>}
-                      {plus}
+                      <span className="insert-label">
+                        <strong>{showVariants ? optionLabel(it) : it.name}</strong>
+                        {badge(it)}
+                      </span>
+                      {showVariants && it.defaults && <small className="insert-defaults">{it.defaults}</small>}
+                      {description(it)}
                     </button>
                   )}
                 />
@@ -801,8 +1185,8 @@ export function InsertPanel() {
                 className={`compact${narrow ? ' list' : ''}`}
                 cols={narrow ? 1 : 2}
                 render={(it) => (
-                  <button className="insert-tile basic" {...tileProps(it)}>
-                    <ItemIcon it={it} />
+                  <button className={`insert-tile basic${justAdded(it) ? ' just-added' : ''}`} {...tileProps(it)}>
+                    {iconFor(it)}
                     <strong>{it.name}</strong>
                   </button>
                 )}
@@ -812,6 +1196,17 @@ export function InsertPanel() {
           </>
         )}
       </div>
+      {peekItem && peek && panelRect && (
+        <InsertPeek
+          it={peekItem}
+          anchor={peek.rect}
+          panel={panelRect}
+          option={showVariants || peekItem.variant ? `${optionLabel(peekItem)}${peekItem.defaults ? ` · ${peekItem.defaults}` : ''}` : null}
+          map={sectionNeighbours(st)}
+          onEnter={keepPeek}
+          onLeave={searching ? keepPeek : () => hidePeek(peek.key)}
+        />
+      )}
     </div>
   );
 }
