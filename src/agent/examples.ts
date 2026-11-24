@@ -1,9 +1,8 @@
 /** Keyword retrieval over the theme's worked examples (ai-profile), checked against the real catalogue. */
-import { findVariant } from '@shared/variants';
 import type { ComponentDefinition, ProjectState } from '@shared/types';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import type { AiExample } from '@catalogue/foundation/ai-examples';
-import { checkProps, type FieldIssue } from './macros';
+import { checkProps, chooseVariants, type FieldIssue } from './macros';
 
 /**
  * Problems an example has against the component contract a section would be checked against: the project's installed
@@ -14,7 +13,7 @@ export function checkExample(state: ProjectState, ex: AiExample): FieldIssue[] {
   const def = themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : themed;
   if (!def || def.category === 'shell') return [{ field: 'componentId', message: `unknown component "${ex.componentId}"` }];
   const issues: FieldIssue[] = [];
-  if (ex.variant !== undefined && 'error' in findVariant(def, ex.variant)) issues.push({ field: 'variant', message: `no variant "${ex.variant}"` });
+  chooseVariants(def, ex.variant, ex.variants, '', issues);
   checkProps(def, ex.props, state, 'props', issues);
   return issues;
 }
@@ -41,4 +40,7 @@ export function examplesFor(state: ProjectState, componentId: string | undefined
 }
 
 /** The compact form shown to the model: a ready-to-send section. */
-export const exampleSection = (ex: AiExample) => ({ for: ex.description, section: { componentId: ex.componentId, ...(ex.variant ? { variant: ex.variant } : {}), props: ex.props } });
+export const exampleSection = (ex: AiExample) => ({
+  for: ex.description,
+  section: { componentId: ex.componentId, ...(ex.variant ? { variant: ex.variant } : {}), ...(ex.variants && Object.keys(ex.variants).length ? { variants: ex.variants } : {}), props: ex.props }
+});

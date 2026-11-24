@@ -10,6 +10,7 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
+import { developerModeRefusal } from '@engine/developer-mode';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import type { BuildFailureContext } from './build-failure';
@@ -1221,19 +1222,9 @@ export class Controller {
     if (opts.opening !== undefined && opts.opening !== this.workspaceKey) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
     // The AI owns the project from the moment it starts, before its run takes the session's write lock.
     if (this.aiBusy()) return { ok: false, revision: session.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
-    const codeOps = new Set(['component.createCode', 'component.updateSource', 'component.convertToCode']);
-    const state = session.state;
-    const copiesCode = (o: { type: string; definitionId?: string; owner?: { kind: string; id: string }; nodeId?: string }) => {
-      if (o.type === 'component.duplicate') return state.components[o.definitionId ?? '']?.kind === 'code';
-      if (o.type === 'component.makeUnique' && o.owner && o.nodeId) {
-        const tree = o.owner.kind === 'page' ? state.pages[o.owner.id] : o.owner.kind === 'shell' ? state.site.shell[o.owner.id as 'header'] : state.components[o.owner.id]?.tree;
-        const n = tree?.nodes[o.nodeId];
-        return n?.kind === 'instance' && state.components[n.definitionId]?.kind === 'code';
-      }
-      return codeOps.has(o.type);
-    };
-    if (!(await loadSettings()).settings.developerMode && batch.operations.some((o) => copiesCode(o as never)))
-      return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'Turn on Developer mode in Settings to work with code.', recoverable: true } };
+    // Code, and copies that would make new code, need Developer mode: the same check the AI's edits go through.
+    const refusal = (await loadSettings()).settings.developerMode ? null : developerModeRefusal(session.state, batch.operations);
+    if (refusal) return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: `${refusal} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
     // An edit belongs to the project it was made in: one closing, closed or switched meanwhile never receives it.
     if (this.session !== session || this.closing) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
     return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user' });

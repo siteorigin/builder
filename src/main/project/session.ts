@@ -15,7 +15,7 @@ import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
-import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
+import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
@@ -2729,9 +2729,8 @@ export class ProjectSession extends EventEmitter {
     const next: ProjectState = { ...this.state, pages: { ...this.state.pages, [pageId]: { ...page, rootIds: put.tree.rootIds, nodes: put.tree.nodes } } };
     // What it brings back must still make sense with everything changed since (a component or image it uses may be
     // gone). Diagnostics are told apart by where they are, as two missing images on one page share a message.
-    const key = (x: Diagnostic) => `${x.code}|${x.owner?.kind}:${x.owner?.id}|${x.nodeId}|${x.message}`;
-    const known = new Set(validateState(this.state, { sectionLinks: false }).filter(blocksSaving).map(key));
-    const introduced = validateState(next, { sectionLinks: false }).filter((x) => blocksSaving(x) && !known.has(key(x)));
+    const known = new Set(validateState(this.state, { sectionLinks: false }).filter(blocksSaving).map(diagnosticKey));
+    const introduced = validateState(next, { sectionLinks: false }).filter((x) => blocksSaving(x) && !known.has(diagnosticKey(x)));
     if (introduced.length) return refuse(introduced.map((x) => x.message).join(' '));
     let ev: SessionEvent;
     try {

@@ -1115,6 +1115,51 @@ describe('run budget, parallel calls and validation', () => {
     expect(result?.canUndo).toBe(true);
   });
 
+  it('treats an error with the same message as one already there, but somewhere else, as new (#132)', async () => {
+    const message = 'A link points to a page that does not exist.';
+    const at = (nodeId: string) => ({ severity: 'error' as const, code: 'LINK_MISSING', message, owner: { kind: 'page', id: 'pg_home' }, nodeId });
+    const about = (s: ProjectSession) => Object.values(s.state.pages).find((p) => p.route === '/about/')!;
+    let session: ProjectSession;
+    let repaired = '';
+    const env = await setup(
+      [
+        () => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.update', pageId: about(session).id, title: 'About the studio' }] })],
+        () => finish('Retitled it.'),
+        (req) => {
+          repaired = (req.items.at(-1) as { text: string }).text;
+          return [call('c2', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.update', pageId: about(session).id, title: 'Our studio' }] })];
+        },
+        () => finish('Retitled it and fixed the new link.')
+      ],
+      {
+        // The project already has the error on n_old; the first title adds the same one on n_new, the second fixes it.
+        compileAll: async (s) => [at('n_old'), ...(about(s).title === 'About the studio' ? [at('n_new')] : [])]
+      }
+    );
+    session = env.session;
+    const { result } = await env.run('Retitle the about page');
+    expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(true);
+    // Only the new one is sent back, with where it is.
+    expect(repaired).toMatch(/Validation found new errors/);
+    expect(repaired).toContain('node n_new');
+    expect(repaired).not.toContain('n_old');
+    expect(result?.status).toBe('completed');
+    expect(result?.summary).toBe('Retitled it and fixed the new link.');
+    expect(result?.validation).toContain('1 pre-existing issue remain.');
+  });
+
+  it('treats a compile error that moved along the same line as new, even with the same message (#132)', async () => {
+    const error = (column: number) => ({ severity: 'error' as const, code: 'COMPILE', message: 'Card (line 1): Attributes need to be unique', site: `src/lib/components/custom/Card.svelte:1:${column}` });
+    const env = await setup(
+      [() => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Pricing', starter: 'empty' }] })], () => finish('Done.'), () => finish('Done again.'), () => finish('Really done.')],
+      { compileAll: async (s) => [error(Object.values(s.state.pages).some((p) => p.title === 'Pricing') ? 21 : 7)] }
+    );
+    const { result } = await env.run('Add a pricing page');
+    // The run never fixed what it moved, so it is rolled back rather than finished with it.
+    expect(result?.status).toBe('failed');
+    expect(Object.values(env.session.state.pages).some((p) => p.title === 'Pricing')).toBe(false);
+  });
+
   it('reverts when repairs run out (Validating → Repairing → failed)', async () => {
     const { session, run } = await setup(
       [
@@ -2130,6 +2175,28 @@ describe('requests that create pages over several steps (#88)', () => {
     expect(cta.props.primaryLink).toEqual({ type: 'page', target: pageAt(session.state, '/reader-requests/')!.id });
   });
 
+  it('connects a link that was waiting when a run stopped at its step limit, once Continue builds its page (#132)', async () => {
+    const reads = (n: number): Turn[] => Array.from({ length: n }, (_, i) => () => [call(`r${i}`, 'read_project', {})]);
+    const { session, run } = await setup([
+      () => [call('s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks', '/reader-requests/')] })],
+      ...reads(LIMITS.modelTurns - 1),
+      // Continue builds the missing page; the link that waited across the stop connects in the same change.
+      () => [call('u', 'upsert_page_with_sections', { slug: 'reader-requests', title: 'Reader requests', sections: [banner('Ask us for a book')] })],
+      () => finish('Added Reader requests.')
+    ]);
+    const first = await run('Add Staff picks with a link to a new Reader requests page');
+    expect(first.result).toMatchObject({ status: 'completed', incomplete: true, error: 'turn limit' });
+    const staff = pageAt(session.state, '/staff-picks/')!;
+    const cta = () => pageAt(session.state, '/staff-picks/')!.nodes[staff.rootIds[0]] as unknown as { props: Record<string, unknown> };
+    expect(first.result?.pendingLinks).toEqual([expect.objectContaining({ route: '/reader-requests/', pageId: staff.id, nodeId: staff.rootIds[0], prop: 'primaryLink' })]);
+    expect(first.result?.checks).toContainEqual({ status: 'issue', text: 'Links to /reader-requests/ do not go anywhere yet.' });
+    expect(cta().props.primaryLink).toEqual({ type: 'none', target: '' });
+    const { result } = await run('Continue');
+    expect(result?.status).toBe('completed');
+    expect(result?.incomplete).toBeUndefined();
+    expect(cta().props.primaryLink).toEqual({ type: 'page', target: pageAt(session.state, '/reader-requests/')!.id });
+  });
+
   it('counts a page made by hand before Continue, and connects the link that was waiting for it without another edit', async () => {
     const { session, run, adapter } = await setup([
       () => [calls(['s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks', '/reader-requests/')] }], ['r', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.create', title: 'Reader requests', route: '/reader-requests/' }] }])],
@@ -2171,3 +2238,42 @@ describe('requests that create pages over several steps (#88)', () => {
 });
 
 const pageAtRoute = (s: ProjectState, route: string) => Object.values(s.pages).find((p) => p.route === route);
+
+describe('Developer mode and code components (#132)', () => {
+  const batch = (operations: unknown[]) => ({ expectedRevision: 0, operations });
+  const resultOf = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const codeDefs = (s: ProjectState) => Object.values(s.components).filter((d) => d.kind === 'code').map((d) => d.id).sort();
+
+  it('refuses to copy a code component with Developer mode off, with the reason, and still copies a managed one', async () => {
+    let session: ProjectSession;
+    const header = () => session.state.site.shell.header.rootIds[0];
+    const managed = () => Object.values(session.state.components).find((d) => d.kind !== 'code' && d.category !== 'shell')!;
+    const env = await setup(
+      [
+        () => [call('d1', 'apply_operations', batch([{ type: 'component.duplicate', definitionId: 'foundation.shell.header', name: 'Header copy' }]))],
+        () => [call('d2', 'apply_operations', batch([{ type: 'component.makeUnique', owner: { kind: 'shell', id: 'header' }, nodeId: header() }]))],
+        () => [call('d3', 'apply_operations', batch([{ type: 'component.fork', definitionId: 'foundation.shell.header' }]))],
+        // The header this fork names is installed by the theme switch before it: it is checked as the batch leaves it.
+        () => [call('d4', 'apply_operations', batch([{ type: 'theme.apply', themeId: 'foundation-alt' }, { type: 'component.fork', definitionId: 'foundation-alt.shell.header' }]))],
+        () => [call('d5', 'apply_operations', batch([{ type: 'component.duplicate', definitionId: managed().id, name: 'Section copy' }]))],
+        () => finish('Copied the section; the header is code, which needs Developer mode.')
+      ],
+      { codeEnabled: false }
+    );
+    session = env.session;
+    const before = codeDefs(session.state);
+    const headerDef = (session.state.site.shell.header.nodes[header()] as InstanceNode).definitionId;
+    const { result } = await env.run('Duplicate the header and this section');
+    expect(result?.status).toBe('completed');
+    for (const i of [1, 2, 3, 4]) {
+      const r = resultOf(env.adapter.requests[i]);
+      expect(r.error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
+      expect(r.error?.message, `call ${i}`).toMatch(/is a code component\..*copies its Svelte source into a new code component.*Developer mode is off for this user/);
+    }
+    expect(resultOf(env.adapter.requests[5]).ok).toBe(true);
+    expect(codeDefs(session.state)).toEqual(before);
+    expect(session.state.site.themeId).toBe('foundation');
+    expect((session.state.site.shell.header.nodes[header()] as InstanceNode).definitionId).toBe(headerDef);
+    expect(Object.values(session.state.components).some((d) => d.name === 'Section copy' && d.kind !== 'code')).toBe(true);
+  });
+});

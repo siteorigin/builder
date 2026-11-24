@@ -22,6 +22,7 @@ import { validateState } from '@engine/validate';
 import { installComponent, makeInstance } from '@engine/install';
 import { compileProject } from '../../src/main/compile';
 import { resolveInstanceProps } from '@generator/index';
+import { applyOperation } from '@engine/apply';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[];
 type JsonSchemaLike = { type?: string; description?: string; anyOf?: JsonSchemaLike[]; properties?: Record<string, JsonSchemaLike> };
@@ -1597,5 +1598,329 @@ describe('read_component and installed theme components', () => {
     old.tree!.nodes.heading = { ...old.tree!.nodes.heading, tag: 'h1' } as never;
     s.components[old.id] = old;
     expect(await read()).not.toContain('headingLevel');
+  });
+});
+
+describe('tone and layout in one call (#132)', () => {
+  const focused = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' as const };
+  const gridOn = (s: ProjectState, route: string) => {
+    const p = pageAt(s, route)!;
+    return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
+  };
+  const items = [{ icon: 'leaf', title: 'Care', description: 'Weekly visits.' }];
+
+  it('places and updates a section with tone and layout set together by the page tool', async () => {
+    const { session, adapter, run } = await setup([
+      () => [call('v1', 'upsert_page_with_sections', { slug: 'care', title: 'Care', sections: [{ componentId: 'features.grid', variants: { tone: 'muted', layout: 'two-columns' }, props: { heading: 'Care', items } }] })],
+      (req) => {
+        expect(lastResult(req).ok).toBe(true);
+        return [call('v2', 'upsert_page_with_sections', { slug: 'care', sections: [{ componentId: 'features.grid', variants: { layout: 'four-columns' } }] })];
+      },
+      (req) => {
+        expect(lastResult(req).ok).toBe(true);
+        // A variant on one axis and a different choice for the same axis are refused together, before anything lands.
+        return [call('v3', 'upsert_page_with_sections', { slug: 'care', sections: [{ componentId: 'features.grid', variant: 'inverse', variants: { tone: 'muted', layout: 'six-columns' } }] })];
+      },
+      () => finish()
+    ]);
+    await run('Add a Care page with a muted two-column grid, then make it four columns');
+    expect(gridOn(session.state, '/care/').variants).toEqual({ tone: 'muted', layout: 'four-columns' });
+    const refused = lastResult(adapter.requests[3]);
+    expect(refused.error).toBe('VALIDATION_FAILED');
+    expect(refused.fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].variants.tone', 'sections[0].variants.layout']);
+    // The tool offers one closed choice per axis.
+    const schema = upsertToolSchema(session.state) as { properties: { sections: { items: { oneOf: Array<{ properties: Record<string, { properties?: Record<string, { enum?: string[] }>; additionalProperties?: boolean }> }> } } } };
+    const grid = schema.properties.sections.items.oneOf.find((o) => JSON.stringify(o.properties.componentId).includes('"features.grid"'))!;
+    expect(grid.properties.variants.additionalProperties).toBe(false);
+    expect(grid.properties.variants.properties!.layout.enum).toEqual(['default', 'two-columns', 'four-columns']);
+    expect(grid.properties.variants.properties!.tone.enum).toContain('muted');
+  });
+
+  it('sets tone and layout of the selected section in one selection call', async () => {
+    const { session, adapter, run } = await setup([() => [call('s1', 'update_selected_props', { variants: { tone: 'inverse', layout: 'two-columns' } })], () => finish()], focused);
+    const grid = gridOn(session.state, '/');
+    const page = pageAt(session.state, '/')!;
+    await run('Make this dark with two columns', { owner: { kind: 'page', id: page.id }, instancePath: [], nodeId: grid.id });
+    expect(gridOn(session.state, '/').variants).toEqual({ tone: 'inverse', layout: 'two-columns' });
+    const tool = adapter.requests[0].tools.find((t) => t.name === 'update_selected_props')!.parameters as { properties: Record<string, { properties?: Record<string, { enum?: string[] }> }> };
+    expect(Object.keys(tool.properties.variants.properties!)).toEqual(['tone', 'layout']);
+  });
+});
+
+describe('unchanged legacy values (#132)', () => {
+  const focused = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' as const };
+  const gridOn = (s: ProjectState) => {
+    const p = pageAt(s, '/')!;
+    return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
+  };
+  const retire = (s: ProjectState) => {
+    (gridOn(s).props.items as ListItem[])[0].icon = 'flux-capacitor';
+  };
+
+  it('resends a page with an icon saved under older rules unchanged, and still refuses a new unknown one', async () => {
+    let sent: Array<Record<string, unknown>> = [];
+    const { session, adapter, run } = await setup(
+      [
+        () => {
+          sent = (gridOn(session.state).props.items as ListItem[]).map((i) => ({ id: i.id, icon: i.icon, title: i.title }));
+          sent[0] = { ...sent[0], title: 'Renamed' };
+          return [call('l1', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'features.grid', props: { heading: 'What we do', items: sent } }] })];
+        },
+        // Matched by its title rather than its id, the item is still the stored one.
+        () => [call('l2', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'features.grid', props: { items: sent.map(({ id: _id, ...rest }, i) => (i === 0 ? { ...rest, description: 'By title.' } : rest)) } }] })],
+        () => [call('l3', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'features.grid', props: { items: sent.map((x, i) => (i === 0 ? { ...x, icon: 'warp-drive' } : x)) } }] })],
+        () => [call('l4', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'features.grid', props: { items: [...sent, { icon: 'flux-capacitor', title: 'New card' }] } }] })],
+        () => finish()
+      ],
+      {},
+      'business',
+      retire
+    );
+    await run('Rename the first card');
+    expect(lastResult(adapter.requests[1]).ok).toBe(true);
+    expect(lastResult(adapter.requests[2]).ok).toBe(true);
+    const third = lastResult(adapter.requests[3]);
+    expect(third.error).toBe('VALIDATION_FAILED');
+    expect(third.fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].props.items[0].icon']);
+    // A new item has nothing stored, so an unknown icon on it is refused.
+    const fourth = lastResult(adapter.requests[4]);
+    expect(fourth.fields.map((f: { field: string }) => f.field)).toEqual([`sections[0].props.items[${sent.length}].icon`]);
+    const first = (gridOn(session.state).props.items as ListItem[])[0];
+    expect(first).toMatchObject({ id: sent[0].id, title: 'Renamed', icon: 'flux-capacitor', description: 'By title.' });
+  });
+
+  it('updates the selected card with its retired icon sent back unchanged', async () => {
+    let id = '';
+    const { session, adapter, run } = await setup(
+      [
+        () => [call('e1', 'edit_selected_list', { prop: 'items', action: 'update', itemId: id, fields: { icon: 'flux-capacitor', title: 'Renamed' } })],
+        () => [call('e2', 'update_selected_props', { props: { items: (gridOn(session.state).props.items as ListItem[]).map((i) => ({ ...i })) } })],
+        () => finish()
+      ],
+      focused,
+      'business',
+      retire
+    );
+    const grid = gridOn(session.state);
+    id = (grid.props.items as ListItem[])[0].id;
+    const page = pageAt(session.state, '/')!;
+    await run('Rename this card', { owner: { kind: 'page', id: page.id }, instancePath: [], nodeId: grid.id });
+    expect(lastResult(adapter.requests[1]).ok).toBe(true);
+    expect(lastResult(adapter.requests[2]).ok).toBe(true);
+    expect((gridOn(session.state).props.items as ListItem[])[0]).toMatchObject({ id, title: 'Renamed', icon: 'flux-capacitor' });
+  });
+});
+
+describe('reading long rich text whole (#132)', () => {
+  const focused = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' as const };
+  /** Paragraphs with bold, italic and a page link, at least `chars` long, ending in a word found nowhere else. */
+  const longBody = (chars: number) => {
+    const out: string[] = [];
+    for (let i = 0; out.join('\n\n').length < chars; i++) out.push(`Paragraph ${i} keeps the studio's story going with **bold ${i}**, *quiet ${i}* and a [visit to About](/about/) in the middle of it.`);
+    out.push('The very last line ends with the unique tail TAILWORD.');
+    return out.join('\n\n');
+  };
+  const place = async (session: ProjectSession, body: string) => {
+    const home = pageAt(session.state, '/')!;
+    const r = await session.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: home.id }, componentId: 'content.text', props: { heading: 'Our story', body } }] }, { label: 'Add story', source: 'user' });
+    expect(r.ok).toBe(true);
+    const page = pageAt(session.state, '/')!;
+    return page.rootIds.map((id) => page.nodes[id] as InstanceNode).find((n) => session.state.components[n.definitionId]?.componentId === 'content.text')!;
+  };
+
+  it('edits a 5,000-character field near its end without losing anything else (#132)', async () => {
+    let text = '';
+    let node = { id: '' };
+    let owner = { kind: 'page' as const, id: '' };
+    // Reads every part the tool returns, in order, then writes the whole value back with one word changed.
+    const step = (req: CanonicalModelRequest): ModelEvent[] => {
+      const last = req.items.at(-1);
+      if (last?.kind === 'tool_result' && last.name === 'update_selected_props') return finish('Changed the last word.');
+      if (last?.kind === 'tool_result' && last.name === 'inspect_element') {
+        const part = JSON.parse(last.content);
+        expect(part.start).toBe(text.length);
+        text += part.text;
+        if (part.next !== null) return [call(`r${part.next}`, 'inspect_element', { owner, nodeId: node.id, prop: 'body', offset: part.next })];
+        return [call('w', 'update_selected_props', { props: { body: text.replace('TAILWORD', 'CHANGED') } })];
+      }
+      return [call('r0', 'inspect_element', { owner, nodeId: node.id, prop: 'body' })];
+    };
+    const { session, adapter, run } = await setup(Array.from({ length: 6 }, () => step), focused);
+    const body = longBody(5000);
+    node = await place(session, body);
+    owner = { kind: 'page', id: pageAt(session.state, '/')!.id };
+    const before = structuredClone(node.props.body) as Array<{ type: string; spans: Array<{ text: string }> }>;
+    expect(JSON.stringify(before).length).toBeGreaterThan(5000);
+    const { result } = await run('Change the last word of this text', { owner, instancePath: [], nodeId: node.id });
+    expect(result?.status).toBe('completed');
+    // The selection shows only a preview of the body, and the run is offered the read that returns it whole.
+    expect(adapter.requests[0].tools.map((t) => t.name)).toContain('inspect_element');
+    expect((adapter.requests[0].items.at(-1) as { text: string }).text).toMatch(/"truncated":\s*true/);
+    const expected = structuredClone(before);
+    const tail = expected.at(-1)!.spans.at(-1)!;
+    tail.text = tail.text.replace('TAILWORD', 'CHANGED');
+    const after = (pageAt(session.state, '/')!.nodes[node.id] as InstanceNode).props.body;
+    expect(after).toEqual(expected);
+  });
+
+  it('reads a field longer than one part in parts that join to the whole value, and refuses a bad item or field', async () => {
+    const { executeTool } = await import('@agent/tools');
+    const { session } = await setup([]);
+    const body = longBody(18000);
+    const node = await place(session, body);
+    const owner = { kind: 'page' as const, id: pageAt(session.state, '/')!.id };
+    const host = { state: () => session.state, revision: () => session.revision } as unknown as Parameters<typeof executeTool>[2];
+    const read = async (args: Record<string, unknown>) => executeTool('inspect_element', JSON.stringify({ owner, nodeId: node.id, ...args }), host, 'c');
+    let text = '';
+    let offset: number | null = 0;
+    let parts = 0;
+    while (offset !== null) {
+      const r = await read({ prop: 'body', offset });
+      expect(r.ok).toBe(true);
+      const c = r.content as { text: string; next: number | null; total: number; format: string };
+      expect(c.format).toBe('markdown');
+      expect(JSON.stringify(c).length).toBeLessThan(24000);
+      text += c.text;
+      offset = c.next;
+      parts++;
+    }
+    expect(parts).toBeGreaterThan(1);
+    // The parts are the same Markdown the tools accept: written back, it is the stored text exactly.
+    const { normalizeRichText } = await import('@engine/values');
+    expect(normalizeRichText(text, session.state, 'Text')).toEqual((pageAt(session.state, '/')!.nodes[node.id] as InstanceNode).props.body);
+    expect((await read({ prop: 'nope' })).ok).toBe(false);
+    expect((await read({ prop: 'heading', itemId: 'x', field: 'y' })).ok).toBe(false);
+    expect((await read({ itemId: 'x' })).ok).toBe(false);
+    expect(((await read({ prop: 'heading' })).content as { text: string }).text).toBe('Our story');
+  });
+});
+
+describe('a selected part or placement scopes the run (#132)', () => {
+  const focused = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' as const };
+  const home = (s: ProjectState) => pageAt(s, '/')!;
+  const nodeAt = (s: ProjectState, i: number) => home(s).nodes[home(s).rootIds[i]] as InstanceNode;
+
+  it('changes only the selected heading of a section, and asks before anything else in it', async () => {
+    const asked: string[] = [];
+    const { session, adapter, run, answers } = await setup(
+      [
+        () => [call('h1', 'update_selected_props', { props: { heading: 'A sharper headline' } })],
+        () => [call('h2', 'update_selected_props', { props: { heading: 'Never this', lead: 'Outside the heading' } })],
+        () => [call('h3', 'style_selected_element', { partId: 'root', scope: 'base', styles: [{ property: 'paddingBlock', value: '1rem' }] })],
+        () => [call('h4', 'update_selected_props', { variant: 'muted' })],
+        (req) => {
+          asked.push(lastResult(req).error?.message ?? '');
+          return [call('h5', 'request_wider_scope', { question: 'This needs the whole section. OK?' })];
+        },
+        () => finish('Changed the headline; the rest stays as it is.')
+      ],
+      focused
+    );
+    answers.push('No, only change the selection');
+    const hero = nodeAt(session.state, 0);
+    const before = structuredClone(hero);
+    const { result } = await run('Rewrite this headline and make the section muted', { owner: { kind: 'page', id: home(session.state).id }, instancePath: [hero.id], nodeId: 'heading', partId: 'heading' });
+    expect(result?.status).toBe('completed');
+    // The small tool offers only what the heading shows.
+    const tool = adapter.requests[0].tools.find((t) => t.name === 'update_selected_props')!.parameters as { properties: { props: { properties: Record<string, unknown> }; variant?: unknown } };
+    expect(Object.keys(tool.properties.props.properties)).toContain('heading');
+    expect(Object.keys(tool.properties.props.properties)).not.toContain('lead');
+    expect(tool.properties.variant).toBeUndefined();
+    for (const i of [2, 3, 4]) {
+      const r = lastResult(adapter.requests[i]);
+      expect(r.error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
+      expect(r.error?.message, `call ${i}`).toContain('request_wider_scope');
+    }
+    expect(asked[0]).toMatch(/changes more of the selection than the selected part/);
+    const after = nodeAt(session.state, 0);
+    expect(after.props.heading).toBe('A sharper headline');
+    expect({ ...after.props, heading: before.props.heading }).toEqual(before.props);
+    expect(after.variants).toEqual(before.variants);
+    expect(after.overrides).toEqual(before.overrides);
+  });
+
+  it('changes only the selected card: its own fields and its own style, never the others in one batch', async () => {
+    let poetry = '';
+    let other = '';
+    const { session, adapter, run } = await setup([
+      (req) => {
+        const grid = nodeAt(session.state, 2);
+        const owner = { kind: 'page', id: home(session.state).id };
+        // A valid style for the selected card and a reset of every card: neither lands.
+        return [
+          call('c1', 'apply_operations', {
+            expectedRevision: session.revision,
+            operations: [
+              { type: 'node.setStyle', owner, nodeId: grid.id, partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' },
+              { type: 'node.resetStyles', owner, nodeId: grid.id, partId: 'card' }
+            ]
+          })
+        ];
+      },
+      () => [call('c2', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home(session.state).id }, nodeId: nodeAt(session.state, 2).id, prop: 'items', itemId: other, field: 'title', value: 'Not this one' }] })],
+      () => [call('c3', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.listInsert', owner: { kind: 'page', id: home(session.state).id }, nodeId: nodeAt(session.state, 2).id, prop: 'items' }] })],
+      () => [
+        call('c4', 'apply_operations', {
+          expectedRevision: session.revision,
+          operations: [
+            { type: 'instance.setProp', owner: { kind: 'page', id: home(session.state).id }, nodeId: nodeAt(session.state, 2).id, prop: 'items', itemId: poetry, field: 'title', value: 'Poetry night' },
+            { type: 'node.setStyle', owner: { kind: 'page', id: home(session.state).id }, nodeId: nodeAt(session.state, 2).id, partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' }
+          ]
+        })
+      ],
+      () => finish('Renamed and coloured this card.')
+    ]);
+    const grid = nodeAt(session.state, 2);
+    const items = grid.props.items as ListItem[];
+    poetry = items[1].id;
+    other = items[0].id;
+    const def = session.state.components[grid.definitionId];
+    const before = structuredClone(grid);
+    await run('Rename this card and make it pale blue', { owner: { kind: 'page', id: home(session.state).id }, instancePath: [grid.id], nodeId: def.parts.card.nodeId, partId: 'card', itemPath: [poetry] });
+    for (const i of [1, 2, 3]) expect(lastResult(adapter.requests[i]).error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
+    expect(lastResult(adapter.requests[4]).ok).toBe(true);
+    const after = nodeAt(session.state, 2);
+    const afterItems = after.props.items as ListItem[];
+    expect(afterItems).toHaveLength(items.length);
+    expect(afterItems[0]).toEqual(items[0]);
+    expect(afterItems[1].title).toBe('Poetry night');
+    expect(after.overrides).toEqual(before.overrides);
+    expect(after.itemOverrides).toEqual({ card: { list: 'items', items: { [poetry]: { base: { background: '#dbeeff' } } } } });
+  });
+
+  it('asks before an edit inside a definition changes a default that other placements show', async () => {
+    let defId = '';
+    let defaultWhenAsked: unknown;
+    const { session, adapter, run, answers } = await setup(
+      [
+        () => [call('d1', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'node.setContent', owner: { kind: 'component', id: defId }, nodeId: 'heading', field: 'text', value: 'A new default' }] })],
+        (req) => {
+          expect(lastResult(req).error?.code).toBe('SCOPE_MISMATCH');
+          defaultWhenAsked = (session.state.components[defId].properties.heading as { default: unknown }).default;
+          return [call('d2', 'request_clarification', { question: 'This changes the heading every placement without its own shows. OK?', widenScope: true })];
+        },
+        () => [call('d3', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'node.setContent', owner: { kind: 'component', id: defId }, nodeId: 'heading', field: 'text', value: 'A new default' }] })],
+        () => finish('Changed the default heading.')
+      ],
+      {},
+      'business',
+      (s) => {
+        // A project copy of the hero, placed twice: once with its own heading, once showing the default.
+        const page = s.pages[s.site.homePageId];
+        const hero = page.nodes[page.rootIds[0]] as InstanceNode;
+        defId = (applyOperation(s, { type: 'component.makeUnique', owner: { kind: 'page', id: page.id }, nodeId: hero.id }) as { definitionId: string }).definitionId;
+        const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+        const { nodeId } = applyOperation(s, { type: 'node.insert', owner: { kind: 'page', id: about.id }, definitionId: defId, index: 0 }) as { nodeId: string };
+        delete (about.nodes[nodeId] as InstanceNode).props.heading;
+      }
+    );
+    const def = () => session.state.components[defId];
+    const before = (def().properties.heading as { default: unknown }).default;
+    answers.push('Yes, allow changes beyond the selection');
+    await run('Change the default heading', { owner: { kind: 'component', id: defId }, instancePath: [], nodeId: 'heading' });
+    expect(lastResult(adapter.requests[1]).error?.message).toMatch(/changes the default of the "heading" property/);
+    expect(defaultWhenAsked).toBe(before);
+    expect(lastResult(adapter.requests[3]).ok).toBe(true);
+    expect((def().properties.heading as { default: unknown }).default).toBe('A new default');
   });
 });

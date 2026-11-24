@@ -3,7 +3,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, Pa
 import { isBinding } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
-import { displayName, enclosingRepeatProp } from '@engine/tree';
+import { displayName, enclosingRepeatProp, getTree } from '@engine/tree';
 import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
@@ -73,6 +73,9 @@ export function agentProps(def: ComponentDefinition | undefined, props: Record<s
   return out;
 }
 
+/** Rich text longer than this is summarized as a preview; inspect_element with a prop reads it whole. */
+const RICH_SUMMARY_CHARS = 1200;
+
 function summarizeValue(v: unknown, pages: RichPages, depth = 0): unknown {
   if (typeof v === 'string') return clip(v, 220);
   if (Array.isArray(v)) {
@@ -80,7 +83,9 @@ function summarizeValue(v: unknown, pages: RichPages, depth = 0): unknown {
     if (v.length && v.every(isRichBlock)) {
       const text = richTextToMarkdown(v, pages);
       // Never a shortened string that could be written back as the whole value.
-      return text.length <= 1200 ? text : { truncated: true, chars: text.length, preview: clip(text, 400) };
+      return text.length <= RICH_SUMMARY_CHARS
+        ? text
+        : { truncated: true, chars: text.length, preview: clip(text, 400), note: 'Shortened here. Read it whole with inspect_element, naming its prop (with itemId and field for a list item), before changing it; never write the preview back.' };
     }
     // A form field's choices are read whole, ids and all: a shortened set written back would drop the rest.
     const choices = v.every((x) => !!x && typeof x === 'object' && typeof x.id === 'string' && typeof x.label === 'string' && typeof x.value === 'string');
@@ -289,10 +294,115 @@ export function tokensSummary(state: ProjectState) {
   return effectiveTokens(state).map((t) => ({ id: t.id, label: t.label, value: t.value, overridden: t.id in state.tokens.overrides }));
 }
 
+/** The selected element's own content is shown whole up to this size (as JSON), and summarized beyond it. */
+const SELECTED_FULL_CHARS = 6000;
+
 /** The selected element's own content, in full unless it is very large: this is what the edit works from. */
 function selectedProps(def: ComponentDefinition | undefined, props: Record<string, unknown>, pages: RichPages): unknown {
   const shown = agentProps(def, props, pages, true);
-  return JSON.stringify(shown).length <= 6000 ? shown : agentProps(def, props, pages);
+  return JSON.stringify(shown).length <= SELECTED_FULL_CHARS ? shown : agentProps(def, props, pages);
+}
+
+/**
+ * Whether what a run is told about the selected element shortens its content, so the run needs a way to read a
+ * field whole (inspect_element with a prop) before it changes it.
+ */
+export function selectionAbridged(state: ProjectState, target: { owner: OwnerRef; nodeId: string }): boolean {
+  let tree: NodeTree;
+  try {
+    tree = getTree(state, target.owner);
+  } catch {
+    return false;
+  }
+  const n = Object.hasOwn(tree.nodes, target.nodeId) ? tree.nodes[target.nodeId] : undefined;
+  if (n?.kind === 'instance') return JSON.stringify(agentProps(state.components[n.definitionId], n.props, state.pages, true)).length > SELECTED_FULL_CHARS;
+  if (n?.kind === 'text' && !isBinding(n.text)) return JSON.stringify(summarizeValue(n.text, state.pages)) !== JSON.stringify(n.text);
+  return false;
+}
+
+/** A field read whole, a part at a time: the most characters (as they are escaped in a tool result) in one part. */
+const FIELD_PART_CHARS = 8000;
+
+export interface FieldRef {
+  owner: OwnerRef;
+  nodeId: string;
+  /** A property of a placed component, or "text" for a text element. */
+  prop: string;
+  itemId?: string;
+  field?: string;
+  offset?: number;
+}
+
+/**
+ * One content field as text, whole or a part at a time from `offset`: rich text as the same Markdown the tools accept,
+ * plain text as it is, anything else as JSON. A placement without a value of its own shows its definition's default,
+ * so that is what is read. Read every part (until `next` is null) before writing the field back whole.
+ */
+export function readField(state: ProjectState, ref: FieldRef): { ok: true; content: Record<string, unknown> } | { ok: false; message: string } {
+  let tree: NodeTree;
+  try {
+    tree = getTree(state, ref.owner);
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const node = Object.hasOwn(tree.nodes, ref.nodeId) ? tree.nodes[ref.nodeId] : undefined;
+  if (!node) return { ok: false, message: `No node "${ref.nodeId}".` };
+  let value: unknown;
+  let schema: PropSchema | undefined;
+  if (node.kind === 'instance') {
+    const def = state.components[node.definitionId];
+    const props = def?.properties ?? {};
+    const top = Object.hasOwn(props, ref.prop) ? props[ref.prop] : undefined;
+    if (!top) return { ok: false, message: `"${def?.name ?? 'This component'}" has no property "${ref.prop}". Properties: ${Object.keys(props).join(', ')}` };
+    value = Object.hasOwn(node.props, ref.prop) ? node.props[ref.prop] : (top as { default?: unknown }).default;
+    schema = top;
+    if (ref.itemId !== undefined || ref.field !== undefined) {
+      if (top.type !== 'list') return { ok: false, message: `"${ref.prop}" is not a list, so it has no items.` };
+      if (ref.itemId === undefined || ref.field === undefined) return { ok: false, message: 'Name both itemId and field to read one field of a list item.' };
+      const items = (Array.isArray(value) ? value : []) as Array<Record<string, unknown>>;
+      const item = items.find((i) => i?.id === ref.itemId);
+      if (!item) return { ok: false, message: `No item "${ref.itemId}" in ${top.label}. Items: ${items.map((i) => i?.id).join(', ')}` };
+      if (!Object.hasOwn(top.fields, ref.field)) return { ok: false, message: `${top.itemLabel} has no field "${ref.field}". Fields: ${Object.keys(top.fields).join(', ')}` };
+      schema = top.fields[ref.field];
+      value = item[ref.field];
+    }
+  } else {
+    const fields: Record<string, unknown> = node.kind === 'text' ? { text: node.text } : node.kind === 'link' ? { label: node.label } : {};
+    if (!Object.hasOwn(fields, ref.prop)) return { ok: false, message: `This ${node.kind} element has no text field "${ref.prop}".${Object.keys(fields).length ? ` Fields: ${Object.keys(fields).join(', ')}` : ''}` };
+    value = fields[ref.prop];
+  }
+  if (isBinding(value)) return { ok: false, message: 'This field shows a property of the component it is inside; read that component instead.' };
+  const rich = Array.isArray(value) && value.length > 0 && value.every(isRichBlock);
+  const format = rich ? 'markdown' : typeof value === 'string' ? 'text' : 'json';
+  const text = rich ? richTextToMarkdown(value as never, state.pages, schema?.type === 'richtext' ? schema.plainAs : undefined) : typeof value === 'string' ? value : JSON.stringify(value ?? null);
+  const start = Math.min(Math.max(0, ref.offset ?? 0), text.length);
+  let end = Math.min(text.length, start + FIELD_PART_CHARS);
+  // Measured as the tool result carries it, where quotes, backslashes and line breaks are escaped.
+  while (end > start + 1 && JSON.stringify(text.slice(start, end)).length - 2 > FIELD_PART_CHARS) end = start + Math.floor((end - start) * 0.9);
+  // Never between the two halves of one character.
+  if (end < text.length && end > start + 1 && /[\uD800-\uDBFF]/.test(text.charAt(end - 1))) end--;
+  const next = end < text.length ? end : null;
+  return {
+    ok: true,
+    content: {
+      owner: ref.owner,
+      nodeId: ref.nodeId,
+      prop: ref.prop,
+      ...(ref.itemId !== undefined ? { itemId: ref.itemId, field: ref.field } : {}),
+      format,
+      total: text.length,
+      start,
+      end,
+      next,
+      text: text.slice(start, end),
+      note:
+        next !== null
+          ? `Part of the value. Call inspect_element again with offset ${next} for the rest, and join the parts in order before writing the field back whole.`
+          : start > 0
+            ? 'The last part of the value.'
+            : 'The whole value.'
+    }
+  };
 }
 
 export function describeSelection(state: ProjectState, ref: ElementRef | null): Record<string, unknown> | null {
@@ -349,7 +459,14 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     ...(itemReach ? { styleReach: itemReach } : {}),
     note: feed
       ? `This shows a page's article details, filled in from that page: change its title, articleDate, byline or excerpt with page.update on pageId ${itemId ?? '(the article)'}, never instance.setProp. Style the part with node.setStyle using partId.`
-      : `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`
+      : itemReach && 'itemId' in itemReach
+        ? `Edit the content this part shows with instance.setProp on the instance, with itemId "${itemReach.itemId}" and the field. Style it with node.setStyle using partId and itemId "${itemReach.itemId}": the other items keep the shared style. To return it to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.`
+        : `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`,
+    // What the run may change: the app refuses anything else until the user approves a wider change. A code
+    // component's parts cannot say what they show, and its root is the whole placement.
+    ...(def?.tree && !def.tree.rootIds.includes(ref.instancePath[1] ?? ref.nodeId)
+      ? { scope: 'Only this part: the content it shows and its own styles. Anything else in the component (other parts, its variants, other items) needs the user to approve a wider change first.' }
+      : {})
   };
 }
 

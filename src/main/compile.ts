@@ -14,9 +14,11 @@ export async function compileProject(state: ProjectState): Promise<Diagnostic[]>
       try {
         compile(source, { filename: path, generate, runes: true });
       } catch (e) {
-        const err = e as { message: string; start?: { line: number } };
+        const err = e as { message: string; start?: { line: number; column?: number } };
         const def = Object.values(state.components).find((d) => d.sourcePath === path || path.includes(d.id.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()));
-        out.push({ severity: 'error', code: 'COMPILE', message: `${def ? def.name : path}${err.start ? ` (line ${err.start.line})` : ''}: ${err.message.split('\n')[0]}` });
+        // The message names the line; `site` also gives the column, so an error that moves along a line is a new one.
+        const site = err.start ? `${path}:${err.start.line}:${err.start.column ?? 0}` : path;
+        out.push({ severity: 'error', code: 'COMPILE', message: `${def ? def.name : path}${err.start ? ` (line ${err.start.line})` : ''}: ${err.message.split('\n')[0]}`, site });
         break;
       }
     }

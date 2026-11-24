@@ -3,7 +3,7 @@
  * batch that goes through the same scope checks, validation and undo group as any other edit, so a small
  * model never has to carry page IDs or revisions from one turn to the next.
  */
-import { findVariant, variantOptions } from '@shared/variants';
+import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
 import type { ComponentDefinition, Condition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { conditionHolds, conditionRef } from '@shared/types';
@@ -26,6 +26,7 @@ export const SECTION_ARGS = z.object({
   componentId: z.string().min(1),
   index: z.number().int().min(0).optional().describe('With repair: the section index the error named.'),
   variant: z.string().optional(),
+  variants: z.record(z.string(), z.string()).optional().describe('Options by axis, such as { "tone": "muted", "layout": "two-columns" }. Axes left out keep their choice.'),
   props: z.record(z.string(), z.unknown()).optional()
 });
 export type SectionInput = Omit<z.infer<typeof SECTION_ARGS>, 'index'>;
@@ -111,6 +112,50 @@ export function fieldError(issues: FieldIssue[], note: string): ToolOutcome {
   };
 }
 
+/**
+ * The variant options a call picks, by axis: `variant` names one option on whichever axis has it, `variants` names
+ * one per axis, so tone and layout can be set together. Returns undefined when nothing is picked. `at` prefixes the
+ * field names of any problems (for example "sections[2].").
+ */
+export function chooseVariants(def: ComponentDefinition, variant: string | undefined, variants: Record<string, string> | undefined, at: string, issues: FieldIssue[]): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  const options = () => [...new Set(variantOptions(def).map((o) => o.id))].join(', ') || 'none';
+  if (variant !== undefined) {
+    const found = findVariant(def, variant);
+    if ('error' in found) issues.push({ field: `${at}variant`, message: `"${def.name}" has no variant "${variant}". Variants: ${options()}` });
+    else out[found.axis] = found.id;
+  }
+  for (const [axis, id] of Object.entries(variants ?? {})) {
+    const found = findVariant(def, id, axis);
+    if ('error' in found) {
+      issues.push({ field: `${at}variants.${axis}`, message: found.error });
+      continue;
+    }
+    if (Object.hasOwn(out, axis) && out[axis] !== found.id) {
+      issues.push({ field: `${at}variants.${axis}`, message: `conflicts with variant "${variant}", which is a ${axis} option. Send one choice per axis.` });
+      continue;
+    }
+    out[axis] = found.id;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * A closed object with one optional choice per variant axis, or null for a component with fewer than two axes, where
+ * `variant` already names any choice. `describe` adds the axis labels; the page tool leaves them out, as it repeats
+ * this for every component and a small model's window has room for little else.
+ */
+export function variantsJsonSchema(def: ComponentDefinition, describe = false): JsonSchema | null {
+  const axes = axesOf(def);
+  if (axes.length < 2) return null;
+  return {
+    type: 'object',
+    properties: Object.fromEntries(axes.map(([axis, a]) => [axis, { type: 'string', enum: Object.keys(a.options), ...(describe && a.label ? { description: a.label } : {}) }])),
+    additionalProperties: false,
+    ...(describe ? { description: 'One option per axis, such as tone and layout together. Axes left out keep their choice.' } : {})
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Section checks
 // ---------------------------------------------------------------------------
@@ -156,13 +201,28 @@ export interface DeferredLink {
   field?: string;
 }
 
+const same = (a: unknown, b: unknown) => a !== undefined && b !== undefined && JSON.stringify(a) === JSON.stringify(b);
+
 /**
  * Check a section's props with the engine's value normalizers, so every problem is reported with its exact
- * path. Returns the props to send, with routes resolved, and any links waiting for a page.
+ * path. Returns the props to send, with routes resolved, and any links waiting for a page. `stored` is the
+ * placement's own props when the section already exists: a value sent back unchanged is checked against it, as the
+ * engine checks it, so one saved under older rules (a link to a page since removed, an icon since retired) never
+ * blocks the rest of the update. A list item is its stored item by id.
  */
-export function checkProps(def: ComponentDefinition, props: Record<string, unknown>, state: ProjectState, path: string, issues: FieldIssue[]): { props: Record<string, unknown>; deferred: DeferredLink[] } {
+export function checkProps(
+  def: ComponentDefinition,
+  props: Record<string, unknown>,
+  state: ProjectState,
+  path: string,
+  issues: FieldIssue[],
+  stored?: Record<string, unknown>,
+  /** The stored item id each sent item of a list stands for, when it is matched by more than its own id. */
+  itemIds?: (prop: string, sent: unknown[]) => Array<string | undefined>
+): { props: Record<string, unknown>; deferred: DeferredLink[] } {
   const out: Record<string, unknown> = {};
   const deferred: DeferredLink[] = [];
+  const storedProp = (k: string) => (stored && Object.hasOwn(stored, k) ? stored[k] : undefined);
   for (const [k, v] of Object.entries(props)) {
     const schema: PropSchema | undefined = Object.hasOwn(def.properties, k) ? def.properties[k] : undefined;
     if (!schema) {
@@ -176,14 +236,20 @@ export function checkProps(def: ComponentDefinition, props: Record<string, unkno
       continue;
     }
     if (schema.type === 'link') {
-      const r = resolveRouteLink(v, state);
+      // A stored link sent back as it is stays as it is, even when its page has gone.
+      const r = same(v, storedProp(k)) ? { value: v } : resolveRouteLink(v, state);
       if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k });
       out[k] = r.value;
-      checkValue(() => normalizeScalar(schema, r.value, state, schema.label), `${path}.${k}`, issues);
+      checkValue(() => normalizeScalar(schema, r.value, state, schema.label, storedProp(k)), `${path}.${k}`, issues);
       continue;
     }
     if (schema.type === 'list' && Array.isArray(v)) {
       const before = issues.length;
+      const kept = storedProp(k);
+      const storedItems = Array.isArray(kept) ? (kept as unknown[]).filter((x): x is ListItem => !!x && typeof x === 'object' && typeof (x as ListItem).id === 'string') : [];
+      // An id two stored items share names neither of them.
+      const storedItem = (id: unknown) => (typeof id === 'string' && storedItems.filter((x) => x.id === id).length === 1 ? storedItems.find((x) => x.id === id) : undefined);
+      const matched = storedItems.length && itemIds ? itemIds(k, v) : [];
       const items = v.map((it, i) => {
         const itemPath = `${path}.${k}[${i}]`;
         if (!it || typeof it !== 'object' || Array.isArray(it)) {
@@ -191,6 +257,7 @@ export function checkProps(def: ComponentDefinition, props: Record<string, unkno
           return it;
         }
         const copy: Record<string, unknown> = {};
+        const was = storedItem(matched[i] ?? (it as Record<string, unknown>).id);
         for (const [f, x] of Object.entries(it)) {
           if (f === 'id') {
             copy.id = x;
@@ -202,23 +269,25 @@ export function checkProps(def: ComponentDefinition, props: Record<string, unkno
             continue;
           }
           let value = x;
-          if (fs.type === 'link') {
+          if (fs.type === 'link' && !same(x, was?.[f])) {
             const r = resolveRouteLink(x, state);
             if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k, itemIndex: i, field: f });
             value = r.value;
           }
           copy[f] = value;
-          checkValue(() => normalizeScalar(fs, value, state, fs.label), `${itemPath}.${f}`, issues);
+          checkValue(() => normalizeScalar(fs, value, state, fs.label, was?.[f]), `${itemPath}.${f}`, issues);
         }
         return copy;
       });
       out[k] = items;
       // List-wide rules (length) are checked once its items are sound.
-      if (issues.length === before) checkValue(() => normalizeProp(schema, items, state, schema.label), `${path}.${k}`, issues);
+      // An item matched by more than its id is checked as that stored item, as the engine will see it once merged.
+      const asStored = items.map((it, i) => (matched[i] && it && typeof it === 'object' && !Array.isArray(it) && (it as Record<string, unknown>).id === undefined ? { ...it, id: matched[i] } : it));
+      if (issues.length === before) checkValue(() => normalizeProp(schema, asStored, state, schema.label, kept), `${path}.${k}`, issues);
       continue;
     }
     out[k] = v;
-    checkValue(() => normalizeProp(schema, v, state, schema.label), `${path}.${k}`, issues);
+    checkValue(() => normalizeProp(schema, v, state, schema.label, storedProp(k)), `${path}.${k}`, issues);
   }
   return { props: out, deferred };
 }
@@ -568,20 +637,35 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   }
 
   const issues: FieldIssue[] = [];
+  const resolved = sections.map((s) => sectionDefinition(scratch, s.componentId));
+  // Only a catalogue request may match another definition of the same component; a project one names its own.
+  const publicIdOf = (r: NonNullable<(typeof resolved)[number]>) => ('componentId' in r.ref ? r.def.componentId : undefined);
+  // Where each section lands decides what its values are checked against: a placement it updates is checked
+  // against its own stored values, as the engine checks them, so a value sent back unchanged is never refused.
+  // A section that names no component matches nothing.
+  const plan = planSections(scratch, page, resolved.map((r) => (r ? { defId: r.def.id, publicId: publicIdOf(r) } : { defId: '' })), !!args.removeOtherSections && !!args.sections);
+  const updates = new Map<number, InstanceNode>();
+  for (const slot of plan.slots) if (slot.kind === 'keep' && slot.section !== undefined) updates.set(slot.section, page!.nodes[slot.id] as InstanceNode);
   const compiled = sections.map((s, i) => {
     const at = `sections[${i}]`;
-    const resolved = sectionDefinition(scratch, s.componentId);
-    if (!resolved) {
+    const r = resolved[i];
+    if (!r) {
       const names = catalogueEntries(state.site.themeId).map((e) => e.componentId).join(', ');
       issues.push({ field: `${at}.componentId`, message: `unknown component "${s.componentId}". Components: ${names}` });
       return null;
     }
-    const { def, ref } = resolved;
-    if (s.variant !== undefined && 'error' in findVariant(def, s.variant))
-      issues.push({ field: `${at}.variant`, message: `"${def.name}" has no variant "${s.variant}". Variants: ${[...new Set(variantOptions(def).map((o) => o.id))].join(', ') || 'none'}` });
-    const { props, deferred } = checkProps(def, s.props ?? {}, scratch, `${at}.props`, issues);
-    // Only a catalogue request may match another definition of the same component; a project one names its own.
-    return { def, ref, props, deferred, variant: s.variant, defId: def.id, publicId: 'componentId' in ref ? def.componentId : undefined };
+    const { def, ref } = r;
+    const variants = chooseVariants(def, s.variant, s.variants, `${at}.`, issues);
+    const node = updates.get(i);
+    const nodeProps = node ? (scratch.components[node.definitionId]?.properties ?? {}) : {};
+    // A list's items stand for the stored items they are merged with below, by id or else by title.
+    const itemIds = (prop: string, sent: unknown[]) => {
+      const schema = Object.hasOwn(nodeProps, prop) ? nodeProps[prop] : undefined;
+      const list = node?.props[prop];
+      return schema?.type === 'list' && Array.isArray(list) ? withStoredFields(schema, sent, list, (item) => effectiveItem(scratch, schema, item)).ids : [];
+    };
+    const { props, deferred } = checkProps(def, s.props ?? {}, scratch, `${at}.props`, issues, node?.props, itemIds);
+    return { def, ref, props, deferred, variants, defId: def.id, publicId: publicIdOf(r) };
   });
   const repairNote = 'Nothing was applied. Call again with repair: true and only the named sections, each with its index; the other sections are kept.';
   if (issues.length) {
@@ -613,7 +697,6 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   if (createOp) push(createOp);
   if (Object.keys(settings).length) push({ type: 'page.update', pageId, ...settings });
 
-  const plan = planSections(scratch, page, good, !!args.removeOtherSections && !!args.sections);
   for (const id of plan.removed) push({ type: 'node.remove', owner, nodeId: id });
   const order = (page?.rootIds ?? []).filter((id) => !plan.removed.includes(id));
   // Places this call gives a value of its own. A link still waiting there is replaced by that value, never
@@ -627,7 +710,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
       if (slot.kind === 'new') {
         const c = good[slot.section];
         insertAt.set(ops.length, slot.section);
-        push({ type: 'node.insert', owner, index: position, ...c.ref, ...(c.variant ? { variant: c.variant } : {}), props: c.props }, slot.section);
+        push({ type: 'node.insert', owner, index: position, ...c.ref, ...(c.variants ? { variants: c.variants } : {}), props: c.props }, slot.section);
         order.splice(position, 0, `new:${slot.section}`);
         return;
       }
@@ -658,7 +741,8 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
         written.add(slotKey(slot.id, prop));
         push({ type: 'instance.setProp', owner, nodeId: slot.id, prop, value }, slot.section);
       }
-      if (c.variant) push({ type: 'instance.setVariant', owner, nodeId: slot.id, variant: c.variant }, slot.section);
+      // One choice per axis, so tone and layout set together each keep the other.
+      for (const [axis, variant] of Object.entries(c.variants ?? {})) push({ type: 'instance.setVariant', owner, nodeId: slot.id, variant, axis }, slot.section);
     });
   }
 
@@ -761,12 +845,14 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
   const section = {
     oneOf: defs.map((d) => {
       const variants = [...new Set(variantOptions(d).map((o) => o.id))];
+      const byAxis = variantsJsonSchema(d);
       return {
         type: 'object',
         properties: {
           componentId: { type: 'string', enum: [d.owner === 'project' ? d.id : d.componentId] },
           index: { type: 'integer', minimum: 0 },
           ...(variants.length ? { variant: { type: 'string', enum: variants } } : {}),
+          ...(byAxis ? { variants: byAxis } : {}),
           props: compactPropsSchema(d)
         },
         required: ['componentId'],
@@ -797,7 +883,8 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
         minItems: 1,
         maxItems: MAX_SECTIONS,
         items: section,
-        description: 'The page, top to bottom. Link props are strings: a route such as /contact/, an https:// URL, mailto:, tel:, #anchor, or "". Rich text is a string with blank lines between paragraphs.'
+        description:
+          'The page, top to bottom. variant picks one option; variants picks one per axis, such as { "tone": "muted", "layout": "two-columns" }, and axes left out keep their choice. Link props are strings: a route such as /contact/, an https:// URL, mailto:, tel:, #anchor, or "". Rich text is a string with blank lines between paragraphs.'
       },
       repair: { type: 'boolean', description: 'After an error: sections holds only the failed sections, each with the index the error named.' }
     },

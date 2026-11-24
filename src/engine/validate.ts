@@ -22,11 +22,23 @@ export interface Diagnostic {
   owner?: { kind: string; id: string };
   nodeId?: string;
   /**
-   * Where in its owner the problem is, for telling it apart from others of its kind (see `introducedDiagnostics`):
-   * unlike the message, it stays the same when a page or component it names is renamed, or a repair changes the wording.
+   * Where in its owner the problem is, for telling it apart from others of its kind (see `introducedDiagnostics` and
+   * `diagnosticKey`): unlike the message, it stays the same when a page or component it names is renamed, or a repair
+   * changes the wording. A compile error's is where in its generated file it is, as "path:line:column": its message
+   * names the line only.
    */
   site?: string;
 }
+
+/**
+ * What tells two diagnostics apart, as `introducedDiagnostics` with `byNode` does: one that names its place (`site`) by
+ * its code, owner and place, any other by its code, owner, element and message. The same message in two places is two
+ * problems.
+ */
+export const diagnosticKey = (d: Diagnostic): string => {
+  const owner = `${d.code}|${d.owner?.kind ?? ''}:${d.owner?.id ?? ''}`;
+  return d.site !== undefined ? `${owner}|@${d.site}` : `${owner}|${d.nodeId ?? ''}|${d.message}`;
+};
 
 /**
  * Errors in what the site shows that an edit may still introduce: the author fixes them later (a link to a section

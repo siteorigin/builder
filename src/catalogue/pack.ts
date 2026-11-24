@@ -18,6 +18,8 @@ export interface AiExample {
   keywords: string[];
   description: string;
   variant?: string;
+  /** Options by axis, such as tone and layout together. */
+  variants?: Record<string, string>;
   props: Record<string, unknown>;
 }
 
