@@ -8,8 +8,8 @@ import { ConfirmHost, Toasts, openDialogs, openMenus } from './components/ui';
 import { runInspection } from './lib/inspect';
 import { restorePanelWidth } from './lib/layout';
 import { forgetCopy, handleShortcut, projectHistory } from './Editor';
-import { frameTextFocus, inlineEdit } from './panels/Canvas';
-import { focusedSurface, forwardedKeyRuns, menuHistoryOwner, type HistoryContext } from './lib/history';
+import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
+import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { endEditingHold, prepareToLeave, projectClosed } from './lib/leave';
 import { keepPagesValid } from './lib/model';
 
@@ -86,6 +86,12 @@ export function App() {
       // While the preview frame has focus, the editor's own keydown handler cannot see keys; the main
       // process forwards the real key presses instead. In Preview the page is the visitor's.
       api.on('input:key', (k) => {
+        // Back and Forward step through the visitor's journey, never the project's history.
+        const dir = forwardedVisitorStep(historyContext(), k, api.platform === 'darwin');
+        if (dir) {
+          if (!getState().leaving) stepVisitor(dir);
+          return;
+        }
         if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl)) handleShortcut(k.key, k.meta || k.ctrl, k.shift);
       }),
       useStore.subscribe(persistChatState)

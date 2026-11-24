@@ -4,7 +4,7 @@ import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useWindowWidth } from './components/ui';
 import { api, applyOps, errorText, getState, saveLocal, setState, toast, useStore } from './store';
 import { Toolbar } from './panels/Toolbar';
-import { Canvas } from './panels/Canvas';
+import { Canvas, stepVisitor } from './panels/Canvas';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
 import { LayersPanel } from './panels/LayersPanel';
@@ -24,6 +24,7 @@ import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs'
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
 import { refLabel } from './lib/model';
 import { focusedSurface } from './lib/history';
+import { visitorStepKey } from '@shared/preview-keys';
 import { useTransitionAnnouncement } from './lib/announce';
 import { runPhase } from './lib/savestate';
 import { PANEL_LIMITS, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
@@ -322,6 +323,14 @@ export function Editor() {
       // loading) must not run a second time, or in Preview at all.
       if (document.activeElement instanceof HTMLIFrameElement) return;
       if (openDialogs.length && !(mod && e.key.toLowerCase() === 'k' && getState().modal?.kind === 'cmdk')) return;
+      // Back and Forward through the visitor's journey in Preview, as a browser's keys do, outside text fields and
+      // never for a key a control already used (a panel divider takes Alt+Left and Alt+Right to resize).
+      const dir = visitorStepKey({ key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey }, api.platform === 'darwin');
+      if (dir && getState().mode === 'preview' && !isTyping(e) && !e.defaultPrevented) {
+        e.preventDefault();
+        if (!getState().leaving) stepVisitor(dir);
+        return;
+      }
       // Undo and Redo from a control without text history of its own (a select, a checkbox) undo the project.
       const history = mod && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
       if (isTyping(e) && !history && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
