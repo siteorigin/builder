@@ -234,16 +234,20 @@ await writer.waitFor();
 assert.equal(await writer.locator('.post-title-input').inputValue(), 'Spring pottery classes');
 await eventually(async () => assert.equal(await isFocused(writer.locator('[data-entry-field="excerpt"] textarea')), true, 'the excerpt has focus'));
 
-step('entry: Go to picture, from the project’s own warning and from Search & AI readiness, shows the post’s second picture');
-for (const where of ['warnings', 'seo']) {
+step('entry: Go to picture, from a page, opens the post at its second picture; the project’s own warning does too');
+// A page chosen puts the writer away: the jump has to open the post itself.
+await openPage('About');
+await eventually(async () => assert.equal(await writer.count(), 0, 'no post is open'));
+for (const where of ['seo', 'warnings']) {
   health = await openHealth();
   await watchPictures();
   const list = where === 'warnings' ? health.locator('[data-group="warnings"]') : health.getByTestId('health-seo');
   await list.locator('.health-row', { hasText: 'picture 2 in its text has no description' }).getByRole('button', { name: 'Go to picture' }).click();
   await modal.waitFor({ state: 'detached' });
+  await writer.waitFor();
+  assert.equal(await writer.locator('.post-title-input').inputValue(), 'Spring pottery classes', `${where}: the post is open`);
   await eventually(async () => assert.deepEqual(await picturesShown(), [2], `${where}: the second picture is shown`));
 }
-assert.equal(await writer.locator('.post-title-input').inputValue(), 'Spring pottery classes');
 
 step('element: from the post, Show on page selects the link’s menu in the shared header');
 health = await openHealth();
