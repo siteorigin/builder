@@ -236,18 +236,29 @@ describe('a part picked inside a placement counts as the placement, in the slot 
 
   it('a part that holds the second of two slots picks it; the placement, its root or another part, the first', () => {
     const p = exhibitors();
-    // The card gets an images-only Media slot first and an open Body slot inside a box of its own.
+    // The card gets an images-only Media slot declared first and an open Body slot, shown in a Wrap in the other
+    // order (Body in a box of its own, then Media), and an Extra slot shown only through a repeat.
     const def = p.state.components[p.cardDef];
     const root = def.tree!.rootIds[0];
-    def.slots = { media: { label: 'Media', primitives: ['image'] }, body: { label: 'Body' } };
+    def.slots = { media: { label: 'Media', primitives: ['image'] }, body: { label: 'Body' }, extra: { label: 'Extra' } };
     def.tree!.nodes.mediaSlot = { id: 'mediaSlot', kind: 'slot', slot: 'media' };
     def.tree!.nodes.bodySlot = { id: 'bodySlot', kind: 'slot', slot: 'body' };
+    def.tree!.nodes.extraSlot = { id: 'extraSlot', kind: 'slot', slot: 'extra' };
     def.tree!.nodes.bodyBox = { id: 'bodyBox', kind: 'element', tag: 'div', children: ['bodySlot'] };
-    (def.tree!.nodes[root] as ElementNode).children.push('mediaSlot', 'bodyBox');
+    def.tree!.nodes.wrap = { id: 'wrap', kind: 'element', tag: 'div', children: ['bodyBox', 'mediaSlot'] };
+    def.tree!.nodes.rows = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: ['extraSlot'] };
+    def.tree!.nodes.rowsBox = { id: 'rowsBox', kind: 'element', tag: 'div', children: ['rows'] };
+    (def.tree!.nodes[root] as ElementNode).children.push('wrap', 'rowsBox');
     const para = (def.tree!.nodes[root] as ElementNode).children[0];
     expect(heldSlot(p.state, partOf(p.owner, p.card, 'bodyBox'))).toBe('body');
     expect(insertAt(p.state, p.owner, 'element', partOf(p.owner, p.card, 'bodyBox'))).toEqual({ owner: p.owner, parentId: p.card, slot: 'body' });
-    for (const from of [ref(p.owner, p.card), partOf(p.owner, p.card, root, 'root'), partOf(p.owner, p.card, para)]) {
+    // Another component goes there too.
+    expect(insertAt(p.state, p.owner, 'element', partOf(p.owner, p.card, 'bodyBox'), p.bandDef)).toEqual({ owner: p.owner, parentId: p.card, slot: 'body' });
+    // Holding both, the Wrap picks the one declared first, as the card itself does.
+    expect(heldSlot(p.state, partOf(p.owner, p.card, 'wrap'))).toBe('media');
+    // A slot shown once per item of a list is not where one insert goes.
+    expect(heldSlot(p.state, partOf(p.owner, p.card, 'rowsBox'))).toBeUndefined();
+    for (const from of [ref(p.owner, p.card), partOf(p.owner, p.card, root, 'root'), partOf(p.owner, p.card, para), partOf(p.owner, p.card, 'rowsBox')]) {
       expect(insertAt(p.state, p.owner, 'element', from)).toEqual({ owner: p.owner, parentId: p.card, slot: 'media' });
     }
     // A card inserted beside its own placement stays beside it, whichever part is picked.

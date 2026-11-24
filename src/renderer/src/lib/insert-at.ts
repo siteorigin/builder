@@ -73,8 +73,11 @@ export const placementOf = (ref: ElementRef | null): ElementRef | null => (ref?.
 
 /**
  * The slot of a placement that a part picked inside it holds (a Section's Container holds its Content), so what is
- * inserted goes there rather than into the placement's first slot. None for the placement's own root, for a part that
- * holds no slot, or for anything inside a component placed in its design, whose slots the page does not fill.
+ * inserted goes there rather than into the placement's first slot. Only a slot the part shows once, through its own
+ * elements, counts: not one inside a repeat (shown once per item, or never) or handed to a component placed in it
+ * (which may not show it). Of several, the first the component declares, as for the placement itself (slotFor). None
+ * for the placement's own root, for a part that holds no slot, or for anything inside a component placed in its
+ * design, whose slots the page does not fill.
  */
 export function heldSlot(state: ProjectState, ref: ElementRef | null): string | undefined {
   if (ref?.instancePath.length !== 1) return undefined;
@@ -82,19 +85,17 @@ export function heldSlot(state: ProjectState, ref: ElementRef | null): string | 
   const def = inst?.kind === 'instance' ? own(state.components, inst.definitionId) : undefined;
   const tree = def?.tree;
   if (!def || !tree || ref.nodeId === tree.rootIds[0]) return undefined;
+  const held = new Set<string>();
   const seen = new Set<string>();
-  const find = (id: string): string | undefined => {
+  const walk = (id: string) => {
     const n = own(tree.nodes, id);
-    if (!n || seen.has(id)) return undefined;
+    if (!n || seen.has(id)) return;
     seen.add(id);
-    if (n.kind === 'slot' && own(def.slots, n.slot)) return n.slot;
-    for (const list of childLists(n)) for (const c of list.ids) {
-      const found = find(c);
-      if (found) return found;
-    }
-    return undefined;
+    if (n.kind === 'slot') held.add(n.slot);
+    else if (n.kind === 'element') n.children.forEach(walk);
   };
-  return find(ref.nodeId);
+  walk(ref.nodeId);
+  return Object.keys(def.slots ?? {}).find((name) => held.has(name));
 }
 
 /**
