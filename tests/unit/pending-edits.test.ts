@@ -271,6 +271,42 @@ describe('the save barrier', () => {
     expect(closed.problems).toEqual([]);
   });
 
+  it('keeps its answer to itself even from a Close that starts once the answer is in', async () => {
+    let answered = false;
+    let close: Promise<Awaited<ReturnType<typeof settle>>> | null = null;
+    const save = settle({
+      blur: () => undefined,
+      // Close is chosen in the turn after Save heard that its writes could not be confirmed.
+      wait: async (ms) => {
+        if (answered && !close) close = settle({ blur: () => undefined, wait });
+        await wait(ms);
+      },
+      barrier: async () => {
+        answered = true;
+        return false;
+      }
+    });
+    const saved = await save;
+    const closed = await close!;
+    saved.finish();
+    closed.finish();
+    expect(saved.problems).toEqual(['A change could not be confirmed as saved.']);
+    expect(closed.problems).toEqual([]);
+  });
+
+  it('treats a barrier that throws at once like one that fails', async () => {
+    const { problems, finish } = await settle({
+      blur: () => undefined,
+      wait,
+      barrier: () => {
+        throw new Error('No project is open.');
+      }
+    });
+    finish();
+    expect(problems).toEqual(['A change could not be confirmed as saved.']);
+    expect(isSettling()).toBe(false);
+  });
+
   it('stops waiting for writes held up past its time, without confirming them', async () => {
     const started = Date.now();
     const { problems, finish } = await settle({ blur: () => undefined, wait, barrier: () => new Promise<boolean>(() => undefined), barrierTimeoutMs: 80 });

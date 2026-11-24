@@ -1194,7 +1194,7 @@ export class Controller {
    */
   async flush(opening?: string): Promise<boolean> {
     const s = this.session;
-    const current = () => this.session === s && (opening === undefined || opening === this.workspaceKey);
+    const current = () => this.session === s && this.workspaceKey !== null && (opening === undefined || opening === this.workspaceKey);
     if (!s || !current()) return false;
     await s.exclusive(async () => undefined);
     return current() && !s.saveUnfinished && !this.aiBusy();

@@ -168,6 +168,8 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
     deferred = [];
     run.forEach((f) => f());
   };
+  const barrier = deps.barrier;
+  let unconfirmed: string | null = null;
   try {
     // The preview hands back an inline edit by message; a field commits as it loses focus.
     if (drafts.has(CANVAS_DRAFT)) canvasCommit?.();
@@ -177,14 +179,12 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
     await until(() => !drafts.has(CANVAS_DRAFT), deps.canvasTimeoutMs ?? 3000, deps.wait);
     deps.hold?.();
     if (!(await until(() => inflight.size === 0, deps.saveTimeoutMs ?? Infinity, deps.wait))) report('A change is still being saved.');
-    else if (deps.barrier) {
+    else if (barrier) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<null>((r) => (timer = setTimeout(() => r(null), deps.barrierTimeoutMs ?? 10000)));
-      const saved = await Promise.race([deps.barrier().catch(() => false), late]);
+      const saved = await Promise.race([Promise.resolve().then(barrier).catch(() => false), late]);
       clearTimeout(timer);
-      // This settle's own answer: a Close running meanwhile is about its own changes, not this confirmation.
-      const unconfirmed = saved === null ? 'A change is still being saved.' : saved ? null : 'A change could not be confirmed as saved.';
-      if (unconfirmed && !s.problems.includes(unconfirmed)) s.problems.push(unconfirmed);
+      unconfirmed = saved === null ? 'A change is still being saved.' : saved ? null : 'A change could not be confirmed as saved.';
     }
     await deps.wait(0);
     // Whatever is still open was not saved: a titled Add page form, unsaved code, an edit the preview kept, or
@@ -193,7 +193,9 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
       if (s.explained.has(key)) continue;
       report(LEFT_OPEN[key] ?? 'A change you were typing has not been saved.');
     }
-    return { problems: [...s.problems], refused: s.refused?.isConnected ? s.refused : null, finish };
+    // The barrier's answer is this settle's alone, kept out of what an overlapping one (a Close) copies.
+    const problems = unconfirmed && !s.problems.includes(unconfirmed) ? [...s.problems, unconfirmed] : [...s.problems];
+    return { problems, refused: s.refused?.isConnected ? s.refused : null, finish };
   } catch (e) {
     finish();
     throw e;
