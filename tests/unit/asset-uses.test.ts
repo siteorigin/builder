@@ -198,11 +198,13 @@ describe('the uses of an image, one row each', () => {
     expect(start.at).toBeUndefined();
     expect(def.properties[start.prop!]?.type).toBe('image');
     const designImage = Object.values(def.tree!.nodes).find((n) => n.kind === 'image')!;
-    expect(defaultEditorNode(def, start.prop!)).toBe(designImage.id);
-    expect(defaultEditorNode(def, 'no-such-property')).toBeNull();
+    expect(defaultEditorNode(def, start.prop!, 'image')).toBe(designImage.id);
+    // Only the element that shows it as an image: none shows this property as a link.
+    expect(defaultEditorNode(def, start.prop!, 'link')).toBeNull();
+    expect(defaultEditorNode(def, 'no-such-property', 'image')).toBeNull();
     // A list's starting rows show in no one element.
     const gallery = made.state.components[(made.state.pages[home.id].nodes[galleryId] as InstanceNode).definitionId];
-    expect(defaultEditorNode(gallery, 'images')).toBeNull();
+    expect(defaultEditorNode(gallery, 'images', 'image')).toBeNull();
   });
 
   it('shows a component’s starting image by the component alone, and a theme component’s design nowhere (#209)', () => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DOUBLE_CLICK_MS, pageClicks } from '../../src/renderer/src/lib/page-clicks';
+import { DOUBLE_CLICK_MS, listPageClicks, pageClicks, settlePageClick } from '../../src/renderer/src/lib/page-clicks';
 
 // Issue #209: double-clicking a page to rename it opened the page on the first click, leaving Edit everywhere and
 // moving the preview, even when the rename was then cancelled.
@@ -11,6 +11,10 @@ describe('clicks on a page row', () => {
     log = [];
   });
   afterEach(() => vi.useRealTimers());
+
+  it('waits 400 ms, short of the usual 500 ms double-click time, so an ordinary click is not held long', () => {
+    expect(DOUBLE_CLICK_MS).toBe(400);
+  });
 
   it('opens the page once no second click has come', () => {
     const c = make();
@@ -86,6 +90,33 @@ describe('clicks on a page row', () => {
     vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
     c.settle();
     expect(log).toEqual([]);
+    // Its clock goes with it: a click made after it waits its own full time.
+    c.click('contact', 1);
+    vi.advanceTimersByTime(300);
+    c.drop();
+    c.click('home', 1);
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS - 1);
+    expect(log).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(log).toEqual(['open home']);
+  });
+
+  it('holds a page while its row is pressed, whatever the clock says, until the press turns out to be a click or not', () => {
+    const c = make();
+    c.click('about', 1);
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS - 10);
+    c.hold();
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
+    expect(log).toEqual([]);
+    expect(c.waiting()).toBe('about');
+    // Released as a second click: a rename, never an open.
+    c.click('about', 2);
+    expect(log).toEqual(['rename about']);
+    // Released as no click on the row: the page opens.
+    c.click('contact', 1);
+    c.hold();
+    c.settle();
+    expect(log).toEqual(['rename about', 'open contact']);
   });
 
   it('opens at once for a click no pointer made', () => {
@@ -97,5 +128,30 @@ describe('clicks on a page row', () => {
     c.click('contact', 1);
     c.click('home', 0);
     expect(log).toEqual(['open about', 'open contact', 'open home']);
+    // On the row waiting, the page opens once.
+    c.click('about', 1);
+    c.click('about', 0);
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
+    expect(log).toEqual(['open about', 'open contact', 'open home', 'open about']);
+  });
+
+  it('lets the canvas open a page waiting before it acts on a pick, and tells it there was one', () => {
+    const c = make();
+    expect(settlePageClick()).toBe(false);
+    const unlist = listPageClicks(c);
+    expect(settlePageClick()).toBe(false);
+    c.click('about', 1);
+    expect(settlePageClick()).toBe(true);
+    expect(log).toEqual(['open about']);
+    expect(settlePageClick()).toBe(false);
+    // Once the list has gone, a newer list's clicks are not let go by the old one.
+    const newer = make();
+    const unlistNewer = listPageClicks(newer);
+    unlist();
+    newer.click('contact', 1);
+    expect(settlePageClick()).toBe(true);
+    unlistNewer();
+    newer.click('home', 1);
+    expect(settlePageClick()).toBe(false);
   });
 });

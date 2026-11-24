@@ -15,7 +15,7 @@ import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree'
 import { isDraftPage } from '@generator/index';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { headerOrderPlan, inHeaderMenu } from '../lib/page-navigation';
-import { pageClicks } from '../lib/page-clicks';
+import { listPageClicks, pageClicks } from '../lib/page-clicks';
 
 /** Addresses are at most four levels deep, so a page four levels down cannot have pages inside it. */
 const MAX_DEPTH = 4;
@@ -366,8 +366,8 @@ export function PagesPanel() {
     const box = { top: t.top - wrap.top - 2, left: t.left - wrap.left - 5, width: r.right - 6 - t.left + 5 };
     setRenameBox((was) => (was && was.top === box.top && was.left === box.left && was.width === box.width ? was : box));
   };
-  // A page that leaves the list while it is being renamed (the AI removed it, an Undo, or its new title no longer
-  // matches the find) ends the rename, as leaving the field would.
+  // A page that leaves the list while it is being renamed: removed (by the AI, an Undo), the rename ends; no longer
+  // matching the find, the find clears (see renameGone).
   const renameGone = useRef<(id: string) => void>(() => {});
   useLayoutEffect(() => {
     if (!renaming) return void (renameBox && setRenameBox(null));
@@ -397,21 +397,28 @@ export function PagesPanel() {
       const id = clicks.waiting();
       if (!id) return;
       const t = e.target instanceof Element ? e.target : null;
-      // A press on that row may be the second click; its options button settles the click itself (see pageMenu),
-      // after the press, so the row stays where it is under the pointer.
+      // A press on that row may be the second click, or a press of its options button (which settles the click
+      // itself, see pageMenu): it is held until its click, so the row stays where it is under the pointer.
       const row = t?.closest<HTMLElement>('[data-page]');
-      if (e.button === 0 && row?.dataset.page === id && listRef.current?.contains(row)) return;
+      if (e.button === 0 && row?.dataset.page === id && listRef.current?.contains(row)) return clicks.hold();
       clicks.settle();
     };
+    // A held press that ends in no click on the row (released somewhere else) was not a second click.
+    const release = () => clicks.waiting() && setTimeout(() => clicks.settle(), 0);
     const other = () => clicks.settle();
     document.addEventListener('pointerdown', press, true);
+    document.addEventListener('pointerup', release, true);
     document.addEventListener('keydown', other, true);
-    // A press in the preview reaches its own document, not this one: focus leaving the editor's window shows it.
+    // Focus leaving the editor's window (for the preview, another app) shows the click was single; a pick in the
+    // preview settles it too (see settlePageClick).
     window.addEventListener('blur', other);
+    const unlist = listPageClicks(clicks);
     return () => {
       document.removeEventListener('pointerdown', press, true);
+      document.removeEventListener('pointerup', release, true);
       document.removeEventListener('keydown', other, true);
       window.removeEventListener('blur', other);
+      unlist();
       // Another project, or no Pages list: the click waiting is for a page that is no longer here.
       clicks.drop();
     };
@@ -495,7 +502,9 @@ export function PagesPanel() {
   // A page clicked a moment ago opens only while it is still in the project.
   clickActions.current = { open: (id) => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id) && open(id), rename: setRenaming };
   renameGone.current = (id) => {
-    if (Object.hasOwn(st.pages, id)) return endRename(id, renameInput.current?.value);
+    // Still a page, no longer matching the find (the AI changed its address): the find clears, so its row comes back
+    // under the field, and the author goes on typing.
+    if (Object.hasOwn(st.pages, id) && finding) return setQuery('');
     // Removed: there is no page left to give the title to.
     renameBase.current = null;
     setRenaming(null);

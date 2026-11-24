@@ -6,6 +6,7 @@ describe('text typed in a number property', () => {
     expect(readNumberDraft('')).toEqual({ empty: true });
     expect(readNumberDraft('   ')).toEqual({ empty: true });
     expect(readNumberDraft('\t\n')).toEqual({ empty: true });
+    expect(readNumberDraft('\u00a0')).toEqual({ empty: true });
     expect(readNumberDraft('', { min: 1, max: 10 })).toEqual({ empty: true });
   });
 
@@ -18,6 +19,7 @@ describe('text typed in a number property', () => {
     expect(readNumberDraft('1e3')).toEqual({ value: 1000 });
     expect(readNumberDraft('1e-3')).toEqual({ value: 0.001 });
     expect(readNumberDraft('2E+2')).toEqual({ value: 200 });
+    expect(readNumberDraft('1e+3')).toEqual({ value: 1000 });
     expect(readNumberDraft('0')).toEqual({ value: 0 });
   });
 
@@ -36,12 +38,14 @@ describe('text typed in a number property', () => {
     expect(readNumberDraft('1e309', { min: 0, max: 6 })).toEqual({ problem: 'Type a number from 0 to 6.' });
     // An exponent left unfinished is not a unit.
     expect(readNumberDraft('1e')).toEqual({ problem: 'Type a number, such as 12.' });
+    expect(readNumberDraft('1E')).toEqual({ problem: 'Type a number, such as 12.' });
   });
 
   it('keeps to the property’s bounds, either end included', () => {
     const bounds = { min: 0, max: 6 };
     expect(readNumberDraft('0', bounds)).toEqual({ value: 0 });
     expect(readNumberDraft('6', bounds)).toEqual({ value: 6 });
+    expect(readNumberDraft('5.75', bounds)).toEqual({ value: 5.75 });
     expect(readNumberDraft('-1', bounds)).toEqual({ problem: 'Use a number from 0 to 6.' });
     expect(readNumberDraft('7', bounds)).toEqual({ problem: 'Use a number from 0 to 6.' });
     expect(readNumberDraft('-1', { min: 0 })).toEqual({ problem: 'Use a number of at least 0.' });

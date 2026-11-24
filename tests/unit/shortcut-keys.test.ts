@@ -14,11 +14,13 @@ describe('shortcut hints for each platform', () => {
     expect(shortcutLabel('⇧⌘\\', 'win32')).toBe('Ctrl+Shift+\\');
     expect(shortcutLabel('⌥⌘I', 'win32')).toBe('Ctrl+Alt+I');
     expect(shortcutLabel('⌃⇧Tab', 'win32')).toBe('Ctrl+Shift+Tab');
+    expect(shortcutLabel('⌥⇧K', 'win32')).toBe('Alt+Shift+K');
   });
 
   it('reads the same on Linux as on Windows', () => {
     expect(shortcutLabel('⇧⌘↑', 'linux')).toBe('Ctrl+Shift+↑');
     expect(shortcutLabel('⌫', 'linux')).toBe('Del');
+    expect(shortcutLabel('⌥⌘I', 'linux')).toBe('Ctrl+Alt+I');
     for (const k of ['⌘J', '⇧⌘↑', '⌫', '⌘↩', 'F2']) expect(shortcutLabel(k, 'linux')).toBe(shortcutLabel(k, 'win32'));
   });
 
@@ -29,6 +31,7 @@ describe('shortcut hints for each platform', () => {
     expect(shortcutLabel('⌦', 'win32')).toBe('Del');
     expect(shortcutLabel('⎋', 'win32')).toBe('Esc');
     expect(shortcutLabel('⇧⇥', 'win32')).toBe('Shift+Tab');
+    expect(shortcutLabel('⇥', 'win32')).toBe('Tab');
   });
 
   it('leaves a hint already written for the platform as it is, so formatting twice changes nothing', () => {

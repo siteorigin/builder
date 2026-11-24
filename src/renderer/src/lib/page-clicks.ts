@@ -13,6 +13,9 @@ export interface PageClicks {
   settle: () => void;
   /** Forget the page waiting for a second click without opening it (the list went, or another project opened). */
   drop: () => void;
+  /** Stop the clock on the page waiting: a press on its row is held until its click (a second one, or the row's
+   *  options) says what it was, so the page never opens, and the list never moves, under a button being pressed. */
+  hold: () => void;
   /** The row waiting for a second click, if any. */
   waiting: () => string | null;
 }
@@ -49,12 +52,38 @@ export function pageClicks({ open, rename, wait = DOUBLE_CLICK_MS, timers = real
         if (count === 2) rename(id);
         return;
       }
+      const was = pending?.id;
       settle();
-      if (count === 0) return open(id);
+      // A click no pointer made opens its page at once, once: settling may just have opened it.
+      if (count === 0) return void (was !== id && open(id));
       pending = { id, timer: timers.set(settle, wait) };
     },
     settle,
     drop,
+    hold: () => {
+      if (pending) timers.clear(pending.timer);
+    },
     waiting: () => pending?.id ?? null
   };
+}
+
+/** The Pages list's clicks while the list is there (see PagesPanel), for the canvas to settle before a pick. */
+let listed: PageClicks | null = null;
+
+/** Make `clicks` the Pages list's; the function returned lets them go. */
+export function listPageClicks(clicks: PageClicks): () => void {
+  listed = clicks;
+  return () => {
+    if (listed === clicks) listed = null;
+  };
+}
+
+/**
+ * Open the page a click in the Pages list is waiting to open, if any: true when there was one. A pick on the canvas
+ * made meanwhile was on the page being left, and selects nothing, as any pick on a page that is leaving.
+ */
+export function settlePageClick(): boolean {
+  if (!listed?.waiting()) return false;
+  listed.settle();
+  return true;
 }

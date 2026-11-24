@@ -1841,10 +1841,10 @@ function EverywhereScope({ state, def, aside }: { state: ProjectState; def: Comp
 
 const FIELD_NAME: Record<ContentField, string> = { text: 'text', label: 'button text', link: 'link', image: 'image', icon: 'icon' };
 
-/** A property default's field: its editor, then which placements show it. */
-function DefaultField({ state, def, prop, schema, onChange, label }: { state: ProjectState; def: ComponentDefinition; prop: string; schema: ScalarPropSchema; onChange: (v: unknown, edit?: PendingEdit) => void; label?: string }) {
+/** A property default's field: its editor, then which placements show it. `content`: the node's field it fills in. */
+function DefaultField({ state, def, prop, schema, onChange, label, content }: { state: ProjectState; def: ComponentDefinition; prop: string; schema: ScalarPropSchema; onChange: (v: unknown, edit?: PendingEdit) => void; label?: string; content?: ContentField }) {
   return (
-    <div data-field={prop} style={{ display: 'contents' }}>
+    <div data-field={prop} data-content={content} style={{ display: 'contents' }}>
       <FieldHome root={`default:${def.id}:${prop}`} alive={() => Object.hasOwn(getState().snapshot?.state.components[def.id]?.properties ?? {}, prop)}>
         <ScalarField schema={schema} value={schema.default} state={state} label={label ?? schema.label} hint={`Each placement fills this in. ${reachText(defaultReach(state, def.id, prop))}`} onChange={onChange} everywhere />
       </FieldHome>
@@ -1909,7 +1909,7 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
 
   /** The editor of one field: its property's default, or the value fixed in the design. */
   function editor(f: Exclude<DesignContent, { source: 'item' }>) {
-    if (f.source === 'default') return <DefaultField key={f.field} state={state} def={def} prop={f.prop} schema={f.schema} label={f.field === 'label' ? `${kind} text` : undefined} onChange={set(f, `Edit ${f.schema.label} default`)} />;
+    if (f.source === 'default') return <DefaultField key={f.field} state={state} def={def} prop={f.prop} schema={f.schema} label={f.field === 'label' ? `${kind} text` : undefined} content={f.field} onChange={set(f, `Edit ${f.schema.label} default`)} />;
     const hint = sources.size > 1 ? 'Same in every placement.' : undefined;
     switch (f.field) {
       case 'text':

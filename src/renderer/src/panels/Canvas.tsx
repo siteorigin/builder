@@ -40,6 +40,7 @@ import { isShellPart, showsPart } from '@shared/page-shell';
 import { sampleEntries, shownView, templateOwner, viewAt, viewKey, type TemplateMode } from '../lib/template-view';
 import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type FrameEntry, type VisitorHistory } from '../lib/preview-history';
 import { shortcutLabel } from '../lib/shortcut-keys';
+import { settlePageClick } from '../lib/page-clicks';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -729,8 +730,9 @@ export function Canvas() {
           break;
         }
         case 'select': {
-          // A pick on a page the editor has not yet confirmed (one leaving) selects nothing.
-          if (!st || !s.frameReady) return;
+          // A pick on a page the editor has not yet confirmed (one leaving) selects nothing: also one made while a page
+          // chosen in Pages a moment ago waits to open, which then opens.
+          if (!st || !s.frameReady || settlePageClick()) return;
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
@@ -739,7 +741,7 @@ export function Canvas() {
           break;
         }
         case 'dblclick': {
-          if (!st || !s.frameReady) return;
+          if (!st || !s.frameReady || settlePageClick()) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
           // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
@@ -848,7 +850,7 @@ export function Canvas() {
           frameTextFocus.active = p.on === true;
           break;
         case 'contextmenu': {
-          if (!st || !s.frameReady) return;
+          if (!st || !s.frameReady || settlePageClick()) return;
           pagePick();
           const chain = chainOf(p.chain);
           const ref = pick(chain, false);

@@ -248,20 +248,20 @@ const revealUse = (owner: OwnerRef, nodeId: string, field?: UseField, label = 'T
 const OVERVIEW_FRAMES = 60;
 
 /**
- * Where a component's starting image or link is changed, in Component Studio: the element of its design that shows
- * the property, with that field in its Content focused. When no one element shows it (a list's starting rows, a
- * property nothing shows, or several properties at once), the component with nothing selected and, for a managed one,
- * its Properties opened.
+ * Where a component's starting image or link is changed, in Component Studio: the element of its design whose image
+ * (or link, for a document) shows the property, with that field in its Content focused. When no one element shows it
+ * that way (a list's starting rows, a property nothing shows, several properties at once), the component with nothing
+ * selected and, for a managed one, its Properties opened.
  */
-const openComponentDefaults = (definitionId: string, prop?: string) => () => {
+const openComponentDefaults = (definitionId: string, prop?: string, content: 'image' | 'link' = 'image') => () => {
   if (!openComponentStudio(definitionId)) return toast(GONE, 'info');
   const s = getState();
   const def = s.snapshot?.state.components[definitionId];
-  const nodeId = def && prop ? defaultEditorNode(def, prop) : null;
+  const nodeId = def && prop ? defaultEditorNode(def, prop, content) : null;
   setState({ selection: nodeId ? { owner: { kind: 'component', id: definitionId }, instancePath: [], nodeId } : null });
   if (def?.kind !== 'managed') return;
   const opening = s.snapshot!.workspaceKey;
-  const field = prop ? `[data-field="${CSS.escape(prop)}"]` : '';
+  const field = prop ? `[data-field="${CSS.escape(prop)}"][data-content="${content}"]` : '';
   let frames = 0;
   const step = () => {
     const now = getState();
@@ -335,7 +335,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
     const c = count(d.properties);
     // One property's starting value opens where that is changed; several, the component's Properties.
     const props = Object.keys(d.properties).filter((k) => count(d.properties[k]));
-    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: document ? 'Starting link for new copies' : 'Starting image for new copies', count: c, ...(editable(state, d.id) ? { go: openComponentDefaults(d.id, props.length === 1 ? props[0] : undefined) } : {}) });
+    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: document ? 'Starting link for new copies' : 'Starting image for new copies', count: c, ...(editable(state, d.id) ? { go: openComponentDefaults(d.id, props.length === 1 ? props[0] : undefined, 'link') } : {}) });
   }
   for (const p of Object.values(state.pages)) {
     const c = count(p.seo) + (p.seo.socialImage === assetId ? 1 : 0);

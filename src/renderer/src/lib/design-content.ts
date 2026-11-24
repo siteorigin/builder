@@ -64,11 +64,12 @@ export function designContent(def: ComponentDefinition, node: GraphNode): Design
 }
 
 /**
- * The element of a design whose content shows a property's starting value, so its Content is where that value is
- * changed. Null when no one element shows it: a list's or a table's starting rows, or a property nothing shows.
+ * The element of a design whose `field` (its image, its link) shows a property's starting value, so its Content is
+ * where that value is changed. Null when no one element shows it that way: a list's or a table's starting rows, a
+ * property nothing shows, or one shown only as another field (a button's text, from the same property as its link).
  */
-export function defaultEditorNode(def: ComponentDefinition, prop: string): string | null {
-  for (const node of Object.values(def.tree?.nodes ?? {})) if (designContent(def, node).some((f) => f.source === 'default' && f.prop === prop)) return node.id;
+export function defaultEditorNode(def: ComponentDefinition, prop: string, field: ContentField): string | null {
+  for (const node of Object.values(def.tree?.nodes ?? {})) if (designContent(def, node).some((f) => f.source === 'default' && f.prop === prop && f.field === field)) return node.id;
   return null;
 }
 
