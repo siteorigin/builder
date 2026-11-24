@@ -1,9 +1,10 @@
 import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type FieldLocation, type ProviderId, type RunStatus } from '@shared/api';
+import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type ProviderId, type RunStatus } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
+import { autoTitle, byRecentActivity, cleanTitle, NEW_CONVERSATION, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { newId } from '@shared/ids';
 import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/turns';
@@ -420,8 +421,13 @@ export class Orchestrator {
   private run: ActiveRun | null = null;
   /** Clear-history calls in progress. */
   private clearing = 0;
-  /** The last finished request's transcript write; reading or removing transcripts waits for it. */
+  /**
+   * The last change queued to the stored conversations (a finished request's transcript write, a rename, a delete);
+   * reading or removing transcripts waits for it, and each change runs after the one before.
+   */
   private saving: Promise<void> = Promise.resolve();
+  /** Conversations deleted in this opening of the project: a read that raced the delete never brings one back. */
+  private deleted = new Set<string>();
   /** Settles once the current run has ended: rolled back or committed, and the app told it is idle. */
   private runEnded: Promise<void> = Promise.resolve();
   conversation: Conversation | null = null;
@@ -451,10 +457,21 @@ export class Orchestrator {
     return s ? s.local('sessions', 'chat') : null;
   }
 
-  async loadConversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }> {
+  /** A stored conversation by its ID, under the title it goes by (see storedTitle). */
+  private async readConversation(dir: string, id: string): Promise<Conversation> {
+    const c = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) as Conversation;
+    // The storage name is the identity; a file claiming another ID is not this conversation.
+    if (c?.id !== id || !Array.isArray(c.messages)) throw new Error('Unknown conversation.');
+    c.title = storedTitle(c);
+    return c;
+  }
+
+  async loadConversations(): Promise<{ active: Conversation; list: ConversationSummary[] }> {
     const session = this.deps.session();
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
+    // A rename or delete already asked for is in the list.
+    await this.saving;
     const list: Conversation[] = [];
     // Reading never creates the folder: a read-only project must stay untouched. The first save makes it.
     const files = await fs.readdir(dir).catch((e: NodeJS.ErrnoException) => {
@@ -465,24 +482,26 @@ export class Orchestrator {
       const m = f.match(/^(c_[a-z0-9]+)\.json$/);
       if (!m) continue;
       try {
-        const c = JSON.parse(await fs.readFile(join(dir, f), 'utf8')) as Conversation;
-        // The storage name is the identity; a file claiming another ID is ignored.
-        if (c.id === m[1] && Array.isArray(c.messages)) list.push(c);
+        list.push(await this.readConversation(dir, m[1]));
       } catch {
         /* skip */
       }
     }
     this.sameSession(session);
-    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const kept = list.filter((c) => !this.deleted.has(c.id));
+    // The open conversation is newer than its file (a name just given, a request still being saved): listed as it is.
+    const open = this.conversation;
+    const summaries = kept.map((c) => summarize(open?.id === c.id ? open : c)).sort(byRecentActivity);
     // Listing never replaces the open conversation: a new one is not on disk until its first message, and one
     // mid-run is saved only when the run ends. Swapping it would send the next message to another thread.
-    if (!this.conversation) this.conversation = list[0] ?? this.freshConversation();
-    return { active: this.conversation, list: list.map((c) => ({ id: c.id, title: c.title, createdAt: c.createdAt })) };
+    // With none open yet, the one continued most recently opens.
+    if (!this.conversation) this.conversation = kept.find((c) => c.id === summaries[0]?.id) ?? this.freshConversation();
+    return { active: this.conversation, list: summaries };
   }
 
   /** A request adds to, and then saves, the open conversation: switching away mid-run would misfile its messages. */
-  private notRunning() {
-    if (this.run) throw new Error('Wait for the AI to finish before switching conversations.');
+  private notRunning(doing = 'switching conversations') {
+    if (this.run) throw new Error(`Wait for the AI to finish before ${doing}.`);
   }
 
   /** A read that finished after its project closed must not set the next project's conversation. */
@@ -491,7 +510,7 @@ export class Orchestrator {
   }
 
   private freshConversation(): Conversation {
-    return { id: newId('c'), title: 'New conversation', createdAt: new Date().toISOString(), messages: [] };
+    return { id: newId('c'), title: NEW_CONVERSATION, createdAt: new Date().toISOString(), messages: [] };
   }
 
   async newConversation(): Promise<Conversation> {
@@ -504,17 +523,89 @@ export class Orchestrator {
     const session = this.deps.session();
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
-    if (!/^c_[a-z0-9]+$/.test(id)) throw new Error('Unknown conversation.');
+    if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id) || this.deleted.has(id)) throw new Error('Unknown conversation.');
     // The open conversation is newer than its file, which a finished request may still be writing.
     if (this.conversation?.id === id) return this.conversation;
-    await this.saving;
-    const c = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) as Conversation;
-    if (c.id !== id) throw new Error('Unknown conversation.');
+    // Read in turn with the writes, renames and deletes queued before it, so it reads what they left.
+    const c = await this.queueFileChange(() => this.readConversation(dir, id));
     this.sameSession(session);
-    // Checked after the read too: a request may have started while the file was loading.
+    // Checked after the read too: a request may have started, or a delete taken the file, while it was loading.
     this.notRunning();
+    if (this.deleted.has(id)) throw new Error('That conversation was deleted.');
     this.conversation = c;
     return c;
+  }
+
+  /**
+   * Name a conversation. The open one takes the name at once and is saved with it (a request running in it saves
+   * the name when it ends); any other is rewritten in its file, after every change already queued.
+   */
+  async renameConversation(id: string, name: unknown): Promise<{ id: string; title: string }> {
+    const session = this.deps.session();
+    const dir = this.chatDir();
+    if (!session || !dir) throw new Error('No project open');
+    if (session.readOnly) throw new Error(session.readOnly.reason);
+    if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id) || this.deleted.has(id)) throw new Error('Unknown conversation.');
+    const title = cleanTitle(name);
+    if (!title) throw new Error(`A conversation’s name needs some text, up to ${TITLE_MAX} characters.`);
+    // A request saves its conversation when it ends: a name given meanwhile could be written over by the old one.
+    this.notRunning('renaming a conversation');
+    const open = this.conversation;
+    if (open?.id === id) {
+      // Its file is written from the open conversation, so that is where the name goes. One with nothing in it yet
+      // is saved, name and all, with its first message.
+      const before = { title: open.title, named: open.named };
+      open.title = title;
+      open.named = true;
+      const write = this.transcriptWrite();
+      if (write) {
+        try {
+          await this.queueFileChange(write);
+        } catch (e) {
+          // Not saved, so not named: the list and the file go on agreeing.
+          open.title = before.title;
+          if (before.named) open.named = true;
+          else delete open.named;
+          throw e;
+        }
+      }
+      return { id, title };
+    }
+    await this.queueFileChange(async () => {
+      if (this.deleted.has(id) || session.readOnly) throw new Error('Unknown conversation.');
+      const c = await this.readConversation(dir, id);
+      c.title = title;
+      c.named = true;
+      await this.writeConversation(dir, c);
+    });
+    // Opened while the name was being written: the open copy, which its next save writes, takes the name too.
+    if (this.conversation?.id === id) Object.assign(this.conversation, { title, named: true });
+    return { id, title };
+  }
+
+  /**
+   * Delete one conversation and nothing else: the site, its undo history and every other conversation stay. The
+   * open one can go only while no request runs in it, and a new conversation takes its place.
+   */
+  async deleteConversation(id: string): Promise<Conversation> {
+    const session = this.deps.session();
+    const dir = this.chatDir();
+    if (!session || !dir) throw new Error('No project open');
+    if (session.readOnly) throw new Error(session.readOnly.reason);
+    if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id)) throw new Error('Unknown conversation.');
+    this.notRunning('deleting a conversation');
+    const open = this.conversation?.id === id;
+    this.deleted.add(id);
+    // No request may start in the open conversation while it goes: it would add to a thread being removed.
+    if (open) this.clearing++;
+    try {
+      await this.queueFileChange(() => fs.rm(join(dir, `${id}.json`), { force: true }));
+    } finally {
+      if (open) this.clearing--;
+    }
+    this.sameSession(session);
+    if (this.conversation?.id === id) this.conversation = this.freshConversation();
+    return this.conversation ?? (await this.loadConversations()).active;
   }
 
   async clearHistory(): Promise<Conversation> {
@@ -525,9 +616,10 @@ export class Orchestrator {
     // No request may start while the files are going: it would add to a conversation that is being removed.
     this.clearing++;
     try {
-      // A finished request's transcript write would bring a cleared conversation back.
-      await this.saving;
-      if (dir) await fs.rm(dir, { recursive: true, force: true });
+      // After a finished request's transcript write (which would bring a cleared conversation back), and any
+      // rename or delete already asked for.
+      if (dir) await this.queueFileChange(() => fs.rm(dir, { recursive: true, force: true }));
+      else await this.saving;
     } finally {
       this.clearing--;
     }
@@ -552,15 +644,36 @@ export class Orchestrator {
     const conv = this.conversation;
     if (!dir || !conv || !conv.messages.length || !/^c_[a-z0-9]+$/.test(conv.id)) return null;
     const bytes = JSON.stringify(conv);
-    const target = join(dir, `${conv.id}.json`);
     return async () => {
-      // Checked again when the write's turn comes: the project may have been taken over meanwhile.
-      if (session.readOnly) return;
-      const tmp = `${target}.${newId('t')}.tmp`;
-      await fs.mkdir(dir, { recursive: true });
+      // Checked again when the write's turn comes: the project may have been taken over, or the conversation
+      // deleted, meanwhile.
+      if (session.readOnly || this.deleted.has(conv.id)) return;
+      await this.writeConversation(dir, conv, bytes);
+    };
+  }
+
+  /** Replace a conversation's file whole: written beside it, then moved over it, so a reader never sees half. */
+  private async writeConversation(dir: string, conv: Conversation, bytes = JSON.stringify(conv)) {
+    const target = join(dir, `${conv.id}.json`);
+    const tmp = `${target}.${newId('t')}.tmp`;
+    await fs.mkdir(dir, { recursive: true });
+    try {
       await fs.writeFile(tmp, bytes);
       await fs.rename(tmp, target);
-    };
+    } catch (e) {
+      await fs.rm(tmp, { force: true }).catch(() => undefined);
+      throw e;
+    }
+  }
+
+  /** Run a change to the stored conversations after every change already queued, and answer with its outcome. */
+  private queueFileChange<T>(change: () => Promise<T>): Promise<T> {
+    const done = this.saving.then(change);
+    this.saving = done.then(
+      () => undefined,
+      () => undefined
+    );
+    return done;
   }
 
   /** Save the transcript after any save already under way, so the newest bytes are always the last written. */
@@ -572,6 +685,7 @@ export class Orchestrator {
 
   reset() {
     this.conversation = null;
+    this.deleted = new Set();
     if (this.run) this.run.conversationId = '';
     // Another project never waits on this one's transcript write.
     this.saving = Promise.resolve();
@@ -670,7 +784,8 @@ export class Orchestrator {
     // A Create component request goes on building a component, however many times it is told to continue.
     const requestTask = prior?.context?.task === 'component' ? ('component' as const) : undefined;
     conv.messages.push(userMsg, assistant);
-    if (conv.title === 'New conversation') conv.title = text.trim().slice(0, 60);
+    // Named by its first request with words in it, unless the author has named it.
+    if (!conv.named && conv.title === NEW_CONVERSATION && text.trim()) conv.title = autoTitle(text);
     const active: ActiveRun = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended };
     this.run = active;
     this.deps.onBusyChange(true);
