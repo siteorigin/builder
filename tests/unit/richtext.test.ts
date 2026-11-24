@@ -165,6 +165,40 @@ describe('rich text input', () => {
     }
   });
 
+  it('reads a line ending in a backslash as a line break inside the block', () => {
+    expect(norm('Harbour Lane Studio\\\n12 Quay Street\\\nPort Town\n\nNext')).toEqual([p('Harbour Lane Studio\n12 Quay Street\nPort Town'), p('Next')]);
+    expect(norm('- One\\\n  more\n- Two')).toEqual([{ type: 'ul', items: [[{ text: 'One\nmore' }], [{ text: 'Two' }]] }]);
+    // Only an odd run of backslashes breaks the line: an even run is escaped backslashes.
+    expect(norm('C:\\\\\nNext')).toEqual([p('C:\\'), p('Next')]);
+    // A string never goes on into the next one, and old strings are read for their marks only.
+    expect(norm(['A\\', 'B'])).toEqual([p('A\n'), p('B')]);
+    expect(toRichText(['A\\', 'B'])).toEqual([p('A\\'), p('B')]);
+  });
+
+  it('keeps line breaks in structured blocks, without the spaces around them', () => {
+    expect(norm([{ type: 'p', spans: [{ text: 'a \r\n b' }, { text: ' bold \n', strong: true }, { text: 'c' }] }])).toEqual([p('a\nb ', { text: 'bold', strong: true }, '\nc')]);
+    expect(norm([{ type: 'p', spans: [{ text: '\nlead and trail\n\n' }] }])).toEqual([p('\nlead and trail\n\n')]);
+    // A block of breaks alone has nothing to show.
+    expect(norm([{ type: 'p', spans: [{ text: ' \n \n' }] }, { type: 'p', spans: [{ text: 'x' }] }])).toEqual([p('x')]);
+    // Every break counts toward the size limit.
+    expect(() => norm([{ type: 'p', spans: [{ text: 'a' + '\n'.repeat(20000) }] }])).toThrow(/too long/);
+  });
+
+  it('reads back line breaks from its own text form exactly', () => {
+    const value = norm([
+      { type: 'p', spans: [{ text: 'Harbour Lane Studio\n12 Quay Street' }] },
+      { type: 'p', spans: [{ text: 'ends with a backslash \\\nthen more' }] },
+      { type: 'p', spans: [{ text: 'Before ' }, { text: 'bold\nlink', strong: true, link: { type: 'page', target: about.id } }, { text: '\n- not a list' }] },
+      { type: 'p', spans: [{ text: '\nstarts and ends with a break\n\n' }] },
+      { type: 'h3', spans: [{ text: 'Two\nlines' }] },
+      { type: 'ul', items: [[{ text: 'Item\n### not a heading' }], [{ text: 'Last\n' }]] }
+    ]);
+    const text = richTextToMarkdown(value, s.pages);
+    expect(text).toContain('Harbour Lane Studio\\\n12 Quay Street');
+    expect(norm(text)).toEqual(value);
+    expect(norm(richTextToMarkdown(value, s.pages, 'ul'), 'ul')).toEqual(value);
+  });
+
   it('gives plain words and old-style paragraphs when that is all a place can hold', () => {
     const value = norm('A **b**\n- c\n- *d*');
     expect(richTextToPlain(value)).toBe('A b\n\nc\nd');
@@ -661,6 +695,25 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
     const back = blocksFromDom(edited(render(RichTextView, { props: { value: resolveRichText(value, { state }) } }).body), state.pages).blocks;
     const moved = applyOperations(state, [{ type: 'page.update', pageId: about.id, route: '/renamed/' }]).state;
     expect(resolveRichText(back, { state: moved })[0]).toEqual({ type: 'p', spans: [{ text: 'story', link: { href: '/renamed/' } }] });
+  });
+
+  it('renders a line break as <br> inside its block, and reads it back the same', () => {
+    const value = normalizeRichText(
+      [
+        { type: 'p', spans: [{ text: 'Harbour Lane Studio\n12 Quay Street\nPort Town' }] },
+        { type: 'p', spans: [{ text: 'A ' }, { text: 'bold\nbreak', strong: true, link: { type: 'url', target: 'https://example.com/' } }, { text: '\nB\n\n' }] },
+        { type: 'ul', items: [[{ text: '\nOne' }], [{ text: 'Two' }]] }
+      ],
+      s,
+      'Body'
+    );
+    const out = html(value).replace(/<!--[\s\S]*?-->/g, '');
+    expect(out).toContain('<p>Harbour Lane Studio<br/>12 Quay Street<br/>Port Town</p>');
+    expect(out).toContain('<strong>bold<br/>break</strong>');
+    expect(out).toContain('B<br/><br/></p>');
+    expect(out).toContain('<li><br/>One</li>');
+    expect(out.match(/<p>/g)).toHaveLength(2);
+    expect(roundTrip(value)).toEqual(value);
   });
 
   it('renders the older form code components may still pass, with the list as its root', () => {

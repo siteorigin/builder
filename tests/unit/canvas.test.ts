@@ -21,9 +21,28 @@ describe('rich text from the canvas', () => {
     expect(blocks([el('p', { tag: 'span', b: true, children: ['styled'] })])).toEqual([p({ text: 'styled', strong: true })]);
   });
 
-  it('splits blocks on block elements and line breaks, and drops empty ones', () => {
-    expect(blocks([el('p', 'One', el('br'), 'Two'), el('div', 'Three'), el('p', '  '), el('p', el('br'))])).toEqual([p('One'), p('Two'), p('Three')]);
+  it('splits blocks on block elements, and drops empty ones', () => {
+    expect(blocks([el('p', 'One'), el('div', 'Two'), el('p', '  '), el('p', el('br')), el('p', el('br'), el('br'))])).toEqual([p('One'), p('Two')]);
     expect(blocks(['Loose text'])).toEqual([p('Loose text')]);
+  });
+
+  it('keeps a line break (Shift+Enter) inside its paragraph or list item', () => {
+    // A three-line postal address is one paragraph, not three.
+    expect(blocks([el('p', 'Harbour Lane Studio', el('br'), '12 Quay Street', el('br'), 'Port Town')])).toEqual([p('Harbour Lane Studio\n12 Quay Street\nPort Town')]);
+    expect(blocks([el('ul', el('li', 'One', el('br'), 'more'), el('li', 'Two'))])).toEqual([{ type: 'ul', items: [[{ text: 'One\nmore' }], [{ text: 'Two' }]] }]);
+    // Each break the writer sees is kept, at either end too: the caret's own line after a break at the end, a
+    // blank line before the words.
+    expect(blocks([el('p', 'A', el('br'), el('br'), 'B')])).toEqual([p('A\n\nB')]);
+    expect(blocks([el('p', 'A', el('br'), el('br'))])).toEqual([p('A\n\n')]);
+    expect(blocks([el('p', el('br'), 'B')])).toEqual([p('\nB')]);
+    // Breaks go outside marks, as spaces do, and the spaces beside a break go.
+    expect(blocks([el('p', el('strong', 'Bold ', el('br')), ' next')])).toEqual([p({ text: 'Bold', strong: true }, '\nnext')]);
+    expect(blocks([el('p', el('strong', 'one', el('br'), 'two'))])).toEqual([p({ text: 'one\ntwo', strong: true })]);
+  });
+
+  it('reads a line feed in the text itself as a space, as the page shows it', () => {
+    // Pasted or source markup is wrapped with line feeds that a page collapses; only <br> breaks a line.
+    expect(blocks(['\n', el('p', 'One\n  Two\r\nThree'), '\n'])).toEqual([p('One Two Three')]);
   });
 
   it('moves spaces outside marks, merges neighbours and collapses whitespace', () => {

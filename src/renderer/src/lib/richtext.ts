@@ -56,12 +56,18 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks:
   };
   const walk = (n: RichDomNode, marks: Omit<RichSpan, 'text'>) => {
     if (typeof n === 'string') {
-      // Browsers type non-breaking spaces into editable text wherever a plain space would collapse.
-      run.push({ text: n.replace(/\u00a0/g, ' '), ...marks });
+      // Whitespace in the text itself (a line feed in pasted or source markup) collapses, as the page shows it: only
+      // a <br> is a line break. Browsers type non-breaking spaces into editable text wherever a plain space would
+      // collapse.
+      run.push({ text: n.replace(/[ \t\r\n\f]+/g, ' ').replace(/\u00a0/g, ' '), ...marks });
       return;
     }
     const tag = n.tag.toLowerCase();
-    if (tag === 'br') return flush();
+    // A line break inside the block (Shift+Enter), not a new paragraph.
+    if (tag === 'br') {
+      run.push({ text: '\n', ...marks });
+      return;
+    }
     const inner = { ...marks };
     const strong = tag === 'strong' || tag === 'b' ? true : (n.b ?? marks.strong);
     const em = tag === 'em' || tag === 'i' ? true : (n.i ?? marks.em);

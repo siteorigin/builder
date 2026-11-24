@@ -1,5 +1,5 @@
 import type { ChoiceOption, ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
-import { cleanBlocks, isListBlock, isRichBlock, linkFromTarget, mergeLists, parseRichText, richTextToPlain } from '@shared/richtext';
+import { cleanBlocks, isListBlock, isRichBlock, linkFromTarget, mergeLists, parseRichText } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -118,7 +118,9 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     });
   else fail(`${label}: expected text, paragraphs or rich text blocks.`);
   const out = mergeLists(cleanBlocks(blocks!));
-  if (out.length > MAX_RICH_BLOCKS || richTextToPlain(out).replace(/\n/g, '').length > MAX_RICH_CHARS) fail(`${label}: text is too long.`);
+  // Every character counts, the line breaks inside a block included; the gaps between blocks do not.
+  const chars = out.reduce((n, b) => n + (isListBlock(b) ? b.items.flat() : b.spans).reduce((m, sp) => m + sp.text.length, 0), 0);
+  if (out.length > MAX_RICH_BLOCKS || chars > MAX_RICH_CHARS) fail(`${label}: text is too long.`);
   return out;
 }
 

@@ -53,39 +53,47 @@ function span(text: string, from: Partial<RichSpan> = {}): RichSpan {
 }
 
 /**
- * One canonical run of spans: whitespace collapsed the way a page shows it, spaces moved outside marks and links,
- * neighbours with the same marks merged, and nothing empty. Equal content always has equal spans.
+ * One canonical run of spans: whitespace collapsed the way a page shows it, spaces and line breaks moved outside
+ * marks and links, neighbours with the same marks merged, and nothing empty. Equal content always has equal spans.
+ *
+ * A line feed is a line break inside the block (Shift+Enter; `<br>` on the page). Breaks are kept where they are,
+ * at the start and end of a block too, so the page shows exactly the lines the writer typed; spaces next to one are
+ * dropped, as a page drops them. A run with no words, only spaces and breaks, is empty.
  */
 export function cleanSpans(spans: RichSpan[]): RichSpan[] {
-  const parts: RichSpan[] = [];
+  const mergeInto = (out: RichSpan[], p: RichSpan) => {
+    const last = out[out.length - 1];
+    if (last && sameMarks(last, p)) last.text += p.text;
+    else out.push(span(p.text, p));
+  };
+  // Neighbours with the same marks first, so a break typed inside bold words (`<strong>a<br>b</strong>`) stays in them.
+  const runs: RichSpan[] = [];
   for (const s of spans) {
     if (!s || typeof s !== 'object') continue;
     // Only what HTML itself collapses: a non-breaking space ("10 kg") is deliberate.
-    const text = String(s.text ?? '').replace(/[ \t\r\n\f]+/g, ' ');
-    if (!text) continue;
-    if (!s.strong && !s.em && !s.link) {
-      parts.push({ text });
-      continue;
-    }
-    const core = text.replace(/^ +| +$/g, '');
-    if (!core) {
-      parts.push({ text: ' ' });
-      continue;
-    }
-    if (text.startsWith(' ')) parts.push({ text: ' ' });
-    parts.push(span(core, s));
-    if (text.endsWith(' ')) parts.push({ text: ' ' });
+    const text = String(s.text ?? '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/[ \t\f]+/g, ' ');
+    if (text) mergeInto(runs, { ...s, text });
   }
   const merged: RichSpan[] = [];
-  for (const p of parts) {
-    const last = merged[merged.length - 1];
-    if (last && sameMarks(last, p)) last.text += p.text;
-    else merged.push({ ...p });
+  for (const r of runs) {
+    if (!r.strong && !r.em && !r.link) {
+      mergeInto(merged, r);
+      continue;
+    }
+    const [, lead, core, trail] = /^([ \n]*)([\s\S]*?)([ \n]*)$/.exec(r.text)!;
+    if (lead) mergeInto(merged, { text: lead });
+    if (core) mergeInto(merged, span(core, r));
+    if (trail) mergeInto(merged, { text: trail });
   }
-  // A space is never doubled across a mark boundary, and a run neither starts nor ends with one.
+  if (!merged.some((s) => /[^ \n]/.test(s.text))) return [];
+  // A space is never doubled across a mark boundary or kept beside a break, and a run neither starts nor ends with one.
   for (let i = 0; i < merged.length; i++) {
-    merged[i].text = merged[i].text.replace(/ {2,}/g, ' ');
-    if (i > 0 && merged[i - 1].text.endsWith(' ')) merged[i].text = merged[i].text.replace(/^ /, '');
+    merged[i].text = merged[i].text.replace(/ {2,}/g, ' ').replace(/ ?\n ?/g, '\n');
+    if (i === 0) continue;
+    if (/[ \n]$/.test(merged[i - 1].text)) merged[i].text = merged[i].text.replace(/^ /, '');
+    if (merged[i].text.startsWith('\n')) merged[i - 1].text = merged[i - 1].text.replace(/ $/, '');
   }
   if (merged.length) merged[0].text = merged[0].text.replace(/^ /, '');
   if (merged.length) merged[merged.length - 1].text = merged[merged.length - 1].text.replace(/ $/, '');
@@ -266,18 +274,43 @@ function parseInline(text: string, marks: Partial<RichSpan>, opts: ParseOptions,
   return out;
 }
 
+// A marker is followed by spaces, never by a line break: a block that starts with a break keeps it.
 const LINE_MARKERS: Array<{ re: RegExp; type: RichBlock['type'] }> = [
-  { re: /^####\s+/, type: 'h4' },
-  { re: /^###\s+/, type: 'h3' },
-  { re: /^>\s?/, type: 'blockquote' },
-  { re: /^[-*+]\s+\[[ xX]\]\s+/, type: 'check' },
-  { re: /^[-*+]\s+/, type: 'ul' },
-  { re: /^\d+[.)]\s+/, type: 'ol' }
+  { re: /^####[ \t]+/, type: 'h4' },
+  { re: /^###[ \t]+/, type: 'h3' },
+  { re: /^>[ \t]?/, type: 'blockquote' },
+  { re: /^[-*+][ \t]+\[[ xX]\][ \t]+/, type: 'check' },
+  { re: /^[-*+][ \t]+/, type: 'ul' },
+  { re: /^\d+[.)][ \t]+/, type: 'ol' }
 ];
+
+/** A line ending in an odd run of backslashes (the last one not escaped) goes on in the next, after a line break. */
+const BREAK_AT_END = /(?:^|[^\\])(?:\\\\)*\\$/;
+
+/**
+ * The lines of one string. With `markdown`, a line ending in a backslash goes on in the next line of the same
+ * string, after a line break, as a Markdown hard break does; one block can hold several lines (an address).
+ */
+function textLines(input: string, markdown: boolean): string[] {
+  const out: string[] = [];
+  let open: string | null = null;
+  for (const raw of input.split(/\r?\n/)) {
+    const line = raw.trim();
+    const text: string = open === null ? line : `${open}\n${line}`;
+    if (markdown && BREAK_AT_END.test(line)) open = text.slice(0, -1);
+    else {
+      out.push(text);
+      open = null;
+    }
+  }
+  // A break at the very end: the line it starts is empty.
+  if (open !== null) out.push(`${open}\n`);
+  return out;
+}
 
 /** Text as blocks. One line is one block; neighbouring items of the same kind of list join one list. */
 export function parseRichText(input: string | string[], opts: ParseOptions = {}): RichText {
-  const lines = (Array.isArray(input) ? input : [input]).flatMap((s) => String(s).split(/\r?\n/)).map((l) => l.trim()).filter(Boolean);
+  const lines = (Array.isArray(input) ? input : [input]).flatMap((s) => textLines(String(s), !!opts.markdown)).filter(Boolean);
   const blocks: RichBlock[] = [];
   const addItem = (type: RichListType, spans: RichSpan[]) => {
     const last = blocks[blocks.length - 1];
@@ -347,8 +380,9 @@ export function richTextToPlain(blocks: RichText): string {
   return blocks.map((b) => (isListBlock(b) ? b.items.map(spansText).join('\n') : spansText(b.spans))).join('\n\n');
 }
 
+/** A line break inside a block ends its line with a backslash, and the block goes on in the next line. */
 function escapeInline(text: string): string {
-  return text.replace(/[\\*[\]]/g, '\\$&');
+  return text.replace(/[\\*[\]]/g, '\\$&').replace(/\n/g, '\\\n');
 }
 
 /** A line that would read as a block marker keeps its first character literal. */
