@@ -131,7 +131,7 @@ const FORMAT_REFUSED =
   /(?:unknown|unsupported|unrecognized|invalid|extra)[^.]*(?:response_format|json_schema)|(?:response_format|json_schema)[^.]*(?:not supported|unsupported|unknown|invalid|not permitted|failed)|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
 /** A refusal of the structured format itself, which no form of the schema would get past. */
 const FORMAT_TYPE_REFUSED =
-  /response_format[^.]*type[^.]*(?:not supported|unsupported|not permitted|unknown|invalid)|type[^.]*json_(?:schema|object)[^.]*(?:not supported|unsupported|not permitted)|(?:unsupported|unknown|unrecognized)[^.]*response_format/i;
+  /response_format[^.]*type[^.]*(?:not supported|unsupported|not permitted|unknown|invalid)|type[^.]*json_(?:schema|object)[^.]*(?:not supported|unsupported|not permitted)|(?:unsupported|unknown|unrecognized) (?:value for )?response_format\b/i;
 /** A reference the server could not follow: always about the schema, whatever else the message says. */
 const REFERENCE_REFUSED = /\$ref|\$defs|resolv\w* ref/i;
 /**
@@ -148,8 +148,20 @@ const SCHEMA_REFUSED =
  */
 function refusesSchema(text: string, param: string): boolean {
   if (param) return param.startsWith('response_format.json_schema');
+  // A request too long for the model is about its length, whatever it quotes.
+  if (CONTEXT_FULL.test(text)) return false;
   if (REFERENCE_REFUSED.test(text)) return true;
-  return !CONTEXT_FULL.test(text) && !FORMAT_TYPE_REFUSED.test(text) && SCHEMA_REFUSED.test(text);
+  return !FORMAT_TYPE_REFUSED.test(text) && SCHEMA_REFUSED.test(text);
+}
+
+/**
+ * Whether a refused request with the compact schema should go again with the full one, which is exactly what the
+ * adapter sent before compact schemas: any refusal but one of the request's length, of the format itself, or of
+ * another parameter the server names. A server's wording for what it cannot compile is not known in advance.
+ */
+function retriesFullSchema(text: string, param: string): boolean {
+  if (param) return param.startsWith('response_format.json_schema');
+  return !CONTEXT_FULL.test(text) && !FORMAT_TYPE_REFUSED.test(text);
 }
 
 const CONTEXT_FULL = /context (size|length|window)|exceeds? .*context|n_ctx|too many tokens|prompt is too long/i;
@@ -566,8 +578,8 @@ export class LocalAdapter implements AgentModelAdapter {
       return true;
     }
     if (!constrained || this.responseFormat === 'none') return false;
+    if (retriesFullSchema(text, param) && this.dropCompact(tools)) return true;
     const schemaRefused = this.responseFormat === 'json_schema' && refusesSchema(text, param);
-    if (schemaRefused && this.dropCompact(tools)) return true;
     if (schemaRefused || names('response_format', FORMAT_REFUSED)) {
       this.responseFormat = this.responseFormat === 'json_schema' ? 'json_object' : 'none';
       return true;

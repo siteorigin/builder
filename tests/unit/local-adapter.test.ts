@@ -901,13 +901,12 @@ describe('constrained JSON', () => {
     expect(posts()).toHaveLength(2);
   });
 
-  it('never steps down for a model whose name merely contains a word', async () => {
-    server.script({ status: 400, body: JSON.stringify({ error: { message: 'Invalid model name: schema-demo' } }) }, envelopeReply('read_page', { pageId: 'p' }));
-    const a = adapter();
-    expect(errorOf(await run(a)).code).toBe('invalid_request');
-    expect(posts()).toHaveLength(1);
-    await run(a);
-    expect(posts()[1].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS, { compact: true }));
+  it('tries the full schema once for a refusal it cannot place, then reports it without giving up the grammar', async () => {
+    const refusal = { status: 400, body: JSON.stringify({ error: { message: 'Invalid model name: schema-demo' } }) };
+    server.script(refusal, refusal);
+    expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    // The full schema is exactly what was sent before compact schemas; a model name is no reason to drop the grammar.
+    expect(posts().map((p) => p.body.response_format?.json_schema?.schema)).toEqual([envelopeSchema(TOOLS, { compact: true }), envelopeSchema(TOOLS)]);
   });
 
   it('still gives up the format when its refusal mentions the context window, as before', async () => {
@@ -929,9 +928,11 @@ describe('constrained JSON', () => {
   });
 
   it('keeps the grammar when a 400 merely mentions the word', async () => {
-    server.script({ status: 400, body: JSON.stringify({ error: { message: 'Unknown model grammar-demo' } }) });
+    const refusal = { status: 400, body: JSON.stringify({ error: { message: 'Unknown model grammar-demo' } }) };
+    server.script(refusal, refusal);
     expect(errorOf(await run(adapter())).code).toBe('invalid_request');
-    expect(posts()).toHaveLength(1);
+    // One try with the full schema (what was sent before compact schemas), never without the grammar.
+    expect(posts().map((p) => p.body.response_format?.type)).toEqual(['json_schema', 'json_schema']);
   });
 
   it('does not strip text that merely mentions a think tag inside the JSON', () => {
@@ -1332,6 +1333,25 @@ describe('compact schemas on the wire (#364)', () => {
     // The same adapter still sends the compact form.
     await run(a, { tools: SHARED });
     expect(posts().map((_, i) => !!schemaAt(i).$defs)).toEqual([true, true, true]);
+  });
+
+  it.each([
+    ['a validation wording', { error: { message: 'JSON schema validation failed: definitions must be inline' } }],
+    ['a keyword named beside the format', { error: { message: 'Unsupported JSON schema keyword in response_format: definitions' } }],
+    ['wording nothing here knows', { error: { message: 'Bad request' } }]
+  ])('gives the full schema a try for %s', async (_case, refusal) => {
+    server.script({ status: 400, body: JSON.stringify(refusal) }, envelopeReply('set_logo', logo));
+    expect(doneOf(await run(adapter(), { tools: SHARED })).toolCalls[0].name).toBe('set_logo');
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED));
+  });
+
+  it('shortens the reply, keeping the compact schema, when a context error happens to quote a reference', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { code: 400, message: 'Context length exceeded. Prompt contains $ref.', type: 'exceed_context_size_error', n_ctx: 4096, n_prompt_tokens: 2800 } }) }, envelopeReply('set_logo', logo));
+    expect(doneOf(await run(adapter(), { tools: SHARED, maxOutputTokens: 2048 })).toolCalls[0].name).toBe('set_logo');
+    expect(posts().map((p) => [p.body.max_tokens, !!schemaAt(posts().indexOf(p)).$defs])).toEqual([
+      [2048, true],
+      [1296, true]
+    ]);
   });
 
   it.each([400, 422])('steps on to JSON mode when the full schema is refused the same way (%i)', async (status) => {

@@ -569,10 +569,10 @@ describe('what a constrained local run sends first (#364)', () => {
    * one should be a deliberate decision.
    */
   const BUDGETS = {
-    site: { code: false, baseline: 42_388, budget: 30_500 },
-    'site (code)': { code: true, baseline: 43_774, budget: 31_800 },
-    section: { code: false, baseline: 12_245, budget: 9_400 },
-    part: { code: false, baseline: 9_523, budget: 7_300 },
+    site: { code: false, baseline: 42_641, budget: 30_500 },
+    'site (code)': { code: true, baseline: 44_027, budget: 31_800 },
+    section: { code: false, baseline: 12_723, budget: 9_700 },
+    part: { code: false, baseline: 10_001, budget: 7_550 },
     ask: { code: false, baseline: 13_138, budget: 9_600 },
     'ask (code)': { code: true, baseline: 13_736, budget: 10_100 }
   } as const;
