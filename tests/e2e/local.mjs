@@ -81,7 +81,19 @@ try {
   await win.locator('.toast', { hasText: 'Connected. second-model is available.' }).waitFor({ timeout: 15000 });
   assert.ok(gets().length > asked, 'the test asked the server for its models');
   assert.equal(posts().length, 0, 'nothing is generated before a chat');
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+
+  step('a cloud key pasted into the Local key field is refused, and never sent');
+  const keyField = dialog.locator('#settings-api-key');
+  const cloudKey = 'sk-ant-api03-NotARealKey_0123456789';
+  await keyField.fill(cloudKey);
+  await dialog.locator('.field-error', { hasText: 'This looks like an Anthropic API key' }).waitFor();
+  assert.equal(await dialog.getByRole('button', { name: 'Save', exact: true }).isEnabled(), false, 'the key cannot be saved');
+  await dialog.getByRole('button', { name: 'Test this key' }).click();
+  await win.locator('.toast.error', { hasText: 'This looks like an Anthropic API key' }).waitFor({ timeout: 15000 });
+  assert.ok(!JSON.stringify(server.requests.map((r) => r.headers)).includes(cloudKey), 'the server never saw the key');
+  assert.equal((await win.evaluate(() => window.builder.ai.providers())).find((p) => p.id === 'local').source, null, 'no key was saved');
+  await keyField.fill('');
+  await dialog.locator('button.btn', { hasText: /^Close$/ }).click();
   await dialog.waitFor({ state: 'detached' });
 
   step('a chat edit through the local model');
