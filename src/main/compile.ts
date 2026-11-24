@@ -26,11 +26,12 @@ export async function compileProject(state: ProjectState): Promise<Diagnostic[]>
 }
 
 /**
- * What identifies a compile error across edits: its file, the compiler's reason and the source line or lines it is on
- * (with their spacing evened out), never its line or column number, which move when anything above it changes, nor the
- * component's name, which a rename changes. The same reason on another construct is a different error.
+ * What identifies a compile error across edits: its file, the compiler's reason and the source it is on with a line of
+ * context either side (spacing evened out), never its line or column number, which move when anything above it changes,
+ * nor the component's name, which a rename changes. The same reason on another construct is a different error, even
+ * where the construct's own line reads the same (a closing tag in another row).
  */
 function compileSite(path: string, source: string, err: { code?: string; start?: { line: number }; end?: { line?: number } }, reason: string): string {
-  const lines = err.start ? source.split('\n').slice(err.start.line - 1, Math.max(err.start.line, err.end?.line ?? err.start.line)) : [];
+  const lines = err.start ? source.split('\n').slice(Math.max(0, err.start.line - 2), Math.max(err.start.line, err.end?.line ?? err.start.line) + 1) : [];
   return JSON.stringify([path, err.code ?? reason, lines.join(' ').replace(/\s+/g, ' ').trim().slice(0, 300)]);
 }

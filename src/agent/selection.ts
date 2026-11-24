@@ -222,7 +222,8 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   if (!r || !Object.keys(r.properties).length) return null;
   const tools: ToolDefinition[] = [];
   // A selected part offers only what it shows; its placement's variants change the whole section.
-  const reach = selectedPartReach(r, target);
+  // Widened, the run may change the whole placement: every part and property is offered again.
+  const reach = opts.widened ? null : selectedPartReach(r, target);
   // A placement property shown in a repeated part shows in every item, not only the selected one.
   const placementWide = (k: string) => !!reach && reach.props.has(k) && !(target.itemId !== undefined && reach.repeated);
   const shown = reach ? Object.fromEntries(Object.entries(r.properties).filter(([k]) => placementWide(k))) : r.properties;

@@ -75,20 +75,27 @@ export function partReach(def: ComponentDefinition, regionNodeId: string): PartR
   // Whether every use of a property, or of an item field of a list, is inside the part.
   const only = new Map<string, boolean>();
   const fields = new Map<string, Map<string, boolean>>();
-  // A list repeated inside another repeat shows the same items in every outer item: one of its items is not one place.
-  const insideAnotherRepeat = (id: string) => {
-    let at: string | null | undefined = id;
-    let repeats = 0;
-    for (let guard = 0; at && guard < 50; guard++) {
-      if (tree?.nodes[at]?.kind === 'repeat' && ++repeats > 1) return true;
-      at = tree ? findParent(tree, at)?.parentId : null;
+  /** A node's ancestors in the definition, nearest first. */
+  const ancestors = (id: string): string[] => {
+    const out: string[] = [];
+    let at = tree ? findParent(tree, id)?.parentId : null;
+    // Never longer than the tree, however deep it nests.
+    for (let guard = 0; at && tree && guard <= Object.keys(tree.nodes).length; guard++) {
+      out.push(at);
+      at = findParent(tree, at)?.parentId;
     }
-    return false;
+    return out;
   };
+  // A list repeated inside another repeat shows the same items in every outer item: one of its items is not one place.
+  const insideAnotherRepeat = (id: string) => [id, ...ancestors(id)].filter((a) => tree?.nodes[a]?.kind === 'repeat').length > 1;
+  const around = new Set(nodes.size ? ancestors(regionNodeId) : []);
+  /** Where each property is used, by node: a list's items change wherever the list is used, not only where it repeats. */
+  const propSites = new Map<string, string[]>();
   for (const site of bindingSites(def)) {
     const inside = nodes.has(site.node.id);
     if ('$prop' in site.binding) {
       only.set(site.binding.$prop, (only.get(site.binding.$prop) ?? true) && inside);
+      propSites.set(site.binding.$prop, [...(propSites.get(site.binding.$prop) ?? []), site.node.id]);
       continue;
     }
     const list = enclosingRepeatProp(def, site.node.id);
@@ -99,15 +106,23 @@ export function partReach(def: ComponentDefinition, regionNodeId: string): PartR
   }
   const itemFields = new Map<string, Set<string>>();
   for (const [list, uses] of fields) {
+    // An item of a list also passed on or shown elsewhere (another component given the same list) changes there too.
+    if ((propSites.get(list) ?? []).some((id) => !nodes.has(id) && !(around.has(id) && tree?.nodes[id]?.kind === 'repeat'))) continue;
     const own = new Set([...uses].filter(([, inside]) => inside).map(([f]) => f));
     // A visible text that carries its link along when it changes (an email and its mailto) is inside only with the link.
     for (const { text, link } of itemLinkPairs(def, list)) if (own.has(text) && !own.has(link)) own.delete(text);
+    // A page card's link also decides the title, text and picture its empty fields show from the linked page.
+    const schema = def.properties[list];
+    const teaser = schema?.type === 'list' ? schema.pageTeaser : undefined;
+    if (teaser && own.has(teaser.link) && [teaser.title, teaser.description, teaser.image].some((f) => f && uses.has(f) && !own.has(f))) own.delete(teaser.link);
     if (own.size) itemFields.set(list, own);
   }
+  // A slot placeholder shown twice (in a duplicated container, say) shows its content in both: only one inside is the part's.
+  const placeholders = (name: string) => Object.values(tree?.nodes ?? {}).filter((n) => n.kind === 'slot' && n.slot === name).map((n) => n.id);
   const slots = new Set<string>();
   for (const id of nodes) {
     const n = tree!.nodes[id];
-    if (n?.kind === 'slot') slots.add(n.slot);
+    if (n?.kind === 'slot' && placeholders(n.slot).every((p) => nodes.has(p))) slots.add(n.slot);
   }
   return { props: new Set([...only].filter(([, inside]) => inside).map(([p]) => p)), itemFields, nodes, repeated: nodes.size > 0 && !!enclosingRepeatProp(def, regionNodeId), slots };
 }
@@ -189,7 +204,8 @@ function slotContent(state: ProjectState, owner: OwnerRef, sel: NonNullable<Retu
 
 /** Whether a destination is inside a selected part: content in a slot it renders, or that slot of the placement itself. */
 function inPartSlot(parentId: string | null | undefined, slot: string | undefined, sel: NonNullable<ReturnType<typeof selectedPart>>, placed: Set<string>): boolean {
-  if (!parentId) return false;
+  // A slot inside a repeated part shows the same content in every item: not one selected item's.
+  if (!parentId || (sel.part.itemId !== undefined && sel.reach.repeated)) return false;
   if (parentId === sel.inst.id) return slot !== undefined && sel.reach.slots.has(slot);
   return placed.has(parentId);
 }

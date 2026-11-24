@@ -2344,6 +2344,11 @@ describe('repair baseline identity (#132)', () => {
     expect(first).toBeDefined();
     expect(await compileKeys('\n\n    <div id="a" id="a"></div>\n')).toEqual([first]);
     expect(await compileKeys('<nav id="a" id="a"></nav>\n')).not.toEqual([first]);
+    // The same faulty line in another row is another error.
+    const [rowA] = await compileKeys('<h2>Alpha</h2>\n<div id="a" id="a"></div>\n<h2>Beta</h2>\n<div></div>\n');
+    const [rowB] = await compileKeys('<h2>Alpha</h2>\n<div></div>\n<h2>Beta</h2>\n<div id="a" id="a"></div>\n');
+    expect(rowA).toBeDefined();
+    expect(rowB).not.toBe(rowA);
   });
 
   it('tells apart the same broken section link in two cards of one placement', () => {
@@ -2364,6 +2369,24 @@ describe('repair baseline identity (#132)', () => {
       keys(applyOperations(s0, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'pricing.plans', newNodeId: 'n_plans', props: { plans: [{ id: 'i_0', name: 'Plan', price: '$1', actionLabel: 'Details', actionLink: { type: 'page', target: pageId, anchor: 'missing' } }] } }]).state);
     expect(toPage(about)).toHaveLength(1);
     expect(toPage(contact)[0]).not.toBe(toPage(about)[0]);
+  });
+
+  it('keeps a broken link the same when another link is added before it in the text, or one of its pages gains the section', () => {
+    const s0 = createStarterState('business', 'Test', false);
+    const home = s0.site.homePageId;
+    const keys = (s: ProjectState) => validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map(diagnosticKey);
+    const withText = (body: string) => applyOperations(s0, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'content.text', newNodeId: 'n_text', props: { body } }]).state;
+    const alone = keys(withText('Read [the plan](#missing) first.'));
+    expect(alone).toHaveLength(1);
+    expect(keys(withText('See [the about page](/about/) and read [the plan](#missing) first.'))).toEqual(alone);
+    // A header link to a section most pages lack: giving one page that section leaves it the same broken link.
+    const header = s0.site.shell.header.rootIds[0];
+    const linked = applyOperations(s0, [{ type: 'instance.listInsert', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'links', item: { label: 'Plans', link: '#plans' } }]).state;
+    const before = keys(linked);
+    expect(before).toHaveLength(1);
+    const section = linked.pages[home].rootIds[0];
+    const fixedOne = applyOperations(linked, [{ type: 'node.setContent', owner: { kind: 'page', id: home }, nodeId: section, field: 'anchor', value: 'plans' }]).state;
+    expect(keys(fixedOne)).toEqual(before);
   });
 });
 
@@ -2441,6 +2464,8 @@ describe('part scope rules (#132)', () => {
     const edit: EditOperation = { type: 'node.setContent', owner, nodeId: 'n_extra', field: 'text', value: 'Changed' };
     expect(checkAuthority(state, [edit], partOf(owner, nodeId, 'card', { partId: 'card', itemPath: [item] }))).toMatch(/outside the selected part/);
     expect(checkAuthority(state, [edit], partOf(owner, nodeId, 'card', { partId: 'card' }))).toBeNull();
+    // Adding to that slot adds to every card too.
+    expect(checkAuthority(state, [{ type: 'node.insert', owner, parentId: nodeId, slot: 'extra', primitive: 'paragraph', text: 'More' }], partOf(owner, nodeId, 'card', { partId: 'card', itemPath: [item] }))).toMatch(/outside the selected part/);
     // A list repeated inside each card shows the same items in every card.
     const nested = structuredClone(state.components[id]);
     nested.tree!.nodes['inner-repeat'] = { id: 'inner-repeat', kind: 'repeat', list: { $prop: 'details' }, children: ['inner-text'] } as never;
@@ -2448,6 +2473,23 @@ describe('part scope rules (#132)', () => {
     (nested.tree!.nodes.card as { children: string[] }).children.push('inner-repeat');
     expect(partReach(nested, 'inner-text').itemFields.get('details')).toBeUndefined();
     expect(partReach(nested, 'card').itemFields.get('items')).toBeDefined();
+    // However many containers lie between the two repeats.
+    const deep = structuredClone(nested);
+    let parent = 'card';
+    for (let i = 0; i < 60; i++) {
+      deep.tree!.nodes[`wrap-${i}`] = { id: `wrap-${i}`, kind: 'element', tag: 'div', children: [] } as never;
+      (deep.tree!.nodes[parent] as { children: string[] }).children.push(`wrap-${i}`);
+      parent = `wrap-${i}`;
+    }
+    (deep.tree!.nodes.card as { children: string[] }).children = (deep.tree!.nodes.card as { children: string[] }).children.filter((c) => c !== 'inner-repeat');
+    (deep.tree!.nodes[parent] as { children: string[] }).children.push('inner-repeat');
+    expect(partReach(deep, 'inner-text').itemFields.get('details')).toBeUndefined();
+    // A list also passed to another component outside the part changes there too.
+    const forwarded = structuredClone(state.components[id]);
+    forwarded.tree!.nodes['echo'] = { id: 'echo', kind: 'instance', definitionId: def.id, props: { items: { $prop: 'items' } } } as never;
+    forwarded.tree!.rootIds.push('echo');
+    expect(partReach(forwarded, 'card-title').itemFields.get('items')).toBeUndefined();
+    expect(partReach(state.components[id], 'card-title').itemFields.get('items')).toBeDefined();
   });
 
   it('lets a container part change the content placed in its slot, and nothing else (#132)', () => {
@@ -2457,6 +2499,13 @@ describe('part scope rules (#132)', () => {
     const paragraph = (results[0] as { nodeId: string }).nodeId;
     const authority = partOf(owner, nodeId, 'inner', { partId: 'container' });
     expect(checkAuthority(state, [{ type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Changed' }], authority)).toBeNull();
+    // A second placeholder for the same slot outside the part shows the same content there.
+    const def = state.components[(state.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId];
+    const twice = structuredClone(def);
+    twice.tree!.nodes['again'] = { id: 'again', kind: 'slot', slot: 'content' } as never;
+    twice.tree!.rootIds.push('again');
+    expect(partReach(twice, 'inner').slots.has('content')).toBe(false);
+    expect(partReach(def, 'inner').slots.has('content')).toBe(true);
     expect(checkAuthority(state, [{ type: 'node.insert', owner, parentId: nodeId, slot: 'content', primitive: 'paragraph', text: 'More' }], authority)).toBeNull();
     expect(checkAuthority(state, [{ type: 'node.setStyle', owner, nodeId, partId: 'root', scope: 'base', property: 'background', value: '#000000' }], authority)).toMatch(/other than the selected one/);
     // A contract edit reaches every placement, more than the part.

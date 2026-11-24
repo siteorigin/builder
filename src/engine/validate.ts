@@ -339,7 +339,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       ? `${where}: ${what} goes to #${i.fragment} on ${state.pages[i.pageId].title}, but that page has no section with that ID. ${fix}`
       : `${where}: ${what} goes to #${i.fragment}, but ${listed((i.pages ?? []).map((id) => state.pages[id].title))} ${(i.pages ?? []).length > 1 ? 'have' : 'has'} no section with that ID. ${fix}`;
     // Which link it is, where one placement shows several with the same text (one per card, say).
-    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId, site: JSON.stringify([i.nodeId ?? null, i.key, i.pageId ?? null, i.fragment, [...(i.pages ?? [])].sort()]) });
+    // Which link it is, and where it goes: a link in text by its text, since another link added before it renumbers it. The
+    // pages missing the section are left out, so fixing one of them never makes the link look newly broken.
+    const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
+    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
   // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
   // ones), and the pictures of a project component, which can only show images.

@@ -2121,8 +2121,9 @@ describe('a selected card styles itself until the user widens the run (#132)', (
           return [call('s2', 'request_wider_scope', { question: 'Style every card?' })];
         },
         (req) => {
-          // Widened, a small model keeps the style tool for the selected element.
-          expect(req.tools.map((t) => t.name)).toContain('style_selected_element');
+          // Widened, a small model keeps the style tool for the selected element, for every part of it again.
+          const style = req.tools.find((t) => t.name === 'style_selected_element');
+          expect((style?.parameters as { properties: { partId: { enum: string[] } } }).properties.partId.enum).toEqual(expect.arrayContaining(['root', 'card', 'heading']));
           return [call('s3', 'style_selected_element', { scope: 'base', styles: [{ property: 'radius', value: '0px' }] })];
         },
         () => finish('Styled the cards.')
@@ -2139,5 +2140,17 @@ describe('a selected card styles itself until the user widens the run (#132)', (
     expect(afterFirst).toEqual({ overrides: before, items: { card: { list: 'items', items: { [poetry]: { base: { background: '#dbeeff' } } } } } });
     expect(lastResult(adapter.requests[3]).ok).toBe(true);
     expect(grid(session.state).overrides?.card?.base).toMatchObject({ radius: '0px' });
+  });
+});
+
+describe('rich text links read and written whole (#132)', () => {
+  it('writes back a link whose address has spaces as the same link', async () => {
+    const { normalizeRichText } = await import('@engine/values');
+    const { richTextToMarkdown } = await import('@shared/richtext');
+    const s = createStarterState('business', 'Test', false);
+    const blocks = normalizeRichText([{ type: 'p', spans: [{ text: 'Call ' }, { text: 'the studio', link: { type: 'tel', target: '+1 555 0100' } }, { text: ' today.' }] }], s, 'Text');
+    const text = richTextToMarkdown(blocks, s.pages);
+    expect(text).toContain('<tel:+1 555 0100>');
+    expect(normalizeRichText(text, s, 'Text')).toEqual(blocks);
   });
 });
