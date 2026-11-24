@@ -9,6 +9,7 @@
 import type {
   Binding,
   ComponentDefinition,
+  ElementNode,
   GraphNode,
   ImageValue,
   InstanceNode,
@@ -28,14 +29,14 @@ import { ELEMENT_TAGS, GENERATOR_VERSION, TEXT_TAGS, isBinding, isComparison, ty
 import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, linkOf, styleToCss, textLinkLeadsToText, textStyleValue, tokenVar } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
-import { DRAFTS_JS, IMAGE_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
+import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, validateRoute } from '@shared/routes';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { effectiveItem } from '@shared/page-teasers';
-import { brokenCardKeys, cardKey, isCardLink } from './card-links';
+import { actionWraps, brokenCardKeys, cardKey, isCardLink } from './card-links';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 
@@ -89,7 +90,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_id', 'so_eager', '__so', 'has', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'richParagraphs']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_id', 'so_eager', '__so', 'has', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'thumbnail']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
 const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_id', 'so_eager', '__so', 'children']);
 
@@ -600,6 +601,11 @@ interface EmitCtx {
   snippets?: number;
   /** Parent maps of the trees images are sized through, built once per emit. */
   sizingParents?: Map<NodeTree, Map<string, { id: string; slot?: string }>>;
+  /** The repeats currently open (outermost first), by node ID, beside `items`. */
+  repeats?: string[];
+  /** Whether the tree has an element with an action, and each node's parent, worked out once per file. */
+  actions?: boolean;
+  parents?: Map<string, string>;
 }
 
 function useImport(ctx: EmitCtx, name: string, path: string) {
@@ -834,6 +840,79 @@ function rendersAsCard(ctx: EmitCtx, node: GraphNode): boolean {
   ctx.brokenCards ??= brokenCardKeys(ctx.state);
   const owner = ctx.def ? { kind: 'component' as const, id: ctx.def.id } : { kind: ctx.ctxExpr.split(':')[0] as 'page' | 'shell', id: ctx.ctxExpr.split(':').slice(1).join(':') };
   return !ctx.brokenCards.has(cardKey({ owner, cardId: node.id }));
+}
+
+/** Whether an element carries an action (`ElementNode.action`), whatever it is set to. */
+function hasAction(node: GraphNode): node is GraphNode & { kind: 'element'; action: NonNullable<ElementNode['action']> } {
+  return node.kind === 'element' && node.action !== undefined && node.action !== null;
+}
+
+function actionExpr(ctx: EmitCtx, node: ElementNode): string {
+  return isBinding(node.action) ? bindExpr(ctx, node.action) : js(node.action ?? 'none');
+}
+
+/**
+ * The images an action element opens, in document order, each with the elements between them: its image descendants
+ * in the same scope (not inside a list or another component).
+ */
+function actionImages(ctx: EmitCtx, node: ElementNode): Array<{ image: GraphNode & { kind: 'image' }; between: GraphNode[] }> {
+  const out: Array<{ image: GraphNode & { kind: 'image' }; between: GraphNode[] }> = [];
+  // A hand-edited tree can list a node twice; each is walked once.
+  const seen = new Set<string>([node.id]);
+  const walk = (ids: string[], between: GraphNode[]) => {
+    for (const id of ids) {
+      const n = ctx.tree.nodes[id];
+      if (!n || seen.has(id)) continue;
+      seen.add(id);
+      if (n.kind === 'image') out.push({ image: n, between });
+      else if (n.kind === 'element') walk(n.children, [...between, n]);
+    }
+  };
+  walk(node.children, []);
+  return out;
+}
+
+/**
+ * The image an action element opens full size: the first of its images that shows a picture where it renders (its
+ * own conditions and those of the elements around it holding), with the words it is known by as `label`.
+ */
+function actionImage(ctx: EmitCtx, node: ElementNode): string {
+  const exprs = actionImages(ctx, node).map(({ image, between }) => {
+    let val = isBinding(image.image) ? bindExpr(ctx, image.image) : js(resolveImage(image.image, ctx.rctx));
+    // What the image stands for when it has no words of its own, as its thumbnail says.
+    if (image.fallbackAlt !== undefined) val = `(${val} ? { ...${val}, fallbackAlt: ${bindExpr(ctx, image.fallbackAlt)} } : null)`;
+    const conds = ctx.def ? [...between, image].map((n) => renderCondition(ctx, n, new Set())).filter((c): c is string => !!c) : [];
+    return conds.length ? `(${conds.join(' && ')} ? ${val} : null)` : val;
+  });
+  if (!exprs.length) return 'null';
+  return exprs.length === 1 ? exprs[0] : `[${exprs.join(', ')}].find((i) => i?.src) ?? null`;
+}
+
+/** The nearest element above an image (see `actionImages`) whose action may open it, or null. */
+function actionOwner(ctx: EmitCtx, nodeId: string): ElementNode | null {
+  ctx.actions ??= Object.values(ctx.tree.nodes).some(hasAction);
+  if (!ctx.actions) return null;
+  const parents = (ctx.parents ??= parentMap(ctx.tree));
+  const seen = new Set<string>([nodeId]);
+  for (let id = parents.get(nodeId); id && !seen.has(id); id = parents.get(id)) {
+    seen.add(id);
+    const n = ctx.tree.nodes[id];
+    if (!n || n.kind !== 'element') return null;
+    if (hasAction(n) && actionWraps(n) && (isBinding(n.action) || n.action === 'image')) return n;
+  }
+  return null;
+}
+
+/**
+ * Which images the viewer moves through together: one list's items in one placement (a gallery), or the element
+ * alone outside a list. Items of an outer list each make their own group.
+ */
+function actionGroup(ctx: EmitCtx, node: GraphNode): string {
+  if (!ctx.def) return js([ctx.ctxExpr, node.id]);
+  ctx.usesUid = true;
+  const repeat = ctx.repeats?.at(-1);
+  const parts = repeat ? [js(repeat), ...ctx.items.slice(0, -1).map((v) => `${v}.id`)] : [js(node.id)];
+  return `[uid, ${parts.join(', ')}]`;
 }
 
 function headingIdExpr(ctx: EmitCtx, heading: GraphNode): string {
@@ -1104,13 +1183,19 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
   const ids = idAttrs(ctx, node.id);
   switch (node.kind) {
     case 'element': {
+      const card = rendersAsCard(ctx, node);
+      // A working action wraps the element, which keeps its own tag, in the runtime helper's one link.
+      const acting = card && hasAction(node);
+      if (acting) ctx.indent++;
+      const q = pad(ctx);
       ctx.indent++;
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
       const label = elementLabelAttrs(ctx, node);
       const choices = tagChoices(ctx, node);
       const attrs = `class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${label}${ids}`;
-      if (rendersAsCard(ctx, node)) {
+      let markup: string;
+      if (card && !acting) {
         // One link around the whole card; the runtime helper renders the container's own tag without a destination.
         useImport(ctx, 'SoLink', `${RUNTIME_DIR}/Link.svelte`);
         const link = isBinding(node.link) ? bindExpr(ctx, node.link) : js(resolveLink(node.link as LinkValue, ctx.rctx));
@@ -1118,12 +1203,19 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
         const tag = choices.tags.length === 1 ? js(fallback) : `${js(choices.tags.slice(0, -1))}.includes(${choices.value}) ? ${choices.value} : ${js(fallback)}`;
         return `${p}<SoLink link={${link}} card={${tag}} ${attrs}>${children ? `\n${children}\n${p}` : ''}</SoLink>`;
       }
-      if (choices.tags.length === 1) return `${p}<${choices.tags[0]} ${attrs}>${children ? `\n${children}\n${p}` : ''}</${choices.tags[0]}>`;
-      // A bound tag renders the children once, from a snippet each possible tag renders.
-      ctx.snippets = (ctx.snippets ?? 0) + 1;
-      const snippet = `so_children_${ctx.snippets}`;
-      const body = children ? `${p}{#snippet ${snippet}()}\n${children}\n${p}{/snippet}\n` : '';
-      return body + perTag(ctx, choices, (tag) => `${pad(ctx)}<${tag} ${attrs}>${children ? `{@render ${snippet}()}` : ''}</${tag}>`);
+      if (choices.tags.length === 1) markup = `${q}<${choices.tags[0]} ${attrs}>${children ? `\n${children}\n${q}` : ''}</${choices.tags[0]}>`;
+      else {
+        // A bound tag renders the children once, from a snippet each possible tag renders.
+        ctx.snippets = (ctx.snippets ?? 0) + 1;
+        const snippet = `so_children_${ctx.snippets}`;
+        const body = children ? `${q}{#snippet ${snippet}()}\n${children}\n${q}{/snippet}\n` : '';
+        markup = body + perTag(ctx, choices, (tag) => `${pad(ctx)}<${tag} ${attrs}>${children ? `{@render ${snippet}()}` : ''}</${tag}>`);
+      }
+      if (!acting) return markup;
+      ctx.indent--;
+      useImport(ctx, 'SoAction', `${RUNTIME_DIR}/Action.svelte`);
+      const link = node.link === undefined || node.link === null ? 'null' : isBinding(node.link) ? bindExpr(ctx, node.link) : js(resolveLink(node.link as LinkValue, ctx.rctx));
+      return `${p}<SoAction mode={${actionExpr(ctx, node)}} link={${link}} image={${actionImage(ctx, node)}} group={${actionGroup(ctx, node)}}>\n${markup}\n${p}</SoAction>`;
     }
     case 'text': {
       if (node.rich) {
@@ -1141,7 +1233,18 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     }
     case 'image': {
       useImport(ctx, 'SoImage', `${RUNTIME_DIR}/Image.svelte`);
-      const val = isBinding(node.image) ? bindExpr(ctx, node.image) : js(resolveImage(node.image, ctx.rctx));
+      let val = isBinding(node.image) ? bindExpr(ctx, node.image) : js(resolveImage(node.image, ctx.rctx));
+      // A thumbnail that opens full size shows only the smaller copies, so the full-size file loads when it opens.
+      const owner = actionOwner(ctx, node.id);
+      if (owner && rendersAsCard(ctx, owner) && (isBinding(owner.action) || owner.action === 'image')) {
+        useImport(ctx, '{ thumbnail }', `${RUNTIME_DIR}/util.js`);
+        // Only the picture the viewer opens: beside others, the one that shows first (see `actionImage`).
+        const tests = [
+          ...(isBinding(owner.action) ? [`${actionExpr(ctx, owner)} === 'image'`] : []),
+          ...(actionImages(ctx, owner).length > 1 ? [`(${actionImage(ctx, owner)})?.src === (${val})?.src`] : [])
+        ];
+        val = tests.length ? `${tests.join(' && ')} ? thumbnail(${val}) : ${val}` : `thumbnail(${val})`;
+      }
       // The first section's images (outside lists) are usually the largest content: load them eagerly.
       const eager = ctx.def ? (ctx.items.length ? '' : ' eager={so_eager}') : ctx.firstSection ? ' eager' : '';
       const sizes = imageSizes(ctx, node);
@@ -1167,11 +1270,13 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const list = bindExpr(ctx, node.list);
       const listSchema = bindingSchema(ctx, node.list);
       ctx.items.push(v);
+      ctx.repeats = [...(ctx.repeats ?? []), node.id];
       ctx.lists = [...(ctx.lists ?? []), ...(listSchema ? [listSchema] : [])];
       ctx.indent++;
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
       ctx.items.pop();
+      ctx.repeats = ctx.repeats.slice(0, -1);
       if (listSchema) ctx.lists = ctx.lists.slice(0, -1);
       return `${p}{#each ${list} ?? [] as ${v} (${v}.id)}\n${children}\n${p}{/each}`;
     }
@@ -1764,6 +1869,7 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {})
   const theme = getTheme(state.site.themeId);
   files.set(`${RUNTIME_DIR}/Link.svelte`, linkSvelte(!!opts.instrument));
   files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
+  files.set(`${RUNTIME_DIR}/Action.svelte`, ACTION_SVELTE);
   files.set(`${RUNTIME_DIR}/RichText.svelte`, RICHTEXT_SVELTE);
   files.set(`${RUNTIME_DIR}/Icon.svelte`, iconSvelte());
   files.set(`${RUNTIME_DIR}/icons.js`, iconsJs(state));

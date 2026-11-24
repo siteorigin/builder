@@ -55,6 +55,38 @@ address, cite { font-style: normal; }
 :not(.so-btn) > .so-link__icon--end { margin-inline-start: 0.35em; }
 /* A whole card as one link: it keeps the card's own layout and colours (any rule on the card wins). */
 :where(.so-card-link) { display: block; color: inherit; text-decoration: none; }
+/* A thumbnail that opens full size (a gallery photo): a badge in its corner says so, on touch screens too. */
+.so-action--image { position: relative; cursor: zoom-in; }
+.so-action--image::after {
+  content: ''; position: absolute; inset-block-start: 0.6rem; inset-inline-end: 0.6rem; width: 2.25rem; height: 2.25rem; border-radius: 50%;
+  background: rgb(15 15 18 / 0.6) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7'/%3E%3C/svg%3E") center / 1.05rem no-repeat;
+  pointer-events: none; transition: background-color 160ms ease;
+}
+.so-action--image:hover::after { background-color: rgb(15 15 18 / 0.82); }
+
+/* The full-size image viewer: the whole screen, the image as large as it fits, and Close and the arrows in easy reach.
+   The page behind it does not scroll while it is open. */
+html:has(.so-viewer[open]) { overflow: hidden; }
+.so-viewer {
+  width: 100%; max-width: none; height: 100%; height: 100dvh; max-height: none; margin: 0; padding: 0.75rem;
+  border: 0; background: rgb(12 12 14 / 0.94); color: #f4f4f5; font-family: var(--so-font-body);
+}
+.so-viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 0.5rem; }
+.so-viewer::backdrop { background: rgb(0 0 0 / 0.5); }
+.so-viewer__close, .so-viewer__step {
+  display: grid; place-items: center; width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: 50%;
+  background: rgb(255 255 255 / 0.12); color: inherit; cursor: pointer;
+}
+.so-viewer__close { justify-self: end; }
+.so-viewer__close:hover, .so-viewer__step:hover { background: rgb(255 255 255 / 0.24); }
+.so-viewer svg { width: 1.4rem; height: 1.4rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.so-viewer :focus-visible { outline-color: #fff; }
+.so-viewer__figure { display: grid; grid-template-rows: minmax(0, 1fr) auto; place-items: center; gap: 0.75rem; min-height: 0; }
+.so-viewer__img { width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
+.so-viewer__caption { max-width: 60ch; max-height: 25vh; overflow-y: auto; text-align: center; font-size: 0.95rem; line-height: 1.5; color: rgb(244 244 245 / 0.86); }
+.so-viewer__nav { display: flex; align-items: center; justify-content: center; gap: 1.25rem; }
+.so-viewer__count { min-width: 4.5em; text-align: center; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+@media (min-width: 768px) { .so-viewer { padding: 1.5rem; } }
 
 .so-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 0.5em;
@@ -131,7 +163,8 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
      address it copies, stays), the skip link, the menu button and phone menu, and the contact form's actions and
      service messages. Components' own (scoped) styles show some of them, hence !important. */
   :is(button, input):is([type='submit'], [type='reset']), form button:not([type]),
-  .so-skip-link, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap { display: none !important; }
+  .so-skip-link, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap, .so-viewer { display: none !important; }
+  .so-action--image::after { display: none; }
   .so-header { position: static !important; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
      the section), stays with what follows it, and short units (a plan, a contact method, a question and its

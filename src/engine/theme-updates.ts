@@ -20,6 +20,7 @@ import { clone } from './install';
 import { EngineError, fail, instancesOf, subtreeIds } from './tree';
 import { codeNeeds, directDependencies } from './definitions';
 import { normalizeProp } from './values';
+import { cardKey, cardLinkProblems, type CardProblem } from '@generator/card-links';
 
 function own<T>(rec: Record<string, T>, key: string): T | undefined {
   return Object.hasOwn(rec, key) ? rec[key] : undefined;
@@ -130,6 +131,21 @@ function placementConflicts(state: ProjectState, def: ComponentDefinition, next:
   return [...out];
 }
 
+/** One card problem, as validation reports it: where, on which cards, and what sits inside them. */
+const problemKey = (p: CardProblem) => JSON.stringify([p.owner.kind, p.owner.id, p.nodeId, p.cards.map(cardKey).sort(), p.what]);
+
+/**
+ * Cards that link today but would not with `next` in place of `def`: a version that adds a link or control (a
+ * gallery photo that opens full size) to content placed inside a card makes that card render as its plain container,
+ * and validation would refuse the project. `before` is the problems already there, worked out once for all candidates.
+ */
+function cardsLostTo(state: ProjectState, def: ComponentDefinition, next: ComponentDefinition, before: () => Set<string>): string[] {
+  if (!instancesOf(state, def.id).length) return [];
+  const after = cardLinkProblems({ ...state, components: { ...state.components, [def.id]: next } });
+  const lost = after.filter((p) => !before().has(problemKey(p)));
+  return [...new Set(lost.map((p) => `${p.label}: this version can open an image or a link from inside a card that links there, and a link cannot sit inside another.`))];
+}
+
 /** Catalogue definitions never change while the app runs, and this is asked on every project update. */
 const catalogueHashes = new WeakMap<ComponentDefinition, string>();
 function catalogueHash(def: ComponentDefinition): string {
@@ -148,6 +164,8 @@ export function themeUpdates(state: ProjectState): ThemeUpdates {
   });
   if (!outdated.length) return out;
   const pinned = pinnedByProject(state);
+  let broken: Set<string> | undefined;
+  const brokenNow = () => (broken ??= new Set(cardLinkProblems(state).map(problemKey)));
   const nestedInTheme = new Set(Object.values(state.components).filter((d) => d.owner === 'theme').flatMap((d) => dependenciesOf(state, d)));
   for (const def of outdated) {
     const next = catalogue.get(def.id)!;
@@ -166,6 +184,7 @@ export function themeUpdates(state: ProjectState): ThemeUpdates {
       continue;
     }
     const conflicts = [...contractConflicts(state, def, next), ...placementConflicts(state, def, next)];
+    if (!conflicts.length) conflicts.push(...cardsLostTo(state, def, next, brokenNow));
     if (conflicts.length) {
       keep(conflicts.join(' '));
       continue;

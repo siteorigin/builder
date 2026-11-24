@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { compile } from 'svelte/compiler';
 import { render } from 'svelte/server';
 import type { Component } from 'svelte';
-import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
+import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
@@ -17,6 +17,8 @@ import { generateProject } from '@generator/index';
 import { usedIcons } from '@generator/runtime-files';
 import { P, eq, item, managed, ne, prop, type ComponentSpec } from '@catalogue/dsl';
 import { nodeClass } from '@generator/index';
+import { isCardLink } from '@generator/card-links';
+import { validateOperation } from '@shared/ops';
 import { axesOf } from '@shared/variants';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -66,12 +68,21 @@ async function renderHome(s: ProjectState): Promise<string> {
   roots.push(dir);
   const paths = join(dir, 'app-paths.js');
   writeFileSync(paths, 'export const resolve = (p) => "/studio" + p; export const asset = (p) => "/studio/" + p; export const base = "/studio";\n');
+  // Navigation callbacks never run while rendering on the server.
+  const navigation = join(dir, 'app-navigation.js');
+  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};\n');
   for (const [path, source] of generateProject(s)) {
     if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
     const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
     mkdirSync(dirname(out), { recursive: true });
     const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
-    writeFileSync(out, code.replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1').replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths)));
+    writeFileSync(
+      out,
+      code
+        .replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1')
+        .replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths))
+        .replace(/(["'])\$app\/navigation\1/g, JSON.stringify(navigation))
+    );
   }
   const Page = (await import(/* @vite-ignore */ join(dir, 'src/routes/+page.svelte.js'))).default as Component<Record<string, unknown>>;
   return render(Page, { props: {} }).body.replace(/<!--[\s\S]*?-->/g, '');
@@ -710,5 +721,253 @@ describe('bindings outside a component (#90)', () => {
     page.rootIds.push('n_named');
     expect(compileErrors(s)).toEqual([]);
     expect(await renderHome(s)).toMatch(/<a href="https:\/\/example\.com\/named"[^>]*>Named<\/a>/);
+  });
+});
+
+describe('gallery items that open a full image or a link (#75)', () => {
+  const aboutOf = (s: ProjectState) => Object.values(s.pages).find((p) => p.route === '/about/')!.id;
+  /** A photo with smaller copies, as the media library keeps one (in the order given, when `widths` is). */
+  function photo(s: ProjectState, id: string, width = 1536, widths = [480, 960, 1440]) {
+    s.assets.assets[id] = {
+      id,
+      name: `${id}.jpg`,
+      file: `static/images/${id}.jpg`,
+      mime: 'image/jpeg',
+      bytes: 1000,
+      width,
+      height: Math.round((width * 2) / 3),
+      hash: id,
+      kind: 'image',
+      variants: widths.filter((w) => w < width).map((w) => ({ width: w, file: `static/images/${id}-${w}.jpg` })),
+      createdAt: '2026-01-01T00:00:00.000Z'
+    };
+    return { assetId: id, alt: `The ${id} photo` };
+  }
+  function gallery(s: ProjectState) {
+    const def = Object.values(s.components).find((d) => d.componentId === 'media.gallery')!;
+    const node = Object.values(home(s).nodes).find((n) => n.kind === 'instance' && n.definitionId === def.id) as InstanceNode;
+    return { def, node };
+  }
+  /** Each photo's markup in one gallery placement, in order. */
+  const photos = (html: string) => html.split(/<li\b/).slice(1).map((li) => li.slice(0, li.indexOf('</li>')));
+  const count = (html: string, re: RegExp) => html.match(new RegExp(re.source, 'g'))?.length ?? 0;
+  /** A photo's markup is exactly one link (opening with `open`) around its one figure, and nothing else. */
+  const wrapped = (li: string, open: RegExp, close = '</figure></a>') =>
+    open.test(li) && li.trimEnd().endsWith(close) && count(li, /<a /) === 1 && count(li, /<\/a>/) === 1 && count(li, /<figure /) === 1;
+  const figure = '<figure class="so-foundation-media-gallery__photo-figure">';
+  /** The groups of the photos that open, by placement, as the viewer reads them. */
+  const groupsOf = (html: string) => [...html.matchAll(/data-viewer-group="([^"]+)"/g)].map((m) => JSON.parse(m[1].replace(/&quot;/g, '"')) as string[]);
+
+  it('wraps each photo, caption included, in one link to its full image or its destination', async () => {
+    const s = fresh();
+    const { def, node } = gallery(s);
+    const about = aboutOf(s);
+    node.props.images = [
+      // Smaller copies stored out of order: the largest still becomes the thumbnail's own file.
+      { id: 'p1', image: photo(s, 'kitchen', 1536, [960, 1440, 480]), caption: 'Kitchen, Millbrook', action: 'image' },
+      { id: 'p2', image: photo(s, 'bedroom'), caption: 'Bedroom, Ashford', action: 'link', link: { type: 'page', target: about } },
+      // A destination kept from before stays unused while the photo does nothing, or opens full size.
+      { id: 'p3', image: photo(s, 'study'), caption: 'Study, Elm Street', action: 'none', link: { type: 'page', target: about } },
+      { id: 'p4', image: { ...photo(s, 'hall'), decorative: true }, caption: 'Hall, Old Mill', action: 'image', link: { type: 'page', target: about } },
+      // Nothing to open: no picture, or no destination.
+      { id: 'p5', image: { assetId: null, alt: '' }, caption: 'Coming soon', action: 'image' },
+      { id: 'p6', image: photo(s, 'porch'), caption: 'Porch, Harbour Lane', action: 'link' },
+      // Saved before photos could open, with a destination: nothing happens.
+      { id: 'p7', image: photo(s, 'attic'), caption: 'Attic, Westfield', link: { type: 'page', target: about } },
+      // A small photo with no smaller copies is its own thumbnail.
+      { id: 'p8', image: photo(s, 'shed', 400), caption: 'Shed', action: 'image' },
+      { id: 'p9', image: photo(s, 'barn'), caption: 'Barn, Eastside', action: 'link', link: { type: 'url', target: 'https://example.com/barn', newTab: true } }
+    ];
+    expect(errors(s)).toEqual([]);
+    expect(compileErrors(s)).toEqual([]);
+    const [section] = placements(await renderHome(s), def);
+    const all = photos(section.slice(0, section.indexOf('</ul>')));
+    expect(all).toHaveLength(9);
+    const [kitchen, bedroom, study, hall, soon, porch, attic, shed, barn] = all;
+    // The whole figure, image and caption, is the one link: to the full-size file, which the thumbnail never offers.
+    expect(wrapped(kitchen, new RegExp(`^[^>]*><a href="/studio/images/kitchen\\.jpg" class="so-card-link so-action so-action--image" aria-haspopup="dialog" data-viewer-group="[^"]+" data-alt="The kitchen photo"[^>]*>${figure}<img `), '</figure><span class="so-visually-hidden">View full image</span></a>')).toBe(true);
+    expect(kitchen).toContain('alt="The kitchen photo"');
+    expect(kitchen).toContain('<figcaption class="so-foundation-media-gallery__caption">Kitchen, Millbrook</figcaption></figure>');
+    expect(kitchen).toContain('data-sveltekit-reload=""');
+    expect(kitchen).toMatch(/<img src="\/studio\/images\/kitchen-1440\.jpg" srcset="\/studio\/images\/kitchen-960\.jpg 960w, \/studio\/images\/kitchen-1440\.jpg 1440w, \/studio\/images\/kitchen-480\.jpg 480w" /);
+    expect(kitchen.match(/kitchen\.jpg/g)).toHaveLength(1);
+    // The viewer is not part of the page until a visitor opens it.
+    expect(section).not.toContain('<dialog');
+    // A link goes to its page, around the whole figure, and its thumbnail is as any other.
+    expect(wrapped(bedroom, new RegExp(`^[^>]*><a href="/studio/about/" class="so-card-link so-action">${figure}<img `))).toBe(true);
+    expect(bedroom).toContain('/studio/images/bedroom.jpg 1536w');
+    expect(wrapped(barn, new RegExp(`^[^>]*><a href="https://example\\.com/barn" class="so-card-link so-action" target="_blank" rel="noopener noreferrer">${figure}`))).toBe(true);
+    for (const li of [study, soon, porch, attic]) {
+      expect(count(li, /<a /)).toBe(0);
+      expect(li).toMatch(new RegExp(`^[^>]*>${figure}`));
+    }
+    expect(soon).toContain('so-img--placeholder');
+    // A decorative photo opens without words, as its thumbnail has none.
+    expect(wrapped(hall, /^[^>]*><a href="\/studio\/images\/hall\.jpg" class="so-card-link so-action so-action--image" aria-haspopup="dialog" data-viewer-group="[^"]+" data-alt=""/, '</figure><span class="so-visually-hidden">View full image</span></a>')).toBe(true);
+    expect(hall).not.toContain('/about/');
+    expect(shed).toMatch(/<a href="\/studio\/images\/shed\.jpg"[^>]*>[^<]*<figure[^>]*><img src="\/studio\/images\/shed\.jpg" (?!srcset)/);
+    expect(shed).not.toContain('srcset');
+  });
+
+  it('moves through the photos of one list in one placement, never into another list or placement', async () => {
+    const s = fresh();
+    const { def, node } = gallery(s);
+    node.props.images = [
+      { id: 'p1', image: photo(s, 'kitchen'), caption: 'Kitchen', action: 'image' },
+      { id: 'p2', image: photo(s, 'bedroom'), caption: 'Bedroom', action: 'image' }
+    ];
+    place(s, def, { images: [{ id: 'p1', image: photo(s, 'garden'), caption: 'Garden', action: 'image' }] });
+    const shot = { pic: P.image('Picture'), mode: P.choice('Mode', 'image', [['image', 'Full'], ['none', 'Nothing']]) };
+    const rows = addDef(s, {
+      componentId: 'test.rows',
+      name: 'Two rows',
+      properties: { a: P.list('Row A', 'Shot', shot, [{ pic: photo(s, 'a1') }, { pic: photo(s, 'a2') }]), b: P.list('Row B', 'Shot', shot, [{ pic: photo(s, 'b1') }]) },
+      parts: {},
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.el('list-a', 'div', {}, [b.repeat('row-a', 'a', [b.el('fig-a', 'figure', { action: item('mode') }, [b.image('img-a', item('pic'))])])]),
+          b.el('list-b', 'div', {}, [b.repeat('row-b', 'b', [b.el('fig-b', 'figure', { action: item('mode') }, [b.image('img-b', item('pic'))])])])
+        ])
+    });
+    place(s, rows);
+    expect(errors(s)).toEqual([]);
+    const page = await renderHome(s);
+    const galleries = placements(page, def).map((html) => groupsOf(html.slice(0, html.indexOf('</ul>'))));
+    expect(galleries.map((g) => g.length)).toEqual([2, 1]);
+    expect(galleries[0][0]).toEqual(galleries[0][1]);
+    expect(galleries[0][0][1]).toBe('photos');
+    expect(galleries[1][0][0]).not.toBe(galleries[0][0][0]);
+    const [own] = placements(page, rows).map(groupsOf);
+    expect(own.map((g) => g[1])).toEqual(['row-a', 'row-a', 'row-b']);
+    expect(own[0]).toEqual(own[1]);
+    expect(own[2][0]).toBe(own[0][0]);
+  });
+
+  it('opens the first picture that shows, with the words its thumbnail has', async () => {
+    const s = fresh();
+    const pick = addDef(s, {
+      componentId: 'test.pick',
+      name: 'Pick',
+      properties: { showA: P.bool('Show A', false), hideB: P.bool('Hide B', false), a: P.image('A'), b: P.image('B'), label: P.str('Label', 'Berries on a plate') },
+      parts: {},
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.el('shot', 'figure', { action: 'image' }, [
+            b.el('wrap-a', 'div', { when: prop('showA') }, [b.image('img-a', prop('a'))]),
+            // An element inside that does nothing when clicked is just a wrapper.
+            b.el('inert', 'div', { action: 'none' }, [b.image('img-b', prop('b'), { unless: prop('hideB'), fallbackAlt: prop('label') })])
+          ])
+        ])
+    });
+    const placed = place(s, pick, { a: photo(s, 'apple'), b: { ...photo(s, 'berry'), alt: '' } });
+    expect(errors(s)).toEqual([]);
+    const html = async () => placements(await renderHome(s), pick)[0];
+    const anchor = async () => /<a href="([^"]+)"[^>]*data-alt="([^"]*)"/.exec(await html())?.slice(1) ?? null;
+    // The first picture's wrapper is hidden, so the photo that shows is the one that opens, named as its thumbnail is.
+    expect(await anchor()).toEqual(['/studio/images/berry.jpg', 'Berries on a plate']);
+    expect(await html()).toContain('alt="Berries on a plate"');
+    expect(await html()).not.toContain('berry.jpg 1536w');
+    placed.props.showA = true;
+    expect(await anchor()).toEqual(['/studio/images/apple.jpg', 'The apple photo']);
+    // Only the picture that opens leaves its full-size file to the viewer; the other keeps its own as usual.
+    expect(await html()).not.toContain('apple.jpg 1536w');
+    expect(await html()).toContain('berry.jpg 1536w');
+    // With neither picture showing there is nothing to open.
+    placed.props.showA = false;
+    placed.props.hideB = true;
+    expect(await anchor()).toBeNull();
+    expect(await html()).not.toContain('<a ');
+  });
+
+  it('counts a photo that opens as a link: a gallery inside a card stops the card linking, but its own photos are fine', async () => {
+    const el = (extra: Record<string, unknown>) => ({ id: 'x', kind: 'element', tag: 'figure', children: [], ...extra }) as unknown as GraphNode;
+    const to = { type: 'url', target: 'https://example.com/x' };
+    expect(isCardLink(el({ action: item('a') }))).toBe(true);
+    expect(isCardLink(el({ action: 'image' }))).toBe(true);
+    expect(isCardLink(el({ action: 'link', link: to }))).toBe(true);
+    expect(isCardLink(el({ action: 'link' }))).toBe(false);
+    expect(isCardLink(el({ action: 'none', link: to }))).toBe(false);
+    // A link cannot wrap a list item or a disclosure, or a tag chosen at runtime: the action does nothing there.
+    expect(isCardLink(el({ action: 'image', tag: 'li' }))).toBe(false);
+    expect(isCardLink(el({ action: 'link', link: to, tag: 'details' }))).toBe(false);
+    expect(isCardLink(el({ action: 'image', tag: 'summary' }))).toBe(false);
+    expect(isCardLink(el({ action: 'image', tag: 'figcaption' }))).toBe(false);
+    expect(isCardLink(el({ action: 'image', tag: 'div' }))).toBe(true);
+    expect(isCardLink(el({ action: item('a'), tag: prop('tag') }))).toBe(false);
+    expect(isCardLink(el({ link: to, tag: 'li' }))).toBe(true);
+
+    const s = fresh();
+    expect(errors(s)).toEqual([]);
+    const panel = addDef(s, {
+      componentId: 'test.panel',
+      name: 'Linked panel',
+      properties: { to: P.link('To', { type: 'url', target: 'https://example.com/panel' }) },
+      parts: {},
+      slots: { content: { label: 'Content' } },
+      build: (b) => b.el('panel', 'div', { link: prop('to') }, [b.slot('content-slot', 'content')])
+    });
+    const holder = place(s, panel);
+    const { node } = gallery(s);
+    node.props.images = [{ id: 'p1', image: photo(s, 'kitchen'), caption: 'Kitchen', action: 'image' }];
+    home(s).rootIds = home(s).rootIds.filter((id) => id !== node.id);
+    holder.slots = { content: [node.id] };
+    const found = errors(s);
+    expect(found.map((d) => d.code)).toEqual(['CARD_LINK_INTERACTIVE']);
+    expect(found[0].message).toMatch(/“Gallery”, which holds the “Figure” element/);
+    expect(found[0].nodeId).toBe(holder.id);
+    // The panel renders without its link; the photo inside it still opens.
+    const [html] = placements(await renderHome(s), panel);
+    expect(html).not.toContain('https://example.com/panel');
+    expect(html).toContain('<a href="/studio/images/kitchen.jpg" class="so-card-link so-action so-action--image"');
+  });
+
+  it('takes what a click does only from a choice of nothing, the full image or the link', () => {
+    const s = fresh();
+    const build = (b: Parameters<ComponentSpec['build']>[0]) =>
+      b.el('root', 'section', {}, [b.el('shot', 'figure', { action: prop('mode'), link: prop('to') }, [b.image('pic', prop('pic'))])]);
+    const ok = addDef(s, { componentId: 'test.shot', name: 'Shot', properties: { mode: P.choice('Mode', 'image', [['image', 'Full'], ['none', 'Nothing'], ['link', 'Link']]), to: P.link('To'), pic: P.image('Picture') }, parts: {}, build });
+    const zoom = addDef(s, { componentId: 'test.zoom', name: 'Zoom', properties: { mode: P.choice('Mode', 'image', [['image', 'Full'], ['zoom', 'Zoom'], ['pan', 'Pan']]), to: P.link('To'), pic: P.image('Picture') }, parts: {}, build });
+    const text = addDef(s, { componentId: 'test.text-mode', name: 'Typed mode', properties: { mode: P.str('Mode', 'image'), to: P.link('To'), pic: P.image('Picture') }, parts: {}, build });
+    const found = errors(s).filter((d) => d.code === 'BINDING_INVALID');
+    expect(found.map((d) => d.owner?.id)).toEqual([zoom.id, text.id]);
+    expect(found[0].message).toMatch(/takes what a click does from a choice whose options "zoom", "pan" are not "none", "image", "link"/);
+    expect(found[1].message).toMatch(/shows a string property as its action, which needs a enum property/);
+    // A property that still decides what a click does stays a choice of those.
+    const retype = (schema: Record<string, unknown>) => () => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: ok.id, prop: 'mode', schema }]);
+    expect(retype({ type: 'string', label: 'Mode', default: 'image' })).toThrow(/needs a enum property/);
+    expect(retype({ type: 'enum', label: 'Mode', default: 'image', options: [{ value: 'image', label: 'Full' }, { value: 'zoom', label: 'Zoom' }] })).toThrow(/takes what a click does from a choice whose options "zoom"/);
+  });
+
+  it('lets a component’s own design unbind, set and bind what a click does', () => {
+    const base = fresh();
+    const def = addDef(base, {
+      componentId: 'test.shot',
+      name: 'Shot',
+      properties: { mode: P.choice('Mode', 'image', [['image', 'Full'], ['none', 'Nothing']]), label: P.str('Label', 'x'), pic: P.image('Picture') },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.el('shot', 'figure', { action: prop('mode') }, [b.image('pic', prop('pic'))])])
+    });
+    const at = { owner: owner(def), nodeId: 'shot' };
+    // Both operations take the field, as the AI and the inspector send them.
+    expect(validateOperation({ type: 'node.setContent', ...at, field: 'action', value: 'image' }).ok).toBe(true);
+    expect(validateOperation({ type: 'node.setBinding', ...at, field: 'action', binding: null }).ok).toBe(true);
+    const shot = (s: ProjectState) => (s.components[def.id].tree!.nodes.shot as { action?: unknown }).action;
+    // Unbinding keeps what the property chose by default; then a fixed value can be set, but only one of the three.
+    let s = applyOperations(base, [{ type: 'node.setBinding', ...at, field: 'action', binding: null }]).state;
+    expect(shot(s)).toBe('image');
+    s = applyOperations(s, [{ type: 'node.setContent', ...at, field: 'action', value: 'link' }]).state;
+    expect(shot(s)).toBe('link');
+    expect(() => applyOperations(s, [{ type: 'node.setContent', ...at, field: 'action', value: 'zoom' }])).toThrow(/What a click does must be none, image, link/);
+    expect(() => applyOperations(s, [{ type: 'node.setContent', ...at, field: 'action', value: ['image'] }])).toThrow(/What a click does must be/);
+    expect(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(def), nodeId: 'pic', field: 'action', value: 'image' }])).toThrow(/Only containers/);
+    // The property can then be renamed away, and a choice bound again; a text property cannot.
+    s = applyOperations(s, [{ type: 'component.removePropSchema', definitionId: def.id, prop: 'mode' }]).state;
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', ...at, field: 'action', binding: { $prop: 'label' } }])).toThrow(/needs a enum property/);
+    s = applyOperations(s, [
+      { type: 'component.setPropSchema', definitionId: def.id, prop: 'opens', schema: { type: 'enum', label: 'Opens', default: 'none', options: [{ value: 'none', label: 'Nothing' }, { value: 'image', label: 'Full' }] } },
+      { type: 'node.setBinding', ...at, field: 'action', binding: { $prop: 'opens' } }
+    ]).state;
+    expect(shot(s)).toEqual({ $prop: 'opens' });
+    expect(errors(s)).toEqual([]);
   });
 });

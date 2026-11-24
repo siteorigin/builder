@@ -12,6 +12,9 @@ import { themeUpdates } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { getTheme } from '@catalogue/index';
+import { managed } from '@catalogue/dsl';
+import { makeInstance } from '@engine/install';
+import { examplesFor } from '@agent/examples';
 import { readProject, readState } from '../../src/main/project/documents';
 import { ProjectSession } from '../../src/main/project/session';
 import { sha, toJson } from '../../src/main/project/fsutil';
@@ -644,6 +647,130 @@ describe('theme component updates', () => {
     const hero = state.components['foundation.hero.centered'];
     expect(themeUpdates(state).available.map((u) => u.id)).not.toContain(hero.id);
     expect(themeUpdates(state).kept.find((k) => k.id === hero.id)?.reason).toMatch(/changed outside the theme/);
+  });
+
+  /** The fixture's gallery placement and the page it is on. */
+  const placedGallery = (s: ProjectState) => {
+    const page = Object.values(s.pages).find((p) => Object.values(p.nodes).some((n) => n.kind === 'instance' && n.definitionId === 'foundation.media.gallery'))!;
+    return { page, node: Object.values(page.nodes).find((n) => n.kind === 'instance' && n.definitionId === 'foundation.media.gallery') as InstanceNode };
+  };
+
+  it('updates a gallery saved before its photos could open, and its photos keep doing nothing (#75)', async () => {
+    const state = await outdated();
+    const id = 'foundation.media.gallery';
+    expect(JSON.stringify(state.components[id])).not.toContain('"action"');
+    expect(themeUpdates(state).available.map((u) => u.id)).toContain(id);
+    const { page, node } = placedGallery(state);
+    // The AI is not shown a worked example its installed gallery would refuse.
+    expect(examplesFor(state, 'media.gallery')).toEqual([]);
+    const pages = JSON.stringify(state.pages);
+    const { state: next } = applyOperations(state, [{ type: 'theme.refresh' }]);
+    expect(examplesFor(next, 'media.gallery').map((e) => e.id)).toEqual(['gallery-work']);
+    expect(definitionHash(next.components[id])).toBe(definitionHash(current(id)));
+    expect(JSON.stringify(next.pages)).toBe(pages);
+    expect(validateState(next).filter((d) => d.severity === 'error')).toEqual([]);
+    // Each saved photo takes the new field's default: nothing happens when it is clicked.
+    const source = generateProject(next).get(`src/routes${page.route === '/' ? '' : page.route.replace(/\/$/, '')}/+page.svelte`)!;
+    const count = (node.props.images as Array<Record<string, unknown>>).length;
+    expect(count).toBeGreaterThan(0);
+    expect((node.props.images as Array<Record<string, unknown>>).every((it) => !('action' in it))).toBe(true);
+    expect(source.match(/"action":"none"/g)).toHaveLength(count);
+    expect(source).not.toMatch(/"action":"(image|link)"/);
+  });
+
+  /** A project component that links as a whole around whatever its placement puts in its slot. */
+  const linkedPanel = () => ({
+    ...managed({
+      componentId: 'test.panel',
+      name: 'Linked panel',
+      description: '',
+      category: 'content',
+      tags: [],
+      icon: 'sparkles',
+      properties: {},
+      parts: {},
+      slots: { content: { label: 'Content' } },
+      build: (b) => b.el('panel', 'div', { link: { type: 'url', target: 'https://example.com/panel' } }, [b.slot('content-slot', 'content')])
+    }),
+    owner: 'project' as const
+  });
+
+  it('still offers a gallery update beside a card that already cannot link (#75)', async () => {
+    const state = await outdated((s) => {
+      const panel = linkedPanel();
+      s.components[panel.id] = panel;
+      const page = s.pages[s.site.homePageId];
+      const holder = makeInstance(panel, {});
+      const button = { id: 'n_button75', kind: 'link' as const, link: { type: 'url' as const, target: 'https://example.com/more' }, label: 'More', appearance: 'primary' };
+      page.nodes[button.id] = button;
+      holder.slots = { content: [button.id] };
+      page.nodes[holder.id] = holder;
+      page.rootIds.push(holder.id);
+    });
+    expect(validateState(state).filter((d) => d.code === 'CARD_LINK_INTERACTIVE')).toHaveLength(1);
+    expect(themeUpdates(state).available.map((u) => u.id)).toContain('foundation.media.gallery');
+  });
+
+  it('holds a gallery update that would add a second problem to a placement whose card already cannot link (#75)', async () => {
+    const state = await outdated((s) => {
+      const panel = {
+        ...managed({
+          componentId: 'test.panel2',
+          name: 'Two-slot panel',
+          description: '',
+          category: 'content',
+          tags: [],
+          icon: 'sparkles',
+          properties: {},
+          parts: {},
+          slots: { content: { label: 'Content' }, extra: { label: 'Extra' } },
+          build: (b) => b.el('panel', 'div', { link: { type: 'url', target: 'https://example.com/panel' } }, [b.slot('content-slot', 'content'), b.slot('extra-slot', 'extra')])
+        }),
+        owner: 'project' as const
+      };
+      s.components[panel.id] = panel;
+      const { page, node } = placedGallery(s);
+      const holder = makeInstance(panel, {});
+      const button = { id: 'n_button75b', kind: 'link' as const, link: { type: 'url' as const, target: 'https://example.com/more' }, label: 'More', appearance: 'primary' };
+      page.nodes[button.id] = button;
+      holder.slots = { content: [node.id], extra: [button.id] };
+      page.nodes[holder.id] = holder;
+      page.rootIds = page.rootIds.map((id) => (id === node.id ? holder.id : id));
+    });
+    // The button already stops the card linking; the newer gallery would be a second thing inside it.
+    expect(validateState(state).filter((d) => d.code === 'CARD_LINK_INTERACTIVE')).toHaveLength(1);
+    expect(themeUpdates(state).kept.find((k) => k.id === 'foundation.media.gallery')?.reason).toMatch(/from inside a card that links there/);
+  });
+
+  it('holds a gallery update that would put a link inside a card that links today (#75)', async () => {
+    const state = await outdated((s) => {
+      const panel = {
+        ...managed({
+          componentId: 'test.panel',
+          name: 'Linked panel',
+          description: '',
+          category: 'content',
+          tags: [],
+          icon: 'sparkles',
+          properties: {},
+          parts: {},
+          slots: { content: { label: 'Content' } },
+          build: (b) => b.el('panel', 'div', { link: { type: 'url', target: 'https://example.com/panel' } }, [b.slot('content-slot', 'content')])
+        }),
+        owner: 'project' as const
+      };
+      s.components[panel.id] = panel;
+      const { page, node } = placedGallery(s);
+      const holder = makeInstance(panel, {});
+      holder.slots = { content: [node.id] };
+      page.nodes[holder.id] = holder;
+      page.rootIds = page.rootIds.map((id) => (id === node.id ? holder.id : id));
+    });
+    // The panel links today: the older gallery has nothing inside it that opens.
+    expect(validateState(state).filter((d) => d.code === 'CARD_LINK_INTERACTIVE')).toEqual([]);
+    expect(themeUpdates(state).available.map((u) => u.id)).not.toContain('foundation.media.gallery');
+    expect(themeUpdates(state).kept.find((k) => k.id === 'foundation.media.gallery')?.reason).toMatch(/from inside a card that links there/);
+    expect(() => applyOperations(state, [{ type: 'theme.refresh', definitionIds: ['foundation.media.gallery'] }])).toThrow(/cannot be updated/);
   });
 
   it('hashes the whole definition', async () => {

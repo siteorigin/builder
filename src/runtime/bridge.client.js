@@ -1199,6 +1199,8 @@ window.addEventListener('message', async (e) => {
       formEpoch++;
       if (editing) commitEdit();
       document.documentElement.toggleAttribute('data-so-editing', mode === 'edit');
+      // A full-size image a visitor opened in Preview is a modal: it would cover the page being edited.
+      if (mode === 'edit') for (const viewer of document.querySelectorAll('dialog.so-viewer[open]')) viewer.close();
       hovered = null;
       pointerAt = null;
       // Preview shows the disclosures as visitors find them; editing reveals the item again.

@@ -123,6 +123,164 @@ export const IMAGE_SVELTE = `<script>
 {/if}
 `;
 
+/**
+ * The Action helper: what clicking a container does (`ElementNode.action`). One link wraps the whole container, which
+ * keeps its own tag, so a gallery's figure keeps its caption. The full-size image opens in a native modal dialog.
+ */
+export const ACTION_SVELTE = `<script>
+	/**
+	 * What clicking a container does (\`mode\`): follow its link ("link"), or open its image full size ("image").
+	 * One link wraps the whole container, which keeps its own tag; with nowhere to go it renders alone.
+	 *
+	 * The full-size image opens in a modal viewer that loads the file only then. It shows the image's alternative
+	 * text and the container's caption, and closes with Escape, its Close button or a click beside the image, giving
+	 * focus back to the link that opened it. The arrow keys, or its Previous and Next buttons, move through the images
+	 * of the same \`group\` (one gallery) in page order. Without JavaScript the link opens the full-size file itself.
+	 */
+	import { asset, resolve } from '$app/paths';
+	import { beforeNavigate } from '$app/navigation';
+	let { mode = 'none', link = null, image = null, group = '', children } = $props();
+	const local = (path) => (path.startsWith('/') && !path.startsWith('//') ? asset(path.slice(1)) : path);
+	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
+	const href = $derived(mode === 'link' && safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
+	const full = $derived(mode === 'image' && typeof image?.src === 'string' && image.src ? local(image.src) : null);
+	// The words the opened image is known by, as its thumbnail says them: none for a decorative one.
+	const alt = $derived(image?.decorative ? '' : String(image?.alt ?? '').trim() || String(image?.fallbackAlt ?? '').trim());
+	// The images that move together (one gallery), by what the generator names them with.
+	const key = $derived(typeof group === 'string' ? group : JSON.stringify(group ?? []));
+
+	let anchor = $state();
+	let dialog = $state();
+	let slides = $state([]);
+	let index = $state(0);
+	// The link that opened the viewer, which gets focus back however far the visitor moves through the group.
+	let opener = null;
+	const current = $derived(slides[index]);
+
+	/** What the viewer shows for one image link: its full-size file, the image's alternative text and the caption. */
+	function slide(a) {
+		const caption = a.querySelector('figcaption');
+		return {
+			src: a.getAttribute('href'),
+			alt: a.dataset.alt ?? '',
+			caption: caption?.textContent?.trim() ?? '',
+			width: Number(a.dataset.width) || undefined,
+			height: Number(a.dataset.height) || undefined
+		};
+	}
+
+	function open(event) {
+		// A click something else has handled (the editor selecting it), or one asking for a new tab or window, is left alone.
+		if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+		event.preventDefault();
+		opener = anchor;
+		const links = [...document.querySelectorAll('a[data-viewer-group]')].filter((a) => a.dataset.viewerGroup === key && (a === anchor || a.getClientRects().length > 0));
+		slides = links.map(slide);
+		index = Math.max(0, links.indexOf(anchor));
+	}
+
+	$effect(() => {
+		if (!dialog || dialog.open) return;
+		dialog.showModal();
+		dialog.querySelector('.so-viewer__close')?.focus();
+	});
+
+	// A viewer whose photo stops showing (a gallery hidden at the new screen width) would be an invisible modal: it closes.
+	$effect(() => {
+		if (!current) return;
+		const check = () => {
+			if (opener && !opener.getClientRects().length) close(false);
+		};
+		window.addEventListener('resize', check);
+		return () => window.removeEventListener('resize', check);
+	});
+
+	function close(restore = true) {
+		if (!slides.length) return;
+		const back = opener;
+		opener = null;
+		slides = [];
+		if (dialog?.open) dialog.close();
+		// Focus goes back only while the visitor is on this page, never pulled from wherever they went.
+		if (restore && back?.isConnected && document.hasFocus()) back.focus();
+	}
+
+	function go(step) {
+		index = (index + step + slides.length) % slides.length;
+	}
+
+	function keydown(event) {
+		if (slides.length < 2 || event.altKey || event.ctrlKey || event.metaKey || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return;
+		event.preventDefault();
+		go(event.key === 'ArrowLeft' ? -1 : 1);
+	}
+
+	function backdrop(event) {
+		if (!(event.target instanceof Element) || !event.target.closest('img, figcaption, button')) close();
+	}
+
+	// Leaving the page (or the header or footer staying while the page changes) closes the viewer, without taking focus back.
+	beforeNavigate(() => close(false));
+</script>
+
+{#if full}
+	<a
+		bind:this={anchor}
+		href={full}
+		class="so-card-link so-action so-action--image"
+		aria-haspopup="dialog"
+		data-viewer-group={key}
+		data-alt={alt}
+		data-width={image?.width}
+		data-height={image?.height}
+		data-sveltekit-reload
+		onclick={open}>{@render children?.()}<span class="so-visually-hidden">View full image</span></a
+	>
+	{#if current}
+		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+		<dialog
+			bind:this={dialog}
+			class="so-viewer"
+			aria-label={current.caption || current.alt || 'Full image'}
+			onclose={() => close()}
+			onkeydown={keydown}
+			onclick={backdrop}
+		>
+			<button type="button" class="so-viewer__close" onclick={() => close()}>
+				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
+				<span class="so-visually-hidden">Close</span>
+			</button>
+			<figure class="so-viewer__figure">
+				<img class="so-viewer__img" src={current.src} alt={current.alt} width={current.width} height={current.height} decoding="async" />
+				{#if current.caption}<figcaption class="so-viewer__caption">{current.caption}</figcaption>{/if}
+			</figure>
+			{#if slides.length > 1}
+				<div class="so-viewer__nav">
+					<button type="button" class="so-viewer__step" onclick={() => go(-1)}>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+						<span class="so-visually-hidden">Previous image</span>
+					</button>
+					<p class="so-viewer__count" aria-live="polite">{index + 1} of {slides.length}</p>
+					<button type="button" class="so-viewer__step" onclick={() => go(1)}>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+						<span class="so-visually-hidden">Next image</span>
+					</button>
+				</div>
+			{/if}
+		</dialog>
+	{/if}
+{:else if href}
+	<a
+		{href}
+		class="so-card-link so-action"
+		target={link?.newTab ? '_blank' : undefined}
+		rel={link?.newTab ? 'noopener noreferrer' : undefined}>{@render children?.()}</a
+	>
+{:else}
+	{@render children?.()}
+{/if}
+`;
+
 export const RICHTEXT_SVELTE = `<script>
 	/**
 	 * Renders structured rich text as plain semantic HTML: paragraphs, headings, quotes and lists of text spans.
@@ -270,6 +428,21 @@ export function has(value) {
 		return true;
 	}
 	return !!value;
+}
+
+/**
+ * An image shown as a thumbnail that opens full size: only its smaller copies, so the full-size file loads when it
+ * is opened. An image without smaller copies is its own thumbnail.
+ */
+export function thumbnail(image) {
+	if (!image?.src || !image.srcset) return image;
+	const smaller = image.srcset
+		.split(', ')
+		.map((candidate) => candidate.split(' '))
+		.filter(([path]) => path !== image.src);
+	if (!smaller.length) return image;
+	const largest = smaller.reduce((a, b) => (parseInt(b[1], 10) > parseInt(a[1], 10) ? b : a));
+	return { ...image, src: largest[0], srcset: smaller.map((c) => c.join(' ')).join(', ') };
 }
 
 /** Rich text blocks as paragraph strings, for code components written against that older form. */

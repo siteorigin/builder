@@ -3,7 +3,7 @@
  * property bindings. Every operation keeps instances consistent with the definition it changes.
  */
 import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ProjectState, PropSchema } from '@shared/types';
-import { ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
@@ -348,6 +348,7 @@ const FIELD_KINDS: Record<BindField, GraphNode['kind'][] | null> = {
   iconPosition: ['link'],
   ariaLabel: ['element', 'icon', 'link'],
   tag: ['element', 'text'],
+  action: ['element'],
   list: ['repeat'],
   prop: ['instance'],
   variant: ['instance'],
@@ -381,6 +382,9 @@ function literalFor(field: BindField, node: GraphNode, schema: PropSchema | unde
       return typeof d === 'string' && d.trim() ? d : undefined;
     case 'iconPosition':
       return (ICON_POSITIONS as unknown[]).includes(d) ? d : undefined;
+    case 'action':
+      // Explicitly nothing: without an action, a destination the container keeps would make it a card again.
+      return (ELEMENT_ACTIONS as unknown[]).includes(d) ? d : 'none';
     case 'tag': {
       const tags: readonly string[] = node.kind === 'text' ? TEXT_TAGS : ELEMENT_TAGS;
       return typeof d === 'string' && tags.includes(d) ? d : node.kind === 'text' ? 'p' : 'div';

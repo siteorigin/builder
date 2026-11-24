@@ -235,6 +235,38 @@ const searchSetup = await win.evaluate(
 );
 assert.equal(searchSetup.ok, true, `Site search and the project pages are added: ${searchSetup.error?.message}`);
 
+step('#75: two gallery photos open full size and the third leads to the About page');
+const before75 = (await win.evaluate(() => window.builder.project.snapshot())).state;
+const home75 = before75.pages[before75.site.homePageId];
+const gallery75 = Object.values(home75.nodes).find((n) => n.kind === 'instance' && before75.components[n.definitionId]?.componentId === 'media.gallery');
+assert.ok(gallery75, 'the starter Home page has a gallery');
+assert.deepEqual(gallery75.props.images.map((p) => p.action), ['image', 'image', 'image'], 'the starter’s photos open full size');
+const about75 = Object.values(before75.pages).find((p) => p.route === '/about/').id;
+const linked75 = await win.evaluate(
+  ([home, node, images]) => window.builder.project.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home }, nodeId: node, prop: 'images', value: images }] }, { label: 'Gallery link' }),
+  [
+    home75.id,
+    gallery75.id,
+    [
+      ...gallery75.props.images.map((p, i) => (i === 2 ? { ...p, action: 'link', link: { type: 'page', target: about75 } } : p)),
+      { id: 'i4', image: { assetId: 'a_dining', alt: 'A dining table set beside a tall window' }, caption: 'Dining room, Westfield', action: 'image' }
+    ]
+  ]
+);
+assert.equal(linked75.ok, true, `the third photo links to About: ${linked75.error?.message}`);
+const placed75 = (await win.evaluate(() => window.builder.project.snapshot())).state.pages[home75.id].nodes[gallery75.id].props.images;
+const noLink = ['none', ''];
+assert.deepEqual(
+  placed75.map((p) => [p.action, p.link?.type, p.link?.target]),
+  [['image', ...noLink], ['image', ...noLink], ['link', 'page', about75], ['image', ...noLink]],
+  'each photo does what was chosen'
+);
+/** The photos the viewer moves through, in page order: full-size file, alternative text and caption. */
+const slides75 = [0, 1, 3].map((i) => ({ file: basename(before75.assets.assets[placed75[i].image.assetId].file), alt: placed75[i].image.alt, caption: placed75[i].caption }));
+const kitchen75 = before75.assets.assets[gallery75.props.images[0].image.assetId];
+assert.ok(kitchen75?.variants?.length, 'the sample kitchen photo has smaller copies');
+const kitchenOriginal = basename(kitchen75.file);
+
 step('export through the controller');
 // Folder exports ask for a parent folder and create a new folder inside it, so nothing is ever replaced.
 const exportsDir = join(WORK, 'exports');
@@ -277,16 +309,16 @@ assert.ok(src.warnings.some((w) => w.includes(photo.name) && /still records wher
 // Issue 212: the first proof is opened in a browser tab now, before any later export, as the author did.
 assert.ok(stat.previewUrl, 'the first website export starts a preview');
 /** A browser tab on a proof: a hidden window (nothing may appear on screen) that never leaves the proof's address. */
-async function proofTab(url) {
+async function proofTab(url, size = { width: 1280, height: 900 }) {
   const [tab] = await Promise.all([
     app.waitForEvent('window'),
-    app.evaluate(({ BrowserWindow }, url) => {
-      const w = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { sandbox: true, contextIsolation: true } });
+    app.evaluate(({ BrowserWindow }, [url, size]) => {
+      const w = new BrowserWindow({ show: false, ...size, useContentSize: true, webPreferences: { sandbox: true, contextIsolation: true } });
       const origin = new URL(url).origin;
       w.webContents.on('will-navigate', (e, to) => new URL(to).origin !== origin && e.preventDefault());
       w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       void w.loadURL(url);
-    }, url)
+    }, [url, size])
   ]);
   await tab.waitForLoadState('load');
   return tab;
@@ -345,6 +377,153 @@ const searchEdits = await win.evaluate(() =>
   )
 );
 assert.equal(searchEdits.ok, true, `the project pages change: ${searchEdits.error?.message}`);
+
+step('#75: the exported gallery on a desktop and on a 390px phone');
+/** What the page has fetched so far (the browser's own record, which includes lazy images). */
+const fetched = (tab) => tab.evaluate(() => performance.getEntriesByType('resource').map((e) => new URL(e.name).pathname.split('/').pop()));
+const viewer = (tab) =>
+  tab.evaluate(() => {
+    const d = document.querySelector('dialog.so-viewer');
+    if (!d) return null;
+    const img = d.querySelector('img');
+    const r = img.getBoundingClientRect();
+    return {
+      open: d.open,
+      modal: d.matches(':modal'),
+      name: d.getAttribute('aria-label'),
+      file: img.getAttribute('src').split('/').pop(),
+      alt: img.getAttribute('alt'),
+      loaded: img.complete && img.naturalWidth > 0,
+      natural: [img.naturalWidth, img.naturalHeight],
+      ratio: r.width / r.height,
+      fits: r.left >= 0 && r.top >= 0 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5,
+      fit: getComputedStyle(img).objectFit,
+      caption: d.querySelector('figcaption')?.textContent ?? '',
+      count: d.querySelector('.so-viewer__count')?.textContent ?? '',
+      focus: document.activeElement?.className ?? '',
+      locked: getComputedStyle(document.documentElement).overflow === 'hidden',
+      buttons: [...d.querySelectorAll('button')].map((b) => {
+        const br = b.getBoundingClientRect();
+        return { name: b.textContent.trim(), w: br.width, h: br.height, inside: br.left >= 0 && br.right <= innerWidth && br.top >= 0 && br.bottom <= innerHeight };
+      })
+    };
+  });
+for (const [label, size] of [['desktop', { width: 1280, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+  const tab = await proofTab(stat.previewUrl, size);
+  // Hydrated once every script has loaded; a click before that simply opens the full-size file.
+  await tab.waitForLoadState('networkidle');
+  assert.equal(await tab.evaluate(() => innerWidth), size.width, `${label}: the proof is ${size.width}px wide`);
+  const photos = tab.locator('a.so-action--image');
+  assert.equal(await photos.count(), 3, `${label}: three photos open full size`);
+  const kitchen = photos.first();
+  await kitchen.scrollIntoViewIfNeeded();
+  await eventually(async () => assert.ok(await kitchen.evaluate((a) => a.querySelector('img').complete && a.querySelector('img').naturalWidth > 0), `${label}: the thumbnail loads`), 10000);
+  // The thumbnail is cropped and came from a smaller copy: the full-size file is not fetched until it is opened.
+  const thumb = await kitchen.evaluate((a) => {
+    const r = a.querySelector('img').getBoundingClientRect();
+    return { ratio: r.width / r.height, fit: getComputedStyle(a.querySelector('img')).objectFit, href: a.getAttribute('href').split('/').pop(), caption: a.querySelector('figcaption')?.textContent, alt: a.querySelector('img').alt };
+  });
+  assert.equal(thumb.fit, 'cover', `${label}: the thumbnail is cropped`);
+  assert.ok(Math.abs(thumb.ratio - 4 / 3) < 0.02, `${label}: the thumbnail is 4:3 (${thumb.ratio})`);
+  assert.equal(thumb.href, kitchenOriginal, `${label}: the photo links to its full-size file`);
+  assert.equal(thumb.caption, 'Kitchen, Millbrook', `${label}: the caption is inside the link`);
+  await kitchen.hover();
+  assert.ok(!(await fetched(tab)).includes(kitchenOriginal), `${label}: the full-size kitchen photo is not fetched before it is opened`);
+
+  /** Waits for the viewer to show slide `i` loaded, and checks its file, words and place in the gallery. */
+  const expectSlide = async (i, how) => {
+    await eventually(async () => {
+      const now = await viewer(tab);
+      assert.ok(now?.loaded && now.file === slides75[i].file, `${label}: ${how} shows ${slides75[i].caption} (${now?.file})`);
+    }, 10000);
+    const now = await viewer(tab);
+    assert.equal(now.alt, slides75[i].alt, `${label}: ${how}: the image's alternative text`);
+    assert.equal(now.caption, slides75[i].caption, `${label}: ${how}: its caption`);
+    assert.equal(now.count, `${i + 1} of 3`, `${label}: ${how}: where it is in the gallery`);
+    return now;
+  };
+  /** When the page started fetching a file, if it has. */
+  const startedAt = (file) => tab.evaluate((f) => performance.getEntriesByType('resource').filter((e) => new URL(e.name).pathname.endsWith(`/${f}`)).map((e) => e.startTime), file);
+  const button = (name) => tab.locator('dialog.so-viewer').getByRole('button', { name, exact: true });
+
+  // Opened with a click on the desktop (the first photo) and with the keyboard on the phone (the second).
+  const first = label === 'desktop' ? 0 : 1;
+  const opener = photos.nth(first);
+  const opened = await tab.evaluate(() => performance.now());
+  if (label === 'desktop') await opener.click();
+  else {
+    await opener.focus();
+    await tab.keyboard.press('Enter');
+  }
+  let v = await expectSlide(first, 'opening');
+  assert.equal(tab.url(), stat.previewUrl, `${label}: opening the photo stays on the page`);
+  assert.ok(v.open && v.modal, `${label}: the full image opens in a modal viewer`);
+  const starts = await startedAt(slides75[first].file);
+  assert.ok(starts.length && starts.every((t) => t >= opened), `${label}: the full-size file is fetched only once the photo is opened (${starts} vs ${opened})`);
+  const asset = before75.assets.assets[placed75[first === 0 ? 0 : 1].image.assetId];
+  assert.deepEqual(v.natural, [asset.width, asset.height], `${label}: at its full size`);
+  assert.equal(v.fit, 'contain', `${label}: uncropped`);
+  assert.ok(Math.abs(v.ratio - asset.width / asset.height) < 0.02, `${label}: in its own proportions (${v.ratio})`);
+  assert.ok(v.fits, `${label}: the whole image fits on screen`);
+  assert.equal(v.name, slides75[first].caption, `${label}: the viewer is named by the caption`);
+  assert.match(v.focus, /so-viewer__close/, `${label}: focus moves to Close`);
+  assert.ok(v.locked, `${label}: the page behind does not scroll`);
+  for (const b of v.buttons) {
+    assert.ok(b.inside, `${label}: ${b.name} is on screen`);
+    assert.ok(b.w >= 44 && b.h >= 44, `${label}: ${b.name} is easy to tap (${b.w}×${b.h})`);
+  }
+  assert.deepEqual(v.buttons.map((b) => b.name), ['Close', 'Previous image', 'Next image'], `${label}: Close, Previous and Next`);
+  if (label === 'desktop') assert.equal(v.alt, thumb.alt, `${label}: with the thumbnail's alternative text`);
+
+  // The arrow keys and the buttons move through this gallery's photos (not the linked one), wrapping at the ends.
+  if (label === 'desktop') {
+    await tab.locator('dialog.so-viewer img').click();
+    await expectSlide(0, 'a click on the image itself');
+    await tab.keyboard.press('ArrowRight');
+    await expectSlide(1, 'ArrowRight');
+    await tab.keyboard.press('ArrowRight');
+    await expectSlide(2, 'ArrowRight again');
+    await tab.keyboard.press('ArrowRight');
+    await expectSlide(0, 'ArrowRight at the end');
+    await tab.keyboard.press('ArrowLeft');
+    await expectSlide(2, 'ArrowLeft at the start');
+    await button('Next image').click();
+    await expectSlide(0, 'Next at the end');
+    await button('Previous image').click();
+    await expectSlide(2, 'Previous at the start');
+    await tab.keyboard.press('Escape');
+  } else {
+    await button('Next image').click();
+    await expectSlide(2, 'Next');
+    await button('Next image').click();
+    await expectSlide(0, 'Next at the end');
+    await button('Previous image').click();
+    await expectSlide(2, 'Previous at the start');
+    await tab.keyboard.press('ArrowLeft');
+    await expectSlide(1, 'ArrowLeft');
+    await tab.keyboard.press('ArrowLeft');
+    await expectSlide(0, 'ArrowLeft again');
+    await button('Close').click();
+  }
+  // Escape on the desktop, Close on the phone: focus goes back to the photo that opened the viewer, wherever it ended.
+  await eventually(async () => assert.equal(await viewer(tab), null, `${label}: the viewer closes`), 5000);
+  assert.ok(await opener.evaluate((a) => document.activeElement === a), `${label}: focus returns to the photo that was opened`);
+  assert.ok(!(await tab.evaluate(() => getComputedStyle(document.documentElement).overflow === 'hidden')), `${label}: the page scrolls again`);
+  if (label === 'desktop') {
+    // A click beside the image closes it too.
+    await opener.click();
+    await expectSlide(0, 'opening again');
+    await tab.mouse.click(4, 4);
+    await eventually(async () => assert.equal(await viewer(tab), null, `${label}: a click beside the image closes the viewer`), 5000);
+  }
+
+  // The third photo, caption and all, leads to its page.
+  const reading = tab.locator('li', { hasText: 'Reading room, Old Mill' }).locator('a');
+  assert.equal(await reading.count(), 1, `${label}: the linked photo is one link`);
+  assert.match(await reading.getAttribute('href'), /\/about\/$/, `${label}: to the About page`);
+  await Promise.all([tab.waitForURL(/\/about\/$/), reading.click()]);
+  await tab.close();
+}
 
 step('ZIP exports');
 const srcZip = await withTimeout(win.evaluate(() => window.builder.project.exportSource('zip')), 120000, 'Source ZIP export');

@@ -76,6 +76,10 @@ export function conditionHolds(c: Condition, value: unknown, present: (v: unknow
 export type IconPosition = 'start' | 'end';
 export const ICON_POSITIONS: IconPosition[] = ['start', 'end'];
 
+/** What clicking a container does (`ElementNode.action`): nothing, open its image full size, or follow its link. */
+export type ElementAction = 'none' | 'image' | 'link';
+export const ELEMENT_ACTIONS: ElementAction[] = ['none', 'image', 'link'];
+
 // ---------------------------------------------------------------------------
 // Property schema
 // ---------------------------------------------------------------------------
@@ -234,6 +238,14 @@ export interface ElementNode extends NodeBase {
    * its tag otherwise, so nothing inside it may be interactive (see `CARD_LINK_INTERACTIVE`).
    */
   link?: Bindable<LinkValue>;
+  /**
+   * What clicking the container does, chosen per placement or list item (a gallery photo): nothing, open its image
+   * full size (`image`, the first image inside it that shows a picture) in a viewer, or follow `link`. With an action
+   * set, `link` applies only while the action is `link`. The container keeps its tag either way: a working action
+   * wraps it in one link, so nothing inside it may be interactive, as in a card. The tag must be fixed and one a link
+   * may wrap (not a list item, term or disclosure); otherwise the action does nothing.
+   */
+  action?: Bindable<ElementAction>;
   /** Accessible name, for landmarks such as navigation regions. */
   ariaLabel?: Bindable<string>;
   /**

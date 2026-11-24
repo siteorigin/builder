@@ -155,8 +155,16 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     id: 'gallery-work',
     componentId: 'media.gallery',
     keywords: ['gallery', 'portfolio', 'work', 'photos', 'images', 'projects'],
-    description: 'A gallery of recent work',
-    props: { eyebrow: 'Recent work', heading: 'A few favourite projects', lead: 'Each one shaped around how the client lives.', images: [{ image: NO_IMAGE, caption: 'Kitchen, Millbrook' }, { image: NO_IMAGE, caption: 'Courtyard, Eastside' }] }
+    description: 'A gallery of recent work: an image can open full size (action "image") or lead to its project page (action "link")',
+    props: {
+      eyebrow: 'Recent work',
+      heading: 'A few favourite projects',
+      lead: 'Each one shaped around how the client lives.',
+      images: [
+        { image: NO_IMAGE, caption: 'Kitchen, Millbrook', action: 'link', link: '/about/' },
+        { image: NO_IMAGE, caption: 'Courtyard, Eastside', action: 'image' }
+      ]
+    }
   },
   {
     id: 'cta-contact',

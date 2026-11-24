@@ -12,9 +12,31 @@ import { boundSchema } from '@engine/schema';
 /** Elements that are controls in their own right. */
 const INTERACTIVE_TAGS = new Set(['details', 'summary']);
 
-/** Whether an element is a card: it carries a binding or a destination of its own. */
-export function isCardLink(n: GraphNode): n is ElementNode & { link: NonNullable<ElementNode['link']> } {
-  if (n.kind !== 'element' || n.link === undefined || n.link === null) return false;
+/** Tags a link cannot wrap: the link would sit between a list or figure and its item or caption, or around a disclosure. */
+const UNWRAPPABLE_TAGS = new Set(['li', 'dt', 'dd', 'figcaption', 'details', 'summary']);
+
+/**
+ * Whether an element's action can take effect: it has one, and a fixed tag that a link may wrap. Any other element
+ * with an action renders as itself, doing nothing when clicked and following no destination it keeps.
+ */
+export function actionWraps(n: GraphNode): boolean {
+  if (n.kind !== 'element' || n.action === undefined || n.action === null) return false;
+  return !isBinding(n.tag) && !UNWRAPPABLE_TAGS.has(n.tag);
+}
+
+/**
+ * Whether an element is a card, one link around its content: it carries a binding or a destination of its own, or
+ * an action that may open its image or follow its link. An action fixed at anything else makes no link, whatever
+ * destination the element keeps; one fixed at `link` is a card while it has a destination.
+ */
+export function isCardLink(n: GraphNode): boolean {
+  if (n.kind !== 'element') return false;
+  if (n.action !== undefined && n.action !== null) {
+    if (!actionWraps(n)) return false;
+    if (isBinding(n.action) || n.action === 'image') return true;
+    if (n.action !== 'link') return false;
+  }
+  if (n.link === undefined || n.link === null) return false;
   return isBinding(n.link) || ((n.link as LinkValue).type !== undefined && (n.link as LinkValue).type !== 'none');
 }
 
@@ -56,7 +78,7 @@ function describe(n: GraphNode, def?: ComponentDefinition): string {
       return name ? `the ${name} button` : 'a button or link';
     case 'element':
       if (name) return `the ${name} element`;
-      if (isCardLink(n)) return 'another card link';
+      if (isCardLink(n)) return n.action !== undefined ? 'a container that opens its image or a link' : 'another card link';
       return isBinding(n.tag) ? 'an element that can render as a details disclosure' : `a ${n.tag} element`;
     case 'text':
       return name ? `the ${name} text` : 'rich text with links';
@@ -228,7 +250,7 @@ export function cardLinkProblems(state: ProjectState): CardProblem[] {
   for (const { owner, tree, label } of allTrees(state)) {
     const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
     for (const n of Object.values(tree.nodes)) {
-      if (isCardLink(n)) {
+      if (n.kind === 'element' && isCardLink(n)) {
         const what = firstInteractive(pass, def, tree, n.children);
         if (what) out.push({ owner, label, nodeId: n.id, cards: [{ owner, cardId: n.id }], what });
       }

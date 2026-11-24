@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ProjectState } from '@shared/types';
+import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { pageLinkUses } from '@engine/page-links';
@@ -155,6 +155,26 @@ describe('what the website publishes', () => {
     expect(plan.draftLinks.every((l) => l.pageId === about)).toBe(true);
     const header = plan.draftLinks.find((l) => l.owner.id === 'header')!;
     expect(describeDraftLink(s, header)).toMatch(/^Header · .+: “About” goes to About \(\/about\/\)$/);
+  });
+
+  it('checks a gallery photo’s link only while the photo follows it (#75)', () => {
+    const { s, draft } = withDraft();
+    const home = s.pages[s.site.homePageId];
+    const gallery = Object.values(home.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'media.gallery') as InstanceNode;
+    const images = gallery.props.images as Array<Record<string, unknown>>;
+    const fromGallery = () => publicationPlan(s).draftLinks.filter((l) => l.nodeId === gallery.id);
+    expect(fromGallery()).toEqual([]);
+    // A destination kept while the photo opens full size, or does nothing, is not a link visitors see.
+    images[0] = { ...images[0], action: 'image', link: { type: 'page', target: draft } };
+    images[1] = { ...images[1], action: 'none', link: { type: 'page', target: draft } };
+    // Saved before photos could open: no action, so nothing happens and the destination is not shown.
+    const { action: _omitted, ...saved } = images[2];
+    images[2] = { ...saved, link: { type: 'page', target: draft, anchor: 'top' } };
+    expect(fromGallery()).toEqual([]);
+    images[1] = { ...images[1], action: 'link' };
+    expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined]]);
+    images[2] = { ...images[2], action: 'link' };
+    expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined], [draft, 'top']]);
   });
 
   it('does not check links on drafts, or the header and footer when no published page shows them', () => {

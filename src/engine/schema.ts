@@ -2,7 +2,7 @@
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
 import type { Binding, ComponentDefinition, Comparison, GraphNode, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
-import { ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
 import { fail, findParent } from './tree';
@@ -201,6 +201,7 @@ export type BindField =
   | 'iconPosition'
   | 'ariaLabel'
   | 'tag'
+  | 'action'
   | 'when'
   | 'unless'
   | 'list'
@@ -228,6 +229,7 @@ export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSc
     case 'tag':
     case 'variant':
     case 'iconPosition':
+    case 'action':
       return ['enum'];
     case 'image':
       return ['image'];
@@ -256,7 +258,7 @@ export function bindingSlots(n: GraphNode): BindingSlot[] {
   const out: BindingSlot[] = [field('when'), field('unless')];
   switch (n.kind) {
     case 'element':
-      out.push(field('tag'), field('link'), field('ariaLabel'));
+      out.push(field('tag'), field('link'), field('action'), field('ariaLabel'));
       break;
     case 'text':
       out.push(field('text'), field('tag'));
@@ -336,7 +338,7 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
     }
   }
   // Older fields are type-checked where they are bound; documents saved before these checks keep loading as they did.
-  const fresh = ['tag', 'variant', 'iconPosition', 'ariaLabel'].includes(field) || (field === 'link' && node.kind === 'element') || (field === 'icon' && node.kind === 'link');
+  const fresh = ['tag', 'variant', 'iconPosition', 'ariaLabel', 'action'].includes(field) || (field === 'link' && node.kind === 'element') || (field === 'icon' && node.kind === 'link');
   const ok = acceptedTypes(node, field, undefined);
   if (!fresh || !ok) return null;
   if (!ok.includes(schema.type)) return `shows a ${schema.type} property as its ${field}, which needs a ${ok.join(' or ')} property.`;
@@ -358,6 +360,10 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
     case 'iconPosition': {
       const bad = options.filter((o) => !(ICON_POSITIONS as string[]).includes(o));
       return bad.length ? `takes its icon side from a choice whose options ${listed(bad)} are not ${listed(ICON_POSITIONS)}.` : null;
+    }
+    case 'action': {
+      const bad = options.filter((o) => !(ELEMENT_ACTIONS as string[]).includes(o));
+      return bad.length ? `takes what a click does from a choice whose options ${listed(bad)} are not ${listed(ELEMENT_ACTIONS)}.` : null;
     }
     default:
       return null;

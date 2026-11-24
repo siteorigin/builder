@@ -5,9 +5,13 @@ import { catalogueComponent, getTheme } from '@catalogue/index';
 import type { AiExample } from '@catalogue/foundation/ai-examples';
 import { checkProps, type FieldIssue } from './macros';
 
-/** Problems an example has against the theme's current component contract. */
+/**
+ * Problems an example has against the component contract a section would be checked against: the project's installed
+ * copy when it has one (it may predate the theme's current version), otherwise the theme's.
+ */
 export function checkExample(state: ProjectState, ex: AiExample): FieldIssue[] {
-  const def: ComponentDefinition | undefined = catalogueComponent(state.site.themeId, ex.componentId);
+  const themed: ComponentDefinition | undefined = catalogueComponent(state.site.themeId, ex.componentId);
+  const def = themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : themed;
   if (!def || def.category === 'shell') return [{ field: 'componentId', message: `unknown component "${ex.componentId}"` }];
   const issues: FieldIssue[] = [];
   if (ex.variant !== undefined && 'error' in findVariant(def, ex.variant)) issues.push({ field: 'variant', message: `no variant "${ex.variant}"` });
