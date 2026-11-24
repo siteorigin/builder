@@ -131,7 +131,12 @@ export const OPERATION_SCHEMAS = {
     slot: z.string().optional(),
     index: z.number().int().min(0)
   }),
-  'node.duplicate': z.object({ type: z.literal('node.duplicate'), owner, nodeId: z.string() }),
+  'node.duplicate': z.object({
+    type: z.literal('node.duplicate'),
+    owner,
+    nodeId: z.string(),
+    index: z.number().int().min(0).optional().describe('Internal: where in the same list the copy goes (by default right after the original), so the editor can duplicate several layers as one group. Not offered to the model.')
+  }),
   'node.copy': z
     .object({
       type: z.literal('node.copy'),

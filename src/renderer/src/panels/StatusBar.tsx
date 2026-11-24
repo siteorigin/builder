@@ -3,8 +3,9 @@ import { ChevronRight, CircleAlert, CircleCheck, Component, Ellipsis, Info, Lock
 import type { Diagnostic, RuntimeState } from '@shared/api';
 import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
-import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
-import { goToShellPart, openAsset, openOutline, selectPage } from '../lib/actions';
+import { breadcrumb, inDefinition, treeFor, type Crumb } from '../lib/model';
+import { goToShellPart, groupCount, openAsset, openOutline, selectPage } from '../lib/actions';
+import { liveSet } from '../lib/layer-set';
 import { Modal, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 
@@ -25,6 +26,7 @@ export function StatusBar() {
   const snap = useStore((s) => s.snapshot);
   const runtime = useStore((s) => s.runtime);
   const selection = useStore((s) => s.selection);
+  const layerSet = useStore((s) => s.layerSet);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const pageIssue = useStore((s) => s.previewIssue);
   const stylesOpen = useStore((s) => s.rightTab === 'styles' && s.dockOpen);
@@ -78,6 +80,8 @@ export function StatusBar() {
       (nav.querySelector<HTMLElement>('[aria-current]') ?? document.querySelector<HTMLElement>('main.canvas'))?.focus();
     });
   };
+  // Several layers selected together in Layers: the path is the selection's, and the count says the rest come too.
+  const picked = layerSet && crumbs.length ? liveSet(treeFor(snap.state, layerSet.owner), selection, layerSet) : null;
   const problemText = errors ? plural(errors, 'problem') : warnings ? plural(warnings, 'warning') : 'No problems';
   return (
     <footer className="status-bar">
@@ -133,6 +137,7 @@ export function StatusBar() {
             ))}
           </ol>
         )}
+        {picked && <span className="crumbs-count">{groupCount(picked)} selected</span>}
       </nav>
       <button className={`problems${errors ? ' error' : warnings ? ' warn' : ''}`} onClick={() => setState({ modal: { kind: 'health' } })} title="Project health: check this project for problems">
         {errors ? <CircleAlert /> : warnings ? <TriangleAlert /> : <CircleCheck />}

@@ -6,10 +6,13 @@ import { isBinding } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
+import { applyOperations } from '@engine/apply';
+import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction } from '../store';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { showAsset } from './place';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownValue, treeFor } from './model';
+import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group } from './layer-set';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
 
@@ -64,6 +67,147 @@ export async function moveSelection(dir: -1 | 1) {
   const index = info.index + dir;
   if (index < 0 || index >= info.list.length) return;
   await applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], dir < 0 ? 'Move up' : 'Move down');
+}
+
+// ---------------------------------------------------------------------------
+// Several layers selected together in Layers (lib/layer-set): each action is one change, so one Undo.
+// ---------------------------------------------------------------------------
+
+/**
+ * What an action from Layers or a shortcut acts on, planned on the project as this window has it: the layers
+ * selected together (`several`), or the selection alone (a part counts as its placement). `selection` is the
+ * selection it was planned for, to tell whether the author has moved on by the time it lands.
+ */
+export interface LayersPlan {
+  snap: ProjectSnapshot;
+  group: Group;
+  several: boolean;
+  selection: ElementRef | null;
+  /** Where the next Shift pick starts, among the layers selected together. */
+  anchor?: string;
+}
+
+export function planLayers(s = getState()): LayersPlan | null {
+  const snap = s.snapshot;
+  if (!snap) return null;
+  if (s.layerSet) {
+    const group = liveSet(treeFor(snap.state, s.layerSet.owner), s.selection, s.layerSet);
+    if (group) return { snap, group, several: true, selection: s.selection, anchor: s.layerSet.anchor };
+  }
+  const t = structuralTarget(s.selection, { state: snap.state });
+  const tree = t ? treeFor(snap.state, t.owner) : undefined;
+  const group = t && tree ? groupOf(tree, t.owner, [t.nodeId]) : null;
+  return group ? { snap, group, several: false, selection: s.selection } : null;
+}
+
+/** "2 sections", or "3 layers" inside a section or a component. */
+export function groupCount(g: Group): string {
+  const noun = g.owner.kind === 'page' && g.parentId === null ? 'section' : 'layer';
+  return `${g.ids.length} ${noun}${g.ids.length === 1 ? '' : 's'}`;
+}
+
+/** "Gallery", "Gallery and Testimonials", or "3 sections". */
+export function groupName(st: ProjectState, g: Group): string {
+  if (g.ids.length > 2) return groupCount(g);
+  return g.ids.map((id) => nodeLabel(st, g.owner, id)).join(' and ');
+}
+
+/** Why the layers can't be moved, duplicated or deleted, or null when they can. */
+function lockedGroup(st: ProjectState, g: Group): string | null {
+  if (g.owner.kind === 'shell') return 'The shared header and footer cannot be moved, duplicated or deleted here. Hide either one on a page in its page settings instead.';
+  if (g.owner.kind === 'component' && g.ids.includes(treeFor(st, g.owner)?.rootIds[0] ?? '')) return 'This is the component itself. Select layers inside it.';
+  return null;
+}
+
+/** Whether the author is still where `plan` was made: the same selection, in the same opening of the project. */
+const stillOn = (plan: LayersPlan) => getState().selection === plan.selection && getState().snapshot?.workspaceKey === plan.snap.workspaceKey;
+
+/** The selection that stands for `plan`'s layers once a change has made `ids` of them (in order): the same one selected, and the same anchor. */
+function resultSelection(plan: LayersPlan, ids: string[], owner: OwnerRef = plan.group.owner) {
+  const at = (id: string | undefined) => Math.max(0, plan.group.ids.indexOf(id ?? ''));
+  return { selection: layerRef(owner, ids[at(plan.selection?.nodeId)]), layerSet: ids.length > 1 ? { owner, ids, anchor: ids[at(plan.anchor)] } : null };
+}
+
+/** Move the layers selected together one place up or down, in one change (the selection alone: moveSelection). */
+export async function moveLayers(dir: -1 | 1, plan = planLayers()) {
+  if (!plan?.several) return moveSelection(dir);
+  const why = lockedGroup(plan.snap.state, plan.group);
+  if (why) return toast(why, 'error');
+  const ops = moveStepOps(plan.group, dir);
+  if (ops) await applyOps(ops, `Move ${groupCount(plan.group)} ${dir < 0 ? 'up' : 'down'}`, undefined, plan.snap.revision);
+}
+
+/** Duplicate the layers selected together: the copies go together after the last of them, and are selected. */
+export async function duplicateLayers(plan = planLayers()) {
+  if (!plan?.several) return duplicateSelection();
+  const why = lockedGroup(plan.snap.state, plan.group);
+  if (why) return toast(why, 'error');
+  const r = await applyOps(duplicateOps(plan.group), `Duplicate ${groupCount(plan.group)}`, undefined, plan.snap.revision);
+  const ids = r?.map((x) => x.nodeId);
+  if (ids?.length === plan.group.ids.length && ids.every((id): id is string => typeof id === 'string') && stillOn(plan)) setState(resultSelection(plan, ids));
+}
+
+/** Delete the layers selected together, in one change, with an Undo beside its notice (the selection alone: deleteSelection). */
+export async function deleteLayers(plan = planLayers()) {
+  if (!plan?.several) return deleteSelection();
+  const why = lockedGroup(plan.snap.state, plan.group);
+  if (why) return toast(why, 'error');
+  const name = groupName(plan.snap.state, plan.group);
+  const r = await commitOps(removeOps(plan.group), `Delete ${groupCount(plan.group)}`, undefined, plan.snap.revision);
+  if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+  if (getState().selection === plan.selection) setState({ selection: null });
+  toast(`Deleted ${name}`, 'info', undoAction(r));
+}
+
+/** Move the layers into another container or slot (or the top level), at `to.index`, keeping their order. */
+export async function moveLayersInto(to: { parentId: string | null; slot?: string; index: number }, plan = planLayers()): Promise<boolean> {
+  if (!plan) return false;
+  const why = lockedGroup(plan.snap.state, plan.group);
+  if (why) return (toast(why, 'error'), false);
+  return !!(await applyOps(moveIntoOps(plan.group, to), plan.several ? `Move ${groupCount(plan.group)}` : 'Move layer', undefined, plan.snap.revision));
+}
+
+/** The pages a page's sections can be moved to: every other page, in the site's order. */
+export function otherPages(st: ProjectState, pageId: string): Array<{ id: string; title: string }> {
+  return st.site.pageOrder.filter((id) => id !== pageId && Object.hasOwn(st.pages, id)).map((id) => ({ id, title: st.pages[id].title }));
+}
+
+/**
+ * Move sections (the ones selected together, or the one selected) to the end of another page, as one change. That
+ * page opens with them selected, unless the author has moved on meanwhile. Section IDs go with them where the page
+ * has no section by that ID; a link that jumped to one on the page they left is named in the notice. Returns the
+ * moved sections' new IDs, or null when nothing moved.
+ */
+export async function moveToPage(pageId: string, plan = planLayers()): Promise<string[] | null> {
+  if (!plan) return null;
+  const g = plan.group;
+  const st = plan.snap.state;
+  const dest = Object.hasOwn(st.pages, pageId) ? st.pages[pageId] : undefined;
+  if (g.owner.kind !== 'page' || g.parentId !== null || !dest || pageId === g.owner.id) return null;
+  const from = st.pages[g.owner.id]?.title ?? 'this page';
+  const ops = moveToPageOps(g, pageId, dest.rootIds.length);
+  // Counted on a copy of the project before it is sent: links elsewhere that jumped to these sections where they were.
+  let broken = 0;
+  try {
+    broken = Math.max(0, missingSectionLinks(applyOperations(st, ops).state).length - missingSectionLinks(st).length);
+  } catch {
+    // The project refuses it, and says why.
+  }
+  const name = groupName(st, g);
+  const r = await commitOps(ops, `Move ${plan.several ? groupCount(g) : name} to ${dest.title}`, undefined, plan.snap.revision);
+  if (!r?.ok) return null;
+  const ids = (r.results ?? []).slice(0, g.ids.length).map((x) => x.nodeId);
+  if (ids.length !== g.ids.length || !ids.every((id): id is string => typeof id === 'string')) return null;
+  if (getState().snapshot?.workspaceKey !== r.workspaceKey) return ids;
+  // Followed to their page, selected as they were, unless the author has moved on meanwhile.
+  if (stillOn(plan) && getState().pageId === g.owner.id && !getState().definitionMode) {
+    selectPage(pageId);
+    setState(resultSelection(plan, ids, { kind: 'page', id: pageId }));
+  }
+  const them = g.ids.length > 1 ? 'them' : 'it';
+  const note = broken ? ` ${broken === 1 ? 'A link' : `${broken} links`} that jumped to ${them} on ${from} now ${broken === 1 ? 'goes' : 'go'} to a section ${from} no longer has: Project health lists ${broken === 1 ? 'it' : 'them'}.` : '';
+  toast(`Moved ${name} to the end of ${dest.title}.${note}`, broken ? 'error' : 'info', undoAction(r));
+  return ids;
 }
 
 /** Where an inserted node goes: into a parent's list (or one of an instance's slots), or the owner's top level. */

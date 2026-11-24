@@ -75,7 +75,7 @@ export interface Clipboard {
   id: string;
   /** The page it was copied from. */
   pageId: string;
-  /** The copied subtree; its only root is the copied node. */
+  /** The copied subtrees; its roots are the copied nodes (siblings, when several were copied together), in page order. */
   tree: NodeTree;
   /** Placed components: name, and the property schema and slots the copied content was written for. */
   components: Record<string, { name: string; contract: string }>;
@@ -1014,8 +1014,12 @@ function nodeMove(state: ProjectState, op: Op<'node.move'>): OpResult {
 function nodeDuplicate(state: ProjectState, op: Op<'node.duplicate'>): OpResult {
   const tree = editableTree(state, op.owner);
   const info = findParent(tree, op.nodeId) ?? fail('Node is not attached.');
+  // The copy goes right after the original, or (the editor duplicating several siblings) where `index` says in the
+  // same list, so the copies stay together after the last of them.
+  const at = op.index ?? info.index + 1;
+  if (at > info.list.length) fail(`index ${at} is past the end of the list, which has ${info.list.length} items.`);
   const nid = copySubtree(tree, tree, op.nodeId, state);
-  info.list.splice(info.index + 1, 0, nid);
+  info.list.splice(at, 0, nid);
   return { nodeId: nid };
 }
 
@@ -1046,13 +1050,21 @@ function styleTokens(n: GraphNode): string[] {
   return out;
 }
 
-/** Take a copy of page content as it is now, for a later paste that must not depend on the original. */
-export function captureClipboard(state: ProjectState, pageId: string, nodeId: string): Clipboard {
+/**
+ * Take a copy of page content as it is now, for a later paste that must not depend on the original. Several nodes
+ * are copied together only when they are siblings (one list of one parent), and are kept in the page's order.
+ */
+export function captureClipboard(state: ProjectState, pageId: string, nodeIds: string | readonly string[]): Clipboard {
   const page = getTree(state, { kind: 'page', id: pageId });
-  getNode(page, nodeId);
-  if (!findParent(page, nodeId)) fail('Node is not attached.');
-  const clip: Clipboard = { id: newId('clip'), pageId, tree: { rootIds: [nodeId], nodes: {} }, components: {}, pages: {}, assets: {} };
-  for (const id of subtreeIds(page, nodeId)) {
+  const wanted = typeof nodeIds === 'string' ? [nodeIds] : [...nodeIds];
+  if (!wanted.length) fail('Nothing was chosen to copy.');
+  if (new Set(wanted).size !== wanted.length) fail('The same content was named twice.');
+  for (const id of wanted) getNode(page, id);
+  const info = findParent(page, wanted[0]) ?? fail('Node is not attached.');
+  if (!wanted.every((id) => info.list.includes(id))) fail('Only sections or elements side by side in one place can be copied together.');
+  const roots = info.list.filter((id) => wanted.includes(id));
+  const clip: Clipboard = { id: newId('clip'), pageId, tree: { rootIds: roots, nodes: {} }, components: {}, pages: {}, assets: {} };
+  for (const id of roots.flatMap((root) => subtreeIds(page, root))) {
     const n = clone(page.nodes[id]);
     for (const cl of childLists(n)) if (cl.ids.some((c) => !own(page.nodes, c))) fail('Part of this content is missing from the page, so it cannot be copied.');
     if (n.kind === 'instance') {
@@ -1111,7 +1123,9 @@ function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | 
     }
     for (const t of styleTokens(n)) if (!tokens.has(t)) gone(`uses the site style "${t}"`);
   }
-  return placeCopy(state, tree, tree.rootIds[0], op);
+  // Several copied together go in their order, from the place asked for (or each at the end).
+  const nodeIds = tree.rootIds.map((root, i) => placeCopy(state, tree, root, { ...op, index: op.index === undefined ? undefined : op.index + i }).nodeId as string);
+  return { nodeId: nodeIds[0], nodeIds };
 }
 
 /** Place a copy of `from`'s subtree at `op`'s destination, with new IDs; shared by copy and paste. */

@@ -1,22 +1,28 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
+import { createContext, Fragment, useContext, useEffect, useRef, useState } from 'react';
+import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
-import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, useStore } from '../store';
+import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { askAiAbout, deleteSelection, duplicateSelection, moveSelection } from '../lib/actions';
+import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, duplicateSelection, groupCount, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
 import { styleCopyItems } from './StylePaste';
 import { everySizeEdits, eyeAction, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type VisibilityEdit } from '../lib/layers';
+import { besideOf, extendTo, inSet, layerRef, liveSet, toggle, type Group } from '../lib/layer-set';
+import { treeFor } from '../lib/model';
 import { OutlinePanel } from './OutlinePanel';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
  * component's own tree while it is being edited everywhere. It follows the WAI-ARIA tree pattern: one tab
  * stop, arrows move (selection follows focus), Right/Left open and close, type-ahead jumps by name.
+ *
+ * Several layers side by side (one list of one parent) can be selected together, to move, copy, duplicate or delete
+ * them as one change (lib/layer-set): Shift-click or Shift+↑/↓ selects a range, Cmd/Ctrl-click adds or removes one,
+ * and Cmd/Ctrl+↑/↓ moves focus without selecting so Space can add or remove the focused layer. Escape keeps one.
  *
  * Rows line up on one indent step (12px, 9px in a narrow sidebar; styles.css owns --layers-pad and
  * --layers-indent, so a row only carries its --depth). Each open branch draws a straight guide down its
@@ -100,6 +106,52 @@ function visibilityOf(state: ProjectState, tree: NodeTree, n: GraphNode, partId?
 const treeRows = (from: Element | null) => [...(from?.closest('[role="tree"]')?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? [])];
 const rowFor = (id: string) => document.querySelector<HTMLElement>(`.layers-tree [data-node="${id}"]`);
 
+/** The layers selected together, while they are: every row in it shows as selected. */
+const Picked = createContext<Group | null>(null);
+
+/** The additive pick: Cmd-click on macOS (Ctrl-click there opens the context menu), Ctrl-click elsewhere. */
+const additive = (e: { metaKey: boolean; ctrlKey: boolean }) => (api.platform === 'darwin' ? e.metaKey : e.ctrlKey);
+
+/** A row's owner, from its data-owner ("page:pg_1"). */
+function ownerOfRow(row: HTMLElement): OwnerRef | null {
+  const v = row.dataset.owner ?? '';
+  const at = v.indexOf(':');
+  const kind = v.slice(0, at);
+  return kind === 'page' || kind === 'shell' || kind === 'component' ? { kind, id: v.slice(at + 1) } : null;
+}
+
+/** Shift (a range) or Cmd/Ctrl (one more, or one less) pick of a layer; a pick that can't join says why. */
+function pickRow(how: 'range' | 'toggle', ref: ElementRef) {
+  const s = getState();
+  const tree = s.snapshot ? treeFor(s.snapshot.state, ref.owner) : undefined;
+  if (!tree) return false;
+  const r = (how === 'range' ? extendTo : toggle)(tree, s.selection, s.layerSet, ref);
+  if ('refused' in r) {
+    toast(r.refused, 'info');
+    return false;
+  }
+  setState({ selection: r.selection, layerSet: r.layerSet });
+  return true;
+}
+
+/**
+ * Once the rows have caught up with a change (a page opened, copies made), move keyboard focus to the selection's
+ * row, while focus is still in Layers or nowhere: a Tab away meanwhile keeps its place.
+ */
+function focusSelected(tries = 10) {
+  setTimeout(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && !active.closest('.layers-tree')) return;
+    const row = document.querySelector<HTMLElement>('.layers-tree [role="treeitem"][data-primary="true"]');
+    if (row) row.focus();
+    else if (tries > 1) focusSelected(tries - 1);
+  }, 60);
+}
+
+/** The row to keep as the tree's one tab stop: the selection's (of several selected together), any selected, the focused one, else the first. */
+const tabStop = (rows: HTMLElement[]) =>
+  rows.find((r) => r.dataset.primary === 'true') ?? rows.find((r) => r.getAttribute('aria-selected') === 'true') ?? rows.find((r) => r.contains(document.activeElement)) ?? rows[0];
+
 export function LayersPanel() {
   const snap = useStore((s) => s.snapshot);
   const pageId = useStore((s) => s.pageId);
@@ -111,6 +163,7 @@ export function LayersPanel() {
   const typed = useRef({ text: '', at: 0 });
   // The panel owns the tree's single tab stop; it re-reconciles whenever the selection changes.
   const selection = useStore((s) => s.selection);
+  const layerSet = useStore((s) => s.layerSet);
   useRovingTabStop(treeRef, 'treeitem');
   // A selection made elsewhere (the canvas, the inspector) scrolls its row into view once its branches have
   // opened, and again when the panel is shown; keyboard focus stays where it is.
@@ -119,7 +172,7 @@ export function LayersPanel() {
     const t = setTimeout(() => {
       const tree = treeRef.current;
       if (!tree || tree.contains(document.activeElement)) return;
-      tree.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+      (tree.querySelector<HTMLElement>('[role="treeitem"][data-primary="true"]') ?? tree.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"]'))?.scrollIntoView({ block: 'nearest' });
     }, 60);
     return () => clearTimeout(t);
     // Returning from the headings outline shows the selected row again: it may have changed while the tree was hidden.
@@ -132,7 +185,7 @@ export function LayersPanel() {
     const reconcile = () => {
       const rows = [...el.querySelectorAll<HTMLElement>('[role="treeitem"]')];
       if (!rows.length) return;
-      const keep = rows.find((r) => r.getAttribute('aria-selected') === 'true') ?? rows.find((r) => r.contains(document.activeElement)) ?? rows[0];
+      const keep = tabStop(rows);
       for (const r of rows) if (r.tabIndex !== (r === keep ? 0 : -1)) r.tabIndex = r === keep ? 0 : -1;
     };
     const mo = new MutationObserver(reconcile);
@@ -144,8 +197,61 @@ export function LayersPanel() {
   const page = st.pages[pageId];
   const defOwner: OwnerRef | null = definitionMode ? { kind: 'component', id: definitionMode.definitionId } : null;
   const defTree = defOwner ? st.components[defOwner.id]?.tree : null;
+  // The layers selected together, while the selection is one of them and they still sit side by side.
+  const picked = layerSet ? liveSet(treeFor(st, layerSet.owner), selection, layerSet) : null;
+
+  /** The page a section (or the sections selected together) can be moved to, at its end; the moved ones are selected there. */
+  const pageMenu = (anchor: { x: number; y: number }, plan: LayersPlan | null, pages: Array<{ id: string; title: string }>, what: string, returnTo: string) =>
+    plan &&
+    menu.open(
+      anchor.x,
+      anchor.y,
+      [{ heading: `Move ${what} to the end of…` }, ...pages.map((p) => ({ label: p.title, icon: <FileText />, onSelect: () => void moveToPage(p.id, plan).then((ids) => ids && focusSelected()) }))],
+      `Move ${what} to another page`,
+      rowFor(returnTo)
+    );
+
+  /** The menu for several layers selected together: each command is one change for all of them, planned now. */
+  const openGroupMenu = (el: HTMLElement | { x: number; y: number; returnTo?: HTMLElement }, g: Group) => {
+    const plan = planLayers();
+    if (!plan?.several) return;
+    const tree = treeFor(st, g.owner);
+    if (!tree) return;
+    const count = groupCount(g);
+    const anchorOf = () => (el instanceof HTMLElement ? (() => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.bottom + 4 }; })() : el);
+    const primary = plan.selection?.nodeId ?? g.ids[0];
+    const destinations = moveDestinations(st, tree, g.owner, g.ids);
+    const pages = g.owner.kind === 'page' && g.parentId === null ? otherPages(st, g.owner.id) : [];
+    const moveTo = (anchor: { x: number; y: number }) =>
+      menu.open(
+        anchor.x,
+        anchor.y,
+        [{ heading: `Move ${count} into…` }, ...destinations.map((d) => ({ label: d.label, onSelect: () => void moveLayersInto({ parentId: d.parentId, slot: d.slot, index: d.index }, plan).then((ok) => ok && focusSelected()) }))],
+        `Move ${count}`,
+        rowFor(primary)
+      );
+    const items = [
+      { heading: `${count} selected` },
+      { label: 'Move up', icon: <ArrowUp />, shortcut: '⇧⌘↑', disabled: g.indexes[0] === 0, onSelect: () => void moveLayers(-1, plan) },
+      { label: 'Move down', icon: <ArrowDown />, shortcut: '⇧⌘↓', disabled: g.indexes[g.indexes.length - 1] >= g.list.length - 1, onSelect: () => void moveLayers(1, plan) },
+      ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
+      ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), plan, pages, count, primary), 0) }] : []),
+      { separator: true },
+      { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateLayers(plan).then(() => focusSelected()) },
+      { separator: true },
+      { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteLayers(plan) }
+    ];
+    const label = `${count} selected options`;
+    if (el instanceof HTMLElement && el.getAttribute('role') === 'treeitem') {
+      const r = el.getBoundingClientRect();
+      menu.open(r.left + 24, r.bottom, items, label, el);
+    } else if (el instanceof HTMLElement) menu.openAt(el, items, label);
+    else menu.open(el.x, el.y, items, label, el.returnTo ?? (document.activeElement as HTMLElement | null));
+  };
 
   const openMenu = (el: HTMLElement | { x: number; y: number; returnTo?: HTMLElement }, ref: ElementRef, topLevel: boolean, onRename?: () => void) => {
+    // A menu opened on one of several layers selected together is for all of them; on any other layer, for that one.
+    if (picked && inSet(layerSet, ref)) return openGroupMenu(el, picked);
     setState({ selection: ref });
     const tree = ref.owner.kind === 'shell' ? st.site.shell[ref.owner.id as 'header' | 'footer'] : ref.owner.kind === 'component' ? st.components[ref.owner.id].tree! : st.pages[ref.owner.id];
     const node = tree.nodes[ref.instancePath[0] ?? ref.nodeId];
@@ -158,65 +264,9 @@ export function LayersPanel() {
     const editable = topLevel && ref.owner.kind !== 'shell' && !isDefRoot;
     const here = editable && !ref.instancePath.length ? findParent(tree, ref.nodeId) : null;
     // "Move to…": the keyboard and menu equivalent of dragging a layer into another container or slot.
-    const destinations = (() => {
-      if (!editable || ref.instancePath.length || !node) return [];
-      const inside = new Set(subtreeIds(tree, ref.nodeId));
-      const out: Array<{ path: string[]; parentId: string | null; slot?: string; index: number }> = [];
-      // Each destination carries its full path of names, so repeated names can be told apart by their parents.
-      const pathOf = (id: string): string[] => {
-        const names: string[] = [];
-        let cur: string | null = id;
-        while (cur) {
-          const n: GraphNode | undefined = tree.nodes[cur];
-          if (!n) break;
-          names.unshift(displayName(st, n));
-          const up = findParent(tree, cur);
-          // Content placed in a component's slot is named by that slot too ("Spring 2026 … › Content › Row").
-          const holder = up?.parentId ? tree.nodes[up.parentId] : undefined;
-          if (up?.slot && holder?.kind === 'instance') names.unshift(st.components[holder.definitionId]?.slots?.[up.slot]?.label ?? up.slot);
-          cur = up?.parentId ?? null;
-        }
-        return names;
-      };
-      if (here?.parentId !== null) out.push({ path: [ref.owner.kind === 'component' ? 'Top level of this component' : 'Top level of the page'], parentId: null, index: tree.rootIds.length });
-      // Walk the tree in outline order, so numbered duplicates follow the order the user sees.
-      const ordered: GraphNode[] = [];
-      const walk = (id: string) => {
-        const n = tree.nodes[id];
-        if (!n || ordered.includes(n)) return;
-        ordered.push(n);
-        for (const ids of childIdsInOrder(st, n)) ids.forEach(walk);
-      };
-      tree.rootIds.forEach(walk);
-      for (const n of ordered) {
-        if (inside.has(n.id)) continue;
-        if (n.kind === 'element') {
-          if (here?.parentId === n.id) continue;
-          out.push({ path: pathOf(n.id), parentId: n.id, index: n.children.length });
-        } else if (n.kind === 'instance') {
-          const slots = st.components[n.definitionId]?.slots ?? {};
-          for (const [slot, info] of Object.entries(slots)) {
-            if (here?.parentId === n.id && here.slot === slot) continue;
-            out.push({ path: [...pathOf(n.id), info.label], parentId: n.id, slot, index: n.slots?.[slot]?.length ?? 0 });
-          }
-        }
-      }
-      // The shortest tail of each path that is unique; identical paths are numbered in page order.
-      const labels = out.map((d) => {
-        if (d.parentId === null) return d.path[0];
-        // A slot is always named with its component ("Spring 2026 … › Content"), never on its own.
-        for (let k = d.slot ? 2 : 1; k <= d.path.length; k++) {
-          const tail = d.path.slice(-k).join(' › ');
-          if (out.filter((o) => o.parentId !== null && o.path.slice(-k).join(' › ') === tail).length < 2) return tail;
-        }
-        return d.path.join(' › ');
-      });
-      return out.map((d, i) => {
-        const same = labels.filter((l, j) => l === labels[i] && j < i).length;
-        const total = labels.filter((l) => l === labels[i]).length;
-        return { ...d, label: total > 1 ? `${labels[i]} (${same + 1} of ${total})` : labels[i] };
-      });
-    })();
+    const destinations = editable && !ref.instancePath.length && node ? moveDestinations(st, tree, ref.owner, [ref.nodeId]) : [];
+    // Moving a page's section to another page: one change, at the end of that page.
+    const pages = editable && here?.parentId === null && ref.owner.kind === 'page' && !ref.instancePath.length ? otherPages(st, ref.owner.id) : [];
     const moveTo = (anchor: { x: number; y: number }) =>
       menu.open(
         anchor.x,
@@ -266,7 +316,8 @@ export function LayersPanel() {
             { separator: true },
             { label: 'Move up', icon: <ArrowUp />, shortcut: '⇧⌘↑', disabled: here.index === 0, onSelect: () => void moveSelection(-1) },
             { label: 'Move down', icon: <ArrowDown />, shortcut: '⇧⌘↓', disabled: here.index >= here.list.length - 1, onSelect: () => void moveSelection(1) },
-            ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : [])
+            ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
+            ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), planLayers(), pages, name, ref.nodeId), 0) }] : [])
           ]
         : []),
       ...(visibility.length ? [{ separator: true }, ...visibility] : []),
@@ -288,8 +339,32 @@ export function LayersPanel() {
     else menu.open(el.x, el.y, items, `${name} options`, el.returnTo ?? (document.activeElement as HTMLElement | null));
   };
 
-  /** Arrow keys (shared roving), plus type-ahead: typing a name's first letters jumps to the next match. */
+  /**
+   * Arrow keys (shared roving), plus type-ahead: typing a name's first letters jumps to the next match. Shift+↑/↓
+   * selects the layer beside the focused one too (or lets it go, back towards where the range started); Cmd/Ctrl+↑/↓
+   * moves focus alone, for Space to add or remove the focused layer.
+   */
   const onTreeKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]');
+    const onRow = !!row && (e.target === row || (e.target as HTMLElement).tagName === 'BUTTON');
+    if (row && onRow && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.altKey) {
+      const dir = e.key === 'ArrowUp' ? -1 : 1;
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        const owner = ownerOfRow(row);
+        const id = row.dataset.node;
+        const tree = owner ? treeFor(st, owner) : undefined;
+        const next = tree && id ? besideOf(tree, id, dir) : null;
+        if (owner && next && pickRow('range', layerRef(owner, next))) requestAnimationFrame(() => rowFor(next)?.focus());
+        return;
+      }
+      if (!e.shiftKey && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        const rows = treeRows(row);
+        rows[rows.indexOf(row) + dir]?.focus();
+        return;
+      }
+    }
     rovingKeys(e, 'treeitem');
     if (e.defaultPrevented || e.key.length !== 1 || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target as HTMLElement;
@@ -336,8 +411,21 @@ export function LayersPanel() {
         </div>
       )}
       {outline && visible && <OutlinePanel pageId={pageId} />}
+      {/* How many layers are selected together, and their commands for the pointer (Shift+F10 on a row has them too). */}
+      {picked && !outline && (
+        <div className="layers-picked" aria-hidden="true">
+          <span className="grow">{groupCount(picked)} selected</span>
+          <button className="icon-btn sm" tabIndex={-1} title="Commands for the selected layers" onClick={(e) => openGroupMenu(e.currentTarget, picked)}>
+            <Ellipsis />
+          </button>
+        </div>
+      )}
+      <span className="sr-only" role="status">
+        {picked && !outline ? `${groupCount(picked)} selected` : ''}
+      </span>
       {/* The tree stays mounted while the outline shows, so its single tab stop is kept for when it returns. */}
-      <div className="panel-body layers-tree" role="tree" aria-label="Layers" ref={treeRef} onKeyDown={onTreeKey} hidden={outline}>
+      <Picked.Provider value={picked}>
+      <div className="panel-body layers-tree" role="tree" aria-label="Layers" aria-multiselectable="true" ref={treeRef} onKeyDown={onTreeKey} hidden={outline}>
         {defOwner && defTree ? (
           <>
             <SectionLabel id="layers-sec-component" icon={<Component />} label="Component layers" />
@@ -383,6 +471,7 @@ export function LayersPanel() {
           </>
         )}
       </div>
+      </Picked.Provider>
       {menu.node}
     </>
   );
@@ -395,6 +484,72 @@ function SectionLabel({ id, icon, label }: { id: string; icon: React.ReactNode; 
       {icon} {label}
     </div>
   );
+}
+
+/**
+ * Where "Move into…" can put layers (one, or several side by side): every container and slot of the tree except the
+ * one they are in and anything inside them, plus the top level when they are not there already; each named by the
+ * shortest tail of its path that tells it apart.
+ */
+function moveDestinations(st: ProjectState, tree: NodeTree, owner: OwnerRef, ids: string[]) {
+  const here = ids.length ? findParent(tree, ids[0]) : null;
+  if (!here) return [];
+  const inside = new Set(ids.flatMap((id) => subtreeIds(tree, id)));
+  const out: Array<{ path: string[]; parentId: string | null; slot?: string; index: number }> = [];
+  // Each destination carries its full path of names, so repeated names can be told apart by their parents.
+  const pathOf = (id: string): string[] => {
+    const names: string[] = [];
+    let cur: string | null = id;
+    while (cur) {
+      const n: GraphNode | undefined = tree.nodes[cur];
+      if (!n) break;
+      names.unshift(displayName(st, n));
+      const up = findParent(tree, cur);
+      // Content placed in a component's slot is named by that slot too ("Spring 2026 … › Content › Row").
+      const holder = up?.parentId ? tree.nodes[up.parentId] : undefined;
+      if (up?.slot && holder?.kind === 'instance') names.unshift(st.components[holder.definitionId]?.slots?.[up.slot]?.label ?? up.slot);
+      cur = up?.parentId ?? null;
+    }
+    return names;
+  };
+  if (here.parentId !== null) out.push({ path: [owner.kind === 'component' ? 'Top level of this component' : 'Top level of the page'], parentId: null, index: tree.rootIds.length });
+  // Walk the tree in outline order, so numbered duplicates follow the order the user sees.
+  const ordered: GraphNode[] = [];
+  const walk = (id: string) => {
+    const n = tree.nodes[id];
+    if (!n || ordered.includes(n)) return;
+    ordered.push(n);
+    for (const ids of childIdsInOrder(st, n)) ids.forEach(walk);
+  };
+  tree.rootIds.forEach(walk);
+  for (const n of ordered) {
+    if (inside.has(n.id)) continue;
+    if (n.kind === 'element') {
+      if (here.parentId === n.id) continue;
+      out.push({ path: pathOf(n.id), parentId: n.id, index: n.children.length });
+    } else if (n.kind === 'instance') {
+      const slots = st.components[n.definitionId]?.slots ?? {};
+      for (const [slot, info] of Object.entries(slots)) {
+        if (here.parentId === n.id && here.slot === slot) continue;
+        out.push({ path: [...pathOf(n.id), info.label], parentId: n.id, slot, index: n.slots?.[slot]?.length ?? 0 });
+      }
+    }
+  }
+  // The shortest tail of each path that is unique; identical paths are numbered in page order.
+  const labels = out.map((d) => {
+    if (d.parentId === null) return d.path[0];
+    // A slot is always named with its component ("Spring 2026 … › Content"), never on its own.
+    for (let k = d.slot ? 2 : 1; k <= d.path.length; k++) {
+      const tail = d.path.slice(-k).join(' › ');
+      if (out.filter((o) => o.parentId !== null && o.path.slice(-k).join(' › ') === tail).length < 2) return tail;
+    }
+    return d.path.join(' › ');
+  });
+  return out.map((d, i) => {
+    const same = labels.filter((l, j) => l === labels[i] && j < i).length;
+    const total = labels.filter((l) => l === labels[i]).length;
+    return { ...d, label: total > 1 ? `${labels[i]} (${same + 1} of ${total})` : labels[i] };
+  });
 }
 
 type MenuFn = (el: HTMLElement | { x: number; y: number; returnTo?: HTMLElement }, ref: ElementRef, top: boolean, onRename?: () => void) => void;
@@ -429,6 +584,7 @@ type Drop = { where: 'before' | 'after' | 'inside' | 'first'; depth: number; lab
 function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: ListProps & { id: string; parentId?: string }) {
   const selection = useStore((s) => s.selection);
   const definitionMode = useStore((s) => s.definitionMode);
+  const picked = useContext(Picked);
   // What the row says about visibility follows the size the preview shows (not the inspector's style scope).
   const size = useStore((s) => scopeForWidth(s.viewport));
   const [open, setOpen] = useState(false);
@@ -454,7 +610,10 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   const isDefRoot = owner.kind === 'component' && state.components[owner.id]?.tree?.rootIds[0] === id;
   const defRoot = isDefRoot && !!definitionMode && !!selection && selection.owner.kind !== 'component' && selection.instancePath.length === 1 && selection.nodeId === id;
   // A node of a component being edited, picked on the canvas in one repeated item, is still this row.
-  const selected = sameRef(selection, ref) || defRoot || (owner.kind === 'component' && !!selection?.itemPath?.length && sameRef({ ...selection, itemPath: undefined }, ref));
+  const own = sameRef(selection, ref) || defRoot || (owner.kind === 'component' && !!selection?.itemPath?.length && sameRef({ ...selection, itemPath: undefined }, ref));
+  // One of several selected together: shown as selected too, while the selection itself stays the one row marked primary.
+  const member = !!picked && picked.owner.kind === owner.kind && picked.owner.id === owner.id && picked.ids.includes(id);
+  const selected = own || member;
   // Holds the selection: a part of this component (at any depth), or anything nested inside this container,
   // judged by where the selection's outermost component sits in this tree.
   const anchor = selection && selection.owner.id === owner.id ? (selection.instancePath[0] ?? selection.nodeId) : null;
@@ -538,12 +697,20 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
       <div
         className={rowClass}
         data-node={id}
+        data-owner={`${owner.kind}:${owner.id}`}
+        data-primary={own || undefined}
         data-name={label.kind}
         data-words={label.empty ? undefined : label.excerpt}
         aria-label={`${label.full}${custom ? ', made in this project' : ''}${vis.note ? `, ${vis.note}` : ''}`}
         style={{ ...depthVar(depth), '--drop-depth': drop?.depth ?? depth } as React.CSSProperties}
         draggable={draggable && !renaming}
         onDragStart={(e) => {
+          // Layers selected together move with the menu or the keys, as one change; a drag moves one layer.
+          if (member) {
+            e.preventDefault();
+            toast('Several layers are selected: move them with Move up, Move down, Move into… or Move to page… in their menu, or press Esc to keep one and drag it.', 'info');
+            return;
+          }
           dragging = { owner, nodeId: id };
           e.dataTransfer.effectAllowed = 'move';
           e.currentTarget.setAttribute('data-dragging', '');
@@ -592,8 +759,15 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
         aria-owns={isOpen ? groupId : undefined}
         aria-level={depth + 1}
         tabIndex={-1}
-        onClick={() => setState({ selection: ref })}
-        onDoubleClick={startRename}
+        onClick={(e) => {
+          // Shift picks a range from the layer picked before; Cmd (Ctrl) adds this one, or takes it away.
+          if (e.shiftKey || additive(e)) {
+            if (pickRow(e.shiftKey ? 'range' : 'toggle', ref)) e.currentTarget.focus();
+            return;
+          }
+          setState({ selection: ref });
+        }}
+        onDoubleClick={(e) => !e.shiftKey && !additive(e) && startRename()}
         onMouseEnter={() => setState({ hover: ref })}
         onMouseLeave={() => setState({ hover: null })}
         onContextMenu={(e) => {
@@ -628,7 +802,13 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
               up?.click();
             }
           }
-          if ((e.key === 'Enter' || e.key === ' ') && t === row) (e.preventDefault(), setState({ selection: ref }));
+          if ((e.key === 'Enter' || e.key === ' ') && t === row) {
+            e.preventDefault();
+            // Space on a layer focus reached without selecting it (Cmd/Ctrl+↑/↓) adds it to the selection; on one of
+            // several selected, it takes that one away. Enter selects this layer alone.
+            if (e.key === ' ' && !e.shiftKey && (!selected || !!picked)) pickRow('toggle', ref);
+            else setState({ selection: ref });
+          }
           if (e.key === 'F2') (e.preventDefault(), startRename());
           if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') (e.preventDefault(), onMenu(row, ref, true, startRename));
         }}

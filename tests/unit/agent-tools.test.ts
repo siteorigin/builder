@@ -1174,6 +1174,20 @@ describe('review regressions', () => {
     expect(session.revision).toBe(0);
   });
 
+  it('rejects a model-supplied place for a duplicate, and never offers one', async () => {
+    let home = '';
+    let first = '';
+    const { session, adapter, run } = await setup([() => [call('x', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'node.duplicate', owner: { kind: 'page', id: home }, nodeId: first, index: 0 }] })], () => finish()]);
+    home = session.state.site.homePageId;
+    first = session.state.pages[home].rootIds[0];
+    await run('Duplicate the first section');
+    const offered = JSON.stringify(adapter.requests[0].tools.find((t) => t.name === 'apply_operations'));
+    expect(offered).toContain('node.duplicate');
+    expect(offered).not.toContain('where in the same list the copy goes');
+    expect(JSON.stringify(adapter.requests[1].items.at(-1))).toContain('does not take an index');
+    expect(session.revision).toBe(0);
+  });
+
   it('keeps a mid-tone brand color readable and only renames a standard copyright line', async () => {
     const hex = (h: string): [number, number, number] => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
     const t = derivedBrandTokens('#777777', '#f1eee6');
