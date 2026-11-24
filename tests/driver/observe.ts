@@ -57,8 +57,9 @@ export interface ObserveEnv {
   /** Where screenshots are saved, or null when the session has no artifacts folder. */
   artifacts: string | null;
   signal: AbortSignal;
-  /** The provider keys the app has saved in this session's own profile: never returned either. */
-  storedSecrets?: () => Promise<string[]>;
+  /** The provider keys the app has saved in this session's own profile: never returned either. Strict: a key file
+   *  that exists but cannot be read throws. */
+  storedSecrets?: (strict?: boolean) => Promise<string[]>;
   /** Told every credential an observation learns, so the session can keep them out of what else it reports. */
   remember?: (secrets: string[]) => void;
   /** Every credential the session has seen before: scrubbed from this observation too. */
@@ -191,8 +192,9 @@ async function readPreview(page: Page): Promise<{ iframe: boolean; doc: PreviewD
 }
 
 /** The credential values in every frame of the window: the editor's, the preview's and any other (failures skipped). */
-export async function frameSecrets(page: Page): Promise<string[]> {
-  const read = await Promise.all(page.frames().map((f) => f.evaluate(secretsIn, SECRET_INPUTS).catch((): string[] => [])));
+export async function frameSecrets(page: Page, { strict = false }: { strict?: boolean } = {}): Promise<string[]> {
+  // Strict: a frame that cannot be read fails the whole read, for a caller that must not take "unknown" as "none".
+  const read = await Promise.all(page.frames().map((f) => (strict ? f.evaluate(secretsIn, SECRET_INPUTS) : f.evaluate(secretsIn, SECRET_INPUTS).catch((): string[] => []))));
   return read.flat();
 }
 
@@ -716,8 +718,12 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   // Pixels cannot be scrubbed, and a credential can be painted where no text check finds it: nothing is captured while
   // the session knows any credential (a filled credential field, a saved key, one seen before), or cannot tell.
   const withheld = { editor: null, preview: null, withheld: 'A credential is known in this session, and screenshots could show it.' };
-  const known = await Promise.all([frameSecrets(page), env.storedSecrets?.() ?? Promise.resolve([])]).catch(() => null);
-  if (!known || obs.secrets.length || obs.echoes || known.flat().length || env.remembered?.().length) return withheld;
+  // Anything that cannot be read counts as a credential.
+  const clear = async () => {
+    const known = await Promise.all([frameSecrets(page, { strict: true }), env.storedSecrets?.(true) ?? Promise.resolve([])]).catch(() => null);
+    return !!known && !known.flat().length && !env.remembered?.().length;
+  };
+  if (obs.secrets.length || obs.echoes || !(await clear())) return withheld;
   const dir = join(env.artifacts, 'snapshots');
   const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
   const vp = await page.evaluate(() => ({ width: (globalThis as Dom).innerWidth as number, height: (globalThis as Dom).innerHeight as number }));
@@ -737,8 +743,8 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
     if (width >= 1 && height >= 1) clip = { x: Math.floor(x), y: Math.floor(y), width: Math.floor(width), height: Math.floor(height) };
   }
   const previewPng = clip ? await page.screenshot({ mask, clip, timeout: 10_000 }) : null;
-  // A credential typed while the pixels were taken counts as well.
-  if ((await frameSecrets(page).catch(() => ['?'])).length) return withheld;
+  // A credential typed or saved while the pixels were taken counts as well.
+  if (!(await clear())) return withheld;
   // A capture that outlived its request leaves nothing behind.
   aborted(signal);
   await mkdir(dir, { recursive: true });
@@ -871,6 +877,8 @@ async function matchesIn(env: ObserveEnv, obs: Observation, scopes: Scope[], arg
       const base: Page | Frame = scope === 'editor' ? env.page : obs.docs.preview!.frame;
       const tree = scope === 'editor' ? obs.editor : obs.preview!;
       const loc = base.getByRole(args.role as Parameters<Page['getByRole']>[0], args.name !== undefined ? { name: args.name, exact: args.exact !== false } : {});
+      // Counted first, so a huge page is refused before Playwright makes a handle for every match.
+      if ((await loc.count().catch(() => 0)) > MATCH_LIMIT) return 'too-many';
       // Every match in one query: elements that move between reads cannot be counted twice or missed.
       const matches = (await loc.elementHandles().catch(() => null)) as ElementHandle[] | null;
       if (!matches) return 'incomplete';

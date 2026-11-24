@@ -689,7 +689,7 @@ export class Session {
           raw = null;
         }
       }
-      return failure(frameIdentity(raw), e, this.context(began));
+      return failure(frameIdentity(raw), e, await this.replyContext(began));
     }
     const spec = OPERATIONS[request.op];
     try {
@@ -698,7 +698,7 @@ export class Session {
       if (request.op !== 'session.close' && request.op !== 'session.describe' && (this.state === 'closing' || this.state === 'closed')) throw new DriverError('CLOSED', 'The session is closed.');
       if (spec.needsApp && this.state !== 'ready') throw new DriverError('NOT_STARTED', 'Start the session first (session.start).');
     } catch (e) {
-      return failure(request, e, this.context(began));
+      return failure(request, e, await this.replyContext(began));
     }
     if (request.op !== 'session.close') this.inFlight = request.id;
     try {
@@ -707,9 +707,9 @@ export class Session {
       if (request.op === 'session.start') result = await this.start(parseStartArgs(request.args), { timeoutMs });
       else if (request.op === 'session.close') result = await this.close(parseCloseArgs(request.args));
       else result = await this.withDeadline(request, spec, timeoutMs);
-      return success(request, result, this.context(began));
+      return success(request, result, await this.replyContext(began));
     } catch (e) {
-      return failure(request, e, this.context(began));
+      return failure(request, e, await this.replyContext(began));
     } finally {
       if (this.inFlight === request.id) this.inFlight = null;
     }
@@ -788,7 +788,7 @@ export class Session {
       registry: this.refs,
       artifacts: this.paths?.artifacts ?? null,
       signal,
-      storedSecrets: () => this.storedSecrets(),
+      storedSecrets: (strict) => this.storedSecrets(strict),
       remember: (secrets) => {
         for (const x of secrets) if (x) this.secrets.add(x);
       },
@@ -819,16 +819,26 @@ export class Session {
    * The provider keys the app saved in the profile this session made (the app is started with it as its user data;
    * a profile the app reports elsewhere fails isolation and is never read).
    */
-  private async storedSecrets(): Promise<string[]> {
+  private async storedSecrets(strict = false): Promise<string[]> {
     const dir = this.paths?.profile;
     if (!dir) return [];
     const keys = await readFile(join(dir, 'api-keys.json'), 'utf8').then(
       (t) => JSON.parse(t) as Record<string, unknown>,
-      () => ({})
+      (e: NodeJS.ErrnoException) => {
+        // No file is no keys; a file that cannot be read is, strictly, keys unknown.
+        if (strict && e.code !== 'ENOENT') throw e;
+        return {};
+      }
     );
     const found = Object.values(keys).filter((v): v is string => typeof v === 'string' && !!v);
     for (const x of found) this.secrets.add(x);
     return found;
+  }
+
+  /** The reply's context: with a page error waiting, once the saved keys it could quote are known (bounded). */
+  private async replyContext(began: number): Promise<ReplyContext> {
+    if (this.events.some((e) => e.type === 'page.error')) await bounded(this.storedSecrets().catch(() => undefined), 2000, undefined);
+    return this.context(began);
   }
 
   private context(began: number): ReplyContext {
@@ -958,11 +968,8 @@ export class Session {
     this.bound = bound;
     page.on('pageerror', (e) => {
       this.pageErrors.push(String(e));
-      const at = now();
-      // Reported once the saved keys are known, so the reply that carries it can be scrubbed of them.
-      void this.storedSecrets()
-        .catch(() => undefined)
-        .then(() => this.event({ type: 'page.error', at, generation: ref.generation, message: String(e) }));
+      // Kept whole: the reply that carries it is scrubbed of credentials first, then cuts it to length.
+      this.event({ type: 'page.error', at: now(), generation: ref.generation, message: String(e) });
     });
     page.on('close', () => {
       bound.closed = true;
@@ -1271,7 +1278,7 @@ export class Session {
       // As with every screenshot the session takes, none while any credential is known (or that cannot be told in
       // time), and credential fields masked in every frame.
       const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
-      const clear = async () => !this.secrets.size && !(await this.storedSecrets()).length && !(await frameSecrets(page)).length;
+      const clear = async () => !this.secrets.size && !(await this.storedSecrets(true)).length && !(await frameSecrets(page, { strict: true })).length;
       if (await bounded(clear().catch(() => false), 3000, false)) {
         const png = await page.screenshot({ timeout: 5000, mask }).catch(() => null);
         if (png && (await bounded(clear().catch(() => false), 3000, false))) await writeFile(join(this.paths!.artifacts, 'final.png'), png).catch(() => undefined);
