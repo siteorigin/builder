@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { applyOps } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
@@ -17,7 +17,7 @@ import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
-import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
+import { askAiAbout, canInlineEdit, commitText, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -1009,6 +1009,7 @@ export function Canvas() {
                 : []),
               ...(locked ? [] : [...clipboard, { label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
               ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: on(() => setState({ modal: { kind: 'create-component' as const, ref: create } })) }] : []),
+              ...(!definitionMode && detachable(state, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: on(() => detachPlacement(ref)) }] : []),
               ...(locked ? [] : [{ separator: true }, { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: on(deleteSelection) }])
             ]
           : [])

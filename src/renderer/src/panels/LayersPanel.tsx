@@ -1,5 +1,5 @@
 import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, Box, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Box, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X } from 'lucide-react';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef, slotChildren } from '@shared/types';
@@ -9,7 +9,7 @@ import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } f
 import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, showLayer, toast, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { copyPasteItems, PasteHere } from './CopyPaste';
 import { styleCopyItems } from './StylePaste';
@@ -637,6 +637,7 @@ export function LayersPanel() {
             ...copyPasteItems({ copy: ref.owner.kind === 'page' && !definitionMode ? () => void copySelection(plan) : null, paste: pasteAfter }),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: create } }) }] : []),
+            ...(!definitionMode && detachable(st, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: () => void detachPlacement(ref) }] : []),
             { separator: true },
             { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
           ]

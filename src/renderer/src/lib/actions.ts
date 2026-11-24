@@ -71,6 +71,32 @@ export async function duplicateSelection() {
   if (id) setState({ selection: { owner: t.owner, instancePath: [], nodeId: id } });
 }
 
+/**
+ * The placement a menu offers to detach: a managed component placed on a page, named by the menu itself (a part of it
+ * or a component inside its design is not), so the action acts on exactly what the menu names.
+ */
+export function detachable(st: ProjectState, ref: ElementRef | null): ElementRef | null {
+  if (!ref || ref.instancePath.length || ref.partId || ref.owner.kind !== 'page') return null;
+  const n = resolveRef(st, ref).node;
+  if (n?.kind !== 'instance') return null;
+  const def = st.components[n.definitionId];
+  return def?.kind === 'managed' && def.tree ? ref : null;
+}
+
+/** Replace a component placed on a page with the elements it renders, one change, and select what replaced it. */
+export async function detachPlacement(ref: ElementRef | null = getState().selection) {
+  const st = getState().snapshot?.state;
+  const t = st ? detachable(st, ref) : null;
+  if (!t || !st) return;
+  const label = refLabel(st, t);
+  const r = await commitOps([{ type: 'component.detachInstance', owner: t.owner, nodeId: t.nodeId }], 'Detach component');
+  // A reply that arrives after its project closed has nothing left here to select or announce.
+  if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+  const id = r.results?.[0]?.nodeId as string | undefined;
+  if (id) setState({ selection: { owner: t.owner, instancePath: [], nodeId: id }, layerSet: null });
+  toast(`Detached ${label}. Its elements are now part of this page.`, 'info', undoAction(r));
+}
+
 export async function moveSelection(dir: -1 | 1) {
   const s = getState();
   const t = structuralTarget(s.selection);

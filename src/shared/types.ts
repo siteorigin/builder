@@ -320,6 +320,20 @@ interface NodeBase {
   unless?: Condition;
   /** Optional anchor ID for in-page links. */
   anchor?: string;
+  /**
+   * Where the node came from when its component placement was detached: the design's key (as in its class names), the
+   * node there, and the options that styled it. The node carries inert copies of those classes (`so--d-…`), which no
+   * component's rules match but the theme's own hooks still read (a dark section's colours, print rules).
+   */
+  detachedFrom?: DetachedFrom;
+}
+export interface DetachedFrom {
+  component: string;
+  node: string;
+  /** Variant options by axis, for the axes whose class the node carried. */
+  options?: Record<string, string>;
+  /** An image or link action repeated in a list: the images its viewer moved through together (one gallery). */
+  group?: string;
 }
 export interface ElementNode extends NodeBase {
   kind: 'element';

@@ -278,6 +278,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'site.update': 'wider',
   'component.createFromNode': 'wider',
   'component.makeUnique': 'node',
+  // Only the placement's own page changes: the component and its other placements stay as they are.
+  'component.detachInstance': 'node',
   'component.duplicate': 'wider',
   'component.rename': 'wider',
   'component.fork': 'wider',

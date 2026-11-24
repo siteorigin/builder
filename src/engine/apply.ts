@@ -82,6 +82,7 @@ import {
   uniqueCopyName
 } from './definitions';
 import { contractConflicts, hiddenSlotContent, themeRefresh } from './theme-updates';
+import { detachInstance } from './detach';
 
 export type OpResult = Record<string, unknown>;
 
@@ -253,6 +254,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return createFromNode(state, op);
     case 'component.makeUnique':
       return makeUnique(state, op);
+    case 'component.detachInstance':
+      return detachInstance(state, op, (tree, id) => copySubtree(tree, tree, id, state));
     case 'component.duplicate': {
       const def = own(state.components, op.definitionId) ?? fail(`Component "${op.definitionId}" does not exist.`);
       const copy = copyDefinition(state, def, op.name);
@@ -871,12 +874,19 @@ function applyArticle(page: PageDoc, op: ArticleFields) {
 }
 
 /** Copy a node subtree from one tree into another, allocating new IDs. Returns the new root ID. */
-function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: ProjectState): string {
+function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: ProjectState, groups = new Map<string, string>()): string {
   const idMap = new Map<string, string>();
   for (const id of subtreeIds(from, nodeId)) idMap.set(id, newId('n'));
+  // A copied detached gallery is a gallery of its own: its images move through the viewer together, apart. Copies made
+  // together (a page's sections) share one map, so a gallery spread over them stays one.
   for (const [oldId, nid] of idMap) {
     const n = clone(from.nodes[oldId]);
     n.id = nid;
+    const group = n.detachedFrom?.group;
+    if (typeof group === 'string') {
+      if (!groups.has(group)) groups.set(group, `${newId('g')}${group.includes('|') ? group.slice(group.indexOf('|')) : ''}`);
+      n.detachedFrom!.group = groups.get(group);
+    }
     // Copies never reuse an anchor: HTML IDs must stay unique.
     if (from === to) delete n.anchor;
     if (n.kind === 'element' || n.kind === 'repeat') n.children = n.children.map((c) => idMap.get(c) ?? c);
@@ -937,7 +947,8 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
   const page: PageDoc = { ...clone(src), id, title, route: autoRoute(state, title, 'page', undefined, routeFolder(src.route) ?? '/'), rootIds: [], nodes: {} };
   // A copy is in the same language until it is translated: it is nobody's translation yet.
   delete page.translationGroup;
-  for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state));
+  const groups = new Map<string, string>();
+  for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state, groups));
   state.pages[id] = page;
   keepSectionLinksOnCopy(state, src.id, page);
   state.site.pageOrder.splice(state.site.pageOrder.indexOf(src.id) + 1, 0, id);
