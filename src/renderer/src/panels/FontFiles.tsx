@@ -165,7 +165,13 @@ function describeUses(state: ProjectState, uses: FontUse[]): string[] {
       lines.push(t ? `${t.label} (${t.group === 'text' ? 'text style' : 'site style'})` : `The site style ${u.tokenId}`);
     } else if (u.kind === 'element') {
       const where =
-        u.owner.kind === 'page' ? `the ${state.pages[u.owner.id]?.title ?? 'a'} page` : u.owner.kind === 'shell' ? `the shared ${u.owner.id}` : `the ${state.components[u.owner.id]?.name ?? 'a'} component`;
+        u.owner.kind === 'page'
+          ? `the ${state.pages[u.owner.id]?.title ?? 'a'} page`
+          : u.owner.kind === 'shell'
+            ? `the shared ${u.owner.id}`
+            : u.owner.kind === 'template'
+              ? `the ${state.collections[u.owner.id]?.settings.name ?? 'collection'} layout`
+              : `the ${state.components[u.owner.id]?.name ?? 'a'} component`;
       elements.set(where, (elements.get(where) ?? 0) + 1);
     } else lines.push(`The code of the ${state.components[u.componentId]?.name ?? ''} component, which names it`);
   }

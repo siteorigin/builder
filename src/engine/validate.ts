@@ -4,7 +4,8 @@ import { collectionDiagnostics } from './collections';
 import type { GraphNode, ImageValue, NodeTree, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { STYLE_PROP_MAP, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
-import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isStateRef, parseStyleScopeKey } from '@shared/types';
+import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
+import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
@@ -13,7 +14,7 @@ import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { nestingChecker } from './semantic-tags';
-import { MAX_UI_STATES, bindingProblem, bindingSlots, boundSchema, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
+import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
@@ -204,6 +205,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         }
         const b = condition ? conditionRef(slot.value) : isBindingRef(slot.value) ? slot.value : undefined;
         if (!b) continue;
+        if (isEntryBinding(b)) {
+          out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: ${nodeLabel(n)} shows the entry field "${b.$entry}", which only a collection's layout can.`, owner, nodeId: id, site: `${id}|${slot.field}|${slot.prop ?? ''}` });
+          continue;
+        }
         if (isStateRef(b)) {
           const comparison = condition && isComparison(slot.value) ? slot.value : undefined;
           const problem = typeof b.$state === 'string' ? stateRefProblem(state, def, { node: n, field: slot.field, prop: slot.prop, comparison }, b) : 'reads UI state without naming it.';
@@ -402,7 +407,16 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     });
   for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
     const entry = i.owner.kind === 'entry' ? findEntry(state, i.owner.id) : undefined;
-    const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[i.owner.id]?.title ?? 'A page');
+    const where =
+      i.owner.kind === 'shell'
+        ? i.owner.id === 'header'
+          ? 'Header'
+          : 'Footer'
+        : i.owner.kind === 'template'
+          ? `${state.collections[i.owner.id]?.settings.name ?? 'Collection'} layout`
+          : entry
+            ? `${entry.entry.title} (${entry.collection.settings.name})`
+            : (state.pages[i.owner.id]?.title ?? 'A page');
     const what = i.label ? `the “${i.label}” link${i.inText ? ' in the text' : ''}` : `a link${i.inText ? ' in the text' : ''}`;
     const fix = i.inText ? 'Change the link in the text to a section the page has.' : 'Choose one of the page’s sections in the link’s Section list.';
     // Collection entries are named by how many there are: a blog can have hundreds. Their pages have no sections, so
@@ -592,6 +606,61 @@ const plainBinding = (v: unknown) => {
   return keys.length === 1 && typeof r[keys[0]] === 'string';
 };
 
+/** Whether a binding place of a node in a tree owned by `kind` reads a collection entry, as only a layout's may. */
+const readsEntry = (kind: string, slot: { field: string; value: unknown }) => kind === 'template' && isEntryBinding(conditionRef(slot.value) ?? slot.value);
+
+/**
+ * What is wrong with the entry fields one element of a collection's layout reads: each a message that follows the
+ * element's name. A field the collection does not have, of a type the place cannot show, or compared with a value of
+ * another type.
+ */
+function entryBindingProblems(state: ProjectState, collection: Collection, n: GraphNode): string[] {
+  const out: string[] = [];
+  for (const slot of bindingSlots(n)) {
+    const condition = slot.field === 'when' || slot.field === 'unless';
+    const b = condition ? conditionRef(slot.value) : isBindingRef(slot.value) ? slot.value : undefined;
+    if (!b || !isEntryBinding(b)) continue;
+    if (condition ? !conditionShapeValid(slot.value) : !plainBinding(b)) {
+      out.push(`reads the entry field "${String(b.$entry).slice(0, 60)}" together with something else as its ${slot.field}; read one of them.`);
+      continue;
+    }
+    const schema = entryFieldSchema(collection, b.$entry);
+    if (!schema) {
+      out.push(`shows "${String(b.$entry).slice(0, 60)}", which entries of ${collection.settings.name} do not have.`);
+      continue;
+    }
+    // A choice field without its options is reported with the collection's settings; nothing more is read from it.
+    if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) continue;
+    if (!ENTRY_CONTENT_FIELDS.has(slot.field)) {
+      out.push(`takes its ${slot.field === 'variant' ? 'variant' : slot.field} from "${schema.label}"; that is the layout's own, the same for every entry. Only content can show an entry's field.`);
+      continue;
+    }
+    if (slot.field === 'datetime' && !ENTRY_DATE_FIELDS.has(b.$entry)) {
+      out.push(`states "${schema.label}" as its date, which is not a date.`);
+      continue;
+    }
+    const nested = slot.field === 'prop' && n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
+    if (slot.field === 'prop' && !(nested && slot.prop !== undefined && Object.hasOwn(nested, slot.prop))) {
+      out.push(`shows "${schema.label}" in "${slot.prop}", which the placed component does not have.`);
+      continue;
+    }
+    const ok = acceptedTypes(n, slot.field, nested?.[slot.prop!]);
+    if (ok && !ok.includes(schema.type)) {
+      out.push(`shows "${schema.label}" (${schema.type === 'string' ? 'text' : schema.type}) as its ${slot.field === 'prop' ? `"${slot.prop}"` : slot.field}, which needs ${ok.map((t) => (t === 'string' ? 'text' : t)).join(' or ')}.`);
+      continue;
+    }
+    const choice = slot.field === 'prop' ? entryChoiceProblem(schema, nested?.[slot.prop!]) : null;
+    if (choice) {
+      out.push(`shows "${schema.label}" in "${slot.prop}", but it ${choice}`);
+      continue;
+    }
+    const comparison = condition && isComparison(slot.value) ? slot.value : undefined;
+    const problem = bindingProblem(state, { node: n, field: slot.field, prop: slot.prop, comparison }, schema);
+    if (problem) out.push(problem);
+  }
+  return out;
+}
+
 /** A condition is a plain binding (or UI state), or one (`ref`) compared with one string, number or yes/no value. */
 function conditionShapeValid(v: unknown): boolean {
   if (plainBinding(v)) return true;
@@ -703,8 +772,19 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
       if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
       // Properties and list items belong to a component: a page or the shared header and footer has none to show.
       else if (n.kind === 'repeat' && !def) out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: a repeat shows a component's list, so it can only be placed inside a component definition.`, owner, nodeId: n.id, site: n.id });
-      else if (!def && bindingSlots(n).some((sl) => (sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : isBindingRef(sl.value))))
-        out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: ${nodeLabel(n)} shows a component property, list item field or UI state, which only an element inside a component definition can.`, owner, nodeId: n.id, site: n.id });
+      else if (!def && bindingSlots(n).some((sl) => !readsEntry(owner.kind, sl) && (sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : isBindingRef(sl.value))))
+        out.push({
+          severity: 'error',
+          code: 'BINDING_SCOPE',
+          message: bindingSlots(n).some((sl) => isEntryBinding(conditionRef(sl.value) ?? sl.value))
+            ? `${label}: ${nodeLabel(n)} shows a field of a collection entry, which only an element of a collection's layout can.`
+            : `${label}: ${nodeLabel(n)} shows a component property, list item field or UI state, which only an element inside a component definition can.`,
+          owner,
+          nodeId: n.id,
+          site: n.id
+        });
+      else if (owner.kind === 'template' && Object.hasOwn(state.collections, owner.id))
+        for (const problem of entryBindingProblems(state, state.collections[owner.id], n)) out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${label}: ${nodeLabel(n)} ${problem}`, owner, nodeId: n.id, site: n.id });
       else if (n.kind === 'slot' && def && !Object.hasOwn(def.slots ?? {}, n.slot))
         out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });
       // Checked on its own, so a read reported on the same button never hides an action added to it.

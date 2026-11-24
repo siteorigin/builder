@@ -99,7 +99,7 @@ interface ImageTraits {
 function imageTraits(def: ComponentDefinition | undefined): Map<string, ImageTraits> {
   const out = new Map<string, ImageTraits>();
   for (const n of Object.values(def?.tree?.nodes ?? {})) {
-    if (n.kind !== 'image' || !isBinding(n.image)) continue;
+    if (n.kind !== 'image' || !isBinding(n.image) || '$entry' in n.image) continue;
     const key = '$prop' in n.image ? n.image.$prop : n.image.$item;
     const before = out.get(key);
     const optional = n.when !== undefined;
@@ -324,6 +324,7 @@ function resolved(r: ReturnType<typeof resolveRef>, ref: ElementRef, v: unknown)
   const props = instance.props ?? {};
   let value: unknown;
   if ('$prop' in v) value = propBindingValue(Object.hasOwn(props, v.$prop) ? props[v.$prop] : own(def.properties, v.$prop)?.default, v);
+  else if (!('$item' in v)) return { known: false };
   else {
     const listProp = listPropFor(def, ref.nodeId);
     const schema = listProp ? own(def.properties, listProp) : undefined;

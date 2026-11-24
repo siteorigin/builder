@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload } from 'lucide-react';
+import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate } from 'lucide-react';
 import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import type { ComponentExportResult, ComponentImportResult } from '@shared/api';
@@ -9,7 +9,7 @@ import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
-import { insert, insertionPoint, insertPlan, selectPage, type InsertSpec, type Where } from '../lib/actions';
+import { insert, insertionPoint, insertPlan, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, searchItems } from '../lib/insert-search';
 import { beginInsertDrag } from '../lib/insert-drag';
@@ -748,6 +748,13 @@ function showPlacement(definitionId: string, owner: OwnerRef, nodeId?: string): 
   const st = s.snapshot?.state;
   const place = st && placesOf(st, definitionId).find((p) => p.owner.kind === owner.kind && p.owner.id === owner.id);
   if (!st || !place) return void toast('That placement has been removed since the menu opened.', 'info'), false;
+  if (nodeId && !place.nodeIds.includes(nodeId)) return void toast('That placement has been removed since the menu opened.', 'info'), false;
+  // A collection's layout is shown on one of its entries, as editing it shows it.
+  if (owner.kind === 'template') {
+    openLayout(owner.id);
+    setState({ selection: { owner, instancePath: [], nodeId: nodeId ?? place.nodeIds[0] }, rightTab: 'inspect', dockOpen: true });
+    return true;
+  }
   const current = s.definitionMode?.returnPageId ?? s.pageId;
   const pageId = owner.kind === 'page' ? owner.id : pageShowing(st, owner.id, current);
   if (nodeId && !place.nodeIds.includes(nodeId)) return void toast('That placement has been removed since the menu opened.', 'info'), false;
@@ -1436,8 +1443,8 @@ export function InsertPanel() {
     // Each placement is its own item, so the one chosen is the one shown; several on one place are counted in order.
     const placeItems = (p: (typeof places)[number]): MenuItem[] => {
       if (p.owner.kind === 'component') return [{ label: `In ${p.label}`, icon: <Component />, hint: p.nodeIds.length > 1 ? `${p.nodeIds.length} times` : 'Design', disabled: true }];
-      const label = p.owner.kind === 'page' ? pageLabel(p) : `Shared ${p.label.toLowerCase()}`;
-      const icon = p.owner.kind === 'page' ? <FileText /> : p.owner.id === 'footer' ? <PanelBottom /> : <PanelTop />;
+      const label = p.owner.kind === 'page' ? pageLabel(p) : p.owner.kind === 'template' ? p.label : `Shared ${p.label.toLowerCase()}`;
+      const icon = p.owner.kind === 'page' ? <FileText /> : p.owner.kind === 'template' ? <LayoutTemplate /> : p.owner.id === 'footer' ? <PanelBottom /> : <PanelTop />;
       if (p.nodeIds.length === 1) return [{ label, icon, onSelect: () => void showPlacement(def.id, p.owner, p.nodeIds[0]) }];
       // Several on one page: in the order they appear, each named by where it sits.
       const tree = treeFor(st, p.owner);

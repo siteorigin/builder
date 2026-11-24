@@ -1,7 +1,7 @@
 /**
  * Checks on what a page will actually show, evaluated with the same rules the generated components use.
  */
-import type { Binding, ComponentDefinition, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
 import { isListBlock, isRichBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
@@ -18,6 +18,7 @@ import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
+import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { selectedVariantStyles, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 
@@ -70,6 +71,7 @@ export function evaluate(v: unknown, scope: Scope): unknown {
   if (!isBinding(v)) return v;
   const b = v as Binding;
   if ('$prop' in b) return propBindingValue(scope.props[b.$prop], b);
+  if (!('$item' in b)) return undefined;
   const item = scope.item ?? {};
   return Object.hasOwn(item, b.$item) ? item[b.$item] : (scope.fields?.[b.$item] as { default?: unknown } | undefined)?.default;
 }
@@ -575,7 +577,7 @@ function placementField(b: unknown, scope: Scope): PlacementField | undefined {
     return whole.itemId === undefined && whole.field === undefined ? { prop: whole.prop, field: b.field } : undefined;
   }
   const id = scope.item?.id;
-  if (!scope.list || typeof id !== 'string' || !id) return undefined;
+  if (!('$item' in b) || !scope.list || typeof id !== 'string' || !id) return undefined;
   const list = scope.placement ? { prop: scope.list } : scope.forwarded?.[scope.list];
   return list && !list.itemId ? { prop: list.prop, itemId: id, field: b.$item } : undefined;
 }
@@ -595,7 +597,8 @@ function followsPageField(state: ProjectState, tree: NodeTree, placementId: stri
   return list?.type === 'list' && !!list.pageTeaser && teaserFields(list.pageTeaser).some(([field]) => field === f.field);
 }
 
-const sameBinding = (a: unknown, b: unknown) => isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop && a.field === b.field : '$item' in b && a.$item === b.$item);
+const sameBinding = (a: unknown, b: unknown) =>
+  isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop && a.field === b.field : '$item' in a ? '$item' in b && a.$item === b.$item : '$entry' in b && a.$entry === b.$entry);
 
 /**
  * Buttons that will render with a label but no destination. The site leaves them out, which is easy to miss in
@@ -1115,8 +1118,8 @@ export function shellPageLinks(state: ProjectState, pageIds: string[]): ShellPag
 
 
 export interface SectionLinkIssue {
-  /** Where the link is: a page, the shared header or footer, or a collection entry's text. */
-  owner: { kind: 'page' | 'shell' | 'entry'; id: string };
+  /** Where the link is: a page, the shared header or footer, a collection's layout, or a collection entry's text. */
+  owner: { kind: 'page' | 'shell' | 'entry' | 'template'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
@@ -1190,16 +1193,57 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
     if (!ids.has(key)) ids.set(key, pageIds(state, pageId, hidden ? undefined : shell, !!hidden));
     return ids.get(key)!;
   };
-  // An entry's page shows the layout, header and footer around its own text: the same rule holds there.
+  // An entry's page shows the site's layout, header and footer, and its collection's layout, around its own text.
   let keptEntryIds: Set<string> | undefined;
   const entryIdsOf = (hidden?: boolean) => (hidden ? (keptEntryIds ??= treeIds(state, [state.site.shell.header, state.site.shell.footer], new Set(LAYOUT_IDS), true)) : entryIds);
+  // Each published entry's page as the website has it: its collection's layout read for it (what the entry lacks left
+  // out), so a section is counted only on the entries that show it. Read only where it can matter: a section ID the
+  // stored layout has nowhere is on no entry's page, whatever the entry.
+  const articles = published.map((e) => {
+    let tree: NodeTree | undefined;
+    return { ...e, article: () => (tree ??= entryArticle(state, e.collection, e.entry)) };
+  });
+  const layoutIds = new Map<string, Set<string>>();
+  const storedIdsOf = (collectionId: string, hidden?: boolean) => {
+    const key = `${hidden ? 'kept' : 'shown'}:${collectionId}`;
+    const template = storedLayout(state, collectionId);
+    if (!layoutIds.has(key)) layoutIds.set(key, template?.nodes ? treeIds(state, [template], new Set(entryIdsOf(hidden)), !!hidden) : entryIdsOf(hidden));
+    return layoutIds.get(key)!;
+  };
+  const articleIds = new Map<string, Set<string>>();
+  const idsOnEntry = (a: (typeof articles)[number], hidden?: boolean) => {
+    const key = `${hidden ? 'kept' : 'shown'}:${a.entry.id}`;
+    if (!articleIds.has(key)) articleIds.set(key, treeIds(state, [a.article()], new Set(entryIdsOf(hidden)), !!hidden));
+    return articleIds.get(key)!;
+  };
+  // The site's own sections and the header's and footer's are on every entry's page; one only the layout has is on
+  // the pages of the entries that show it.
+  const lacks = (a: (typeof articles)[number], fragment: string, hidden?: boolean) =>
+    !storedIdsOf(a.collection.settings.id, hidden).has(fragment) || (!entryIdsOf(hidden).has(fragment) && !idsOnEntry(a, hidden).has(fragment));
+  /** The published entries whose page lacks a section with this ID. */
+  const lackingIn = (fragment: string, hidden: boolean | undefined) => articles.filter((a) => lacks(a, fragment, hidden)).map((a) => a.entry.id);
+  /** Whether a collection's stored layout has a link these checks follow; its entries' pages are read only then. */
+  const layoutLinks = new Map<string, boolean>();
+  const hasSectionLinks = (collectionId: string) => {
+    if (!layoutLinks.has(collectionId)) {
+      const template = storedLayout(state, collectionId);
+      // A placed section's links can depend on the words each entry gives it: a layout with one is always read.
+      const placed = !!template?.nodes && Object.values(template.nodes).some((n) => n?.kind === 'instance');
+      layoutLinks.set(collectionId, placed || (!!template?.nodes && renderedLinks(state, template, false, true).some(({ link }) => (link.type === 'page' && !!link.anchor) || link.type === 'anchor')));
+    }
+    return layoutLinks.get(collectionId)!;
+  };
   // The header and footer are checked on the pages that show each: they can differ.
-  const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[] }> = [
+  const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[]; entry?: (typeof articles)[number] }> = [
     ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0),
-    ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] }))
+    ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] })),
+    // A collection's layout, as each of its published entries shows it.
+    ...articles.filter((a) => hasSectionLinks(a.collection.settings.id)).map((a) => ({ owner: { kind: 'template' as const, id: a.collection.settings.id }, tree: a.article(), on: [] as PageDoc[], entry: a }))
   ];
   const out: SectionLinkIssue[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, SectionLinkIssue>();
+  // A layout link's entries lacking its section, gathered across the entries' pages before they are written once.
+  const lackingOf = new Map<SectionLinkIssue, Set<string>>();
   // Links in a panel kept in the page hidden are in its HTML, where the build follows them; the sections they go to
   // count only where a visitor can see them.
   for (const src of sources)
@@ -1210,25 +1254,37 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
         const missing = src.on.filter((p) => !idsOf(p.id, hidden).has(fragment)).map((p) => p.id);
-        const lacking = src.owner.kind === 'shell' && !entryIdsOf(hidden).has(fragment) ? entries : [];
+        const lacking = src.owner.kind === 'shell' ? lackingIn(fragment, hidden) : src.entry && lacks(src.entry, fragment, hidden) ? [src.entry.entry.id] : [];
         if (missing.length || lacking.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}) };
       }
-      // A link the walk reaches twice (a repeated slot, say) is reported once.
+      // A link the walk reaches twice (a repeated slot, say) is reported once; one in a layout, once for all the
+      // entries that lack its section.
       const id = JSON.stringify([src.owner, reportId, key]);
-      if (!issue || seen.has(id)) continue;
-      seen.add(id);
+      if (!issue) continue;
+      const had = seen.get(id);
+      if (had) {
+        if (src.entry && issue.entries?.length) issue.entries.forEach((e) => lackingOf.get(had)?.add(e));
+        continue;
+      }
+      seen.set(id, issue);
+      if (src.entry && issue.entries) lackingOf.set(issue, new Set(issue.entries));
       out.push(issue);
     }
+  for (const [issue, ids] of lackingOf) issue.entries = [...ids];
   // An entry's text: its page has the layout's and the header and footer's sections, and none of a page's.
-  for (const { entry } of published) {
+  for (const a of articles) {
+    const { entry } = a;
     const owner = { kind: 'entry' as const, id: entry.id };
-    entryTextLinks(entry.body).forEach(({ link, label }, i) => {
+    const links = entryTextLinks(entry.body);
+    // Text the entry's layout does not show has no links a visitor or the build could follow.
+    if (!links.length || !showsBody(a.collection, a.article())) continue;
+    links.forEach(({ link, label }, i) => {
       const key = `body:${i}`;
       if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
         if (!idsOf(link.target).has(link.anchor)) out.push({ owner, nodeId: '', key, label, inText: true, fragment: link.anchor, pageId: link.target });
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
-        if (!entryIds.has(fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
+        if (lacks(a, fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
       }
     });
   }
@@ -1257,8 +1313,11 @@ function entryTextLinks(body: unknown): Array<{ link: LinkValue; label: string }
 
 /** A link visitors would see on the published site that goes to a draft page. */
 export interface DraftLink {
-  /** Where the link is: a published page, the shared header or footer shown on one, or a published entry's text. */
-  owner: { kind: 'page' | 'shell' | 'entry'; id: string };
+  /**
+   * Where the link is: a published page, the shared header or footer shown on one, the layout of a collection with a
+   * published entry, or a published entry's text.
+   */
+  owner: { kind: 'page' | 'shell' | 'entry' | 'template'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
@@ -1337,12 +1396,29 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
     )
   ]);
-  // An entry shows both shared parts.
+  // An entry shows both shared parts, and its collection's layout.
   const entryShown = entries.length > draftEntries.length;
+  const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
+  // A layout's links go where the layout says, whatever the entry, apart from Previous and Next, which never lead to a
+  // draft: one with no link to a page, an entry or an address has none to a draft on any entry's page.
+  const mayLink = new Map<string, boolean>();
+  const layoutMayLinkToDraft = (collectionId: string) => {
+    if (!mayLink.has(collectionId)) {
+      const t = state.collections[collectionId]?.settings?.template;
+      const placed = !!t?.nodes && Object.values(t.nodes).some((n) => n?.kind === 'instance');
+      mayLink.set(collectionId, !!t?.nodes && (draftIds.size > 0 || withheld.size > 0) && (placed || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes))));
+    }
+    return mayLink.get(collectionId)!;
+  };
   const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
-    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
+    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
+    // Each collection's layout, as each published entry shows it: its own words on the layout's buttons, and only the
+    // elements that entry shows. Read only for a layout that links where a draft could be at all.
+    ...entries
+      .filter((e) => !draftEntryIds.has(e.entry.id) && layoutMayLinkToDraft(e.collection.settings.id))
+      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry) }))
   ];
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
@@ -1351,9 +1427,11 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       const to =
         link.type === 'page' && draftIds.has(link.target)
           ? { pageId: link.target, ...(link.anchor ? { anchor: link.anchor } : {}) }
-          : link.type === 'url'
-            ? draftAtAddress(state, link.target, withheld)
-            : null;
+          : link.type === 'entry' && draftEntryIds.has(link.target)
+            ? { entryId: link.target }
+            : link.type === 'url'
+              ? draftAtAddress(state, link.target, withheld)
+              : null;
       if (!to) continue;
       // A link the walk reaches twice (a repeated slot, say) is reported once.
       const id = JSON.stringify([src.owner, reportId, key]);
@@ -1362,9 +1440,9 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to });
     }
   // A published entry's text: a link to a draft entry, a page link to a draft page, or a typed address of one.
-  const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
-  for (const { entry } of entries) {
+  for (const { entry, collection } of entries) {
     if (draftEntryIds.has(entry.id)) continue;
+    const found: DraftLink[] = [];
     for (const { link, label } of entryTextLinks(entry.body)) {
       const to: (DraftTarget & { anchor?: string }) | null =
         link.type === 'entry' && draftEntryIds.has(link.target)
@@ -1374,8 +1452,10 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
             : link.type === 'url'
               ? draftAtAddress(state, link.target, withheld)
               : null;
-      if (to) draftLinks.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, inText: true, ...to });
+      if (to) found.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, inText: true, ...to });
     }
+    // Text the entry's layout does not show links nowhere on the website.
+    if (found.length && showsBody(collection, entryArticle(state, collection, entry))) draftLinks.push(...found);
   }
   return { published, drafts, draftLinks };
 }
@@ -1386,9 +1466,11 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
  * preview (/winter-stock-preview/)".
  */
 export function describeDraftLink(state: ProjectState, l: DraftLink): string {
-  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : l.owner.kind === 'page' ? state.pages[l.owner.id] : undefined;
+  const layout = l.owner.kind === 'template' ? state.collections[l.owner.id] : undefined;
+  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : l.owner.kind === 'page' ? state.pages[l.owner.id] : layout?.settings.template;
   const entry = l.owner.kind === 'entry' ? findEntry(state, l.owner.id) : undefined;
-  const place = l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[l.owner.id]?.title ?? 'A page');
+  const place =
+    l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : layout ? `${layout.settings.name} layout` : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[l.owner.id]?.title ?? 'A page');
   const node = tree?.nodes[l.nodeId];
   const where = node && node.kind === 'instance' ? `${place} · ${displayName(state, node)}` : place;
   const draft = draftTarget(state, l);
@@ -1597,7 +1679,7 @@ const hiddenEverywhere = (...layers: Array<ResponsiveStyles | undefined>) => {
 function renderedTag(n: GraphNode & { kind: 'text' }, scope: Scope, def: ComponentDefinition | undefined): { tag: string; levels?: number[] } {
   if (!isBinding(n.tag)) return { tag: TEXT_TAG_SET.has(n.tag) ? n.tag : 'p' };
   const b = n.tag;
-  const schema = '$prop' in b ? (def ? propBindingSchema(def.properties, b) : undefined) : scope.fields?.[b.$item];
+  const schema = '$prop' in b ? (def ? propBindingSchema(def.properties, b) : undefined) : '$item' in b ? scope.fields?.[b.$item] : undefined;
   const options = schema?.type === 'enum' ? schema.options.map((o) => o.value).filter((o) => TEXT_TAG_SET.has(o)) : [];
   const fallback = schema?.type === 'enum' && options.includes(schema.default) ? schema.default : (options[0] ?? 'p');
   const v = evaluate(b, scope);
@@ -1771,3 +1853,18 @@ export function pageHeadings(state: ProjectState, pageId: string, opts: { shell?
   const hasContent = Object.hasOwn(state.pages, pageId) && !!state.pages[pageId].rootIds.length;
   return { outline, review: reviewHeadings(outline, hasContent, uninspected), uninspected };
 }
+
+/**
+ * An entry's page as the website has it, around its own text: its collection's layout read for the entry. The text
+ * itself is left out, since its links are checked as the entry's own.
+ */
+function entryArticle(state: ProjectState, collection: Collection, entry: EntryDoc): NodeTree {
+  return materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
+}
+
+/** A collection's layout as stored, when it is a tree at all (a damaged one is reported with its settings). */
+function storedLayout(state: ProjectState, collectionId: string): NodeTree | undefined {
+  const t = state.collections[collectionId]?.settings?.template;
+  return t && typeof t === 'object' && Array.isArray(t.rootIds) && t.nodes && typeof t.nodes === 'object' ? t : undefined;
+}
+

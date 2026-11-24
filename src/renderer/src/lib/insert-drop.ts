@@ -64,7 +64,8 @@ function shownSlots(state: ProjectState, definitionId: string): string[] {
 /** Every list on a page that a drop can go into: its top level first, then each container and component slot. */
 export function dropListSpecs(state: ProjectState, owner: OwnerRef): ListSpec[] {
   const tree = treeFor(state, owner);
-  if (!tree || owner.kind !== 'page') return [];
+  // A page, or a collection's layout, which is laid out like one.
+  if (!tree || (owner.kind !== 'page' && owner.kind !== 'template')) return [];
   const lists: ListSpec[] = [{ parentId: null, childIds: [...tree.rootIds], depth: -1 }];
   // Each node attached to the page, from the top, once.
   const depth = new Map<string, number>();

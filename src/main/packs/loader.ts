@@ -146,6 +146,13 @@ const manifestSchema = z.strictObject({
   components: z.array(component).min(1).max(400),
   aiProfile: z.object({ guidance: z.array(text(600)).max(40), examples: z.array(z.object({ id: z.string(), componentId: z.string(), keywords: z.array(z.string()), description: z.string(), props: z.record(z.string(), z.unknown()) }).loose()).max(200).optional() }).loose(),
   devOnly: z.boolean().optional(),
+  // Elements and text only: a template places no component, so it never needs one the project lacks.
+  articleTemplate: z
+    .strictObject({
+      rootIds: z.array(z.string().max(80)).min(1).max(20),
+      nodes: z.record(z.string().max(80), z.object({ id: z.string().max(80), kind: z.enum(['element', 'text', 'image', 'link', 'icon', 'divider']) }).loose())
+    })
+    .optional(),
   previews: z.record(ID, previews).optional(),
   files: z.record(file, z.strictObject({ size: z.number().int().nonnegative(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }))
 });

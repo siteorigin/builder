@@ -41,7 +41,7 @@ const LANDMARK_ENDS = ['header', 'footer'];
 const CARD_BREAKS = ['ul', 'ol', 'li', 'dl', 'dt', 'dd', 'figcaption', 'details', 'summary'];
 
 /** What renders around a tree's roots: a page's sections sit in the layout's `<main>`, the header and footer in `<body>`. */
-const ROOT_PARENT: Record<OwnerRef['kind'], string | null> = { page: 'main', shell: 'body', component: null };
+const ROOT_PARENT: Record<OwnerRef['kind'], string | null> = { page: 'main', shell: 'body', component: null, template: 'main' };
 
 const ownerKey = (o: OwnerRef) => `${o.kind}:${o.id}`;
 const sameOwner = (a: OwnerRef, b: OwnerRef) => a.kind === b.kind && a.id === b.id;

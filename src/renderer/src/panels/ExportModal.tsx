@@ -5,7 +5,8 @@ import type { PageDoc } from '@shared/types';
 import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
-import { goToShellPart, openAsset, selectPage } from '../lib/actions';
+import { goToShellPart, openAsset, selectPage, openLayout } from '../lib/actions';
+import { treeFor } from '../lib/model';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
 import { openContentMatch } from './FindReplace';
 
@@ -42,11 +43,18 @@ function openFailedPage(pageId: string) {
 function openDraftLink(l: DraftLink) {
   // A collection entry's text has no place in the inspector yet (the dialog offers no button for one).
   if (l.owner.kind === 'entry') return;
-  const owner = l.owner as { kind: 'page' | 'shell'; id: string };
+  const owner = l.owner as { kind: 'page' | 'shell' | 'template'; id: string };
   const s = getState();
   const st = s.snapshot?.state;
-  const tree = st && (l.owner.kind === 'shell' ? st.site.shell[l.owner.id as 'header' | 'footer'] : st.pages[l.owner.id]);
+  const tree = st && treeFor(st, owner);
   if (!tree?.nodes[l.nodeId]) return toast('That link is no longer on the site.', 'info');
+  // A link in a collection's layout is shown on one of its entries.
+  if (owner.kind === 'template') {
+    openLayout(owner.id);
+    setState({ modal: null, selection: { owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true });
+    setTimeout(() => openSection('content'), 50);
+    return;
+  }
   if (l.owner.kind === 'shell') {
     if (!goToShellPart(l.owner.id)) return toast(`No page shows the shared ${l.owner.id}, so the link is not on any page.`, 'info');
   } else if (s.pageId !== l.owner.id || s.definitionMode) selectPage(l.owner.id);

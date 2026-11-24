@@ -26,6 +26,12 @@ export function getTree(state: ProjectState, owner: OwnerRef): NodeTree {
     if (owner.id !== 'header' && owner.id !== 'footer') fail('Shell owner must be "header" or "footer".');
     return state.site.shell[owner.id];
   }
+  if (owner.kind === 'template') {
+    const c = Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
+    if (!c) fail(`Collection "${owner.id}" does not exist.`);
+    if (!c.settings.template || typeof c.settings.template !== 'object') fail(`The ${c.settings.name} collection has no layout to edit.`);
+    return c.settings.template;
+  }
   const def = Object.hasOwn(state.components, owner.id) ? state.components[owner.id] : undefined;
   if (!def) fail(`Component definition "${owner.id}" does not exist.`);
   if (def.kind !== 'managed' || !def.tree) fail(`"${def.name}" is a code component; edit its source instead.`);
@@ -228,7 +234,18 @@ export function allTrees(state: ProjectState): Array<{ owner: OwnerRef; tree: No
     { owner: { kind: 'shell', id: 'footer' }, tree: state.site.shell.footer, label: 'Footer' }
   ];
   for (const id of state.site.pageOrder) if (state.pages[id]) out.push({ owner: { kind: 'page', id }, tree: state.pages[id], label: state.pages[id].title });
+  for (const { owner, tree, label } of templateTrees(state)) out.push({ owner, tree, label });
   for (const def of Object.values(state.components)) if (def.tree) out.push({ owner: { kind: 'component', id: def.id }, tree: def.tree, label: def.name });
+  return out;
+}
+
+/** Each collection's layout template, by collection ID, named for the collection ("Posts layout"). */
+export function templateTrees(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree; label: string }> {
+  const out: Array<{ owner: OwnerRef; tree: NodeTree; label: string }> = [];
+  for (const id of Object.keys(state.collections ?? {}).sort()) {
+    const t = state.collections[id]?.settings?.template;
+    if (t && typeof t === 'object' && t.nodes && typeof t.nodes === 'object' && Array.isArray(t.rootIds)) out.push({ owner: { kind: 'template', id }, tree: t, label: `${state.collections[id].settings.name} layout` });
+  }
   return out;
 }
 
@@ -324,7 +341,11 @@ export function anchorsInUse(state: ProjectState, owner: OwnerRef, exceptNodeId?
   const trees: NodeTree[] =
     owner.kind === 'component'
       ? [getTree(state, owner)]
-      : [state.site.shell.header, state.site.shell.footer, ...(owner.kind === 'page' ? [getTree(state, owner)] : Object.values(state.pages))];
+      : [
+          state.site.shell.header,
+          state.site.shell.footer,
+          ...(owner.kind === 'page' || owner.kind === 'template' ? [getTree(state, owner)] : [...Object.values(state.pages), ...templateTrees(state).map((t) => t.tree)])
+        ];
   const out = new Set(RESERVED_ANCHORS);
   for (const t of trees) for (const n of Object.values(t.nodes)) if (n.anchor && !(t === getTree(state, owner) && n.id === exceptNodeId)) out.add(n.anchor);
   return out;

@@ -291,25 +291,112 @@ assert.equal(renamed.ok, true, `the post is renamed: ${renamed.error?.message}`)
 const blogState = (await win.evaluate(() => window.builder.project.snapshot())).state;
 assert.deepEqual(blogState.site.redirects?.filter((r) => r.entryId), [{ from: '/blog/opening-hours/', entryId: 'en_hours01' }], 'the old address of the renamed post is kept');
 
+step('#394: the posts layout, opened on the canvas, shown on any post, and edited once for every post');
+const LAYOUT_CTA = 'Join a glazing class 394';
+const LAYOUT_COLOR = '#7a1f5c';
+const openRail = async (name) => {
+  if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
+};
+const framePath = () => frame.locator('body').evaluate(() => location.pathname);
+await openRail('Pages');
+await win.getByTestId('edit-layout-posts').click();
+// Shown on the collection's first entry, newest first: the draft is one, as the editor's preview has drafts.
+await eventually(async () => assert.equal(await framePath(), '/blog/secret-plans/', 'the layout opens on the collection\'s first post'), 30000);
+await win.getByTestId('template-strip').waitFor();
+// Switching the post it is shown on keeps the layout open, on that post's own words.
+/** The strip has the post open: the frame has reported landing on it. */
+const settled = () => eventually(async () => assert.equal(await win.getByTestId('template-strip').getAttribute('aria-busy'), null, 'the post has opened'), 30000);
+await settled();
+// The picker keeps keyboard focus while the post it chose opens.
+await win.getByTestId('template-sample').focus();
+await win.getByTestId('template-sample').selectOption('en_hours01');
+await eventually(async () => assert.equal(await framePath(), '/blog/opening-times/', 'the layout is shown on the chosen post'), 30000);
+await eventually(async () => assert.equal((await frame.locator('h1').first().innerText()).trim(), 'Opening hours'), 30000);
+await settled();
+await win.getByTestId('template-sample').selectOption('en_spring01');
+await eventually(async () => assert.equal((await frame.locator('h1').first().innerText()).trim(), 'Spring open studio', 'another post shows its own title in the same layout'), 30000);
+await settled();
+assert.equal(await win.getByTestId('template-sample').evaluate((el) => el === document.activeElement), true, 'the picker still has focus after two posts opened');
+// Layers show the layout between the shared header and footer.
+await eventually(async () => assert.match(await win.locator('.layers-tree').innerText(), /Layout of every entry/), 10000);
+// Its title picked on the canvas is the layout's, showing each post's own title.
+await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 30000 });
+await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
+{
+  // Plain clicks on the title, through the window's pointer as the author clicks (the canvas is zoomed to fit, so the
+  // point inside the frame is scaled to the window), each a level further in, until the title itself is selected.
+  const at = await frame.locator('h1').first().evaluate((el) => {
+    el.scrollIntoView({ block: 'center' });
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, width: innerWidth };
+  });
+  const box = await win.locator('.frame-box iframe').boundingBox();
+  const scale = box.width / at.width;
+  const named = () => win.locator('#dock-panel-inspect .insp-name h3').first().innerText().catch(() => '');
+  for (let i = 0; i < 6 && (await named()) !== 'Title'; i++) {
+    await win.mouse.click(box.x + at.x * scale, box.y + at.y * scale);
+    await win.waitForTimeout(400);
+  }
+  assert.equal(await named(), 'Title', 'the layout\'s title is selected on the canvas');
+}
+await eventually(async () => assert.match(await win.locator('#dock-panel-inspect').innerText(), /Posts layout\./, 'the inspector says the title belongs to the layout of every post'), 10000);
+assert.equal(await win.getByTestId('entry-field-text').inputValue(), 'title', 'the title shows each post\'s own title');
+const layout = (await win.evaluate(() => window.builder.project.snapshot())).state.collections.posts.settings.template;
+const titleNode = Object.values(layout.nodes).find((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"title"}');
+assert.ok(titleNode, 'the layout has a title showing each post\'s title');
+// A call to action under every post, from Insert while the layout is open, its heading typed in the Inspector.
+const layoutCtas = async () => {
+  const st = (await win.evaluate(() => window.builder.project.snapshot())).state;
+  return Object.values(st.collections.posts.settings.template.nodes).filter((n) => n.kind === 'instance' && st.components[n.definitionId]?.componentId === 'cta.banner');
+};
+await openRail('Insert');
+await win.locator('.side-panel-view:not([hidden]) .insert-tile.section', { has: win.locator('strong', { hasText: /^Call to action$/ }) }).first().click();
+await eventually(async () => assert.equal((await layoutCtas()).length, 1, 'Insert places the section in the layout, not on a page'), 15000);
+const ctaHeading = win.locator('#dock-panel-inspect').getByRole('textbox', { name: 'Heading', exact: true });
+await ctaHeading.waitFor({ timeout: 15000 });
+await ctaHeading.fill(LAYOUT_CTA);
+await ctaHeading.press('Tab');
+await eventually(async () => assert.equal((await layoutCtas())[0]?.props.heading, LAYOUT_CTA, 'the heading typed in the Inspector is the layout\'s'), 15000);
+// And the title's colour, once for every post.
+const layoutEdit = await win.evaluate(
+  ([id, color]) =>
+    window.builder.project.apply({ operations: [{ type: 'node.setStyle', owner: { kind: 'template', id: 'posts' }, nodeId: id, scope: 'base', property: 'color', value: color }] }, { label: 'Colour the posts\' titles' }),
+  [titleNode.id, LAYOUT_COLOR]
+);
+assert.equal(layoutEdit.ok, true, `the layout is edited: ${layoutEdit.error?.message}`);
+await eventually(async () => assert.equal(await frame.getByText(LAYOUT_CTA).count(), 1, 'the canvas shows the layout\'s new section on the post'), 30000);
+// Each post keeps its own document: the layout lives in the collection's settings.
+for (const id of ['en_hours01', 'en_spring01']) assert.deepEqual(JSON.parse(readFileSync(join(dir, 'siteorigin/collections/posts/entries', `${id}.json`), 'utf8')).title, blogState.collections.posts.entries[id].title);
+await win.getByRole('button', { name: 'Done', exact: true }).first().click();
+await eventually(async () => assert.equal(await win.getByTestId('template-strip').count(), 0, 'Done closes the layout'), 10000);
+
 /** The published posts as a built website has them, wherever it was built (`root`, served under `base`). */
 function checkBuiltPosts(root, label, base = '') {
   // Read without the comments Svelte leaves to hydrate from.
   const page = (...path) => readFileSync(join(root, ...path, 'index.html'), 'utf8').replace(/<!--[^]*?-->/g, '');
+  const all = files(root);
   const hours = page('blog', 'opening-times');
-  assert.match(hours, /<h1 class="so-entry__title[^"]*">Opening hours<\/h1>/, `${label}: the renamed post is prerendered at its new address`);
-  assert.match(hours, /<time datetime="2026-01-12">January 12, 2026<\/time> <span class="so-entry__author">Ana Ruiz<\/span>/, `${label}: the post states its publication date in a <time> element, and its author`);
+  const title = hours.match(/<h1 class="([^"]*so-n-[^"]*)">Opening hours<\/h1>/);
+  assert.ok(title, `${label}: the renamed post is prerendered at its new address, with its title in the posts layout`);
+  assert.match(hours, /<time datetime="2026-01-12">January 12, 2026<\/time><\/span>\s*<span[^>]*>Ana Ruiz<\/span>/, `${label}: the post states its publication date in a <time> element, and its author`);
   assert.match(hours, /<meta property="article:published_time" content="2026-01-12"/, `${label}: the post says when it was published`);
   assert.match(hours, /<meta property="og:type" content="article"/, `${label}: the post is an article`);
   assert.match(hours, /<strong>Tuesday to Saturday<\/strong>/, `${label}: the post shows its text`);
   const spring = page('blog', 'spring-open-studio');
   assert.match(spring, /<meta property="article:modified_time" content="2026-03-09"/, `${label}: the revised post says when it was revised`);
+  // #394: the layout edited once shows on every post, each with its own title and words.
+  assert.match(spring, new RegExp(`<h1 class="${title[1]}">Spring open studio</h1>`), `${label}: the other post has its own title in the same layout`);
+  for (const [name, post] of [['opening-times', hours], ['spring-open-studio', spring]]) assert.ok(post.includes(LAYOUT_CTA), `${label}: ${name} shows the section added to the layout`);
+  assert.ok(!page('about').includes(LAYOUT_CTA), `${label}: a page is not a post: the layout's section is not on it`);
+  const cls = title[1].split(/\s+/).find((c) => c.startsWith('so-n-'));
+  const css = all.filter((f) => f.endsWith('.css')).map((f) => readFileSync(join(root, f), 'utf8')).join('\n');
+  assert.match(css, new RegExp(`\\.${cls}[^{]*\\{(?:[^}]*;)?\\s*color:\\s*${LAYOUT_COLOR}`, 'i'), `${label}: the title's colour from the layout styles every post`);
   const springLinks = [...spring.matchAll(/<a [^>]*href="([^"]*)"[^>]*>our hours<\/a>/g)].map((m) => new URL(m[1], `https://example.test${base}/blog/spring-open-studio/`).pathname);
   assert.deepEqual(springLinks, [`${base}/blog/opening-times/`], `${label}: the link between posts follows the rename`);
   const old = page('blog', 'opening-hours');
   const refresh = old.match(/<meta http-equiv="refresh" content="0; url=([^"]*)"/)?.[1];
   assert.ok(refresh, `${label}: the old address of the renamed post sends visitors on`);
   assert.equal(new URL(refresh.replace(/&amp;/g, '&'), `https://example.test${base}/blog/opening-hours/`).pathname, `${base}/blog/opening-times/`, `${label}: the old address leads to the post's new one`);
-  const all = files(root);
   assert.deepEqual(all.filter((f) => f.includes('secret-plans')), [], `${label}: the draft post has no page`);
   const leaked = all.filter((f) => /\.(html|js|json|xml|txt)$/.test(f) && readFileSync(join(root, f), 'utf8').includes(DRAFT_MARK));
   assert.deepEqual(leaked, [], `${label}: nothing in the website carries the draft post's text`);

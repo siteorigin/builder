@@ -75,8 +75,9 @@ import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variant
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
-import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, formatArticleDate, isArticleDate, pageArticle } from '@shared/articles';
+import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, isArticleDate, pageArticle } from '@shared/articles';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
+import { entryNeighbours, materializeTemplate } from './entry-template';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
 import { declaredState, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
@@ -216,7 +217,8 @@ export function encodeMailto(target: string): string {
 }
 
 export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveContext): { href: string; newTab?: boolean; download?: string } | null {
-  if (!link || link.type === 'none' || !link.target) return null;
+  // A destination that is not text (a hand edit, a theme pack's layout) goes nowhere rather than failing the build.
+  if (!link || link.type === 'none' || !link.target || typeof link.target !== 'string') return null;
   let href = '';
   switch (link.type) {
     case 'document': {
@@ -931,6 +933,11 @@ function treeOwners(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTre
     { owner: { kind: 'shell', id: 'footer' }, tree: state.site.shell.footer }
   ];
   for (const id of state.site.pageOrder) if (state.pages[id]) out.push({ owner: { kind: 'page', id }, tree: state.pages[id] });
+  // Each collection's layout, whose elements style every entry's page; its node IDs are its own (see themeArticleTemplate).
+  for (const id of Object.keys(state.collections ?? {}).sort()) {
+    const t = state.collections[id]?.settings?.template;
+    if (t?.nodes && typeof t.nodes === 'object') out.push({ owner: { kind: 'template', id }, tree: t });
+  }
   return out;
 }
 
@@ -1343,6 +1350,8 @@ function bindExpr(ctx: EmitCtx, v: unknown, schema?: PropSchema): string {
       // One field of an object property; a name the object lacks reads as nothing (validation reports it).
       return v.field === undefined ? local : `${local}?.[${js(v.field)}]`;
     }
+    // An entry's field is read before a layout is written (see ./entry-template); anywhere else it reads nothing.
+    if (!('$item' in v)) return 'undefined';
     // Outside every list there is no item to read (validation reports it), so the field is empty.
     const itemVar = ctx.items[ctx.items.length - 1];
     return itemVar ? itemField(itemVar, v.$item) : 'undefined';
@@ -1609,6 +1618,7 @@ function nameAttr(ctx: EmitCtx, attr: string, v: unknown): string {
 function bindingSchema(ctx: EmitCtx, b: Binding): PropSchema | undefined {
   if (!ctx.def) return undefined;
   if ('$prop' in b) return propBindingSchema(ctx.def.properties, b);
+  if (!('$item' in b)) return undefined;
   const list = ctx.lists?.at(-1);
   return list?.type === 'list' && Object.hasOwn(list.fields, b.$item) ? list.fields[b.$item] : undefined;
 }
@@ -3036,19 +3046,40 @@ export function entryFile(route: string): string {
 }
 
 /**
- * An entry's page: its title, publication date (a `<time>` element, written as readers of the site's language write
- * it), author, featured image and text, inside the site's own header and footer. Its head carries what a page's
- * does, and says it is a dated article. Only what the entry, its collection and the site settings say is read, so a
- * change to one post makes its page again and no other.
+ * An entry's page: its collection's layout template read for the entry (see ./entry-template), inside the site's
+ * own header and footer. Its head carries what a page's does, and says it is a dated article. Only what the entry,
+ * its collection (with its template), the entries listed beside it and the site settings say is read, so a change to
+ * one post makes its page again, and a change to the template makes every entry's.
  */
-export function generateEntry(state: ProjectState, collectionId: string, entryId: string): string {
+export function generateEntry(state: ProjectState, collectionId: string, entryId: string, opts: GenerateOptions = {}): string {
   const collection = state.collections[collectionId];
   const entry = collection.entries[entryId];
   const route = entryRoute(collection, entry);
   const file = entryFile(route);
   const site = state.site;
-  const rctx: ResolveContext = { state };
-  const imports = new Map<string, string>();
+  const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collectionId, entryId));
+  const ctx: EmitCtx = {
+    state,
+    file,
+    imports: new Map(),
+    instrument: !!opts.instrument,
+    def: null,
+    tree,
+    ctxExpr: `template:${collectionId}`,
+    items: [],
+    rctx: { state },
+    indent: 0,
+    locals: new Map()
+  };
+  // The first section is usually what fills the first screen; its images load eagerly.
+  const markup = tree.rootIds
+    .map((id, i) => {
+      ctx.firstSection = i === 0;
+      return emitNode(ctx, id);
+    })
+    .filter(Boolean)
+    .join('\n');
+  ctx.firstSection = false;
   const title = `${entry.title} · ${site.name}`;
   const description = entry.excerpt || site.description;
   const published = isArticleDate(entry.publishedAt) ? entry.publishedAt : undefined;
@@ -3078,71 +3109,14 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
     }
   }
   head.push(`\t<meta name="twitter:card" content=${js(base && social ? 'summary_large_image' : 'summary')} />`);
-  const meta: string[] = [];
-  if (published) meta.push(`<time datetime=${js(published)}>{${js(formatArticleDate(published, siteLanguage(site)))}}</time>`);
-  if (entry.author) meta.push(`<span class="so-entry__author">{${js(entry.author)}}</span>`);
-  const body: string[] = [
-    `\t\t<header class="so-entry__header">`,
-    `\t\t\t<h1 class="so-entry__title">{${js(entry.title)}}</h1>`,
-    ...(meta.length ? [`\t\t\t<p class="so-entry__meta">${meta.join(' ')}</p>`] : []),
-    `\t\t</header>`
-  ];
-  if (featured) {
-    imports.set('SoImage', relImport(file, `${RUNTIME_DIR}/Image.svelte`));
-    // Described by what the library says of the picture; without that it is shown beside the title it illustrates.
-    const image = resolveImage({ assetId: featured.id, alt: featured.description || featured.altSuggestion || '' }, rctx);
-    body.push(`\t\t<SoImage image={${js(image)}} eager sizes="(min-width: 48rem) 42rem, 100vw" class="so-entry__image" />`);
-  }
-  const text = resolveRichText(entry.body, rctx);
-  if (text.length) {
-    imports.set('SoRichText', relImport(file, `${RUNTIME_DIR}/RichText.svelte`));
-    body.push(`\t\t<SoRichText value={${js(text)}} class="so-entry__body" />`);
-  }
-  const script = imports.size ? `<script>\n${renderImports(imports)}\n</script>\n\n` : '';
+  const imports = renderImports(ctx.imports);
+  const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   return (
     HEADER_NOTE(`siteorigin/collections/${collection.settings.id}/entries/${entry.id}.json`) +
-    script +
-    `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n<article class="so-entry">\n\t<div class="so-container so-entry__inner">\n${body.join('\n')}\n\t</div>\n</article>\n\n${ENTRY_STYLE}`
+    (script ? `<script>\n${script}\n</script>\n\n` : '') +
+    `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
   );
 }
-
-/** How an entry's page is laid out: one readable column, as the theme's tokens size it. */
-const ENTRY_STYLE = `<style>
-	.so-entry {
-		padding-block: var(--so-space-section, 5rem);
-	}
-	.so-entry__inner {
-		display: flex;
-		flex-direction: column;
-		gap: var(--so-space-lg, 2rem);
-		max-width: calc(var(--so-container-reading, 42rem) + 2 * var(--so-container-gutter, 1.5rem));
-	}
-	.so-entry__header {
-		display: flex;
-		flex-direction: column;
-		gap: var(--so-space-sm, 0.5rem);
-	}
-	.so-entry__title {
-		font-family: var(--so-text-h1-family, inherit);
-		font-size: var(--so-text-h1-size, 2.5rem);
-		line-height: var(--so-text-h1-line-height, 1.1);
-		font-weight: var(--so-text-h1-weight, 600);
-		letter-spacing: var(--so-text-h1-tracking, normal);
-		text-transform: var(--so-text-h1-transform, none);
-	}
-	.so-entry__meta {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0 1em;
-		color: var(--so-color-muted, inherit);
-	}
-	.so-entry :global(.so-entry__image) {
-		width: 100%;
-		height: auto;
-		border-radius: var(--so-radius-md, 0);
-	}
-</style>
-`;
 
 /** Is the page a draft, left out of the website? The Home page never is, whatever its document says. */
 export function isDraftPage(state: ProjectState, page: PageDoc): boolean {
@@ -3200,6 +3174,8 @@ export function draftOnlyComponents(state: ProjectState): ComponentDefinition[] 
     for (const id of s.site.pageOrder) if (s.pages[id]) walk(s.pages[id]);
     walk(s.site.shell.header);
     walk(s.site.shell.footer);
+    // A collection's layout is part of the site while it has an entry the site shows.
+    for (const c of Object.values(s.collections ?? {})) if (c?.settings?.template?.nodes && Object.keys(c.entries ?? {}).length) walk(c.settings.template);
     return seen;
   };
   const published = placed(live);
@@ -3557,10 +3533,11 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
     const page = state.pages[id];
     if (page) files.set(pageFile(page), file(`page:${id}${mode}`, (s) => generatePage(s, s.pages[id], opts)));
   }
-  // Each entry's page reads that entry, its collection's settings and the site's, so one post's change makes one file.
+  // Each entry's page reads that entry, its collection's settings (its layout among them), the entries listed beside
+  // it and the site's, so one post's change makes its own file and its neighbours' again, and no other.
   for (const { collection, entry, route } of siteEntries(state)) {
     const cid = collection.settings.id;
-    files.set(entryFile(route), file(`entry:${cid}:${entry.id}`, (s) => generateEntry(s, cid, entry.id)));
+    files.set(entryFile(route), file(`entry:${cid}:${entry.id}${mode}`, (s) => generateEntry(s, cid, entry.id, opts)));
   }
   for (const { from, page, entry } of liveRedirects(state)) {
     if (page) files.set(redirectFile(from), file(`redirect:${page.id}:${from}`, (s) => generateRedirect(s, from, s.pages[page.id])));

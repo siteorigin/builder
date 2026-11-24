@@ -327,7 +327,11 @@ interface GeneratedManifest {
 }
 
 /** Whether an operation changes a collection or one of its entries. */
-const isCollectionOperation = (o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.');
+/** Whether a value names a collection's layout template as an owner, at most a few levels in (`target.owner`). */
+const namesTemplate = (v: unknown, depth = 0): boolean =>
+  !!v && typeof v === 'object' && depth < 4 && ((v as { kind?: unknown }).kind === 'template' || Object.values(v as Record<string, unknown>).some((x) => namesTemplate(x, depth + 1)));
+/** An edit of a collection, of its entries, or of its layout template. */
+const isCollectionOperation = (o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.') || namesTemplate(o);
 
 /**
  * A change checked against files it does not write: a collection removal guards the links other entries and pages

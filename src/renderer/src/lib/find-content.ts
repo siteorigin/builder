@@ -608,6 +608,7 @@ function itemValue(state: ProjectState, owner: OwnerRef, nodeId: string, prop: s
 function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   if (owner.kind === 'page') return own(state.pages, owner.id);
   if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
+  if (owner.kind === 'template') return own(state.collections ?? {}, owner.id)?.settings.template;
   return own(state.components, owner.id)?.tree;
 }
 

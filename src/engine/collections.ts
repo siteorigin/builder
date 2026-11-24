@@ -3,8 +3,8 @@
  * every address held once across pages, old page addresses, collections and entries; links to entries kept or
  * pointed elsewhere when an entry goes; pictures and links in entries pointing at things that exist.
  */
-import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionTaxonomy, EntryDoc, LinkValue, ProjectState, RichText, SiteRedirect } from '@shared/types';
-import { COLLECTION_FIELD_TYPES, SCHEMA_VERSION } from '@shared/types';
+import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionTaxonomy, EntryDoc, GraphNode, LinkValue, NodeTree, ProjectState, ResponsiveStyles, RichText, SiteRedirect } from '@shared/types';
+import { COLLECTION_FIELD_TYPES, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, findEntry, isCollectionId, isEntryId, isTermId, routeOwners, type RouteOwner } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
@@ -13,8 +13,10 @@ import { isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { EngineError, fail } from './tree';
 import { normalizeRichText, normalizeScalar } from './values';
-import { checkPropName, normalizePropSchema } from './schema';
+import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
 import { entryLinkUses } from './page-links';
+import { declaredTokens } from './tokens';
+import { articleTemplateFor } from '@catalogue/index';
 
 type OpResult = Record<string, unknown>;
 
@@ -243,10 +245,42 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
     name: (op.name ?? preset?.name ?? nameFromId(op.collectionId)).trim(),
     route,
     taxonomies: normalizeTaxonomies(op.taxonomies ?? preset?.taxonomies ?? {}),
-    fields: normalizeFields(op.fields ?? {}, state)
+    fields: normalizeFields(op.fields ?? {}, state),
+    template: themeArticleTemplate(state)
   };
   state.collections[op.collectionId] = { settings, entries: {} };
   return { collectionId: op.collectionId, route };
+}
+
+/**
+ * The layout a new collection's entries start with: a copy of the theme's, every node with a new ID (so two
+ * collections' layouts never share a style rule), keeping only the site styles the site has.
+ */
+export function themeArticleTemplate(state: ProjectState): NodeTree {
+  const source = articleTemplateFor(state.site.themeId);
+  if (!source) return { rootIds: [], nodes: {} };
+  const tokens = new Set(declaredTokens(state).map((t) => t.id));
+  const ids = new Map(Object.keys(source.nodes).map((id) => [id, newId('n')]));
+  const remap = (list: unknown) => (Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string' && ids.has(id)).map((id) => ids.get(id)!) : []);
+  const nodes: Record<string, GraphNode> = {};
+  for (const [id, n] of Object.entries(source.nodes)) {
+    const copy = structuredClone(n) as GraphNode & { children?: string[] };
+    copy.id = ids.get(id)!;
+    if ('children' in copy) copy.children = remap(copy.children);
+    if (copy.styles) copy.styles = keptStyles(copy.styles, tokens);
+    nodes[copy.id] = copy;
+  }
+  return { rootIds: remap(source.rootIds), nodes };
+}
+
+/** Styles without the values that name a site style the site lacks (a theme pack's template written for others). */
+function keptStyles(styles: ResponsiveStyles, tokens: ReadonlySet<string>): ResponsiveStyles {
+  const out: ResponsiveStyles = {};
+  for (const [scope, props] of Object.entries(styles) as Array<[keyof ResponsiveStyles, Record<string, unknown>]>) {
+    const kept = Object.fromEntries(Object.entries(props ?? {}).filter(([, v]) => !(v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' && !tokens.has((v as { token: string }).token))));
+    if (Object.keys(kept).length) out[scope] = kept as ResponsiveStyles[keyof ResponsiveStyles];
+  }
+  return out;
 }
 
 export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, EntryAddress>): OpResult {
@@ -278,11 +312,33 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   if (op.taxonomies !== undefined || op.fields !== undefined) {
     const taxonomies = op.taxonomies !== undefined ? normalizeTaxonomies(op.taxonomies) : c.settings.taxonomies;
     const fields = op.fields !== undefined ? normalizeFields(op.fields, state) : c.settings.fields;
+    // A custom field the layout shows can't go, or become another kind, while it does: every entry's value would be
+    // dropped below, even if a later change in the same batch brought the field back.
+    for (const name of layoutFields(c)) {
+      const before = Object.hasOwn(c.settings.fields ?? {}, name) ? c.settings.fields[name] : undefined;
+      const after = Object.hasOwn(fields, name) ? fields[name] : undefined;
+      if (before && (!after || after.type !== before.type))
+        fail(`The ${c.settings.name} layout shows ${before.label}. Unbind it in the layout before ${after ? 'changing its kind' : 'removing it'}.`);
+    }
     settleEntries(state, c, taxonomies, fields);
     c.settings.taxonomies = taxonomies;
     c.settings.fields = fields;
   }
   return { collectionId: c.settings.id, route: c.settings.route };
+}
+
+/** The custom fields a collection's layout shows or tests, by name. */
+function layoutFields(c: Collection): Set<string> {
+  const out = new Set<string>();
+  const nodes = c.settings.template?.nodes;
+  for (const n of Object.values(nodes && typeof nodes === 'object' ? nodes : {})) {
+    if (!n || typeof n !== 'object') continue;
+    for (const slot of bindingSlots(n)) {
+      const b = conditionRef(slot.value) ?? slot.value;
+      if (isEntryBinding(b) && b.$entry.startsWith('field.')) out.add(b.$entry.slice(6));
+    }
+  }
+  return out;
 }
 
 export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>, atStart?: Map<string, EntryAddress>): OpResult {
@@ -516,6 +572,10 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
       !(COLLECTION_FIELD_TYPES as readonly unknown[]).includes(f?.type) || (f!.type === 'enum' && (!Array.isArray(f!.options) || !f!.options.length || !f!.options.every((o) => typeof o?.value === 'string')));
     const fieldsDamaged = fields !== s.fields || Object.values(fields).some(damaged);
     if (fieldsDamaged) out.push({ severity: 'error', code: 'COLLECTION_INVALID', message: `${name}: its custom fields are damaged.`, owner });
+    // Its layout is checked as a tree, element by element, with the others (validate.ts); here only that there is one.
+    const t = s.template as Partial<NodeTree> | undefined;
+    if (!t || typeof t !== 'object' || !Array.isArray(t.rootIds) || !t.nodes || typeof t.nodes !== 'object')
+      out.push({ severity: 'error', code: 'COLLECTION_INVALID', message: `${name}: its layout is damaged, so its entries cannot be shown.`, owner });
     for (const [k, f] of Object.entries(fields)) {
       const a = f?.type === 'image' && f.default?.assetId ? own(assets, f.default.assetId) : undefined;
       if (f?.type === 'image' && f.default?.assetId && !a) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${name}: the default of ${f.label} shows an image that is not in the library.`, owner, site: `default|${k}` });

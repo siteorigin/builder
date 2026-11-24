@@ -35,9 +35,9 @@ export interface ConditionRule {
   source?: ConditionSource;
 }
 
-export const sourceKey = (b: BindingRef) => ('$state' in b ? `state:${b.$state}` : '$prop' in b ? `prop:${propBindingName(b)}` : `item:${b.$item}`);
+export const sourceKey = (b: BindingRef) => ('$state' in b ? `state:${b.$state}` : '$prop' in b ? `prop:${propBindingName(b)}` : '$item' in b ? `item:${b.$item}` : `entry:${b.$entry}`);
 /** The name a binding reads, for a rule whose source has gone. */
-export const bindingName = (b: BindingRef) => ('$state' in b ? b.$state : '$prop' in b ? propBindingName(b) : b.$item);
+export const bindingName = (b: BindingRef) => ('$state' in b ? b.$state : '$prop' in b ? propBindingName(b) : '$item' in b ? b.$item : b.$entry);
 
 /**
  * What a condition at this node can read: the component's properties, then the fields of the item it repeats for,

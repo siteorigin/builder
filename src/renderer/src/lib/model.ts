@@ -10,6 +10,7 @@ import { placementItems, repeatedPartList } from '@shared/item-styles';
 import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
 import { isDraftPage } from '@generator/index';
 import { layerLabel } from './layers';
+import { keepTemplateValid, type TemplateMode } from './template-view';
 
 export interface BridgeDesc {
   ctx: string;
@@ -24,12 +25,13 @@ export function treeFor(state: ProjectState, owner: OwnerRef): NodeTree | undefi
   // Own keys only: ids can come from the preview, and "toString" must not find Object.prototype's.
   if (owner.kind === 'page') return Object.hasOwn(state.pages, owner.id) ? state.pages[owner.id] : undefined;
   if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
+  if (owner.kind === 'template') return Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id]?.settings?.template : undefined;
   return Object.hasOwn(state.components, owner.id) ? state.components[owner.id]?.tree : undefined;
 }
 
 export function parseCtx(ctx: string): { owner: OwnerRef; path: string[] } | null {
   const [head, ...path] = ctx.split('|');
-  const m = head.match(/^(page|shell|component):(.+)$/);
+  const m = head.match(/^(page|shell|component|template):(.+)$/);
   if (!m) return null;
   return { owner: { kind: m[1] as OwnerRef['kind'], id: m[2] }, path };
 }
@@ -433,6 +435,7 @@ export function refExists(state: ProjectState, ref: ElementRef): boolean {
 }
 
 type DefinitionMode = { definitionId: string; returnPageId: string } | null;
+type View = { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; templateMode?: TemplateMode | null };
 
 /**
  * The page shown, the selection and Edit everywhere kept to what the project still has after it changes (an Undo, a
@@ -441,7 +444,15 @@ type DefinitionMode = { definitionId: string; returnPageId: string } | null;
  * component edited everywhere that has gone (its copy undone) ends that mode, back on the page it was entered from.
  * `selection` is in the result only when it changes, so a selection that still holds is kept as it is.
  */
-export function keepViewValid(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode }): { pageId: string; definitionMode: DefinitionMode; selection?: null } {
+export function keepViewValid(state: ProjectState, view: View): { pageId: string; definitionMode: DefinitionMode; selection?: null; templateMode?: TemplateMode | null } {
+  // A collection's layout whose collection went closes, and one whose entry went is shown on another. While one is
+  // open, `templateMode` is always in the result, so the page shown changing under it (an Undo took the page away and
+  // Home is shown) never closes it.
+  if (view.templateMode) {
+    const tm = keepTemplateValid(state, view.templateMode);
+    const rest = keepViewValid(state, { ...view, templateMode: undefined });
+    return { ...rest, templateMode: tm, ...(!tm && view.selection?.owner.kind === 'template' ? { selection: null } : {}) };
+  }
   const dm = view.definitionMode;
   if (dm && !own(state.components, dm.definitionId)) {
     const pageId = keepPagesValid(state, dm.returnPageId, null).pageId;
@@ -477,6 +488,7 @@ export function shellPageNames(state: ProjectState, part: string, max = 5): { te
 export function ownerLabel(state: ProjectState, owner: OwnerRef): string {
   if (owner.kind === 'page') return state.pages[owner.id]?.title ?? 'Page';
   if (owner.kind === 'shell') return owner.id === 'header' ? 'Header' : 'Footer';
+  if (owner.kind === 'template') return `${state.collections[owner.id]?.settings.name ?? 'Collection'} layout`;
   return state.components[owner.id]?.name ?? 'Component';
 }
 
@@ -706,6 +718,8 @@ export function shownValue(state: ProjectState, ref: ElementRef, bound: unknown)
   const r = resolveRef(state, ref);
   const props = (r.instance?.props ?? {}) as Record<string, unknown>;
   if ('$prop' in bound) return propBindingValue(props[bound.$prop] ?? (r.def?.properties[bound.$prop] as { default?: unknown } | undefined)?.default, bound);
+  // An entry's field shows the entry previewed, which the canvas shows; it is never typed where it shows.
+  if (!('$item' in bound)) return undefined;
   const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
   const schema = list ? r.def!.properties[list] : undefined;
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];

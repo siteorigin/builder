@@ -81,6 +81,8 @@ export interface PlaceView {
   selection: ElementRef | null;
   mode: 'edit' | 'preview';
   definitionMode: unknown;
+  /** A collection's layout open on the canvas: no page is shown, so nothing is remembered on or forgotten for one. */
+  templateMode?: unknown;
   pagePlaces: PagePlaces;
 }
 
@@ -96,7 +98,7 @@ export function notePlace(prev: PlaceView, s: PlaceView): PagePlaces {
   // the same selection (an Undo took the page away and Home is shown) is not.
   if (s.selection === prev.selection && !(prev.mode === 'preview' && s.mode === 'edit')) return places;
   const st = s.snapshot?.state;
-  if (!st || !s.pageId || s.mode !== 'edit' || s.definitionMode || s.snapshot?.workspaceKey !== prev.snapshot?.workspaceKey) return places;
+  if (!st || !s.pageId || s.mode !== 'edit' || s.definitionMode || s.templateMode || prev.templateMode || s.snapshot?.workspaceKey !== prev.snapshot?.workspaceKey) return places;
   if (s.selection) {
     const kept = placeToKeep(st, s.pageId, s.selection);
     if (!kept) return places;

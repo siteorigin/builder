@@ -62,12 +62,13 @@ function visitorTextRead(state: ProjectState, language: string, keys: string[]):
 function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   if (owner.kind === 'page') return has(state.pages, owner.id);
   if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
+  if (owner.kind === 'template') return has(state.collections ?? {}, owner.id)?.settings.template;
   return has(state.components, owner.id)?.tree;
 }
 
 function nodeOf(state: ProjectState, owner: OwnerRef, nodeId: string): GraphNode | string {
   const tree = treeOf(state, owner);
-  if (!tree) return owner.kind === 'page' ? 'page' : owner.kind === 'shell' ? 'header or footer' : 'component';
+  if (!tree) return owner.kind === 'page' ? 'page' : owner.kind === 'shell' ? 'header or footer' : owner.kind === 'template' ? 'collection' : 'component';
   return has(tree.nodes, nodeId) ?? 'element';
 }
 
@@ -376,7 +377,7 @@ export function shownField(op: EditOperation, read: unknown): string | null {
 function conditionText(c: unknown): string | undefined {
   const ref = conditionRef(c);
   if (!ref) return undefined;
-  const name = '$state' in ref ? ref.$state : '$prop' in ref ? ref.$prop : ref.$item;
+  const name = '$state' in ref ? ref.$state : '$prop' in ref ? ref.$prop : '$item' in ref ? ref.$item : ref.$entry;
   if (!isComparison(c)) return `${name} has a value`;
   const shown = (v: unknown) => (typeof v === 'string' ? `“${v}”` : String(v));
   return 'eq' in c ? `${name} is ${shown(c.eq)}` : `${name} is not ${shown(c.ne)}`;
@@ -390,6 +391,7 @@ export function placeOf(state: ProjectState, op: EditOperation): string {
     const owner = o.owner as OwnerRef;
     if (owner.kind === 'page') return has(state.pages, owner.id)?.title ?? 'Page';
     if (owner.kind === 'shell') return owner.id === 'footer' ? 'Footer' : 'Header';
+    if (owner.kind === 'template') return `${has(state.collections ?? {}, owner.id)?.settings.name ?? 'Collection'} layout`;
     return has(state.components, owner.id)?.name ?? 'Component';
   }
   if (typeof o.tokenId === 'string') return [...getTheme(state.site.themeId).tokens, ...state.tokens.custom].find((t) => t.id === o.tokenId)?.label ?? 'Site style';

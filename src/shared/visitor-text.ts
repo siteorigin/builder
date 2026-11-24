@@ -61,7 +61,8 @@ export const VISITOR_TEXT_KEYS = [
   'videoFrom',
   'videoLoads',
   'tableRegion',
-  'redirect'
+  'redirect',
+  'readingTime'
 ] as const;
 
 export type VisitorTextKey = (typeof VISITOR_TEXT_KEYS)[number];
@@ -142,6 +143,10 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'tableRegion', label: 'Table', hint: 'The name screen readers give a table without a caption or heading.' },
       { key: 'redirect', label: 'Moved page', hint: 'The link on an old address, for browsers that do not go on by themselves.' }
     ]
+  },
+  {
+    label: 'Posts',
+    fields: [{ key: 'readingTime', label: 'Reading time', hint: 'In a post’s layout, how long its text takes to read.', fills: ['count'] }]
   }
 ];
 
@@ -186,7 +191,8 @@ const EN: VisitorText = {
   videoFrom: 'Video from {host}',
   videoLoads: 'Loads the player from {host}',
   tableRegion: 'Table',
-  redirect: 'This page has moved. Continue to its new address.'
+  redirect: 'This page has moved. Continue to its new address.',
+  readingTime: '{count} min read'
 };
 
 const AR: VisitorText = {
@@ -230,7 +236,8 @@ const AR: VisitorText = {
   videoFrom: 'فيديو من {host}',
   videoLoads: 'يُحمَّل المشغّل من {host}',
   tableRegion: 'جدول',
-  redirect: 'نُقلت هذه الصفحة. تابع إلى عنوانها الجديد.'
+  redirect: 'نُقلت هذه الصفحة. تابع إلى عنوانها الجديد.',
+  readingTime: 'وقت القراءة: {count} دقيقة'
 };
 
 const HE: VisitorText = {
@@ -274,7 +281,8 @@ const HE: VisitorText = {
   videoFrom: 'סרטון מ-{host}',
   videoLoads: 'הנגן נטען מ-{host}',
   tableRegion: 'טבלה',
-  redirect: 'הדף הזה הועבר. אפשר להמשיך לכתובת החדשה שלו.'
+  redirect: 'הדף הזה הועבר. אפשר להמשיך לכתובת החדשה שלו.',
+  readingTime: '{count} דק׳ קריאה'
 };
 
 /** Built-in wording by primary language subtag. Hebrew is also known by its old code. */

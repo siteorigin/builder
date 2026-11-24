@@ -93,12 +93,21 @@ export type ImageUseTarget =
 /**
  * Binding to a property of the enclosing component, or a field of the current repeated item. `field` names one
  * field of an object property (`{ $prop: 'primary', field: 'label' }`); without it the whole value is bound.
+ * Inside a collection's layout template (and only there), `{ $entry: field }` reads a field of the entry the template
+ * is shown for (see shared/entry-fields.ts).
  */
-export type Binding = { $prop: string; field?: string } | { $item: string };
+export type Binding = { $prop: string; field?: string } | { $item: string } | EntryBinding;
 export type Bindable<T> = T | Binding;
+/** A read of one field of the collection entry a layout template is shown for: `title`, `body`, `field.price`... */
+export type EntryBinding = { $entry: string };
 
 export function isBinding(v: unknown): v is Binding {
-  return !!v && typeof v === 'object' && ('$prop' in (v as object) || '$item' in (v as object));
+  return !!v && typeof v === 'object' && ('$prop' in (v as object) || '$item' in (v as object) || '$entry' in (v as object));
+}
+
+/** A read of an entry field, and nothing else: a value that also names a property or an item field is neither. */
+export function isEntryBinding(v: unknown): v is EntryBinding {
+  return !!v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { $entry?: unknown }).$entry === 'string' && !Object.hasOwn(v, '$prop') && !Object.hasOwn(v, '$item') && !Object.hasOwn(v, '$state');
 }
 
 /**
@@ -872,6 +881,12 @@ export interface CollectionDoc {
    * `publishedAt` (then by ID), as dated articles do.
    */
   entryOrder?: string[];
+  /**
+   * The layout every entry's page is shown with: a tree of sections and elements, edited like a page's, whose nodes
+   * and placed sections read the entry they are shown for through `{ $entry: field }` bindings. Editing it changes
+   * every entry's page; each entry keeps its own words and details.
+   */
+  template: NodeTree;
 }
 
 /** One entry of a collection: `siteorigin/collections/<collectionId>/entries/<id>.json`. */
@@ -923,10 +938,10 @@ export interface ProjectState {
 // Selection identity
 // ---------------------------------------------------------------------------
 
-export type OwnerKind = 'page' | 'shell' | 'component';
+export type OwnerKind = 'page' | 'shell' | 'component' | 'template';
 export interface OwnerRef {
   kind: OwnerKind;
-  /** Page ID, shell part ('header' | 'footer') or definition ID. */
+  /** Page ID, shell part ('header' | 'footer'), definition ID, or (for a layout template) collection ID. */
   id: string;
 }
 

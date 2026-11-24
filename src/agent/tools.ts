@@ -25,7 +25,7 @@ import { OP_REACH, type AuthorityGrants } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 
-const owner = z.object({ kind: z.enum(['page', 'shell', 'component']), id: z.string() });
+const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template']), id: z.string() });
 
 export const TOOL_ARGS = {
   read_project: z.object({ sections: z.array(z.enum(['pages', 'tokens', 'catalogue', 'components', 'shell'])).optional() }),

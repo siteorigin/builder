@@ -49,6 +49,7 @@ export function designContent(def: ComponentDefinition, node: GraphNode): Design
         out.push({ field, source: 'item', list: enclosingRepeatProp(def, node.id) ?? null, itemField: raw.$item });
         continue;
       }
+      if (!('$prop' in raw)) continue;
       const schema = propBindingSchema(def.properties, raw);
       // A list or table can only feed a repeat or a table, never one field; a missing property has nothing to change.
       if (!schema || schema.type === 'list' || schema.type === 'table' || schema.type === 'object') continue;

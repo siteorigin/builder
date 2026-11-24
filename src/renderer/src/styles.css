@@ -4424,3 +4424,21 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insert-ghost svg { flex: none; width: 14px; height: 14px; }
 .insert-ghost.refused { background: var(--red); }
 html.insert-dragging, html.insert-dragging * { cursor: grabbing !important; user-select: none; }
+/* A collection's layout being edited: whose layout, the entry it is shown on, and Done, in the strip above the page. */
+.frame-status.template-strip { gap: 6px; color: var(--text); overflow: visible; }
+.frame-status.template-strip svg { flex: none; width: 14px; height: 14px; color: var(--accent-text); }
+.template-strip-name { font-weight: 600; flex: none; }
+.template-strip-sample { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); }
+.template-strip-sample .select { height: 24px; max-width: 220px; padding-block: 0; font-size: 12px; }
+.frame-status.template-strip .link-btn { flex: none; min-height: 24px; }
+.template-no-entries { position: absolute; inset: 0; z-index: 4; display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; background: color-mix(in srgb, var(--canvas-bg, #eef0f3) 88%, transparent); }
+/* Collections under the pages: each with Edit layout, which opens the layout its entries share on the canvas. */
+.pages-collections { margin: 8px 6px 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.pages-collections h4 { margin: 0 6px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3, var(--text-2)); }
+.pages-collections ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pages-collection { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 6px; border-radius: var(--r-sm); }
+.pages-collection.open { background: var(--panel-2); }
+.pages-collection > svg { flex: none; width: 15px; height: 15px; color: var(--text-2); }
+.pages-collection-text { display: flex; flex-direction: column; min-width: 0; }
+.pages-collection-name { font-size: 13px; color: var(--text); }
+.pages-collection-meta { font-size: 11px; color: var(--text-2); }

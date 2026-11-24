@@ -27,8 +27,8 @@ export function propertiesHash(properties: Record<string, unknown> | undefined):
 
 const owner = z
   .object({
-    kind: z.enum(['page', 'shell', 'component']).describe('Document that owns the node: a page, the shared shell (header/footer) or a component definition.'),
-    id: z.string().describe('Page ID, "header" or "footer" for the shell, or a component definition ID.')
+    kind: z.enum(['page', 'shell', 'component', 'template']).describe("Document that owns the node: a page, the shared shell (header/footer), a component definition, or a collection's layout template."),
+    id: z.string().describe('Page ID, "header" or "footer" for the shell, a component definition ID, or (for a template) the collection ID.')
   })
   .describe('Owner document of the node.');
 
@@ -54,7 +54,7 @@ const FONT_FACE = z.object({
 const styleValue = z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() })]);
 // Strict, so a value naming two sources ({ $prop, $state }) is refused rather than read as whichever comes first.
 const contentBinding = [z.object({ $prop: z.string(), field: z.string().optional() }).strict(), z.object({ $item: z.string() }).strict()] as const;
-const binding = z.union([...contentBinding, z.object({ $state: z.string() }).strict()]);
+const binding = z.union([...contentBinding, z.object({ $state: z.string() }).strict(), z.object({ $entry: z.string().max(80) }).strict()]);
 /** node.setBinding's binding without UI state, as the assistant is offered it until it may author state. */
 export const PROP_OR_ITEM_BINDING = z
   .union(contentBinding)
@@ -346,7 +346,7 @@ export const OPERATION_SCHEMAS = {
     axis: z.string().optional().describe('For field "variant": the nested instance variant axis to bind to an enum property.'),
     binding: binding
       .nullable()
-      .describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; {"$state": name} (when, unless and variant only) reads the component\'s UI state. null unbinds, keeping the current default.'),
+      .describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; {"$state": name} (when, unless and variant only) reads the component\'s UI state; {"$entry": field} (a collection\'s layout template only) reads the entry it is shown for. null unbinds, keeping the current default.'),
     eq: conditionValue.optional().describe('For "when"/"unless": render when the bound value equals this (or, for unless, when it does not).'),
     ne: conditionValue.optional().describe('For "when"/"unless": render when the bound value differs from this (or, for unless, when it does not).')
   }),

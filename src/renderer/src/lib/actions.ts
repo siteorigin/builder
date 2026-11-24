@@ -17,6 +17,7 @@ import type { InsertSpec } from './insert-search';
 import { elementWhere, insertAt, insertOps, insertRole, nodeBefore, nodeLabel, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
+import { sampleEntries } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 
 export type { InsertSpec, Primitive } from './insert-search';
@@ -24,6 +25,7 @@ export type { InsertSpec, Primitive } from './insert-search';
 export function currentOwner(): OwnerRef | null {
   const s = getState();
   if (s.definitionMode) return { kind: 'component', id: s.definitionMode.definitionId };
+  if (s.templateMode) return { kind: 'template', id: s.templateMode.collectionId };
   return s.pageId ? { kind: 'page', id: s.pageId } : null;
 }
 
@@ -131,7 +133,7 @@ export interface LayersPlan {
   anchor?: string;
 }
 
-type EditorPlace = Pick<ReturnType<typeof getState>, 'snapshot' | 'selection' | 'layerSet' | 'pageId' | 'definitionMode'>;
+type EditorPlace = Pick<ReturnType<typeof getState>, 'snapshot' | 'selection' | 'layerSet' | 'pageId' | 'definitionMode'> & { templateMode?: ReturnType<typeof getState>['templateMode'] };
 
 /**
  * The layers selected together, while they apply: the selection is one of them, they still sit side by side, and
@@ -141,7 +143,11 @@ type EditorPlace = Pick<ReturnType<typeof getState>, 'snapshot' | 'selection' | 
 export function liveGroup(s: EditorPlace = getState()): Group | null {
   const set = s.layerSet;
   if (!set || !s.snapshot) return null;
-  const shown = s.definitionMode ? set.owner.kind === 'component' && set.owner.id === s.definitionMode.definitionId : set.owner.kind === 'page' && set.owner.id === s.pageId;
+  const shown = s.definitionMode
+    ? set.owner.kind === 'component' && set.owner.id === s.definitionMode.definitionId
+    : s.templateMode
+      ? set.owner.kind === 'template' && set.owner.id === s.templateMode.collectionId
+      : set.owner.kind === 'page' && set.owner.id === s.pageId;
   return shown ? liveSet(treeFor(s.snapshot.state, set.owner), s.selection, set) : null;
 }
 
@@ -542,7 +548,7 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   }
   const instId = ref.instancePath[0];
   const binding = target.value;
-  if (!isBinding(binding)) {
+  if (!isBinding(binding) || '$entry' in binding) {
     toast('This text is part of the component design. Use Edit everywhere or Make unique to change it.', 'error');
     return 'restore';
   }
@@ -568,8 +574,24 @@ export function canInlineEdit(ref: ElementRef): boolean {
   if (computedAt(s.snapshot.state, ref, target.value)) return false;
   // A component's own text (editing it everywhere) is its design; a bound field is filled in per placement.
   if (ref.owner.kind === 'component') return !ref.instancePath.length && !isBinding(target.value);
-  if (!ref.instancePath.length) return true;
-  return ref.instancePath.length === 1 && isBinding(target.value);
+  // In a collection's layout, what shows an entry's field shows each entry's own words, never words typed here.
+  if (!ref.instancePath.length) return !isBinding(target.value);
+  if (ref.instancePath.length !== 1 || !isBinding(target.value)) return false;
+  const inst = resolveRef(s.snapshot.state, { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] }).node;
+  const placed = '$prop' in target.value && inst?.kind === 'instance' ? inst.props[target.value.$prop] : undefined;
+  return !(placed && typeof placed === 'object' && '$entry' in placed);
+}
+
+/**
+ * Edit a collection's layout on the canvas, shown on one of its entries (the one given while the collection has it,
+ * else its first), with its layers in view. Every entry's page shows what is edited here.
+ */
+export function openLayout(collectionId: string, entryId?: string) {
+  const st = getState().snapshot?.state;
+  if (!st || !Object.hasOwn(st.collections ?? {}, collectionId)) return;
+  const samples = sampleEntries(st, collectionId);
+  const entry = entryId && samples.some((e) => e.id === entryId) ? entryId : (samples[0]?.id ?? null);
+  setState({ templateMode: { collectionId, entryId: entry }, definitionMode: null, selection: null, mode: 'edit', previewReturn: null, leftTab: 'layers' });
 }
 
 /**
@@ -583,7 +605,7 @@ export function selectPage(pageId: string, target?: ElementRef | null) {
   const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
   const selection = target !== undefined ? target : s.mode === 'edit' && !itself && st ? placeOn(st, s.pagePlaces, pageId) : null;
   // A page opened while previewing is where Edit opens: what was selected before Preview is not selected again.
-  setState({ pageId, selection, definitionMode: null, previewReturn: null, ...(itself ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });
+  setState({ pageId, selection, definitionMode: null, templateMode: null, previewReturn: null, ...(itself ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });
   saveLocal({ pageId });
 }
 
@@ -632,7 +654,16 @@ export function setMode(mode: 'edit' | 'preview') {
   const st = s.snapshot?.state;
   // A selection made while previewing is the author's latest choice and stays. Otherwise the one Preview was entered
   // with, on the same page and in the same component edited everywhere (or none), while it is still there.
-  const ref = !s.selection && back && st && back.pageId === s.pageId && back.definitionId === editing ? selectionBack(st, back.pageId, back.ref, back.revision === s.snapshot?.revision) : null;
+  // A layout's element comes back while that layout is still open and has it.
+  const layoutBack = !!back && back.ref.owner.kind === 'template' && s.templateMode?.collectionId === back.ref.owner.id;
+  const ref =
+    !s.selection && back && st && back.pageId === s.pageId && back.definitionId === editing
+      ? layoutBack
+        ? resolveRef(st, back.ref).node
+          ? back.ref
+          : null
+        : selectionBack(st, back.pageId, back.ref, back.revision === s.snapshot?.revision)
+      : null;
   unscrolled = ref;
   setState({ mode, previewReturn: null, ...(ref ? { selection: ref } : {}) });
   // The page Edit returns on (one a visitor's link opened, say) is the page being worked on, and reopens.

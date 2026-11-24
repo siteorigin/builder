@@ -138,7 +138,7 @@ function tokenUses(state: ProjectState): Map<string, TokenUse> {
     const mark =
       t.owner.kind === 'page'
         ? (u: TokenUse) => u.pages.set(t.owner.id, t.label)
-        : t.owner.kind === 'shell'
+        : t.owner.kind === 'shell' || t.owner.kind === 'template'
           ? (u: TokenUse) => u.shared.add(t.label)
           : (u: TokenUse) => u.components.set(t.owner.id, t.label);
     if (t.owner.kind === 'component') {
@@ -154,7 +154,7 @@ function tokenUses(state: ProjectState): Map<string, TokenUse> {
   // A placement's token property (an accent colour, a spacing step) uses the style it chooses.
   forEachTokenPropRef(state, (id, site) => {
     if (site.owner.kind === 'page') at(id).pages.set(site.owner.id, site.label);
-    else if (site.owner.kind === 'shell') at(id).shared.add(site.label);
+    else if (site.owner.kind === 'shell' || site.owner.kind === 'template') at(id).shared.add(site.label);
     else if (instancesOf(state, site.owner.id).length) at(id).components.set(site.owner.id, site.label);
   });
   return uses;

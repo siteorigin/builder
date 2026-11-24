@@ -116,7 +116,7 @@ export function partReach(def: ComponentDefinition, regionNodeId: string): PartR
   const propSites = new Map<string, string[]>();
   for (const site of bindingSites(def)) {
     // UI state is the design's own: no placement's content reaches it.
-    if ('$state' in site.binding) continue;
+    if ('$state' in site.binding || '$entry' in site.binding) continue;
     const inside = nodes.has(site.node.id);
     if ('$prop' in site.binding) {
       only.set(site.binding.$prop, (only.get(site.binding.$prop) ?? true) && inside);

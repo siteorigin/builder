@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
+import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, LayoutTemplate, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';
 import { collectionRoutes } from '@shared/collections';
 import type { ElementRef, ProjectState } from '@shared/types';
@@ -9,7 +9,7 @@ import { limitNote } from '../lib/kept-drafts';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { goToShellPart, selectPage } from '../lib/actions';
+import { goToShellPart, openLayout, selectPage } from '../lib/actions';
 import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
@@ -1092,8 +1092,44 @@ export function PagesPanel() {
             </div>
           </div>
         )}
+        <CollectionLayouts state={st} />
       </div>
       {menu.node}
     </div>
+  );
+}
+
+/**
+ * The site's collections, each with the layout its entries' pages share. Edit layout opens it on the canvas, shown on
+ * the collection's first entry; a change there changes every entry's page.
+ */
+function CollectionLayouts({ state }: { state: ProjectState }) {
+  const open = useStore((s) => s.templateMode?.collectionId ?? null);
+  const ids = Object.keys(state.collections ?? {}).sort();
+  if (!ids.length) return null;
+  return (
+    <section className="pages-collections" aria-labelledby="pages-collections-head">
+      <h4 id="pages-collections-head">Collections</h4>
+      <ul>
+        {ids.map((id) => {
+          const c = state.collections[id];
+          const n = Object.keys(c.entries ?? {}).length;
+          return (
+            <li key={id} className={`pages-collection${open === id ? ' open' : ''}`}>
+              <LayoutTemplate aria-hidden="true" />
+              <span className="grow pages-collection-text">
+                <span className="pages-collection-name ellipsis">{c.settings.name}</span>
+                <span className="pages-collection-meta ellipsis">
+                  {n} {n === 1 ? 'entry' : 'entries'} · {c.settings.route}
+                </span>
+              </span>
+              <button className="btn btn-sm" aria-pressed={open === id} aria-label={`Edit the ${c.settings.name} layout`} data-testid={`edit-layout-${id}`} onClick={() => openLayout(id)}>
+                Edit layout
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
