@@ -5,8 +5,8 @@ import type { AssetRecord, ComponentDefinition, ImageValue, ListItem, ListProp, 
 import type { MoveDirection } from './list-editor';
 
 /** The lists that take several library images at once, by component: the list and the item field the image goes in.
- *  Only a Gallery: a team member, testimonial or logo needs more than a picture to be worth a row. */
-const PICK_MANY: Record<string, { prop: string; field: string }> = { 'media.gallery': { prop: 'images', field: 'image' } };
+ *  Only a Gallery's and a Carousel's: a team member, testimonial or logo needs more than a picture to be worth a row. */
+const PICK_MANY: Record<string, { prop: string; field: string }> = { 'media.gallery': { prop: 'images', field: 'image' }, 'media.carousel': { prop: 'slides', field: 'image' } };
 
 /** The item field chosen images go in, for a list that takes several at once; otherwise null. A component made
  *  unique from a Gallery keeps the action while its list still holds images. */

@@ -132,6 +132,15 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 .so-viewer__count { min-width: 4.5em; text-align: center; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
 @media (min-width: 768px) { .so-viewer { padding: 1.5rem; } }
 
+/* A carousel's count of the slides showing, and its Previous and Next buttons, in the colours of the ground they sit on. */
+.so-carousel__status { font-size: var(--so-text-small-size); line-height: var(--so-text-small-line-height); }
+.so-carousel__step {
+  display: grid; place-items: center; width: 2.75rem; height: 2.75rem; padding: 0; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent); background: none; color: var(--so-surface-ink, currentColor);
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+.so-carousel__step:not([aria-disabled='true']):hover { border-color: currentColor; background: color-mix(in srgb, currentColor 8%, transparent); }
+
 .so-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 0.5em;
   min-height: 46px; padding: 0.7em 1.35em;

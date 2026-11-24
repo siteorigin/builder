@@ -257,6 +257,68 @@ export const gallery = managed({
     ])
 });
 
+/** The space between slides, which the widths below allow for. */
+const SLIDE_GAP = '1.5rem';
+/** A slide's width when `n` show at once. */
+const slidesAcross = (n: number) => (n === 1 ? '100%' : `calc((100% - ${n - 1} * ${SLIDE_GAP}) / ${n})`);
+
+/**
+ * A row of images that scrolls sideways a slide at a time: a portfolio, a product tour or the photos of one project.
+ * Its list is a carousel track (`ElementNode.carousel`): it scrolls and snaps to each slide with CSS alone, so every
+ * slide is reachable without the page's script and prints as a stack, and the runtime helper adds Previous and Next
+ * buttons and the count of the slides showing. A phone shows one slide and the edge of the next.
+ */
+export const carousel = managed({
+  componentId: 'media.carousel',
+  name: 'Carousel',
+  description:
+    'Images with optional captions in a row that scrolls sideways a slide at a time, by swiping or with Previous and Next buttons. Each slide can link to a page, such as a case study. Shows one, two or three slides at once on a desktop. Use for a portfolio, a product tour or the photos of one project.',
+  category: 'media',
+  tags: ['carousel', 'slider', 'slides', 'slideshow', 'swipe', 'images', 'photos', 'portfolio', 'case study', 'product tour', 'tour', 'work'],
+  icon: 'gallery-horizontal-end',
+  properties: {
+    eyebrow: P.str('Eyebrow', ''),
+    heading: P.str('Heading', 'Featured projects'),
+    headingLevel: headingLevel('h2'),
+    lead: P.text('Supporting text', ''),
+    // A new carousel starts empty, like a Gallery: the author chooses its pictures from Assets.
+    slides: P.list('Slides', 'Slide', { image: P.image('Image'), caption: P.str('Caption', ''), link: P.link('Link') }, [], { titleField: 'caption', max: 24 })
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+    slide: { nodeId: 'slide-card', label: 'Slide', styleControls: ['background', 'border', 'radius', 'shadow', 'paddingBlock', 'paddingInline'] },
+    image: { nodeId: 'image', label: 'Image', styleControls: ['aspectRatio', 'radius'] },
+    caption: { nodeId: 'caption', label: 'Caption', styleControls: ['textStyle', 'color'] }
+  },
+  variantAxes: {
+    tone: toneAxis(['lead', 'caption']),
+    layout: layoutAxis({
+      default: { label: 'Three at a time' },
+      'two-columns': { label: 'Two at a time', styles: { slide: { desktop: { width: slidesAcross(2) } } } },
+      'one-column': { label: 'One at a time', styles: { slide: { tablet: { width: slidesAcross(1) }, desktop: { width: slidesAcross(1) } } } }
+    })
+  },
+  build: (b) =>
+    sectionShell(b, [
+      headingBlock(b),
+      // Named by the heading. An empty carousel leaves no empty list (and no buttons) behind.
+      b.el('track', 'ul', { name: 'Slides', carousel: true, collapseEmpty: true, ariaLabel: { $prop: 'heading' }, styles: { gap: SLIDE_GAP } }, [
+        b.repeat('slides', 'slides', [
+          b.el('slide', 'li', { name: 'Slide', styles: { base: { width: '85%' }, tablet: { width: slidesAcross(2) }, desktop: { width: slidesAcross(3) } } }, [
+            // A slide with a destination is one link around its picture and caption.
+            b.el('slide-card', 'div', { name: 'Slide card', link: item('link'), styles: { layout: 'stack' } }, [
+              b.el('figure', 'figure', { name: 'Figure', styles: { layout: 'stack', gap: tok('space.sm') } }, [
+                b.image('image', { $item: 'image' }, { name: 'Image', styles: { aspectRatio: '4/3', radius: tok('radius.md'), objectFit: 'cover' } }),
+                b.text('caption', 'figcaption', { $item: 'caption' }, { name: 'Caption', when: { $item: 'caption' }, styles: { textStyle: tok('text.small'), ...mutedStyles } })
+              ])
+            ])
+          ])
+        ])
+      ])
+    ])
+});
+
 /**
  * A curated list of the site's own pages: a portfolio, case studies, a project index or a directory of services.
  * Each card links to its page by ID, so it follows the page's renames and address changes, and shows the page's

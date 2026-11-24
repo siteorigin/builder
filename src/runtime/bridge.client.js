@@ -267,6 +267,12 @@ let revealKey = '';
  * smoothly): an update or typed text never scrolls back to it.
  */
 let revealScroll = false;
+/**
+ * The list that scrolls sideways (a carousel's) the item was last brought into. A list rendered afresh (an update
+ * arrived) starts at its beginning again, so the item is brought back into the new one; the same list scrolled away
+ * from it by the author stays where they put it.
+ */
+let revealSide = null;
 /** Disclosures opened for the item. Only these are closed again; one the page or the author opened stays open. */
 const revealOpened = new Set();
 /**
@@ -305,6 +311,7 @@ function setReveal(target) {
   if (key !== revealKey) {
     revealKey = key;
     revealScroll = !!reveal;
+    revealSide = null;
     revealDeclined = new Set();
   } else if (reveal && reveal.text && !(before && before.text && before.text.value === reveal.text.value)) revealTyped = true;
   reconcileReveal();
@@ -370,14 +377,48 @@ function reconcileReveal() {
   if (revealScroll) {
     const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
     if (el) {
-      const r = el.getBoundingClientRect();
       // Scrolling never moves focus: the author keeps typing in the inspector.
       // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
       const instant = revealScroll === 'resize' || matchMedia('(prefers-reduced-motion: reduce)').matches;
       revealScroll = false;
-      if (r.top < 60 || r.bottom > innerHeight - 20) el.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
+      // An item in a list that scrolls sideways (a carousel's slide) is brought in there, and the page then scrolls
+      // to the list, which leaves the list where it was just put.
+      const side = sideScroller(el);
+      revealSide = side;
+      if (side) bringInside(side, el, instant);
+      const target = side || el;
+      const r = target.getBoundingClientRect();
+      if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
+    }
+  } else if (reveal) {
+    const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
+    const side = el ? sideScroller(el) : null;
+    if (side && side !== revealSide) {
+      revealSide = side;
+      bringInside(side, el, true);
     }
   }
+}
+/** The nearest box around an element that scrolls sideways, such as a carousel's list, or null. */
+function sideScroller(el) {
+  for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+    const x = getComputedStyle(p).overflowX;
+    if ((x === 'auto' || x === 'scroll') && p.scrollWidth > p.clientWidth + 1) return p;
+  }
+  return null;
+}
+/**
+ * Scrolls `list` sideways, and nothing else, until the start of `el` is at the start of what it shows (where a
+ * carousel stops), unless all of `el` already shows.
+ */
+function bringInside(list, el, instant) {
+  const l = list.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  const left = l.left + list.clientLeft;
+  const right = left + list.clientWidth;
+  if (r.left >= left - 1 && r.right <= right + 1) return;
+  const dx = getComputedStyle(list).direction === 'rtl' ? r.right - right : r.left - left;
+  list.scrollBy({ left: dx, behavior: instant ? 'instant' : 'smooth' });
 }
 /**
  * Typed text (`value`, or null for none), shown in the given plain text elements in a text node of the bridge's own.
@@ -3088,7 +3129,8 @@ window.addEventListener('message', async (e) => {
   }
 });
 
-window.addEventListener('scroll', scheduleRects, { passive: true });
+// Captured, so a box scrolling inside the page (a carousel's list) moves the outlines of what is in it too.
+window.addEventListener('scroll', scheduleRects, { passive: true, capture: true });
 window.addEventListener('resize', () => {
   // The item is checked at another width: brought back into view if the new layout moved it out. A change of
   // height alone (the editor window resized) leaves the page where the author put it.

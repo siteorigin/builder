@@ -77,7 +77,7 @@ describe('authoring a pack', () => {
   it('builds Foundation and its development fixture from their own identities', () => {
     expect(FOUNDATION_PACK.components.map((c) => c.componentId)).toEqual([
       'shell.header', 'shell.footer', 'hero.centered', 'hero.split', 'intro.page', 'content.article', 'logos.strip', 'features.grid', 'content.media', 'content.text', 'stats.row',
-      'testimonials.grid', 'team.grid', 'pricing.plans', 'data.table', 'faq.list', 'content.pages', 'content.news', 'media.gallery', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section'
+      'testimonials.grid', 'team.grid', 'pricing.plans', 'data.table', 'faq.list', 'content.pages', 'content.news', 'media.gallery', 'media.carousel', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section'
     ]);
     expect(FOUNDATION_ALT_PACK.components.map((c) => c.componentId)).toEqual(FOUNDATION_PACK.components.map((c) => c.componentId));
     const altHero = FOUNDATION_ALT_PACK.components.find((c) => c.componentId === 'hero.split')!;

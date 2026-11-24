@@ -36,7 +36,8 @@ const COMPONENTS = [
   'content.news',
   'content.article',
   'data.table',
-  'media.video'
+  'media.video',
+  'media.carousel'
 ] as const;
 type ComponentId = (typeof COMPONENTS)[number];
 
@@ -912,6 +913,61 @@ describe('media.video (issue #73)', () => {
     const helper = bundle.files.get('src/lib/siteorigin/runtime/VideoPlayer.svelte')!;
     expect(helper).toMatch(/aspect-ratio: 16 \/ 9/);
     expect(helper).toMatch(/\.so-video \{[^}]*width: 100%/);
+  });
+});
+
+describe('media.carousel (issue #381)', () => {
+  const bare = (out: string) => out.replace(/ class="svelte-[a-z0-9]+"/g, '').replace(/ svelte-[a-z0-9]+(?=")/g, '');
+  const slide = (id: string, caption: string, link = { type: 'none', target: '' }, alt = '') => ({ id, image: { assetId: null, alt }, caption, link });
+  const SLIDES = [slide('a', 'Measuring the room'), slide('b', 'Choosing the finishes', { type: 'url', target: 'https://example.com/finishes' }), slide('c', '')];
+  const rendered = (props: Record<string, unknown>) => bare(authoredHtml('media.carousel', props));
+  const list = (out: string) => out.match(/<ul\b([^>]*)>([\s\S]*)<\/ul>/);
+
+  it('renders every slide as an item of one list that scrolls, named by the heading and reachable by keyboard', () => {
+    const out = rendered({ heading: 'Featured projects', slides: SLIDES });
+    const [, attrs, inner] = list(out)!;
+    expect(attrs).toMatch(classed('so-carousel__list'));
+    expect(attrs).toMatch(classed(nodeClass('media.carousel', 'track')));
+    expect(attrs).toContain('aria-label="Featured projects"');
+    expect(attrs).toContain('tabindex="0"');
+    // Each slide is a list item holding a figure: its image, and its caption while it has one.
+    expect(inner.match(/<li\b/g)).toHaveLength(3);
+    expect(tags(inner, 'figcaption')).toEqual(['Measuring the room', 'Choosing the finishes']);
+    expect(inner.match(/<img\b/g) ?? inner.match(/so-img--placeholder/g)).toHaveLength(3);
+  });
+
+  it('makes a slide with a destination one link around its picture and caption, and leaves the others plain', () => {
+    const out = rendered({ slides: SLIDES });
+    const items = tags(list(out)![2], 'li');
+    expect(items[1]).toMatch(/^\s*<a\b[^>]*href="https:\/\/example\.com\/finishes"[^>]*>\s*<figure\b[\s\S]*<\/figure>\s*<\/a>\s*$/);
+    for (const i of [0, 2]) {
+      expect(items[i]).not.toContain('<a');
+      expect(items[i]).toMatch(/^\s*<div\b[^>]*>\s*<figure\b/);
+    }
+  });
+
+  it('has no buttons or count until the page’s script runs, and nothing at all without slides', () => {
+    const out = rendered({ slides: SLIDES });
+    expect(out).not.toMatch(/<button|so-carousel__controls|role="status"/);
+    for (const empty of [{}, { slides: [] }]) {
+      const none = rendered(empty);
+      expect(none).not.toMatch(/<ul|so-carousel/);
+      expect(tags(none, 'h2')).toEqual(['Featured projects']);
+    }
+  });
+
+  it('is still named when its heading is cleared', () => {
+    expect(list(rendered({ heading: '', slides: SLIDES }))![1]).toContain('aria-label="Slides"');
+  });
+
+  it('shows three slides at a time on a desktop, two or one when chosen, and one with the edge of the next on a phone', () => {
+    const css = componentsCss();
+    const cls = nodeClass('media.carousel', 'slide');
+    expect(css).toMatch(new RegExp(`\\.${cls}[^{]*\\{[^}]*width: 85%`));
+    expect(css).toMatch(/@media \(min-width: 1024px\)[\s\S]*width: calc\(\(100% - 2 \* 1\.5rem\) \/ 3\)/);
+    expect(css).toMatch(/--layout-two-columns[^{]*\{[^}]*width: calc\(\(100% - 1 \* 1\.5rem\) \/ 2\)/);
+    expect(css).toMatch(/--layout-one-column[^{]*\{[^}]*width: 100%/);
+    expect(css).toMatch(new RegExp(`\\.${nodeClass('media.carousel', 'track')}[^{]*\\{[^}]*gap: 1\\.5rem`));
   });
 });
 

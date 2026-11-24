@@ -348,6 +348,12 @@ export interface ElementNode extends NodeBase {
   collapseEmpty?: boolean;
   /** How the container enters when it first scrolls into view. Absent: it is simply there. */
   appear?: AppearPreset;
+  /**
+   * Makes a list (a literal `ul` with no link or action of its own) a carousel track: it scrolls sideways and snaps
+   * to each item, and the runtime helper adds Previous and Next buttons and a count of the slides showing once the
+   * page's script runs. Without it the list still scrolls, and it prints as a plain stack.
+   */
+  carousel?: true;
 }
 export interface TextNode extends NodeBase {
   kind: 'text';
