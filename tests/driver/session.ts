@@ -15,7 +15,7 @@ import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { execFile } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, readFileSync, rmSync } from 'node:fs';
+import { createWriteStream, existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -24,7 +24,8 @@ import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
 import type { ElectronApplication, Page } from 'playwright';
 import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
-import { isAlive, killTree, ownedProcesses, processTable } from './processes.ts';
+import { killTree, killTreeSync, ownedEntries, processTable } from './processes.ts';
+import type { ProcessEntry } from './processes.ts';
 import { DriverError, PROTOCOL_VERSION, failure, frameIdentity, parseRequest, success } from './protocol.ts';
 import type { Capability, CloseArgs, CloseResult, FixtureName, KeepArtifacts, OpKind, Reply, ReplyContext, Request, SessionEvent, StartArgs, WindowRef } from './protocol.ts';
 
@@ -217,42 +218,79 @@ export interface LaunchedApp {
   pid: number;
 }
 
-/**
- * Call `fn` with every Electron main process spawned from this Node process while `run` is in flight. Playwright
- * spawns the app inside `electron.launch()`, so this is the only way to know its pid if the launch never returns.
- */
-async function watchingSpawns<T>(fn: (child: ChildProcess) => void, run: () => Promise<T>): Promise<T> {
-  const onMessage = (message: unknown) => {
-    const child = (message as { process?: ChildProcess }).process;
-    // Published as the process object is made, before it has arguments or a pid: look once it has spawned.
-    child?.once('spawn', () => {
-      // Playwright's own arguments; on Windows it runs the app through a shell, with them inside one command line.
-      if (child.pid && child.spawnargs.some((a) => a.includes('--remote-debugging-port=0'))) fn(child);
-    });
-  };
-  subscribe('child_process', onMessage);
-  // Playwright waits for three lines from the app but awaits one at a time: if the app is killed before the first,
-  // the other two waits reject with no one listening, which would end this process. Those, and only those, are
-  // let go while a launch settles; anything else unhandled still throws.
-  const onUnhandled = (reason: unknown) => {
-    if (reason instanceof Error && reason.message === PLAYWRIGHT_LAUNCH_FAILED) return;
-    throw reason;
-  };
-  process.on('unhandledRejection', onUnhandled);
-  try {
-    return await run();
-  } finally {
-    unsubscribe('child_process', onMessage);
-    setTimeout(() => process.off('unhandledRejection', onUnhandled), 5000).unref();
-  }
-}
-
 /** The error Playwright's Electron launcher rejects with when the app exits before it is connected. */
 const PLAYWRIGHT_LAUNCH_FAILED = 'Process failed to launch!';
 
+/**
+ * Playwright waits for three lines from the app but awaits one at a time: if the app is killed before the first, the
+ * other two waits reject with no one listening, which would end this process. While any launch is settling, those
+ * rejections, and only those, are let go. Anything else is left to the process's own listeners when it has any, and
+ * otherwise thrown, as Node does with an unhandled rejection by default.
+ */
+let launchesSettling = 0;
+function onUnhandledRejection(reason: unknown) {
+  if (reason instanceof Error && reason.message === PLAYWRIGHT_LAUNCH_FAILED) return;
+  if (process.listenerCount('unhandledRejection') > 1) return;
+  throw reason;
+}
+function tolerateStrayLaunchFailures(): () => void {
+  if (launchesSettling++ === 0) process.on('unhandledRejection', onUnhandledRejection);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    setTimeout(() => {
+      if (--launchesSettling === 0) process.off('unhandledRejection', onUnhandledRejection);
+    }, 5000).unref();
+  };
+}
+
+interface ElectronStart {
+  env: Record<string, string | undefined>;
+  cwd: string;
+  timeoutMs: number;
+  /** Arguments after the app path. */
+  args?: string[];
+  artifactsDir?: string;
+  /** Called with the app's main process once it has spawned, before Playwright hands it over. */
+  onSpawn?: (child: ChildProcess) => void;
+}
+
+/**
+ * Launch Electron through Playwright, knowing its main process from the moment it spawns. Playwright spawns the app
+ * inside `electron.launch()`, so watching this process's spawns is the only way to know its pid if the launch never
+ * returns. Each launch carries an argument of its own, so two launches at once never take each other's process.
+ */
+async function startElectron(opts: ElectronStart): Promise<ElectronApplication> {
+  const token = `--siteorigin-launch=${randomBytes(8).toString('hex')}`;
+  const onMessage = (message: unknown) => {
+    const child = (message as { process?: ChildProcess }).process;
+    // Published as the process object is made, before it has arguments or a pid: look once it has spawned. On Windows
+    // Playwright runs the app through a shell, with the arguments inside one command line.
+    child?.once('spawn', () => {
+      if (child.pid && child.spawnargs.some((a) => a.includes(token))) opts.onSpawn?.(child);
+    });
+  };
+  subscribe('child_process', onMessage);
+  const release = tolerateStrayLaunchFailures();
+  try {
+    return await electron.launch({ args: ['.', ...(opts.args ?? []), token], cwd: opts.cwd, env: definedEnv(opts.env), timeout: opts.timeoutMs, ...(opts.artifactsDir ? { artifactsDir: opts.artifactsDir } : {}) });
+  } finally {
+    unsubscribe('child_process', onMessage);
+    release();
+  }
+}
+
+/** The process-table entry of a process just spawned, read as soon as it can be: its identity from then on. */
+async function identify(pid: number): Promise<ProcessEntry | null> {
+  return processTable()
+    .then((t) => t.find((p) => p.pid === pid) ?? null)
+    .catch(() => null);
+}
+
 /** Wait for the app's editor window: the first window at the editor's address, skipping any other (hidden) window. */
-export async function editorWindow(app: ElectronApplication, timeoutMs: number): Promise<Page> {
-  const found = new Promise<Page>((resolvePage, reject) => {
+export async function editorWindow(app: ElectronApplication, timeoutMs: number, isEditor: (url: string) => boolean = isEditorUrl): Promise<Page> {
+  return new Promise<Page>((resolvePage, reject) => {
     let done = false;
     const timer = setTimeout(() => finish(null, new Error(`No editor window appeared within ${timeoutMs / 1000}s.`)), timeoutMs);
     const finish = (page: Page | null, err?: Error) => {
@@ -267,14 +305,13 @@ export async function editorWindow(app: ElectronApplication, timeoutMs: number):
     const onClose = () => finish(null, new Error('The app exited before its editor window appeared.'));
     const consider = (page: Page) => {
       void settledUrl(page, timeoutMs).then((url) => {
-        if (url && isEditorUrl(url)) finish(page);
+        if (url && isEditor(url)) finish(page);
       });
     };
     app.on('window', consider);
     app.on('close', onClose);
     for (const page of app.windows()) consider(page);
   });
-  return found;
 }
 
 /** The page's address once it has left about:blank, or null if it closed or never did. */
@@ -296,17 +333,25 @@ export async function launchApp(opts: LaunchOptions): Promise<LaunchedApp> {
   const deadline = Date.now() + timeoutMs;
   const left = () => Math.max(1, deadline - Date.now());
   let pid: number | null = null;
+  let identity: Promise<ProcessEntry | null> = Promise.resolve(null);
   let app: ElectronApplication | null = null;
+  // An unpackaged build given a dev server's address loads the editor from there instead.
+  const devUrl = opts.env.ELECTRON_RENDERER_URL;
+  const isEditor = (url: string) => isEditorUrl(url) || (!!devUrl && sameOrigin(url, devUrl));
   try {
-    app = await watchingSpawns(
-      (child) => {
-        pid = child.pid ?? pid;
+    app = await startElectron({
+      env: opts.env,
+      cwd: opts.cwd ?? REPO_ROOT,
+      timeoutMs: left(),
+      artifactsDir: opts.artifactsDir,
+      onSpawn: (child) => {
+        pid = child.pid!;
+        identity = identify(pid);
         opts.onSpawn?.(child);
-      },
-      () => electron.launch({ args: ['.'], cwd: opts.cwd ?? REPO_ROOT, env: definedEnv(opts.env), timeout: left(), ...(opts.artifactsDir ? { artifactsDir: opts.artifactsDir } : {}) })
-    );
+      }
+    });
     pid = app.process().pid ?? pid;
-    const win = await editorWindow(app, left());
+    const win = await editorWindow(app, left(), isEditor);
     const errors: string[] = [];
     win.on('pageerror', (e) => errors.push(String(e)));
     if (opts.viewport !== null) await win.setViewportSize(opts.viewport ?? { width: 1440, height: 900 });
@@ -314,9 +359,18 @@ export async function launchApp(opts: LaunchOptions): Promise<LaunchedApp> {
     return { app, win, errors, pid: pid! };
   } catch (e) {
     // An app that started but never became ready is ended here: the caller never gets a handle to it.
-    if (pid) await killTree(pid).catch(() => undefined);
+    const known = await identity;
+    if (pid) await killTree(pid, { known: known ? [known] : [] }).catch(() => undefined);
     else if (app) await app.close().catch(() => undefined);
     throw e;
+  }
+}
+
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
   }
 }
 
@@ -467,6 +521,16 @@ function parseCloseArgs(args: Record<string, unknown> | undefined): CloseArgs {
 
 const now = () => new Date().toISOString();
 
+/** `promise`, or `fallback` once `ms` pass; the timer never outlives the race. */
+async function bounded<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<T>((r) => (timer = setTimeout(() => r(fallback), ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class Session {
   readonly id = `s-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
   state: State = 'new';
@@ -490,6 +554,10 @@ export class Session {
   private events: SessionEvent[] = [];
   private droppedEvents = 0;
   private appExited = false;
+  /** The app's main process as spawned: Node knows when it has exited, after which its pid may be another's. */
+  private proc: ChildProcess | null = null;
+  /** Every process seen as the session's, by pid, with the start time that tells it from a later one. */
+  private readonly seen = new Map<number, ProcessEntry>();
   private failed = false;
   private inFlight: string | null = null;
   private build: BuildIdentity | null = null;
@@ -497,6 +565,8 @@ export class Session {
   private fixtureProject: string | null = null;
   private log: WriteStream | null = null;
   private closeRequested = false;
+  /** Whether closing keeps the artifacts: settled by the first close, so a later one cannot change it. */
+  private keeping: boolean | null = null;
   private abortStart: ((e: DriverError) => void) | null = null;
   private starting: Promise<unknown> | null = null;
   private launching: Promise<unknown> | null = null;
@@ -589,7 +659,7 @@ export class Session {
     const events = this.events;
     this.events = [];
     if (this.droppedEvents) {
-      events.unshift({ type: 'page.error', at: now(), generation: this.bound?.ref.generation ?? 0, message: `${this.droppedEvents} earlier events were dropped.` });
+      events.unshift({ type: 'events.dropped', at: now(), count: this.droppedEvents });
       this.droppedEvents = 0;
     }
     return { sessionId: this.id, window: this.bound && !this.bound.closed ? this.bound.ref : null, elapsedMs: Date.now() - began, events };
@@ -610,9 +680,9 @@ export class Session {
     if (this.appExited) throw new DriverError('APP_EXITED', 'The app is no longer running.');
     const b = this.bound;
     if (!b) throw new DriverError('WINDOW_CLOSED', 'The app has no editor window.', { retryable: true });
+    if (b.closed) throw new DriverError('WINDOW_CLOSED', `Editor window ${b.ref.generation} closed and no other has replaced it.`, { retryable: true, details: { generation: b.ref.generation } });
     if (request.expectWindow !== undefined && request.expectWindow !== b.ref.generation)
       throw new DriverError('WINDOW_REPLACED', `The editor window is generation ${b.ref.generation}, not ${request.expectWindow}.`, { details: { from: request.expectWindow, to: b.ref.generation, nativeId: b.ref.nativeId } });
-    if (b.closed) throw new DriverError('WINDOW_CLOSED', `Editor window ${b.ref.generation} closed and no other has replaced it.`, { retryable: true, details: { generation: b.ref.generation } });
     if (b.ref.generation !== this.acknowledged) {
       if (request.expectWindow !== b.ref.generation)
         throw new DriverError('WINDOW_REPLACED', `Editor window ${this.acknowledged} was replaced by window ${b.ref.generation}; send expectWindow: ${b.ref.generation} to use it.`, {
@@ -677,16 +747,19 @@ export class Session {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = Date.now() + timeoutMs;
     const stopped = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new DriverError('TIMEOUT', `The session did not start within ${timeoutMs / 1000}s (it was at ${phase}).`, { details: { phase, sessionState: 'closed' } })), timeoutMs);
+      timer = setTimeout(() => reject(new DriverError('TIMEOUT', `The session did not start within ${timeoutMs / 1000}s (it was at ${phase}).`)), timeoutMs);
       this.abortStart = reject;
     });
     stopped.catch(() => undefined);
     const steps = this.startSteps(deadline, (p) => (phase = p), stopped);
     this.starting = steps.catch(() => undefined);
-    try {
-      await Promise.race([steps, stopped]);
+    // The description is part of starting: the deadline covers it too.
+    const ready = steps.then(() => {
       this.state = 'ready';
-      return await this.describe();
+      return this.describe();
+    });
+    try {
+      return await Promise.race([ready, stopped]);
     } catch (e) {
       // Closed by its owner while starting is not a failure, and that close is already removing the run's folders.
       const interrupted = this.closeRequested;
@@ -697,7 +770,7 @@ export class Session {
           : new DriverError('LAUNCH_FAILED', `The app did not start (at ${phase}): ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`, { details: { phase } });
       if (!interrupted && this.args.keepArtifacts !== 'never') await this.writeEvidence(err).catch(() => undefined);
       const closed = await this.close({ failed: !interrupted }).catch((c: unknown) => c);
-      const details: Record<string, unknown> = { ...err.details, phase };
+      const details: Record<string, unknown> = { ...err.details, phase, sessionState: 'closed' };
       if (closed && typeof closed === 'object' && 'processes' in closed) Object.assign(details, { artifacts: (closed as CloseResult).artifacts, processes: (closed as CloseResult).processes });
       else details.cleanup = closed instanceof DriverError ? { code: closed.code, message: closed.message, ...closed.details } : String(closed);
       throw new DriverError(err.code, err.message, { retryable: err.retryable, details });
@@ -727,33 +800,41 @@ export class Session {
     left();
     this.paths = await this.makeRoot();
     this.log = createWriteStream(join(this.paths.artifacts, 'app.log'), { flags: 'a' });
+    // A full disk must not end the process hosting the session: the log is evidence, not a requirement.
+    this.log.on('error', () => undefined);
     await reach('root');
     await reach('provider');
     if ((this.args.provider ?? 'scripted') === 'scripted') this.mock = await new MockOpenAIServer().start();
     // Nothing is launched once the session is closing; a launch already under way is ended as its process appears.
     left();
     at('app.spawned');
-    const env = sessionEnv(this.paths, { headed: this.args.headed });
-    const launch = watchingSpawns(
-      (child) => {
-        this.pid = child.pid ?? this.pid;
+    const launch = startElectron({
+      env: sessionEnv(this.paths, { headed: this.args.headed }),
+      cwd: this.appRoot,
+      // The profile from the first instruction the app runs, so even a build that ignores SITEORIGIN_USER_DATA never
+      // takes the single-instance lock of a Builder already running in the person's own profile.
+      args: [`--user-data-dir=${this.paths.profile}`],
+      // Playwright's own deadline comes after the session's, which kills the app first: Playwright's leaves waits
+      // that reject with no one listening.
+      timeoutMs: left() + 10_000,
+      artifactsDir: join(this.paths.root, 'playwright'),
+      onSpawn: (child) => {
+        this.proc = child;
+        this.pid = child.pid!;
+        void identify(child.pid!).then((e) => e && this.seen.set(e.pid, e));
         child.stdout?.on('data', (d) => this.log?.write(d));
         child.stderr?.on('data', (d) => this.log?.write(d));
-        if (this.closeRequested && child.pid) void killTree(child.pid).catch(() => undefined);
+        if (this.closeRequested) void killTree(child.pid!).catch(() => undefined);
         else void Promise.resolve(this.options.hooks?.phase?.('app.spawned', this)).catch(() => undefined);
-      },
-      () => electron.launch({ args: ['.'], cwd: this.appRoot, env, timeout: left(), artifactsDir: join(this.paths!.root, 'playwright') })
-    );
+      }
+    });
     this.launching = launch.catch(() => undefined);
     const app = await launch;
     this.app = app;
-    // Read once: Playwright's handle to the process is gone by the time the app has closed.
-    const proc = app.process();
-    this.pid = proc.pid ?? this.pid;
     // A throw inside a Playwright event handler would end this whole process, so these never throw.
     app.on('close', () => {
       this.appExited = true;
-      this.event({ type: 'app.exited', at: now(), code: proc.exitCode, signal: proc.signalCode });
+      this.event({ type: 'app.exited', at: now(), code: this.proc?.exitCode ?? null, signal: this.proc?.signalCode ?? null });
     });
     app.on('window', (page) => void this.consider(page).catch(() => undefined));
     for (const page of app.windows()) void this.consider(page).catch(() => undefined);
@@ -835,38 +916,55 @@ export class Session {
     await reach('fixture.ready');
   }
 
-  /** Make the run root, marked as this session's, and its folders. */
+  /** Make the run root, marked as this session's, and its folders. A root that cannot be finished is removed again. */
   private async makeRoot(): Promise<SessionPaths> {
     const parent = resolve(this.options.parentDir ?? process.env.WORK ?? (await realpath(tmpdir())));
     await mkdir(parent, { recursive: true });
     // Resolved, because Vite fails to import through a symlinked project path (the macOS temp folder is one).
     const root = await realpath(await mkdtemp(join(parent, 'so-session-')));
-    await writeFile(join(root, OWNER_MARK), JSON.stringify({ sessionId: this.id, pid: process.pid, createdAt: now() }));
-    let artifacts = join(root, 'artifacts');
-    if (this.args.artifactsDir) {
-      await mkdir(this.args.artifactsDir, { recursive: true });
-      artifacts = join(await realpath(this.args.artifactsDir), this.id);
-      await mkdir(artifacts);
-      await writeFile(join(artifacts, OWNER_MARK), JSON.stringify({ sessionId: this.id, pid: process.pid, createdAt: now() }));
-      this.artifactsOutside = true;
+    let outside: string | null = null;
+    try {
+      await writeFile(join(root, OWNER_MARK), JSON.stringify({ sessionId: this.id, pid: process.pid, createdAt: now() }));
+      let artifacts = join(root, 'artifacts');
+      if (this.args.artifactsDir) {
+        await mkdir(this.args.artifactsDir, { recursive: true });
+        artifacts = join(await realpath(this.args.artifactsDir), this.id);
+        await mkdir(artifacts);
+        outside = artifacts;
+        await writeFile(join(artifacts, OWNER_MARK), JSON.stringify({ sessionId: this.id, pid: process.pid, createdAt: now() }));
+        this.artifactsOutside = true;
+      }
+      const paths: SessionPaths = {
+        root,
+        profile: join(root, 'profile'),
+        workspace: join(root, 'workspace'),
+        projects: join(root, 'workspace', 'SiteOrigin'),
+        home: join(root, 'home'),
+        tmp: join(root, 'tmp'),
+        artifacts
+      };
+      for (const dir of [paths.profile, paths.projects, paths.home, paths.tmp, paths.artifacts]) await mkdir(dir, { recursive: true });
+      return paths;
+    } catch (e) {
+      // Nothing else knows these folders yet: they were made just now, by this call.
+      await rm(root, { recursive: true, force: true }).catch(() => undefined);
+      if (outside) await rm(outside, { recursive: true, force: true }).catch(() => undefined);
+      throw new DriverError('LAUNCH_FAILED', `The session's folders could not be made: ${e instanceof Error ? e.message : String(e)}`, { details: { phase: 'root' } });
     }
-    const paths: SessionPaths = {
-      root,
-      profile: join(root, 'profile'),
-      workspace: join(root, 'workspace'),
-      projects: join(root, 'workspace', 'SiteOrigin'),
-      home: join(root, 'home'),
-      tmp: join(root, 'tmp'),
-      artifacts
-    };
-    for (const dir of [paths.profile, paths.projects, paths.home, paths.tmp, paths.artifacts]) await mkdir(dir, { recursive: true });
-    return paths;
   }
 
   // -- describing ----------------------------------------------------------------
 
+  /** The processes the session owns now, remembered by identity so they can still be found if they leave the tree. */
+  private async ownedNow(): Promise<ProcessEntry[]> {
+    if (!this.pid) return [];
+    const owned = ownedEntries(await processTable(), this.pid, [...this.seen.values()]);
+    for (const e of owned) this.seen.set(e.pid, e);
+    return owned;
+  }
+
   async describe(): Promise<Description> {
-    const processes = this.pid && !this.appExited ? ownedProcesses(await processTable().catch(() => []), this.pid).filter(isAlive) : [];
+    const processes = (await this.ownedNow().catch((): ProcessEntry[] => [])).map((e) => e.pid);
     const provider = this.mock ? { kind: 'scripted' as const, baseURL: this.mock.baseURL } : this.state === 'new' ? null : { kind: 'none' as const };
     return {
       protocol: PROTOCOL_VERSION,
@@ -893,49 +991,78 @@ export class Session {
 
   // -- closing -------------------------------------------------------------------
 
-  /** End the session. Safe to call at any time and more than once: every call gets the same result. */
+  /**
+   * End the session. Safe to call at any time and more than once: every call gets the same result, and the first
+   * call's arguments decide whether artifacts are kept.
+   */
   close(args: CloseArgs = {}): Promise<CloseResult> {
     if (args.failed) this.failed = true;
     this.closing ??= this.teardown(args);
     return this.closing;
   }
 
+  private keepsArtifacts(args: CloseArgs = {}): boolean {
+    if (this.keeping !== null) return this.keeping;
+    const keep = args.keepArtifacts ?? this.args.keepArtifacts ?? 'on-failure';
+    return keep === 'always' || (keep === 'on-failure' && this.failed);
+  }
+
+  private appRunning(): boolean {
+    return !!this.proc && this.proc.exitCode === null && this.proc.signalCode === null;
+  }
+
   private async teardown(args: CloseArgs): Promise<CloseResult> {
     const wasStarted = this.state !== 'new';
     this.closeRequested = true;
     this.state = 'closing';
+    this.keeping = this.keepsArtifacts(args);
     this.abortStart?.(new DriverError('CLOSED', 'The session was closed while it started.'));
-    const keep = args.keepArtifacts ?? this.args.keepArtifacts ?? 'on-failure';
-    const keeping = keep === 'always' || (keep === 'on-failure' && this.failed);
-    if (keeping && this.bound && !this.bound.closed && !this.appExited)
+    if (this.keeping && this.bound && !this.bound.closed && !this.appExited)
       await this.bound.page.screenshot({ path: join(this.paths!.artifacts, 'final.png'), timeout: 5000 }).catch(() => undefined);
     let ended: CloseResult['ended'] = !wasStarted || !this.pid ? 'not-started' : this.appExited ? 'already-exited' : 'quit';
-    const before = this.pid ? ownedProcesses(await processTable().catch(() => []), this.pid) : [];
+    // Whatever the session cannot account for (a process table it could not read, a start that would not settle)
+    // keeps the run folder in place rather than delete it under something still running.
+    const problems: string[] = [];
+    await this.ownedNow().catch((e: unknown) => problems.push(`the process table could not be read (${String(e)})`));
     if (this.app && !this.appExited) {
-      const quit = await Promise.race([
+      const quit = await bounded(
         this.app.close().then(
           () => true,
           () => false
         ),
-        new Promise<boolean>((r) => setTimeout(() => r(false), this.options.closeTimeoutMs ?? DEFAULT_CLOSE_MS))
-      ]);
+        this.options.closeTimeoutMs ?? DEFAULT_CLOSE_MS,
+        false
+      );
       if (!quit) ended = 'killed';
-    } else if (this.pid && isAlive(this.pid)) ended = 'killed';
-    // Even an app that quit can leave a child behind (an npm install whose parent is gone): sweep its group.
-    const swept = this.pid ? await killTree(this.pid).catch(() => ({ owned: [] as number[], survivors: [] as number[] })) : { owned: [], survivors: [] };
-    // A launch or start still in flight settles once its process is gone; anything it spawned meanwhile is killed.
-    await Promise.race([Promise.all([this.launching, this.starting]), new Promise((r) => setTimeout(r, SETTLE_MS))]);
-    const late = this.pid && !swept.owned.includes(this.pid) ? await killTree(this.pid).catch(() => ({ owned: [] as number[], survivors: [] as number[] })) : { owned: [], survivors: [] };
-    const processes = [...new Set([...before, ...swept.owned, ...late.owned])];
-    const survivors = [...new Set([...swept.survivors, ...late.survivors])].filter(isAlive);
+    } else if (this.appRunning()) ended = 'killed';
+    // Even an app that quit can leave a child behind (an npm install whose parent is gone): sweep what it owned.
+    const sweep = async () => {
+      if (!this.pid) return [];
+      try {
+        const report = await killTree(this.pid, { known: [...this.seen.values()] });
+        for (const e of report.owned) this.seen.set(e.pid, e);
+        return report.survivors;
+      } catch (e) {
+        problems.push(`the process table could not be read (${String(e)})`);
+        return [];
+      }
+    };
+    await sweep();
+    // A launch or start still in flight settles once its process is gone; anything it spawned meanwhile is swept.
+    const settled = await bounded(Promise.all([this.launching, this.starting]).then(() => true), SETTLE_MS, false);
+    if (!settled) problems.push(`the start did not settle within ${SETTLE_MS / 1000}s`);
+    const survivors = await sweep();
+    if (survivors.length) problems.push(`processes ${survivors.map((e) => e.pid).join(', ')} did not end`);
+    const processes = [...this.seen.keys()];
     await this.mock?.stop().catch(() => undefined);
-    await new Promise<void>((r) => (this.log ? this.log.end(() => r()) : r()));
+    if (this.log) await bounded(new Promise<void>((r) => this.log!.end(() => r())), 5000, undefined);
     this.state = 'closed';
-    if (survivors.length) {
-      // Removing files under a process that is still running could fail or race it: keep everything as evidence.
-      throw new DriverError('CLEANUP_FAILED', `Processes ${survivors.join(', ')} did not end; the run folder ${this.paths?.root} was kept.`, { details: { survivors, processes, root: this.paths?.root ?? null } });
+    if (problems.length) {
+      throw new DriverError('CLEANUP_FAILED', `The run folder ${this.paths?.root ?? '(none)'} was kept: ${problems.join('; ')}.`, {
+        details: { problems, survivors: survivors.map((e) => e.pid), processes, root: this.paths?.root ?? null }
+      });
     }
-    const { removed, artifacts } = await this.removeOwned(keeping);
+    const { removed, artifacts } = await this.removeOwned(this.keeping);
     return { artifacts, removed, processes, ended };
   }
 
@@ -980,33 +1107,38 @@ export class Session {
   }
 
   /**
-   * Last resort when the process hosting the session is exiting and cannot wait: kill the app's process group and
-   * remove the run root (keeping nothing). Synchronous, so it can run in an 'exit' handler.
+   * Last resort when the process hosting the session is exiting and cannot wait: kill what the app owns and remove
+   * the run's folders, keeping the artifacts when the session would have. Synchronous, so it can run in an 'exit'
+   * handler.
    */
   disposeSync() {
     if (this.state === 'closed') return;
-    if (this.pid && process.platform !== 'win32') {
-      try {
-        process.kill(-this.pid, 'SIGKILL');
-      } catch {
-        // Already gone.
-      }
-    }
+    this.closeRequested = true;
+    const keeping = this.keepsArtifacts();
     if (this.pid) {
       try {
-        process.kill(this.pid, 'SIGKILL');
+        killTreeSync(this.pid, [...this.seen.values()]);
       } catch {
-        // Already gone.
+        // Nothing more can be done on the way out.
       }
     }
-    for (const dir of [this.paths?.root, this.artifactsOutside ? this.paths?.artifacts : undefined]) {
-      if (!dir) continue;
+    const ours = (dir: string) => {
       try {
-        const mark = JSON.parse(readFileSync(join(dir, OWNER_MARK), 'utf8')) as { sessionId?: string };
-        if (mark.sessionId === this.id) rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+        return (JSON.parse(readFileSync(join(dir, OWNER_MARK), 'utf8')) as { sessionId?: string }).sessionId === this.id;
       } catch {
-        // Not ours, or already gone.
+        return false;
       }
+    };
+    const p = this.paths;
+    try {
+      if (p && ours(p.root)) {
+        if (keeping && !this.artifactsOutside) {
+          for (const name of readdirSync(p.root)) if (name !== 'artifacts' && name !== OWNER_MARK) rmSync(join(p.root, name), { recursive: true, force: true, maxRetries: 3 });
+        } else rmSync(p.root, { recursive: true, force: true, maxRetries: 3 });
+      }
+      if (p && this.artifactsOutside && !keeping && ours(p.artifacts)) rmSync(p.artifacts, { recursive: true, force: true, maxRetries: 3 });
+    } catch {
+      // Left for whoever looks: the process is exiting.
     }
     this.state = 'closed';
   }

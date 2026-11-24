@@ -1,7 +1,9 @@
 /**
- * The test driver's wire contract, version 1. A client sends requests and gets back exactly one reply for each, in
- * order, over any line transport (the stdio host frames each as one JSON line). Later work adds operations; it never
- * changes the meaning of a field here without raising PROTOCOL_VERSION.
+ * The test driver's wire contract, version 1. A client sends requests and gets back exactly one reply for each, over
+ * any line transport (the stdio host frames each as one JSON line). Replies are matched to requests by `id`, which a
+ * client keeps unique among its requests still waiting for a reply; they come in the order requests finish, so a
+ * refusal (BUSY) can arrive before the reply to the request it was refused behind. Later work adds operations; it
+ * never changes the meaning of a field here without raising PROTOCOL_VERSION.
  *
  * Request  { v: 1, id, op, args?, timeoutMs?, expectWindow? }
  * Success  { v: 1, id, op, ok: true,  sessionId, window, elapsedMs, events, result }
@@ -9,7 +11,13 @@
  *
  * `id` correlates a reply with its request; a frame too broken to read one is answered with `id: null`. `window` names
  * the editor window the session is bound to when the reply was made (null before the app starts and after it ends).
- * `events` are things the session saw happen since the previous reply, such as the window being replaced.
+ * `events` are things the session saw happen since the previous reply (any reply), such as the window being replaced.
+ *
+ * `retryable` on an error says whether the same request may succeed later without the client changing it: after the
+ * request it was refused behind has its reply (BUSY), or once the app has brought up a window (WINDOW_CLOSED). Only an
+ * `observe` request is safe to repeat blindly; anything else may have taken effect before it failed.
+ *
+ * session.close always runs to the end of its bounded teardown: a deadline on it does not cut cleanup short.
  *
  * Every operation has a kind, so a record of a run tells what a person could have done from how the test got there:
  * `session` manages the run itself, `observe` only reads, `fixture` prepares state no person made through the UI, and
@@ -49,7 +57,9 @@ export type SessionEvent =
   | { type: 'window.closed'; at: string; generation: number }
   | { type: 'window.replaced'; at: string; from: number; to: number }
   | { type: 'app.exited'; at: string; code: number | null; signal: string | null }
-  | { type: 'page.error'; at: string; generation: number; message: string };
+  | { type: 'page.error'; at: string; generation: number; message: string }
+  /** More events happened than a reply carries; this many of the oldest were left out. */
+  | { type: 'events.dropped'; at: string; count: number };
 
 export const ERROR_CODES = [
   /** The frame is not a request: not JSON, missing fields, a field of the wrong type, or too large. */
@@ -200,14 +210,12 @@ export interface Capability {
   summary: string;
 }
 
-/** What `session.start` accepts. Every field is optional. */
+/** What `session.start` accepts. Every field is optional. The request's `timeoutMs` is one deadline for the whole start. */
 export interface StartArgs {
   /** The state the app opens in: the Welcome screen (default) or a named, reproducible project fixture. */
   fixture?: FixtureName;
   /** The AI provider the app is set up with: a scripted local server that costs nothing (default), or none. */
   provider?: 'scripted' | 'none';
-  /** One deadline for the whole start: launch, provider setup, fixture and readiness. */
-  startupTimeoutMs?: number;
   /** When the session's artifacts outlive it. Default: when the session ended in failure. */
   keepArtifacts?: KeepArtifacts;
   /** A folder the caller owns, to hold this session's artifacts in a new child folder. Never deleted. */
@@ -219,6 +227,7 @@ export interface StartArgs {
 export type FixtureName = 'welcome' | 'business-v1';
 export type KeepArtifacts = 'always' | 'on-failure' | 'never';
 
+/** What `session.close` accepts. Only the first close decides; a later one gets the same result. */
 export interface CloseArgs {
   /** Overrides the session's keepArtifacts for this close. */
   keepArtifacts?: KeepArtifacts;
