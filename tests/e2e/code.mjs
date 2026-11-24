@@ -1,7 +1,7 @@
 // Code components: create in the editor, see compiler diagnostics, save, render, undo.
 // LIVE_FIX=1 keeps the syntax error and OPENAI_API_KEY, so the code-fixing agent repairs it (costs money).
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MOD, assertTabsResolve, createProject, eventually, launch, scratch, step } from './harness.mjs';
 
@@ -54,9 +54,127 @@ await win.getByLabel('prop2 field2 type').selectOption('number');
 await win.screenshot({ path: join(OUT, '40b-code-properties.png') });
 await win.getByRole('tab', { name: 'Svelte source' }).click();
 
+step('a keyboard author leaves the source, visits Properties and keeps its undo history');
+// Tabs move focus in an animation frame, so where focus lands is polled, never read once.
+const focused = () =>
+  win.evaluate(() => {
+    const a = document.activeElement;
+    return { id: a?.id ?? '', editor: !!a?.closest('.modal .cm-content'), control: !!a?.closest('#new-code-panel-manifest') && a.matches('button, input, select, textarea') };
+  });
+const focusIs = (what, check) => eventually(async () => assert.ok(check(await focused()), `focus is on ${what}: ${JSON.stringify(await focused())}`), 3000);
+// The starter is short, so every line of it is drawn and these are the whole document.
+const lines = () => win.locator('.modal .cm-content').evaluate((el) => [...el.querySelectorAll('.cm-line')].map((l) => l.textContent));
+const source = async () => (await lines()).join('\n');
+const caret = () => win.locator('.modal .code-status-pos').textContent();
+const armed = win.locator('.modal .code-status-hint.active');
+const REDO = process.platform === 'darwin' ? 'Meta+Shift+z' : 'Control+y';
+const MARK = ' // kb-213';
+// On the first line, which has no indent of its own: Tab adds one and Shift+Tab takes exactly that away again.
+// `first`: the caret is on it already, and Tab must be the first key pressed (any other key ends the way out).
+const indentRoundTrip = async (when, { first = false } = {}) => {
+  if (!first) await win.keyboard.press(`${MOD}+Home`);
+  else assert.match(await caret(), /^Ln 1,/, `the caret is on the first line ${when}`);
+  const [before] = await lines();
+  await win.keyboard.press('Tab');
+  await eventually(async () => {
+    const [after] = await lines();
+    assert.ok(after.length > before.length && after.trim() === before.trim(), `Tab indents ${when}: ${JSON.stringify(after)}`);
+  }, 3000);
+  await focusIs(`the editor after Tab ${when}`, (f) => f.editor);
+  await win.keyboard.press('Shift+Tab');
+  await eventually(async () => assert.equal((await lines())[0], before, `Shift+Tab outdents ${when}`), 3000);
+  await focusIs(`the editor after Shift+Tab ${when}`, (f) => f.editor);
+};
+await win.getByRole('tab', { name: 'Svelte source' }).press('Tab');
+await focusIs('the editor, from its tab', (f) => f.editor);
+assert.match(await win.locator('.modal .code-status-hint').textContent(), /Esc then Tab leaves the editor/, 'the way out is shown while the editor has focus');
+await indentRoundTrip('in the starter');
+// Past the history's grouping delay, and in one input, so the marker is an undo step of its own.
+await win.waitForTimeout(600);
+const unmarked = await source();
+await win.keyboard.press('ArrowDown');
+await win.keyboard.press('End');
+await win.keyboard.insertText(MARK);
+await eventually(async () => assert.ok((await lines())[1].endsWith(`$props();${MARK}`), 'the marker ends line 2'));
+const marked = await source();
+const caretAt = await caret();
+await win.keyboard.press('Escape');
+await armed.waitFor({ timeout: 5000 });
+await win.keyboard.press('Shift+Tab');
+await focusIs('the Svelte source tab', (f) => f.id === 'new-code-tab-source');
+await win.keyboard.press('ArrowRight');
+await win.getByRole('tab', { name: /^Properties/, selected: true }).waitFor();
+await focusIs('the Properties tab', (f) => f.id === 'new-code-tab-manifest');
+await win.keyboard.press('Tab');
+await focusIs('a control in Properties', (f) => f.control);
+await win.keyboard.press('Shift+Tab');
+await focusIs('the Properties tab again', (f) => f.id === 'new-code-tab-manifest');
+await win.keyboard.press('ArrowLeft');
+await win.getByRole('tab', { name: 'Svelte source', selected: true }).waitFor();
+await focusIs('the Svelte source tab again', (f) => f.id === 'new-code-tab-source');
+await win.keyboard.press('Tab');
+await focusIs('the editor, re-entered', (f) => f.editor);
+assert.equal(await caret(), caretAt, 'the cursor is where it was left');
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.equal(await source(), unmarked, 'undo takes back exactly the change made before Properties was visited'));
+await win.keyboard.press(REDO);
+await eventually(async () => assert.equal(await source(), marked, 'redo puts exactly that change back'));
+await indentRoundTrip('after coming back');
+// The second Escape asks about the draft; Keep editing comes straight back to the editor, where Tab indents at once.
+// CodeMirror's own Escape would open two seconds in which Tab leaves instead: the page's clock is held still from
+// that Escape to the Tab, so a slow run still lands inside them and cannot pass for the wrong reason.
+await win.keyboard.press('Escape');
+await armed.waitFor({ timeout: 5000 });
+await win.evaluate(() => {
+  const now = Date.now();
+  window.__realNow = Date.now;
+  Date.now = () => now;
+});
+try {
+  await win.keyboard.press('Escape');
+  await win.getByText('Discard this new component?').waitFor();
+  const keep = win.getByRole('button', { name: 'Keep editing' });
+  await eventually(async () => assert.equal(await keep.evaluate((b) => b === document.activeElement), true, 'Keep editing has focus'), 3000);
+  await win.keyboard.press('Enter');
+  await keep.waitFor({ state: 'detached' });
+  await focusIs('the editor, after Keep editing', (f) => f.editor);
+  await indentRoundTrip('straight after Keep editing', { first: true });
+} finally {
+  await win.evaluate(() => {
+    Date.now = window.__realNow;
+    delete window.__realNow;
+  });
+}
+// Focus that leaves and comes straight back, quicker than the editor hears of it, puts the way out away too.
+await win.keyboard.press('Escape');
+await armed.waitFor({ timeout: 5000 });
+const bounced = await win.evaluate(() => {
+  const tab = document.getElementById('new-code-tab-source');
+  const editor = document.querySelector('.modal .cm-content');
+  tab.focus();
+  const away = document.activeElement === tab;
+  editor.focus();
+  return away && document.activeElement === editor;
+});
+assert.ok(bounced, 'focus left the editor and came straight back');
+await indentRoundTrip('when focus comes straight back', { first: true });
+// Out of the editor to Create, past whatever lies between, and never through the discard prompt.
+const createButton = win.getByRole('button', { name: 'Create and insert' });
+const discard = win.getByText('Discard this new component?');
+await win.keyboard.press('Escape');
+await armed.waitFor({ timeout: 5000 });
+let create = false;
+for (let i = 0; i < 6 && !create; i++) {
+  await win.keyboard.press('Tab');
+  await focusIs(`something past the editor (Tab ${i + 1})`, (f) => !f.editor);
+  assert.equal(await discard.count(), 0, 'leaving the editor never offers to discard the draft');
+  create = await createButton.evaluate((b) => b === document.activeElement);
+}
+assert.ok(create, 'Create and insert is reached with Tab');
+
 step('save, insert and render');
 const t0 = Date.now();
-await win.getByRole('button', { name: 'Create and insert' }).click();
+await win.keyboard.press('Enter');
 await win.waitForSelector('.modal', { state: 'detached', timeout: LIVE_FIX ? 120000 : 30000 });
 console.log('save took', Date.now() - t0, 'ms');
 await eventually(async () => assert.equal(await frame.locator('text=Clicked 0 times').count(), 1, 'the new component renders in the preview'), 30000);
@@ -70,6 +188,7 @@ assert.equal(def.properties.prop1.type, 'enum');
 assert.equal(def.properties.prop1.default, 'one', 'a choice defaults to its first option');
 assert.deepEqual(Object.fromEntries(Object.entries(def.properties.prop2.fields).map(([k, f]) => [k, f.type])), { title: 'string', field2: 'number' }, 'the list keeps the item fields added with controls');
 assert.ok(existsSync(join(dir, def.sourcePath)), `the component source is written to ${def.sourcePath}`);
+if (!LIVE_FIX) assert.ok(readFileSync(join(dir, def.sourcePath), 'utf8').includes(`$props();${MARK}\n`), 'the redone source change is what was created');
 
 step('the source editor saves an edited schema');
 // The placement holds content of its own, so keeping it is told apart from falling back to the default.
