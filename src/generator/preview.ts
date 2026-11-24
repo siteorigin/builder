@@ -27,13 +27,18 @@ function startingProps(def: ComponentDefinition): Record<string, unknown> {
   const props = defaultProps(def);
   for (const [name, schema] of Object.entries(def.properties)) {
     if (schema.type !== 'list' || !Array.isArray(props[name])) continue;
-    const seen = new Set<string>();
-    props[name] = (props[name] as unknown[]).map((it, i) => {
-      const item = (it && typeof it === 'object' ? it : {}) as ListItem;
-      let id = typeof item.id === 'string' && item.id && !seen.has(item.id) ? item.id : '';
-      for (let n = i; !id || seen.has(id); n++) id = `preview-item-${n}`;
-      seen.add(id);
-      return id === item.id ? item : { ...item, id };
+    const rows = (props[name] as unknown[]).map((it) => (it && typeof it === 'object' ? it : {}) as ListItem);
+    // Every ID a row really has is its own (the first of two that share one); the rest take ones nobody has.
+    const own = new Set<string>();
+    const keeps = rows.map((r) => typeof r.id === 'string' && !!r.id && !own.has(r.id) && !!own.add(r.id));
+    const taken = new Set(own);
+    props[name] = rows.map((item, i) => {
+      if (keeps[i]) return item;
+      let n = i;
+      while (taken.has(`preview-item-${n}`)) n++;
+      const id = `preview-item-${n}`;
+      taken.add(id);
+      return { ...item, id };
     });
   }
   return props;

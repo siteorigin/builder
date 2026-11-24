@@ -86,6 +86,10 @@ describe('isolated component preview files', () => {
     expect(preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)).toBe(first);
     const shown = [...first.matchAll(/\{"id":"([^"]+)",/g)].map((m) => m[1]);
     expect(shown).toEqual(['preview-item-0', a.id, 'preview-item-2', b.id]);
+    // An ID of the preview's own never takes one a later row really has.
+    def.properties[name] = { ...schema, default: [{ ...a, id: undefined }, { ...b, id: 'preview-item-0' }] } as typeof schema;
+    const again = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
+    expect([...again.matchAll(/\{"id":"([^"]+)",/g)].map((m) => m[1])).toEqual(['preview-item-1', 'preview-item-0']);
   });
 
   it('renders each variant choice, and an axis left out keeps its default', () => {

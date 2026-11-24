@@ -564,11 +564,13 @@ export function Canvas() {
           const path = String(p.path);
           // A component preview reports whether the component is on the page; only the one the frame was last given counts.
           const studio = showsStudio();
+          // A preview of a component the author has since moved on from is set up, but takes no picks until they come
+          // back to it (or the next preview replaces it).
+          let elsewhere = false;
           if (studio) {
             const shown = p.preview as { key?: unknown; mounted?: unknown; error?: unknown } | undefined;
-            // Only a preview of the component being edited now: another's (still loading as the author moved on) waits for
-            // the next one, taking no picks.
-            if (!studioLoads.current!.shows(shown?.key) || studioAt.current!.definitionId !== s.definitionMode?.definitionId) break;
+            if (!studioLoads.current!.shows(shown?.key)) break;
+            elsewhere = studioAt.current!.definitionId !== s.definitionMode?.definitionId;
             if (shown?.mounted !== true) {
               const name = studioDefName() ?? 'The component';
               setFrameError(`${name} couldn’t be shown${typeof shown?.error === 'string' && shown.error ? `: ${shown.error.slice(0, 300)}` : '.'}`);
@@ -576,7 +578,7 @@ export function Canvas() {
               markTimedOut(false);
               break;
             }
-            studioPending.current = false;
+            if (!elsewhere) studioPending.current = false;
           }
           // A page loaded in full inside the same frame while previewing (a visitor's Back across documents) is
           // followed, so the editor and the frame agree on the page.
@@ -586,7 +588,8 @@ export function Canvas() {
           // The visitor left the page they were on.
           if (reloaded && s.previewReturn) setState({ previewReturn: null });
           setReady(true);
-          setState({ frameReady: true });
+          // A page that arrives after Component Studio was opened, before its first preview, takes no picks either.
+          setState({ frameReady: !elsewhere && (studio || !studioPending.current) });
           setFrameError(null);
           setRetrying(false);
           markTimedOut(false);
@@ -664,7 +667,7 @@ export function Canvas() {
           if (getState().mode === 'preview' && at && samePath(addressPath(at.address), path)) setJourney(observe(journeyRef.current, at, true));
           // An open edit is not ended here: one in the shared header outlives the page change, and the page
           // ends any other (its element goes away) with its own cancel.
-          setState({ frameReady: true });
+          setState({ frameReady: !studioPending.current });
           // A page that arrived after the canvas reported it as too slow is no longer a problem.
           if (timedOut.current) {
             markTimedOut(false);
@@ -730,7 +733,10 @@ export function Canvas() {
           if (!st || !s.frameReady) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
-          const desc = ref && canInlineEdit(ref) ? descFor(ref) : null;
+          // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
+          // the selection leaves out (one only a sample has, or one inside another list's item) is still that item.
+          const clicked = ref && s.definitionMode?.studio ? studioClicked(chain, ref) : null;
+          const desc = ref && canInlineEdit(ref) ? (clicked ?? descFor(ref)) : null;
           if (ref && desc) {
             setState({ selection: ref });
             // The double-click it answers, so the edit starts at the word clicked (and not after a newer one).
@@ -1187,6 +1193,12 @@ export function Canvas() {
     if (dm?.studio) return st ? studioDescOf(st, dm.definitionId, ref) : null;
     const at = pageRefFor(ref, via);
     return st && at ? descOf(st, at) : null;
+  }
+
+  /** In Component Studio, the element of a pick's chain that a reference of the design names, as the preview names it. */
+  function studioClicked(chain: BridgeDesc[], ref: ElementRef): BridgeDesc | null {
+    const want = descFor({ ...ref, itemPath: [] });
+    return want ? (chain.find((d) => d.ctx === want.ctx && d.node === want.node) ?? null) : null;
   }
 
   /** Where a reference shows on the page: itself, or while editing everywhere, through a placement there. */
