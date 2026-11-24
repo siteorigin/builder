@@ -898,9 +898,9 @@ export function InsertPanel() {
     }
   };
   const browseTop = useRef(0);
-  // The last insert, confirmed in the strip with an Undo for it. `known`: the history entries before it, so its own
-  // entry can be told from any other change with the same name.
-  const [added, setAdded] = useState<{ key: string; kind: Kind; name: string; where: Where; n: number; selection: unknown; known: string[] } | null>(null);
+  // The last insert, confirmed in the strip with an Undo for it. `entryId`: the history entry it made, so that Undo
+  // takes back that change and no other.
+  const [added, setAdded] = useState<{ key: string; kind: Kind; name: string; where: Where; n: number; selection: unknown; entryId?: string } | null>(null);
   // The section shown larger beside the panel, and the tile or result it is for.
   const [peek, setPeek] = useState<{ key: string; rect: DOMRect } | null>(null);
   const peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -1021,7 +1021,7 @@ export function InsertPanel() {
   }, [added, hold]);
   // Undone some other way (the toolbar, the keyboard, History): the confirmation goes with it.
   useEffect(() => {
-    const entry = added && snap?.history.entries.find((e) => e.label === `Insert ${added.name}` && !added.known.includes(e.id));
+    const entry = added?.entryId && snap?.history.entries.find((e) => e.id === added.entryId);
     if (entry && !entry.applied) setAdded(null);
   }, [snap?.revision, added]);
   // The confirmation gives way when the selection moves on to something else: its Undo would no longer be about
@@ -1179,22 +1179,21 @@ export function InsertPanel() {
       const before = getState().selection;
       const prior = getState().snapshot;
       const project = prior?.workspaceKey;
-      const known = getState().snapshot?.history.entries.map((e) => e.id) ?? [];
       const name = fullName(it);
-      await insert(it.spec, name);
+      const entryId = await insert(it.spec, name);
       const s = getState();
       const after = s.selection;
       // Landed: the selection moved to a node of this project that exists now and did not before the insert.
       const landed = !!(after && after !== before && s.snapshot && s.snapshot.workspaceKey === project && treeFor(s.snapshot.state, after.owner)?.nodes[after.nodeId] && !(prior && treeFor(prior.state, after.owner)?.nodes[after.nodeId]));
       if (!landed || !after) return;
-      setAdded((a) => ({ key: it.key, kind: it.kind, name, where: to, n: (a?.n ?? 0) + 1, selection: after, known }));
+      setAdded((a) => ({ key: it.key, kind: it.kind, name, where: to, n: (a?.n ?? 0) + 1, selection: after, entryId }));
       if (stripRef.current?.matches(':hover')) setHoldPointer(true);
     } finally {
       adding.current = false;
     }
   };
   // The insert's own history entry, while it is still applied: what the confirmation's Undo takes back.
-  const addedEntry = added && snap.history.entries.find((e) => e.applied && e.label === `Insert ${added.name}` && !added.known.includes(e.id));
+  const addedEntry = added?.entryId ? snap.history.entries.find((e) => e.applied && e.id === added.entryId) : undefined;
   const undo = addedEntry ? undoAction({ entryId: addedEntry.id, revision: snap.revision, workspaceKey: snap.workspaceKey }) : undefined;
   const undoKeys = api.platform === 'darwin' ? '⌘Z' : 'Ctrl+Z';
   const clear = () => {

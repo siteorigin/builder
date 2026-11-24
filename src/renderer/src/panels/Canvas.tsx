@@ -5,6 +5,7 @@ import { findParent } from '@engine/tree';
 import { applyOps, commitOps } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
+import { editLabel, placeWords } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
@@ -1493,7 +1494,7 @@ export function Canvas() {
         return;
       }
       const index = commit && to !== null ? moveIndex(shown, from, to, order) : null;
-      if (index !== null) void announcedMove(() => applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], 'Move'));
+      if (index !== null) void announcedMove(() => applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], editLabel(st, 'Move', t)));
     };
     const up = () => end(true);
     const cancel = () => end(false);

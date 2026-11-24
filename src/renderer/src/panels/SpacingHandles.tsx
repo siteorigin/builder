@@ -5,6 +5,7 @@ import { api, commitOps, getState, useStore } from '../store';
 import type { BridgeDesc } from '../lib/model';
 import type { FrameSpacing } from '../lib/payload';
 import { trackApply } from '../lib/pending';
+import { subjectWords } from '../lib/edit-label';
 import { chosenReach, reachVersion, subscribeReach } from '../lib/item-reach';
 import {
   SPACING_HANDLES,
@@ -179,7 +180,10 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     // A click, or a drag that ends on what is saved already, changes nothing.
     if (!d.moved || !v || sameStyleValue(storedSpacing(d.target, d.scope, property), v.value) || getState().snapshot?.workspaceKey !== d.opening) return clear();
     try {
-      const r = await commitOps([spacingOp(d.target, d.scope, property, v.value)], `Set ${d.plan.label.toLowerCase()}`, undefined, d.revision);
+      const st = getState().snapshot?.state;
+      const ref: ElementRef = { owner: d.target.owner, instancePath: [], nodeId: d.target.nodeId, ...(d.target.partId ? { partId: d.target.partId } : {}) };
+      const label = `Set ${d.plan.label.toLowerCase()}${st ? ` for ${subjectWords(st, ref)}` : ''}`;
+      const r = await commitOps([spacingOp(d.target, d.scope, property, v.value)], label, undefined, d.revision);
       if (r?.ok) post('spacingPreview', { drag: d.id, handoff: r.revision });
       else clear();
     } catch {

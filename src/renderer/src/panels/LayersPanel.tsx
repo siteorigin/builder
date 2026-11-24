@@ -16,6 +16,7 @@ import { styleCopyItems } from './StylePaste';
 import { clip, contentText, everySizeEdits, eyeAction, hiddenAncestor, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
+import { placeWords } from '../lib/edit-label';
 import { describeConditions } from '../lib/conditions';
 import { OutlinePanel } from './OutlinePanel';
 import { templateOwner } from '../lib/template-view';
@@ -510,7 +511,7 @@ export function LayersPanel() {
               label: p.before ? `Before ${named}` : 'To the end',
               icon: at ? kindIcon(at) : <CornerDownRight />,
               onSelect: () =>
-                void applyOps(p.ops, `Move ${count}`, undefined, plan.snap.revision).then((r) => {
+                void applyOps(p.ops, `Move ${count} ${placeWords(st, g.owner)}`, undefined, plan.snap.revision).then((r) => {
                   if (!r) return;
                   focusSelectedRow();
                   announce(p.before ? `Moved ${count} before ${fullNames[i]}${total > 1 ? ` (${nth} of ${total})` : ''}` : `Moved ${count} to the end of ${g.parentId === null ? (defOwner ? 'the component' : 'the page') : where}`);
@@ -578,7 +579,7 @@ export function LayersPanel() {
     const moveTo = (anchor: { x: number; y: number }) =>
       destinationMenu(anchor, tree, ref.owner, name, destinations, (d) =>
         // The row remounts under its new parent; keyboard focus follows it there.
-        void applyOps([{ type: 'node.move', owner: ref.owner, nodeId: ref.nodeId, parentId: d.parentId, slot: d.slot, index: d.index }], 'Move layer').then((r) => {
+        void applyOps([{ type: 'node.move', owner: ref.owner, nodeId: ref.nodeId, parentId: d.parentId, slot: d.slot, index: d.index }], `Move ${name} ${placeWords(st, ref.owner)}`).then((r) => {
           if (!r) return;
           setTimeout(() => rowFor(ref.nodeId)?.focus(), 80);
           announce(`Moved ${name} to the end of ${landing(d)}`);
@@ -1208,7 +1209,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           const slotName = n.kind === 'instance' ? Object.values(def?.slots ?? {})[0]?.label : undefined;
           const into = slotName ? `${slotName} in ${name}` : name;
           const to = where === 'inside' ? `to the end of ${into}` : where === 'first' ? `to the top of ${into}` : `${where} ${name}`;
-          void applyOps(ops, d.ids.length > 1 ? `Move ${what}` : 'Move layer').then((r) => r && say(`Moved ${what} ${to}`));
+          void applyOps(ops, `Move ${what} ${placeWords(state, owner)}`).then((r) => r && say(`Moved ${what} ${to}`));
         }}
         role="treeitem"
         aria-selected={selected}
@@ -1325,7 +1326,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
               const commit = (rename: () => void) => (checked ? commitDraft(from!.snap, rename, value, { check: true }) : commitDraft(from?.snap ?? null, rename, value));
               if (isDefRoot) {
                 if (value) commit(() => void applyOps([{ type: 'component.rename', definitionId: owner.id, name: value }], 'Rename component'));
-              } else if (value !== (from?.name ?? n.name ?? '')) commit(() => void applyOps([{ type: 'node.rename', owner, nodeId: id, name: value }], 'Rename layer'));
+              } else if (value !== (from?.name ?? n.name ?? '')) commit(() => void applyOps([{ type: 'node.rename', owner, nodeId: id, name: value }], `Rename ${from?.shown ?? editName}${value ? ` to ${value}` : ''} ${placeWords(state, owner)}`));
             }}
             onKeyDown={(e) => {
               e.stopPropagation();

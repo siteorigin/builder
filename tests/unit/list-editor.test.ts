@@ -115,9 +115,9 @@ describe('History and Undo wording for a list edit', () => {
   });
 
   it('names a design, not a page, for an edit made everywhere', () => {
-    expect(label({ kind: 'remove', itemId: 'i1' }, true)).toBe('Remove “Planning & layout” from Cards everywhere');
+    expect(label({ kind: 'remove', itemId: 'i1' }, true)).toBe('Remove “Planning & layout” from Cards in the Services design');
     // The nested placement sits in a design, whose owner is not a page.
-    expect(listEditLabel(state, { kind: 'component', id: 'host' }, 'n2', 'items', { kind: 'field', itemId: 'i2', field: 'title' }, 'Fallback', true)).toBe('Edit Title of “Materials & colour” in Cards everywhere');
+    expect(listEditLabel(state, { kind: 'component', id: 'host' }, 'n2', 'items', { kind: 'field', itemId: 'i2', field: 'title' }, 'Fallback', true)).toBe('Edit Title of “Materials & colour” in Cards in the Host design');
   });
 
   it('names a row of a list still on its default items', () => {
