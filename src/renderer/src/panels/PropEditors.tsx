@@ -623,7 +623,7 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
  * its hint; without, it names itself with aria-label.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string }) {
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder, everywhere }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean }) {
   const name = id ? undefined : (label ?? schema.label);
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
@@ -656,7 +656,7 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
         </select>
       );
     case 'link':
-      return <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={label ?? schema.label} />;
+      return <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={label ?? schema.label} everywhere={everywhere} />;
     case 'image':
       return <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={label ?? schema.label} />;
     case 'icon':
@@ -916,9 +916,10 @@ export interface FieldAction {
 /**
  * One scalar field with its visible label wired to its control. Booleans sit on one line; images are their own
  * titled card. `hint` replaces the schema's description and `error` replaces both, for text and link fields; a
- * link can also offer an `action` that fixes its problem.
+ * link can also offer an `action` that fixes its problem. `everywhere` is for a value in a component's design,
+ * which shows on every page that places it (see LinkEditor).
  */
-export function ScalarField({ schema, value, onChange, read, state, label, hint, error, action, onLive, placeholder }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string }) {
+export function ScalarField({ schema, value, onChange, read, state, label, hint, error, action, onLive, placeholder, everywhere }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean }) {
   const id = useId();
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
@@ -941,7 +942,7 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
         <div className="field-label" id={`${id}-l`}>
           {shown}
         </div>
-        <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={schema.label} />
+        <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={schema.label} everywhere={everywhere} />
         {error ? (
           <div className="field-error" id={`${id}-note`}>
             {error}
@@ -960,7 +961,7 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
     );
   return (
     <Field label={shown} hint={note} error={error} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} />
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} everywhere={everywhere} />
     </Field>
   );
 }
@@ -991,7 +992,7 @@ export interface ListReveal {
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, onTable, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place }: {
+export function PropField({ name, schema, value, onChange, onList, onTable, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -1019,10 +1020,12 @@ export function PropField({ name, schema, value, onChange, onList, onTable, read
   action?: FieldAction;
   /** For a list: the placement it belongs to, so the item open here is revealed on the page (see lib/reveal). */
   place?: ListPlace;
+  /** A value in a component's design, shown on every page that places it (see ScalarField). */
+  everywhere?: boolean;
 }) {
-  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} />;
+  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} />;
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
-  return <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} />;
+  return <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} everywhere={everywhere} />;
   void name;
 }
 
@@ -1152,7 +1155,7 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, read, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace }) {
+function ListEditor({ name, schema, items, onList, read, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -1304,6 +1307,7 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
                           error={note?.field === key ? note.error : undefined}
                           action={note?.field === key ? note.action : undefined}
                           onLive={fs.type === 'string' ? reveal.typed(key) : undefined}
+                          everywhere={everywhere}
                         />
                       );
                     }}

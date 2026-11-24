@@ -1,5 +1,5 @@
 import { isFocusValue } from './focus';
-import type { ComponentDefinition, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import type { ComponentDefinition, ResponsiveStyles, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.
@@ -761,4 +761,142 @@ export function scopeForWidth(width: number): 'phone' | 'tablet' | 'desktop' {
   if (width < 768) return 'phone';
   if (width < 1024) return 'tablet';
   return 'desktop';
+}
+
+// ---------------------------------------------------------------------------
+// The cascade the generated CSS gives one element
+// ---------------------------------------------------------------------------
+
+/**
+ * A base-scope value that would break a narrower layout if it also applied on phones, so the generated CSS sets it
+ * from tablet up only. A span wider than a phone's single column always is; `wideColumns` layers (variants and
+ * placement overrides) also keep a multi-column grid off phones, so the component's own phone layout still applies.
+ */
+export function wideOnlyStyle(prop: string, value: unknown, wideColumns = false): boolean {
+  if (prop === 'columnSpan') return value !== 'full' && Number(value) > 1;
+  if (!wideColumns) return false;
+  if (prop === 'columns') return Number(value) > 1;
+  return prop === 'gridTemplate';
+}
+
+/**
+ * "Hidden at all sizes" plus "visible on phone" is expressed by hiding only in the other ranges,
+ * so the element keeps whatever display mode its own styles give it.
+ */
+export function resolveVisibility(styles: ResponsiveStyles): ResponsiveStyles {
+  const ranges = ['phone', 'tablet', 'desktop'] as const;
+  if (!ranges.some((r) => styles[r]?.hidden === false)) return styles;
+  const out: ResponsiveStyles = structuredClone(styles);
+  const hiddenBase = out.base?.hidden === true;
+  if (out.base) delete out.base.hidden;
+  for (const r of ranges) {
+    const visible = out[r]?.hidden === false;
+    const hidden = out[r]?.hidden === true;
+    if (out[r]) delete out[r]!.hidden;
+    if (hidden || (hiddenBase && !visible)) out[r] = { ...(out[r] ?? {}), hidden: true };
+  }
+  return out;
+}
+
+/** One layer of style rules on an element. Layers are given weakest first, in the order the stylesheet writes them. */
+export interface StyleLayer {
+  styles: ResponsiveStyles | undefined;
+  /** How many classes its selectors carry: a stronger layer wins at every size, whatever its media query. */
+  strength: number;
+  /** Variants and placement overrides: multi-column values set for all sizes apply from tablet up. */
+  wideColumns?: boolean;
+  /**
+   * Variants and placement overrides: the weaker rules a `hidden: false` here undoes. The stylesheet writes a restoring
+   * display only at the sizes where one of these hides the element (see the generator's `unhider`).
+   */
+  unhides?: Array<ResponsiveStyles | undefined>;
+}
+
+const CASCADE_SIZES = ['phone', 'tablet', 'desktop'] as const;
+type Size = (typeof CASCADE_SIZES)[number];
+/** Where a rule sits in the stylesheet: unconditional rules, then tablet-and-up rules, then each size's own block. */
+const BUCKET_ORDER = { base: 0, wide: 1, phone: 2, tablet: 3, desktop: 4 } as const;
+type Bucket = keyof typeof BUCKET_ORDER;
+/** Style properties that write the same CSS property, so only one of them takes effect at a size. */
+const CSS_CHANNEL: Record<string, string> = { columns: 'grid-template-columns', gridTemplate: 'grid-template-columns' };
+
+/** The other style properties that write the same CSS property as `prop` (a grid template for columns). */
+export function cssRivals(prop: string): string[] {
+  const channel = CSS_CHANNEL[prop];
+  return channel ? Object.keys(CSS_CHANNEL).filter((k) => k !== prop && CSS_CHANNEL[k] === channel) : [];
+}
+
+/**
+ * Where a property's declarations sit inside one rule: composite text styles and gaps first so the specific ones
+ * win, custom CSS after the named properties, and visibility last so it can override the display a layout sets.
+ */
+export function styleDeclOrder(prop: string): number {
+  return prop === 'textStyle' || prop === 'gap' ? 0 : prop === 'customCss' ? 2 : prop === 'hidden' ? 3 : 1;
+}
+
+/**
+ * The value each style property gets from layers of rules, as the generated CSS cascades them. Each size holds the
+ * winner at that size: the strongest layer that sets the property there, then the rule written last (base, then
+ * tablet-and-up, then the size's own block), then the later layer. Properties that write the same CSS property
+ * (columns and a grid template) compete as one. `base` holds the winner among values that apply at every size, when
+ * it is what some size shows, so a size never needs to fall back to it: a value kept off phones is in tablet and
+ * desktop only.
+ */
+export function cascadeStyles(layers: StyleLayer[]): ResponsiveStyles {
+  type Decl = { prop: string; value: StyleValue; bucket: Bucket; strength: number; index: number; seq: number };
+  const decls: Decl[] = [];
+  layers.forEach((layer, index) => {
+    const raw = layer.styles;
+    if (!raw) return;
+    const push = (prop: string, value: StyleValue, bucket: Bucket) => decls.push({ prop, value, bucket, strength: layer.strength, index, seq: decls.length });
+    // Where a weaker rule hides the element, so a `hidden: false` here writes a display that shows it again.
+    const weakerHides = (size: Size) => !!layer.unhides?.some((l) => l?.base?.hidden === true || l?.[size]?.hidden === true);
+    // Visibility is folded the way the stylesheet writes it: a hide with sizes shown again hides in the others.
+    const folded = resolveVisibility(raw);
+    for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
+      for (const [prop, value] of Object.entries(folded[scope] ?? {})) {
+        if (value === undefined) continue;
+        push(prop, value, scope === 'base' && wideOnlyStyle(prop, value, layer.wideColumns) ? 'wide' : scope);
+      }
+      // A size shown again (the folding removed the value): a display that undoes a weaker hide there.
+      if (scope !== 'base' && raw[scope]?.hidden === false && weakerHides(scope)) push('hidden', false, scope);
+    }
+    // Shown at every size: in each size it does not set itself, a display that undoes a weaker hide there.
+    if (raw.base?.hidden === false) for (const size of CASCADE_SIZES) if (raw[size]?.hidden === undefined && weakerHides(size)) push('hidden', false, size);
+  });
+  // Within one rule, declarations are written in the generator's order, so the later one wins a shared CSS property.
+  const inRule = (a: Decl, b: Decl) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop);
+  const beats = (a: Decl, b: Decl | undefined) =>
+    !b ||
+    a.strength > b.strength ||
+    (a.strength === b.strength &&
+      (BUCKET_ORDER[a.bucket] > BUCKET_ORDER[b.bucket] || (BUCKET_ORDER[a.bucket] === BUCKET_ORDER[b.bucket] && (a.index > b.index || (a.index === b.index && inRule(a, b) >= 0)))));
+  // One shown-again result per hide a layout overrides, so a value for every size is recognised at each size too.
+  const unhidden = new Map<Decl, Decl>();
+  const winners = (applies: (bucket: Bucket) => boolean) => {
+    const best = new Map<string, Decl>();
+    for (const d of decls) {
+      const channel = CSS_CHANNEL[d.prop] ?? d.prop;
+      if (applies(d.bucket) && beats(d, best.get(channel))) best.set(channel, d);
+    }
+    // A hide is a `display: none`, and every layout writes a display too: a layout that wins over the hide shows it.
+    const hide = best.get('hidden');
+    if (hide?.value === true && decls.some((d) => d.prop === 'layout' && applies(d.bucket) && beats(d, hide))) {
+      if (!unhidden.has(hide)) unhidden.set(hide, { ...hide, value: false });
+      best.set('hidden', unhidden.get(hide)!);
+    }
+    return [...best.values()];
+  };
+  const values = (list: Decl[]) => Object.fromEntries(list.map((d) => [d.prop, d.value]));
+  const out: ResponsiveStyles = {};
+  const shown = new Set<Decl>();
+  for (const size of CASCADE_SIZES) {
+    const at = winners((b) => b === 'base' || b === size || (b === 'wide' && size !== 'phone'));
+    at.forEach((d) => shown.add(d));
+    if (at.length) out[size] = values(at);
+  }
+  // A value for every size that no size shows (each overrides it) is not what the design gives any size.
+  const base = winners((b) => b === 'base').filter((d) => shown.has(d));
+  if (base.length) out.base = values(base);
+  return out;
 }

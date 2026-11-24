@@ -48,6 +48,7 @@ import {
   nodeSetBinding,
   removePart,
   removePropSchema,
+  setPropDefault,
   removeSlot,
   removeVariant,
   replaceProperties,
@@ -247,6 +248,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return setPropSchema(state, op);
     case 'component.removePropSchema':
       return removePropSchema(state, op);
+    case 'component.setPropDefault':
+      return setPropDefault(state, op);
     case 'component.setPart':
       return setPart(state, op);
     case 'component.removePart':

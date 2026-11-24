@@ -446,9 +446,10 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   const childCount = slotLists.reduce((c, l) => c + l.ids.length, 0);
   const expandable = parts.length > 0 || childCount > 0;
   const canHold = n?.kind === 'element' || (n?.kind === 'instance' && Object.keys(def?.slots ?? {}).length > 0);
-  // In component editing the canvas selects the definition's root through the placement; match it here.
+  // In component editing the canvas selects the definition's root through the placement; match it here. A part
+  // of a component placed in the design is never that root, whatever its node is called inside that component.
   const isDefRoot = owner.kind === 'component' && state.components[owner.id]?.tree?.rootIds[0] === id;
-  const defRoot = isDefRoot && !!definitionMode && !!selection && selection.instancePath.length === 1 && selection.nodeId === id;
+  const defRoot = isDefRoot && !!definitionMode && !!selection && selection.owner.kind !== 'component' && selection.instancePath.length === 1 && selection.nodeId === id;
   // A node of a component being edited, picked on the canvas in one repeated item, is still this row.
   const selected = sameRef(selection, ref) || defRoot || (owner.kind === 'component' && !!selection?.itemPath?.length && sameRef({ ...selection, itemPath: undefined }, ref));
   // Holds the selection: a part of this component (at any depth), or anything nested inside this container,

@@ -101,6 +101,7 @@ const DEFINITION_OPERATIONS = new Set<OperationType>([
   'node.setBinding',
   'component.setPropSchema',
   'component.removePropSchema',
+  'component.setPropDefault',
   'component.setPart',
   'component.removePart',
   'component.setVariant',

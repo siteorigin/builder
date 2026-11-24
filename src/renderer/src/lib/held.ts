@@ -169,6 +169,11 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const def = has(state.components, op.definitionId);
       return def ? found({ name: def.name, description: def.description }) : gone('component');
     }
+    case 'component.setPropDefault': {
+      // The schema is part of the field: it decides how the default is read.
+      const schema = has(has(state.components, op.definitionId)?.properties, op.prop);
+      return schema ? withRoutes(state, op.value, { schema, value: schema.default }) : gone('property');
+    }
   }
   return null;
 }

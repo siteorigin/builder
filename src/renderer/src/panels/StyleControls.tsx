@@ -7,6 +7,7 @@ import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { DraftInput } from '../components/ui';
 import { setState, useStore } from '../store';
+import { allSizesReach, styleEffective, styleUnder } from '../lib/style-source';
 
 type Size = Exclude<ResponsiveScope, 'base'>;
 const SIZES: Size[] = ['phone', 'tablet', 'desktop'];
@@ -174,7 +175,8 @@ export function StyleControls({
   resetLabel,
   target,
   designSizesWin,
-  image
+  image,
+  wideColumns
 }: {
   styles: ResponsiveStyles | undefined;
   inherited: ResponsiveStyles | undefined;
@@ -198,6 +200,11 @@ export function StyleControls({
   designSizesWin?: boolean;
   /** For an image: the picture Image focus is chosen on, and the rules under these styles. */
   image?: FocusImage;
+  /**
+   * `styles` are a placement's overrides (or a variant's): the stylesheet keeps a multi-column value set for All
+   * sizes off phones, where the design's own layout still applies.
+   */
+  wideColumns?: boolean;
 }) {
   const scope = useStore((s) => s.styleScope);
   const viewport = useStore((s) => s.viewport);
@@ -233,7 +240,7 @@ export function StyleControls({
   for (const p of props) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);
   const own = styles?.[scope] ?? {};
   // Layout controls that only mean something for a stack or grid are shown when the layout is one.
-  const effective = (id: string) => own[id] ?? styles?.base?.[id] ?? inherited?.[scope]?.[id] ?? inherited?.base?.[id];
+  const effective = (id: string) => styleEffective({ prop: id, scope, styles, inherited, designSizesWin, wideColumns });
   const layout = effective('layout');
   const position = effective('position');
   // Set at any size: such a row always shows, so "From All sizes" and "Phone uses …" are never hidden.
@@ -263,12 +270,10 @@ export function StyleControls({
     const value = own[p.id];
     const label = labelOf(p);
     // What shows through when nothing is set here, and where it comes from.
-    const designHere = scope !== 'base' ? inherited?.[scope]?.[p.id] : undefined;
-    const allSizes = scope !== 'base' && !(designSizesWin && designHere !== undefined) ? styles?.base?.[p.id] : undefined;
-    const fromDesign = designHere ?? inherited?.base?.[p.id];
-    const under = allSizes ?? fromDesign;
+    const shows = styleUnder({ prop: p.id, scope, styles, inherited, designSizesWin, wideColumns });
+    const under = shows.value;
     const underText = describe(p, under, tokens);
-    const underFrom = allSizes !== undefined ? 'From All sizes' : under !== undefined ? 'From the design' : undefined;
+    const underFrom = shows.from === 'all-sizes' ? 'From All sizes' : shows.from === 'design' ? 'From the design' : undefined;
     // Under All sizes, a size with its own value here wins over whatever is set for all sizes; so does the
     // design's own value for the previewed size when nothing here overrides it (or, for a component's own
     // design, whenever it has one).
@@ -277,7 +282,12 @@ export function StyleControls({
     if (value === undefined && underFrom) lines.push({ text: underFrom, quiet: underFrom === 'From the design' });
     for (const s of exceptions) lines.push({ text: `${SCOPE_LABEL[s]} uses ${describe(p, styles![s]![p.id], tokens)}`, previewed: s === preview });
     const designAtPreview = inherited?.[preview]?.[p.id];
-    if (scope === 'base' && (value === undefined || designSizesWin) && !exceptions.includes(preview) && designAtPreview !== undefined && JSON.stringify(designAtPreview) !== JSON.stringify(inherited?.base?.[p.id]))
+    // A value for All sizes that the stylesheet keeps off phones (a grid of several columns): phones show the design.
+    const ownReachesPreview = allSizesReach(p.id, value, preview, wideColumns);
+    const designOnPhone = inherited?.phone?.[p.id];
+    if (scope === 'base' && value !== undefined && !exceptions.includes('phone') && !allSizesReach(p.id, value, 'phone', wideColumns))
+      lines.push({ text: designOnPhone !== undefined ? `${SCOPE_LABEL.phone} uses ${describe(p, designOnPhone, tokens)} from the design` : 'Tablet and desktop only', previewed: preview === 'phone' });
+    else if (scope === 'base' && (!ownReachesPreview || designSizesWin) && !exceptions.includes(preview) && designAtPreview !== undefined && JSON.stringify(designAtPreview) !== JSON.stringify(inherited?.base?.[p.id]))
       lines.push({ text: `${SCOPE_LABEL[preview]} uses ${describe(p, designAtPreview, tokens)} from the design`, previewed: true });
     const sourceId = `${moreId}-${p.id}-src`;
     const resetTo = underText ? ` to ${underText} ${underFrom === 'From All sizes' ? 'from All sizes' : 'from the design'}` : '';

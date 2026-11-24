@@ -1,4 +1,4 @@
-import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
+import { axesOf, designStyles, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
@@ -28,7 +28,7 @@ import {
   Trash2,
   Users
 } from 'lucide-react';
-import type { ComponentDefinition, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { partStyleControls, styleSetFor } from '@shared/styles';
@@ -45,10 +45,11 @@ import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuI
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import type { FocusImage } from './FocusEditor';
-import { assetUrl, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
+import { assetUrl, definitionView, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
+import { defaultReach, designContent, designContentOp, forwardedProp, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
@@ -118,17 +119,6 @@ function applyTableEdit(owner: OwnerRef, nodeId: string, prop: string, edit: Tab
   return applyOps([{ type: 'instance.editTable', owner, nodeId, prop, ...edit }], label, coalesceKey).then((r) => r !== null);
 }
 
-/** Default styles a definition gives a node (base + selected variant), used as inherited placeholders. */
-function inheritedStyles(def: ComponentDefinition, nodeId: string, variants: InstanceNode['variants']): ResponsiveStyles {
-  const base = def.tree?.nodes[nodeId]?.styles ?? {};
-  const layers = selectedVariantStyles(def, variants, nodeId);
-  const out: ResponsiveStyles = {};
-  for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
-    const merged = Object.assign({}, base[scope], ...layers.map((l) => l[scope]));
-    if (Object.keys(merged).length) out[scope] = merged;
-  }
-  return out;
-}
 
 /**
  * A style edit's history key: changes to one property in a row merge into one Undo step. A focal point is the
@@ -315,12 +305,18 @@ export function Inspector() {
     return inst?.kind === 'instance' && inst.definitionId === editingDef?.id;
   })();
   if (editingDef && (!selection || (selection.owner.kind === 'component' && selection.owner.id === editingDef.id) || !throughPlacement)) {
-    // Outside picks (another section) show the overview: the mode edits this component only.
-    const direct = !!selection && selection.owner.kind === 'component' && selection.owner.id === editingDef.id && !selection.instancePath.length;
-    const node = direct ? editingDef.tree?.nodes[selection!.nodeId] : undefined;
+    // Outside picks (another section) show the overview: the mode edits this component only. A part of a component
+    // placed in the design (its row in Layers) shows that part, as this design sets it.
+    const view = definitionView(st, editingDef.id, selection);
     return (
       <div className="panel-body insp" key={selection ? JSON.stringify(selection) : 'def-overview'}>
-        {node ? <DefinitionNodeInspector state={st} def={editingDef} node={node} tokens={tokens} /> : <DefinitionOverview state={st} def={editingDef} />}
+        {view.kind === 'node' ? (
+          <DefinitionNodeInspector state={st} def={editingDef} node={view.node} tokens={tokens} />
+        ) : view.kind === 'nested-part' ? (
+          <PartInspector state={st} selection={selection!} tokens={tokens} everywhere={editingDef} />
+        ) : (
+          <DefinitionOverview state={st} def={editingDef} />
+        )}
       </div>
     );
   }
@@ -643,7 +639,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           )}
           <StyleControls
             styles={node.overrides?.root}
-            inherited={inheritedStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
+            inherited={designStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
+            wideColumns
             allowed={withHidden(partStyleControls(def, 'root'))}
             tokens={tokens}
             image={rootImage}
@@ -670,6 +667,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             key={styledPart}
             styles={node.overrides?.[styledPart]}
             inherited={undefined}
+            wideColumns
             allowed={withHidden(partStyleControls(def, styledPart))}
             tokens={tokens}
             onSet={onStyle(styledPart)}
@@ -725,7 +723,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   );
 }
 
-function PartInspector({ state, selection, tokens }: { state: ProjectState; selection: ElementRef; tokens: Tokens }) {
+/**
+ * A part of a placed component. `everywhere` is the component being edited everywhere when the part belongs to a
+ * component placed in its design: changes then go to that design, for every placement of it.
+ */
+function PartInspector({ state, selection, tokens, everywhere }: { state: ProjectState; selection: ElementRef; tokens: Tokens; everywhere?: ComponentDefinition }) {
   const scope = useStore((s) => s.styleScope);
   const devUrl = useDevUrl();
   const r = resolveRef(state, selection);
@@ -752,7 +754,8 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   // A level shared by every item is left to the section when the words are each item's own, so neither says "this one only" wrongly.
   if (node.kind === 'text' && !(isBinding(node.text) && '$item' in node.text && isBinding(node.tag) && '$prop' in node.tag)) pushB(node.tag, 'tag');
   if (node.kind === 'image') pushB(node.image, 'image');
-  if (node.kind === 'link') (pushB(node.label, 'label'), pushB(node.link, 'link'));
+  if (node.kind === 'link') (pushB(node.label, 'label'), pushB(node.link, 'link'), pushB(node.icon, 'icon'));
+  if (node.kind === 'element') pushB(node.link, 'link');
   if (node.kind === 'icon') pushB(node.icon, 'icon');
   const contentList = Object.entries(def.properties).find(([, p]) => p.type === 'list' && bindings.some((b) => b.item && b.item in (p as { fields: object }).fields))?.[0];
   // A structural part (a card itself) has no content binding, but it still repeats once per list item:
@@ -761,7 +764,9 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   // The repeat that encloses the part names its list exactly; a field-name match is only a fallback.
   const listProp = (repeatList && def.properties[repeatList]?.type === 'list' ? repeatList : undefined) ?? contentList;
   const listSchema = listProp ? (def.properties[listProp] as Extract<ComponentDefinition['properties'][string], { type: 'list' }>) : undefined;
-  const listItems = listProp ? (((inst.props[listProp] ?? listSchema?.default) as Array<Record<string, unknown>>) ?? []) : [];
+  // A list the outer design fills in from one of its own properties is not this placement's to list here.
+  const ownList = listProp ? (inst.props[listProp] ?? listSchema?.default) : undefined;
+  const listItems = Array.isArray(ownList) ? (ownList as Array<Record<string, unknown>>) : [];
   const itemLabel = listSchema?.itemLabel.toLowerCase() ?? 'item';
   const listLabel = listSchema?.label.toLowerCase() ?? 'items';
   const itemIndex = itemId ? listItems.findIndex((x) => x.id === itemId) : -1;
@@ -771,6 +776,9 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   const styleReach = n === 1 ? `the 1 ${partName}` : `all ${n} ${partName}s`;
   const instOwner = owner;
   const instNodeId = selection.instancePath[0];
+  // Edits join the same field's last edit. In a component's design the same node IDs can recur in another design
+  // copied from it, so the key names the design too, as its row in Layers does.
+  const keyAt = everywhere ? `${everywhere.id}:${instNodeId}` : instNodeId;
   const kind = elementKind(node);
   const parentName = inst.name ?? def.name;
   const parentLink = (
@@ -818,11 +826,11 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
       <Header
         title={title}
         kind={parentLink}
-        tone={owner.kind === 'shell' ? 'shared' : 'local'}
+        tone={everywhere ? 'definition' : owner.kind === 'shell' ? 'shared' : 'local'}
         icon={kind.icon}
-        actions={<SelectionActions title={title} selection={selection} items={[{ label: `Select ${parentName}`, icon: <Component />, shortcut: 'Esc', onSelect: () => selectAndFocus(parent) }]} />}
+        actions={everywhere ? <DoneButton /> : <SelectionActions title={title} selection={selection} items={[{ label: `Select ${parentName}`, icon: <Component />, shortcut: 'Esc', onSelect: () => selectAndFocus(parent) }]} />}
       >
-        <OwnerScope owner={owner} state={state} />
+        {everywhere ? <EverywhereScope state={state} def={everywhere} /> : <OwnerScope owner={owner} state={state} />}
         {listSchema && !nested && (
           <Scope tone="local" icon={<List />}>
             {contentReach ? `Content: ${contentReach.charAt(0).toLowerCase()}${contentReach.slice(1)} · ` : ''}Style: {styleReach}
@@ -834,11 +842,21 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
           <p className="muted insp-note">This belongs to a component inside {def.name}. Change it with Edit everywhere on that component, or make {def.name} unique.</p>
         </Section>
       ) : bindings.length ? (
-        <Section title="Content" id="part-content" level={LEVEL} scope={listSchema ? (perItem ? (itemId ? `This ${itemLabel} only` : `Each ${itemLabel}`) : `Every ${itemLabel}`) : undefined}>
+        <Section title="Content" id="part-content" level={LEVEL} scope={listSchema ? (perItem ? (itemId ? `This ${itemLabel} only` : `Each ${itemLabel}`) : `Every ${itemLabel}`) : everywhere ? 'Same in every placement' : undefined}>
           {bindings.map((b, i) => {
             if (b.prop) {
               const schema = def.properties[b.prop];
               if (!schema) return null;
+              // Filled in from a property of the design this component sits in: that property's default.
+              const forwarded = everywhere ? forwardedProp(inst.props[b.prop]) : null;
+              if (forwarded) return <ForwardedDefault key={i} state={state} def={everywhere!} prop={forwarded} />;
+              // Filled in from each item of a list the design repeats it over.
+              if (isBinding(inst.props[b.prop]))
+                return (
+                  <p key={i} className="muted insp-note">
+                    {schema.label}: each item of the list it repeats over has its own.
+                  </p>
+                );
               return (
                 <div key={i} data-field={b.prop} style={{ display: 'contents' }}>
                 <PropField
@@ -846,7 +864,8 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                   schema={schema}
                   value={inst.props[b.prop] ?? schema.default}
                   state={state}
-                  onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${instNodeId}:${b.prop}`)}
+                  everywhere={!!everywhere}
+                  onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}`)}
                   onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
                   read={() => readProp(instOwner, instNodeId, b.prop!)}
                   onTable={(edit) => applyTableEdit(instOwner, instNodeId, b.prop!, edit, `Edit ${schema.label}`)}
@@ -861,7 +880,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
               const field = listSchema.fields[b.item!];
               const item = listItems.find((x) => x.id === itemId);
               if (!field || !item) return null;
-              const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`);
+              const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${keyAt}:${listProp}:${itemId}:${b.item}`);
               // A page list's card says where an empty field's text comes from.
               const teaser = teaserFieldNote(state, listSchema, item, b.item!);
               // An item without its own value for the field shows the field's default, on the site and here.
@@ -877,8 +896,8 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
           {linkPair && pairedItem && itemId && (
             <ContactMismatch text={pairedItem[linkPair.text]} link={pairedItem[linkPair.link]} onRepair={(link, label, revision) => applyListOp(instOwner, instNodeId, listProp!, { kind: 'repair', itemId, field: linkPair.link, value: link, label, revision }, label)} />
           )}
-          {listSchema && perItem && !itemId && <p className="muted insp-note">Each {itemLabel} has its own text. Click one on the page to change it, or open the list to edit them all.</p>}
-          {listSchema && (
+          {listSchema && perItem && !itemId && <p className="muted insp-note">Each {itemLabel} has its own text. {everywhere ? (Array.isArray(ownList) ? 'Open the list to edit them.' : `Each placement of ${everywhere.name} fills them in.`) : 'Click one on the page to change it, or open the list to edit them all.'}</p>}
+          {listSchema && Array.isArray(ownList) && (
             <button className="btn btn-sm insp-inline-btn" onClick={() => openList(parent, listProp!, itemId ?? (listItems[0]?.id as string | undefined), !!itemId)}>
               <List /> {itemId ? `Show in ${listLabel} list` : `Open ${listLabel} list`}
             </button>
@@ -886,19 +905,24 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
         </Section>
       ) : (
         <Section title="Content" id="part-content" level={LEVEL}>
-          <p className="muted insp-note">This is fixed in the section’s design. To change it, select {def.name} and choose Edit everywhere, or Make unique for just this placement.</p>
+          <p className="muted insp-note">
+            {everywhere
+              ? `This is fixed in the ${def.name} design. To change it, click Done editing, then edit ${def.name} everywhere.`
+              : `This is fixed in the section’s design. To change it, select ${def.name} and choose Edit everywhere, or Make unique for just this placement.`}
+          </p>
         </Section>
       )}
       {part && !nested && def.kind === 'managed' && (
         <Section title="Style" id="part-style" level={LEVEL} scope={[listSchema ? styleReach.charAt(0).toUpperCase() + styleReach.slice(1) : '', countStyles(inst.overrides?.[partId!]) ? changes(countStyles(inst.overrides?.[partId!])) : ''].filter(Boolean).join(' · ') || undefined}>
           <StyleControls
             styles={inst.overrides?.[partId!]}
-            inherited={inheritedStyles(def, part.nodeId, inst.variants)}
+            inherited={designStyles(def, part.nodeId, inst.variants)}
+            wideColumns
             allowed={partStyleControls(def, partId!)}
             tokens={tokens}
             image={partImage}
             onSet={(property, value, expectedRevision) =>
-              commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], `Style ${part.label}`, styleKey(property, `${instNodeId}:${partId}:${scope}:${property}`), expectedRevision)
+              commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], `Style ${part.label}`, styleKey(property, `${keyAt}:${partId}:${scope}:${property}`), expectedRevision)
             }
             onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, scope: sc }], 'Reset part overrides')}
           />
@@ -1069,6 +1093,154 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
   );
 }
 
+/** Who a change made while editing a component everywhere reaches. */
+function EverywhereScope({ state, def }: { state: ProjectState; def: ComponentDefinition }) {
+  const uses = instancesOf(state, def.id).length;
+  return (
+    <Scope tone="definition" icon={<Pencil />}>
+      <strong>Editing everywhere.</strong>{' '}
+      {uses === 1 ? `Used once, on ${placesText(state, def)}, and wherever you add it later. A placement’s own changes still win.` : `Changes apply to all ${uses} placements, except where one has its own changes.`}
+    </Scope>
+  );
+}
+
+const FIELD_NAME: Record<ContentField, string> = { text: 'text', label: 'button text', link: 'link', image: 'image', icon: 'icon' };
+
+/** A property default's field: its editor, then which placements show it. */
+function DefaultField({ state, def, prop, schema, onChange, label }: { state: ProjectState; def: ComponentDefinition; prop: string; schema: ScalarPropSchema; onChange: (v: unknown, edit?: PendingEdit) => void; label?: string }) {
+  return (
+    <div data-field={prop} style={{ display: 'contents' }}>
+      <ScalarField schema={schema} value={schema.default} state={state} label={label ?? schema.label} hint={`Each placement fills this in. ${reachText(defaultReach(state, def.id, prop))}`} onChange={onChange} everywhere />
+    </div>
+  );
+}
+
+/**
+ * A nested component's input that the design fills in from one of its own properties: that property's default,
+ * which every placement without its own value shows.
+ */
+function ForwardedDefault({ state, def, prop }: { state: ProjectState; def: ComponentDefinition; prop: string }) {
+  const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
+  if (!schema) return null;
+  if (schema.type === 'list' || schema.type === 'table') return <p className="muted insp-note">Each placement of {def.name} fills this in, as its {schema.label.toLowerCase()}.</p>;
+  const change = (v: unknown, edit?: PendingEdit) => void applyWith(edit, [propDefaultOp(def.id, prop, v)], `Edit ${schema.label} default`, `${def.id}:default:${prop}`);
+  return <DefaultField state={state} def={def} prop={prop} schema={schema} onChange={change} />;
+}
+
+/** The content a node of the design holds: defaults each placement fills in, values fixed in the design, per-item notes. */
+function DesignContentSection({ state, def, node }: { state: ProjectState; def: ComponentDefinition; node: GraphNode }) {
+  const iconId = useId();
+  const fields = designContent(def, node);
+  if (!fields.length) return null;
+  const kind = elementKind(node).name;
+  const set = (f: DesignContent, label: string) => (v: unknown, edit?: PendingEdit) => void applyWith(edit, [designContentOp(def, node.id, f.field, v)], label, `${def.id}:${node.id}:${f.field}`);
+  const items = fields.filter((f): f is Extract<DesignContent, { source: 'item' }> => f.source === 'item');
+  const list = items[0]?.list ? (def.properties[items[0].list] as ListProp | undefined) : undefined;
+  const sources = new Set(fields.map((f) => f.source));
+  const scope = sources.size > 1 ? undefined : sources.has('design') ? 'Same in every placement' : sources.has('default') ? 'Filled in on each placement' : `Each ${list?.itemLabel.toLowerCase() ?? 'item'}`;
+  return (
+    <Section title="Content" id="def-content" level={LEVEL} scope={scope}>
+      {fields.map((f) => {
+        if (f.source === 'item') return null;
+        if (f.source === 'default') return <DefaultField key={f.field} state={state} def={def} prop={f.prop} schema={f.schema} label={f.field === 'label' ? `${kind} text` : undefined} onChange={set(f, `Edit ${f.schema.label} default`)} />;
+        const hint = sources.size > 1 ? 'Same in every placement.' : undefined;
+        switch (f.field) {
+          case 'text':
+            return (
+              <div key={f.field} data-field="text" style={{ display: 'contents' }}>
+                <Field label="Text" hint={hint}>
+                  <DraftInput multiline rows={2} value={Array.isArray(f.value) ? richTextToMarkdown(toRichText(f.value), state.pages) : String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} />
+                </Field>
+              </div>
+            );
+          case 'label':
+            return (
+              <div key={f.field} data-field="label" style={{ display: 'contents' }}>
+                <Field label={`${kind} text`} hint={hint}>
+                  <DraftInput value={String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'label', v)], 'Edit button text everywhere', `${def.id}:${node.id}:label`)} />
+                </Field>
+              </div>
+            );
+          case 'link':
+            // A destination fixed in the design: a button without one is left out of every placement.
+            return (
+              <div key={f.field} className="field" data-field="link" role="group" aria-labelledby={`${node.id}-def-dest`}>
+                <div className="field-label" id={`${node.id}-def-dest`}>
+                  Link
+                </div>
+                <LinkEditor value={f.value as LinkValue} onChange={set(f, 'Edit button link everywhere')} state={state} label={kind} everywhere />
+                {hint && <div className="field-hint">{hint}</div>}
+              </div>
+            );
+          case 'image':
+            return (
+              <div key={f.field} className="field" data-field="image" role="group" aria-label="Image">
+                <ImageEditor value={f.value as ImageValue} onChange={set(f, 'Edit image everywhere')} state={state} />
+                {hint && <div className="field-hint">{hint}</div>}
+              </div>
+            );
+          case 'icon':
+            return (
+              <div key={f.field} data-field="icon" style={{ display: 'contents' }}>
+                <Field label="Icon" controlId={iconId} hint={hint}>
+                  <IconPicker id={iconId} value={String(f.value ?? '')} onChange={set(f, 'Edit icon everywhere')} />
+                </Field>
+              </div>
+            );
+        }
+      })}
+      {items.length > 0 && (
+        <p className="muted insp-note">
+          Each {list?.itemLabel.toLowerCase() ?? 'item'} has its own {listJoin(items.map((f) => FIELD_NAME[f.field]))}. Change {items.length === 1 ? 'it' : 'them'} in the {list?.label.toLowerCase() ?? 'items'} list of each placement.
+        </p>
+      )}
+    </Section>
+  );
+}
+
+/** A component placed in the design: the inputs the design gives it, the same in every placement. */
+function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; def: ComponentDefinition; node: InstanceNode; placedDef: ComponentDefinition }) {
+  const owner: OwnerRef = { kind: 'component', id: def.id };
+  const fields = groupFields(Object.entries(placedDef.properties).map(([key, schema]) => ({ key, schema: schema as PropSchema, data: null })));
+  if (!fields.length) return null;
+  return (
+    <Section title="Content" id="content" level={LEVEL} scope="Same in every placement">
+      <FieldGroups
+        groups={fields}
+        render={({ key, schema, label }) => {
+          const raw = node.props[key];
+          const forwarded = forwardedProp(raw);
+          if (forwarded) return <ForwardedDefault key={key} state={state} def={def} prop={forwarded} />;
+          if (isBinding(raw))
+            return (
+              <p key={key} className="muted insp-note">
+                {label ?? schema.label}: each item of the list has its own.
+              </p>
+            );
+          return (
+            <PropField
+              key={key}
+              name={key}
+              schema={schema}
+              label={label}
+              value={raw ?? schema.default}
+              onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}`)}
+              onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label} everywhere`, op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+              read={() => readProp(owner, node.id, key)}
+              onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label} everywhere`)}
+              state={state}
+              linkPairs={schema.type === 'list' ? itemLinkPairs(placedDef, key) : undefined}
+              everywhere
+            />
+          );
+        }}
+      />
+    </Section>
+  );
+}
+
+const listJoin = (items: string[]) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+
 function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectState; def: ComponentDefinition; node: GraphNode; tokens: Tokens }) {
   const scope = useStore((s) => s.styleScope);
   const devUrl = useDevUrl();
@@ -1120,7 +1292,6 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         }
       : undefined;
   const placedDef = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
-  const designLinks = node.kind === 'instance' && placedDef ? Object.entries(placedDef.properties).filter(([prop, schema]) => schema.type === 'link' && !isBinding(node.props[prop])) : [];
   const itemWord = repeated ? (def.properties[repeated] as { itemLabel?: string } | undefined)?.itemLabel?.toLowerCase() : undefined;
   const placements = uses === 1 ? '1 placement' : `${uses} placements`;
   const rootRef: ElementRef | null = def.tree?.rootIds[0] ? { owner, instancePath: [], nodeId: def.tree.rootIds[0] } : null;
@@ -1142,57 +1313,26 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   return (
     <>
       <Header title={title} kind={kindLine} tone="definition" icon={isRoot ? <Component /> : elementKind(node).icon} actions={<DoneButton />}>
-        <Scope tone="definition" icon={<Pencil />}>
-          <strong>Editing everywhere.</strong>{' '}
-          {uses === 1 ? `Used once, on ${placesText(state, def)}, and wherever you add it later. A placement’s own changes still win.` : `Changes apply to all ${uses} placements, except where one has its own changes.`}
-        </Scope>
+        <EverywhereScope state={state} def={def} />
       </Header>
-      {node.kind === 'text' && !isBinding(node.text) && (
-        <Section title="Content" id="def-text" level={LEVEL} scope="Same in every placement">
-          <Field label="Text">
-            <DraftInput multiline rows={2} value={Array.isArray(node.text) ? richTextToMarkdown(toRichText(node.text), state.pages) : String(node.text)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'text', value: v }], 'Edit definition text')} />
-          </Field>
-        </Section>
-      )}
-      {/* A button's own label (not one each placement fills in), as the canvas edits it in place. */}
-      {node.kind === 'link' && (!isBinding(node.label) || !isBinding(node.link)) && (
-        <Section title="Content" id="def-label" level={LEVEL} scope="Same in every placement">
-          {!isBinding(node.label) && (
-            <Field label="Button text">
-              <DraftInput value={String(node.label)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'label', value: v }], 'Edit button text everywhere')} />
-            </Field>
-          )}
-          {/* A destination fixed in the design (not one each placement chooses): a button without one is left out. */}
-          {!isBinding(node.link) && (
-            <div className="field" role="group" aria-labelledby={`${node.id}-def-dest`}>
-              <div className="field-label" id={`${node.id}-def-dest`}>
-                Link
-              </div>
-              <LinkEditor value={node.link} onChange={(v, edit) => void applyWith(edit, [{ type: 'node.setContent', owner, nodeId: node.id, field: 'link', value: v }], 'Edit button link everywhere', `${def.id}:${node.id}:link`)} state={state} label="Button" everywhere />
-            </div>
-          )}
-        </Section>
-      )}
-      {/* A component placed in the design: the links it is given here (not ones each placement chooses). */}
-      {node.kind === 'instance' && designLinks.length > 0 && (
-        <Section title="Content" id="def-links" level={LEVEL} scope="Same in every placement">
-          {designLinks.map(([prop, schema]) => (
-            <div key={prop} className="field" role="group" aria-labelledby={`${node.id}-${prop}-dest`}>
-              <div className="field-label" id={`${node.id}-${prop}-dest`}>
-                {schema.label}
-              </div>
-              <LinkEditor
-                value={(node.props[prop] ?? schema.default) as LinkValue}
-                onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${prop}`)}
-                state={state}
-                label={schema.label}
-                everywhere
-              />
-            </div>
-          ))}
-        </Section>
-      )}
+      <DesignContentSection state={state} def={def} node={node} />
+      {/* A component placed in the design: what it is given here, the same in every placement. */}
+      {node.kind === 'instance' && placedDef && <NestedInputs state={state} def={def} node={node} placedDef={placedDef} />}
       <Section title="Style" id="def-style" level={LEVEL} scope={repeated ? `Every ${itemWord ?? 'item'} · ${placements}` : placements}>
+        {node.kind === 'instance' ? (
+          <StyleControls
+            styles={node.overrides?.root}
+            inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], node.variants) : undefined}
+            wideColumns
+            tokens={tokens}
+            allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
+            onSet={(property, value, expectedRevision) =>
+              commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId: 'root', scope, property, value }], `Edit ${def.name} definition`, styleKey(property, `${def.id}:${node.id}:root:${scope}:${property}`), expectedRevision)
+            }
+            onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root', scope: sc }], 'Reset overrides')}
+            target={`the ${(node.name ?? placedDef?.name ?? 'component').toLowerCase()} itself`}
+          />
+        ) : (
         <StyleControls
           styles={changed}
           inherited={original}
@@ -1217,6 +1357,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           }
           resetLabel={original ? 'Restore original design' : 'Clear styles on this element'}
         />
+        )}
       </Section>
     </>
   );

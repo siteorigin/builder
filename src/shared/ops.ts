@@ -278,6 +278,12 @@ export const OPERATION_SCHEMAS = {
     schema: z.record(z.string(), z.unknown()).describe('{ type, label, default, ... } as in component.createCode.')
   }),
   'component.removePropSchema': z.object({ type: z.literal('component.removePropSchema'), definitionId: z.string(), prop: z.string() }),
+  'component.setPropDefault': z.object({
+    type: z.literal('component.setPropDefault'),
+    definitionId: z.string(),
+    prop: z.string(),
+    value: z.unknown().describe('The new default: what placements without a value of their own show, and what new placements start with.')
+  }),
   'component.setPart': z.object({
     type: z.literal('component.setPart'),
     definitionId: z.string(),

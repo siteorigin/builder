@@ -66,7 +66,7 @@ async function shot(state, check, themes = BOTH, { full = false } = {}) {
 async function sections(mode) {
   await win.evaluate((m) => {
     for (const k of Object.keys(localStorage)) if (k.startsWith('section:')) localStorage.removeItem(k);
-    if (m === 'open') for (const id of ['content', 'style', 'component', 'advanced', 'part-content', 'part-style', 'prim-content', 'prim-style', 'prim-actions', 'prim-advanced', 'page-basic', 'page-seo', 'page-adv', 'def-text', 'def-style']) localStorage.setItem(`section:${id}`, '1');
+    if (m === 'open') for (const id of ['content', 'style', 'component', 'advanced', 'part-content', 'part-style', 'prim-content', 'prim-style', 'prim-actions', 'prim-advanced', 'page-basic', 'page-seo', 'page-adv', 'def-content', 'def-style']) localStorage.setItem(`section:${id}`, '1');
   }, mode);
 }
 
