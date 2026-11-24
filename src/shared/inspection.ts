@@ -17,14 +17,15 @@ export interface InspectionDesc {
 /**
  * The element to change for a finding, as operations address it: a node of the owner's own tree and, on a component
  * placement, the part and the one list item. `match` says when it is broader than the element measured: the
- * declared part around it, or the placement as a whole.
+ * declared part around it, the placement as a whole, or (`container`) the node holding markup the editor does not
+ * address on its own, such as a link in rich text.
  */
 export interface InspectionRef {
   owner: OwnerRef;
   nodeId: string;
   partId?: string;
   itemId?: string;
-  match?: 'nearest-part' | 'placement';
+  match?: 'nearest-part' | 'placement' | 'container';
   /**
    * For an element of a component placed inside a project component's design: the same element in that design,
    * which changes every placement of the design (the placement's own part, above, changes only this one).

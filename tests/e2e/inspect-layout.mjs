@@ -71,7 +71,7 @@ try {
   const shellPlacement = (part) => state.site.shell[part].rootIds[0];
   const withShell = await inspectUntil((r) => assert.ok(r.checks, 'the report counts the readability checks'), 'with the shell');
   const shell = findings(withShell);
-  assert.ok(shell.length > 0, `the shell's links are measured:\n${summary(withShell)}`);
+  assert.deepEqual([...new Set(shell.map((f) => f.ref?.owner.id))].sort(), ['footer', 'header'], `the header's and the footer's links are measured:\n${summary(withShell)}`);
   for (const f of shell) {
     assert.equal(f.kind, 'small-tap-target', summary(withShell));
     assert.ok(['header', 'footer'].includes(f.ref?.owner.id) && f.ref.owner.kind === 'shell', summary(withShell));
@@ -126,8 +126,9 @@ try {
   for (const [name, c] of Object.entries(fixed.checks)) assert.deepEqual([c.failed, c.unverified, c.incomplete], [0, 0, undefined], `${name} is clean again:\n${summary(fixed)}`);
 
   assert.deepEqual(errors, [], 'no page errors');
-  console.log('\ninspect-layout: all checks passed');
-  cleanup();
 } finally {
   await app.close();
 }
+// Only once the app has closed: it writes to its folder until then.
+cleanup();
+console.log('\ninspect-layout: all checks passed');

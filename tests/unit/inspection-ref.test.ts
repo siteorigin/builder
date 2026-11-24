@@ -77,6 +77,9 @@ describe('inspection references', () => {
     expect(placementOf(styleThrough(s, ref!), 'foundation.features.grid').itemOverrides?.cardTitle?.items['a,b%c']).toEqual({ base: { color: '#123456' } });
     // An item the list no longer has means the measured page was out of date: nothing is named, never every card.
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-title', items: 'gone' })).toBeNull();
+    // The card's item comes first in the path (deeper lists follow): a later ID that happens to be a card's is not it.
+    expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-text', items: `gone,${items[1].id}` })).toBeNull();
+    expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-text', items: `${items[1].id},other` })?.itemId).toBe(items[1].id);
     // Items on an element shown outside every list: the page measured was older than the design.
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'heading', items: items[1].id })).toBeNull();
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-title', items: 42 } as never)).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id, partId: 'cardTitle' });
@@ -140,6 +143,27 @@ describe('inspection references', () => {
     expect(inspectionRef(s, { ctx: ctxOf(s, banner.id), node: root, items: '' })).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: banner.id });
     def.parts = Object.fromEntries(Object.entries(def.parts).map(([id, part]) => [id === 'root' ? 'frame' : id, part]));
     expect(inspectionRef(s, { ctx: ctxOf(s, banner.id), node: root, items: '' })).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: banner.id, partId: 'frame' });
+  });
+
+  it('names the node holding markup the editor does not address on its own, and says so', () => {
+    const s0 = fresh();
+    const page = { kind: 'page' as const, id: s0.site.homePageId };
+    const inserted = applyOperations(s0, [{ type: 'node.insert', owner: page, primitive: 'container' }]);
+    const s = inserted.state;
+    const box = inserted.results[0].nodeId as string;
+    expect(inspectionRef(s, { ctx: ctxOf(s), node: box, items: '' })).toEqual({ owner: page, nodeId: box });
+    expect(inspectionRef(s, { ctx: ctxOf(s), node: box, items: '', inside: true })).toEqual({ owner: page, nodeId: box, match: 'container' });
+  });
+
+  it('stops at nodes a hand-edited design left holding each other', () => {
+    const s = fresh();
+    const grid = placementOf(s, 'foundation.features.grid');
+    const def = s.components['foundation.features.grid'];
+    def.tree!.nodes.loopA = { id: 'loopA', kind: 'element', tag: 'div', children: ['loopB'] } as never;
+    def.tree!.nodes.loopB = { id: 'loopB', kind: 'element', tag: 'div', children: ['loopA'] } as never;
+    def.parts.loopy = { nodeId: 'loopB', label: 'Loopy' } as (typeof def.parts)[string];
+    expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'loopA', items: 'x' })).toBeNull();
+    expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'loopA', items: '' })).toMatchObject({ nodeId: grid.id, partId: 'loopy', match: 'nearest-part' });
   });
 
   it('names nothing for an address the project does not have', () => {

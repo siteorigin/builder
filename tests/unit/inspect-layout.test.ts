@@ -199,7 +199,9 @@ describe('layout inspection readability checks', () => {
   it.skipIf(!browserInstalled)('keeps measuring through form controls that hide the form\'s own properties', async () => {
     // A control named "children" or "childNodes" replaces form.children or form.childNodes on the form element.
     const r = await inspect(`<form ${so('form')} style="color:#ccc">Pale words in a form<input ${so('guests')} name="children" style="display:block;min-height:44px;width:200px"><input ${so('note')} name="childNodes" style="display:block;min-height:44px;width:200px"></form>
-      <form ${so('loop')} style="color:#ddd">Pale words in a form whose parent is hidden<input name="parentElement" style="display:block;min-height:44px;width:200px"><input name="hasAttribute" style="display:block;min-height:44px;width:200px"></form>`);
+      <form ${so('loop')} style="color:#ddd">Pale words in a form whose parent is hidden<input name="parentElement" style="display:block;min-height:44px;width:200px"><input name="hasAttribute" style="display:block;min-height:44px;width:200px"></form>
+      <div style="display:contents" ${so('codeForm')} data-so-code="true"><form><input name="getBoundingClientRect" style="display:block;min-height:44px;width:200px"><input name="innerText" style="display:block;min-height:44px;width:200px"></form></div>`);
+    expect(r).not.toHaveProperty('error');
     for (const c of Object.values(r.checks!)) expect(c.incomplete).toBeUndefined();
     expect(of(r, 'low-contrast').map((i) => i.desc?.node).sort()).toEqual(['form', 'loop']);
   }, 30000);
@@ -220,11 +222,19 @@ describe('layout inspection readability checks', () => {
     const more = await inspect(`
       <div ${so('hardEdge')} style="background:linear-gradient(90deg, red 50%, #009000 50%)"><p ${so('hardText')} style="color:#000">Black on two colours meeting at an edge</p></div>
       <div ${so('dip')} style="background:linear-gradient(90deg, rgb(50 137 60), rgb(210 96 60))"><p ${so('dipText')} style="color:#000">Black on a blend that dips between quarters</p></div>
-      <div ${so('group')} style="opacity:.5"><section style="background:#000 url('${photo}')"><div style="background:#fff"><p ${so('groupText')} style="color:#000;margin:0">A card and its photo faded together</p></div></section></div>`);
-    // Nothing is painted between stops that meet at an edge, and a dip between the quarter points is still found.
-    expect(of(more, 'contrast-unverified').map((i) => i.desc?.node)).toEqual(['dipText']);
-    // Faded together, the card still hides the photo: the text is measured (black at half strength on white fails).
-    expect(of(more, 'low-contrast').map((i) => i.desc?.node)).toEqual(['groupText']);
+      <div ${so('group')} style="opacity:.5"><section style="background:#000 url('${photo}')"><div style="background:#fff"><p ${so('groupText')} style="color:#000;margin:0">A card and its photo faded together</p></div></section></div>
+      <section style="background:#000 url('${photo}')"><div style="background:#fff;padding:8px"><div style="opacity:.5"><div style="background:#fff"><p ${so('twoCovers')} style="color:#000;margin:0">A faded card on a panel over a photo</p></div></div></div></section>
+      <div style="background:linear-gradient(90deg, red 60%, #009000 40%)"><p ${so('fixedUp')} style="color:#000">Black on two colours, the second stop placed early</p></div>
+      <div style="background:linear-gradient(90deg, red 0%, 50%, #009000 50%)"><p ${so('hinted')} style="color:#000">Black on two colours meeting at a hint</p></div>
+      <div style="background:linear-gradient(90deg, #000 50%, #fff 50%)"><p ${so('greyEdge')} style="color:#757575">Grey on black and white halves</p></div>
+      <style>.mbar{position:relative;height:100px}.mbar::before{content:'';position:absolute;left:0;top:100px;margin-top:-100px;width:300px;height:50px;background:#000}</style>
+      <div class="mbar"><p ${so('pulledBar')} style="position:relative;color:#000;margin:0">Black on a bar pulled up by its margin</p></div>`);
+    // Nothing is painted between stops that meet at an edge (however the edge is written), and a dip between the
+    // quarter points is still found.
+    expect(of(more, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]).sort()).toEqual([['dipText', 'gradient'], ['pulledBar', 'overlay']]);
+    // Faded with its photo, a card still hides it; faded on a panel, the panel does. Either way the text is measured
+    // (black at half strength on white fails).
+    expect(of(more, 'low-contrast').map((i) => i.desc?.node).sort()).toEqual(['groupText', 'twoCovers']);
     const unverified = Object.fromEntries(of(r, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]));
     expect(unverified).toEqual({ blackText: 'gradient', whiteText: 'gradient', stackedText: 'layers', fadedText: 'image', photoLink: 'image', barText: 'overlay' });
     const pale = of(r, 'low-contrast');
@@ -236,7 +246,7 @@ describe('layout inspection readability checks', () => {
   it.skipIf(!browserInstalled)('reads colours the page styles its own elements against', async () => {
     const r = await inspect(`<style>span, so-color-probe { color: #fff !important }</style><p ${so('dark')} style="color:oklch(0.2 0 0)">Dark text written in oklch</p>`);
     expect(of(r, 'low-contrast')).toEqual([]);
-    expect(r.checks!.contrast.failed).toBe(0);
+    expect(r.checks!.contrast).toMatchObject({ failed: 0, unverified: 0 });
   }, 30000);
 
   it.skipIf(!browserInstalled)('tells a line cut off at the side from a slide waiting off screen, whatever shortens it', async () => {
@@ -245,8 +255,9 @@ describe('layout inspection readability checks', () => {
       <p ${so('wideLine')} style="width:120px;white-space:nowrap;overflow:hidden;margin:0">A line that runs out of its box</p>
       <p ${so('tall')} style="height:24px;width:200px;overflow:hidden;text-overflow:ellipsis;margin:0">Several lines of words that wrap well past the height of this short box, ellipsis or not</p>
       <p ${so('mono')} style="font-family:monospace;width:12ch"><span ${so('s1')} style="display:inline-block">1234567890</span><span ${so('s2')}>123456789012 abc</span><span ${so('s3')}> XYZ</span></p>
-      <p ${so('runs')} style="width:80px;white-space:nowrap;overflow:hidden;margin:0"><span style="display:inline-block;width:100px">Seen</span><span>Lost words</span></p>`);
-    expect(of(r, 'clipped-text').map((i) => [i.desc?.node, i.axis]).sort()).toEqual([['runs', 'horizontal'], ['tall', 'vertical'], ['wideLine', 'horizontal']]);
+      <p ${so('runs')} style="width:80px;white-space:nowrap;overflow:hidden;margin:0"><span style="display:inline-block;width:100px">Seen</span><span>Lost words</span></p>
+      <p ${so('runs2')} style="width:80px;white-space:nowrap;overflow:hidden;margin:0"><span style="display:inline-block;width:100px">Seen</span><span style="display:contents">Lost words</span></p>`);
+    expect(of(r, 'clipped-text').map((i) => [i.desc?.node, i.axis]).sort()).toEqual([['runs', 'horizontal'], ['runs2', 'horizontal'], ['tall', 'vertical'], ['wideLine', 'horizontal']]);
     // Inline boxes flow as lines: their outer rectangles cross without their text doing so.
     expect(of(r, 'overlap')).toEqual([]);
   }, 30000);
@@ -259,9 +270,14 @@ describe('layout inspection readability checks', () => {
       <p ${so('seps')}><a href="/a">A</a> | <a href="/b">B</a></p>
       <div role="button" style="width:100px;height:60px"><a ${so('help')} href="/help" style="display:inline-block">?</a></div>
       <label style="position:relative;display:inline-block;width:20px;height:20px"><input ${so('bigBox')} type="checkbox" style="position:absolute;left:0;top:0;width:48px;height:48px;margin:0"></label>
-      <input ${so('elsewhere')} type="checkbox" id="elsewhere"><label style="display:block;min-height:60px" for="elsewhere">Agree <input ${so('wrongLabel')} type="checkbox"></label>`);
+      <input ${so('elsewhere')} type="checkbox" id="elsewhere"><label style="display:block;min-height:60px" for="elsewhere">Agree <input ${so('wrongLabel')} type="checkbox"></label>
+      <label style="display:flex;align-items:center;min-height:44px"><input ${so('radio')} type="radio" name="r"> Pick this one</label>
+      <div ${so('rich')}><p><a href="/go">Go</a></p></div>`);
     // A label labels one control: the one it names, or else the one inside it.
-    expect(of(r, 'small-tap-target').map((i) => [i.desc?.node, i.count ?? 1]).sort()).toEqual([['elsewhere', 1], ['far', 1], ['help', 1], ['seps', 2], ['wrapped', 1], ['wrongLabel', 1]]);
+    expect(of(r, 'small-tap-target').map((i) => [i.desc?.node, i.count ?? 1]).sort()).toEqual([['elsewhere', 1], ['far', 1], ['help', 1], ['rich', 1], ['seps', 2], ['wrapped', 1], ['wrongLabel', 1]]);
+    // A link the editor does not address on its own (in rich text) is named by the node holding it, which says so.
+    expect(of(r, 'small-tap-target').find((i) => i.desc?.node === 'rich')?.desc).toEqual({ ctx: 'page:p', node: 'rich', items: '', inside: true });
+    expect(of(r, 'small-tap-target').find((i) => i.desc?.node === 'wrapped')?.desc).toEqual({ ctx: 'page:p', node: 'wrapped', items: '' });
     const exactly = await inspect(pageWith(['tap']), 768);
     expect(exactly.checks!.tapTargets.skipped).toBeDefined();
   }, 30000);

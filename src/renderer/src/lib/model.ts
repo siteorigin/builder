@@ -181,8 +181,9 @@ export function inspectionRef(state: ProjectState, d: InspectionDesc): Inspectio
   const ownerTree = treeFor(state, ref.owner);
   if (!ref.instancePath.length) {
     const node = ownerTree && own(ownerTree.nodes, ref.nodeId);
-    // Markup inside a code component is the placement's as a whole.
-    if (d.inside && node?.kind === 'instance') return { owner: ref.owner, nodeId: ref.nodeId, match: 'placement' };
+    // Markup inside a code component is the placement's as a whole; inside another node (a link in rich text), that
+    // node's.
+    if (d.inside) return { owner: ref.owner, nodeId: ref.nodeId, match: node?.kind === 'instance' ? 'placement' : 'container' };
     // A placement's root takes its styles through the part declared on it, which need not be called "root".
     const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
     const rootPart = def?.kind === 'managed' && def.tree ? partIdFor(def, def.tree.rootIds[0]) : undefined;
@@ -210,35 +211,43 @@ export function inspectionRef(state: ProjectState, d: InspectionDesc): Inspectio
     // The root of a component placed there (its boundary), which the design does not expose as a part of its own.
     const placedDef = own(state.components, placedThere.definitionId);
     const rootPart = placedDef?.kind === 'managed' && placedDef.tree ? partIdFor(placedDef, placedDef.tree.rootIds[0]) : undefined;
-    definition = { owner: { kind: 'component', id: def.id }, nodeId: inner, ...(rootPart && rootPart !== 'root' ? { partId: rootPart } : {}) };
+    definition = { owner: { kind: 'component', id: def.id }, nodeId: inner, ...(rootPart && rootPart !== 'root' ? { partId: rootPart } : {}), ...(d.inside ? { match: 'placement' as const } : {}) };
   }
   if (!partId) return { owner: ref.owner, nodeId: placementId, match: 'placement', ...(definition ? { definition } : {}) };
   const out: InspectionRef = { owner: ref.owner, nodeId: placementId, partId, ...(nearest ? { match: 'nearest-part' as const } : {}), ...(definition ? { definition } : {}) };
   // The list item the part is shown for. Only an element of the placement's own design carries that design's items
-  // (one inside a component placed there carries that component's own); a part outside every list, or inside
-  // several, has none. An item the list no longer has means the measured page was out of date: nothing is named.
-  // An element of the design shown outside every list never carries items: one that does is from an older page.
+  // (one inside a component placed there carries that component's own), outermost first; a part styled one item at
+  // a time sits inside exactly one list, so its item is the first. A part outside every list, or inside several,
+  // has none. An element outside every list that carries items, or an item the list no longer has, means the
+  // measured page was out of date: nothing is named.
   if (direct && items.length && !inRepeat(def, ref.nodeId)) return null;
   const list = direct && ref.owner.kind !== 'component' ? repeatedPartList(def, partId) : undefined;
   if (list && items.length) {
-    const listed = new Set(placementItems(def, placement, list).map((i) => i.id));
-    const hits = [...new Set(items.filter((i) => listed.has(i)))];
-    if (!hits.length) return null;
-    if (hits.length === 1) out.itemId = hits[0];
+    if (!placementItems(def, placement, list).some((i) => i.id === items[0])) return null;
+    out.itemId = items[0];
   }
   return out;
 }
 
 /** Whether a definition's node is rendered inside one of its repeats. */
 function inRepeat(def: ComponentDefinition, nodeId: string): boolean {
-  for (let at = def.tree && findParent(def.tree, nodeId); at?.parentId; at = findParent(def.tree!, at.parentId)) if (own(def.tree!.nodes, at.parentId)?.kind === 'repeat') return true;
+  // Each node once: a hand-edited design can leave detached nodes holding each other.
+  const seen = new Set<string>();
+  for (let at = def.tree && findParent(def.tree, nodeId); at?.parentId && !seen.has(at.parentId); at = findParent(def.tree!, at.parentId)) {
+    seen.add(at.parentId);
+    if (own(def.tree!.nodes, at.parentId)?.kind === 'repeat') return true;
+  }
   return false;
 }
 
 /** The part declared on a definition's node, or on the nearest node around it that has one. */
 function nearestPart(def: ComponentDefinition, nodeId: string): string | undefined {
   let partId = partIdFor(def, nodeId);
-  for (let at = def.tree && findParent(def.tree, nodeId); !partId && at?.parentId; at = findParent(def.tree!, at.parentId)) partId = partIdFor(def, at.parentId);
+  const seen = new Set<string>();
+  for (let at = def.tree && findParent(def.tree, nodeId); !partId && at?.parentId && !seen.has(at.parentId); at = findParent(def.tree!, at.parentId)) {
+    seen.add(at.parentId);
+    partId = partIdFor(def, at.parentId);
+  }
   return partId;
 }
 
