@@ -1,5 +1,7 @@
-// Design capture harness for the editor chrome: the top toolbar, the bottom status bar, the left icon rail
-// and the "Editing … everywhere" mode band. Drives the real (built) app and writes full-window captures
+// Design capture harness for the editor chrome: the top toolbar in each of its states (rest, editing, undo, the
+// AI working, checking and asking, a width error, presets, Preview, both panels hidden, editing a component
+// everywhere, a file conflict, and the compact and overflow widths with their menus), plus the bottom status bar,
+// the left icon rail and the "Editing … everywhere" mode band. Drives the real (built) app and writes full-window captures
 // plus crops of each strip, in light and dark. Opt-in only, never part of `npm run test:e2e`:
 //
 //   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/editor-toolbar.mjs
@@ -67,6 +69,7 @@ async function region(name) {
   }
   if (name === 'top-left') return { x: 0, y: 0, width: 640, height: 520 };
   if (name === 'top-center') return { x: Math.round(vp.width / 2 - 380), y: 0, width: 760, height: 320 };
+  if (name === 'top-right') return { x: vp.width - 520, y: 0, width: 520, height: 380 };
   throw new Error(`unknown region ${name}`);
 }
 
@@ -74,7 +77,9 @@ async function region(name) {
 async function shot(state, check, { themes = BOTH, area = 'window', keepPointer = false } = {}) {
   for (const theme of themes) {
     await setTheme(theme);
-    if (!keepPointer) await win.mouse.move(700, 600);
+    // Park the pointer on the empty foot of the icon rail: over the canvas it would be inside the preview's
+    // frame, which leaves the editor's last :hover in place.
+    if (!keepPointer) await win.mouse.move(24, win.viewportSize().height - 60);
     await pause(150);
     const visible = await win.locator(check).first().isVisible().catch(() => false);
     if (!visible) throw new Error(`state "${state}" (${theme}) did not render "${check}"; refusing to write`);
@@ -89,6 +94,11 @@ async function shot(state, check, { themes = BOTH, area = 'window', keepPointer 
 const escape = async (n = 1) => {
   for (let i = 0; i < n; i++) await win.keyboard.press('Escape'), await pause(150);
 };
+// AI run states, pushed through the agent's own event channel as the main process sends them.
+async function emit(e) {
+  await app.evaluate(({ BrowserWindow }, ev) => BrowserWindow.getAllWindows()[0].webContents.send('ai:event', ev), e);
+  await pause(150);
+}
 const openRail = async (name, open = true) => {
   const b = win.locator(`.rail [aria-label="${name}"]`);
   if (((await b.getAttribute('aria-pressed')) === 'true') !== open) await b.click();
@@ -115,6 +125,25 @@ await shot('editor-rest', '.save-state.saved');
 await shot('tb-rest', '.save-state.saved', { area: 'toolbar' });
 await shot('sb-rest', '.status-dot.ready', { area: 'status' });
 
+// Hovering the project and page switcher.
+await win.locator('.project-title').hover();
+await pause(200);
+await shot('tb-hover-title', '.project-title:hover', { themes: ['light'], area: 'toolbar', keepPointer: true });
+// Leave the switcher for an element of the editor itself, so its hover does not carry into later captures.
+await win.locator('.status-bar').hover();
+await pause(200);
+
+// The AI working on the site, checking its changes, then waiting for the author's answer.
+const aiRun = { runId: 'r_toolbar', conversationId: 'c_toolbar', kind: 'status' };
+await emit({ ...aiRun, status: 'running' });
+await shot('tb-ai-working', '.save-state >> text=AI is working', { area: 'toolbar' });
+await emit({ ...aiRun, status: 'validating' });
+await shot('tb-ai-checking', '.save-state >> text=AI is checking', { themes: ['light'], area: 'toolbar' });
+await emit({ ...aiRun, status: 'awaiting-input' });
+await shot('tb-ai-asking', '.save-state >> text=AI is waiting for you', { area: 'toolbar' });
+await emit({ ...aiRun, status: 'cancelled' });
+await pause(600);
+
 // An edit through the inspector: mid-typing is "Editing…", then saved with a named undo.
 await frame.locator('h1').first().click();
 await pause(700);
@@ -125,6 +154,9 @@ await pause(300);
 await shot('tb-editing', '.save-state.pending', { themes: ['light'], area: 'toolbar', keepPointer: true });
 await eyebrow.press('Enter');
 await pause(1200);
+// Saved, with a named change to undo.
+await escape(2);
+await shot('tb-undo-ready', '.toolbar [aria-label^="Undo "]:not([disabled])', { area: 'toolbar' });
 
 // Text inside the hero selected: the status bar breadcrumb at its deepest.
 await frame.locator('h1').first().click();
@@ -160,6 +192,17 @@ await win.locator('.zoom-btn').click();
 await win.getByRole('menuitemradio', { name: '75%' }).click();
 await pause(900);
 await shot('tb-custom-width', '.width-input', { themes: ['light'], area: 'toolbar' });
+// A width outside 240-2560: the field turns red and keeps focus.
+await width.fill('99');
+await width.press('Enter');
+await pause(300);
+await shot('tb-width-error', '.width-error', { area: 'top-center', keepPointer: true });
+await width.press('Escape');
+await pause(300);
+// The tablet preset.
+await win.getByRole('button', { name: 'Tablet', exact: true }).first().click();
+await pause(700);
+await shot('tb-tablet', '.segmented [aria-label="Tablet"][aria-pressed="true"]', { themes: ['light'], area: 'toolbar' });
 await win.locator('.zoom-btn').click();
 await win.getByRole('menuitemradio', { name: /Fit/ }).click();
 await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
@@ -210,10 +253,11 @@ await win.setViewportSize({ width: 1280, height: 800 });
 await openRail('Pages');
 await pause(900);
 await shot('window-1280', '.editor', { themes: ['light'] });
+await shot('tb-1280', '.toolbar', { area: 'toolbar' });
 await win.setViewportSize({ width: W, height: H });
 await pause(600);
 
-// A file conflict: a generated file edited outside the app, then an edit that would regenerate it.
+// A file conflict: a generated file edited outside the app, then an edit that regenerates it.
 {
   const recents = await win.evaluate(() => window.builder.projects.recents());
   const dir = recents.find((r) => r.name === 'Harbour Lane Studio').dir;
@@ -221,10 +265,10 @@ await pause(600);
   if (!existsSync(pageFile)) throw new Error(`expected a generated home page at ${pageFile}`);
   appendFileSync(pageFile, '\n<!-- edited outside the app -->\n');
   await pause(600);
-  await frame.locator('h1').first().click();
-  await pause(600);
-  const field = win.locator('.field', { hasText: 'Eyebrow' }).locator('input').first();
-  await field.fill('Interior design studio since 2009');
+  // An edit that regenerates the home page: its title, from the Inspector with nothing selected.
+  await escape(3);
+  const field = win.locator('#dock-panel-inspect .field', { hasText: /^Title/ }).locator('input').first();
+  await field.fill('Home page');
   await field.press('Enter');
   await win.locator('.save-state.error').waitFor({ timeout: 10000 });
   await escape(3);
@@ -232,6 +276,20 @@ await pause(600);
   await shot('tb-conflict', '.save-state.error', { area: 'toolbar' });
   await shot('sb-conflict', '.status-bar', { area: 'status' });
 }
+
+// Narrower windows: compact (no Edit and Preview labels), then overflow (Zoom and Settings in More).
+await win.setViewportSize({ width: 1180, height: 800 });
+await pause(700);
+await shot('tb-compact-1180', '.toolbar[data-tier="compact"]', { area: 'toolbar' });
+await win.setViewportSize({ width: 1040, height: 800 });
+await pause(700);
+await shot('tb-overflow-1040', '.toolbar[data-tier="overflow"]', { themes: ['light'], area: 'toolbar' });
+await win.locator('.toolbar-more').click();
+await pause(300);
+await shot('tb-more-menu', '.menu', { themes: ['light'], area: 'top-right' });
+await escape();
+await win.setViewportSize({ width: W, height: H });
+await pause(600);
 
 // A long project name at the smallest window, on a blank site.
 await win.evaluate(() => window.builder.projects.close());

@@ -654,64 +654,116 @@ body.dialog-open .toast { pointer-events: none; }
 
 /* ---------- Editor shell ---------- */
 .editor { display: grid; grid-template-rows: var(--toolbar-h) 1fr 28px; grid-template-columns: minmax(0, 1fr); height: 100%; }
-.toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 12px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: 20; }
+.toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: 20; }
 .toolbar.mac .toolbar-start { padding-left: 70px; }
-/* The centre group is centred on the window when there is room. In a narrow window the start column
-   (identity and save state) keeps a floor and borrows from the empty space on the right instead. */
-.toolbar.mac { grid-template-columns: minmax(min(500px, 40vw), 1fr) auto minmax(max-content, 1fr); }
+/* The centre group is centred on the window when there is room (from about 1400px on macOS). Narrower, the start
+   column (identity and save state) keeps a floor and borrows from the empty space on the right instead. The tracks
+   never depend on what the start column holds, so a status changing length never moves the centre group. */
+.toolbar.mac { grid-template-columns: minmax(min(460px, 36vw), 1fr) auto minmax(max-content, 1fr); }
 /* Below the full toolbar's width (lib/layout.ts toolbarTier, which also drops the Edit and Preview labels and
    then moves Zoom and Settings into More) the centre group stops centring on the window: the identity takes
    what the controls leave, and the project and page names shorten. */
 .toolbar:not([data-tier='full']) { grid-template-columns: minmax(0, 1fr) max-content max-content; }
-/* Title-bar icon buttons match the 26–28px rhythm of the fields, segments and Export beside them. */
+/* One 28px rail: every control in the bar (switcher, status, segments, field, zoom, toggles, Export) shares a height
+   and a centre line. */
 .toolbar .icon-btn { flex: none; width: 28px; height: 28px; }
-/* At the narrowest start column (1280–1600px windows) a long page name is capped, so a long name, a long
-   project name and "File conflict" still fit beside each other instead of running into the centre group. */
+/* At the narrowest start column a long page name is capped, so a long name, a long project name and the longest
+   status still fit beside each other instead of running into the centre group. */
 .toolbar-start { container: chrome-start / inline-size; }
-@container chrome-start (max-width: 520px) { .project-title .page { max-width: 116px; } }
+@container chrome-start (max-width: 400px) { .project-title .page { max-width: 128px; } }
+/* The quiet states share one slot as wide as the widest of them ("AI is checking ›"), so typing, saving and the AI
+   starting and finishing never move the switcher. Only a state that needs the author (the AI's question, an edit on
+   hold, a conflict) may take more, and then the project name gives way, down to a few letters, so the page and
+   chevron keep their room. The slot is only reserved in a start column that can afford it. */
+.save-slot { display: flex; flex: none; }
+@container chrome-start (min-width: 360px) { .save-slot { min-width: 128px; } }
+.toolbar-group:has(.save-state:is(.ask, .wait, .error)) .project-title .site { min-width: 28px; }
 .toolbar .segmented button { transition: background 120ms, color 120ms, box-shadow 120ms; }
 .toolbar .icon-btn[aria-pressed='true']:hover:not(:disabled), .rail .icon-btn.shortcut[aria-pressed='true']:hover { background: color-mix(in srgb, var(--text) 5%, var(--raised)); }
 .toolbar-start, .toolbar-end { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .toolbar-end { justify-content: flex-end; }
-.toolbar-group { display: flex; align-items: center; gap: 2px; min-width: 0; }
-.toolbar-mark { display: grid; place-items: center; flex: none; margin: 0 8px 0 2px; }
+/* 6px between neighbouring controls: a 2px focus ring drawn 2px out still clears the next control's edge. */
+.toolbar-group { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.toolbar-mark { display: grid; place-items: center; flex: none; margin: 0 2px; }
 .toolbar-mark svg { display: block; }
-.toolbar-center { display: flex; align-items: center; gap: 8px; }
-.toolbar-divider { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
-.project-title { display: flex; align-items: center; gap: 5px; min-width: 0; height: 30px; padding: 0 6px 0 8px; border-radius: var(--r-sm); border: 0; background: transparent; max-width: 360px; transition: background 120ms; }
-.project-title:hover, .project-title[aria-expanded='true'] { background: var(--hover); }
-/* The project name gives way first; the page (the answer to "where am I") keeps its name until the project is
-   short (the 100:1 shrink weights), then shortens too rather than push the chevron out of the button. Whole
-   numbers: a lone item with a shrink factor under 1 takes only that fraction of the overflow. */
-.project-title .site { font-weight: 600; flex: 0 100 auto; min-width: 56px; }
+.toolbar-center { display: flex; align-items: center; gap: 6px; }
+/* Dividers mark sub-groups inside a region (viewport | mode, history | panels); regions themselves are set apart by
+   the wider 14px grid gap. */
+.toolbar-divider { flex: none; width: 1px; height: 18px; background: var(--border-strong); margin: 0 2px; }
+.project-title { display: flex; align-items: center; gap: 4px; min-width: 0; height: 28px; padding: 0 4px 0 6px; border-radius: var(--r-sm); border: 0; background: transparent; max-width: 380px; font-size: 13px; transition: background 120ms; }
+.project-title:hover { background: var(--hover); }
+/* Open menu triggers are drawn pressed in (a sunken fill and a 3:1 ring) while their menu is up, so the menu reads
+   as coming from them. */
+.project-title[aria-expanded='true'], .toolbar .zoom-btn[aria-expanded='true'], .toolbar .icon-btn[aria-haspopup][aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+.project-title:is(:hover, [aria-expanded='true']) .chev { color: var(--text-2); }
+/* In dark the hover fill is lighter than the raised face, so a sunken trigger takes the darker background instead. */
+@media (prefers-color-scheme: dark) { .project-title[aria-expanded='true'], .toolbar .zoom-btn[aria-expanded='true'], .toolbar .icon-btn[aria-haspopup][aria-expanded='true'] { background: var(--bg); } }
+/* Breadcrumb weight, as in the status bar: the project is the quiet parent, the page (the answer to "where am I")
+   is the strong current item. The project name gives way first: its shrink weight is so much larger that the page
+   loses nothing (not even the fraction of a pixel that would turn "Home" into "Ho…") until the project is at its
+   floor, and only then shortens itself rather than push the chevron out of the button. Whole numbers: a lone item
+   with a shrink factor under 1 takes only that fraction of the overflow. */
+.project-title .site { flex: 0 100000 auto; min-width: 56px; font-weight: 500; color: var(--text-2); }
 .project-title .sep { color: var(--text-3); flex: none; }
-.project-title .page { display: inline-flex; align-items: center; gap: 4px; min-width: 48px; max-width: 180px; flex: 0 1 auto; color: var(--text-2); }
-.project-title .page svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
-.project-title .page.def { color: var(--plum); font-weight: 600; }
+.project-title .page { display: inline-flex; align-items: center; gap: 4px; min-width: 48px; max-width: 200px; flex: 0 1 auto; color: var(--text); font-weight: 600; }
+.project-title .page svg { width: 13px; height: 13px; flex: none; color: var(--text-2); }
+.project-title .page.def { color: var(--plum); }
 .project-title .page.def svg { color: var(--plum); }
 .project-title .chev { width: 14px; height: 14px; flex: none; color: var(--text-3); }
-/* The save state sits after the title, so its changing width never moves the title. */
-.save-state { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 26px; font-size: 12px; color: var(--text-3); padding: 0 6px; white-space: nowrap; }
-.save-state svg { width: 13px; height: 13px; flex: none; }
+/* The save state sits after the title, so its changing width never moves the title. Quiet while all is well, the
+   AI's Sparkles in the accent while it works, and a tinted, ringed button with a chevron when something waits on
+   the author: the AI's question in the AI's accent, a file conflict in red. Each state says itself in words. */
+.save-state { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 28px; font-size: 12px; color: var(--text-3); padding: 0 6px; border: 1px solid transparent; border-radius: var(--r-sm); white-space: nowrap; }
+.save-state svg { width: 14px; height: 14px; flex: none; }
 .save-state.pending { color: var(--text-2); }
-.save-state.saved svg { color: var(--green); }
-.save-state.error { margin-left: 4px; border: 1px solid color-mix(in srgb, var(--red) 70%, transparent); border-radius: var(--r-sm); background: var(--red-soft); color: var(--red); font-weight: 600; transition: background 120ms; }
-.save-state.error:hover { background: color-mix(in srgb, var(--red) 12%, var(--raised)); border-color: var(--red); }
+.save-state .spin { animation: spin 1s linear infinite; }
+button.save-state { transition: background 120ms, border-color 120ms; }
+.save-state.ai { color: var(--text-2); }
+.save-state.ai:hover { background: var(--hover); color: var(--text); }
+.save-state.ai:hover .go { color: var(--text-2); }
+.save-state .ai-glyph { color: var(--accent-text); }
+.save-state:is(.ask, .wait, .error) { padding: 0 6px 0 7px; font-weight: 600; }
+.save-state.ask { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+.save-state.ask:hover { background: color-mix(in srgb, var(--accent) 16%, var(--raised)); }
+/* An edit on hold is the author's own work, not the AI's and not an error: the neutral raised face and 3:1 ring. */
+.save-state.wait { border-color: var(--border-control); background: var(--raised); color: var(--text); box-shadow: var(--shadow-sm); }
+.save-state.wait:hover { background: color-mix(in srgb, var(--text) 5%, var(--raised)); }
+.save-state.error { border-color: var(--red); background: var(--red-soft); color: var(--red); }
+.save-state.error:hover { background: color-mix(in srgb, var(--red) 12%, var(--raised)); }
 .save-state .go { width: 12px; height: 12px; margin-left: -1px; }
-.width-field { display: inline-flex; align-items: center; height: 26px; padding: 0 8px 0 4px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); font-size: 12px; transition: border-color 120ms; }
+/* The quiet AI states lead to the AI panel too; their chevron is the faintest cue that they go somewhere. */
+.save-state.ai .go { color: var(--text-3); }
+.width-field { position: relative; display: inline-flex; align-items: center; height: 28px; padding: 0 8px 0 6px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); font-size: 12px; transition: border-color 120ms, background 120ms; }
 .width-field:hover { border-color: var(--text-3); }
-.width-field:focus-within { border-color: var(--accent); outline: 2px solid var(--focus); outline-offset: -1px; }
-.width-input { width: 40px; height: 24px; padding: 0 3px 0 0; border: 0; background: transparent; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; outline: none; user-select: text; appearance: textfield; }
+/* The house focus outline, 2px out, like every other control in the bar; the edge underneath keeps its own colour,
+   so an invalid width stays red while it is being corrected. */
+.width-field:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.width-input { width: 34px; height: 26px; padding: 0 3px 0 0; border: 0; background: transparent; color: var(--text); font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; outline: none; user-select: text; appearance: textfield; }
 .width-input:focus-visible { outline: none; }
 .width-input::-webkit-inner-spin-button, .width-input::-webkit-outer-spin-button { appearance: none; margin: 0; }
 .width-field .unit { color: var(--text-3); }
+.width-field:has([aria-invalid='true']) { border-color: var(--red); background: var(--red-soft); }
+/* Why a width was not applied, anchored under the field while it is being corrected. */
+.width-error { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-md); color: var(--text); font-size: 12px; white-space: nowrap; pointer-events: none; }
+.width-error svg { width: 14px; height: 14px; flex: none; color: var(--red); }
 /* A fixed width, so the centre group stays put as the zoom label changes ("Fit", "125%"). */
-.zoom-btn { min-width: 60px; gap: 3px; padding: 0 6px 0 8px; font-variant-numeric: tabular-nums; }
-.zoom-btn[aria-expanded='true'] { background: var(--hover); }
+.toolbar .zoom-btn { width: 56px; height: 28px; gap: 3px; padding: 0 4px; border: 0; justify-content: center; font-variant-numeric: tabular-nums; }
+/* Disclosure chevrons stay quiet, as on the switcher, and step up while hovered or open. */
+.toolbar .zoom-btn svg { width: 12px; height: 12px; color: var(--text-3); }
+.toolbar .zoom-btn:is(:hover, [aria-expanded='true']) svg { color: var(--text-2); }
+/* Device glyphs a step larger than other segment glyphs, and the phone a size smaller than the tablet, so the two
+   portrait outlines tell apart by scale at a glance. */
+.toolbar .segmented[aria-label='Preview width'] svg { width: 16px; height: 16px; }
+/* Device options are icon-only, so they take less side padding than the labelled Edit and Preview (30px targets). */
+.toolbar .segmented[aria-label='Preview width'] button { padding: 0 7px; }
+.toolbar .segmented[aria-label='Preview width'] [aria-label='Phone'] svg { width: 14px; height: 14px; }
 /* Pressed panel toggles in the title bar use the toolbar's own selected treatment (the segmented controls'
-   raised fill and 3:1 ring), so blue stays for focus and Export. */
-.toolbar .icon-btn[aria-pressed='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
-.toolbar .export-btn { margin-left: 4px; }
+   raised face, 3:1 ring and lift), so blue stays for focus and Export. */
+.toolbar .icon-btn[aria-pressed='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+.toolbar .export-btn { height: 28px; margin-left: 2px; padding: 0 12px 0 10px; }
+/* Below the full tier the history group follows the mode group across the 14px region gap; its divider sits
+   midway (8px each side) instead of hugging Undo. */
+.toolbar:not([data-tier='full']) .toolbar-end > .toolbar-divider:first-child { margin-left: -6px; }
 
 .workspace { display: flex; min-height: 0; position: relative; }
 .rail { width: 48px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 5px 0 8px; background: var(--panel); border-right: 1px solid var(--border); }
@@ -876,7 +928,6 @@ body.dialog-open .toast { pointer-events: none; }
   .status-dot.ready, .status-dot.error { background: CanvasText; }
   .status-dot.busy { box-shadow: none; border: 2px solid Highlight; }
 }
-.width-field:has([aria-invalid='true']) { border-color: var(--red); }
 .status-bar .crumbs button.more svg { width: 14px; height: 14px; color: var(--text-2); }
 
 /* ---------- Canvas ---------- */
@@ -2998,8 +3049,8 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .chip.add:hover { border-color: var(--accent); color: var(--accent-text); }
 /* Title bar: every empty stretch between controls is a window drag region, so double-clicking it does the
    system's title-bar action (Zoom on macOS: the window fills the screen without going full screen).
-   Controls opt out individually. */
-.toolbar-end > *, .toolbar-group > *, .toolbar-center > * { -webkit-app-region: no-drag; }
+   Controls opt out individually; the mark, the dividers and the blank end of the status slot drag. */
+.toolbar :is(button, label, .segmented, .save-state) { -webkit-app-region: no-drag; }
 #root, .editor, .welcome { width: 100%; }
 /* The top of Welcome's main area is a window drag strip; the scrolling pane itself is not. */
 .welcome-main::before { content: ''; position: fixed; top: 0; left: var(--welcome-rail); right: 0; height: 44px; -webkit-app-region: drag; }
