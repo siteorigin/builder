@@ -1637,9 +1637,10 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       (schema as { default: unknown }).default = normalizeProp(schema, { [field.field]: schemaFix(f) }, state, `${def.name} → ${schema.label}`, schema.default);
       return true;
     }
-    // The default must still fit its schema (a number or choice can be bound to text); one saved under older rules
-    // stays while it is not changed.
-    (schema as { default: unknown }).default = normalizeProp(schema, schemaFix(schema), state, `${def.name} → ${schema.label}`, (schema as { default: unknown }).default);
+    // The default must still fit its schema (a number or choice can be bound to text); an image's description saved
+    // before the limit stays while it is not changed.
+    const saved = schema.type === 'image' ? (schema as { default: unknown }).default : undefined;
+    (schema as { default: unknown }).default = normalizeProp(schema, schemaFix(schema), state, `${def.name} → ${schema.label}`, saved);
     return true;
   };
   const v = op.value;
