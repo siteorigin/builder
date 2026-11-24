@@ -3,11 +3,12 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
-import { assetUsages } from '@engine/apply';
+import { resolveFontStack } from '@catalogue/fonts';
+import { applyOperations, assetUsages } from '@engine/apply';
 import { generateProject } from '@generator/index';
 import { fontFaceCss, importedFontStack, projectFontFamilies, renameFontFamily, stackUsesFamily } from '@shared/fonts';
 import { validateOperation } from '@shared/ops';
-import type { AssetRecord } from '@shared/types';
+import type { AssetRecord, ComponentDefinition } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
 
 const dirs: string[] = [];
@@ -155,6 +156,71 @@ describe('imported fonts', () => {
     expect(state.tokens.overrides['font.body']).toEqual({ token: 'font.display' });
     expect(state.tokens.overrides['color.brand']).toBe('Old Name');
     expect(page.title).toBe('Old Name');
+  });
+
+  it('never rewrites a theme definition when a family is renamed, only the ones the project owns', () => {
+    const state = createStarterState('business', 'Theme rename', false);
+    const theme = Object.values(state.components).find((d) => d.owner === 'theme' && d.kind === 'managed' && d.tree)!;
+    const fontOf = (d: ComponentDefinition) => (Object.values(d.tree!.nodes)[0] as unknown as { styles: { base: { fontFamily: string } } }).styles.base.fontFamily;
+    (Object.values(theme.tree!.nodes)[0] as { styles?: unknown }).styles = { base: { fontFamily: "Georgia, 'Old Name', serif" } };
+    state.components['project.copy'] = { ...structuredClone(theme), id: 'project.copy', owner: 'project' };
+    const locked = JSON.stringify(theme);
+    // The rename a font's last file makes by changing its family.
+    const next = applyOperations({ ...state, components: state.components }, [add(face('f1', '400', 'normal', 'Old Name')), { type: 'asset.update', assetId: 'f1', font: { family: 'New Name', weight: '400', style: 'normal' } }]).state;
+    expect(JSON.stringify(next.components[theme.id])).toBe(locked);
+    expect(fontOf(next.components[theme.id])).toBe("Georgia, 'Old Name', serif");
+    expect(fontOf(next.components['project.copy'])).toBe("Georgia, 'New Name', serif");
+    // Renaming directly leaves the theme's copy alone as well.
+    renameFontFamily(state, 'Old Name', 'Newer Name');
+    expect(JSON.stringify(state.components[theme.id])).toBe(locked);
+    expect(fontOf(state.components['project.copy'])).toBe("Georgia, 'Newer Name', serif");
+  });
+
+  it('counts a font as used while a project code component names it, and protects its last file', async () => {
+    const { s } = await make();
+    const code = (source: string) => ({ type: 'component.createCode' as const, name: 'Banner', source, properties: {} });
+    await s.apply({ operations: [add(face('f1', '400')), add(face('f2', '700')), add(face('f3', '400', 'normal', 'Inter'))] }, { label: 'Import' });
+    expect(assetUsages(s.state).f1).toBeUndefined();
+    // However often, and however it is cased or spaced, one component counts once; a word that only starts or ends a longer name does not count.
+    const r = await s.apply({ operations: [code("<h2>Hello</h2>\n<style>\n  h2 { font-family: 'brand   SANS', serif; }\n  p { font: 1rem Brand Sans; }\n  .interface { font-family: var(--font-inter), system-ui, sans-serif; }\n</style>")] }, { label: 'Add code' });
+    expect(r.ok).toBe(true);
+    expect(assetUsages(s.state)).toMatchObject({ f1: 1, f2: 1 });
+    expect(assetUsages(s.state).f3).toBeUndefined();
+    // One face can go while another provides the family; the last one is protected.
+    expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f2' }] }, { label: 'Remove' })).ok).toBe(true);
+    const last = await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1' }] }, { label: 'Remove' });
+    expect(last.ok).toBe(false);
+    expect(last.error?.message).toMatch(/This font is used 1 time/);
+    expect(s.state.assets.assets.f1).toBeDefined();
+  });
+
+  it('quotes a family CSS would drop, and gives a bare imported name its stack', async () => {
+    const { dir, s } = await make();
+    await s.apply({ operations: [add(face('f1', '400', 'normal', '1984 Display')), add(face('f2', '400', 'normal', 'Brand Sans')), add(face('f3', '400', 'normal', 'Serif'))] }, { label: 'Import' });
+    const stack = (value: string) => resolveFontStack(s.state, value);
+    // A bare name, in any case or spacing, becomes the family's own stack.
+    expect(stack('1984 Display')).toEqual({ stack: "'1984 Display', system-ui, sans-serif" });
+    expect(stack('1984   display')).toEqual({ stack: "'1984 Display', system-ui, sans-serif" });
+    expect(stack('brand sans')).toEqual({ stack: "'Brand Sans', system-ui, sans-serif" });
+    // Inside the author's own stack, only a name CSS cannot read is quoted, and the rest stays as written.
+    expect(stack('Georgia, 1984 Display, serif')).toEqual({ stack: "Georgia, '1984 Display', serif" });
+    expect(stack('Georgia,Brand Sans,serif')).toEqual({ stack: 'Georgia,Brand Sans,serif' });
+    expect(stack("'1984 Display', serif")).toEqual({ stack: "'1984 Display', serif" });
+    // A keyword stays a keyword, even beside a font of the same name.
+    expect(stack('serif')).toEqual({ stack: 'serif' });
+    // What is stored is stable: resolving it again changes nothing.
+    for (const value of ['1984 Display', 'Georgia, 1984 Display, serif']) {
+      const once = stack(value) as { stack: string };
+      expect(stack(once.stack)).toEqual(once);
+    }
+    // Through a font style, into the CSS the site is built from.
+    const r = await s.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: '1984 Display' }] }, { label: 'Use font' });
+    expect(r.ok).toBe(true);
+    expect(s.state.tokens.overrides['font.display']).toBe("'1984 Display', system-ui, sans-serif");
+    const css = readFileSync(join(dir, 'src/lib/siteorigin/styles/tokens.css'), 'utf8');
+    expect(css).toContain("'1984 Display', system-ui, sans-serif");
+    expect(css).not.toMatch(/font-family:\s*1984/);
+    expect(assetUsages(s.state).f1).toBe(1);
   });
 
   it('moves styles to the new name when a family is renamed', async () => {

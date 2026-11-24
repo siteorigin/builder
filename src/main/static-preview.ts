@@ -26,7 +26,7 @@ export class StaticPreviews {
     // The folder this export was written to. Whatever is at the path later (the folder moved away and another export,
     // or anything else, put there) is not this proof, and is never served under its address.
     const exported = await fs.stat(root, { bigint: true });
-    const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain', '.xml': 'application/xml', '.gif': 'image/gif', '.avif': 'image/avif', ...documentTypes };
+    const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon', '.txt': 'text/plain', '.xml': 'application/xml', '.gif': 'image/gif', '.avif': 'image/avif', ...documentTypes };
     const server = createServer(async (req, res) => {
       if (!(await sameFolder(root, exported))) {
         res.writeHead(410, { 'content-type': 'text/html; charset=utf-8' });
