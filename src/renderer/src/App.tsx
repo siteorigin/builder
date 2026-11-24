@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, applyAiEvent, getState, persistChatState, projectHistory, saveLocal, setState, toast, useStore } from './store';
+import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, saveLocal, setState, toast, useStore } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
@@ -14,6 +14,7 @@ import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
 import { keepViewValid } from './lib/model';
+import { placeOn, readPlaces } from './lib/page-place';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -54,7 +55,7 @@ export function App() {
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
-        setState({ screen: 'welcome', snapshot: null, selection: null, conversation: null, chatDrafts: {}, chatImages: {}, definitionMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, ...pasteStyleClosed() });
+        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, conversation: null, chatDrafts: {}, chatImages: {}, definitionMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, ...pasteStyleClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -100,7 +101,8 @@ export function App() {
         }
         if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl)) handleShortcut(k.key, k.meta || k.ctrl, k.shift);
       }),
-      useStore.subscribe(persistChatState)
+      useStore.subscribe(persistChatState),
+      useStore.subscribe(persistPlaces)
     ];
     void api.project
       .snapshot()
@@ -126,11 +128,14 @@ export function App() {
 function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>) {
   const local = snap.localState ?? {};
   forgetKeptDrafts();
+  const pageId = local.pageId && Object.hasOwn(snap.state.pages, local.pageId) ? local.pageId : snap.state.site.homePageId;
+  // Each page's place is this opening's own; the page opens where the author left it, brought into view (see Canvas).
+  const pagePlaces = readPlaces(snap.state, local.pagePlaces);
   setState({
     screen: 'editor',
     snapshot: snap,
     runtime: snap.runtime,
-    pageId: local.pageId && snap.state.pages[local.pageId] ? local.pageId : snap.state.site.homePageId,
+    pageId,
     viewport: restoreViewport(local.viewport),
     zoom: restoreZoom(local.zoom),
     leftTab: (local.leftTab as never) ?? 'pages',
@@ -144,7 +149,9 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     chatMode: local.chatMode === 'ask' ? 'ask' : 'edit',
     keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
     conversation: null,
-    selection: null,
+    pagePlaces,
+    selection: placeOn(snap.state, pagePlaces, pageId),
+    previewReturn: null,
     mode: 'edit',
     definitionMode: null,
     heldEdits: [],

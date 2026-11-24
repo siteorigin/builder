@@ -231,6 +231,8 @@ export interface LocalWorkspaceState {
   chatMode?: 'edit' | 'ask';
   /** The starter's sample contact details the author chose to keep, which the export no longer reviews. */
   keptSamples?: string[];
+  /** The element last selected on each page, by page ID, so a page opened again resumes there (lib/page-place). */
+  pagePlaces?: Record<string, ElementRef>;
 }
 
 export interface CreateProjectOptions {

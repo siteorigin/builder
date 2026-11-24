@@ -13,6 +13,7 @@ import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
+import { forgetPlace, placeOn, placeToKeep } from './page-place';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
@@ -602,8 +603,17 @@ export function canInlineEdit(ref: ElementRef): boolean {
   return ref.instancePath.length === 1 && isBinding(target.value);
 }
 
-export function selectPage(pageId: string) {
-  setState({ pageId, selection: null, definitionMode: null });
+/**
+ * Open a page. Another page opens at the element last selected there (lib/page-place), so the author resumes where
+ * they were; `target` names what to select instead, and null opens the page itself and forgets its place. Choosing the
+ * page already shown selects the page itself too. In Preview nothing is selected.
+ */
+export function selectPage(pageId: string, target?: ElementRef | null) {
+  const s = getState();
+  const st = s.snapshot?.state;
+  const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode);
+  const selection = target !== undefined ? target : s.mode === 'edit' && !itself && st ? placeOn(st, s.pagePlaces, pageId) : null;
+  setState({ pageId, selection, definitionMode: null, ...(itself && s.mode === 'edit' ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });
   saveLocal({ pageId });
 }
 
@@ -630,9 +640,37 @@ export function askAiAbout(ref: ElementRef | null) {
   setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 50);
 }
 
-/** The one way to switch Edit and Preview, so every entry point leaves the same selection and inspector state. */
+/**
+ * The one way to switch Edit and Preview, so every entry point leaves the same selection and inspector state. Preview
+ * selects nothing; back in Edit, what was selected is selected again when the visitor stayed where they were (the
+ * page and the place on it the author left; Canvas lets it go when the visitor moves on). It is not scrolled to: the
+ * visitor may have scrolled the page, and the page stays as they left it.
+ */
 export function setMode(mode: 'edit' | 'preview') {
-  setState(mode === 'preview' ? { mode, selection: null } : { mode });
+  const s = getState();
+  if (s.mode === mode) return;
+  if (mode === 'preview') {
+    const back = s.selection && s.pageId && s.snapshot ? { pageId: s.pageId, ref: s.selection, revision: s.snapshot.revision } : null;
+    setState({ mode, selection: null, previewReturn: back });
+    return;
+  }
+  const back = s.previewReturn;
+  const st = s.snapshot?.state;
+  // Unchanged since Preview was entered, the selection is as good as it was; after a change (the AI, another app),
+  // only an element still on the page is.
+  const ref = back && st && back.pageId === s.pageId ? (back.revision === s.snapshot?.revision ? back.ref : s.definitionMode ? null : placeToKeep(st, back.pageId, back.ref)) : null;
+  unscrolled = ref;
+  setState({ mode, previewReturn: null, ...(ref ? { selection: ref } : {}) });
+}
+
+/** A selection made again without being scrolled to (see setMode). */
+let unscrolled: ElementRef | null = null;
+
+/** Whether `ref` is the selection Edit just made again unscrolled: asked once, by the canvas, as it scrolls to a new selection. */
+export function takeUnscrolled(ref: ElementRef | null): boolean {
+  const quiet = !!ref && ref === unscrolled;
+  unscrolled = null;
+  return quiet;
 }
 
 /** Open Site styles. Site styles are site-wide, so this leaves component editing first: the plum band

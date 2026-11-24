@@ -1466,7 +1466,7 @@ export function placedOnPage(ref: ElementRef | undefined): string | undefined {
 
 /** Open a page's settings in the inspector, where an article's title, date, byline and excerpt are changed. */
 export function openPageSettings(pageId: string) {
-  selectPage(pageId);
+  selectPage(pageId, null);
   setState({ rightTab: 'inspect', dockOpen: true });
   // Once the page's settings are showing, open its Article section (it may have been collapsed) and bring it into view.
   setTimeout(() => openSection('page-article'), 120);

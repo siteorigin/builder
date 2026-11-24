@@ -15,7 +15,7 @@ import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
-import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, showsInlineText, structuralTarget } from '../lib/actions';
+import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -25,7 +25,7 @@ import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
 import { isShellPart, showsPart } from '@shared/page-shell';
-import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type VisitorHistory } from '../lib/preview-history';
+import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type FrameEntry, type VisitorHistory } from '../lib/preview-history';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -110,6 +110,14 @@ export function Canvas() {
     journeyRef.current = h;
     setJourneyState(h);
   };
+  /** The frame's entry when Preview was entered, or null until the page reports one: a visitor who leaves it (a link,
+   *  a section jump, Back or Forward) has moved on, and Edit then selects nothing again (see setMode). */
+  const previewFrom = useRef<FrameEntry | null>(null);
+  function visitorAt(at: FrameEntry) {
+    const from = previewFrom.current;
+    if (!from) previewFrom.current = at;
+    else if ((from.key !== at.key || from.address !== at.address) && getState().previewReturn) setState({ previewReturn: null });
+  }
   const [dragging, setDragging] = useState(false);
   /** A frame resize in progress: the pointer, where it started, and the opening its width belongs to. */
   const resizeDrag = useRef<{ el: HTMLDivElement; pointer: number; x: number; from: number; zoom: number; opening: string | undefined; changed: boolean; onKey: (e: KeyboardEvent) => void } | null>(null);
@@ -383,6 +391,8 @@ export function Canvas() {
           // followed, so the editor and the frame agree on the page.
           const reloaded = readySession.current === session && s.mode === 'preview';
           readySession.current = session;
+          // The visitor left the page they were on.
+          if (reloaded && s.previewReturn) setState({ previewReturn: null });
           setReady(true);
           setState({ frameReady: true });
           setFrameError(null);
@@ -408,6 +418,7 @@ export function Canvas() {
         }
         case 'history': {
           const at = frameEntry(p);
+          if (at && getState().mode === 'preview') visitorAt(at);
           if (at) setJourney(observe(journeyRef.current, at, getState().mode === 'preview'));
           break;
         }
@@ -713,15 +724,18 @@ export function Canvas() {
     if (ready) syncTrack();
   }, [ready, selection, hover, snapshot?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A new selection is scrolled to, and so is one a Layers row asks to show again (showLayer). Asked from Layers, one
-  // taller than the page shows from its top.
+  // A new selection is scrolled to once the frame shows its page, and so is one a Layers row asks to show again
+  // (showLayer). Asked from Layers, one taller than the page shows from its top. One made with a page change (a page
+  // opened at its remembered place, a usage on another page) is scrolled to when the page says it has arrived
+  // (`navigated`). The selection Edit makes again after Preview stays where the visitor left the page.
   const shownFor = useRef(showSelection);
   useEffect(() => {
     // A request is for the moment it is made: one the page could not take then never carries over to a later pick.
     const show = shownFor.current !== showSelection;
     shownFor.current = showSelection;
-    const desc = ready ? descFor(selection) : null;
-    if (desc) post('scrollTo', show ? { desc, show } : { desc });
+    const quiet = takeUnscrolled(selection);
+    const desc = ready && page && samePath(page.route, frameAt.current) ? descFor(selection) : null;
+    if (desc && (show || !quiet)) post('scrollTo', show ? { desc, show } : { desc });
   }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
@@ -769,6 +783,8 @@ export function Canvas() {
   // author went back to editing, opened no other page and moved none). A page the editor is still opening is where
   // it starts, once the frame is there.
   useEffect(() => {
+    // Where the frame is when Preview is entered (or, while a page is still opening, the first entry it reports).
+    previewFrom.current = mode === 'preview' && frameAt.current !== null ? journeyRef.current.at : null;
     if (mode !== 'preview') return;
     setJourney(startJourney(journeyRef.current, siteNow(), frameAt.current !== null));
   }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1250,7 +1266,7 @@ export function Canvas() {
               {address}
             </span>
           )}
-          <button ref={exitRef} onClick={() => setState({ mode: 'edit' })}>
+          <button ref={exitRef} onClick={() => setMode('edit')}>
             <Pencil size={13} /> Back to editing
           </button>
         </div>

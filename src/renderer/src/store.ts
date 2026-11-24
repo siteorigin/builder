@@ -11,6 +11,7 @@ import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText, whereO
 import type { RevealedItem } from './lib/reveal';
 import type { StyleCopy } from './lib/style-copy';
 import type { LayerSet } from './lib/layer-set';
+import { notePlace, type PagePlaces } from './lib/page-place';
 
 export const api = window.builder;
 
@@ -111,6 +112,13 @@ export interface State {
   selection: ElementRef | null;
   /** Sibling layers selected in Layers together with `selection`, which is always one of them (lib/layer-set). */
   layerSet: LayerSet | null;
+  /** The element last selected on each page, resumed when the page is opened again (lib/page-place). Never in the site. */
+  pagePlaces: PagePlaces;
+  /**
+   * What was selected when Preview was entered, on which page and at which revision: Edit selects it again when the
+   * visitor stayed where they were. A visitor's link, Back or Forward lets it go (see Canvas).
+   */
+  previewReturn: { pageId: string; ref: ElementRef; revision: number } | null;
   hover: ElementRef | null;
   viewport: number;
   zoom: number | 'fit';
@@ -201,6 +209,8 @@ export const useStore = create<State>((set) => ({
   pageId: null,
   selection: null,
   layerSet: null,
+  pagePlaces: {},
+  previewReturn: null,
   hover: null,
   viewport: 1280,
   zoom: 'fit',
@@ -355,6 +365,17 @@ export function persistChatState(s: State, prev: State) {
     { key: s.snapshot?.workspaceKey ?? null, drafts: s.chatDrafts, images: s.chatImages, conversationId: s.conversation?.id ?? null }
   );
   if (out) void api.project.saveLocalState(out.patch, out.key);
+}
+
+/**
+ * Remember the element selected on each page as the author selects it (lib/page-place), and save the places to the
+ * opening they belong to, as they change. A new opening brings its own, which are not saved back.
+ */
+export function persistPlaces(s: State, prev: State) {
+  const places = notePlace(prev, s);
+  if (places !== s.pagePlaces) return setState({ pagePlaces: places });
+  const key = s.snapshot?.workspaceKey;
+  if (key && s.pagePlaces !== prev.pagePlaces && key === prev.snapshot?.workspaceKey) void api.project.saveLocalState({ pagePlaces: s.pagePlaces }, key);
 }
 
 /** The readable part of an error from the main process (Electron prefixes rejected IPC calls). */

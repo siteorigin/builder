@@ -1116,8 +1116,8 @@ function openChange(c: ChatChange) {
   const target = changeTarget(st, getState().pageId, c);
   if (!target) return;
   if ('error' in target) return toast(target.error, 'info');
-  selectPage(target.pageId);
-  if (target.selection) setState({ selection: target.selection });
+  // The element changed, or the page itself when the change was to the page or the element has gone.
+  selectPage(target.pageId, target.selection);
   if (target.note) toast(target.note, 'info');
 }
 
