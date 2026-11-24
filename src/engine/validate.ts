@@ -12,6 +12,7 @@ import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds
 import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
+import { nestingProblems } from './semantic-tags';
 import { MAX_UI_STATES, bindingProblem, bindingSlots, boundSchema, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
@@ -725,6 +726,9 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
       }
       checkStyles(n.styles, label, owner, n.id);
     }
+    // HTML the browser would rebuild (a block in a paragraph), or a list item, term or caption outside its list or figure.
+    // A container directly in a list is a warning: lists are built that way, one edit at a time.
+    for (const p of nestingProblems(state, owner, tree)) out.push({ severity: p.severity, code: 'TAG_NESTING', message: `${label}: ${p.message}`, owner, nodeId: p.nodeId, site: p.site });
     if (def) {
       for (const { axis, id, option: v } of variantOptions(def)) for (const [nid, st] of Object.entries(v.styles ?? {})) checkStyles(st, label, owner, nid, `variant:${axis}:${id}`);
       if (!variantIdsValid(def)) out.push({ severity: 'warning', code: 'VARIANT_ID_INVALID', message: `${label}: a variant name uses characters that cannot be generated, so that variant is ignored.`, owner });
