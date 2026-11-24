@@ -1,5 +1,5 @@
 import { isFocusValue } from './focus';
-import type { ComponentDefinition, ResponsiveStyles, StyleProps, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.

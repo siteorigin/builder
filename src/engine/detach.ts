@@ -255,7 +255,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       if (!d || seen.has(d.id)) break;
       seen.add(d.id);
       if (d.kind !== 'managed' || !d.tree) return undefined;
-      const r = d.tree.rootIds[0];
+      const r: string = d.tree.rootIds[0];
       const next: GraphNode | undefined = own(d.tree.nodes, r);
       const level: StyleLayer[] = designLayers(d, r, chosen).map((l) => ({ ...l, strength: l.strength + tie(d.id) }));
       levels.push(level);
