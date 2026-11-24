@@ -175,6 +175,16 @@ describe('removing many assets in one batch', () => {
     expect(done.assets.assets.f1 ?? done.assets.assets.f2).toBeUndefined();
   });
 
+  it('counts a font a code component names, even when a removal already counted before the component was added', () => {
+    const s = applyOperations(site().s, [{ type: 'asset.add', asset: face('f1', 'Brand Sans') }]).state;
+    const code: EditOperation = { type: 'component.createCode', name: 'Banner', source: "<h2>Hi</h2>\n<style>h2 { font-family: 'Brand Sans', serif; }</style>", properties: {} };
+    // The first removal counts every use; the component added after it must still be seen by the one that follows.
+    rejects(() => applyOperations(s, [remove('img10'), code, remove('f1')]), /^Operation 3 \(asset\.remove\): This font is used 1 time\. /);
+    rejects(() => applyOperations(applyOperations(s, [code]).state, [remove('img10'), remove('f1')]), /^Operation 2 \(asset\.remove\): This font is used 1 time\. /);
+    // Without the component, the font can go.
+    expect(applyOperations(s, [remove('img10'), remove('f1')]).state.assets.assets.f1).toBeUndefined();
+  });
+
   it('never counts a broken font file as another face of the family', () => {
     const s = applyOperations(site().s, [
       { type: 'asset.add', asset: face('f1', 'Brand Sans') },

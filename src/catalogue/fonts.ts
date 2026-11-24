@@ -5,7 +5,7 @@
  * project's own fonts, or system fonts.
  */
 import type { ProjectState } from '@shared/types';
-import { projectFontFamilies } from '@shared/fonts';
+import { FAMILY_KEYWORDS, importedFontStack, projectFontFamilies } from '@shared/fonts';
 import { getTheme, listThemes } from './index';
 import type { PackFont } from './pack';
 
@@ -54,6 +54,9 @@ function stackEntries(stack: string): string[] {
   return out.map((e) => e.trim()).filter(Boolean);
 }
 
+/** A word CSS reads as an identifier, so a bare name made of such words is a valid family. "1984" and "-" are not. */
+const IDENT_WORD_RE = /^[A-Za-z_\u0080-\uFFFF][\w\u0080-\uFFFF-]*$/;
+
 const unquoted = (entry: string) => entry.replace(/^['"]|['"]$/g, '').trim();
 /** CSS family names ignore case, and an unquoted name treats any run of spaces as one. */
 const familyKey = (entry: string) => unquoted(entry).replace(/\s+/g, ' ').toLowerCase();
@@ -67,13 +70,15 @@ export function fontFamilies(stack: string): string[] {
  * Check a font stack against what the site can really load, by its first family (the one that is meant to show).
  * A bundled font's plain name ("Lora") does not match its package's @font-face family ("Lora Variable"), so the
  * real family is added in front of it, keeping the rest of the stack; a bare name gets the font's full stack.
- * A stack that needs no change is returned byte for byte. Returns the stack to store, or an error a person can act on.
+ * A project's own font written bare gets its stack (quoted, with fallbacks), and one inside a longer stack that CSS would
+ * not read as a name ("1984 Display") is quoted in place. A stack that needs no change is returned byte for byte.
+ * Returns the stack to store, or an error a person can act on.
  */
 export function resolveFontStack(state: ProjectState, value: string): { stack: string } | { error: string } {
   const entries = stackEntries(value);
   if (!entries.length) return { error: 'Choose a font.' };
   const keys = entries.map(familyKey);
-  const own = new Set(projectFontFamilies(state).map((f) => familyKey(f.family)));
+  const own = new Map(projectFontFamilies(state).map((f) => [familyKey(f.family), f.family]));
   const installed = installedFonts(state);
   if (!own.has(keys[0]) && !SYSTEM_FONTS.has(keys[0])) {
     const names = installed.map((f) => f.name).join(', ');
@@ -84,10 +89,15 @@ export function resolveFontStack(state: ProjectState, value: string): { stack: s
       return { error: `"${unquoted(entries[0])}" is not installed, so visitors would see a fallback font instead. Installed fonts: ${names}. System fonts such as Georgia, Arial or system-ui also work, or import the font.` };
     }
   }
+  // An unquoted entry that names a project font, spelled as the font's own files spell it.
+  const bare = (i: number) => (/^['"]/.test(entries[i]) || FAMILY_KEYWORDS.has(keys[i]) ? undefined : own.get(keys[i]));
+  if (entries.length === 1 && bare(0)) return { stack: importedFontStack(bare(0)!) };
   const alias = (key: string) => (own.has(key) ? undefined : installed.find((f) => familyKey(f.name) === key && !keys.includes(familyKey(f.family))));
   if (entries.length === 1 && alias(keys[0])) return { stack: alias(keys[0])!.stack };
-  if (!keys.some(alias)) return { stack: value };
-  return { stack: entries.flatMap((e, i) => (alias(keys[i]) ? [`'${alias(keys[i])!.family}'`, e] : [e])).join(', ') };
+  // A name CSS would drop ("1984 Display") is quoted where it stands; a valid one is left as written.
+  const fixed = entries.map((e, i) => (bare(i) && e.split(/\s+/).some((w) => !IDENT_WORD_RE.test(w)) ? `'${bare(i)}'` : e));
+  if (!keys.some(alias)) return { stack: fixed.some((e, i) => e !== entries[i]) ? fixed.join(', ') : value };
+  return { stack: fixed.flatMap((e, i) => (alias(keys[i]) ? [`'${alias(keys[i])!.family}'`, e] : [e])).join(', ') };
 }
 
 /**

@@ -47,12 +47,24 @@ export function importedFontStack(family: string): string {
 
 const unquote = (s: string) => s.trim().replace(/^['"]|['"]$/g, '').trim();
 const sameFamily = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** Words that name no family when written bare, so a font of the same name is not what they mean. */
+export const FAMILY_KEYWORDS: ReadonlySet<string> = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong', 'inherit', 'initial', 'unset', 'revert', 'revert-layer', 'default']);
+/** Source text as it is searched for a family name: runs of whitespace as one space, case folded. */
+const searchText = (s: string) => s.replace(/\s+/g, ' ').toLowerCase();
+/** The family a stack entry names, as CSS reads it: a run of spaces in a name is one, and a bare keyword names none. */
+function entryName(part: string): string | undefined {
+  const bare = !/^\s*['"]/.test(part);
+  const name = searchText(unquote(part));
+  return bare && FAMILY_KEYWORDS.has(name) ? undefined : name;
+}
 /** Are these two records faces of one family? */
 export const sameFontFamily = (a: AssetRecord, b: AssetRecord) => isValidFontAsset(a) && isValidFontAsset(b) && sameFamily(a.font!.family, b.font!.family);
 
 /** Does a font stack name this family, anywhere in the stack? (CSS family names ignore case.) */
 export function stackUsesFamily(stack: string, family: string): boolean {
-  return stack.split(',').some((part) => sameFamily(unquote(part), family));
+  const name = searchText(unquote(family));
+  return stack.split(',').some((part) => entryName(part) === name);
 }
 
 /**
@@ -92,25 +104,41 @@ function fontSlots(state: ProjectState, components: unknown = state.components, 
 }
 
 /**
+ * A test for a family name written anywhere in text that went through `searchText`, but not as the start or end of a
+ * longer name (`Sans` is not in `sans-serif`, `Inter` is not in `interface` or `--font-inter`).
+ */
+function namedIn(family: string): (text: string) => boolean {
+  const name = searchText(unquote(family)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(?<![\\p{L}\\p{N}_-])${name}(?![\\p{L}\\p{N}_-])`, 'u');
+  return (text) => re.test(text);
+}
+
+/** The definitions the project owns: what an edit may change, and whose code is the site's own. */
+const projectDefinitions = (state: ProjectState) => Object.values(state.components).filter((d) => d.owner === 'project');
+
+/**
  * Whether the site itself chose this font family: in a site style (the theme's font tokens are `fontTokens`, besides
  * any named font.*) or text style, as an element's font (on pages,
  * the shared header and footer, or the given components), or in a project code component's source. Text that
  * merely mentions the name, and the theme's own defaults, are not choices.
  */
-export function siteChoosesFamily(state: ProjectState, family: string, fontTokens: ReadonlySet<string> = new Set(), components = Object.values(state.components).filter((d) => d.owner === 'project')): boolean {
+export function siteChoosesFamily(state: ProjectState, family: string, fontTokens: ReadonlySet<string> = new Set(), components = projectDefinitions(state)): boolean {
   // CSS reads a run of spaces in an unquoted name as one, and family names ignore case.
-  const key = (name: string) => unquote(name).replace(/\s+/g, ' ').toLowerCase();
+  const key = (name: string) => searchText(unquote(name));
   const name = key(family);
   if (fontSlots(state, components, fontTokens).some((s) => s.get().split(',').some((part) => key(part) === name))) return true;
-  return components.some((d) => d.kind === 'code' && typeof d.source === 'string' && d.source.replace(/\s+/g, ' ').toLowerCase().includes(name));
+  const named = namedIn(family);
+  return components.some((d) => d.kind === 'code' && typeof d.source === 'string' && named(searchText(d.source)));
 }
 
 /** Point every use of `from` at `to`, keeping the rest of each stack. */
 export function renameFontFamily(state: ProjectState, from: string, to: string) {
-  for (const slot of fontSlots(state)) {
+  // A theme's definitions are locked to the pack's own copy (their hash), so a project's font never rewrites them.
+  const name = searchText(unquote(from));
+  for (const slot of fontSlots(state, projectDefinitions(state))) {
     const stack = slot.get();
     if (!stackUsesFamily(stack, from)) continue;
-    slot.set(stack.split(',').map((part) => (sameFamily(unquote(part), from) ? `${part.startsWith(' ') ? ' ' : ''}'${to}'` : part)).join(','));
+    slot.set(stack.split(',').map((part) => (entryName(part) === name ? `${part.startsWith(' ') ? ' ' : ''}'${to}'` : part)).join(','));
   }
 }
 
@@ -131,14 +159,19 @@ export function fontFaceCss(state: ProjectState): string {
   return rules.length ? `/* Fonts imported into this project. */\n${rules.join('\n')}\n\n` : '';
 }
 
-/** How many styles use each imported font family, keyed by asset ID (for usage counts). */
+/**
+ * How many styles use each imported font family, keyed by asset ID (for usage counts). A project's code component
+ * that names the family in its source counts once, however often it names it.
+ */
 export function fontAssetUsages(state: ProjectState): Record<string, number> {
   const out: Record<string, number> = {};
   const families = projectFontFamilies(state);
   if (!families.length) return out;
   const stacks = fontSlots(state).map((s) => s.get());
+  const sources = projectDefinitions(state).flatMap((d) => (d.kind === 'code' && typeof d.source === 'string' ? [searchText(d.source)] : []));
   for (const { family, faces } of families) {
-    const n = stacks.filter((v) => stackUsesFamily(v, family)).length;
+    const named = namedIn(family);
+    const n = stacks.filter((v) => stackUsesFamily(v, family)).length + sources.filter(named).length;
     if (n) for (const a of faces) out[a.id] = n;
   }
   return out;
