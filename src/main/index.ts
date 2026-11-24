@@ -363,6 +363,16 @@ function registerIpc() {
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } }
   );
   handle('project:redo', () => controller.session?.redo());
+  // What History showed: the revision it stood at and how many changes the step takes.
+  const shown = (v: unknown): v is { revision: number; count: number } => {
+    const o = v as Record<string, unknown> | null;
+    return !!o && typeof o === 'object' && Number.isInteger(o.revision) && Number.isInteger(o.count);
+  };
+  handle('project:stepHistory', (entryId: unknown, direction: unknown, expected: unknown, key: unknown) =>
+    typeof entryId === 'string' && (direction === 'undo' || direction === 'redo') && shown(expected) && typeof key === 'string'
+      ? controller.stepHistory(entryId, direction, expected, key)
+      : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to step to.', recoverable: false } }
+  );
   const kindOf = (only: unknown) => (only === 'image' || only === 'font' || only === 'document' ? only : undefined);
   const pathList = (paths: unknown) => (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : undefined);
   handle('project:reviewImport', (paths?: unknown, only?: unknown) => controller.reviewImport(pathList(paths), kindOf(only)));

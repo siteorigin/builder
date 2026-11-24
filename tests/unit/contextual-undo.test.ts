@@ -167,11 +167,11 @@ describe('a deletion notification’s Undo', () => {
     await click(tb);
     expect(home().rootIds).toContain(b);
     expect(home().rootIds).not.toContain(a);
-    expect(session.historyInfo()).toMatchObject({ canRedo: true, redoLabel: 'Delete Promo' });
+    expect(session.historyInfo()).toMatchObject({ canRedo: true, redoLabel: 'Delete Promo on Home' });
     // The earlier deletion is the newest applied change again, so its Undo steps back through history too.
     await click(ta);
     expect(home().rootIds).toEqual(order);
-    expect(session.historyInfo().redoLabel).toBe('Delete Promo');
+    expect(session.historyInfo().redoLabel).toBe('Delete Promo on Home');
   });
 
   it('never brings a section back twice: a later deletion of it stands', async () => {
@@ -185,7 +185,7 @@ describe('a deletion notification’s Undo', () => {
     await click(t);
     expect(home().rootIds).not.toContain(logos);
     expect(session.revision).toBe(revision);
-    expect(lastError()?.text).toBe('“Delete Logo strip” was already undone.');
+    expect(lastError()?.text).toBe('“Delete Logo strip on Home” was already undone.');
   });
 
   it('explains when later edits leave no single place for the section, and opens History at it', async () => {

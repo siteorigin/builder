@@ -143,7 +143,7 @@ await eventually(async () => {
   assert.deepEqual(page.rootIds, rootsBefore, 'nothing new at the top of the page');
 });
 assert.notEqual((await newest()).id, before?.id);
-assert.equal((await newest()).label, 'Insert Exhibitor card', 'one change');
+assert.equal((await newest()).label, 'Insert Exhibitor card on Home', 'one change');
 await panel.locator('.insert-where-done', { hasText: 'Exhibitor card' }).waitFor();
 await win.screenshot({ path: join(SHOTS, 'insert-destination-card.png') });
 await undo();
@@ -208,7 +208,7 @@ for (const [where, locator, fy, index, label] of [
     assert.equal((await snapshot()).components[page.nodes[page.rootIds[index]].definitionId]?.name, 'Gallery', `Gallery is ${where} the sections`);
   });
   assert.notEqual((await newest()).id, changes?.id);
-  assert.equal((await newest()).label, 'Insert Gallery', `one change (${where})`);
+  assert.equal((await newest()).label, 'Insert Gallery on Home', `one change (${where})`);
   assert.equal(await dropLabel.count(), 0, 'the drop indicator goes away');
   // Dropped where it shows: its outline arrives with the cue there too.
   assert.equal((await arrival()).animation, 'ov-arrive', `the dropped Gallery arrives with the cue (${where})`);
@@ -236,7 +236,7 @@ await secondCard.waitFor();
     assert.equal(page.nodes[kids[1]].kind, 'text', 'and it is a paragraph');
   });
   assert.notEqual((await newest()).id, changes?.id);
-  assert.equal((await newest()).label, 'Insert Paragraph', 'one change');
+  assert.equal((await newest()).label, 'Insert Paragraph on Home', 'one change');
   await undo();
   await eventually(async () => assert.deepEqual((await home()).nodes[grid].children, [card, card2], 'one Undo takes it away'));
 }
@@ -270,7 +270,7 @@ step('the Exhibitor card drags between the two cards, and a Paragraph between se
     assert.equal((await snapshot()).components[wrapper.definitionId]?.componentId, 'layout.section', 'a new Section after the first');
     assert.equal(page.nodes[wrapper.slots.content[0]].kind, 'text', 'holding the paragraph');
   });
-  assert.equal((await newest()).label, 'Insert Paragraph');
+  assert.equal((await newest()).label, 'Insert Paragraph on Home');
   await undo();
   await eventually(async () => assert.deepEqual(await home(), before, 'one Undo takes both away'));
 }
@@ -419,6 +419,27 @@ step('a Gallery inserted at the end of a tall page is scrolled to as the page mo
   assert.notEqual(still.background, 'rgba(0, 0, 0, 0)', `but with its wash (${still.background})`);
   await eventually(async () => assert.equal(await win.locator('.ov-selected.arriving').count(), 0, 'and it ends'), 4000);
   await win.emulateMedia({ reducedMotion: 'no-preference' });
+}
+
+step('a click on a tile names the page in History, and the confirmation’s Undo takes back its own insert of two the same (#199)');
+{
+  await openInsert();
+  const count = (await home()).rootIds.length;
+  await sectionTile('Gallery').click();
+  await eventually(async () => assert.equal((await home()).rootIds.length, count + 1, 'Gallery is added'));
+  const first = await newest();
+  assert.equal(first.label, 'Insert Gallery on Home', 'History names the page it went on');
+  const afterFirst = (await home()).rootIds;
+  await sectionTile('Gallery').click();
+  await eventually(async () => assert.equal((await home()).rootIds.length, count + 2, 'a second Gallery is added'));
+  const second = await newest();
+  assert.notEqual(second.id, first.id, 'each insert is its own change, with the same label');
+  assert.equal(second.label, first.label);
+  const confirmUndo = panel.locator('.insert-where.added .insert-undo');
+  await confirmUndo.waitFor();
+  await confirmUndo.click();
+  await eventually(async () => assert.deepEqual((await home()).rootIds, afterFirst, 'the confirmation’s Undo takes away the second, and only it'));
+  assert.equal((await newest()).id, first.id, 'the first insert stays applied');
 }
 
 assert.deepEqual(errors, [], 'no page errors');

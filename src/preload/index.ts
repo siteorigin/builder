@@ -53,6 +53,7 @@ const api: BuilderApi = {
     undo: invoke('project:undo'),
     undoEntry: invoke('project:undoEntry'),
     redo: invoke('project:redo'),
+    stepHistory: invoke('project:stepHistory'),
     reviewImport: invoke('project:reviewImport'),
     importAssets: invoke('project:importAssets'),
     exportComponent: invoke('project:exportComponent'),

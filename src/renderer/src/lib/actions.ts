@@ -23,6 +23,7 @@ import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
+import { editLabel, placeWords } from './edit-label';
 
 export type { InsertSpec, Primitive } from './insert-search';
 
@@ -61,7 +62,7 @@ export async function deleteSelection() {
   if (!t || !s.snapshot) return;
   const label = refLabel(s.snapshot.state, t);
   if (t.owner.kind === 'shell') return toast('The shared header and footer cannot be deleted. Hide either one on a page in its page settings instead.', 'error');
-  const r = await commitOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], `Delete ${label}`);
+  const r = await commitOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], editLabel(s.snapshot.state, 'Delete', t));
   // A reply that arrives after its project closed has nothing left here to select or announce.
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
   // What went with it goes, also picked again meanwhile; what the author selected elsewhere (another page) stays.
@@ -72,8 +73,8 @@ export async function deleteSelection() {
 export async function duplicateSelection() {
   const s = getState();
   const t = structuralTarget(s.selection);
-  if (!t || t.owner.kind === 'shell') return;
-  const r = await applyOps([{ type: 'node.duplicate', owner: t.owner, nodeId: t.nodeId }], 'Duplicate');
+  if (!t || t.owner.kind === 'shell' || !s.snapshot) return;
+  const r = await applyOps([{ type: 'node.duplicate', owner: t.owner, nodeId: t.nodeId }], editLabel(s.snapshot.state, 'Duplicate', t));
   const id = r?.[0]?.nodeId as string | undefined;
   if (id) setState({ selection: { owner: t.owner, instancePath: [], nodeId: id } });
 }
@@ -96,7 +97,7 @@ export async function detachPlacement(ref: ElementRef | null = getState().select
   const t = st ? detachable(st, ref) : null;
   if (!t || !st) return;
   const label = refLabel(st, t);
-  const r = await commitOps([{ type: 'component.detachInstance', owner: t.owner, nodeId: t.nodeId }], 'Detach component');
+  const r = await commitOps([{ type: 'component.detachInstance', owner: t.owner, nodeId: t.nodeId }], editLabel(st, 'Detach', t));
   // A reply that arrives after its project closed has nothing left here to select or announce.
   if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
   const id = r.results?.[0]?.nodeId as string | undefined;
@@ -114,7 +115,7 @@ export async function moveSelection(dir: -1 | 1) {
   if (!info) return;
   const index = info.index + dir;
   if (index < 0 || index >= info.list.length) return;
-  await applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], dir < 0 ? 'Move up' : 'Move down');
+  await applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], editLabel(s.snapshot.state, 'Move', t, dir < 0 ? 'up' : 'down'));
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +180,11 @@ export function groupName(st: ProjectState, g: Group): string {
   return g.ids.map((id) => nodeLabel(st, g.owner, id)).join(' and ');
 }
 
+/** A change to the layers selected together, as History names it: "Move Gallery and Testimonials up on Home". */
+function groupLabel(st: ProjectState, verb: string, g: Group, detail?: string): string {
+  return `${verb} ${groupName(st, g)}${detail ? ` ${detail}` : ''} ${placeWords(st, g.owner)}`;
+}
+
 /** Why the layers can't be moved, duplicated or deleted, or null when they can. */
 function lockedGroup(st: ProjectState, g: Group): string | null {
   if (g.owner.kind === 'shell') return 'The shared header and footer cannot be moved, duplicated or deleted here. Hide either one on a page in its page settings instead.';
@@ -231,7 +237,7 @@ export async function moveLayers(dir: -1 | 1, plan = planLayers()) {
   const why = lockedGroup(plan.snap.state, plan.group);
   if (why) return toast(why, 'error');
   const ops = moveStepOps(plan.group, dir);
-  if (ops) await applyOps(ops, `Move ${groupCount(plan.group)} ${dir < 0 ? 'up' : 'down'}`, undefined, plan.snap.revision);
+  if (ops) await applyOps(ops, groupLabel(plan.snap.state, 'Move', plan.group, dir < 0 ? 'up' : 'down'), undefined, plan.snap.revision);
 }
 
 /** Duplicate the layers selected together: the copies go together after the last of them, and are selected (with
@@ -240,7 +246,7 @@ export async function duplicateLayers(plan = planLayers(), follow = focusInLayer
   if (!plan?.several) return duplicateSelection();
   const why = lockedGroup(plan.snap.state, plan.group);
   if (why) return toast(why, 'error');
-  const r = await applyOps(duplicateOps(plan.group), `Duplicate ${groupCount(plan.group)}`, undefined, plan.snap.revision);
+  const r = await applyOps(duplicateOps(plan.group), groupLabel(plan.snap.state, 'Duplicate', plan.group), undefined, plan.snap.revision);
   const ids = r?.map((x) => x.nodeId);
   if (ids?.length !== plan.group.ids.length || !ids.every((id): id is string => typeof id === 'string') || !stillOn(plan)) return;
   setState(resultSelection(plan, ids));
@@ -253,7 +259,7 @@ export async function deleteLayers(plan = planLayers()) {
   const why = lockedGroup(plan.snap.state, plan.group);
   if (why) return toast(why, 'error');
   const name = groupName(plan.snap.state, plan.group);
-  const r = await commitOps(removeOps(plan.group), `Delete ${groupCount(plan.group)}`, undefined, plan.snap.revision);
+  const r = await commitOps(removeOps(plan.group), groupLabel(plan.snap.state, 'Delete', plan.group), undefined, plan.snap.revision);
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
   if (stillOn(plan)) setState({ selection: null });
   toast(`Deleted ${name}`, 'info', undoAction(r));
@@ -264,7 +270,7 @@ export async function moveLayersInto(to: { parentId: string | null; slot?: strin
   if (!plan) return false;
   const why = lockedGroup(plan.snap.state, plan.group);
   if (why) return (toast(why, 'error'), false);
-  return !!(await applyOps(moveIntoOps(plan.group, to), plan.several ? `Move ${groupCount(plan.group)}` : 'Move layer', undefined, plan.snap.revision));
+  return !!(await applyOps(moveIntoOps(plan.group, to), groupLabel(plan.snap.state, 'Move', plan.group), undefined, plan.snap.revision));
 }
 
 /** The pages a page's sections can be moved to: every other page, in the site's order. */
@@ -332,7 +338,7 @@ export async function moveToPage(pageId: string, plan = planLayers(), follow = f
         prev.selection === plan.selection && prev.layerSet === plan.layerSet && !now.selection && !now.layerSet;
     }
   });
-  const r = await commitOps(ops, `Move ${plan.several ? groupCount(g) : name} to ${dest.title}`, undefined, plan.snap.revision).finally(stopWatching);
+  const r = await commitOps(ops, `Move ${plan.several ? groupCount(g) : name} from ${from} to ${dest.title}`, undefined, plan.snap.revision).finally(stopWatching);
   if (!r?.ok) return null;
   const ids = (r.results ?? []).slice(0, g.ids.length).map((x) => x.nodeId);
   if (ids.length !== g.ids.length || !ids.every((id): id is string => typeof id === 'string')) return null;
@@ -367,21 +373,27 @@ export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = 
   return { role, at: insertionPoint(role, getState().selection, snapshot, spec.definitionId) };
 }
 
-/** Insert `spec` where its tile says (see insertPlan), as one change, and select it. */
-export async function insert(spec: InsertSpec, label: string) {
+/**
+ * Insert `spec` where its tile says (see insertPlan), as one change, and select it. Resolves to the history entry the
+ * change made, for an Undo beside it, once it has landed.
+ */
+export async function insert(spec: InsertSpec, label: string): Promise<string | undefined> {
   const { role, at } = insertPlan(spec);
-  if (!at) return;
+  const st = getState().snapshot?.state;
+  if (!at || !st) return;
   // Named here, so what is selected is the thing inserted (or a new Grid's first column), not the last node the
   // change made.
   const id = newId('n');
   const ops = insertOps(at, spec, role, id);
-  const r = await applyOps(ops, `Insert ${label}`);
+  const done = await commitOps(ops, `Insert ${label} ${placeWords(st, at.owner)}`);
+  const r = done?.ok ? (done.results ?? []) : null;
   if (!r?.some((x) => x?.nodeId === id)) return;
   // Selected, and outlined with the arrival cue once the page shows it (scrolled to as it mounts). Inserted while
   // previewing (the command menu), it is just selected: Edit shows it as the author left it.
   const ref: ElementRef = { owner: at.owner, instancePath: [], nodeId: insertSelection(ops, id) };
   if (getState().mode === 'edit') markArrival(ref);
   setState({ selection: ref, rightTab: 'inspect' });
+  return done?.entryId;
 }
 
 /**
@@ -397,7 +409,7 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
   // change made.
   const named = newId('n');
   const ops = insertOps(at, spec, role, named);
-  const r = await commitOps(ops, `Insert ${name}`, undefined, snap.revision);
+  const r = await commitOps(ops, `Insert ${name} ${placeWords(snap.state, at.owner)}`, undefined, snap.revision);
   if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return false;
   const id = r.results?.some((x) => x?.nodeId === named) ? insertSelection(ops, named) : undefined;
   const now = getState();
@@ -558,7 +570,7 @@ export async function placeAsset(assetId: string, shown: string): Promise<boolea
       const nodeId = newId('n');
       const owner = p.at.owner;
       const ops: EditOperation[] = [...insertOps(p.at, { primitive: 'image' }, 'element', nodeId), { type: 'node.setContent', owner, nodeId, field: 'image', value: asset.id }];
-      const r = await commitOps(ops, `Place ${name}`, undefined, snap.revision, { replanStale: tries < 2 });
+      const r = await commitOps(ops, `Place ${name} ${placeWords(snap.state, owner)}`, undefined, snap.revision, { replanStale: tries < 2 });
       // Refused, and said why (the AI started, the project changed again): that change's own record reports it.
       if (!r) return false;
       if (!r.ok) {
@@ -638,7 +650,8 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
     toast('This card shows its page’s text while it has none of its own. Type different text to show it here instead.', 'info');
     return 'restore';
   }
-  const label = (target.field === 'label' ? 'Edit button text' : 'Edit text') + (ref.owner.kind === 'component' ? ' everywhere' : '');
+  // The element as the page shows it ("Edit Heading on About"), in a component's design when edited everywhere.
+  const label = editLabel(snapshot.state, 'Edit', ref);
   if (!ref.instancePath.length) return (await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label)) ? undefined : 'restore';
   if (ref.instancePath.length > 1) {
     toast('Edit nested component text from the inspector.', 'error');

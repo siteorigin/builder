@@ -74,7 +74,7 @@ function quoted(text: string): string {
  * The History and Undo wording for one list edit, read from the project as it is before the edit lands (so a removed
  * row can still be named): what was done, to which row (by its title, else its place, "card 2"), in which list, and
  * where the list is, the section and the page it is on. `everywhere` is the edit made on a design for every
- * placement, which names the design, not a page. Falls back to `fallback` when the row or list can't be found.
+ * placement, which names the design it was made in, not a page. Falls back to `fallback` when the row or list can't be found.
  */
 export function listEditLabel(state: ProjectState, owner: OwnerRef, nodeId: string, prop: string, op: ListEdit, fallback: string, everywhere = false): string {
   const node = treeFor(state, owner)?.nodes[nodeId];
@@ -112,7 +112,8 @@ export function listEditLabel(state: ProjectState, owner: OwnerRef, nodeId: stri
       what = `Edit ${schema.fields[op.field]?.label ?? op.field} of ${nameAt(at)} in ${list}`;
       break;
   }
-  if (everywhere) return `${what} everywhere`;
+  // Made on a design for every placement: the design it was made in (the one being edited, or the placed one's own).
+  if (everywhere) return `${what} in the ${(owner.kind === 'component' ? state.components[owner.id]?.name : undefined) ?? def.name} design`;
   const section = def.name;
   const page = owner.kind === 'page' && Object.hasOwn(state.pages, owner.id) ? state.pages[owner.id].title : owner.kind === 'shell' ? `the ${owner.id}` : '';
   const where = [section, page && `on ${page}`].filter(Boolean).join(' ');
