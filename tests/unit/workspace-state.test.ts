@@ -353,3 +353,29 @@ describe('the opening the File menu follows (#255)', () => {
     c.onSessionClosing = null;
   });
 });
+
+describe('a deleted conversation’s workspace state (#235)', () => {
+  it('drops its draft, images and place as the open conversation, and nothing of another thread', async () => {
+    const { c, parent } = setup();
+    const dir = await create(c, parent, 'Kiln and Clay');
+    const key = opening(c);
+    c.saveLocalState({ chatDrafts: { c_gone: 'Ask about the contact form', c_kept: 'Warmer hero' }, chatImages: { c_gone: ['a_1'], c_kept: ['a_2'] }, chatConversation: 'c_gone', rightTab: 'chat' }, key);
+    // Another opening's delete changes nothing here.
+    c.forgetConversation('c_gone', 'another-opening');
+    expect(c.snapshot()!.localState.chatDrafts).toEqual({ c_gone: 'Ask about the contact form', c_kept: 'Warmer hero' });
+    c.forgetConversation('c_gone', key);
+    // Closing straight after still writes the state without it.
+    await c.close();
+    expect(onDisk(dir)).toEqual({ chatDrafts: { c_kept: 'Warmer hero' }, chatImages: { c_kept: ['a_2'] }, rightTab: 'chat' });
+  });
+
+  it('leaves the state alone when the conversation had nothing kept', async () => {
+    const { c, parent } = setup();
+    await create(c, parent, 'Kiln and Clay');
+    const key = opening(c);
+    c.saveLocalState({ chatDrafts: { c_kept: 'Warmer hero' }, chatConversation: 'c_kept' }, key);
+    const before = c.snapshot()!.localState;
+    c.forgetConversation('c_other', key);
+    expect(c.snapshot()!.localState).toBe(before);
+  });
+});

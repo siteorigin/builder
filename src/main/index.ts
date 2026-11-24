@@ -520,11 +520,14 @@ function registerIpc() {
     if (blocked) throw new Error(blocked);
     return orchestrator.renameConversation(id, title);
   });
-  handle('ai:deleteConversation', (id: string, key?: string) => {
+  handle('ai:deleteConversation', async (id: string, key?: string) => {
     if (typeof key !== 'string' || key !== controller.openingKey) throw new Error('The project changed, so the conversation was not deleted.');
     const blocked = readOnlyReason();
     if (blocked) throw new Error(blocked);
-    return orchestrator.deleteConversation(id);
+    const active = await orchestrator.deleteConversation(id);
+    // In the same turn as the delete: its unsent message never outlives it, even if the project closes next.
+    controller.forgetConversation(id, key);
+    return active;
   });
   // Chat history belongs to the app editing the project; a read-only view never clears it.
   handle('ai:clearHistory', async (key?: string) => {

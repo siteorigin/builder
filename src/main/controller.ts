@@ -1394,6 +1394,21 @@ export class Controller {
     this.localTimer = setTimeout(() => void this.flushLocalState(), 300);
   }
 
+  /**
+   * A conversation deleted in the opening `key` takes its unsent message and images with it, and is no longer the one
+   * to reopen: dropped from the workspace state at once, so a close straight after the delete can't keep them.
+   */
+  forgetConversation(id: string, key: string) {
+    if (!this.session || !key || this.workspaceKey !== key) return;
+    const { chatDrafts, chatImages, chatConversation } = this.localState;
+    const patch: LocalWorkspaceState = {};
+    if (chatDrafts && Object.hasOwn(chatDrafts, id)) patch.chatDrafts = Object.fromEntries(Object.entries(chatDrafts).filter(([k]) => k !== id));
+    if (chatImages && Object.hasOwn(chatImages, id)) patch.chatImages = Object.fromEntries(Object.entries(chatImages).filter(([k]) => k !== id));
+    // Left out of the file when it is written: the project reopens on the conversation main shows first.
+    if (chatConversation === id) patch.chatConversation = undefined;
+    if (Object.keys(patch).length) this.saveLocalState(patch, key);
+  }
+
   /** The opening of the project that is open now (see saveLocalState), or null. */
   get openingKey(): string | null {
     return this.workspaceKey;
