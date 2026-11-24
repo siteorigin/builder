@@ -198,9 +198,11 @@ export function Toolbar() {
   return (
     <header ref={header} className={`toolbar drag${isMac ? ' mac' : ''}`} data-tier={tier} onFocus={(e) => e.currentTarget.contains(e.target) && (focused.current = e.target)}>
       <div className="toolbar-start">
-        <span className="toolbar-mark" title="SiteOrigin Builder">
+        {/* The mark is home: it leaves the project for Welcome by the same route as Close project, so edits are saved
+            or the author is asked first. */}
+        <button className="toolbar-mark" aria-label="All projects" title={`All projects (${keys('⇧⌘W')})`} onClick={() => void closeProject()}>
           <AppMark size={22} />
-        </span>
+        </button>
         <div className="toolbar-group">
           <button className="icon-btn" aria-pressed={!!leftTab} title={`Show or hide the sidebar (${keys('⌘\\')})`} aria-label="Sidebar" onClick={() => setState({ leftTab: leftTab ? null : 'pages' })}>
             <PanelLeft />

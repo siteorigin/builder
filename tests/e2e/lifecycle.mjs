@@ -123,6 +123,17 @@ await eventually(async () => assert.equal(await titleField().evaluate((el) => el
 assert.equal(await titleField().inputValue(), '', 'the typed text survived both questions');
 assert.equal(await win.locator('.editor').count(), 1, 'the app is still running with the project open');
 
+step('the toolbar mark (All projects) leaves by the same route: it asks, and Keep editing keeps the editor (#517)');
+const mark = win.locator('.toolbar').getByRole('button', { name: 'All projects', exact: true });
+assert.equal(await mark.evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region')), 'no-drag', 'the mark is a click target inside the drag region');
+await mark.click();
+await dialog.waitFor();
+await dialog.getByRole('button', { name: 'Keep editing' }).click();
+await eventually(async () => assert.equal(await titleField().evaluate((el) => el === document.activeElement), true, 'focus is back in the title field'));
+assert.equal(await titleField().inputValue(), '', 'what was typed is still there');
+assert.equal(await win.locator('.editor').count(), 1, 'the project stayed open');
+assert.equal(await win.locator('.welcome').count(), 0, 'Welcome never appeared');
+
 step('Leave without it discards the invalid draft');
 await menu('Close Project');
 await dialog.waitFor();
@@ -223,6 +234,14 @@ writeFileSync(manifestA, goodA);
 await openRecent(dirA);
 await win.waitForSelector('.editor');
 assert.equal(await openDir(), realpathSync(dirA), 'the repaired project opens from Welcome');
+
+step('the toolbar mark, pressed from the keyboard, saves the focused field and lands on Welcome (#517)');
+heading = await heroHeading();
+await typeDraft(heading, 'Kept through All projects');
+await mark.focus();
+await win.keyboard.press('Enter');
+await win.waitForSelector('.welcome');
+assert.equal(savedHeading(dirA), 'Kept through All projects', 'the typed heading is on disk');
 
 step('closing the window saves the focused field');
 await openProject(dirA);
