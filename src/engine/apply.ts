@@ -31,6 +31,7 @@ import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
 import { VISITOR_TEXT_KEYS, isVisitorTextKey, ownVisitorText, ownVisitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
+import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { checkPublicUrl } from '@shared/public-url';
 import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { collectionRouteOwner } from '@shared/collections';
@@ -254,6 +255,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return tokenReplace(state, op.tokenId, op.withTokenId);
     case 'site.update':
       return siteUpdate(state, op);
+    case 'component.create':
+      return componentCreate(state, op);
     case 'component.createFromNode':
       return createFromNode(state, op);
     case 'component.makeUnique':
@@ -2277,7 +2280,42 @@ function setVisitorText(site: ProjectState['site'], language: string, text: Reco
 // ---------------------------------------------------------------------------
 
 function projectDefId(name: string, prefix = 'proj'): string {
-  return `${prefix}.${slugify(name) || 'component'}-${newId('x', 5).slice(2)}`;
+  return projectDefinitionId(name, prefix);
+}
+
+/**
+ * A new managed project component holding one empty container, its root, ready for elements inserted into it. The
+ * editor may name its ID, so the batch that creates it can also place it; any other ID is the engine's own.
+ */
+function componentCreate(state: ProjectState, op: Op<'component.create'>): OpResult {
+  const name = op.name.trim();
+  if (!name) fail('A component needs a name.');
+  if (op.definitionId !== undefined) {
+    if (!PROJECT_DEFINITION_ID.test(op.definitionId)) fail(`"${op.definitionId}" is not a project component ID.`);
+    if (Object.hasOwn(state.components, op.definitionId)) fail(`Component "${op.definitionId}" already exists.`);
+  }
+  const id = op.definitionId ?? projectDefId(name);
+  const [root] = primitiveNode(state, 'container');
+  const def: ComponentDefinition = {
+    schemaVersion: SCHEMA_VERSION,
+    id,
+    componentId: `project.${slugify(name) || 'component'}`,
+    contractVersion: 1,
+    kind: 'managed',
+    owner: 'project',
+    name,
+    description: op.description?.trim() || 'Project component.',
+    category: 'custom',
+    tags: ['custom', 'project'],
+    icon: 'component',
+    properties: {},
+    parts: { root: { nodeId: root.id, label: 'Root', ...withControls(root) } },
+    tree: { rootIds: [root.id], nodes: { [root.id]: root } },
+    provenance: { createdBy: 'user' },
+    license: 'Project'
+  };
+  state.components[id] = def;
+  return { definitionId: id, rootNodeId: root.id };
 }
 
 function copyDefinition(state: ProjectState, def: ComponentDefinition, name: string): ComponentDefinition {

@@ -3,7 +3,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, Pa
 import { isBinding, slotChildren } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
-import { displayName, enclosingRepeatProp, getTree } from '@engine/tree';
+import { childLists, displayName, enclosingRepeatProp, getTree } from '@engine/tree';
 import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
@@ -354,6 +354,99 @@ export function componentDetail(def: ComponentDefinition) {
     // UI state the design reads in conditions and variants and its buttons change; placements never set it.
     ...(def.state && Object.keys(def.state).length ? { state: def.state } : {}),
     examples: def.examples ?? []
+  };
+}
+
+/** Characters of node records one structural read of a component returns; the rest follows from `next`. */
+export const STRUCTURE_CHARS = 12000;
+
+/** A tree's node IDs in document order: each node, then what it holds (children, repeated content, slot content). */
+function documentOrder(tree: NodeTree): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const walk = (id: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+    const n = tree.nodes[id];
+    if (n) for (const l of childLists(n)) l.ids.forEach(walk);
+  };
+  tree.rootIds.forEach(walk);
+  return out;
+}
+
+/** Every token a value refers to, at any depth: style values, text styles, token properties' defaults. */
+function collectTokens(v: unknown, out: Set<string>) {
+  if (Array.isArray(v)) return v.forEach((x) => collectTokens(x, out));
+  if (!v || typeof v !== 'object') return;
+  const rec = v as Record<string, unknown>;
+  if (typeof rec.token === 'string') out.add(rec.token);
+  for (const x of Object.values(rec)) collectTokens(x, out);
+}
+
+/** A design's node as stored (its child lists are IDs), with long literal content shortened and the parts it names. */
+function structureNode(state: ProjectState, n: GraphNode, parts: string[] | undefined, nested: (id: string) => ComponentDefinition | undefined): Record<string, unknown> {
+  const rec: Record<string, unknown> = { ...n };
+  if (n.kind === 'text' && !isBinding(n.text)) rec.text = summarizeValue(n.text, state.pages);
+  if (n.kind === 'instance') {
+    const def = nested(n.definitionId);
+    rec.component = def?.name;
+    rec.componentId = def?.componentId;
+    rec.props = agentProps(def, n.props, state.pages);
+  }
+  if (parts?.length) rec.parts = parts;
+  return rec;
+}
+
+/**
+ * How a managed component's design is built, for a model making one like it: its nodes in document order as stored
+ * (kind, tag, name, child IDs, styles with their token references and phone/tablet/desktop rules, bindings to its
+ * properties ($prop) and list items ($item), conditions, repeats, slots and the components placed in it), the parts
+ * each node is styled through, and, on the first read, its property defaults, the style rules of each variant option
+ * by node, and every token it uses. A long design comes a part at a time: read again from `next` until it is null.
+ */
+export function componentStructure(state: ProjectState, def: ComponentDefinition, offset = 0) {
+  if (def.kind !== 'managed' || !def.tree)
+    return { definitionId: def.id, kind: def.kind, note: def.kind === 'code' ? 'A code component: its design is Svelte source, not a node tree. Its contract above is what placements use.' : 'This component has no design tree.' };
+  const tree = def.tree;
+  const order = documentOrder(tree);
+  const partsOf = new Map<string, string[]>();
+  for (const [pid, p] of Object.entries(def.parts)) partsOf.set(p.nodeId, [...(partsOf.get(p.nodeId) ?? []), pid]);
+  const theme = getTheme(state.site.themeId).components;
+  // A design read from the catalogue places other theme components the project may not have installed yet.
+  const nested = (id: string) => (Object.hasOwn(state.components, id) ? state.components[id] : theme.find((c) => c.id === id));
+  const nodes: Record<string, unknown>[] = [];
+  let used = 0;
+  let i = Math.min(offset, order.length);
+  for (; i < order.length; i++) {
+    const n = tree.nodes[order[i]];
+    const rec = n ? structureNode(state, n, partsOf.get(n.id), nested) : { id: order[i], missing: true };
+    const size = JSON.stringify(rec).length;
+    // At least one node per read, so a read always moves on.
+    if (nodes.length && used + size > STRUCTURE_CHARS) break;
+    nodes.push(rec);
+    used += size;
+  }
+  const page = { totalNodes: order.length, offset, next: i < order.length ? i : null };
+  if (offset > 0) return { definitionId: def.id, nodes, ...page };
+  const tokens = new Set<string>();
+  collectTokens(tree.nodes, tokens);
+  collectTokens(def.variantAxes, tokens);
+  for (const sch of Object.values(def.properties)) if (sch.type === 'token') collectTokens(sch.default, tokens);
+  const defaults = Object.fromEntries(Object.entries(def.properties).flatMap(([k, sch]) => ('default' in sch && sch.default !== undefined ? [[k, summarizeValue(sch.default, state.pages)]] : [])));
+  const variantStyles = Object.fromEntries(
+    axesOf(def)
+      .map(([axis, a]) => [axis, Object.fromEntries(Object.entries(a.options).flatMap(([o, v]) => (v.styles && Object.keys(v.styles).length ? [[o, v.styles]] : [])))] as const)
+      .filter(([, opts]) => Object.keys(opts).length)
+  );
+  return {
+    definitionId: def.id,
+    rootIds: tree.rootIds,
+    nodes,
+    ...page,
+    ...(Object.keys(defaults).length ? { propertyDefaults: defaults } : {}),
+    ...(Object.keys(variantStyles).length ? { variantStyles } : {}),
+    tokensUsed: [...tokens].sort()
   };
 }
 

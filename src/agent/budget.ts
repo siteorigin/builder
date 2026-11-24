@@ -85,7 +85,9 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
   }
   if (item.name === 'read_component') {
     const id = args.definitionId ?? args.componentId ?? body?.definitionId;
-    return id ? { ...base, target: `component:${id}` } : null;
+    // A design read part by part: each part is its own read, and a contract alone never stands in for the design.
+    const design = args.structure ? `:structure:${Number(args.offset ?? 0)}` : '';
+    return id ? { ...base, target: `component:${id}${design}` } : null;
   }
   if (item.name === 'read_project') {
     const extras = PROJECT_EXTRAS.filter((s) => Array.isArray(args.sections) && args.sections.includes(s));

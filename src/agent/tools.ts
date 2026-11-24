@@ -10,7 +10,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
-import { agentProps, catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
+import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, pageDetail, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
@@ -36,7 +36,15 @@ export const TOOL_ARGS = {
     offset: z.number().int().min(0).optional().describe('With prop: where to go on reading a long value, from the next a previous read returned.')
   }),
   search_components: z.object({ query: z.string().describe('Words such as "pricing", "team", "image text".'), limit: z.number().int().min(1).max(20).optional() }),
-  read_component: z.object({ componentId: z.string().optional(), definitionId: z.string().optional() }),
+  read_component: z.object({
+    componentId: z.string().optional(),
+    definitionId: z.string().optional(),
+    structure: z
+      .boolean()
+      .optional()
+      .describe('Also show how its design is built, to make a new component like it: its nodes, the styles and tokens they use at each screen size, their bindings to its properties, its parts and its variant rules.'),
+    offset: z.number().int().min(0).optional().describe('With structure: where to go on reading a long design, from the next a previous read returned.')
+  }),
   search_assets: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }),
   apply_operations: z.object({
     expectedRevision: z.number().int().describe('The revision you last read. Mismatches are rejected; read again and retry.'),
@@ -84,12 +92,13 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
   inspect_element:
     'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree. With prop, read one content field whole instead (long rich text as Markdown), a part at a time: call again with the offset each part returns until next is null.',
-  search_components: 'Search the theme catalogue by keywords. Returns componentIds you can insert with node.insert.',
-  read_component: 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.',
+  search_components: 'Search the theme catalogue and the project\'s own components by keywords. Returns componentIds (theme) and definitionIds (project) you can insert with node.insert, or read with read_component.',
+  read_component:
+    'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component. With structure, also its design as stored (nodes in order, styles with tokens and phone/tablet/desktop rules, $prop and $item bindings, parts, variant rules by node, tokens used), a part at a time: call again with the offset it returns until next is null.',
   search_assets: 'List imported images by name and description, with the assetId that identifies each one (two images can share a name). You cannot see image contents.',
   apply_operations:
     'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
-  read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
+  read_source: 'Read the Svelte source of a code component; project code components can be patched. A managed component has no source to read: read_component with structure shows its design.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout:
     'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). No screenshots.',
@@ -111,8 +120,8 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds site tokens, or the catalogue: every component with its properties, parts and variants, and the icon names.',
   read_page: 'Its sections with props (and list item IDs), variants, styles and nested content.',
   inspect_element: 'One node: props, property schema, parts with their style controls, variants, slots and place in the tree. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
-  search_components: 'Theme components by keywords, with their componentIds.',
-  read_component: "A component's property schema, parts, variants, slots and examples. Read it before using an unfamiliar component.",
+  search_components: 'Theme and project components by keywords, with their componentIds or definitionIds.',
+  read_component: "A component's property schema, parts, variants, slots and examples. Read it before using an unfamiliar component. structure adds how its design is built (nodes, styles, tokens, bindings, variant rules), a part at a time from each next offset.",
   search_assets: 'Images by name and description, each with its assetId (names can repeat). You cannot see images.',
   read_source: "A component's Svelte source. Only project code components can be patched.",
   apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the hash from read_source.',
@@ -185,8 +194,36 @@ export const PAGE_OPERATIONS = new Set<OperationType>([
 /** A small model's page run: the page tool builds sections, and these remove or reorder one by its ID and set the page's own settings. */
 export const FOCUSED_PAGE_OPERATIONS = new Set<OperationType>(['node.remove', 'node.move', 'page.update']);
 
+/** What building a new component takes: making it, its design, its contract and its placement. */
+const COMPONENT_BUILD_OPERATIONS = new Set<OperationType>([
+  'component.create',
+  'component.createCode',
+  'component.updateSource',
+  'component.rename',
+  'component.setPropSchema',
+  'component.removePropSchema',
+  'component.setPropDefault',
+  'component.setPart',
+  'component.removePart',
+  'component.setVariant',
+  'component.removeVariant',
+  'component.setSlot',
+  'component.removeSlot',
+  'node.insert',
+  'node.remove',
+  'node.move',
+  'node.duplicate',
+  'node.rename',
+  'node.setStyle',
+  'node.resetStyles',
+  'node.setContent',
+  'node.setBinding'
+]);
+/** The tools a small model gets for building a new component, beside those operations. */
+const COMPONENT_BUILD_TOOLS = new Set<ToolName>(['read_project', 'read_page', 'search_components', 'read_component', 'search_assets', 'apply_operations', 'validate_project', 'request_clarification', 'read_source', 'apply_source_patch']);
+
 /** The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it. */
-function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: Set<OperationType>) {
+function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
     .filter((t) => !NEVER_OFFERED.has(t) && !NOT_YET_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)) && (!only || only.has(t)))
     .map((t) =>
@@ -196,7 +233,9 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
           ? OPERATION_SCHEMAS[t].omit({ newNodeId: true })
           : t === 'node.duplicate'
             ? OPERATION_SCHEMAS[t].omit({ index: true })
-            : t === 'asset.replace'
+            : t === 'component.create'
+              ? OPERATION_SCHEMAS[t].omit({ definitionId: true })
+              : t === 'asset.replace'
               ? OPERATION_SCHEMAS[t].omit({ keepAlt: true, uses: true })
               : t === 'page.update' && only
                 ? // A run limited to a page changes its own settings: a new route or translation reaches other pages.
@@ -212,7 +251,7 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
  * Tool definitions for one run. Without Developer mode, code tools and code operations are left out. Component
  * contract operations are offered when `definitionOps` says the run may change a component's design.
  */
-export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: boolean; operations?: Set<OperationType> } = {}): ToolDefinition[] {
+export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: boolean; operations?: ReadonlySet<OperationType> } = {}): ToolDefinition[] {
   const codeEnabled = opts.codeEnabled ?? true;
   const definitionOps = opts.definitionOps ?? codeEnabled;
   return (Object.keys(TOOL_ARGS) as ToolName[])
@@ -249,6 +288,8 @@ export interface RunTools {
   mode: ToolMode;
   /** Only the small tool set is offered. */
   focused: boolean;
+  /** The run builds a new component, asked for from the Create component dialog. */
+  task?: 'component';
 }
 
 const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameters).includes('"assetId"');
@@ -288,10 +329,18 @@ export function toolsForRun(opts: {
   widened?: SelectionTarget | null;
   /** The page a run is limited to: its page tool builds only that page, and nothing site-wide is offered. */
   page?: { route: string } | null;
+  /** The request asks for a new component (the Create component dialog). */
+  task?: 'component';
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
   if (opts.ask) return { tools: askTools(codeEnabled), mode: 'ask', focused };
+  // A new component is built with the general tools, which the page and selection tools cannot replace; a small model
+  // gets only what building one takes, so the request still fits beside them.
+  if (opts.task === 'component') {
+    const tools = focused ? toolDefinitions({ codeEnabled, definitionOps, operations: COMPONENT_BUILD_OPERATIONS }).filter((t) => COMPONENT_BUILD_TOOLS.has(t.name as ToolName)) : toolDefinitions({ codeEnabled, definitionOps });
+    return { tools, mode: 'general', focused, task: 'component' };
+  }
   const general = toolDefinitions({ codeEnabled, definitionOps });
   if (selection) {
     const micro = selectionTools(state, selection);
@@ -319,6 +368,26 @@ export function toolsForRun(opts: {
   // do (styling every card of a selected one, say).
   const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
   return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations') : general)], mode: 'site', focused };
+}
+
+/**
+ * The project's own components matching a search, best first, scored as the catalogue search scores its own: a word
+ * in the name counts most, one in the description or tags less. The shared header and footer are never offered.
+ */
+export function searchProjectComponents(state: ProjectState, query: string, limit: number) {
+  const words = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const mine = Object.values(state.components).filter((d) => d.owner === 'project' && d.category !== 'shell');
+  if (!words.length) return mine.slice(0, limit);
+  return mine
+    .map((d) => {
+      const name = d.name.toLowerCase();
+      const hay = `${name} ${d.description ?? ''} ${(d.tags ?? []).join(' ')}`.toLowerCase();
+      return { d, score: words.reduce((n, w) => n + (name.includes(w) ? 3 : hay.includes(w) ? 1 : 0), 0) };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => x.d);
 }
 
 /** An image in the project's library, or null for an unknown ID or a font. */
@@ -501,10 +570,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'search_components': {
       const a = args as z.infer<(typeof TOOL_ARGS)['search_components']>;
       const themed = searchCatalogue(state.site.themeId, a.query, a.limit ?? 8).map((e) => ({ componentId: e.componentId, name: e.name, description: e.description, variants: e.axes }));
-      const q = a.query.toLowerCase();
-      const project = Object.values(state.components)
-        .filter((d) => d.owner === 'project' && d.category !== 'shell' && `${d.name} ${d.description}`.toLowerCase().includes(q))
-        .map((d) => ({ definitionId: d.id, name: d.name, description: d.description, projectComponent: true }));
+      const project = searchProjectComponents(state, a.query, a.limit ?? 8).map((d) => ({ definitionId: d.id, name: d.name, description: d.description, kind: d.kind, projectComponent: true }));
       return { ok: true, content: { results: [...themed, ...project] } };
     }
     case 'read_component': {
@@ -515,6 +581,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const installed = themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : undefined;
       const def = a.definitionId ? state.components[a.definitionId] : (installed ?? themed);
       if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Component not found. Use search_components.' } };
+      // A design read part by part: the contract came with the first part.
+      if (a.structure && a.offset) return { ok: true, content: { definitionId: def.id, structure: componentStructure(state, def, a.offset) } };
+      if (a.structure) return { ok: true, content: { ...componentDetail(def), structure: componentStructure(state, def) } };
       const examples = examplesFor(state, def.componentId).map(exampleSection);
       return { ok: true, content: { ...componentDetail(def), ...(examples.length ? { workedExamples: examples } : {}) } };
     }
@@ -535,6 +604,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       if (ops.some((o) => o.type === 'page.create' && o.pageId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'page.create does not take a pageId.' } };
       // Node IDs too: the result of each node.insert names the node it made.
       if (ops.some((o) => o.type === 'node.insert' && o.newNodeId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.insert does not take a newNodeId.' } };
+      // So are new components' IDs: the result of each component.create names the component it made.
+      if (ops.some((o) => o.type === 'component.create' && o.definitionId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.create does not take a definitionId.' } };
       // The copy goes right after the original; placing it elsewhere is a node.move of the copy it returns.
       if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.duplicate does not take an index.' } };
       // UI state is not offered yet (NOT_YET_OFFERED), and a call naming it anyway is refused the same way.
@@ -562,7 +633,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['read_source']>;
       const def = state.components[a.definitionId];
       if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Unknown component.' } };
-      if (def.kind !== 'code') return { ok: true, content: { definitionId: def.id, editable: false, note: 'This is a managed component. Its source is generated; edit it with operations, or convert a copy to code with component.convertToCode.' } };
+      if (def.kind !== 'code') return { ok: true, content: { definitionId: def.id, editable: false, note: 'This is a managed component. Its source is generated: read_component with structure shows its design, and operations edit it. A copy can be converted to code with component.convertToCode.' } };
       const lines = (def.source ?? '').split('\n');
       const start = (a.startLine ?? 1) - 1;
       const end = Math.min(lines.length, a.endLine ?? start + 400);

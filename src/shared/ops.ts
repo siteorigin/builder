@@ -363,6 +363,16 @@ export const OPERATION_SCHEMAS = {
       .describe('What the site says on its own (skip link, menu button, form progress, search, image viewer) in one language. Built in for en, ar, he.')
   }),
 
+  'component.create': z
+    .object({
+      type: z.literal('component.create'),
+      definitionId: z.string().optional().describe('Internal: lets one batch create a component and place it. Not offered to the model.'),
+      name: z.string().min(1).max(60),
+      description: z.string().max(300).optional().describe('What the component is for, as the Insert panel shows it.')
+    })
+    .describe(
+      'Create a new, empty managed project component: one container element, its root, which the result names (rootNodeId) beside its definitionId. Build its design with node.insert and the other node operations under owner { kind: "component", id: definitionId }, give it properties with component.setPropSchema and node.setBinding, and place it on a page with node.insert { definitionId }.'
+    ),
   'component.createFromNode': z.object({ type: z.literal('component.createFromNode'), owner, nodeId: z.string(), name: z.string().min(1).max(60) }),
   'component.makeUnique': z.object({ type: z.literal('component.makeUnique'), owner, nodeId: z.string(), name: z.string().max(60).optional() }),
   'component.detachInstance': z

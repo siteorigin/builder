@@ -290,6 +290,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         if (!fields.length) return add(op, 'site', render);
         return fields.forEach((f) => add(op, 'site', render, {}, SITE_FIELDS[f]));
       }
+      case 'component.create':
+        return plain(op, `Created the component ${quoted(op.name.trim())}`);
       case 'component.createFromNode':
         return plain(op, `Made ${name(op.owner, op.nodeId)} on ${where(op.owner)} into the reusable component ${quoted(op.name)}`, linkTo(op.owner, res.nodeId ?? op.nodeId));
       case 'component.makeUnique':
