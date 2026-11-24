@@ -948,7 +948,7 @@ export function SiteStyles() {
   };
 
   // Type scale: every heading and text size at once, keeping each style's font; one step to undo.
-  const roles = scaleRoles(theme.tokens);
+  const roles = scaleRoles(theme.tokens, tokens);
   const scale = activeTypeScale(tokens, theme.tokens);
   const scaleName = (c: TypeScaleChoice) => (c === 'theme' ? 'Theme' : typeScale(c).label);
   const scaleDescription = (c: TypeScaleChoice) => (c === 'theme' ? `${theme.name}'s own sizes, line heights and letter spacing.` : typeScale(c).description);

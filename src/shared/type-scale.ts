@@ -6,7 +6,7 @@
  */
 import type { EditOperation } from './ops';
 import type { TextStyleValue, TokenDef } from './types';
-import { textMetrics } from './styles';
+import { linkOf, textMetrics } from './styles';
 
 /** The viewport widths a fluid size grows between: its smallest size up to a phone, its largest from a laptop up. */
 export const FLUID_MIN_WIDTH = 360;
@@ -183,20 +183,23 @@ export function scaleMetrics(id: TypeScaleId): Record<TypeScaleRole, ScaleMetric
 }
 
 /**
- * The styles a scale can set in this site: those its theme declares as text styles that it can write out, so
- * each has a theme value to go back to. A theme without some of them simply has fewer.
+ * The styles a scale can set in this site: those its theme declares as text styles that can be written out, by
+ * the theme or by the project's own change to them. A theme without some of them simply has fewer.
  */
-export function scaleRoles(themeTokens: TokenDef[]): TypeScaleRole[] {
-  return TYPE_SCALE_ROLES.filter((r) => themeTokens.some((t) => t.id === r && t.group === 'text') && textMetrics(themeTokens, r) !== null);
+export function scaleRoles(themeTokens: TokenDef[], tokens: TokenDef[] = themeTokens): TypeScaleRole[] {
+  return TYPE_SCALE_ROLES.filter((r) => {
+    const declared = themeTokens.find((t) => t.id === r && t.group === 'text');
+    return !!declared && (textMetrics(themeTokens, r) !== null || textMetrics(tokens, r, declared.value) !== null);
+  });
 }
 
-/** What a choice sets on each style the theme has: a preset's metrics, or the theme's own. */
-function targets(themeTokens: TokenDef[], choice: TypeScaleChoice): Map<TypeScaleRole, ScaleMetrics> {
+/** What a choice sets on each style: a preset's metrics, or the theme's own (null where the theme has none to give). */
+function targets(themeTokens: TokenDef[], tokens: TokenDef[], choice: TypeScaleChoice): Map<TypeScaleRole, ScaleMetrics | null> {
   const preset = choice === 'theme' ? null : scaleMetrics(choice);
   return new Map(
-    scaleRoles(themeTokens).map((role) => {
-      const m = preset ? preset[role] : textMetrics(themeTokens, role)!;
-      return [role, { size: m.size, lineHeight: m.lineHeight, tracking: m.tracking }];
+    scaleRoles(themeTokens, tokens).map((role) => {
+      const m = preset ? preset[role] : textMetrics(themeTokens, role);
+      return [role, m ? { size: m.size, lineHeight: m.lineHeight, tracking: m.tracking } : null];
     })
   );
 }
@@ -208,24 +211,32 @@ function sameText(a: TextStyleValue, b: TextStyleValue): boolean {
   const fam = (v: TextStyleValue['family']) => (v && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '').trim());
   return fam(a.family) === fam(b.family) && SCALE_KEYS.every((k) => same(a[k], b[k])) && Number(a.weight) === Number(b.weight) && same(a.transform ?? 'none', b.transform ?? 'none');
 }
-const isLink = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v) && 'token' in v && !TEXT_KEYS.some((k) => k in (v as object));
 const asStyle = (role: string, value: unknown): TokenDef[] => [{ id: role, label: role, group: 'text', value: value as TextStyleValue }];
+
+/** The text styles a style follows through saved links, nearest first. */
+function followed(tokens: TokenDef[], role: string): string[] {
+  const out: string[] = [];
+  for (let cur = linkOf(tokens.find((t) => t.id === role)?.value, 'text'); cur && cur !== role && !out.includes(cur); cur = linkOf(tokens.find((t) => t.id === cur)?.value, 'text')) out.push(cur);
+  return out;
+}
 
 /**
  * A saved style that cannot be read as it stands (a metric missing or broken in a hand-edited document): the
- * theme's metrics with every saved metric that reads kept in place of the theme's.
+ * theme's metrics with every saved metric that reads kept in place of the theme's, and which ones were kept.
  */
-function repaired(role: string, saved: Record<string, unknown> | null, theme: TextStyleValue): TextStyleValue {
+function repaired(role: string, saved: unknown, theme: TextStyleValue): { metrics: TextStyleValue; kept: Set<string> } {
   let out: Record<string, unknown> = { ...theme };
+  const kept = new Set<string>();
+  const fields = saved && typeof saved === 'object' && !Array.isArray(saved) ? (saved as Record<string, unknown>) : {};
   for (const k of TEXT_KEYS) {
-    if (!saved || !Object.hasOwn(saved, k)) continue;
-    const tried = { ...out, [k]: saved[k] };
-    if (textMetrics(asStyle(role, tried), role)) out = tried;
+    if (!Object.hasOwn(fields, k)) continue;
+    const tried = { ...out, [k]: fields[k] };
+    if (textMetrics(asStyle(role, tried), role)) (out = tried), kept.add(k);
   }
-  return textMetrics(asStyle(role, out), role)!;
+  return { metrics: textMetrics(asStyle(role, out), role)!, kept };
 }
 
-/** Whether the engine would keep these metrics through an edit: a letter case it knows, a font that exists. */
+/** Whether the engine keeps these metrics through an edit of the others: a letter case it knows, a font that exists. */
 function keepable(m: TextStyleValue, tokens: TokenDef[]): boolean {
   if (m.transform !== undefined && !CASES.includes(String(m.transform))) return false;
   const ref = m.family && typeof m.family === 'object' ? (m.family as { token?: unknown }).token : null;
@@ -242,38 +253,45 @@ export interface TypeScaleEdits {
 /**
  * The edits that give the site a type scale, as one batch: each style the theme has takes the scale's size, line
  * height and letter spacing, and keeps its font, weight and case.
- * - A style already set that way is left alone; a changed one that ends up exactly as the theme has it goes back
+ * - A style already set that way is left alone; a changed one that ends up exactly as the theme writes it goes back
  *   to the theme. Choosing the theme's own scale leaves styles that were never changed alone, so one the theme
  *   writes as a link to another keeps following it.
- * - A style saved as a link to another text style (by hand, or from an older version), or one that cannot be read,
- *   is written out whole from what it shows now, so the order of the batch cannot change its font or weight.
+ * - Only the three scale metrics are sent, and the engine keeps the rest. A style is edited before any style it
+ *   follows through a saved link (by hand, or from an older version), so it is written out from what it shows
+ *   before the batch, whatever the batch then does to the styles it followed.
+ * - A saved style that cannot be read is sent whole, except the metrics it saved that read, which the engine keeps.
  * `tokens` are the site's styles with its changes (effectiveTokens), `overrides` the changes themselves.
  */
 export function typeScaleOps(tokens: TokenDef[], themeTokens: TokenDef[], overrides: Record<string, unknown>, choice: TypeScaleChoice): TypeScaleEdits {
   const ops: EditOperation[] = [];
-  const unscalable: TypeScaleRole[] = [];
-  for (const [role, target] of targets(themeTokens, choice)) {
+  const unscalable = new Set<TypeScaleRole>();
+  const want = targets(themeTokens, tokens, choice);
+  // A style that follows another has a longer chain of links than the one it follows, so it goes first.
+  const order = [...want.keys()].sort((a, b) => followed(tokens, b).length - followed(tokens, a).length);
+  for (const role of order) {
+    const target = want.get(role);
     const changed = Object.hasOwn(overrides, role);
-    if (choice === 'theme' && !changed) continue;
+    if (!target || (choice === 'theme' && !changed)) continue;
     const declared = themeTokens.find((t) => t.id === role)!.value;
     const value = tokens.find((t) => t.id === role)?.value;
-    const theme = textMetrics(themeTokens, role)!;
-    // What the style is written out with now: its own, the style it follows, or a repair of what it saved.
+    const themeOwn = textMetrics(themeTokens, role);
     const readable = textMetrics(tokens, role, declared);
-    const current = readable ?? repaired(role, isLink(value) ? null : (value as Record<string, unknown>), theme);
+    const fix = readable || !themeOwn ? null : repaired(role, value, themeOwn);
+    const current = readable ?? fix?.metrics;
+    if (!current) continue;
+    const next: TextStyleValue = { ...current, ...target };
+    // Back to the theme only where the theme writes the style out itself: a link of the theme's would follow styles a scale does not set.
+    const backToTheme = changed && !linkOf(declared, 'text') && !!themeOwn && sameText(next, themeOwn);
+    const already = !!readable && !linkOf(value, 'text') && sameScale(readable, target);
+    if (already && !(choice === 'theme' && backToTheme)) continue;
     if (!keepable(current, tokens)) {
-      unscalable.push(role);
+      unscalable.add(role);
       continue;
     }
-    const whole = !readable || isLink(value);
-    const next: TextStyleValue = { ...current, ...target };
-    const backToTheme = changed && sameText(next, theme);
-    const already = !whole && sameScale(current, target);
-    // The theme's own scale also clears a change that matches the theme; a preset leaves a matching style alone.
-    if (already && !(choice === 'theme' && backToTheme)) continue;
-    ops.push({ type: 'token.set', tokenId: role, value: backToTheme ? null : whole ? next : { ...target } });
+    const sent = fix ? Object.fromEntries(TEXT_KEYS.filter((k) => !fix.kept.has(k) || (SCALE_KEYS as readonly string[]).includes(k)).flatMap((k) => (next[k] === undefined ? [] : [[k, next[k]]]))) : { ...target };
+    ops.push({ type: 'token.set', tokenId: role, value: backToTheme ? null : sent });
   }
-  return { ops, unscalable };
+  return { ops, unscalable: TYPE_SCALE_ROLES.filter((r) => unscalable.has(r)) };
 }
 
 /**
@@ -283,12 +301,12 @@ export function typeScaleOps(tokens: TokenDef[], themeTokens: TokenDef[], overri
 export function activeTypeScale(tokens: TokenDef[], themeTokens: TokenDef[]): TypeScaleChoice | null {
   return (
     TYPE_SCALE_CHOICES.find((choice) => {
-      const want = targets(themeTokens, choice);
+      const want = targets(themeTokens, tokens, choice);
       return (
         want.size > 0 &&
         [...want].every(([role, target]) => {
           const m = textMetrics(tokens, role, themeTokens.find((t) => t.id === role)?.value);
-          return !!m && sameScale(m, target);
+          return !!target && !!m && sameScale(m, target);
         })
       );
     }) ?? null
@@ -370,5 +388,6 @@ export function pairingOps(p: AvailablePairing, tokens: TokenDef[]): EditOperati
       const v = tokens.find((t) => t.id === id)?.value;
       return typeof v !== 'string' || firstFamily(v) !== firstFamily(stack);
     })
-    .map(([tokenId, value]) => ({ type: 'token.set' as const, tokenId, value }));
+    // A stack longer than a font style takes goes by the font's name, which the engine expands to the same stack.
+    .map(([tokenId, stack]) => ({ type: 'token.set' as const, tokenId, value: stack.length <= 200 ? stack : tokenId === 'font.display' ? p.display : p.body }));
 }

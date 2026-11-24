@@ -68,6 +68,7 @@ describe('fluid sizes', () => {
     // Small, large and dynamic viewport widths are the window's width.
     expect(sizeAtWidth('clamp(16px, 2dvw, 32px)', 1280)).toBeCloseTo(25.6, 5);
     expect(sizeAtWidth('CLAMP(1REM, 1REM + 1SVW, 3REM)', 1000)).toBeCloseTo(26, 5);
+    expect(sizeAtWidth('clamp(1rem, 1rem + 1lvw, 3rem)', 1000)).toBeCloseTo(26, 5);
     for (const v of ['calc(1rem + 2vw)', 'min(2rem, 5vw)', 'clamp(1rem, var(--x), 2rem)', 'clamp(1rem, 1rem 2vw, 4rem)', 'clamp(1rem, 2vw +, 4rem)', 'large', ''])
       expect(sizeAtWidth(v, 375), v).toBeNull();
   });
@@ -153,7 +154,7 @@ describe('applying a type scale', () => {
     const before = structuredClone(session.state.tokens);
     const r = await session.apply({ operations: opsFor(session.state, 'bold-display') }, { label: 'Use the Bold display type scale' });
     expect(r.ok).toBe(true);
-    expect(metrics(session.state, 'text.h2')).toMatchObject({ weight: 600, size: scaleMetrics('bold-display')['text.h2'].size });
+    expect(metrics(session.state, 'text.h2')).toMatchObject({ weight: 600, ...scaleMetrics('bold-display')['text.h2'] });
     await session.undo();
     expect(session.state.tokens).toEqual(before);
   });
@@ -230,9 +231,22 @@ describe('applying a type scale', () => {
     // Untouched: the theme's own scale has nothing to do, and the link is kept.
     expect(typeScaleOps(linked, linked, {}, 'theme')).toEqual({ ops: [], unscalable: [] });
     expect(activeTypeScale(linked, linked)).toBe('theme');
-    // A preset has to write it out, with the font and weight it showed through the link.
+    // A preset has to give it its own sizes; the engine writes it out with the font and weight it showed.
     const h3 = typeScaleOps(linked, linked, {}, 'editorial').ops.find((o) => (o as { tokenId: string }).tokenId === 'text.h3') as { value: TextStyleValue };
-    expect(h3.value).toEqual({ ...textMetrics(linked, 'text.h2'), ...scaleMetrics('editorial')['text.h3'] });
+    expect(h3.value).toEqual(scaleMetrics('editorial')['text.h3']);
+  });
+
+  it("never sends a style back to a link of the theme's, which could follow a style the scale does not set", () => {
+    const s = starter();
+    const linked: TokenDef[] = themeTokens(s).map((t) => (t.id === 'text.h3' ? { ...t, value: { token: 'text.eyebrow' } } : t));
+    const eyebrow = textMetrics(linked, 'text.eyebrow')!;
+    // Heading 3 has its own value now, with the theme's sizes; the eyebrow style it would follow has been made heavier.
+    const overrides = { 'text.h3': { ...eyebrow }, 'text.eyebrow': { ...eyebrow, weight: 800 } };
+    const tokens = linked.map((t) => (t.id in overrides ? { ...t, value: overrides[t.id as keyof typeof overrides] } : t));
+    expect(typeScaleOps(tokens, linked, overrides, 'theme').ops).toEqual([]);
+    const toBig = { ...overrides, 'text.h3': { ...eyebrow, size: '3rem' } };
+    const h3 = typeScaleOps(linked.map((t) => (t.id in toBig ? { ...t, value: toBig[t.id as keyof typeof toBig] } : t)), linked, toBig, 'theme').ops;
+    expect(h3).toEqual([{ type: 'token.set', tokenId: 'text.h3', value: { size: eyebrow.size, lineHeight: eyebrow.lineHeight, tracking: eyebrow.tracking } }]);
   });
 
   it('keeps a font stack written into a style, not just a link to a font', () => {
@@ -270,6 +284,18 @@ describe('applying a type scale', () => {
     expect(metrics(s, 'text.h3')).toMatchObject({ family: { token: 'font.body' }, weight: 600, ...scaleMetrics('editorial')['text.h3'] });
   });
 
+  it('writes a style out before the style it follows changes, keeping its font, weight and case', () => {
+    let s = starter();
+    const h1 = textMetrics(themeTokens(s), 'text.h1')!;
+    // Heading 1 follows Heading 2, which shows uppercase in a font of its own; Heading 2 then takes Compact's sizes.
+    s = set(s, 'text.h2', { family: 'Lora', transform: 'uppercase', weight: 700 });
+    s.tokens.overrides['text.h1'] = { token: 'text.h2' };
+    const shown = metrics(s, 'text.h1');
+    s = apply(s, opsFor(s, 'compact'));
+    expect(metrics(s, 'text.h1')).toEqual({ ...shown, ...scaleMetrics('compact')['text.h1'] });
+    expect(metrics(s, 'text.h1').family).not.toEqual(h1.family);
+  });
+
   it('sets only the styles a theme has', () => {
     const s = starter();
     const fewer: TokenDef[] = themeTokens(s).filter((t) => t.id !== 'text.lead' && t.id !== 'text.small');
@@ -286,6 +312,12 @@ describe('applying a type scale', () => {
     expect(activeTypeScale(odd, odd)).toBe('theme');
     const one = odd.map((t) => (t.id === 'text.body' ? { ...t, value: { ...(t.value as TextStyleValue), size: '1.1rem' } } : t));
     expect(activeTypeScale(one, odd)).toBeNull();
+    // A style the theme cannot write out that the project gave a value of its own is scaled, and keeps the theme's scale from matching.
+    const lead = textMetrics(themeTokens(s), 'text.lead')!;
+    const own = odd.map((t) => (t.id === 'text.lead' ? { ...t, value: lead } : t));
+    expect(scaleRoles(odd, own)).toContain('text.lead');
+    expect(typeScaleOps(own, odd, { 'text.lead': lead }, 'compact').ops.map((o) => (o as { tokenId: string }).tokenId)).toContain('text.lead');
+    expect(activeTypeScale(own, odd)).toBeNull();
   });
 
   it('writes a whole style out when the one saved cannot be read, keeping what it saved that reads', () => {
@@ -294,11 +326,18 @@ describe('applying a type scale', () => {
     s.tokens.overrides['text.small'] = { family: georgia, size: '0.8rem', lineHeight: '1.4', weight: 700 } as unknown as TextStyleValue;
     const ops = opsFor(s, 'balanced');
     const small = ops.find((o) => (o as { tokenId: string }).tokenId === 'text.small') as { value: TextStyleValue };
-    expect(small.value).toEqual({ ...textMetrics(themeTokens(s), 'text.small'), family: georgia, weight: 700, ...scaleMetrics('balanced')['text.small'] });
+    // Only what the engine cannot keep from the saved style is sent.
+    expect(small.value).toEqual(scaleMetrics('balanced')['text.small']);
     expect(metrics(apply(s, ops), 'text.small')).toMatchObject({ family: georgia, weight: 700, ...scaleMetrics('balanced')['text.small'] });
     // The theme's own scale repairs it too, rather than taking the theme's sizes it shows for a match.
     const back = apply(s, opsFor(s, 'theme'));
     expect(metrics(back, 'text.small')).toMatchObject({ family: georgia, weight: 700, size: textMetrics(themeTokens(s), 'text.small')!.size });
+    // A saved style without a font takes the theme's.
+    const fontless = starter();
+    fontless.tokens.overrides['text.small'] = { size: '0.8rem', weight: 700 } as unknown as TextStyleValue;
+    const sent = (opsFor(fontless, 'balanced').find((o) => (o as { tokenId: string }).tokenId === 'text.small') as { value: Record<string, unknown> }).value;
+    expect(sent).toEqual({ family: { token: 'font.body' }, ...scaleMetrics('balanced')['text.small'] });
+    expect(metrics(apply(fontless, opsFor(fontless, 'balanced')), 'text.small')).toMatchObject({ family: { token: 'font.body' }, weight: 700 });
   });
 
   it('leaves out a style whose font or case would be refused, so the rest still applies', () => {
@@ -309,6 +348,10 @@ describe('applying a type scale', () => {
     expect(unscalable).toEqual(['text.h3', 'text.lead']);
     expect(ops.map((o) => (o as { tokenId: string }).tokenId)).toEqual(['text.display', 'text.h1', 'text.h2', 'text.body', 'text.small']);
     expect(() => applyOperations(s, ops)).not.toThrow();
+    // A style that already has the scale needs no change, whatever it holds.
+    const done = starter();
+    done.tokens.overrides['text.h3'] = { ...textMetrics(themeTokens(done), 'text.h3')!, ...scaleMetrics('compact')['text.h3'], transform: 'full-width' };
+    expect(typeScaleOps(effectiveTokens(done), themeTokens(done), done.tokens.overrides, 'compact').unscalable).toEqual([]);
   });
 });
 
@@ -354,6 +397,12 @@ describe('font pairings', () => {
     s = apply(s, pairingOps(loraDm, effectiveTokens(s)));
     expect(followedText(effectiveTokens(s), 'font.display')).toBe(loraDm.displayStack);
     expect(followedText(effectiveTokens(s), 'font.body')).toBe(loraDm.bodyStack);
+  });
+
+  it('names a font whose stack is longer than a font style takes', () => {
+    const long = { ...availablePairings(installedFonts(starter()))[1], displayStack: `'Playfair Display Variable', ${Array.from({ length: 30 }, (_, i) => `'Fallback ${i}'`).join(', ')}, serif` };
+    expect(long.displayStack.length).toBeGreaterThan(200);
+    expect(pairingOps(long, effectiveTokens(starter()))[0]).toEqual({ type: 'token.set', tokenId: 'font.display', value: 'Playfair Display' });
   });
 
   it('tells a shipped font from a project font of the same name', () => {
