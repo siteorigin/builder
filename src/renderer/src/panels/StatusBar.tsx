@@ -1,12 +1,16 @@
-import { useState } from 'react';
-import { ChevronRight, CircleAlert, CircleCheck, Component, Ellipsis, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
-import type { RuntimeState } from '@shared/api';
-import { api, applyOps, confirmDialog, setState, toast, useStore } from '../store';
-import { refKey } from '@shared/types';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { ChevronRight, CircleAlert, CircleCheck, Component, Ellipsis, Info, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
+import type { Diagnostic, RuntimeState } from '@shared/api';
+import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
+import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
-import { openAsset, openOutline } from '../lib/actions';
+import { goToShellPart, openAsset, openOutline, selectPage } from '../lib/actions';
 import { Modal, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+/** "2 problems and 1 warning", or whichever of them there are. */
+const countsText = (problems: number, warnings: number) => [problems && plural(problems, 'problem'), warnings && plural(warnings, 'warning')].filter(Boolean).join(' and ');
 
 function runtimeInfo(runtime: RuntimeState, pageIssue: string | null, frameReady: boolean) {
   const broken = runtime.state === 'error' || (runtime.state === 'ready' && !!pageIssue);
@@ -39,9 +43,10 @@ export function StatusBar() {
   const announce = useTransitionAnnouncement(health, (prev, next) => {
     const [pe, pw, pc, pb] = prev.split(',').map(Number);
     const [e, w, c, b] = next.split(',').map(Number);
-    if (b !== pb) return b ? `Preview problem. ${e} problem${e === 1 ? '' : 's'} in this project` : `Preview working again${e ? `. ${e} problem${e === 1 ? '' : 's'} remain` : ''}`;
+    const counts = countsText(e, w);
+    if (b !== pb) return b ? `Preview problem. ${counts} in this project` : `Preview working again${counts ? `. ${counts} in this project` : ''}`;
     if (c !== pc && e - c === pe - pc && w === pw) return null;
-    return e ? `${e} problem${e === 1 ? '' : 's'} in this project` : w ? `${w} warning${w === 1 ? '' : 's'} in this project` : 'No problems';
+    return counts ? `${counts} in this project` : 'No problems';
   });
   if (!snap) return null;
   // Problems = document errors plus file conflicts, so this never says "No problems" while the toolbar shows a conflict.
@@ -73,7 +78,7 @@ export function StatusBar() {
       (nav.querySelector<HTMLElement>('[aria-current]') ?? document.querySelector<HTMLElement>('main.canvas'))?.focus();
     });
   };
-  const problemText = errors ? `${errors} problem${errors === 1 ? '' : 's'}` : warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : 'No problems';
+  const problemText = errors ? plural(errors, 'problem') : warnings ? plural(warnings, 'warning') : 'No problems';
   return (
     <footer className="status-bar">
       <button className={`row preview-status${broken ? ' error' : ''}`} style={{ gap: 6 }} title="Preview status: open Project health" onClick={() => setState({ modal: { kind: 'health' } })}>
@@ -132,6 +137,7 @@ export function StatusBar() {
       <button className={`problems${errors ? ' error' : warnings ? ' warn' : ''}`} onClick={() => setState({ modal: { kind: 'health' } })} title="Project health: check this project for problems">
         {errors ? <CircleAlert /> : warnings ? <TriangleAlert /> : <CircleCheck />}
         {problemText}
+        {errors > 0 && warnings > 0 && <span className="also">, {plural(warnings, 'warning')}</span>}
         <ChevronRight className="go" aria-hidden="true" />
       </button>
       <span className="sr-only" role="status">
@@ -143,22 +149,149 @@ export function StatusBar() {
   );
 }
 
+/** The project's own documents, by the names the app uses for them. */
+const DOCUMENT_NAMES: Record<string, string> = {
+  'siteorigin/site.json': 'Site settings',
+  'siteorigin/tokens.json': 'Site styles',
+  'siteorigin/assets.json': 'Asset library',
+  'siteorigin/theme-lock.json': 'Theme record'
+};
+
+/** What a conflicted file holds, in the words the user knows it by. The path is shown beside it. */
+function conflictSubject(state: ProjectState, path: string): string {
+  const page = /^siteorigin\/pages\/([^/]+)\.json$/.exec(path)?.[1];
+  if (page && Object.hasOwn(state.pages, page)) return `${state.pages[page].title} page`;
+  const component = /^siteorigin\/components\/([^/]+)\//.exec(path)?.[1];
+  if (component && Object.hasOwn(state.components, component)) return `${state.components[component].name} component`;
+  if (Object.hasOwn(DOCUMENT_NAMES, path)) return DOCUMENT_NAMES[path];
+  const route = /^src\/routes\/(.*)\+page\.svelte$/.exec(path)?.[1];
+  const built = route === undefined ? undefined : Object.values(state.pages).find((p) => p.route === `/${route}`);
+  return built ? `${built.title} website file` : 'Project file';
+}
+
+/** A generated file's reason, without the word "generated". */
+const conflictReason = (reason: string) =>
+  reason === 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.' ? 'Edited outside SiteOrigin Builder, which can’t update this file until it is restored.' : reason;
+
+/** Why a theme component stays as it is, in plain words where the engine's reason is about its stored data. */
+const keptReason = (reason: string) => (reason === 'Its stored definition was changed outside the theme.' ? 'It has its own edits, so this update leaves it as it is.' : reason);
+
+/** A diagnostic's opening words (the page or image it is about), set apart so a long list can be scanned by them. */
+function diagnosticLead(state: ProjectState, d: Diagnostic): { lead: string; rest: string } | null {
+  const { kind, id } = d.owner ?? {};
+  if (!id) return null;
+  if (kind === 'asset') {
+    const name = Object.hasOwn(state.assets.assets, id) ? state.assets.assets[id].name : undefined;
+    return typeof name === 'string' && name && d.message.startsWith(`${name} `) ? { lead: name, rest: d.message.slice(name.length) } : null;
+  }
+  const where = kind === 'page' && Object.hasOwn(state.pages, id) ? state.pages[id].title : kind === 'component' && Object.hasOwn(state.components, id) ? state.components[id].name : null;
+  return where && d.message.startsWith(`${where}: `) ? { lead: `${where}:`, rest: d.message.slice(where.length + 1) } : null;
+}
+
+/** The element a diagnostic is about, when it can be selected on a page. */
+function diagnosticTarget(state: ProjectState, d: Diagnostic): ElementRef | null {
+  if (!d.nodeId || !d.owner) return null;
+  const { kind, id } = d.owner;
+  const tree = kind === 'page' && Object.hasOwn(state.pages, id) ? state.pages[id] : kind === 'shell' && (id === 'header' || id === 'footer') ? state.site.shell[id] : null;
+  if (!tree || !Object.hasOwn(tree.nodes, d.nodeId)) return null;
+  return { owner: d.owner as ElementRef['owner'], instancePath: [], nodeId: d.nodeId };
+}
+
+function showElement(ref: ElementRef) {
+  const s = getState();
+  if (ref.owner.kind === 'page') {
+    if (s.pageId !== ref.owner.id || s.definitionMode) selectPage(ref.owner.id);
+  } else if (!goToShellPart(ref.owner.id)) {
+    toast(`No page shows the shared ${ref.owner.id} right now.`, 'error');
+    return;
+  }
+  setState({ modal: null, mode: 'edit', selection: ref, rightTab: 'inspect', dockOpen: true });
+}
+
+function HealthGroup({ title, count, note, children }: { title: string; count?: number; note?: ReactNode; children: ReactNode }) {
+  const id = useId();
+  return (
+    <section className="health-group" aria-labelledby={id}>
+      <h3 id={id}>
+        {title}
+        {count !== undefined && <span className="health-count">{count}</span>}
+      </h3>
+      {note && <p className="health-note">{note}</p>}
+      <ul className="health-list">{children}</ul>
+    </section>
+  );
+}
+
+/** One item: what happened, its actions (named by that text, since rows repeat them), and any details across the full width. */
+function HealthRow({ tone, icon, stacked, actions, details, children }: { tone: 'danger' | 'warn' | 'quiet'; icon: ReactNode; stacked?: boolean; actions?: ReactNode; details?: ReactNode; children: ReactNode }) {
+  const textId = useId();
+  return (
+    <li className={`health-row ${tone}${stacked ? ' stacked' : ''}`}>
+      <span className="health-icon">{icon}</span>
+      <div className="health-text" id={textId}>
+        {children}
+      </div>
+      {actions && (
+        <div className="health-actions" role="group" aria-labelledby={textId}>
+          {actions}
+        </div>
+      )}
+      {details && <div className="health-below">{details}</div>}
+    </li>
+  );
+}
+
+/** Technical output, closed until asked for: it helps whoever is fixing the problem, and few others. */
+function ErrorDetails({ text }: { text: string }) {
+  const [copied, setCopied] = useState<'copied' | 'failed' | null>(null);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied('copied');
+    } catch {
+      setCopied('failed');
+    }
+  };
+  return (
+    <details className="health-details">
+      <summary>Error details</summary>
+      <pre>{text}</pre>
+      <button className="btn btn-sm" onClick={() => void copy()}>
+        {copied === 'copied' ? 'Copied' : 'Copy details'}
+      </button>
+      <span className="health-copy-state" role="status">
+        {copied === 'failed' ? 'Couldn’t copy. Select the text above instead.' : ''}
+      </span>
+    </details>
+  );
+}
+
 export function HealthModal() {
   const snap = useStore((s) => s.snapshot);
   const runtime = useStore((s) => s.runtime);
   const pageIssue = useStore((s) => s.previewIssue);
-  const frameReady = useStore((s) => s.frameReady);
-  if (!snap) return null;
-  // The tools line describes the website tools only; a page problem is listed separately below.
-  const { label } = runtimeInfo(runtime, null, true);
-  void frameReady;
-  const close = () => setState({ modal: null });
   const [busy, setBusy] = useState<string | null>(null);
+  const summaryRef = useRef<HTMLParagraphElement>(null);
+  // What the last action did: its row may be gone by the time it finishes.
+  const [status, setStatus] = useState('');
+  // Settling a problem removes the row holding the focused button: carry on from the summary, which now says what is left.
+  const listed = [snap?.diagnostics.length ?? 0, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, runtime.state, !!pageIssue].join();
+  useEffect(() => {
+    const active = document.activeElement;
+    if (!active || active === document.body) summaryRef.current?.focus();
+  }, [listed, status]);
+  if (!snap) return null;
+  const st = snap.state;
+  const readOnly = !!snap.readOnly;
+  // The tools line describes the website tools only; a page problem is listed separately.
+  const { label } = runtimeInfo(runtime, null, true);
+  const close = () => setState({ modal: null });
   const resolve = async (path: string, choice: 'keep' | 'restore') => {
     setBusy(path);
     try {
       const r = await api.project.resolveConflict(path, choice);
       if (!r.ok && r.message) toast(r.message, 'error');
+      else if (r.ok) setStatus(`${conflictSubject(st, path)} conflict resolved.`);
     } catch (e) {
       toast(`The conflict could not be resolved: ${(e as Error).message}`, 'error');
     } finally {
@@ -166,9 +299,15 @@ export function HealthModal() {
     }
   };
   const updateTheme = async () => {
+    const count = plural(snap.themeUpdates?.available.length ?? 0, 'component');
     setBusy('theme');
+    setStatus(`Updating ${count}…`);
     try {
-      await applyOps([{ type: 'theme.refresh' }], 'Update theme components');
+      const done = await applyOps([{ type: 'theme.refresh' }], 'Update theme components');
+      setStatus(done ? `${count} updated.` : '');
+    } catch (e) {
+      setStatus('');
+      throw e;
     } finally {
       setBusy(null);
     }
@@ -176,7 +315,7 @@ export function HealthModal() {
   const unlock = async () => {
     const ok = await confirmDialog({
       title: 'Unlock this project?',
-      body: 'Only unlock it if SiteOrigin Builder is no longer running on the other computer or account. Two apps editing the same project can overwrite each other’s changes.',
+      body: 'Only unlock it if the other copy of SiteOrigin Builder is no longer running. Two apps editing the same project can overwrite each other’s changes.',
       confirmLabel: 'Unlock and edit',
       cancelLabel: 'Keep read-only',
       danger: true
@@ -186,130 +325,216 @@ export function HealthModal() {
     if (!r.ok && r.message) toast(r.message, 'error');
     else close();
   };
-  return (
-   <Modal
-          title="Project health"
-          icon={<Stethoscope />}
-          onClose={() => close()}
-          wide={snap.diagnostics.length + snap.conflicts.length > 0 || (runtime.state === 'error' && !!runtime.detail)}
-          footer={
-            <button className="btn" onClick={() => close()}>
-              Close
+  const reinstall = (text: string) => (
+    <button className="btn btn-sm" disabled={runtime.state === 'preparing'} onClick={() => void api.project.repairDependencies()}>
+      {text}
+    </button>
+  );
+
+  // Conflicts are listed with their actions, so their diagnostic copies are skipped. The counts match the status bar's.
+  const listedDiagnostics = snap.diagnostics.filter((d) => d.code !== 'CONFLICT');
+  const errors = listedDiagnostics.filter((d) => d.severity === 'error');
+  const warnings = listedDiagnostics.filter((d) => d.severity === 'warning');
+  const notes = listedDiagnostics.filter((d) => d.severity === 'info');
+  const toolsFailed = runtime.state === 'error';
+  const pageFailed = !!pageIssue && runtime.state === 'ready';
+  const problems = errors.length + snap.conflicts.length + (toolsFailed || pageFailed ? 1 : 0);
+  const updates = snap.themeUpdates?.available ?? [];
+  const kept = snap.themeUpdates?.kept ?? [];
+  const headline = problems ? `${plural(problems, 'problem')}${warnings.length ? ` and ${plural(warnings.length, 'warning')}` : ''}` : warnings.length ? plural(warnings.length, 'warning') : 'No problems found';
+  const guidance = problems ? (warnings.length ? `Fix the ${problems === 1 ? 'problem' : 'problems'} first, then check the warnings.` : problems === 1 ? 'Here’s what to do next.' : 'Each one says what to do next.') : warnings.length ? 'Worth checking before you publish.' : 'Every page, component and style in this project checks out.';
+
+  const diagnosticRow = (d: Diagnostic, i: number) => {
+    // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed.
+    const asset = d.code === 'ASSET_FILE_MISSING' && d.owner?.kind === 'asset' ? d.owner.id : null;
+    const uses = asset ? (snap.assetUsage[asset] ?? 0) : 0;
+    // A page's heading outline is reviewed (and fixed) in its outline, beside the page.
+    const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
+    const target = asset || outlinePage ? null : diagnosticTarget(st, d);
+    const lead = diagnosticLead(st, d);
+    return (
+      <HealthRow
+        key={`${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
+        tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
+        icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
+        actions={
+          asset ? (
+            <button className="btn btn-sm" onClick={() => openAsset(asset)}>
+              Open in Assets
             </button>
-          }
+          ) : outlinePage ? (
+            <button className="btn btn-sm" onClick={() => openOutline(outlinePage)}>
+              Show headings
+            </button>
+          ) : target ? (
+            <button className="btn btn-sm" onClick={() => showElement(target)}>
+              Show on page
+            </button>
+          ) : undefined
+        }
+      >
+        {lead ? (
+          <>
+            <strong>{lead.lead}</strong>
+            {lead.rest}
+          </>
+        ) : (
+          d.message
+        )}
+        {asset && <> {uses ? `It is used ${uses === 1 ? 'once' : uses === 2 ? 'twice' : `${uses} times`}, and every use is kept.` : 'Nothing uses it.'}</>}
+      </HealthRow>
+    );
+  };
+
+  return (
+    <Modal
+      title="Project health"
+      icon={<Stethoscope />}
+      onClose={() => close()}
+      wide={problems + warnings.length + notes.length > 0}
+      footer={
+        <button className="btn" onClick={() => close()}>
+          Close
+        </button>
+      }
+    >
+      <p ref={summaryRef} className={`health-summary ${problems ? 'error' : warnings.length ? 'warn' : 'ok'}`} tabIndex={-1} data-autofocus>
+        {problems ? <CircleAlert /> : warnings.length ? <TriangleAlert /> : <CircleCheck />}
+        <span>
+          <strong>{headline}</strong>
+          {guidance}
+          {status && ` ${status}`}
+        </span>
+      </p>
+      <span className="sr-only" role="status">
+        {status}
+      </span>
+      {snap.readOnly && (
+        <div className="scope-note site health-callout">
+          <Lock />
+          <span className="grow">
+            <strong>Read-only.</strong> {snap.readOnly.reason}
+          </span>
+          {snap.readOnly.canUnlock && (
+            <button className="btn btn-sm" onClick={() => void unlock()}>
+              Unlock…
+            </button>
+          )}
+        </div>
+      )}
+      {problems > 0 && (
+        <HealthGroup
+          title="Problems"
+          count={problems}
+          note={snap.conflicts.length > 0 ? 'Whichever version of a file you choose, the one it replaces is saved in the project’s recovery folder.' : undefined}
         >
-          <div className="scope-note info" style={{ marginBottom: 12, alignItems: 'center' }}>
-            <Wrench />
-            <span className="grow">
-              <strong>Website tools: {label.toLowerCase()}.</strong> They are set up inside this project folder. Reinstall them if the preview will not start.
-            </span>
-            {!snap.readOnly && (
-              <button className="btn btn-sm" disabled={runtime.state === 'preparing'} onClick={() => void api.project.repairDependencies()}>
-                Reinstall
-              </button>
-            )}
-          </div>
-          {pageIssue && runtime.state === 'ready' && (
-            <div className="scope-note danger" style={{ marginBottom: 12 }}>
-              <CircleAlert />
-              <span className="grow">
-                <strong>This page couldn’t be previewed.</strong> Something on it failed to show. Undo your last change, or try again.
-                <span className="mono" style={{ display: 'block', marginTop: 4, fontSize: 12, color: 'var(--text-2)', userSelect: 'text', overflowWrap: 'anywhere' }}>
-                  {pageIssue}
-                </span>
-              </span>
-            </div>
+          {toolsFailed && (
+            <HealthRow
+              tone="danger"
+              icon={<CircleAlert />}
+              actions={!readOnly ? reinstall('Reinstall website tools') : undefined}
+              details={runtime.detail || runtime.message ? <ErrorDetails text={runtime.detail || runtime.message} /> : undefined}
+            >
+              <strong>The preview couldn’t start.</strong> {readOnly ? 'The error details show what went wrong.' : 'Reinstalling the website tools may help. If it doesn’t, the error details show what went wrong.'}
+            </HealthRow>
           )}
-          {snap.readOnly && (
-            <div className="scope-note info" style={{ marginBottom: 12, alignItems: 'center' }}>
-              <Lock />
-              <span className="grow">
-                <strong>Read-only.</strong> {snap.readOnly.reason}
-              </span>
-              {snap.readOnly.canUnlock && (
-                <button className="btn btn-sm" onClick={() => void unlock()}>
-                  Unlock…
-                </button>
-              )}
-            </div>
+          {pageFailed && (
+            <HealthRow tone="danger" icon={<CircleAlert />} details={<ErrorDetails text={pageIssue!} />}>
+              <strong>This page couldn’t be previewed.</strong> Something on it failed to show. Undo your last change, or choose Try again on the preview.
+            </HealthRow>
           )}
-          {!!snap.themeUpdates?.available.length && (
-            <div className="scope-note info" style={{ marginBottom: 12, alignItems: 'center' }}>
-              <RefreshCw />
-              <span className="grow" title={snap.themeUpdates.available.map((u) => u.name).join(', ')}>
-                <strong>
-                  {snap.themeUpdates.available.length} theme component{snap.themeUpdates.available.length === 1 ? ' has' : 's have'} an update.
-                </strong>{' '}
-                Your content and changes stay. Components you forked are not touched, and you can undo this.
-                {!!snap.themeUpdates.kept.length && ` ${snap.themeUpdates.kept.length} more can’t be updated automatically.`}
-              </span>
-              <button className="btn btn-sm" disabled={!!busy || !!snap.conflicts.length} onClick={() => void updateTheme()}>
-                Update
-              </button>
-            </div>
-          )}
-          {snap.diagnostics.length === 0 && snap.conflicts.length === 0 && !pageIssue && runtime.state !== 'error' && (
-            <div className="scope-note shared">
-              <CircleCheck />
-              <span>No problems found. Every page, component and style in this project checks out.</span>
-            </div>
-          )}
-          <div className="col" style={{ gap: 6 }}>
-            {/* Conflicts are listed below with their actions, so their diagnostic copies are skipped here. */}
-            {snap.diagnostics.filter((d) => d.code !== 'CONFLICT').map((d, i) => {
-              // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed.
-              const asset = d.code === 'ASSET_FILE_MISSING' && d.owner?.kind === 'asset' ? d.owner.id : null;
-              const uses = asset ? (snap.assetUsage[asset] ?? 0) : 0;
-              // A page's heading outline is reviewed (and fixed) in its outline, beside the page.
-              const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
-              return (
-                <div key={i} className={`scope-note ${d.severity === 'error' ? 'danger' : 'site'}`} style={asset || outlinePage ? { alignItems: 'center' } : undefined}>
-                  {d.severity === 'error' ? <CircleAlert /> : <TriangleAlert />}
-                  <span className="grow">
-                    {d.message}
-                    {asset && <> {uses ? `It is used ${uses === 1 ? 'once' : uses === 2 ? 'twice' : `${uses} times`}, and every use is kept.` : 'Nothing uses it.'}</>}
-                  </span>
-                  {asset && (
-                    <button className="btn btn-sm" onClick={() => openAsset(asset)}>
-                      Open in Assets
-                    </button>
-                  )}
-                  {outlinePage && (
-                    <button className="btn btn-sm" onClick={() => openOutline(outlinePage)}>
-                      Show headings
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-            {snap.conflicts.map((c) => (
-              <div key={c.path} className="scope-note danger">
-                <CircleAlert />
-                <span className="grow">
-                  <strong>{c.path}</strong>: {c.reason}
-                </span>
-                {/* An older snapshot without a kind: generated conflicts were the ones whose reason says so. */}
-                {(c.kind ?? (c.reason.startsWith('Generated') ? 'generated' : 'canonical')) === 'canonical' ? (
+          {snap.conflicts.map((c) => {
+            // An older snapshot without a kind: generated conflicts were the ones whose reason says so.
+            const canonical = (c.kind ?? (c.reason.startsWith('Generated') ? 'generated' : 'canonical')) === 'canonical';
+            return (
+              <HealthRow
+                key={c.path}
+                tone="danger"
+                icon={<CircleAlert />}
+                stacked
+                actions={
                   <>
-                    <button className="btn btn-sm" disabled={!!busy} title="Use the file as it is now on disk" onClick={() => void resolve(c.path, 'keep')}>
-                      Keep external changes
+                    <button className="btn btn-sm" onClick={() => void api.projects.reveal(`${snap.dir}/${c.path}`)}>
+                      Show in folder
                     </button>
-                    <button className="btn btn-sm" disabled={!!busy} title="Put back SiteOrigin Builder’s version. The external file is saved in the project’s recovery folder." onClick={() => void resolve(c.path, 'restore')}>
-                      Restore Builder version
-                    </button>
+                    <span className="grow" />
+                    {canonical ? (
+                      <>
+                        <button className="btn btn-sm" disabled={!!busy || readOnly} title="Use the file as it is now on disk. SiteOrigin Builder’s version is saved in the project’s recovery folder." onClick={() => void resolve(c.path, 'keep')}>
+                          Keep external changes
+                        </button>
+                        <button className="btn btn-sm" disabled={!!busy || readOnly} title="Put back SiteOrigin Builder’s version. The external file is saved in the project’s recovery folder." onClick={() => void resolve(c.path, 'restore')}>
+                          Restore Builder version
+                        </button>
+                      </>
+                    ) : (
+                      <button className="btn btn-sm" disabled={!!busy || readOnly} title="Put back SiteOrigin Builder’s file. The edited file is saved in the project’s recovery folder." onClick={() => void resolve(c.path, 'restore')}>
+                        Restore Builder’s file
+                      </button>
+                    )}
                   </>
-                ) : (
-                  <button className="btn btn-sm" disabled={!!busy} onClick={() => void resolve(c.path, 'restore')}>
-                    Restore
-                  </button>
-                )}
-                <button className="btn btn-sm" onClick={() => void api.projects.reveal(`${snap.dir}/${c.path}`)}>
-                  Show file
-                </button>
-              </div>
-            ))}
-          </div>
-          {runtime.state === 'error' && runtime.detail && <pre className="code-view" style={{ height: 'auto', maxHeight: 240, marginTop: 12 }}>{runtime.detail}</pre>}
-        </Modal>
+                }
+              >
+                <strong>{conflictSubject(st, c.path)}.</strong> {conflictReason(c.reason)}
+                <span className="health-path">{c.path}</span>
+              </HealthRow>
+            );
+          })}
+          {errors.map(diagnosticRow)}
+        </HealthGroup>
+      )}
+      {warnings.length > 0 && (
+        <HealthGroup title="Warnings" count={warnings.length}>
+          {warnings.map(diagnosticRow)}
+        </HealthGroup>
+      )}
+      {notes.length > 0 && (
+        <HealthGroup title="Notes" count={notes.length}>
+          {notes.map(diagnosticRow)}
+        </HealthGroup>
+      )}
+      {updates.length > 0 && (
+        <HealthGroup title="Updates">
+          <HealthRow
+            tone="quiet"
+            icon={<RefreshCw />}
+            actions={
+              <button className="btn btn-sm" disabled={!!busy || readOnly || !!snap.conflicts.length} onClick={() => void updateTheme()}>
+                Update {plural(updates.length, 'component')}
+              </button>
+            }
+            details={
+              <details className="health-details">
+                <summary>{kept.length ? `See which ones (${kept.length} more can’t be updated)` : 'See which ones'}</summary>
+                <ul>
+                  <li>
+                    <strong>Will update:</strong> {updates.map((u) => u.name).join(', ')}
+                  </li>
+                  {kept.map((k) => (
+                    <li key={k.id}>
+                      <strong>{k.name}.</strong> {keptReason(k.reason)}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            }
+          >
+            <strong>
+              {updates.length} theme component{updates.length === 1 ? ' has' : 's have'} an update.
+            </strong>{' '}
+            Your content and changes stay. Components you copied and edited are not touched, and you can undo this.
+            {!!snap.conflicts.length && <span className="health-hint">Resolve the file conflicts above to update.</span>}
+          </HealthRow>
+        </HealthGroup>
+      )}
+      {!toolsFailed && (
+        <HealthGroup title="Website tools">
+          <HealthRow tone="quiet" icon={<Wrench />} actions={!readOnly && runtime.state !== 'unavailable' ? reinstall('Reinstall') : undefined}>
+            <strong>{runtime.state === 'ready' ? 'Ready' : label}.</strong>{' '}
+            {runtime.state === 'preparing' ? 'This can take a minute.' : runtime.state === 'unavailable' ? runtime.message : readOnly ? 'The website tools are set up inside this project folder.' : 'The website tools are set up inside this project folder. Reinstall them if the preview won’t start.'}
+          </HealthRow>
+        </HealthGroup>
+      )}
+    </Modal>
   );
 }

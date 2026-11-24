@@ -506,6 +506,10 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .status-bar .problems.warn, .status-bar .problems.warn svg { color: var(--amber); font-weight: 600; }
 .status-bar .problems.error:hover { background: var(--red-soft); color: var(--red); }
 .status-bar .problems.warn:hover { background: var(--amber-soft); color: var(--amber); }
+.status-bar .read-only { color: var(--amber); font-weight: 600; }
+.status-bar .problems.error .go, .status-bar .problems.warn .go { color: var(--text-3); }
+.status-bar .problems .also { margin-left: -5px; font-weight: 400; color: var(--text-2); }
+.status-bar .preview-status .status-dot { margin: 0 3px; }
 .status-bar .problems .go { width: 11px; height: 11px; margin-left: -2px; }
 .status-bar .problems:not(.error):not(.warn) .go { color: var(--text-3); }
 .status-sep { flex: none; width: 1px; height: 14px; background: var(--border-strong); }
@@ -1737,26 +1741,67 @@ button.asset-use:hover svg.go { color: var(--text); }
 .layers-views { padding: 0 10px 8px 14px; flex: none; }
 .outline-view { padding: 0 10px 12px 10px; }
 .outline-summary { padding: 0 0 8px 4px; }
-.outline-summary .link:disabled { opacity: 0.5; }
+.outline-summary-action { display: block; height: auto; min-height: 26px; max-width: 100%; margin-top: 6px; padding-block: 4px; white-space: normal; text-align: start; }
 .outline-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
 /* Indented by level, so the outline reads as the nesting a screen reader announces. */
 .outline-list > li { padding-inline-start: calc((min(var(--level), 6) - 1) * 12px); }
-.outline-list > li.shared { opacity: 0.8; }
-.outline-group { display: block; margin: 10px 0 2px 4px; font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
-/* In a narrow sidebar the fix wraps below its row, so the heading's words keep their room. */
-.outline-item { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; }
-.outline-row { flex: 1 1 150px; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; text-align: start; }
+.outline-group { display: block; margin: 10px 0 2px 6px; font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+/* A flagged heading keeps its words on their own line, with its flag and next step below them. */
+.outline-item { display: flex; flex-direction: column; min-width: 0; }
+.outline-row { width: 100%; min-width: 0; display: flex; align-items: flex-start; gap: 8px; min-height: 30px; padding: 4px 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; text-align: start; }
 .outline-row:hover { background: var(--hover); }
-.outline-row[aria-current='true'] { background: var(--accent-soft); }
+.outline-row[aria-current='true'] { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
 .outline-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .outline-level { flex: none; min-width: 26px; height: 20px; padding: 0 5px; border-radius: 5px; background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
 .outline-row.warn .outline-level { background: var(--amber-soft); color: var(--amber); }
-.outline-words { flex: 1 1 4em; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* On a selected row the amber tints sit on an opaque ground, so their text keeps 4.5:1 over the selection's fill. */
+.outline-row.warn[aria-current='true'] :is(.outline-level, .badge.amber) { background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--raised); }
+.outline-text { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.outline-words { display: block; width: 100%; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outline-row.warn .outline-words { white-space: normal; overflow-wrap: anywhere; }
 .outline-words.empty { color: var(--text-3); font-style: italic; }
-.outline-row .badge { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.outline-fix { flex: none; margin-inline-start: auto; }
+.outline-row .badge { flex: none; max-width: 100%; }
+/* Lines up under the heading's words: the row's padding, its level chip and their gap. */
+.outline-next { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 1px 6px 6px 40px; }
+.outline-hint { font-size: 12px; line-height: 1.4; color: var(--text-2); }
 .outline-view:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .outline-note { margin: 10px 6px 0; font-size: 12px; }
+.outline-view .layers-empty { padding: 6px 6px 8px 4px; }
+
+/* ---------- Project health dialog: a summary, then one list per severity, most urgent first ---------- */
+.health-summary { display: flex; align-items: flex-start; gap: 10px; width: fit-content; max-width: calc(100% + 12px); margin: 0 -6px 11px; padding: 3px 6px; font-size: 13px; line-height: 1.45; color: var(--text-2); }
+.modal .health-summary[data-autofocus]:focus { outline: none; }
+.modal .health-summary[data-autofocus]:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; border-radius: var(--r-sm); }
+.health-summary > svg { width: 18px; height: 18px; flex: none; margin-top: 1px; }
+.health-summary strong { display: block; font-size: 14px; font-weight: 600; color: var(--text); }
+.health-summary.error > svg { color: var(--red); }
+.health-summary.warn > svg { color: var(--amber); }
+.health-summary.ok > svg { color: var(--green); }
+.health-callout { align-items: center; margin-bottom: 14px; padding: 10px 12px; }
+.health-group + .health-group { margin-top: 14px; }
+.health-group h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.health-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-xs); background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.health-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); overflow: hidden; }
+.health-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 10px 12px; font-size: 13px; line-height: 1.45; color: var(--text); }
+.health-row + .health-row { border-top: 1px solid var(--border); }
+.health-row.stacked { grid-template-columns: 16px minmax(0, 1fr); }
+.health-icon { display: flex; height: 19px; align-items: center; color: var(--text-3); }
+.health-icon svg { width: 14px; height: 14px; }
+.health-row.danger .health-icon { color: var(--red); }
+.health-row.warn .health-icon { color: var(--amber); }
+.health-text { min-width: 0; }
+.health-text strong { font-weight: 600; }
+.health-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.health-row.stacked .health-actions { grid-column: 2; justify-content: flex-start; margin-top: 4px; }
+.health-path { display: block; margin-top: 2px; font-family: var(--mono); font-size: 11px; color: var(--text-3); overflow-wrap: anywhere; user-select: text; }
+.health-hint { display: block; margin-top: 2px; font-size: 12px; color: var(--text-2); }
+.health-note { margin: 0 0 6px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.health-below { grid-column: 2 / -1; min-width: 0; }
+.health-details { font-size: 12px; color: var(--text-2); }
+.health-details summary { width: fit-content; padding: 3px 0; font-weight: 600; line-height: 18px; }
+.health-details ul { margin: 2px 0 0; padding-inline-start: 16px; list-style: disc; line-height: 1.45; }
+.health-details pre { max-height: 200px; overflow: auto; margin: 4px 0 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--text-2); }
+.health-copy-state { margin-inline-start: 8px; }
 
 /* ---------- Inspector: selection header and content (scoped to .insp, the Inspector tab's body) ----------
    Every selection gets the same header: a kind tile (neutral, green for the shared header and footer, plum

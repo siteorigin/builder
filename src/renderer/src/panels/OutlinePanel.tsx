@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { CircleCheck, Heading1, Info, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Info, TriangleAlert } from 'lucide-react';
 import { sameRef } from '@shared/types';
 import type { OutlineHeading } from '@generator/checks';
 import { applyOps, getState, setState, useStore } from '../store';
@@ -11,7 +11,7 @@ const WHERE: Record<string, string> = { header: 'Shared header', footer: 'Shared
 function rowNote(r: OutlineRow): { text: string; warn: boolean } | null {
   if (r.extraTitle) return { text: r.heading.repeated && !r.fix ? 'Heading 1 shown more than once' : 'Another Heading 1', warn: true };
   if (r.skip) return { text: `Skips Heading ${r.skip.suggest}`, warn: true };
-  if (r.title) return { text: 'Page title', warn: false };
+  if (r.title) return { text: 'Main heading', warn: false };
   return null;
 }
 
@@ -21,6 +21,19 @@ function fixedWhy(h: OutlineHeading): string {
   if (h.levelSource) return '';
   return h.owner.kind === 'shell' ? 'Set by the shared header or footer’s design.' : 'Set by the component’s design. Update its theme component, or edit the design everywhere, to choose another level.';
 }
+
+/** The next step for a flagged heading that has no one-click fix here. */
+function flagHint(r: OutlineRow): string | null {
+  const h = r.heading;
+  if (r.fix || !(r.extraTitle || r.skip)) return null;
+  if (r.extraTitle && h.repeated) return 'It repeats on this page, so it counts as a second title.';
+  const level = `Heading ${r.skip?.suggest ?? 2}`;
+  if (h.rich) return `Change it to ${level} in the text.`;
+  return h.levelSource ? `Change it to ${level} in the Inspector.` : fixedWhy(h);
+}
+
+/** Whether a flagged heading's level is changed where the heading is edited, so the row can lead there. */
+const editable = (r: OutlineRow) => !r.fix && !!(r.extraTitle || r.skip) && !(r.extraTitle && r.heading.repeated) && (!!r.heading.rich || !!r.heading.levelSource);
 
 /**
  * The current page's headings as visitors' screen readers list them: each with its level and words, indented by
@@ -54,27 +67,31 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
     });
   };
 
+  const flagged = rows.filter((r) => r.extraTitle || r.skip).length;
+  const promise = readOnly ? 'This project is read-only, so levels can’t be changed here.' : 'Changing a level never changes how a heading looks.';
   const summary = review.missingTitle ? (
     <div className="scope-note site" role="note">
       <TriangleAlert aria-hidden="true" />
       <span className="grow">
-        <strong>No page title.</strong> None of this page’s headings is a Heading 1, so screen readers have no title to announce.
-        {titleFix && (
-          <>
-            {' '}
-            <button className="link" disabled={readOnly} onClick={() => setLevel(titleFix, 1)}>
-              Make “{headingWords(titleFix.heading)}” Heading 1
-            </button>
-          </>
+        <strong>No main heading.</strong> Screen readers have no Heading 1 to start from. {promise}
+        {titleFix && !readOnly && (
+          <button className="btn btn-sm outline-summary-action" onClick={() => setLevel(titleFix, 1)}>
+            Make “{headingWords(titleFix.heading)}” Heading 1
+          </button>
         )}
       </span>
     </div>
-  ) : review.extraTitles || review.skips.length ? (
+  ) : flagged ? (
     <div className="scope-note site" role="note">
       <TriangleAlert aria-hidden="true" />
       <span className="grow">
-        {review.extraTitles && <>This page has more than one Heading 1. Keep its title as Heading 1 and make the others Heading 2, unless they are meant to be titles. </>}
-        {review.skips.length > 0 && <>{review.skips.length === 1 ? 'A heading skips a level.' : `${review.skips.length} headings skip a level.`} Each level should follow on from the heading before it.</>}
+        <strong>
+          {flagged} heading{flagged === 1 ? '' : 's'} to check.
+        </strong>{' '}
+        {promise}
+        <button className="btn btn-sm outline-summary-action" onClick={() => document.querySelector<HTMLElement>('.outline-list .outline-row.warn')?.focus()}>
+          Go to the first one
+        </button>
       </span>
     </div>
   ) : !review.titles.length && outline.uninspected ? (
@@ -82,10 +99,15 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
       <Info aria-hidden="true" />
       <span className="grow">No Heading 1 is listed. Custom code on this page may show one; check the page in Preview.</span>
     </div>
+  ) : !review.titles.length && rows.length > 0 && rows.every((r) => r.heading.owner.kind === 'shell') ? (
+    <div className="scope-note instance" role="note">
+      <Info aria-hidden="true" />
+      <span className="grow">This page has no headings of its own.</span>
+    </div>
   ) : review.titles.length ? (
     <div className="scope-note shared" role="note">
       <CircleCheck aria-hidden="true" />
-      <span className="grow">One page title, and no skipped levels. Changing a level never changes how a heading looks.</span>
+      <span className="grow">One main heading, no skipped levels.</span>
     </div>
   ) : null;
 
@@ -106,6 +128,9 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
             const group = h.owner.kind === 'shell' && (prev?.kind !== 'shell' || prev.id !== h.owner.id) ? WHERE[h.owner.id] : null;
             const words = headingWords(h);
             const why = fixedWhy(h);
+            // A read-only project says so once, above the list, rather than offering edits on every row.
+            const hint = readOnly ? null : flagHint(r);
+            const shellName = h.owner.kind === 'shell' ? WHERE[h.owner.id] : null;
             return (
               <li key={i} className={h.owner.kind === 'shell' ? 'shared' : undefined} style={{ '--level': h.level } as React.CSSProperties}>
                 {group && <span className="outline-group">{group}</span>}
@@ -114,25 +139,37 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
                     className={`outline-row${note?.warn ? ' warn' : ''}`}
                     data-heading={r.key}
                     aria-current={sameRef(selection, target) ? 'true' : undefined}
-                    aria-label={`Heading ${h.level}, ${words}${note ? `. ${note.text}` : ''}${h.repeated && !r.extraTitle ? '. Shown more than once' : ''}`}
-                    title={why || undefined}
+                    aria-label={`Heading ${h.level}, ${words}${note ? `. ${note.text}` : ''}${h.repeated && !r.extraTitle ? '. Shown more than once' : ''}${hint ? `. ${hint}` : ''}${shellName ? `. ${shellName}` : ''}`}
+                    title={why || words}
                     onClick={() => select(h)}
                   >
                     <span className="outline-level" aria-hidden="true">
                       H{h.level}
                     </span>
-                    <span className={`outline-words${h.text ? '' : ' empty'}`}>{words}</span>
-                    {note && (
-                      <span className={`badge ${note.warn ? 'amber' : 'green'}`} aria-hidden="true">
-                        {note.warn ? <TriangleAlert /> : <Heading1 />}
-                        {note.text}
-                      </span>
-                    )}
+                    <span className="outline-text">
+                      <span className={`outline-words${h.text ? '' : ' empty'}`}>{words}</span>
+                      {note && (
+                        <span className={`badge ${note.warn ? 'amber' : 'green'}`} aria-hidden="true">
+                          {note.warn ? <TriangleAlert /> : <CircleCheck />}
+                          {note.text}
+                        </span>
+                      )}
+                    </span>
                   </button>
-                  {r.fix && (
-                    <button className="btn btn-sm outline-fix" disabled={readOnly} title="Changes the heading’s level in the page outline; it looks the same" onClick={() => setLevel(r, r.fix!)}>
-                      Make Heading {r.fix}
-                    </button>
+                  {!readOnly && (r.fix || hint) && (
+                    <div className="outline-next">
+                      {hint && <span className="outline-hint">{hint}</span>}
+                      {r.fix && (
+                        <button className="btn btn-sm" aria-label={`Make Heading ${r.fix}: ${words}`} title="Changes the heading’s level in the page outline; it looks the same" onClick={() => setLevel(r, r.fix!)}>
+                          Make Heading {r.fix}
+                        </button>
+                      )}
+                      {editable(r) && (
+                        <button className="btn btn-sm" aria-label={`Edit heading: ${words}`} onClick={() => select(h)}>
+                          Edit heading
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               </li>
