@@ -475,6 +475,32 @@ describe('copying and detaching', () => {
       'base:hover': { border: '1px solid #0000ff' },
       'base:focus': { color: '#00ff00' }
     });
+    // A stronger resting colour for the border reaches a weaker state's side through custom CSS.
+    expect(flattenStates([{ styles: { 'base:hover': { borderBlockStart: '2px solid #0000ff' } } as ResponsiveStyles, strength: 1 }, { styles: { base: { customCss: 'border-color: red' } } as ResponsiveStyles, strength: 3 }])).toBeNull();
+    // A stronger beneath side, in the same state as an own border the fold would put over it.
+    expect(flattenStates([{ styles: { 'base:hover': { borderBlockStart: '2px solid #0000ff' } } as ResponsiveStyles, strength: 2 }, { styles: { 'base:hover': { border: '1px solid #000000' } } as ResponsiveStyles, strength: 1 }], { beneath: 1 })).toBeNull();
+  });
+
+  it('drops a side a later border overrides at one size, and keeps it at the others', () => {
+    const one = [{ styles: { 'base:hover': { borderBlockStart: '3px solid #ff0000' }, 'phone:hover': { border: '1px solid #0000ff' } } as ResponsiveStyles, strength: 1 }];
+    expect(flattenStates(one)).toEqual({ 'phone:hover': { border: '1px solid #0000ff' }, 'tablet:hover': { borderBlockStart: '3px solid #ff0000' }, 'desktop:hover': { borderBlockStart: '3px solid #ff0000' } });
+  });
+
+  it('folds states whose layers already agree with the state order, and leaves states beneath alone', () => {
+    // A stronger layer's later state wins while both hold, before and after.
+    const agree = [{ styles: { 'base:hover': { background: '#00000a' } } as ResponsiveStyles, strength: 1 }, { styles: { 'base:focus': { background: '#00000b' } } as ResponsiveStyles, strength: 2 }];
+    expect(flattenStates(agree)).toEqual({ 'base:hover': { background: '#00000a' }, 'base:focus': { background: '#00000b' } });
+    // A stronger hover that beats a weaker focus while both hold disagrees with the folded order...
+    const disagree = [{ styles: { 'base:hover': { background: '#00000a' } } as ResponsiveStyles, strength: 2 }, { styles: { 'base:focus': { background: '#00000b' } } as ResponsiveStyles, strength: 1 }];
+    expect(flattenStates(disagree)).toBeNull();
+    // ...unless both are beneath, where both stay as they are.
+    expect(flattenStates(disagree, { beneath: 2 })).toEqual({});
+  });
+
+  it('refuses a link’s state background a stronger resting one beats, which still paints it in that state', () => {
+    const layers = [{ styles: { 'base:hover': { background: '#0000ff' } } as ResponsiveStyles, strength: 1 }, { styles: { base: { background: '#ff0000' } } as ResponsiveStyles, strength: 3 }];
+    expect(flattenStates(layers)).toEqual({});
+    expect(flattenStates(layers, { link: true })).toBeNull();
   });
 
   it('refuses to detach a placement whose state styles cannot be kept exactly, and changes nothing', () => {

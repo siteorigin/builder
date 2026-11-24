@@ -1439,12 +1439,13 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
  * value of the state rule that wins there; layers beneath (`beneath`) stay in force under the result as they are.
  *
  * Folded, every state rule becomes as strong as every other and as the result's resting rule, so the fold is refused
- * where that would change what shows: two layers' state values that write a CSS property in common other than as the
- * same property in the same state (which wins while both states hold, or which side of a border, no longer follows
- * their layers); a state value a stronger layer's resting rule overrides through another property (custom CSS, a
- * border over one side); and a state of a layer beneath that the result's resting rule, now over it, would hide.
+ * where that would change what shows: two states that write a CSS property in common, while both hold, where the
+ * winner is no longer the one their layers chose (layers beneath that both stay as they are aside); a state value a
+ * stronger layer's resting rule overrides through another property (custom CSS, a border over one side); a state of a
+ * layer beneath that the result's resting rule, now over it, would hide; and, for a link (`link`), a state background
+ * a stronger resting one beats, whose state rule still paints the background the resting one leaves to the theme.
  */
-export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, 'beneath'> = {}): ResponsiveStyles | null {
+export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, 'beneath' | 'link'> = {}): ResponsiveStyles | null {
   const beneath = opts.beneath ?? 0;
   type Decl = { prop: string; value: StyleValue; index: number; strength: number; scope: ResponsiveScope; state?: StyleState; names: string[] };
   const decls: Decl[] = [];
@@ -1463,12 +1464,30 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   if (!states.length) return {};
   // Two rules that can apply at the same size.
   const meet = (a: Decl, b: Decl) => a.scope === 'base' || b.scope === 'base' || a.scope === b.scope;
+  // Whether two rules can set something in common. Borders and corners are compared as families, so a side, a
+  // colour or a physical edge never slips past its shorthand.
+  const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
+  const touch = (a: Decl, b: Decl) => overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y)));
+  const order = (d: Decl) => STYLE_STATES.indexOf(d.state!);
+  const own = (d: Decl) => d.index >= beneath;
   for (const a of states) {
-    for (const b of states) if (a.index < b.index && meet(a, b) && overlap(a.names, b.names) && (a.state !== b.state || a.prop !== b.prop)) return null;
+    for (const b of states) {
+      if (a === b || !meet(a, b) || !touch(a, b) || (!own(a) && !own(b))) continue;
+      // One state's values: the size-by-size winners settle one property, and one rule's order a border and its sides.
+      if (a.state === b.state && (a.prop === b.prop || (own(a) && own(b)))) continue;
+      // Each pair once, `b` the later: the later state, or in one state the later layer.
+      if (a.state !== b.state ? order(a) > order(b) : a.index > b.index) continue;
+      // Where both apply, before: the stronger layer's, or as strong, the later. After: the later of two folded
+      // together; the folded one over a layer beneath.
+      const before = a.strength > b.strength ? a : b;
+      const after = own(a) && own(b) ? b : own(a) ? a : b;
+      if (before !== after) return null;
+    }
     for (const r of decls) {
-      if (r.state || r.index === a.index || !meet(a, r) || !overlap(a.names, r.names)) continue;
+      if (r.state || r.index === a.index || !meet(a, r) || !touch(a, r)) continue;
       if (r.strength > a.strength && r.prop !== a.prop) return null;
-      if (a.index < beneath && r.index >= beneath && r.strength <= a.strength) return null;
+      if (!own(a) && own(r) && r.strength <= a.strength) return null;
+      if (opts.link && own(a) && a.prop === 'background' && r.prop === 'background' && r.strength > a.strength) return null;
     }
   }
   const out: ResponsiveStyles = {};
@@ -1487,6 +1506,9 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
       }
       const props: StyleProps = {};
       for (const [prop, d] of best) if (d.state && d.index >= beneath) props[prop] = d.value;
+      // One rule writes a border before its sides, so a side a later border overrode here goes.
+      const border = best.get('border');
+      if (border) for (const edge of SHORTHANDS.border) if (best.has(edge) && later(rank(border), rank(best.get(edge)!))) delete props[edge];
       bySize[size] = props;
       if (Object.keys(props).length) any = true;
     }
