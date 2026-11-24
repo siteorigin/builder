@@ -40,6 +40,7 @@ export interface LocalAdapterOptions {
   lookup?: (host: string) => Promise<Array<{ address: string }>>;
 }
 
+const LOOKUP_TIMEOUT_MS = 2_000;
 const LOOPBACK_ADDRESS = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i;
 
 /**
@@ -47,14 +48,27 @@ const LOOPBACK_ADDRESS = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,
  * address it resolves to must be this computer. The name stays in the request, so proxy exclusions and certificates
  * written for it still apply.
  */
-async function localhostProblem(url: string, lookup: LocalAdapterOptions['lookup'] = (host) => dnsLookup(host, { all: true })): Promise<string | null> {
+async function localhostProblem(url: string, lookup: LocalAdapterOptions['lookup'] = (host) => dnsLookup(host, { all: true }), signal?: AbortSignal): Promise<string | null> {
   if (new URL(url).hostname !== 'localhost') return null;
   const instead = 'so nothing was sent. Use http://127.0.0.1 in the server address instead.';
+  // A resolver that stalls must not hold a request past its own timeouts, or past Stop.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort = () => undefined as void;
+  const gaveUp = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('timeout')), LOOKUP_TIMEOUT_MS);
+    onAbort = () => reject(new Error('aborted'));
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
   try {
-    const elsewhere = (await lookup('localhost')).find((a) => !LOOPBACK_ADDRESS.test(a.address));
+    const elsewhere = (await Promise.race([lookup('localhost'), gaveUp])).find((a) => !LOOPBACK_ADDRESS.test(a.address));
     return elsewhere ? `localhost on this computer points to ${elsewhere.address}, which is not this computer, ${instead}` : null;
   } catch {
     return `localhost could not be looked up on this computer, ${instead}`;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    gaveUp.catch(() => undefined);
   }
 }
 
@@ -419,7 +433,11 @@ export class LocalAdapter implements AgentModelAdapter {
       return;
     }
     // A key saved before cloud keys were refused is still never sent.
-    const keyProblem = localKeyProblem(this.endpoint.apiKey) ?? (await localhostProblem(this.url.url, this.opts.lookup));
+    const keyProblem = localKeyProblem(this.endpoint.apiKey) ?? (await localhostProblem(this.url.url, this.opts.lookup, signal));
+    if (signal.aborted) {
+      yield { type: 'error', ...CANCELLED };
+      return;
+    }
     if (keyProblem) {
       yield { type: 'error', code: 'invalid_request', message: keyProblem };
       return;

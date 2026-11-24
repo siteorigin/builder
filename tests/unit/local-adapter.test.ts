@@ -536,6 +536,19 @@ describe('where a request may go', () => {
       expect(targets).toEqual([`http://localhost:${port()}/v1/models`, `http://localhost:${port()}/v1/chat/completions`]);
     });
 
+    it('neither waits on a stalled lookup nor outlasts Stop', async () => {
+      const { fetch, targets } = counting();
+      const stalled = () => new Promise<Array<{ address: string }>>(() => undefined);
+      const started = Date.now();
+      expect(await listLocalModels(endpoint(), { fetch, lookup: stalled })).toMatchObject({ ok: false, message: expect.stringMatching(/could not be looked up/) });
+      expect(Date.now() - started).toBeLessThan(4000);
+      const stop = new AbortController();
+      const turn = run(new LocalAdapter(endpoint(), { fetch, lookup: stalled }), { tools: [] }, stop.signal);
+      stop.abort();
+      expect(errorOf(await turn)).toMatchObject({ code: 'cancelled' });
+      expect(targets).toEqual([]);
+    });
+
     it.each([
       ['points somewhere else', async () => [{ address: '127.0.0.1' }, { address: '203.0.113.7' }], /points to 203\.0\.113\.7/],
       ['cannot be looked up', async (): Promise<Array<{ address: string }>> => Promise.reject(new Error('ENOTFOUND')), /could not be looked up/]
