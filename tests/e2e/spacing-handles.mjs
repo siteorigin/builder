@@ -110,11 +110,10 @@ assert.deepEqual(heroNode(quick).overrides.root, { ...heroNode(saved).overrides.
 await eventually(async () => assert.equal(await previews(), 0), 15000);
 assert.deepEqual(await padding(), [48, 48]);
 await win.locator('[aria-label^="Undo"]').first().click();
-await eventually(async () => assert.deepEqual(heroNode(await snap()).overrides?.root?.base?.paddingBlock, { token: 'space.lg' }));
+const beforeEscape = await landed(quick, (s) => assert.deepEqual(heroNode(s).overrides?.root?.base?.paddingBlock, { token: 'space.lg' }));
 await eventually(async () => assert.deepEqual(await padding(), [24, 24]), 15000);
 
 step('Escape mid-drag puts the page back and saves nothing');
-const beforeEscape = await snap();
 await dragTopTo(70);
 await eventually(async () => assert.match(await hud.innerText(), /3XL · 72px/));
 await eventually(async () => assert.deepEqual(await padding(), [72, 72]));
@@ -133,8 +132,8 @@ assert.match(await win.locator('.ov-chip').first().innerText(), /Split hero/, 'E
 
 step('one Undo takes the drag back');
 await win.locator('[aria-label^="Undo"]').first().click();
-await eventually(async () => assert.deepEqual(heroNode(await snap()).overrides ?? {}, original, 'the overrides are as they were'));
-assert.deepEqual(applied(await snap()), applied(before), 'the history is where it started');
+const undone = await landed(escaped, (s) => assert.deepEqual(heroNode(s).overrides ?? {}, original, 'the overrides are as they were'));
+assert.deepEqual(applied(undone), applied(before), 'the history is where it started');
 await eventually(async () => assert.deepEqual(await padding(), start, 'the page shows its original padding'), 15000);
 
 step('editing Phone while the canvas shows Desktop: no handles, since the drag would not show');

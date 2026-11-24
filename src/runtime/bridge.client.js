@@ -169,7 +169,8 @@ function spacingOf(el) {
  * em, ch or lh come out as they would on the box. A percentage is taken of the page's width.
  */
 function measureSpace(vars, desc) {
-  const el = desc && typeof desc.ctx === 'string' && typeof desc.node === 'string' ? findAll(desc)[0] : null;
+  // The box the editor outlines: the first copy that shows, as the spacing report takes it.
+  const el = desc && typeof desc.ctx === 'string' && typeof desc.node === 'string' ? findAll(desc).find((e) => rectOf(e)) : null;
   const probe = document.createElement('div');
   probe.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;margin:0;border:0;visibility:hidden;pointer-events:none;';
   if (el) {

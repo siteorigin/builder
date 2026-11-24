@@ -15,6 +15,7 @@ import {
   previewDecls,
   previewMedia,
   sameStyleValue,
+  spaceSignature,
   spaceTokens,
   spacingOp,
   spacingTarget,
@@ -84,8 +85,13 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   const [hot, setHot] = useState<string | null>(null);
   const [live, setLive] = useState<{ key: string; text: string } | null>(null);
   const drag = useRef<Drag | null>(null);
-  /** The spacing scale as the page last measured it for this box; null until it first answers. */
-  const known = useRef<SpaceStop[] | null>(null);
+  /** The spacing scale as the page last measured it for this box, with the site styles it was measured for. */
+  const known = useRef<{ sig: string; stops: SpaceStop[] } | null>(null);
+  /** The last scale measured, while the site's spacing styles are still what it was measured for. */
+  const current = (): SpaceStop[] | null => {
+    const st = getState().snapshot?.state;
+    return st && known.current?.sig === spaceSignature(st) ? known.current.stops : null;
+  };
   // The inspector's choice of one card or every card changes what the handles write.
   useSyncExternalStore(subscribeReach, reachVersion);
   const shown = scopeForWidth(viewport);
@@ -97,13 +103,14 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   const measure = (): Promise<SpaceStop[]> => {
     const st = getState().snapshot?.state;
     const tokens = st ? spaceTokens(st).slice(0, 500) : [];
+    const sig = st ? spaceSignature(st) : '';
     return measureSpace(
       tokens.map((x) => x.cssVar),
       desc
     ).then((px) => {
-      if (!px) return known.current ?? [];
+      if (!px) return current() ?? [];
       const stops = tokens.flatMap((x, i) => (px[i] === null ? [] : [{ token: x.token, label: x.label, px: px[i]! }]));
-      known.current = stops;
+      known.current = { sig, stops };
       return stops;
     });
   };
@@ -259,7 +266,7 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       x: e.clientX,
       y: e.clientY,
       zoom,
-      stops: known.current,
+      stops: current(),
       at: { x: e.clientX, y: e.clientY, exact: e.altKey },
       moved: false,
       value: null,

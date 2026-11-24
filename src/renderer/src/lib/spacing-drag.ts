@@ -116,6 +116,9 @@ export function spaceTokens(state: ProjectState): Array<{ token: string; label: 
     .map((t) => ({ token: t.id, label: t.label, cssVar: tokenVar(t.id) }));
 }
 
+/** What the spacing scale is made of: a scale measured for one value of this is stale once it changes. */
+export const spaceSignature = (state: ProjectState) => JSON.stringify(effectiveTokens(state).filter((t) => t.group === 'space').map((t) => [t.id, t.value]));
+
 /** Where a selection's spacing is written: one set of styles, and the properties the inspector offers there. */
 export interface SpacingTarget {
   owner: OwnerRef;
@@ -173,11 +176,12 @@ export interface HandlePlan {
 
 const at = (styles: ResponsiveStyles | undefined, scope: ResponsiveScope) => (styles && Object.hasOwn(styles, scope) ? styles[scope] : undefined) ?? {};
 
-/** The CSS properties that set one side's padding or margin: the shorthand, its axis, the side and its logical name. */
+/** The CSS properties Custom CSS can set one side's padding or margin with: the shorthand, its axis, and the side's
+ *  logical name (physical names such as padding-top are not written there). */
 function cssNames(box: SpacingBox, side: SpacingSide, rtl: boolean): string[] {
   const axis = side === 'top' || side === 'bottom' ? 'block' : 'inline';
   const logical = side === 'top' ? 'block-start' : side === 'bottom' ? 'block-end' : (side === 'left') !== rtl ? 'inline-start' : 'inline-end';
-  return [box, `${box}-${side}`, `${box}-${axis}`, `${box}-${logical}`];
+  return [box, `${box}-${axis}`, `${box}-${logical}`];
 }
 
 /** Whether Custom CSS sets one of these properties: it is written after the named styles, so it wins. */

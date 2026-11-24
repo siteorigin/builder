@@ -13,6 +13,7 @@ import {
   previewDecls,
   previewMedia,
   spaceScale,
+  spaceSignature,
   spaceTokens,
   spacingOp,
   spacingTarget,
@@ -288,6 +289,13 @@ describe('spacingTarget: the styles a drag writes', () => {
     expect(tokens.find((t) => t.token === 'space.lg')).toEqual({ token: 'space.lg', label: 'Large', cssVar: '--so-space-lg' });
     expect(tokens.every((t) => t.token.startsWith('space.'))).toBe(true);
   });
+
+  it('marks a measured scale stale when a spacing style\u2019s value changes, and only then', () => {
+    const s = fresh();
+    const sig = spaceSignature(s);
+    expect(spaceSignature({ ...s, tokens: { ...s.tokens, overrides: { ...s.tokens.overrides, 'space.lg': '64px' } } })).not.toBe(sig);
+    expect(spaceSignature({ ...s, tokens: { ...s.tokens, overrides: { ...s.tokens.overrides, 'color.brand': '#123456' } } })).toBe(sig);
+  });
 });
 
 describe('planHandle: what each handle writes', () => {
@@ -334,12 +342,16 @@ describe('planHandle: what each handle writes', () => {
 
   it('shows no handle where Custom CSS sets the side, since it is written after the named styles', () => {
     expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding-block-start: 60px' } }))).toBeNull();
-    expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'opacity: 0.9; padding-top: 60px' } }))).toBeNull();
+    expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'opacity: 0.9; padding-block-start: 60px' } }))).toBeNull();
     expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding: 60px' } }))).toBeNull();
     expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding-block: 60px' } }))).toBeNull();
-    expect(plan('padding', 'top', element(EDGES, { phone: { customCss: 'padding-top: 60px' } }), 'base', 'phone')).toBeNull();
-    expect(plan('padding', 'bottom', element(EDGES, { base: { customCss: 'padding-top: 60px' } }))).toMatchObject({ property: 'paddingBlockEnd' });
-    expect(plan('margin', 'top', element(EDGES, { base: { customCss: 'padding-top: 60px' } }))).toMatchObject({ property: 'marginBlockStart' });
+    expect(plan('padding', 'top', element(EDGES, { phone: { customCss: 'padding-block-start: 60px' } }), 'base', 'phone')).toBeNull();
+    expect(plan('padding', 'bottom', element(EDGES, { base: { customCss: 'padding-block-start: 60px' } }))).toMatchObject({ property: 'paddingBlockEnd' });
+    expect(plan('margin', 'top', element(EDGES, { base: { customCss: 'padding-block-start: 60px' } }))).toMatchObject({ property: 'marginBlockStart' });
+    expect(plan('margin', 'top', element(EDGES, { base: { customCss: 'margin-block-start: 0' } }))).toBeNull();
+    expect(plan('padding', 'left', element(EDGES, { base: { customCss: 'padding-inline-end: 4px' } }), 'base', 'desktop', true)).toBeNull();
+    // Custom CSS never writes physical names, so one there leaves the handle.
+    expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding-top: 60px' } }))).toMatchObject({ property: 'paddingBlockStart' });
   });
 
   it('leaves a change to every card to the inspector when some card keeps a moving side of its own', () => {
@@ -348,7 +360,8 @@ describe('planHandle: what each handle writes', () => {
     expect(plan('padding', 'top', shared({ a: { base: { paddingBlock: '48px' } } }), 'phone', 'phone')).toBeNull();
     // Its own bottom is moved by the pair too.
     expect(plan('padding', 'top', shared({ a: { base: { paddingBlockEnd: '2px' } } }))).toBeNull();
-    expect(plan('padding', 'top', shared({ a: { base: { customCss: 'padding-bottom: 2px' } } }))).toBeNull();
+    expect(plan('padding', 'top', shared({ a: { base: { customCss: 'padding-block-end: 2px' } } }))).toBeNull();
+    expect(plan('padding', 'top', shared({ a: { base: { background: '#fff' } }, b: { base: { paddingBlockStart: '2px' } } }))).toBeNull();
     // Nothing of its own on these sides at the size shown, or nothing to do with spacing: the handle stays.
     expect(plan('padding', 'top', shared({ a: { tablet: { paddingBlock: '9px' } } }), 'base', 'phone')).toMatchObject({ property: 'paddingBlock', sides: ['top', 'bottom'] });
     expect(plan('padding', 'top', shared({ a: { base: { background: '#fff' } } }))).toMatchObject({ property: 'paddingBlock' });
@@ -385,6 +398,8 @@ describe('previewDecls: what the page shows while dragging', () => {
     const rtlRight = planHandle(handle('padding', 'right'), element(EDGES), 'base', 'desktop', true)!;
     expect(previewDecls(ltrLeft, '8px', false)).toEqual([['padding-inline-start', '8px']]);
     expect(previewDecls(rtlRight, '8px', true)).toEqual([['padding-inline-start', '8px']]);
+    const ltrRight = planHandle(handle('padding', 'right'), element(EDGES), 'base', 'desktop', false)!;
+    expect(previewDecls(ltrRight, '8px', false)).toEqual([['padding-inline-end', '8px']]);
     const below = planHandle(handle('margin', 'bottom'), element(EDGES), 'base', 'desktop', false)!;
     expect(previewDecls(below, { token: 'space.xl' }, false)).toEqual([['margin-block-end', 'var(--so-space-xl)']]);
   });
@@ -410,6 +425,7 @@ describe('the frame\u2019s spacing report', () => {
     expect(spacingOf({ padding: { ...sides, top: 100000 }, border: sides, margin: sides, ...desc })).toBeNull();
     expect(spacingOf({ padding: sides, border: sides, margin: { ...sides, left: 'x' }, ...desc })).toBeNull();
     expect(spacingOf({ padding: sides, border: sides, margin: sides, ctx: 'page:p', node: 'n' })).toBeNull();
+    expect(spacingOf({ padding: sides, border: sides, margin: sides, node: 'n', items: '' })).toBeNull();
     expect(spacingOf(null)).toBeNull();
   });
 
