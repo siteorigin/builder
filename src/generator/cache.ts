@@ -2,8 +2,8 @@
  * Reuse of generated files between runs of `generateProject` on successive states of one project.
  *
  * Each state-dependent file is made by one generator call against a view of the state that records what it reads:
- * each field of a page node, page, component and site settings, every other document whole, and which entries
- * exist. A later run gives back the earlier content when everything that call read is the same, so the output is
+ * each field of a page node, page, component, site settings, collection settings and collection entry, every other
+ * document whole, and which entries exist. A later run gives back the earlier content when everything that call read is the same, so the output is
  * the bytes a full run makes. What a file reads is found by watching it being made, never declared, so a generator
  * that starts reading something new is followed without any change here.
  *
@@ -20,7 +20,7 @@ import { sameValue } from '@shared/same';
 interface Shape {
   [key: string]: Shape;
 }
-const SHAPE: Shape = { pages: { '*': { nodes: { '*': {} } } }, components: { '*': {} }, site: {} };
+const SHAPE: Shape = { pages: { '*': { nodes: { '*': {} } } }, components: { '*': {} }, site: {}, collections: { '*': { settings: {}, entries: { '*': {} } } } };
 
 /**
  * A thing read: `=` a value, `?` what kind of entry sits at a key (its fields are recorded one by one), `h` whether a

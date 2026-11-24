@@ -10,8 +10,10 @@ import type {
   AppearPreset,
   AssetRecord,
   Binding,
+  Collection,
   ComponentDefinition,
   ElementNode,
+  EntryDoc,
   GraphNode,
   ImageValue,
   InstanceNode,
@@ -72,7 +74,8 @@ import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variant
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
-import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, isArticleDate, pageArticle } from '@shared/articles';
+import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, formatArticleDate, isArticleDate, pageArticle } from '@shared/articles';
+import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
 import { declaredState, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
@@ -240,9 +243,13 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
     case 'anchor':
       href = `#${link.target.replace(/^#/, '')}`;
       break;
-    case 'entry':
-      // Entries are not pages of the website yet: the link's words show without a destination.
-      return null;
+    case 'entry': {
+      // An entry's page, at its current address: a link to an entry the site does not publish shows its words alone.
+      const found = findEntry(ctx.state, link.target);
+      if (!found || !isEntryPath(found.collection, found.entry)) return null;
+      href = entryRoute(found.collection, found.entry);
+      break;
+    }
   }
   return link.newTab ? { href, newTab: true } : { href };
 }
@@ -2962,26 +2969,199 @@ export function liveRedirects(state: ProjectState): Array<{ from: string; page: 
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Collection entries
+// ---------------------------------------------------------------------------
+
+/** A collection entry the site has a page for, and that page's address. */
+export interface SiteEntry {
+  collection: Collection;
+  entry: EntryDoc;
+  route: string;
+}
+
+/** Whether an entry's address is one the site can have: its collection's prefix and one plain lowercase segment. */
+function isEntryPath(collection: Collection, entry: EntryDoc): boolean {
+  const prefix: unknown = collection?.settings?.route;
+  if (typeof prefix !== 'string' || prefix === '/' || validateRoute(prefix)) return false;
+  return typeof entry?.slug === 'string' && /^[a-z0-9][a-z0-9-]{0,59}$/.test(entry.slug) && !validateRoute(entryRoute(collection, entry));
+}
+
+/**
+ * The entries the site has a page for, drafts included (as draft pages are, until the website leaves them out): the
+ * collections by ID, and each one's entries in its own order. An entry at an address the site cannot have (a slug or
+ * prefix edited by hand), or at one a page or an earlier entry holds, has none, so no two files share a place.
+ */
+export function siteEntries(state: ProjectState): SiteEntry[] {
+  const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
+  const out: SiteEntry[] = [];
+  for (const id of Object.keys(state.collections ?? {}).sort()) {
+    const collection = state.collections[id];
+    if (!collection?.entries || typeof collection.entries !== 'object' || collection.settings?.id !== id) continue;
+    for (const entry of orderedEntries(collection)) {
+      if (!entry || typeof entry !== 'object' || !isEntryPath(collection, entry)) continue;
+      const route = entryRoute(collection, entry);
+      if (used.has(route.toLowerCase())) continue;
+      used.add(route.toLowerCase());
+      out.push({ collection, entry, route });
+    }
+  }
+  return out;
+}
+
+/** Is the entry a draft, left out of the website? */
+export function isDraftEntry(entry: EntryDoc): boolean {
+  return entry.draft !== false;
+}
+
+/** The route file of an entry's page. */
+export function entryFile(route: string): string {
+  return `src/routes/${routeDir(route)}/+page.svelte`;
+}
+
+/**
+ * An entry's page: its title, publication date (a `<time>` element, written as readers of the site's language write
+ * it), author, featured image and text, inside the site's own header and footer. Its head carries what a page's
+ * does, and says it is a dated article. Only what the entry, its collection and the site settings say is read, so a
+ * change to one post makes its page again and no other.
+ */
+export function generateEntry(state: ProjectState, collectionId: string, entryId: string): string {
+  const collection = state.collections[collectionId];
+  const entry = collection.entries[entryId];
+  const route = entryRoute(collection, entry);
+  const file = entryFile(route);
+  const site = state.site;
+  const rctx: ResolveContext = { state };
+  const imports = new Map<string, string>();
+  const title = `${entry.title} · ${site.name}`;
+  const description = entry.excerpt || site.description;
+  const published = isArticleDate(entry.publishedAt) ? entry.publishedAt : undefined;
+  const updated = isArticleDate(entry.updatedAt) && entry.updatedAt !== published ? entry.updatedAt : undefined;
+  const asset = (id: unknown) => (typeof id === 'string' && Object.hasOwn(state.assets.assets, id) && state.assets.assets[id].kind === 'image' ? state.assets.assets[id] : undefined);
+  const featured = asset(entry.featuredImage);
+  const head: string[] = [`\t<title>{${js(title)}}</title>`];
+  if (description) head.push(`\t<meta name="description" content={${js(description)}} />`);
+  head.push(`\t<meta property="og:type" content="article" />`);
+  if (published) head.push(`\t<meta property="article:published_time" content={${js(published)}} />`);
+  if (updated) head.push(`\t<meta property="article:modified_time" content={${js(updated)}} />`);
+  head.push(`\t<meta property="og:title" content={${js(entry.title)}} />`);
+  if (description) head.push(`\t<meta property="og:description" content={${js(description)}} />`);
+  const social = featured ?? asset(site.socialImage);
+  const base = publicUrl(site);
+  if (base) {
+    head.push(`\t<link rel="canonical" href={${js(base + route)}} />`);
+    head.push(`\t<meta property="og:url" content={${js(base + route)}} />`);
+    if (social) {
+      head.push(`\t<meta property="og:image" content={${js(base + '/' + social.file.replace(/^static\//, ''))}} />`);
+      if (social.width && social.height) {
+        head.push(`\t<meta property="og:image:width" content=${js(String(social.width))} />`);
+        head.push(`\t<meta property="og:image:height" content=${js(String(social.height))} />`);
+      }
+      const alt = social.altSuggestion || social.description || '';
+      if (alt) head.push(`\t<meta property="og:image:alt" content={${js(alt)}} />`);
+    }
+  }
+  head.push(`\t<meta name="twitter:card" content=${js(base && social ? 'summary_large_image' : 'summary')} />`);
+  const meta: string[] = [];
+  if (published) meta.push(`<time datetime=${js(published)}>{${js(formatArticleDate(published, siteLanguage(site)))}}</time>`);
+  if (entry.author) meta.push(`<span class="so-entry__author">{${js(entry.author)}}</span>`);
+  const body: string[] = [
+    `\t\t<header class="so-entry__header">`,
+    `\t\t\t<h1 class="so-entry__title">{${js(entry.title)}}</h1>`,
+    ...(meta.length ? [`\t\t\t<p class="so-entry__meta">${meta.join('')}</p>`] : []),
+    `\t\t</header>`
+  ];
+  if (featured) {
+    imports.set('SoImage', relImport(file, `${RUNTIME_DIR}/Image.svelte`));
+    // Described by what the library says of the picture; without that it is shown beside the title it illustrates.
+    const image = resolveImage({ assetId: featured.id, alt: featured.description || featured.altSuggestion || '' }, rctx);
+    body.push(`\t\t<SoImage image={${js(image)}} eager sizes="(min-width: 48rem) 42rem, 100vw" class="so-entry__image" />`);
+  }
+  const text = resolveRichText(entry.body, rctx);
+  if (text.length) {
+    imports.set('SoRichText', relImport(file, `${RUNTIME_DIR}/RichText.svelte`));
+    body.push(`\t\t<SoRichText value={${js(text)}} class="so-entry__body" />`);
+  }
+  const script = imports.size ? `<script>\n${renderImports(imports)}\n</script>\n\n` : '';
+  return (
+    HEADER_NOTE(`siteorigin/collections/${collection.settings.id}/entries/${entry.id}.json`) +
+    script +
+    `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n<article class="so-entry">\n\t<div class="so-container so-entry__inner">\n${body.join('\n')}\n\t</div>\n</article>\n\n${ENTRY_STYLE}`
+  );
+}
+
+/** How an entry's page is laid out: one readable column, as the theme's tokens size it. */
+const ENTRY_STYLE = `<style>
+	.so-entry {
+		padding-block: var(--so-space-section, 5rem);
+	}
+	.so-entry__inner {
+		display: flex;
+		flex-direction: column;
+		gap: var(--so-space-lg, 2rem);
+		max-width: calc(var(--so-container-reading, 42rem) + 2 * var(--so-container-gutter, 1.5rem));
+	}
+	.so-entry__header {
+		display: flex;
+		flex-direction: column;
+		gap: var(--so-space-sm, 0.5rem);
+	}
+	.so-entry__title {
+		font-family: var(--so-text-h1-family, inherit);
+		font-size: var(--so-text-h1-size, 2.5rem);
+		line-height: var(--so-text-h1-line-height, 1.1);
+		font-weight: var(--so-text-h1-weight, 600);
+		letter-spacing: var(--so-text-h1-tracking, normal);
+		text-transform: var(--so-text-h1-transform, none);
+	}
+	.so-entry__meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0 1em;
+		color: var(--so-color-muted, inherit);
+	}
+	.so-entry :global(.so-entry__image) {
+		width: 100%;
+		height: auto;
+		border-radius: var(--so-radius-md, 0);
+	}
+</style>
+`;
+
 /** Is the page a draft, left out of the website? The Home page never is, whatever its document says. */
 export function isDraftPage(state: ProjectState, page: PageDoc): boolean {
   return page.draft === true && page.id !== state.site.homePageId;
 }
 
 /**
- * The site as visitors get it: every draft left out, with the old addresses that lead to one. The old addresses are
- * chosen on the whole site first, so a draft's route never frees an address another redirect could then take. Links
- * to a draft resolve as links to a missing page. A site without drafts is returned as it is.
+ * The site as visitors get it: every draft page and draft entry left out, with the old addresses that lead to one.
+ * The old addresses are chosen on the whole site first, so a draft's route never frees an address another redirect
+ * could then take. Links to a draft resolve as links to a missing page. A site without drafts is returned as it is.
  */
 export function publishedState(state: ProjectState): ProjectState {
   const drafts = new Set(Object.values(state.pages).filter((p) => isDraftPage(state, p)).map((p) => p.id));
-  if (!drafts.size) return state;
+  // A damaged entry is never published either.
+  const unpublished = (e: EntryDoc | undefined) => !e || typeof e !== 'object' || isDraftEntry(e);
+  const entriesOf = (c: Collection | undefined) => (c?.entries && typeof c.entries === 'object' ? c.entries : {});
+  const draftEntries = Object.values(state.collections ?? {}).some((c) => Object.values(entriesOf(c)).some(unpublished));
+  if (!drafts.size && !draftEntries) return state;
   const redirects = liveRedirects(state)
     .filter((r) => !drafts.has(r.page.id))
     .map((r) => ({ from: r.from, pageId: r.page.id }));
   const site = { ...state.site, pageOrder: state.site.pageOrder.filter((id) => !drafts.has(id)) };
   if (redirects.length) site.redirects = redirects;
   else delete site.redirects;
-  return { ...state, site, pages: Object.fromEntries(Object.entries(state.pages).filter(([id]) => !drafts.has(id))) };
+  const collections = !draftEntries
+    ? state.collections
+    : Object.fromEntries(
+        Object.entries(state.collections).map(([id, c]) => {
+          const entries = Object.fromEntries(Object.entries(entriesOf(c)).filter(([, e]) => !unpublished(e)));
+          const order = c?.settings?.entryOrder;
+          const settings = Array.isArray(order) ? { ...c.settings, entryOrder: order.filter((e) => Object.hasOwn(entries, e)) } : c?.settings;
+          return [id, { ...c, settings, entries }];
+        })
+      );
+  return { ...state, site, collections, pages: Object.fromEntries(Object.entries(state.pages).filter(([id]) => !drafts.has(id))) };
 }
 
 /**
@@ -3072,6 +3252,12 @@ export function generateSitemap(state: ProjectState): string | null {
     .map((id) => state.pages[id])
     .filter((p) => p && !p.seo.noindex && !isDraftPage(state, p))
     .map((p) => `\t<url><loc>${escapeHtmlAttr(base + p.route)}</loc></url>`);
+  // Published entries follow, each with the day it last changed: its revision date, or else its publication date.
+  for (const { entry, route } of siteEntries(state)) {
+    if (isDraftEntry(entry)) continue;
+    const changed = isArticleDate(entry.updatedAt) ? entry.updatedAt : isArticleDate(entry.publishedAt) ? entry.publishedAt : undefined;
+    urls.push(`\t<url><loc>${escapeHtmlAttr(base + route)}</loc>${changed ? `<lastmod>${changed}</lastmod>` : ''}</url>`);
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 }
 
@@ -3354,6 +3540,11 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
   for (const id of state.site.pageOrder) {
     const page = state.pages[id];
     if (page) files.set(pageFile(page), file(`page:${id}${mode}`, (s) => generatePage(s, s.pages[id], opts)));
+  }
+  // Each entry's page reads that entry, its collection's settings and the site's, so one post's change makes one file.
+  for (const { collection, entry, route } of siteEntries(state)) {
+    const cid = collection.settings.id;
+    files.set(entryFile(route), file(`entry:${cid}:${entry.id}`, (s) => generateEntry(s, cid, entry.id)));
   }
   for (const { from, page } of liveRedirects(state)) files.set(redirectFile(from), file(`redirect:${page.id}:${from}`, (s) => generateRedirect(s, from, s.pages[page.id])));
   // The not-found page and the hook that makes it work at any address both read the whole site's sections; the hook
