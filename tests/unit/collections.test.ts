@@ -49,7 +49,8 @@ function blog() {
 describe('collections', () => {
   it('creates the ready-made blog and a custom collection with readable settings', () => {
     const s = run(site(), { type: 'collection.create', collectionId: 'posts' }, { type: 'collection.create', collectionId: 'case-studies' });
-    expect(s.collections.posts.settings).toEqual({
+    const { template, ...settings } = s.collections.posts.settings;
+    expect(settings).toEqual({
       schemaVersion: SCHEMA_VERSION,
       id: 'posts',
       name: 'Posts',
@@ -57,6 +58,11 @@ describe('collections', () => {
       taxonomies: { categories: { label: 'Categories', terms: {} }, tags: { label: 'Tags', terms: {} } },
       fields: {}
     });
+    // Each collection starts with the theme's article layout, its elements its own.
+    expect(template.rootIds).toHaveLength(1);
+    expect(Object.values(template.nodes).some((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"title"}')).toBe(true);
+    const other = s.collections['case-studies'].settings.template;
+    expect(Object.keys(other.nodes).filter((id) => Object.hasOwn(template.nodes, id))).toEqual([]);
     expect(s.collections['case-studies'].settings).toMatchObject({ name: 'Case studies', route: '/case-studies/', taxonomies: {}, fields: {} });
     // What is given wins over the ready-made blog's settings.
     const named = run(site(), { type: 'collection.create', collectionId: 'posts', name: 'Journal', route: '/journal/', taxonomies: {} });
@@ -550,18 +556,19 @@ describe('collections', () => {
 describe('collections format', () => {
   it('is format 8, which stamps collection and entry documents like any other', () => {
     // Released as the seventh migration, upgrading format 7 to 8; the later UI state (8 to 9), style state (9 to 10)
-    // and entry address (10 to 11) steps only change the version.
+    // and entry address (10 to 11) steps only change the version, and collection templates (11 to 12) give a
+    // collection without a layout the one its entries had.
     expect(MIGRATIONS.findIndex((m) => m.id === 'collections') + 1).toBe(7);
-    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states', 'entry-addresses']);
-    expect(SCHEMA_VERSION).toBe(11);
+    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states', 'entry-addresses', 'collection-templates']);
+    expect(SCHEMA_VERSION).toBe(12);
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['**Bold** [link](entry:en_winter)'], terms: {}, author: 'Ana' });
     for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = 7;
     s.collections.posts.settings.schemaVersion = 7;
     s.collections.posts.entries.en_spring.schemaVersion = 7;
     const r = migrateProject(s)!;
-    expect(r).toMatchObject({ from: 7, to: 11, applied: ['collections', 'ui-state', 'style-states', 'entry-addresses'] });
-    expect(r.state.collections.posts.settings.schemaVersion).toBe(11);
-    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(11);
+    expect(r).toMatchObject({ from: 7, to: 12, applied: ['collections', 'ui-state', 'style-states', 'entry-addresses', 'collection-templates'] });
+    expect(r.state.collections.posts.settings.schemaVersion).toBe(12);
+    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(12);
     // Nothing else changes.
     expect({ ...r.state.collections.posts.entries.en_spring, schemaVersion: 7 }).toEqual(s.collections.posts.entries.en_spring);
     expect({ ...r.state.collections.posts.settings, schemaVersion: 7 }).toEqual(s.collections.posts.settings);

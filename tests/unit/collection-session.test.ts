@@ -49,13 +49,15 @@ describe('collections on disk', () => {
     await ok(s.apply({ operations: blog }, { label: 'Start the blog' }));
     expect(readdirSync(join(dir, POSTS)).sort()).toEqual(['collection.json', 'entries']);
     expect(readdirSync(join(dir, POSTS, 'entries')).sort()).toEqual(['en_spring.json', 'en_winter.json']);
+    // The layout every entry is shown with is the collection's own, kept with its settings.
     expect(read(dir, `${POSTS}/collection.json`)).toEqual({
       schemaVersion: SCHEMA_VERSION,
       id: 'posts',
       name: 'Posts',
       route: '/blog/',
       taxonomies: { categories: { label: 'Categories', terms: {} }, tags: { label: 'Tags', terms: {} } },
-      fields: {}
+      fields: {},
+      template: s.state.collections.posts.settings.template
     });
     const text = readFileSync(join(dir, `${POSTS}/entries/en_winter.json`), 'utf8');
     // Pretty-printed, like every other document.
@@ -95,6 +97,30 @@ describe('collections on disk', () => {
     expect([files(`${POSTS}/collection.json`), files(`${POSTS}/entries/en_spring.json`), files(`${POSTS}/entries/en_winter.json`)]).toEqual(before);
     expect(files('siteorigin/collections/projects/entries/en_hall.json')).toBe(projects);
     expect(Object.keys(s.state.collections.projects.entries)).toEqual(['en_hall']);
+  });
+
+  it('saves a layout edit in the collection’s settings alone, undoes it as one step, and keeps it from the assistant', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: blog }, { label: 'Start the blog' }));
+    const files = (rel: string) => readFileSync(join(dir, rel), 'utf8');
+    const entries = [files(`${POSTS}/entries/en_spring.json`), files(`${POSTS}/entries/en_winter.json`)];
+    const settings = files(`${POSTS}/collection.json`);
+    const t = s.state.collections.posts.settings.template;
+    const title = Object.values(t.nodes).find((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"title"}')!;
+    const owner = { kind: 'template' as const, id: 'posts' };
+    const edit: EditOperation = { type: 'node.setStyle', owner, nodeId: title.id, scope: 'base', property: 'color', value: '#aa0000' };
+    // The assistant has no tools for collections yet, their layouts included.
+    const ai = await s.apply({ operations: [edit] }, { label: 'AI', source: 'ai' });
+    expect(ai).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
+    await ok(s.apply({ operations: [edit] }, { label: 'Style the title' }));
+    expect(read(dir, `${POSTS}/collection.json`).template.nodes[title.id].styles.base.color).toBe('#aa0000');
+    expect([files(`${POSTS}/entries/en_spring.json`), files(`${POSTS}/entries/en_winter.json`)]).toEqual(entries);
+    // A binding to a field the entries lack is refused where it is made.
+    const bad = await s.apply({ operations: [{ type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.nope' } }] }, { label: 'Bind' });
+    expect(bad.ok).toBe(false);
+    await ok(s.undo());
+    expect(files(`${POSTS}/collection.json`)).toBe(settings);
+    expect([files(`${POSTS}/entries/en_spring.json`), files(`${POSTS}/entries/en_winter.json`)]).toEqual(entries);
   });
 
   it('deletes a collection with every entry, keeps a file of the author’s in its folder, and undoes the delete', async () => {

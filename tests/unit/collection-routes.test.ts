@@ -36,13 +36,13 @@ describe('collection entries on the website', () => {
     expect(winter).toBeDefined();
     expect(entryFile('/blog/winter-workshop/')).toBe('src/routes/blog/winter-workshop/+page.svelte');
     expect(winter).toContain('siteorigin/collections/posts/entries/en_winter.json');
-    expect(winter).toContain('<time datetime="2026-01-12">{"January 12, 2026"}</time>');
+    expect(winter).toContain('<time datetime={"2026-01-12"}>{"January 12, 2026"}</time>');
     expect(winter).toContain('{"Ana Ruiz"}');
     expect(winter).toContain('<meta property="og:type" content="article" />');
     expect(winter).toContain('<meta property="article:published_time" content={"2026-01-12"} />');
     expect(winter).toContain('<link rel="canonical" href={"https://example.com/blog/winter-workshop/"} />');
     expect(winter).toContain('<meta name="description" content={"Three evenings of glazing."} />');
-    expect(winter).toContain('<h1 class="so-entry__title">{"Winter workshop"}</h1>');
+    expect(winter).toMatch(/<h1 class=\{\["so-n-[a-z0-9_-]+"\]\}>\{"Winter workshop"\}<\/h1>/);
     expect(files.get('src/routes/blog/spring-open-studio/+page.svelte')).toContain('<meta property="article:modified_time" content={"2026-03-09"} />');
     // The working project has the draft too, as it has draft pages, so the editor can show it.
     expect(files.has('src/routes/blog/secret-plans/+page.svelte')).toBe(true);
@@ -92,10 +92,10 @@ describe('collection entries on the website', () => {
     check();
     expect(check()).toEqual([]);
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['Bring an apron and a towel.'] });
-    expect(check()).toEqual(['entry:posts:en_winter']);
+    expect(check()).toEqual(['entry:posts:en_winter#clean', 'entry:posts:en_winter#dev']);
     // A new date changes the post's page and the sitemap that dates it, nothing else.
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', updatedAt: '2026-03-20' });
-    expect(check().sort()).toEqual(['entry:posts:en_spring', 'sitemap.xml']);
+    expect(check().sort()).toEqual(['entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'sitemap.xml']);
   });
 });
 
@@ -128,7 +128,7 @@ describe('old addresses of entries', () => {
       { from: '/blog/glazing-evenings/', entryId: 'en_winter' },
       { from: '/blog/glaze/', entryId: 'en_winter' }
     ]);
-    expect(generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')).toContain('<h1 class="so-entry__title">');
+    expect(generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')).toContain('{"Winter workshop"}</h1>');
   });
 
   it('keeps nothing for a draft, for one published in the same change, or for a slug it only passed through', () => {
@@ -258,10 +258,19 @@ describe('a renamed entry in a cached run', () => {
     };
     made();
     s = run(s, rename('en_winter', 'glazing-evenings'));
-    expect(made()).toEqual(['entry:posts:en_spring', 'entry:posts:en_winter', 'layout#clean', 'layout#dev', 'redirect:posts:en_winter:/blog/winter-workshop/', 'sitemap.xml']);
+    expect(made()).toEqual([
+      'entry:posts:en_spring#clean',
+      'entry:posts:en_spring#dev',
+      'entry:posts:en_winter#clean',
+      'entry:posts:en_winter#dev',
+      'layout#clean',
+      'layout#dev',
+      'redirect:posts:en_winter:/blog/winter-workshop/',
+      'sitemap.xml'
+    ]);
     // A change to its text afterwards reaches its own page alone, not its old address.
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['New words.'] });
-    expect(made()).toEqual(['entry:posts:en_winter']);
+    expect(made()).toEqual(['entry:posts:en_winter#clean', 'entry:posts:en_winter#dev']);
     // Renamed again, the cached old address is made again to go straight to the newest.
     s = run(s, rename('en_winter', 'glaze'));
     expect(made()).toContain('redirect:posts:en_winter:/blog/winter-workshop/');
@@ -352,7 +361,7 @@ describe('entry pages in more detail', () => {
     s.assets.assets.img_hall = { id: 'img_hall', name: 'Hall', file: 'static/assets/hall-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 1600, height: 900, hash: 'h', kind: 'image', description: 'The great hall', createdAt: '2026-01-01T00:00:00.000Z' };
     s = run(s, { type: 'site.update', language: 'fr' }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', featuredImage: 'img_hall', updatedAt: '2026-01-12' });
     const page = generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')!;
-    expect(page).toContain('<time datetime="2026-01-12">{"12 janvier 2026"}</time>');
+    expect(page).toContain('<time datetime={"2026-01-12"}>{"12 janvier 2026"}</time>');
     expect(page).toContain('<meta property="article:modified_time" content={"2026-01-12"} />');
     expect(page).toContain('<SoImage image={{"src":"/assets/hall-1a2b3c4d.jpg","alt":"The great hall","width":1600,"height":900}}');
     expect(page).toContain('<meta property="og:image" content={"https://example.com/assets/hall-1a2b3c4d.jpg"} />');
