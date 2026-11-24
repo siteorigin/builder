@@ -147,6 +147,11 @@ function refs(def: ComponentDefinition) {
   return { tokens, assets };
 }
 
+/** The contact form placed in a component's design. */
+function landedInner(s: Session, defId: string): string {
+  return Object.values(s.state.components[defId].tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === 'foundation.contact.form')!.id;
+}
+
 /** A package with one code component and the given source, as a hand-written file would be. */
 function codePackage(source: string, extra: Partial<ComponentPackage> = {}): string {
   const def = {
@@ -469,6 +474,8 @@ describe('component packages: export and import (#371)', () => {
     // An element placed twice (or inside itself) would be generated over and over: refused by name.
     const twice = await importInto(dest, writePackage(JSON.stringify({ ...good, rootId: 'proj.band-abcde', definitions: [managed({ root: { id: 'root', kind: 'element', tag: 'div', children: ['c', 'c'] }, c: { id: 'c', kind: 'element', tag: 'div', children: [] } })] })));
     expect(twice.error?.message).toMatch(/the element "c" is placed in more than one place/);
+    const loop = await importInto(dest, writePackage(JSON.stringify({ ...good, rootId: 'proj.band-abcde', definitions: [managed({ root: { id: 'root', kind: 'element', tag: 'div', children: [] }, x: { id: 'x', kind: 'element', tag: 'div', children: ['x'] } })] })));
+    expect(loop.error?.message).toMatch(/the element "x" is placed inside itself/);
     expect(clash.error?.message).toMatch(/“Band” can't be imported: its design doesn't compile \(Identifier 'slot__hero_title' has already been declared\)/);
     expect(snapshot(dest)).toBe(untouched);
     await dest.close();
@@ -503,6 +510,17 @@ describe('component packages: export and import (#371)', () => {
     expect(readFileSync(file).equals(other)).toBe(true);
     expect(snapshot(dest)).toBe(untouched);
 
+    // The same picture under a record whose file has gone: the import adds one intact record, and a second import
+    // uses that one rather than adding another.
+    const gone = await blank('Gone');
+    const old = await addImage(gone, 'Old.png', bytes);
+    rmSync(join(gone.dir, gone.state.assets.assets[old].file));
+    ok(await importInto(gone, path));
+    const after = Object.keys(gone.state.assets.assets).length;
+    ok(await importInto(gone, path));
+    expect(Object.keys(gone.state.assets.assets).length).toBe(after);
+    await gone.close();
+
     // Files an earlier attempt stored without landing are the same bytes: the next import uses them.
     const again = await blank('Again');
     await preparePackageImport(again.dir, again.state, await readComponentPackage(path), { codeAllowed: true });
@@ -535,7 +553,43 @@ describe('component packages: export and import (#371)', () => {
     const text = JSON.stringify(landed);
     expect(text).not.toContain('https://forms.example.com/f/abc');
     expect(text).not.toContain('secret-key');
-    await Promise.all([s.close(), dest.close()]);
+
+    // Passed down through another component's property, however deep, it is emptied all the same.
+    const inner = landedInner(s, defId);
+    ok(await s.apply({ operations: [{ type: 'component.setPropSchema', definitionId: defId, prop: 'destination', schema: { type: 'string', label: 'Destination', default: 'https://inner.example.com/f' } }] }, { label: 'Prop' }));
+    ok(await s.apply({ operations: [{ type: 'node.setBinding', owner: { kind: 'component', id: defId }, nodeId: inner, field: 'prop', prop: 'endpoint', binding: { $prop: 'destination' } }] }, { label: 'Bind' }));
+    const outerSection = ok(await s.apply({ operations: [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }] }, { label: 'Insert' })).results![0].nodeId as string;
+    ok(await s.apply({ operations: [{ type: 'node.insert', owner, parentId: outerSection, slot: 'content', definitionId: defId, props: { destination: 'https://outer.example.com/f' } }] }, { label: 'Place' }));
+    const outerId = ok(await s.apply({ operations: [{ type: 'component.createFromNode', owner, nodeId: outerSection, name: 'Outer band' }] }, { label: 'Create' })).results![0].definitionId as string;
+    const nested = await exportTo(s, outerId);
+    expect(readFileSync(nested.path, 'utf8')).toContain('https://outer.example.com/f');
+    const deep = await blank('Deep');
+    const d = ok(await importInto(deep, nested.path, { codeAllowed: false }));
+    const brought = (d.results!.at(-1)!.definitionIds as string[]).map((id) => JSON.stringify(deep.state.components[id])).join('');
+    for (const url of ['https://forms.example.com/f/abc', 'https://inner.example.com/f', 'https://outer.example.com/f']) expect(brought).not.toContain(url);
+
+    // Code may never place a form: where it sends would be decided by the package's code.
+    const pkg = JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage;
+    const code = JSON.parse(codePackage(`<script>\n  import Form from '../generated/foundation-contact-form.svelte';\n</script>\n\n<Form endpoint="https://evil.example.com/f" />\n`)).definitions[0];
+    const formCode = await importInto(deep, writePackage(JSON.stringify({ ...pkg, rootId: code.id, definitions: [code, ...pkg.definitions] })));
+    expect(formCode.error?.message).toMatch(/places a contact form, which a package can't bring in code/);
+
+    // A copy of the theme's own form lands as code of the project's own when unchanged (its destination emptied), and
+    // is checked like any other package code once its settings differ from the theme's.
+    const stock = pkg.definitions.find((x) => x.id === 'foundation.contact.form')!;
+    const copy = { ...stock, owner: 'project' as const, id: 'code.contact-copy-abcde', sourcePath: 'src/lib/siteorigin/custom/ContactCopy-abcde.svelte' };
+    const asCopy = (def: ComponentDefinition) => writePackage(JSON.stringify({ ...pkg, rootId: def.id, definitions: [def], tokens: [], images: [] }));
+    const landedCopy = ok(await importInto(deep, asCopy(copy)));
+    expect(deep.state.components[landedCopy.results!.at(-1)!.definitionId as string].source).toBe(stock.source);
+    // Its own default destination is emptied as it lands, which leaves it the theme's form.
+    const aimed = { ...copy, properties: { ...copy.properties, endpoint: { ...copy.properties.endpoint, default: 'https://evil.example.com/f' } as never } };
+    const emptied = ok(await importInto(deep, asCopy(aimed)));
+    expect(JSON.stringify(deep.state.components[emptied.results!.at(-1)!.definitionId as string])).not.toContain('evil.example.com');
+    const changed = { ...copy, properties: { ...copy.properties, extra: { type: 'string', label: 'Extra', default: '' } as never } };
+    const refused = await importInto(deep, asCopy(changed));
+    expect(refused.ok).toBe(false);
+    expect(refused.error!.message).toMatch(/Code in a component package may not use/);
+    await Promise.all([s.close(), dest.close(), deep.close()]);
   });
 
   it('lets only the editor import: the assistant, and an edit without the checked package, land nothing', async () => {

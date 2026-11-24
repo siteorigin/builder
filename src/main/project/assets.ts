@@ -551,13 +551,14 @@ export async function importPackageImage(
   if (image.mime === 'image/svg+xml' && !p.buf.equals(image.bytes)) throw refuse('it holds scripts, links or other content a site’s images may not have.');
   // The same picture already in the library is that record, while its file is still the picture. One whose file has
   // gone gets a record of its own; one whose file now holds something else is left alone, never written over.
-  const dup = existing.find((a) => a.hash === p.hash && a.mime === p.mime);
-  if (dup) {
+  let changed: AssetRecord | undefined;
+  for (const dup of existing.filter((a) => a.hash === p.hash && a.mime === p.mime)) {
     const at = safeJoin(projectDir, dup.file);
     const there = await fs.lstat(at).then(() => readRegularFile(at, MAX_BYTES).catch(() => null), () => 'missing' as const);
     if (Buffer.isBuffer(there) && sha(there) === dup.hash) return { record: dup, existing: true };
-    if (there !== 'missing') throw refuse(`the library's own copy of it (“${dup.name}”) has changed in the project folder. Locate it in Assets, then import again.`);
+    if (there !== 'missing') changed ??= dup;
   }
+  if (changed) throw refuse(`the library's own copy of it (“${changed.name}”) has changed in the project folder. Locate it in Assets, then import again.`);
   const { stored, files } = await planStore(p, refuse);
   // A file already at a planned name is never replaced: the same bytes (left by an import that was then refused) are
   // used as they are, and anything else is someone else's file.

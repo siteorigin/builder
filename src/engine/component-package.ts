@@ -139,7 +139,7 @@ function siteLinks(def: ComponentDefinition, drop: boolean): number {
 }
 
 /** A static import's specifier, with comments allowed between the keyword and the quoted path. */
-const IMPORT_SPEC = /(\bfrom|\bimport\s*\(?)((?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*\n)*)(['"])([^'"\n]*)\3/g;
+const IMPORT_SPEC = /(\bfrom|\bimport)((?:\s|\(|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*\n)*)(['"])([^'"\n]*)\3/g;
 
 /** The project file an import specifier in the file `fromFile` names, or null for a package import. */
 function resolveImport(spec: string, fromFile: string): string | null {
@@ -447,7 +447,8 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
     for (const f of [prop, ...(isRecord(fields) ? Object.values(fields) : [])] as Array<{ type?: unknown; options?: unknown }>)
       if (f.type === 'enum' && !(Array.isArray(f.options) && f.options.every((o) => isRecord(o) && typeof o.value === 'string' && typeof o.label === 'string'))) damaged(`its property "${k}" has no options`);
   }
-  for (const [axis, a] of Object.entries(def.variantAxes ?? {})) if (!isRecord(a) || !isRecord(a.options)) damaged(`its variant "${axis}" has no options`);
+  for (const [axis, a] of Object.entries(def.variantAxes ?? {}))
+    if (!isRecord(a) || typeof a.label !== 'string' || !isRecord(a.options) || !Object.values(a.options).every((o) => isRecord(o) && typeof o.label === 'string')) damaged(`its variant "${axis}" has no options`);
   if (def.kind === 'code') {
     if (typeof def.source !== 'string' || !def.source.trim()) fail(`${name} is a code component without its code.`);
     if (def.tree) fail(`${name} is a code component with a design as well, which no component has.`);
@@ -476,7 +477,23 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
       }
   }
   for (const r of tree.rootIds) if (!Object.hasOwn(tree.nodes, r)) fail(`${name} has a damaged design.`);
+  // Nor inside itself, even out of sight: an element that is its own ancestor is never one an edit can walk out of.
+  const parentOf = new Map<string, string>();
+  for (const [id, n] of Object.entries(tree.nodes)) for (const list of childLists(n as GraphNode)) for (const c of list.ids) parentOf.set(c, id);
+  for (const id of Object.keys(tree.nodes)) {
+    const seen = new Set<string>();
+    for (let at: string | undefined = id; at !== undefined; at = parentOf.get(at)) {
+      if (seen.has(at)) damaged(`the element "${id}" is placed inside itself`);
+      seen.add(at);
+    }
+  }
 }
+
+/**
+ * Whether a definition is the theme's contact form, or a copy of it, going by the code it runs rather than the name it
+ * gives itself: whatever a package calls it, form code that reads the service settings sends visitors' messages.
+ */
+export const sendsFormMessages = (def: ComponentDefinition | undefined): boolean => !!def && def.kind === 'code' && readsFormServices({ ...def, componentId: 'contact.form' });
 
 /** The packaged components a packaged definition renders: placed by its design, declared, or imported by its code. */
 function needsOf(def: ComponentDefinition, byFile: ReadonlyMap<string, string>): string[] {
@@ -554,6 +571,8 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     packagedFiles.add(was);
     if (reused.has(def.id)) {
       ids.set(def.id, def.id);
+      // Kept where it is, but an importer that moves imports it from its own new place.
+      moved.set(was, was);
       continue;
     }
     let id: string;
@@ -668,6 +687,10 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (def.kind === 'code') {
       const file = fileOf.get(def.id)!;
       def.source = relinkSource(def.source ?? '', defFile(def), file, moved, keys);
+      // Code that places a form decides in its source where the form sends: that is never taken from a package.
+      const forms = new Set(defs.filter((d) => sendsFormMessages(d)).map((d) => moved.get(normalizePath(defFile(d)))));
+      if (!sendsFormMessages(def) && importedFiles(def.source, file).some((f) => forms.has(f)))
+        fail(`The code of ${quoted(def.name)} places a contact form, which a package can't bring in code. Place the form in a design instead.`);
       def.sourcePath = file;
       if (def.dependencies?.length) def.dependencies = [...new Set(def.dependencies.map((d) => ids.get(d)!))].sort();
     } else delete def.sourcePath;
@@ -685,18 +708,34 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (!(COMPONENT_CATEGORIES as readonly string[]).includes(def.category)) def.category = 'custom';
     landed.push(def);
   }
-  // A form a package brings never sends visitors' messages to the package author's account: its service is set up
-  // again here, by whoever imports it.
-  const placedDef = (id: string) => landed.find((d) => d.id === id) ?? own(state.components, id) ?? defs.find((d) => d.id === id);
+  // A form a package brings never sends visitors' messages to the package author's account. Every setting that decides
+  // where (the form's own, and any property of a component around it that passes one on, however deep) is emptied, so
+  // whoever imports it sets the service up here.
+  const all = [...landed, ...defs.filter((d) => reused.has(d.id))];
+  const destinations = new Map<string, Set<string>>();
+  for (const d of all) if (sendsFormMessages(d)) destinations.set(d.id, new Set(FORM_DESTINATIONS));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const d of all)
+      for (const n of Object.values(d.tree?.nodes ?? {})) {
+        if (n.kind !== 'instance') continue;
+        for (const k of destinations.get(n.definitionId) ?? []) {
+          const v = n.props?.[k];
+          if (!isRecord(v) || typeof v.$prop !== 'string' || !Object.hasOwn(d.properties, v.$prop)) continue;
+          const mine = destinations.get(d.id) ?? new Set<string>();
+          if (mine.has(v.$prop)) continue;
+          destinations.set(d.id, mine.add(v.$prop));
+          changed = true;
+        }
+      }
+  }
   for (const def of landed) {
-    if (readsFormServices(def)) for (const k of FORM_DESTINATIONS) if (def.properties[k]?.type === 'string') def.properties[k].default = '';
+    for (const k of destinations.get(def.id) ?? []) if (Object.hasOwn(def.properties, k) && 'default' in def.properties[k]) (def.properties[k] as { default: unknown }).default = '';
     for (const n of Object.values(def.tree?.nodes ?? {})) {
-      if (n.kind !== 'instance' || !readsFormServices(placedDef(n.definitionId))) continue;
-      for (const k of FORM_DESTINATIONS) {
+      if (n.kind !== 'instance') continue;
+      for (const k of destinations.get(n.definitionId) ?? []) {
         const v = n.props?.[k];
-        const bound = isRecord(v) && typeof v.$prop === 'string' ? own(def.properties, v.$prop) : undefined;
-        if (bound?.type === 'string') bound.default = '';
-        else if (n.props && Object.hasOwn(n.props, k)) delete n.props[k];
+        if (n.props && Object.hasOwn(n.props, k) && !(isRecord(v) && typeof v.$prop === 'string')) delete n.props[k];
       }
     }
   }

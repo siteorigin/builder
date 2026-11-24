@@ -37,7 +37,7 @@ import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, trust, untrust } from './settings';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
-import { planComponentPackage } from '@engine/component-package';
+import { importedCode, planComponentPackage } from '@engine/component-package';
 import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
 
 const INSTANCE_ID = randomUUID();
@@ -1590,6 +1590,21 @@ export class Controller {
       return { ok: false, message: (e as Error).message };
     }
     const name = pkg.definitions.find((d) => d.id === pkg.rootId)?.name ?? 'the component';
+    // Code from a package runs on this computer whenever the site is previewed or built: whoever imports it decides,
+    // knowing that, before anything is written. (A path given directly is a test's, which has no one to ask.)
+    const code = importedCode(s.state, { id: '', pkg, images: {} });
+    if (code.length && !path && (await loadSettings()).settings.developerMode) {
+      const names = code.map((d) => `“${d.name}”`).join(', ');
+      const r = await dialog.showMessageBox(this.getWindow()!, {
+        type: 'warning',
+        buttons: ['Cancel', 'Import code'],
+        defaultId: 0,
+        cancelId: 0,
+        message: `“${name}” includes code`,
+        detail: `This package brings code components (${names}). Their code runs on this computer whenever the site is previewed or built, and the checks it passes can't make code from someone else safe. Import it only from someone you trust.`
+      });
+      if (r.response !== 1) return { ok: false };
+    }
     // Its images are written before their records exist, so the session holds off sweeping meanwhile.
     return this.serialImport(() =>
       s.withImport(async () => {

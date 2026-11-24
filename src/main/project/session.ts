@@ -21,7 +21,7 @@ import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
 import { defFile, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
-import type { ComponentImport } from '@engine/component-package';
+import { sendsFormMessages, type ComponentImport } from '@engine/component-package';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
@@ -1901,12 +1901,15 @@ export class ProjectSession extends EventEmitter {
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The package's components are damaged: ${(e as Error).message}`, recoverable: true } };
         }
       }
-      const files = brought ? new Set(brought.map(defFile)) : null;
+      // A form decides in its code where visitors' messages go, so a package's code may never place one.
+      const files = brought ? new Set(brought.filter((d) => !sendsFormMessages(d)).map(defFile)) : null;
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
-        // whichever pack reuses it.
-        if (def.owner === 'theme' && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.kind === 'code' && c.source === def.source))) continue;
+        // whichever pack reuses it; nor does a package bringing that code to a site whose theme lacks it, unchanged
+        // with the settings it takes (a form's destinations are emptied as it lands).
+        const shipped = (c: ComponentDefinition) => c.kind === 'code' && c.source === def.source && (def.owner === 'theme' || (importing && JSON.stringify(c.properties) === JSON.stringify(def.properties)));
+        if ((def.owner === 'theme' || importing) && listThemes().some((t) => t.source !== 'user' && t.components.some(shipped))) continue;
         // Code the AI writes is held to a stricter policy than code a developer writes, and so is an installed pack's
         // own code, which nobody here wrote or reviewed.
         const installed = def.owner === 'theme' && listThemes().some((t) => t.source === 'user' && t.components.some((c) => c.id === def.id));
