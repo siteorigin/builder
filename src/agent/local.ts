@@ -1,3 +1,4 @@
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { newId } from '@shared/ids';
 import { checkLocalBaseURL, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall } from './types';
@@ -35,6 +36,26 @@ export interface LocalAdapterOptions {
   firstTokenTimeoutMs?: number;
   idleTimeoutMs?: number;
   profile?: LocalModelProfile;
+  /** Every address a name resolves to. Tests stand in for the system resolver. */
+  lookup?: (host: string) => Promise<Array<{ address: string }>>;
+}
+
+const LOOPBACK_ADDRESS = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i;
+
+/**
+ * `localhost` is only a name, and the hosts file or resolver can point it anywhere. Before anything is sent, every
+ * address it resolves to must be this computer. The name stays in the request, so proxy exclusions and certificates
+ * written for it still apply.
+ */
+async function localhostProblem(url: string, lookup: LocalAdapterOptions['lookup'] = (host) => dnsLookup(host, { all: true })): Promise<string | null> {
+  if (new URL(url).hostname !== 'localhost') return null;
+  const instead = 'so nothing was sent. Use http://127.0.0.1 in the server address instead.';
+  try {
+    const elsewhere = (await lookup('localhost')).find((a) => !LOOPBACK_ADDRESS.test(a.address));
+    return elsewhere ? `localhost on this computer points to ${elsewhere.address}, which is not this computer, ${instead}` : null;
+  } catch {
+    return `localhost could not be looked up on this computer, ${instead}`;
+  }
 }
 
 type LocalError = { code: ModelErrorCode; message: string; retryAfterMs?: number };
@@ -398,7 +419,7 @@ export class LocalAdapter implements AgentModelAdapter {
       return;
     }
     // A key saved before cloud keys were refused is still never sent.
-    const keyProblem = localKeyProblem(this.endpoint.apiKey);
+    const keyProblem = localKeyProblem(this.endpoint.apiKey) ?? (await localhostProblem(this.url.url, this.opts.lookup));
     if (keyProblem) {
       yield { type: 'error', code: 'invalid_request', message: keyProblem };
       return;
@@ -590,10 +611,10 @@ export class LocalAdapter implements AgentModelAdapter {
 }
 
 /** Models the server reports through `GET {baseURL}/models`. */
-export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
+export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
   const url = checkLocalBaseURL(endpoint.baseURL, endpoint.allowRemote);
   if (!url.ok) return { ok: false, models: [], message: url.message };
-  const keyProblem = localKeyProblem(endpoint.apiKey);
+  const keyProblem = localKeyProblem(endpoint.apiKey) ?? (await localhostProblem(url.url, opts.lookup));
   if (keyProblem) return { ok: false, models: [], message: keyProblem };
   try {
     const res = await (opts.fetch ?? globalThis.fetch)(`${url.url}/models`, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS) });
@@ -608,7 +629,7 @@ export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 
 }
 
 /** Check that the server answers and offers the model. Nothing is generated, so this is quick. */
-export async function testLocal(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; message: string }> {
+export async function testLocal(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; message: string }> {
   const r = await listLocalModels(endpoint, opts);
   if (!r.ok) return { ok: false, message: r.message ?? 'Could not reach the local server.' };
   if (!r.models.length) return { ok: false, message: 'Connected, but the server has no models loaded.' };

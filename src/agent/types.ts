@@ -60,6 +60,21 @@ const QUOTA = 'The provider account has no remaining credit or quota. Check bill
 export const redact = (s: string) => s.replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-…');
 
 /**
+ * Build something with these environment variables out of sight, then put them back exactly as they were. The
+ * provider SDKs read headers such as `ANTHROPIC_CUSTOM_HEADERS` only while a client is constructed, which is
+ * synchronous, so nothing else can observe the gap.
+ */
+export function withoutEnv<T>(names: string[], make: () => T): T {
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) delete process.env[name];
+  try {
+    return make();
+  } finally {
+    for (const [name, value] of saved) if (value !== undefined) process.env[name] = value;
+  }
+}
+
+/**
  * Classify a provider error code or type that arrived without an HTTP status, such as an SSE `error` or
  * `response.failed` event after a 200 response. Returns null when the code says nothing useful.
  */

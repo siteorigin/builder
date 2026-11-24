@@ -312,7 +312,10 @@ describe('native tool calls', () => {
       }
       expect([nativeSent[2].content, nativeSent[4].content]).toEqual(['Added a Pricing page.', 'Renamed the site.']);
       // Each earlier answer stays one whole envelope, never two run together.
-      expect([JSON.parse(constrainedSent[2].content).action.args.message, JSON.parse(constrainedSent[4].content).action.args.message]).toEqual(['Added a Pricing page.', 'Renamed the site.']);
+      expect([JSON.parse(constrainedSent[2].content).action, JSON.parse(constrainedSent[4].content).action]).toEqual([
+        { tool: 'finish', args: { message: 'Added a Pricing page.' } },
+        { tool: 'finish', args: { message: 'Renamed the site.' } }
+      ]);
     });
 
     it('puts a user turn between two replies that only tool calls separate', async () => {
@@ -507,20 +510,43 @@ describe('where a request may go', () => {
     expect(checkLocalBaseURL(url, true).ok).toBe(false);
   });
 
-  it('uses localhost as the loopback address, so how the name resolves never decides where a request goes', async () => {
-    const port = new URL(server.baseURL).port;
-    expect(checkLocalBaseURL(`http://LOCALHOST:${port}/v1/`)).toEqual({ ok: true, url: server.baseURL, remote: false });
-    expect(checkLocalBaseURL(`http://localhost:${port}/v1`, true)).toEqual({ ok: true, url: server.baseURL, remote: false });
-    const targets: string[] = [];
-    const fetch = ((input: string | URL | Request, init?: RequestInit) => {
-      targets.push(String(input));
-      return globalThis.fetch(input, init);
-    }) as typeof globalThis.fetch;
-    server.script(textReply('ok'));
-    const endpoint = { baseURL: `http://localhost:${port}/v1`, model: 'test-model', apiKey: 'local-secret', toolMode: 'native' as const };
-    expect((await listLocalModels(endpoint, { fetch })).ok).toBe(true);
-    expect(doneOf(await run(new LocalAdapter(endpoint, { fetch }), { tools: [] })).text).toBe('ok');
-    expect(targets).toEqual([`${server.baseURL}/models`, `${server.baseURL}/chat/completions`]);
+  describe('localhost', () => {
+    const port = () => new URL(server.baseURL).port;
+    const endpoint = () => ({ baseURL: `http://localhost:${port()}/v1`, model: 'test-model', apiKey: 'local-secret', toolMode: 'native' as const });
+    /** A fetch that counts its calls and stands in for the server, since `localhost` itself is never resolved here. */
+    function counting() {
+      const targets: string[] = [];
+      const fetch = ((input: string | URL | Request, init?: RequestInit) => {
+        targets.push(String(input));
+        return globalThis.fetch(String(input).replace('//localhost:', '//127.0.0.1:'), init);
+      }) as typeof globalThis.fetch;
+      return { fetch, targets };
+    }
+
+    it('keeps the name in the address, so proxy exclusions and certificates for it still apply', () => {
+      expect(checkLocalBaseURL(`http://LOCALHOST:${port()}/v1/`)).toEqual({ ok: true, url: `http://localhost:${port()}/v1`, remote: false });
+    });
+
+    it('sends to localhost once every address it resolves to is this computer', async () => {
+      const { fetch, targets } = counting();
+      const lookup = async () => [{ address: '127.0.0.1' }, { address: '::1' }, { address: '::ffff:127.0.0.1' }];
+      server.script(textReply('ok'));
+      expect((await listLocalModels(endpoint(), { fetch, lookup })).ok).toBe(true);
+      expect(doneOf(await run(new LocalAdapter(endpoint(), { fetch, lookup }), { tools: [] })).text).toBe('ok');
+      expect(targets).toEqual([`http://localhost:${port()}/v1/models`, `http://localhost:${port()}/v1/chat/completions`]);
+    });
+
+    it.each([
+      ['points somewhere else', async () => [{ address: '127.0.0.1' }, { address: '203.0.113.7' }], /points to 203\.0\.113\.7/],
+      ['cannot be looked up', async (): Promise<Array<{ address: string }>> => Promise.reject(new Error('ENOTFOUND')), /could not be looked up/]
+    ])('sends nothing when localhost %s', async (_label, lookup, message) => {
+      const { fetch, targets } = counting();
+      expect(errorOf(await run(new LocalAdapter(endpoint(), { fetch, lookup }), { tools: [] }))).toMatchObject({ code: 'invalid_request', message: expect.stringMatching(message) });
+      expect(await listLocalModels(endpoint(), { fetch, lookup })).toMatchObject({ ok: false, message: expect.stringMatching(message) });
+      expect(await testLocal(endpoint(), { fetch, lookup })).toMatchObject({ ok: false, message: expect.stringMatching(message) });
+      expect(targets).toEqual([]);
+      expect(server.requests).toEqual([]);
+    });
   });
 
   /** Fake keys at the length real ones have. */
@@ -535,12 +561,15 @@ describe('where a request may go', () => {
     [`Bearer ${fake('sk-proj-')}`, 'OpenAI'],
     [`OPENAI_API_KEY=${fake('sk-proj-')}`, 'OpenAI'],
     [`(${fake('sk-proj-')})`, 'OpenAI'],
-    [`  "${fake('sk-ant-api03-')}"  `, 'Anthropic']
+    [`  "${fake('sk-ant-api03-')}"  `, 'Anthropic'],
+    // The shortest each prefix counts at.
+    [`sk-ant-${'a'.repeat(33)}`, 'Anthropic'],
+    [`sk-proj-${'a'.repeat(30)}`, 'OpenAI']
   ])('recognizes the cloud key %s', (key, provider) => {
     expect(localKeyProblem(key)).toContain(`an ${provider} API key`);
   });
 
-  it.each(['', '   ', 'local-secret', 'ollama', 'lm-studio', 'sk-no-key-required', 'sk-local-dev', 'sk-proj-local', 'lab:sk-proj-local', 'sk-ant-mine', 'sk-1234567890abcdefghijkl', `sk-${'0123456789abcdef'.repeat(2)}`, `sk-${'x9'.repeat(30)}`])(
+  it.each(['', '   ', 'local-secret', 'ollama', 'lm-studio', 'sk-no-key-required', 'sk-local-dev', 'sk-proj-local', 'lab:sk-proj-local', 'sk-ant-mine', `sk-ant-${'a'.repeat(32)}`, `sk-proj-${'a'.repeat(29)}`, 'sk-1234567890abcdefghijkl', `sk-${'0123456789abcdef'.repeat(2)}`, `sk-${'x9'.repeat(30)}`])(
     'accepts the local key "%s"',
     (key) => {
       expect(localKeyProblem(key)).toBeNull();

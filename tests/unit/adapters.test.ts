@@ -424,6 +424,9 @@ describe('cloud adapters and the environment', () => {
     vi.stubEnv('OPENAI_PROJECT_ID', 'proj-from-env');
     vi.stubEnv('ANTHROPIC_BASE_URL', mock.baseURL.replace(/\/v1$/, ''));
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'token-from-env');
+    // A gateway's own credentials, set for the base URLs above, must not follow the requests to the providers.
+    vi.stubEnv('OPENAI_CUSTOM_HEADERS', 'X-Gateway-Key: gateway-secret\nAuthorization: Bearer gateway-token');
+    vi.stubEnv('ANTHROPIC_CUSTOM_HEADERS', 'X-Gateway-Key: gateway-secret\nAuthorization: Bearer gateway-token');
 
     const openai = official('https://api.openai.com/v1/', [() => openaiTurn([message('Done.')], { text: 'Done.' }), () => json(200, { id: 'gpt-6.2-sol', object: 'model' })]);
     expect(doneOf(await collect(new OpenAIAdapter('sk-test', 'gpt-6.2-sol', { fetch: openai.fetch }).streamTurn(request(), new AbortController().signal)))?.text).toBe('Done.');
@@ -448,5 +451,9 @@ describe('cloud adapters and the environment', () => {
       expect(r.headers.get('x-api-key')).toBeNull();
     }
     expect(JSON.stringify(anthropic.seen.map((r) => [...r.headers]))).not.toContain('token-from-env');
+    expect(JSON.stringify([...openai.seen, ...anthropic.seen].map((r) => [...r.headers]))).not.toMatch(/gateway/i);
+    // The variables are only kept out of the clients' sight while they are built.
+    expect(process.env.OPENAI_CUSTOM_HEADERS).toContain('gateway-secret');
+    expect(process.env.ANTHROPIC_CUSTOM_HEADERS).toContain('gateway-secret');
   });
 });

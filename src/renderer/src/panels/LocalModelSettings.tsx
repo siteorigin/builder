@@ -65,8 +65,6 @@ export function LocalModelSettings({
   const saved = checkLocalBaseURL(local.baseURL, local.allowRemote);
   const savedRemoteHost = saved.ok && saved.remote ? new URL(saved.url).host : null;
   const typedHost = offMachine.ok && offMachine.remote ? new URL(offMachine.url).host : savedRemoteHost;
-  // The address is used as written once committed, so the field turns localhost into 127.0.0.1; this says why.
-  const typedLocalhost = /^\s*https?:\/\/localhost(?::\d+)?(?:[/\s]|$)/i.test(draft);
 
   const refresh = useCallback(async () => {
     const id = ++discoveries;
@@ -181,7 +179,7 @@ export function LocalModelSettings({
           </span>
         </div>
       )}
-      <Field label="Server" controlId="settings-local-url" error={check.ok ? null : check.message} hint={typedLocalhost ? 'localhost is reached as 127.0.0.1. For a server that listens only on IPv6, use http://[::1]:port/v1.' : savedRemoteHost ? "Type your server's address and press Enter." : 'Start the server in your model app and load a model, then pick the app here or type the address it shows.'}>
+      <Field label="Server" controlId="settings-local-url" error={check.ok ? null : check.message} hint={savedRemoteHost ? "Type your server's address and press Enter." : 'Start the server in your model app and load a model, then pick the app here or type the address it shows.'}>
         <div className="col" style={{ gap: 8 }}>
           <div className="row settings-presets" role="group" aria-label="Common server apps">
             {LOCAL_PRESETS.map((p) => (

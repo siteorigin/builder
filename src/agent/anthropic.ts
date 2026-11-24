@@ -1,17 +1,18 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { AdapterOptions, AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolCall } from './types';
-import { classifyHttpError } from './types';
+import { classifyHttpError, withoutEnv } from './types';
 import { modelInfo } from './models';
 
 /** The API's own address, always passed: the SDK would otherwise send the key wherever `ANTHROPIC_BASE_URL` points. */
 export const ANTHROPIC_API_URL = 'https://api.anthropic.com';
 
 /**
- * Client options taken only from the app, never from the environment. A key passed in code already keeps the
- * SDK from reading `ANTHROPIC_AUTH_TOKEN`; the address has to be passed too.
+ * A client configured only by the app, never by the environment. A key passed in code already keeps the SDK from
+ * reading `ANTHROPIC_AUTH_TOKEN`; the address has to be passed too, and `ANTHROPIC_CUSTOM_HEADERS` (a gateway's
+ * credentials, say, that would now go to Anthropic) kept out of sight while the client is built.
  */
-function clientOptions(apiKey: string, timeout: number, opts: AdapterOptions) {
-  return { apiKey, authToken: null, baseURL: opts.baseURL ?? ANTHROPIC_API_URL, webhookKey: null, maxRetries: 0, timeout, ...(opts.fetch ? { fetch: opts.fetch } : {}) };
+function client(apiKey: string, timeout: number, opts: AdapterOptions): Anthropic {
+  return withoutEnv(['ANTHROPIC_CUSTOM_HEADERS'], () => new Anthropic({ apiKey, authToken: null, baseURL: opts.baseURL ?? ANTHROPIC_API_URL, webhookKey: null, maxRetries: 0, timeout, ...(opts.fetch ? { fetch: opts.fetch } : {}) }));
 }
 
 /** Anthropic Messages API adapter with client-executed tools. */
@@ -20,7 +21,7 @@ export class AnthropicAdapter implements AgentModelAdapter {
   /** Lowered when a custom model rejects the requested output budget. */
   private outputCap: number | null = null;
   constructor(apiKey: string, private model: string, opts: AdapterOptions = {}) {
-    this.client = new Anthropic(clientOptions(apiKey, 120_000, opts));
+    this.client = client(apiKey, 120_000, opts);
   }
 
   capabilities(): ModelCapabilities {
@@ -167,7 +168,7 @@ function safeParse(s: string): unknown {
 
 export async function testAnthropic(apiKey: string, model: string, opts: AdapterOptions = {}): Promise<{ ok: boolean; message: string }> {
   try {
-    const c = new Anthropic(clientOptions(apiKey, 30_000, opts));
+    const c = client(apiKey, 30_000, opts);
     await c.models.retrieve(model);
     return { ok: true, message: `Connected. ${model} is available.` };
   } catch (e) {

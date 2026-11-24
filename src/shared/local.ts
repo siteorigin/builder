@@ -22,7 +22,7 @@ export const DEFAULT_LOCAL_SETTINGS: LocalProviderSettings = { baseURL: LOCAL_PR
 
 /**
  * Loopback addresses as normalized by `URL`, which already rewrites forms such as 2130706433 to 127.0.0.1. Only
- * literal addresses count: a name is whatever the resolver says, and `localhost` can be mapped anywhere.
+ * literal addresses count: a name is whatever the resolver says.
  */
 export function isLoopbackHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
@@ -45,9 +45,9 @@ export function checkLocalBaseURL(raw: string, allowRemote = false): LocalURLChe
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, message: 'The server URL must start with http:// or https://.' };
   if (u.username || u.password) return { ok: false, message: 'Remove the username and password from the server URL. Use the API key field instead.' };
   if (u.search || u.hash) return { ok: false, message: 'The server URL cannot include a query string or fragment.' };
-  // `localhost` is used as the address it stands for, so the request never depends on how the name resolves.
-  if (u.hostname === 'localhost') u.hostname = '127.0.0.1';
-  const remote = !isLoopbackHost(u.hostname);
+  // `localhost` counts as this computer here, where nothing can resolve it; before anything is sent, the main process
+  // checks that every address it resolves to is this computer (see the local adapter).
+  const remote = u.hostname !== 'localhost' && !isLoopbackHost(u.hostname);
   // Strictly true: a hand-edited settings file holding "false" must not count as permission.
   if (remote && allowRemote !== true) return { ok: false, message: `${u.hostname} is not on this computer. Turn on "Allow a server on another machine" to send project content there.` };
   const path = u.pathname.replace(/\/+$/, '') || '/v1';

@@ -187,6 +187,8 @@ export function SettingsModal() {
   const keyUrl = provider === 'anthropic' ? 'https://console.anthropic.com/settings/keys' : 'https://platform.openai.com/api-keys';
   const unsavedKey = !!keys[provider].trim();
   const enteringKey = !keySaved || !!replacing[provider] || unsavedKey;
+  // A cloud provider's key typed for a local server is refused here and again by the main process, which never stores it.
+  const keyProblem = isLocal && enteringKey ? localKeyProblem(keys.local) : null;
   const label = status?.label ?? provider;
   // The model a test would use: a typed ID counts, though chat keeps the saved one until it is committed.
   const testedModel = custom && !isLocal ? modelDraft.trim() : model;
@@ -237,6 +239,7 @@ export function SettingsModal() {
     if (result && !result.ok) return problem('Connection failed', result.draft ? `${result.message} This key is not saved yet.` : result.message);
     if (result?.ok && result.draft) return passed('This key works', 'Press Save key to use it in chat.');
     if (result?.ok) return passed('Connection test passed', server ? result.message.replace(/^Connected\.\s*/, '') : `${modelLabelFor(testedModel)} responded.`);
+    if (keyProblem) return problem('This key cannot be used here', keyProblem);
     if (unsavedKey) return neutral('Key not saved yet', keySaved ? `Chat keeps using ${currentKey} until you save this one.` : 'Press Save key or Enter to use it in chat.', <KeyRound />);
     // A local server's own state says more than its key does, so only hosted providers report the save here.
     if (notice?.kind === 'saved' && !server) return neutral(`${label} key saved`, `${modelLabel}. Test the connection to make sure it works.`, <KeyRound />);
@@ -305,8 +308,6 @@ export function SettingsModal() {
 
   // A key that just failed its test can still be saved, but is no longer the suggested next step.
   const draftFailed = unsavedKey && !!test && !test.ok && test.draft && test.provider === provider && test.edits === keyEdits;
-  // A cloud provider's key typed for a local server is refused here and again by the main process, which never stores it.
-  const keyProblem = isLocal && enteringKey ? localKeyProblem(keys.local) : null;
   const keyField = status && (
     <Field
       controlId={enteringKey ? 'settings-api-key' : undefined}
