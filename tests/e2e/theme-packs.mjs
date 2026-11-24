@@ -56,6 +56,7 @@ const shots = panel.locator('.insert-group[data-kind="section"] .insert-tile.sec
 await eventually(async () => assert.ok((await shots.count()) >= 18, 'every catalogue section has a thumbnail'), 15000);
 await eventually(async () => assert.ok((await shots.evaluateAll((imgs) => imgs.every((i) => i.complete && i.naturalWidth === 320 && i.src.startsWith('data:image/webp')))), 'each thumbnail is a decoded WebP image'));
 assert.equal(await panel.locator('.insert-group[data-kind="section"] .sketch').count(), 0, 'no hand-drawn sketch is left in place of a thumbnail');
+assert.equal(new Set(await shots.evaluateAll((imgs) => imgs.map((i) => i.src))).size, await shots.count(), 'each section has its own thumbnail');
 await panel.locator('.insert-group[data-kind="section"]').first().screenshot({ path: join(SHOTS, 'theme-packs-insert.png') });
 
 step('Variants lists each option with its own thumbnail, and inserts the option shown');

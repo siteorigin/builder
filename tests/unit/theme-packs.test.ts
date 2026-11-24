@@ -3,7 +3,7 @@
  * projects that use an installed pack. Sites get the pack's fonts as files copied into the project.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectState } from '@shared/types';
@@ -14,10 +14,10 @@ import { defaultTheme, findTheme, getTheme, listThemes, registerPacks, themeLock
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { FONTS_DIR, generateProject, packFileCopies } from '@generator/index';
-import { buildPack, registerBuiltinPacks, writeRelease } from '../../src/main/packs/build';
+import { buildPack, fileSource, registerBuiltinPacks, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir } from '../../src/main/packs/loader';
-import { readPackFile } from '../../src/main/packs/files';
-import { ProjectSession } from '../../src/main/project/session';
+import { readPackFile, registerPackFiles } from '../../src/main/packs/files';
+import { ProjectSession, ThemeUnavailableError } from '../../src/main/project/session';
 import { ProjectFormatError } from '../../src/main/project/documents';
 import { editedGeneratedFile } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
@@ -75,7 +75,13 @@ describe('authoring a pack', () => {
   });
 
   it('builds Foundation and its development fixture from their own identities', () => {
-    expect(FOUNDATION_PACK.components).toHaveLength(20);
+    expect(FOUNDATION_PACK.components.map((c) => c.componentId)).toEqual([
+      'shell.header', 'shell.footer', 'hero.centered', 'hero.split', 'intro.page', 'logos.strip', 'features.grid', 'content.media', 'content.text', 'stats.row',
+      'testimonials.grid', 'team.grid', 'pricing.plans', 'data.table', 'faq.list', 'content.pages', 'media.gallery', 'cta.banner', 'contact.details', 'contact.form', 'layout.section'
+    ]);
+    expect(FOUNDATION_ALT_PACK.components.map((c) => c.componentId)).toEqual(FOUNDATION_PACK.components.map((c) => c.componentId));
+    const altHero = FOUNDATION_ALT_PACK.components.find((c) => c.componentId === 'hero.split')!;
+    expect(altHero.tree!.nodes.grid.styles?.base).toMatchObject({ layout: 'stack', textAlign: 'center' });
     for (const c of FOUNDATION_PACK.components) expect([c.id, c.provenance?.pack, c.provenance?.packVersion, c.license]).toEqual([`foundation.${c.componentId}`, 'foundation', '0.1.0', 'GPL-3.0-or-later']);
     for (const [i, c] of FOUNDATION_ALT_PACK.components.entries()) {
       expect(c.id).toBe(`foundation-alt.${c.componentId}`);
@@ -96,10 +102,15 @@ describe('a pack release', () => {
     const built = BUILTIN_PACKS.map((a) => buildPack(a));
     for (const b of built) writeRelease(join(root, b.pack.id), b.pack, b.files);
     const loaded = await Promise.all(built.map((b) => loadPackDir(join(root, b.pack.id), { dir: root, source: 'bundled' })));
-    for (const [i, l] of loaded.entries()) expect(JSON.stringify(l.pack.components)).toBe(JSON.stringify(BUILTIN_PACKS[i].components));
+    for (const [i, l] of loaded.entries()) {
+      expect(JSON.stringify(l.pack.components)).toBe(JSON.stringify(BUILTIN_PACKS[i].components));
+      expect(l.pack.fonts).toEqual(built[i].pack.fonts);
+      // Every file the release ships is its source, byte for byte.
+      for (const [rel, abs] of built[i].files) expect(readFileSync(join(root, l.pack.id, rel)).equals(readFileSync(abs)), rel).toBe(true);
+    }
     // Same project, generated once with the packs from source and once with their releases.
     const state = createStarterState('business', 'Parity', false);
-    const both = () => [...generateProject(state, { instrument: false }), ...generateProject(state, { instrument: true })];
+    const both = () => [...generateProject(state, { instrument: false }), ...generateProject(state, { instrument: true }), ...packFileCopies(state).map((c) => [c.path, c.file])];
     const fromSource = both();
     registerPacks(loaded.map((l) => l.pack));
     expect(both()).toEqual(fromSource);
@@ -112,6 +123,8 @@ describe('the pack registry', () => {
     expect(defaultTheme().id).toBe('foundation');
     expect(findTheme('nope')).toBeUndefined();
     expect(getTheme('nope').id).toBe('foundation');
+    expect(getTheme('foundation-alt').id).toBe('foundation-alt');
+    expect(findTheme('foundation-alt')?.devOnly).toBe(true);
     expect(() => registerPacks([...listThemes(), listThemes()[0]])).toThrow(/Two packs have the ID "foundation"/);
     // A fixture is never the default, even listed first.
     registerPacks([...listThemes()].reverse());
@@ -151,6 +164,36 @@ describe('pinning an installed pack', () => {
     expect(themePinProblem(state('d1'))).toMatch(/theme "studio" 1\.0\.0, which is not installed/);
   });
 
+  it('opens a project whose theme is not installed read-only, pinned or not', async () => {
+    const d = tmp();
+    withInstalled('d1');
+    const state = applyOperations(createStarterState('business', 'Gone', false), [{ type: 'theme.apply', themeId: 'studio' }]).state;
+    delete state.themeLock.theme.digest;
+    await (await ProjectSession.create(d, state)).close();
+    registerBuiltinPacks();
+    const theme = readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8');
+    const err = await ProjectSession.open(d, 'test').catch((e) => e);
+    expect(err).toBeInstanceOf(ThemeUnavailableError);
+    expect((err as Error).message).toMatch(/uses the theme "studio" 1\.0\.0, which is not installed/);
+    expect(readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8')).toBe(theme);
+  });
+
+  it('refuses to undo back to a theme that is no longer installed', async () => {
+    const d = tmp();
+    withInstalled('d1');
+    const s = await ProjectSession.create(d, createStarterState('business', 'Undo', false));
+    expect((await s.apply({ operations: [{ type: 'theme.apply', themeId: 'studio' }] }, { label: 'Studio' })).ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation' }] }, { label: 'Foundation' })).ok).toBe(true);
+    registerBuiltinPacks();
+    const theme = readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8');
+    const r = await s.undo();
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/Cannot undo "Foundation": This project uses the theme "studio"[^]*not installed/);
+    expect(s.state.site.themeId).toBe('foundation');
+    expect(readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8')).toBe(theme);
+    await s.close();
+  });
+
   it('opens a project read-only rather than restyle it from another copy of its pack', async () => {
     const d = tmp();
     withInstalled('d1');
@@ -168,11 +211,33 @@ describe('pinning an installed pack', () => {
 });
 
 describe('switching to a pack with other fonts', () => {
-  const onlyInter = () => ({ fonts: FOUNDATION_PACK.fonts.filter((f) => f.name === 'Inter') });
+  const inter = FOUNDATION_PACK.fonts.find((f) => f.name === 'Inter')!;
+  // Studio ships Inter only, and sets its display font to it.
+  const onlyInter = () => ({ fonts: [inter], tokens: FOUNDATION_PACK.tokens.map((t) => (t.id === 'font.display' ? { ...t, value: inter.stack } : t)) });
   it('takes the new theme’s fonts where the site kept the defaults', () => {
-    withInstalled('d1', onlyInter());
+    const studioPack = withInstalled('d1', onlyInter());
     const next = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'theme.apply', themeId: 'studio' }]).state;
-    expect(packFileCopies(next).every((c) => c.pack === 'studio' && c.file.startsWith('fonts/inter-'))).toBe(true);
+    expect(packFileCopies(next)).toEqual(studioPack.fonts[0].faces.map((f) => ({ path: `${FONTS_DIR}/${f.file.slice('fonts/'.length)}`, pack: 'studio', file: f.file })));
+  });
+
+  it('is not blocked by text that only mentions a font, nor by a font the project imported itself', () => {
+    withInstalled('d1', onlyInter());
+    const s = createStarterState('business', 'Fonts', false);
+    const hero = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'instance')!;
+    (hero as { props: Record<string, unknown> }).props.heading = 'Set in Lora Variable, our favourite';
+    expect(applyOperations(s, [{ type: 'theme.apply', themeId: 'studio' }]).state.site.themeId).toBe('studio');
+    const own = createStarterState('business', 'Fonts', false);
+    own.assets.assets['f1'] = { id: 'f1', name: 'Lora', file: 'static/assets/lora-aaaaaaaa.woff2', mime: 'font/woff2', bytes: 1, hash: 'x', kind: 'font', createdAt: '', font: { family: 'Lora Variable', weight: '400', style: 'normal' } };
+    own.tokens.overrides['font.body'] = "'Lora Variable', serif";
+    expect(applyOperations(own, [{ type: 'theme.apply', themeId: 'studio' }]).state.site.themeId).toBe('studio');
+  });
+
+  it('is refused for a font chosen on an element', () => {
+    withInstalled('d1', onlyInter());
+    const s = createStarterState('business', 'Fonts', false);
+    const hero = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'instance')!;
+    const styled = applyOperations(s, [{ type: 'node.setStyle', owner: { kind: 'page', id: s.site.homePageId }, nodeId: hero.id, partId: 'heading', scope: 'base', property: 'fontFamily', value: 'Playfair Display, serif' }]).state;
+    expect(() => applyOperations(styled, [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Playfair Display: your site uses this font/);
   });
 
   it('refuses, naming the font, when the site chose a font the new theme does not ship', () => {
@@ -208,6 +273,39 @@ describe("a site's theme fonts", () => {
     expect(existsSync(join(d, FONTS_DIR, 'lora-latin-wght-normal.woff2'))).toBe(true);
     expect(existsSync(join(d, FONTS_DIR, 'fraunces-latin-wght-normal.woff2'))).toBe(false);
     expect(Object.keys(manifest()).some((p) => p.includes('fraunces'))).toBe(false);
+    // Exactly the faces now in use are on disk and claimed, each the pack's own bytes.
+    const onDisk = readdirSync(join(d, FONTS_DIR)).filter((f) => f.endsWith('.woff2')).map((f) => `${FONTS_DIR}/${f}`).sort();
+    expect(onDisk).toEqual(packFileCopies(s.state).map((c) => c.path).sort());
+    expect(Object.keys(manifest()).filter((p) => p.startsWith(`${FONTS_DIR}/`) && p.endsWith('.woff2')).sort()).toEqual(onDisk);
+    for (const c of packFileCopies(s.state)) expect(readFileSync(join(d, c.path)).equals(await readPackFile(c.pack, c.file))).toBe(true);
+    await s.close();
+  });
+
+  it('keep a copy the pack can no longer supply, rather than delete it', async () => {
+    const d = tmp();
+    const s = await ProjectSession.create(d, createStarterState('business', 'Fonts', false));
+    const path = `${FONTS_DIR}/inter-latin-wght-normal.woff2`;
+    const original = readFileSync(join(d, path));
+    const before = JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path];
+    // The pack's copy no longer matches what was validated (it changed on disk after startup).
+    const { files } = buildPack(FOUNDATION_PACK);
+    const broken = new Map([...files].map(([rel, abs]) => [rel, { ...fileSource(abs), ...(rel === 'fonts/inter-latin-wght-normal.woff2' ? { sha256: '0'.repeat(64) } : {}) }]));
+    registerPackFiles('foundation', broken);
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename' })).ok).toBe(true);
+    expect(readFileSync(join(d, path)).equals(original)).toBe(true);
+    expect(JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path]).toBe(before);
+    expect(await editedGeneratedFile(d)).toBeNull();
+    await s.close();
+  });
+
+  it('leave an obsolete font that was edited outside the app where it is', async () => {
+    const d = tmp();
+    const s = await ProjectSession.create(d, createStarterState('business', 'Fonts', false));
+    const path = `${FONTS_DIR}/fraunces-latin-wght-normal.woff2`;
+    writeFileSync(join(d, path), Buffer.from('wOF2 my own'));
+    await s.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: 'Lora' }] }, { label: 'Font' });
+    expect(readFileSync(join(d, path)).toString()).toBe('wOF2 my own');
+    expect(JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path]).toBeUndefined();
     await s.close();
   });
 

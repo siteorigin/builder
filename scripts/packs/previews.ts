@@ -34,6 +34,30 @@ interface Case {
   pageId: string;
 }
 
+/**
+ * Run `fn` with IDs drawn from a fixed sequence, so the same pack builds the same preview HTML every time and its
+ * thumbnails are found in the cache instead of drawn again.
+ */
+function withFixedIds<T>(fn: () => T): T {
+  const crypto = globalThis.crypto;
+  const real = crypto.getRandomValues;
+  let seed = 0x5eed1e55;
+  crypto.getRandomValues = (<A extends ArrayBufferView | null>(array: A): A => {
+    if (!array) return array;
+    const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+    for (let i = 0; i < bytes.length; i++) {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      bytes[i] = seed >>> 24;
+    }
+    return array;
+  }) as typeof crypto.getRandomValues;
+  try {
+    return fn();
+  } finally {
+    crypto.getRandomValues = real;
+  }
+}
+
 /** A project holding one page per thumbnail, each with a single section. */
 function previewProject(pack: ThemePack): { state: ProjectState; cases: Case[] } {
   const state = createStarterState('blank', 'Studio', false);
@@ -105,9 +129,9 @@ async function bundlePages(files: Map<string, string>, pages: string[]): Promise
  * Draw the thumbnails of every component and variant option of a pack. `files` maps each pack file (its fonts)
  * to its source on disk. Returns the previews map for the manifest and the image bytes by release path.
  */
-export async function renderPreviews(pack: ThemePack, files: Map<string, string>, cacheDir: string): Promise<{ previews: Record<string, ComponentPreviews>; bytes: Map<string, Buffer> }> {
+export async function renderPreviews(pack: ThemePack, files: Map<string, string>, cacheDir: string, opts: { require?: boolean } = {}): Promise<{ previews: Record<string, ComponentPreviews>; bytes: Map<string, Buffer>; drawn: number }> {
   registerPacks([pack]);
-  const { state, cases } = previewProject(pack);
+  const { state, cases } = withFixedIds(() => previewProject(pack));
   const generated = generateProject(state);
   const css = ['tokens.css', 'theme.css', 'components.css', 'site.css'].map((f) => generated.get(`${STYLES_DIR}/${f}`) ?? '').join('\n');
   const { module, dir } = await bundlePages(generated, cases.map((c) => pageFile(state.pages[c.pageId])));
@@ -124,9 +148,15 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   rmSync(dir, { recursive: true, force: true });
 
   const missing = docs.filter((d) => !existsSync(d.cached));
-  if (missing.length) {
-    const { chromium } = await import('playwright');
-    if (!existsSync(chromium.executablePath())) throw new Error('Drawing theme previews needs Playwright’s Chromium. Run "npx playwright install chromium", then build again.');
+  const { chromium } = await import('playwright');
+  const browserReady = existsSync(chromium.executablePath());
+  if (missing.length && !browserReady) {
+    const message = `Drawing ${missing.length} theme preview${missing.length === 1 ? '' : 's'} needs Playwright’s Chromium. Run "npx playwright install chromium", then build again.`;
+    if (opts.require) throw new Error(message);
+    // Development carries on without them: Insert shows a sketch where a thumbnail is missing.
+    console.warn(`${pack.id}: ${message} Building without them.`);
+  }
+  if (missing.length && browserReady) {
     const browser = await chromium.launch();
     try {
       const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 1, locale: 'en-US', colorScheme: 'light', reducedMotion: 'reduce' });
@@ -154,10 +184,13 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   const previews: Record<string, ComponentPreviews> = {};
   const bytes = new Map<string, Buffer>();
   for (const { c, cached } of docs) {
+    if (!existsSync(cached)) continue;
     const file = previewFile(c.componentId, c.axis, c.option);
     bytes.set(file, readFileSync(cached));
-    const p = (previews[c.componentId] ??= { default: file });
-    if (c.axis) ((p.variants ??= {})[c.axis] ??= {})[c.option!] = file;
+    if (!c.axis) previews[c.componentId] = { ...previews[c.componentId], default: file };
+    else (((previews[c.componentId] ??= { default: '' }).variants ??= {})[c.axis] ??= {})[c.option!] = file;
   }
-  return { previews, bytes };
+  // A variant's thumbnail is only listed beside its section's own.
+  for (const [id, p] of Object.entries(previews)) if (!p.default) delete previews[id];
+  return { previews, bytes: new Map([...bytes].filter(([f]) => Object.values(previews).some((p) => p.default === f || Object.values(p.variants ?? {}).some((o) => Object.values(o).includes(f))))), drawn: browserReady ? missing.length : 0 };
 }

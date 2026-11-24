@@ -10,6 +10,7 @@ import { ownerLabel } from '../lib/model';
 import { gridKeys, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
 import { usePackPreview } from '../components/PackPreview';
+import { axesOf } from '@shared/variants';
 
 export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
   const key = (name ?? 'box')
@@ -234,7 +235,8 @@ function ItemIcon({ it }: { it: Item }) {
 /** A section's thumbnail from its theme pack, or a sketch of its layout while that loads or when there is none. */
 function SectionThumb({ it }: { it: Item }) {
   const url = usePackPreview(it.preview?.pack, it.preview?.file);
-  return url ? <img className="insert-shot" src={url} alt="" draggable={false} /> : <SectionSketch id={it.spec.componentId!} />;
+  const [broken, setBroken] = useState<string | null>(null);
+  return url && url !== broken ? <img className="insert-shot" src={url} alt="" draggable={false} onError={() => setBroken(url)} /> : <SectionSketch id={it.spec.componentId!} />;
 }
 
 /** Whether the Insert panel lists every variant of a section, remembered on this computer. */
@@ -349,7 +351,8 @@ export function InsertPanel() {
   useEffect(() => {
     if (open) searchRef.current?.focus({ preventScroll: true });
   }, [open]);
-  useEffect(() => setActive(0), [q]);
+  // A new list (another query, or variants shown or hidden) starts at its first result, so Enter adds what is highlighted.
+  useEffect(() => setActive(0), [q, showVariants]);
   // Keep the highlighted result in view, so Enter never adds something off screen.
   useEffect(() => {
     if (q.trim()) document.getElementById(`${id}-r${active}`)?.scrollIntoView({ block: 'nearest' });
@@ -399,8 +402,9 @@ export function InsertPanel() {
       ...(shots ? { preview: { pack: theme.id, file: shots.default } } : {})
     };
     if (!showVariants) return [base];
-    const axes = catalogueComponent(st.site.themeId, e.componentId)?.variantAxes ?? {};
-    const options = Object.entries(axes).flatMap(([axis, a]) =>
+    const def = catalogueComponent(st.site.themeId, e.componentId);
+    // The options the engine accepts, so every tile inserts.
+    const options = (def ? axesOf(def) : []).flatMap(([axis, a]) =>
       Object.entries(a.options)
         .filter(([option]) => option !== a.default)
         .map(([option, o]): Item => {

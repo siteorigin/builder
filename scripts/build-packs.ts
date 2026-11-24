@@ -3,7 +3,8 @@
  * for shipped packs, `resources/packs-dev/<id>/` for development fixtures. Each release is written to a staging
  * folder, loaded back through the app's own loader, and only then put in place.
  *
- *   npm run build:packs                  build every pack, drawing any thumbnail whose source changed
+ *   npm run build:packs                       build every pack, drawing any thumbnail whose source changed
+ *   npm run build:packs -- --require-previews  fail rather than build without thumbnails (for packaging)
  */
 import { renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,10 +14,11 @@ import { loadPackDir } from '../src/main/packs/loader';
 import { renderPreviews } from './packs/previews';
 
 const root = process.cwd();
+const requirePreviews = process.argv.includes('--require-previews');
 const started = Date.now();
 for (const authored of BUILTIN_PACKS) {
   const { pack, files } = buildPack(authored, root);
-  const { previews, bytes } = await renderPreviews(pack, files, join(root, '.tmp', 'pack-previews'));
+  const { previews, bytes, drawn } = await renderPreviews(pack, files, join(root, '.tmp', 'pack-previews'), { require: requirePreviews });
   const dir = join(root, 'resources', authored.devOnly ? 'packs-dev' : 'packs');
   // Named after the pack, as the loader requires, inside a folder the app skips.
   const stage = join(dir, '.staging', pack.id);
@@ -29,6 +31,6 @@ for (const authored of BUILTIN_PACKS) {
   rmSync(join(dir, pack.id), { recursive: true, force: true });
   renameSync(stage, join(dir, pack.id));
   rmSync(join(dir, '.staging'), { recursive: true, force: true });
-  console.log(`${pack.id} ${pack.version}: ${files.size} font files, ${bytes.size} previews, digest ${digest.slice(0, 12)}`);
+  console.log(`${pack.id} ${pack.version}: ${files.size} font files, ${bytes.size} previews (${drawn} drawn), digest ${digest.slice(0, 12)}`);
 }
 console.log(`Theme packs built in ${((Date.now() - started) / 1000).toFixed(1)}s.`);

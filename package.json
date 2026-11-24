@@ -19,8 +19,8 @@
     "test:export-build": "node tests/e2e/export.mjs --build",
     "test:ai": "node tests/e2e/ai.mjs",
     "eval:agent": "tsx --tsconfig tsconfig.node.json scripts/eval-agent.ts",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
+    "pack": "npm run build:packs -- --require-previews && electron-vite build && electron-builder --dir",
+    "dist": "npm run build:packs -- --require-previews && electron-vite build && electron-builder",
     "test:packaged": "node tests/e2e/packaged.mjs"
   },
   "devDependencies": {

@@ -625,10 +625,16 @@ function buildMenu() {
 // One app instance at a time: a second one would race this one's settings, recents and project locks.
 // Launching the app again focuses the existing window instead.
 if (!app.requestSingleInstanceLock()) app.exit(0);
+/** Settles once startup (theme packs, IPC, the menu) is done: no window may open before then. */
+let markStarted!: () => void;
+const started = new Promise<void>((resolve) => (markStarted = resolve));
+
 app.on('second-instance', () => {
-  // On macOS the app can be running with no window; launching it again opens one.
+  // On macOS the app can be running with no window; launching it again opens one, once startup is done.
   if (!win) {
-    if (app.isReady()) void createWindow();
+    void started.then(() => {
+      if (!win) void createWindow();
+    });
     return;
   }
   if (headless) return;
@@ -658,6 +664,7 @@ app.whenReady().then(async () => {
   await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData'), app.isPackaged));
   registerIpc();
   buildMenu();
+  markStarted();
   // Registered once, not per window: macOS brings up a new window after the last one closes.
   nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
   await createWindow();

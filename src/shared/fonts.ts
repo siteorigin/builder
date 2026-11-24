@@ -59,7 +59,7 @@ export function stackUsesFamily(stack: string, family: string): boolean {
  * Every place a font family is written: font tokens, text styles, and `fontFamily` styles on elements, overrides
  * and variants. Page titles and other text that merely match a font's name are not font uses.
  */
-function fontSlots(state: ProjectState): Array<{ get: () => string; set: (v: string) => void }> {
+function fontSlots(state: ProjectState, components: unknown = state.components): Array<{ get: () => string; set: (v: string) => void }> {
   const slots: Array<{ get: () => string; set: (v: string) => void }> = [];
   const add = (holder: Record<string, unknown>, key: string) => {
     if (typeof holder[key] === 'string') slots.push({ get: () => holder[key] as string, set: (v) => (holder[key] = v) });
@@ -85,9 +85,20 @@ function fontSlots(state: ProjectState): Array<{ get: () => string; set: (v: str
     }
   };
   walk(state.pages);
-  walk(state.components);
+  walk(components);
   walk(state.site.shell);
   return slots;
+}
+
+/**
+ * Whether the site itself chose this font family: in a site style or text style, as an element's font (on pages,
+ * the shared header and footer, or the given components), or in a project code component's source. Text that
+ * merely mentions the name, and the theme's own defaults, are not choices.
+ */
+export function siteChoosesFamily(state: ProjectState, family: string, components = Object.values(state.components).filter((d) => d.owner === 'project')): boolean {
+  if (fontSlots(state, components).some((s) => stackUsesFamily(s.get(), family))) return true;
+  const name = family.toLowerCase();
+  return components.some((d) => d.kind === 'code' && typeof d.source === 'string' && d.source.replace(/\s+/g, ' ').toLowerCase().includes(name));
 }
 
 /** Point every use of `from` at `to`, keeping the rest of each stack. */

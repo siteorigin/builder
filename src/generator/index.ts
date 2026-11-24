@@ -289,6 +289,9 @@ function tokenCssValue(v: TokenValue | unknown): string {
   return String(v);
 }
 
+/** Text placed inside a CSS comment, which must not be able to end it. */
+const inComment = (text: string) => text.replace(/\*\//g, '* /');
+
 /** The theme fonts this site uses, which the editor copies into the project from the theme's pack. */
 function usedFonts(state: ProjectState) {
   // Any string in any document may name a font: a file that depends on the answer, not on every document.
@@ -321,7 +324,7 @@ function packFontFaceCss(state: ProjectState): string {
         `@font-face {\n\tfont-family: '${f.family}';\n\tfont-style: ${face.style};\n\tfont-display: swap;\n\tfont-weight: ${face.weight};\n\tsrc: url('../fonts/${face.file.slice('fonts/'.length)}') format('${face.format}');${face.unicodeRange ? `\n\tunicode-range: ${face.unicodeRange};` : ''}\n}`
     )
   );
-  return `/* Fonts from the ${getTheme(state.site.themeId).name} theme. Licences: ../fonts/NOTICE.txt */\n${rules.join('\n')}\n\n`;
+  return `/* Fonts from the ${inComment(getTheme(state.site.themeId).name)} theme. Licences: ../fonts/NOTICE.txt */\n${rules.join('\n')}\n\n`;
 }
 
 /** The licence notices of the theme fonts the site ships. */
@@ -552,7 +555,7 @@ export function generateComponentsCss(state: ProjectState): string {
   for (const def of sortedDefs(state)) {
     if (def.kind !== 'managed' || !def.tree) continue;
     const css = emitRules(definitionRules(state, def));
-    if (css) parts.push(`/* ${def.name} (${def.id}) */\n${css}`);
+    if (css) parts.push(`/* ${inComment(def.name)} (${inComment(def.id)}) */\n${css}`);
   }
   return parts.join('\n\n') + '\n';
 }

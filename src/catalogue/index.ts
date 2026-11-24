@@ -49,16 +49,17 @@ export function themeLockEntry(theme: ThemePack): { id: string; version: string;
 }
 
 /**
- * Why a project cannot be edited with the packs loaded here: its installed (pinned) pack is missing, or another
- * copy has the same version with different contents. Editing would regenerate its styles from the wrong pack.
+ * Why a project cannot be edited with the packs loaded here: its theme is not installed, or (for an installed
+ * pack, which the lock pins) another copy has the same version with different contents. Generating it would
+ * restyle the site from the wrong pack before anyone edited anything.
  */
 export function themePinProblem(state: { site: { themeId: string }; themeLock?: { theme?: { id: string; version: string; digest?: string } } }): string | null {
-  const lock = state.themeLock?.theme;
-  if (!lock?.digest) return null;
-  const pack = findTheme(state.site.themeId);
-  if (!pack) return `This project uses the theme "${lock.id}" ${lock.version}, which is not installed. Put that pack in the packs folder and restart SiteOrigin Builder to edit it.`;
-  if (pack.version === lock.version && pack.digest !== lock.digest)
-    return `This project uses the theme "${lock.id}" ${lock.version}, but the installed pack with that version is a different copy. Reinstall the copy the site was made with, or a newer version, and restart SiteOrigin Builder to edit it.`;
+  const id = state.site.themeId;
+  const lock = state.themeLock?.theme?.id === id ? state.themeLock.theme : undefined;
+  const pack = findTheme(id);
+  if (!pack) return `This project uses the theme "${id}"${lock ? ` ${lock.version}` : ''}, which is not installed. Install it (a built-in theme comes back by reinstalling SiteOrigin Builder) and restart SiteOrigin Builder to edit the project.`;
+  if (lock?.digest && pack.version === lock.version && pack.digest !== lock.digest)
+    return `This project uses the theme "${id}" ${lock.version}, but the installed pack with that version is a different copy. Reinstall the copy the site was made with, or a newer version, and restart SiteOrigin Builder to edit it.`;
   return null;
 }
 

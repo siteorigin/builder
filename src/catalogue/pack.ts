@@ -104,6 +104,9 @@ export interface AuthoredPack extends PackMeta {
   components: ComponentDefinition[];
 }
 
+/** IDs of the packs that ship with the app, which an installed pack can never take, even when a release is missing. */
+export const BUNDLED_PACK_IDS = ['foundation', 'foundation-alt'];
+
 /** The release format this version of the app reads. */
 export const PACK_FORMAT = 1;
 export const PACK_MANIFEST = 'pack.json';

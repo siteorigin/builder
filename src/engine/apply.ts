@@ -23,7 +23,7 @@ import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, tex
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
-import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily } from '@shared/fonts';
+import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
@@ -1886,11 +1886,10 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
   }
   // Fonts ship with their theme. One the site chose itself (a site style, a text style, an element's font, a project
   // component's code) would silently fall back to a system font under a theme without it.
-  const chosen = JSON.stringify([Object.values(state.tokens.overrides), state.tokens.custom.map((t) => t.value), state.site.shell, state.pages, Object.values(state.components).filter((d) => d.owner === 'project')])
-    .replace(/(\\[nrt]|\s)+/g, ' ')
-    .toLowerCase();
   for (const f of getTheme(state.site.themeId).fonts)
-    if (chosen.includes(f.family.toLowerCase()) && !theme.fonts.some((n) => n.family.toLowerCase() === f.family.toLowerCase())) conflicts.push(`${f.name}: your site uses this font, which ${theme.name} does not include. Choose another font first.`);
+    // A font the project imported itself stays whatever the theme.
+    if (!theme.fonts.some((n) => n.family.toLowerCase() === f.family.toLowerCase()) && !projectFontFamilies(state).some((p) => p.family.toLowerCase() === f.family.toLowerCase()) && siteChoosesFamily(state, f.family))
+      conflicts.push(`${f.name}: your site uses this font, which ${theme.name} does not include. Choose another font first.`);
   if (conflicts.length) throw new EngineError('CONFLICT', `${theme.name} is not compatible with this project: ${conflicts.join(' ')}`, { conflicts });
   const install = (next: ComponentDefinition) => {
     const existing = own(state.components, next.id);

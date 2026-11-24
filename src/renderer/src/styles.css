@@ -1869,3 +1869,7 @@ button.asset-use:hover svg.go { color: var(--text); }
 .table-editor-col { display: flex; align-items: center; gap: 4px; }
 .table-editor-col > input { flex: 1; min-width: 0; }
 .sketch-table-row { display: flex; gap: 6%; padding-bottom: 2px; border-bottom: 1px solid color-mix(in srgb, var(--text-3) 30%, var(--panel-2)); }
+
+/* Shown instead of the editor when no theme pack could be loaded. */
+.fatal { max-width: 560px; margin: 15vh auto; padding: 0 16px; font-size: 14px; line-height: 1.5; color: var(--text); }
+.fatal ul { margin: 12px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }

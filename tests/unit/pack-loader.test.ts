@@ -14,6 +14,7 @@ import { buildPack, fileSource, registerBuiltinPacks, writeRelease } from '../..
 import { loadPackDir, loadPacks, type PackRoot } from '../../src/main/packs/loader';
 import { readPackFile, registerPackFiles } from '../../src/main/packs/files';
 import { loadInstalledPacks, packPreview } from '../../src/main/packs/installed';
+import { findTheme } from '@catalogue/index';
 import { sha } from '../../src/main/project/fsutil';
 
 const dirs: string[] = [];
@@ -34,14 +35,16 @@ function studio(id = 'studio'): AuthoredPack {
   return author.define(components.map((c) => author.adopt(c)));
 }
 
-let webp: Buffer;
-/** Write a release of `pack` into `root`, with two preview images. Returns its folder. */
+let light: Buffer;
+let dark: Buffer;
+/** Write a release of `pack` into `root`, with two (different) preview images. Returns its folder. */
 async function release(root: string, pack: AuthoredPack = studio()): Promise<string> {
-  webp ??= await sharp({ create: { width: 8, height: 5, channels: 3, background: '#e0e0e0' } }).webp().toBuffer();
+  light ??= await sharp({ create: { width: 8, height: 5, channels: 3, background: '#e0e0e0' } }).webp().toBuffer();
+  dark ??= await sharp({ create: { width: 8, height: 5, channels: 3, background: '#202020' } }).webp().toBuffer();
   const { pack: built, files } = buildPack(pack);
   const previews = { 'hero.split': { default: 'previews/hero.split.webp', variants: { tone: { inverse: 'previews/hero.split--tone-inverse.webp' } } } };
   const dir = join(root, built.id);
-  writeRelease(dir, { ...built, previews }, files, new Map([['previews/hero.split.webp', webp], ['previews/hero.split--tone-inverse.webp', webp]]));
+  writeRelease(dir, { ...built, previews }, files, new Map([['previews/hero.split.webp', light], ['previews/hero.split--tone-inverse.webp', dark]]));
   return dir;
 }
 
@@ -119,8 +122,64 @@ describe('loading a theme pack release', () => {
       rmSync(join(d, 'fonts'), { recursive: true });
       symlinkSync(elsewhere, join(d, 'fonts'));
     }, /fonts is a link/],
-    ['a font larger than the limit', (d) => edit(d, (m) => (m.files[m.fonts[0].faces[0].file].size = 5 * 1024 * 1024)), /is larger than 4096 KB/]
+    ['a font larger than the limit', (d) => edit(d, (m) => (m.files[m.fonts[0].faces[0].file].size = 5 * 1024 * 1024)), /is larger than 4096 KB/],
+    ['a pack licence that forbids publishing', (d) => edit(d, (m) => (m.license = 'LicenseRef-Proprietary')), /The pack's licence "LicenseRef-Proprietary" does not allow/],
+    ['an element ID that could break out of generated markup', (d) => edit(d, (m) => {
+      const def = m.components[2];
+      const root = def.tree!.rootIds[0];
+      const bad = 'x" onmouseover="alert(1)';
+      def.tree!.nodes[bad] = { ...def.tree!.nodes[root], id: bad };
+      delete def.tree!.nodes[root];
+      def.tree!.rootIds[0] = bad;
+      for (const part of Object.values(def.parts)) if (part.nodeId === root) part.nodeId = bad;
+    }), /the element ID "x" onmouseover="alert\(1\)" may only use letters, digits/],
+    ['an element inside itself', (d) => edit(d, (m) => {
+      const def = m.components[2];
+      const root = def.tree!.rootIds[0];
+      (def.tree!.nodes[root] as { children: string[] }).children.push(root);
+    }), /contains itself/],
+    ['base CSS that hides url() behind escapes', (d) => edit(d, (m) => (m.baseCss += '\nbody { background: \\75 rl(https://example.com/pixel.gif); }')), /loads a resource/],
+    ['base CSS that hides @import behind escapes', (d) => edit(d, (m) => (m.baseCss = '@\\69 mport "https://example.com/x.css";\n' + m.baseCss)), /@import/],
+    ['a token that refers to a token by number', (d) => edit(d, (m) => ((m.tokens[0] as { value: unknown }).value = { token: 7 })), /malformed at tokens\.0\.value/],
+    ['a token value that could leave its rule', (d) => edit(d, (m) => ((m.tokens[0] as { value: unknown }).value = 'red; } body { display: none')), /malformed at tokens\.0\.value/],
+    ['a contrast pair without its colours', (d) => edit(d, (m) => (m.contrastPairs = [{} as never])), /malformed at contrastPairs\.0/],
+    ['two components that generate the same files', (d) => edit(d, (m) => {
+      const twin = structuredClone(m.components[3]);
+      const id = m.components[3].componentId!.replace('.', '-');
+      Object.assign(twin, { componentId: id, id: `studio.${id}`, provenance: { ...twin.provenance, componentId: id } });
+      m.components.push(twin);
+    }), /would generate the same files as/],
+    ['a variant option ID the generator cannot use', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.variantAxes?.tone)!;
+      def.variantAxes!.tone.options['dark mode'] = { label: 'Dark mode' };
+    }), /variant or option ID that is not allowed/],
+    ['a list property without fields', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => Object.values(c.properties).some((p) => p.type === 'list'))!;
+      const name = Object.keys(def.properties).find((k) => def.properties[k].type === 'list')!;
+      delete (def.properties[name] as { fields?: unknown }).fields;
+    }), /the list property "[^"]+" has no fields/],
+    ['a WOFF2 file cut short', (d) => {
+      const f = firstFont(d);
+      replaceListed(d, f, readFileSync(join(d, f)).subarray(0, 200));
+    }, /is not a WOFF2 font/],
+    ['an image listed as a font face', (d) => {
+      const m = manifestOf(d);
+      const face = m.fonts[0].faces[0].file;
+      writeFileSync(join(d, 'fonts', 'face.webp'), readFileSync(join(d, 'previews', 'hero.split.webp')));
+      edit(d, (x) => {
+        x.fonts[0].faces[0].file = 'fonts/face.webp';
+        x.files['fonts/face.webp'] = x.files['previews/hero.split.webp'];
+        delete x.files[face];
+      });
+    }, /fonts\/face\.webp, which is not a \.woff2 file/]
   ];
+
+  it('accepts base CSS that only mentions url() in a comment', async () => {
+    const root = tmp();
+    const dir = await release(root);
+    edit(dir, (m) => (m.baseCss += '\n/* Fonts come from the pack, never url() or @import. */'));
+    await expect(loadPackDir(dir, user(root))).resolves.toBeTruthy();
+  });
 
   it.each(refusals)('refuses %s, saying why', async (_what, damage, reason) => {
     const root = tmp();
@@ -167,6 +226,14 @@ describe('loading every installed pack', () => {
     expect(refused).toEqual([{ dir: theirs, packId: 'studio', reason: expect.stringMatching(/ships with SiteOrigin Builder, so an installed pack cannot replace it/) }]);
   });
 
+  it("keeps the built-in IDs for the app even when its own releases are missing", async () => {
+    const mine = tmp();
+    const theirs = await release(mine, studio('foundation'));
+    const { packs, refused } = await loadPacks([{ dir: tmp(), source: 'bundled' }, user(mine)]);
+    expect(packs).toEqual([]);
+    expect(refused).toEqual([{ dir: theirs, packId: 'foundation', reason: expect.stringMatching(/ships with SiteOrigin Builder/) }]);
+  });
+
   it('loads neither of two installed packs that claim one ID', async () => {
     const a = tmp();
     const b = tmp();
@@ -184,7 +251,10 @@ describe('loading every installed pack', () => {
     expect(catalogue.packs.map((p) => p.id)).toEqual(['studio']);
     expect(catalogue.refused[0].reason).toMatch(/built-in theme is missing/);
     expect(catalogue.userDir).toBe(mine);
-    expect(await packPreview('studio', 'previews/hero.split.webp')).toMatch(/^data:image\/webp;base64,/);
+    expect(findTheme('studio')?.source).toBe('user');
+    const shown = (url: string | null) => Buffer.from(url!.replace(/^data:image\/webp;base64,/, ''), 'base64');
+    expect(shown(await packPreview('studio', 'previews/hero.split.webp')).equals(light)).toBe(true);
+    expect(shown(await packPreview('studio', 'previews/hero.split--tone-inverse.webp')).equals(dark)).toBe(true);
     // Only listed preview images are served, never fonts or paths outside the pack.
     expect(await packPreview('studio', firstFont(join(mine, 'studio')))).toBeNull();
     expect(await packPreview('studio', 'previews/../pack.json')).toBeNull();
@@ -202,6 +272,9 @@ describe('reading a loaded pack file', () => {
     const b = readFileSync(join(dir, font));
     b[b.length - 1] ^= 0xff;
     writeFileSync(join(dir, font), b);
+    await expect(readPackFile('studio', font)).rejects.toThrow(/changed after it was loaded/);
+    // A file grown far past its listed size is refused without being read whole.
+    writeFileSync(join(dir, font), Buffer.alloc(files.get(font)!.size * 4));
     await expect(readPackFile('studio', font)).rejects.toThrow(/changed after it was loaded/);
     await expect(readPackFile('studio', 'fonts/other.woff2')).rejects.toThrow(/has no file/);
   });

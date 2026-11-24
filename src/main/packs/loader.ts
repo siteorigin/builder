@@ -9,11 +9,13 @@ import { join, relative, sep, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import type { ComponentDefinition, GraphNode } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
-import { PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST, PACK_VERSION_RE, type PackManifest, type ThemePack } from '@catalogue/pack';
+import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST, PACK_VERSION_RE, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { FONT_FAMILY_RE } from '@shared/fonts';
+import { variantIdsValid } from '@shared/variants';
+import { defKey } from '@generator/index';
 import { sha } from '../project/fsutil';
 import { checkSvelteSource } from '../codecheck';
-import type { PackFileSource } from './files';
+import { readRegularFile, type PackFileSource } from './files';
 import type { PackRefusal } from '@shared/api';
 
 export interface PackRoot {
@@ -67,7 +69,24 @@ const font = z.strictObject({
   faces: z.array(fontFace).min(1).max(64)
 });
 
-const tokenValue = z.union([z.string().max(500), z.object({ token: z.string() }), z.record(z.string(), z.unknown())]);
+const tokenRef = z.strictObject({ token: z.string().regex(/^[a-z][a-z0-9-]*(\.[a-z0-9-]+)*$/) });
+const cssText = z.string().max(500).regex(/^[^;{}<>\\]*$/);
+const tokenValue = z.union([
+  cssText,
+  tokenRef,
+  z.strictObject({ family: z.union([cssText, tokenRef]), size: cssText, lineHeight: cssText, weight: z.union([cssText, z.number()]), tracking: cssText, transform: cssText.optional() })
+]);
+const contrastPair = z.strictObject({
+  id: z.string().max(80),
+  use: text(200),
+  fg: z.string().max(80),
+  bg: z.union([z.string().max(80), z.strictObject({ mix: z.tuple([z.string().max(80), z.number(), z.string().max(80)]) })]),
+  state: z.enum(['rest', 'hover']),
+  varyingGround: z.boolean().optional(),
+  group: z.string().max(80),
+  fixable: z.boolean().optional(),
+  min: z.number().positive().max(21).optional()
+});
 
 /** The parts of a definition the loader relies on; the rest is checked by what reads it (the engine and generator). */
 const component = z
@@ -106,7 +125,7 @@ const manifestSchema = z.strictObject({
   license: z.string(),
   description: text(400),
   tokens: z.array(z.strictObject({ id: z.string().regex(/^[a-z][a-z0-9-]*(\.[a-z0-9-]+)*$/), label: text(80), group: z.enum(['color', 'font', 'text', 'space', 'container', 'radius', 'shadow', 'border']), value: tokenValue, description: text(400).optional() })).max(400),
-  contrastPairs: z.array(z.object({}).loose()).max(200).optional(),
+  contrastPairs: z.array(contrastPair).max(200).optional(),
   baseCss: text(512 * 1024),
   fonts: z.array(font).max(32),
   components: z.array(component).min(1).max(400),
@@ -118,32 +137,65 @@ const manifestSchema = z.strictObject({
 
 /** CSS a pack writes into every site unchanged: no other stylesheets, no remote or local resources, no markup. */
 function checkCss(css: string, where: string) {
-  if (/@import/i.test(css)) refuse(`${where} imports another stylesheet (@import), which packs may not do.`);
-  if (/url\s*\(|image-set\s*\(|expression\s*\(|javascript:|(?<![\w-])behavior\s*:|-moz-binding/i.test(css)) refuse(`${where} loads a resource (url() or similar), which packs may not do.`);
   if (/<\/?\s*(style|script)/i.test(css)) refuse(`${where} contains markup.`);
+  // Read as a browser would: comments say nothing, and an escaped letter ("\\75 rl(") is the letter itself.
+  const plain = css
+    .replace(/\/\*[\s\S]*?(\*\/|$)/g, ' ')
+    .replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?/g, (_, hex: string) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd))
+    .replace(/\\(.)/gs, '$1');
+  if (/@import/i.test(plain)) refuse(`${where} imports another stylesheet (@import), which packs may not do.`);
+  if (/url\s*\(|image-set\s*\(|expression\s*\(|javascript:|(?<![\w-])behavior\s*:|-moz-binding/i.test(plain)) refuse(`${where} loads a resource (url() or similar), which packs may not do.`);
 }
 
 /** Every reference inside a managed definition's tree points at something the definition has. */
+/** Node, part and slot IDs become class names and attributes in generated source, so only plain ones are allowed. */
+const SAFE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
 function checkTree(def: ComponentDefinition) {
   const where = `Component ${def.componentId}`;
   const nodes = def.tree!.nodes;
   for (const [id, n] of Object.entries(nodes)) {
+    if (!SAFE_ID.test(id)) refuse(`${where}: the element ID "${id.slice(0, 40)}" may only use letters, digits, "-" and "_".`);
     if (n.id !== id) refuse(`${where}: node "${id}" is stored under another ID.`);
+    const slot = (n as { slot?: unknown }).slot;
+    if (slot !== undefined && (typeof slot !== 'string' || !SAFE_ID.test(slot))) refuse(`${where}: node "${id}" has an unusable slot name.`);
     for (const child of (n as GraphNode & { children?: string[] }).children ?? []) if (!nodes[child]) refuse(`${where}: node "${id}" lists a child "${child}" that does not exist.`);
     for (const v of Object.values(n)) if (isBinding(v) && '$prop' in v && !(v.$prop in def.properties)) refuse(`${where}: node "${id}" uses the property "${v.$prop}", which the component does not have.`);
   }
   for (const id of def.tree!.rootIds) if (!nodes[id]) refuse(`${where}: its root "${id}" does not exist.`);
+  // Every element is reached once from the roots: no element inside itself, and none in two places.
+  const seen = new Set<string>();
+  const walk = (id: string, path: Set<string>) => {
+    if (path.has(id)) refuse(`${where}: element "${id}" contains itself.`);
+    if (seen.has(id)) refuse(`${where}: element "${id}" is placed twice.`);
+    seen.add(id);
+    const inner = new Set(path).add(id);
+    for (const child of (nodes[id] as GraphNode & { children?: string[] }).children ?? []) walk(child, inner);
+  };
+  for (const id of def.tree!.rootIds) walk(id, new Set());
   for (const [pid, part] of Object.entries(def.parts)) if (!nodes[part.nodeId]) refuse(`${where}: part "${pid}" refers to an element that does not exist.`);
 }
 
 async function checkComponents(m: PackManifest, source: PackRoot['source']) {
   const ids = new Set<string>();
+  const files = new Map<string, string>();
   for (const def of m.components) {
     const where = `Component ${def.componentId}`;
     if (def.schemaVersion !== SCHEMA_VERSION) refuse(`${where} is written for document schema ${def.schemaVersion}; this app reads ${SCHEMA_VERSION}.`);
     if (def.id !== `${m.id}.${def.componentId}`) refuse(`${where} has the ID "${def.id}"; a component of the ${m.id} pack must be "${m.id}.${def.componentId}".`);
     if (ids.has(def.componentId!)) refuse(`${where} is listed twice.`);
     ids.add(def.componentId!);
+    // Two IDs that generate the same file name ("hero.split", "hero-split") would overwrite each other.
+    const key = defKey(def.id);
+    if (files.has(key)) refuse(`${where} would generate the same files as ${files.get(key)}.`);
+    files.set(key, def.componentId!);
+    if (!variantIdsValid(def)) refuse(`${where} has a variant or option ID that is not allowed (letters and digits, starting with a letter).`);
+    for (const [name, p] of Object.entries(def.properties)) {
+      const prop = p as { type: string; fields?: unknown; default?: unknown; options?: unknown };
+      if (prop.type === 'list' && (!prop.fields || typeof prop.fields !== 'object' || !Array.isArray(prop.default))) refuse(`${where}: the list property "${name}" has no fields or no default items.`);
+      if (prop.type === 'enum' && !Array.isArray(prop.options)) refuse(`${where}: the choice property "${name}" has no options.`);
+    }
+    for (const slot of Object.keys(def.slots ?? {})) if (!SAFE_ID.test(slot)) refuse(`${where}: the slot name "${slot.slice(0, 40)}" is not allowed.`);
     if (def.provenance?.pack !== m.id || def.provenance?.packVersion !== m.version || def.provenance?.componentId !== def.componentId) refuse(`${where} says it comes from another pack or version.`);
     if (!COMPONENT_LICENSES.has(def.license ?? '')) refuse(`${where} has the licence "${def.license}", which does not allow it to be published in websites.`);
     if ('sourcePath' in def) refuse(`${where} names a source file; a pack's code is stored in the pack itself.`);
@@ -162,8 +214,9 @@ async function checkComponents(m: PackManifest, source: PackRoot['source']) {
 }
 
 /** Is this a WOFF2 font or a WebP image, by its first bytes? */
-const isWoff2 = (b: Buffer) => b.subarray(0, 4).toString('latin1') === 'wOF2';
-const isWebp = (b: Buffer) => b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP';
+/** Is this a whole WOFF2 font or WebP image: its signature, and the length its header gives as the file's own? */
+const isWoff2 = (b: Buffer) => b.length >= 48 && b.subarray(0, 4).toString('latin1') === 'wOF2' && b.readUInt32BE(8) === b.length;
+const isWebp = (b: Buffer) => b.length >= 20 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP' && b.readUInt32LE(4) + 8 === b.length;
 
 /** A path that is a real folder or file, never a link to somewhere else. */
 async function plain(abs: string, kind: 'dir' | 'file'): Promise<Stats> {
@@ -179,7 +232,7 @@ export async function loadPackDir(dir: string, root: PackRoot): Promise<LoadedPa
   const manifestPath = join(dir, PACK_MANIFEST);
   const st = await plain(manifestPath, 'file');
   if (st.size > LIMITS.manifestBytes) refuse(`${PACK_MANIFEST} is larger than ${LIMITS.manifestBytes / 1024 / 1024} MB.`);
-  const raw = await fs.readFile(manifestPath);
+  const raw = await readRegularFile(manifestPath, LIMITS.manifestBytes).catch((e: Error) => refuse(`${PACK_MANIFEST} could not be read: ${e.message}`));
   let json: unknown;
   try {
     json = JSON.parse(raw.toString('utf8'));
@@ -207,7 +260,7 @@ export async function loadPackDir(dir: string, root: PackRoot): Promise<LoadedPa
   for (const f of m.fonts) {
     if (!FONT_LICENSES.has(f.license)) refuse(`The font ${f.name} has the licence "${f.license}", which does not allow it to be published in websites.`);
     for (const face of f.faces) {
-      if (!face.file.startsWith('fonts/')) refuse(`The font ${f.name} names ${face.file}, which is not in the fonts folder.`);
+      if (!face.file.startsWith('fonts/') || !face.file.endsWith('.woff2')) refuse(`The font ${f.name} names ${face.file}, which is not a .woff2 file in the fonts folder.`);
       used.add(face.file);
     }
   }
@@ -215,7 +268,7 @@ export async function loadPackDir(dir: string, root: PackRoot): Promise<LoadedPa
   for (const [componentId, p] of Object.entries(m.previews ?? {})) {
     if (!componentIds.has(componentId)) refuse(`There is a preview for ${componentId}, which the pack does not have.`);
     for (const f of [p.default, ...Object.values(p.variants ?? {}).flatMap((o) => Object.values(o))]) {
-      if (!f.startsWith('previews/')) refuse(`The preview of ${componentId} names ${f}, which is not in the previews folder.`);
+      if (!f.startsWith('previews/') || !f.endsWith('.webp')) refuse(`The preview of ${componentId} names ${f}, which is not a .webp image in the previews folder.`);
       used.add(f);
     }
   }
@@ -244,7 +297,8 @@ export async function loadPackDir(dir: string, root: PackRoot): Promise<LoadedPa
     if (inside.startsWith('..') || isAbsolute(inside)) refuse(`${rel} is outside the pack.`);
     const fst = await plain(abs, 'file');
     if (fst.size !== want.size) refuse(`${rel} is ${fst.size} bytes, but the pack lists ${want.size}. The pack is damaged or was changed after it was built.`);
-    const bytes = await fs.readFile(abs);
+    const bytes = await readRegularFile(abs, want.size).catch((e: Error) => refuse(`${rel} could not be read: ${e.message}`));
+    if (bytes.length !== want.size) refuse(`${rel} is ${bytes.length} bytes, but the pack lists ${want.size}. The pack is damaged or was changed after it was built.`);
     if (sha(bytes) !== want.sha256) refuse(`${rel} does not match the hash the pack lists. The pack is damaged or was changed after it was built.`);
     if (rel.endsWith('.woff2') && !isWoff2(bytes)) refuse(`${rel} is not a WOFF2 font.`);
     if (rel.endsWith('.webp') && !isWebp(bytes)) refuse(`${rel} is not a WebP image.`);
@@ -277,7 +331,8 @@ export async function loadPacks(roots: PackRoot[]): Promise<{ packs: LoadedPack[
   }
   const refused: PackRefusal[] = [];
   const packs: LoadedPack[] = [];
-  const bundled = new Set(found.filter((f) => f.loaded && f.root.source === 'bundled').map((f) => f.loaded!.pack.id));
+  // A bundled pack's folder is named for it, so its ID stays the app's even when that release fails to load.
+  const bundled = new Set([...BUNDLED_PACK_IDS, ...found.filter((f) => f.root.source === 'bundled').map((f) => f.loaded?.pack.id ?? f.dir.split(sep).pop()!)]);
   const userCount = new Map<string, number>();
   for (const f of found) if (f.loaded && f.root.source === 'user') userCount.set(f.loaded.pack.id, (userCount.get(f.loaded.pack.id) ?? 0) + 1);
   for (const f of found) {

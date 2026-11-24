@@ -226,8 +226,17 @@ export interface LockOwner {
 }
 
 /** Why a project is open read-only. */
+/** The project's theme pack is not available here, so it opens read-only (see themePinProblem). */
+export class ThemeUnavailableError extends ProjectFormatError {
+  constructor(message: string) {
+    super(message, true);
+  }
+}
+
 export interface ReadOnlyInfo {
   reason: string;
+  /** Why there is no preview, when it is not that a newer app made the project. */
+  preview?: string;
   /** The lock may belong to a crashed or unreachable app; the user can take it over. */
   canUnlock: boolean;
   /** The owner the user is shown: unlocking takes over this owner only. */
@@ -458,7 +467,7 @@ export class ProjectSession extends EventEmitter {
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not opened to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
     // Generating from another copy of the site's theme would restyle it before anyone edited anything.
     const pin = themePinProblem(s.state);
-    if (pin) throw new ProjectFormatError(pin, true);
+    if (pin) throw new ThemeUnavailableError(pin);
     // With a file in conflict the update waits: its stored version is the user's to choose first.
     if (s.migrationDue && !s.pending.size) await s.publishMigration();
     else await s.publishGenerated(false);
@@ -837,6 +846,8 @@ export class ProjectSession extends EventEmitter {
           const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
           if (bad.length) return { ok: false, message: `The external code for "${def.name}" has problems, so it was not kept: ${bad[0].message}` };
         }
+        const pin = themePinProblem(next);
+        if (pin) return { ok: false, message: `The external version of ${path} was not kept: ${pin}` };
         if (builder !== null) await atomicWrite(this.local('recovery', `${stamp}.builder`), builder);
         const nextDocs = stateToDocs(next);
         changed = await this.diffDocs(this.docs, nextDocs);
@@ -1091,6 +1102,9 @@ export class ProjectSession extends EventEmitter {
    * instead of recording a new step (undo and redo).
    */
   private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number }): Promise<SessionEvent> {
+    // A state whose theme is not available here would be generated from the wrong pack.
+    const pin = themePinProblem(next);
+    if (pin) throw new Error(pin);
     // Generate first: a generator failure must not leave canonical documents half-published.
     const generated = { clean: this.generate(next, false), dev: this.generate(next, true) };
     const nextDocs = stateToDocs(next);
@@ -1232,8 +1246,10 @@ export class ProjectSession extends EventEmitter {
       try {
         copies.set(c.path, await readPackFile(c.pack, c.file));
       } catch (e) {
-        // A damaged or missing pack file costs that font (the site falls back to the next font in its stack), not the save.
+        // A damaged or missing pack file costs that font's update, not the save: a copy already in the project stays,
+        // still claimed, so it is neither replaced nor removed as obsolete.
         console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
+        if (known(c.path)) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
       }
     }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
@@ -1510,6 +1526,8 @@ export class ProjectSession extends EventEmitter {
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
       }
+      const pin = themePinProblem(next);
+      if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: pin, recoverable: false } };
       // Any authored code that is new or changed must pass the safety checks before it can be saved. Imports
       // are followed into the components as they will be once this batch is saved, whichever order it made them in.
       const resolve = componentSources(next.components);
@@ -2099,6 +2117,8 @@ export class ProjectSession extends EventEmitter {
     const already = new Set(fatal(this.state).map((d) => d.message));
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${broken.message}`, recoverable: false } };
+    const pin = themePinProblem(next);
+    if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${pin}`, recoverable: false } };
     // That check sees the project as loaded. An edit made outside the app that has not been loaded yet would slip
     // past it, so the restore waits for it.
     const unloaded = await this.unloadedEdit(new Set(Object.keys(entry.docs)));
@@ -2441,6 +2461,8 @@ export class ProjectSession extends EventEmitter {
       }
       const errors = validateState(next, { sectionLinks: false }).filter(blocksSaving);
       if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
+      const pin = themePinProblem(next);
+      if (pin) return { ok: false, message: `The changed files were not loaded: ${pin}` };
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
         const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');

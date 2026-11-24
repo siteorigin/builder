@@ -32,7 +32,11 @@ describe('bundled fonts', () => {
     expect(Object.keys(lock.packages).filter((d) => d.includes('@fontsource'))).toEqual([]);
     // The pack is built from pinned packages, so a rebuild cannot change a site's font files.
     const builder = JSON.parse(readFileSync('package.json', 'utf8'));
-    for (const p of PACKAGES) expect(builder.devDependencies[p], p).toMatch(/^\d+\.\d+\.\d+$/);
+    const builderLock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+    for (const p of PACKAGES) {
+      expect(builder.devDependencies[p], p).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(builderLock.packages[`node_modules/${p}`]?.version, p).toBe(builder.devDependencies[p]);
+    }
   });
 
   it('carry every face of the stylesheets they come from, with an open licence', () => {
@@ -166,7 +170,7 @@ describe('font token validation', () => {
 
 describe('projects from earlier templates', () => {
   it('can use every font of their theme, because the fonts come from the theme rather than the lockfile', () => {
-    for (const template of [{ id: 'sveltekit-brochure', version: '0.1.0' }, { id: 'sveltekit-brochure', version: '0.2.0' }, undefined]) {
+    for (const template of [{ id: 'sveltekit-brochure', version: '0.1.0' }, { id: 'sveltekit-brochure', version: '0.1.1' }, { id: 'sveltekit-brochure', version: '0.2.0' }, { id: 'other', version: '0.2.0' }, undefined]) {
       const s = legacy();
       (s.manifest as { template?: unknown }).template = template;
       expect(installedFonts(s)).toEqual(BUNDLED_FONTS());
