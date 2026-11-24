@@ -38,7 +38,7 @@ import { collectionCreate, collectionRemove, collectionUpdate, entryCreate, entr
 import { isListBlock, toRichText } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { teaserFields } from '@shared/page-teasers';
-import { dropFontFamily, familyUses, fontAssetUsages, isValidFontAsset, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily, stackUsesFamily } from '@shared/fonts';
+import { dropFontFamily, familyUses, fontAssetUsages, isValidFontAsset, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily, stackLeadsWith, withoutFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { catalogueComponent, getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
@@ -576,7 +576,7 @@ export function assetUsages(state: ProjectState): Record<string, number> {
   for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
   for (const e of collectionEntries(state)) if (typeof e.featuredImage === 'string' && e.featuredImage) out[e.featuredImage] = (out[e.featuredImage] ?? 0) + 1;
   // An imported font is in use while a token or style names its family.
-  for (const [id, n] of Object.entries(fontAssetUsages(state))) out[id] = (out[id] ?? 0) + n;
+  for (const [id, n] of Object.entries(fontAssetUsages(state, themeFontTokens(state)))) out[id] = (out[id] ?? 0) + n;
   return out;
 }
 
@@ -588,7 +588,8 @@ export function assetUsages(state: ProjectState): Record<string, number> {
  */
 function removeUsedFontFace(state: ProjectState, assetId: string, removing: AssetRecord, choice: Extract<EditOperation, { type: 'asset.remove' }>['fontUses']) {
   const family = removing.font!.family;
-  const uses = familyUses(state, family).length;
+  const fontTokens = themeFontTokens(state);
+  const uses = familyUses(state, family, fontTokens).length;
   if (!uses) return;
   const times = `${uses} time${uses === 1 ? '' : 's'}`;
   const others = Object.entries(state.assets.assets).some(([k, x]) => k !== assetId && sameFontFamily(x, removing));
@@ -600,14 +601,20 @@ function removeUsedFontFace(state: ProjectState, assetId: string, removing: Asse
     if (!others) fail(`This font is used ${times}, and it is the last file of ${family}. Choose another font for its uses, or let them fall back.`);
     return;
   }
-  if (choice === 'fallback') return dropFontFamily(state, family, null);
+  if (choice === 'fallback') return dropFontFamily(state, family, null, fontTokens);
   const stack = choice!.replaceWith;
   if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(stack) || !isSafeCssValue(stack)) fail('Font stacks may contain names, quotes, commas and hyphens only.');
-  if (stackUsesFamily(stack, family)) fail(`Choose a font other than ${family} to put in its place.`);
   const font = resolveFontStack(state, stack);
   if ('error' in font) fail(font.error);
-  dropFontFamily(state, family, font.stack);
+  if (stackLeadsWith(font.stack, family)) fail(`Choose a font other than ${family} to put in its place.`);
+  // A font that lists this family as a backup (a theme's own copy of it) keeps the rest of its stack.
+  const rest = withoutFamily(font.stack, family);
+  if (!rest) fail(`Choose a font other than ${family} to put in its place.`);
+  dropFontFamily(state, family, rest, fontTokens);
 }
+
+/** The theme's font tokens, which may be named other than font.*: a site's choice in one is a use of its family. */
+const themeFontTokens = (state: ProjectState) => new Set(getTheme(state.site.themeId).tokens.filter((t) => t.group === 'font').map((t) => t.id));
 
 /** assetUsages, kept for the rest of a run of removals when the batch holds the counts (ApplyContext.assetUses). */
 function batchAssetUsages(state: ProjectState, ctx: ApplyContext): Record<string, number> {

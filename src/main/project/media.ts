@@ -560,7 +560,7 @@ export function cmapLookup(cmap: Buffer): ((codePoint: number) => boolean) | nul
   return (cp) => lookups.some((has) => has(cp));
 }
 
-/** Segments ending at `endCode[i]`, each mapping by a delta or through the glyph ID array. */
+/** Segments ending at `endCode[i]`, each mapping by a delta or through the glyph ID array, read within the subtable. */
 function format4(t: Buffer, at: number): (cp: number) => boolean {
   const segs = t.readUInt16BE(at + 6) / 2;
   const ends = at + 14;
@@ -568,36 +568,49 @@ function format4(t: Buffer, at: number): (cp: number) => boolean {
   const deltas = starts + segs * 2;
   const offsets = deltas + segs * 2;
   if (offsets + segs * 2 > t.length) throw new RangeError('cmap format 4 is cut short');
+  // Its length is 16 bits, which a large subtable wraps: one too short for its own arrays is read to the table's end.
+  const declared = at + t.readUInt16BE(at + 2);
+  const end = declared >= offsets + segs * 2 ? Math.min(t.length, declared) : t.length;
   return (cp) => {
     if (cp > 0xffff) return false;
-    for (let i = 0; i < segs; i++) {
-      if (t.readUInt16BE(ends + i * 2) < cp) continue;
-      const start = t.readUInt16BE(starts + i * 2);
-      if (start > cp) return false;
-      const delta = t.readUInt16BE(deltas + i * 2);
-      const offsetAt = offsets + i * 2;
-      const offset = t.readUInt16BE(offsetAt);
-      if (!offset) return ((cp + delta) & 0xffff) !== 0;
-      const glyphAt = offsetAt + offset + (cp - start) * 2;
-      if (glyphAt + 2 > t.length) return false;
-      const glyph = t.readUInt16BE(glyphAt);
-      return glyph !== 0 && ((glyph + delta) & 0xffff) !== 0;
+    // The first segment ending at or after the code point (end codes rise).
+    let lo = 0;
+    let hi = segs;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (t.readUInt16BE(ends + mid * 2) < cp) lo = mid + 1;
+      else hi = mid;
     }
-    return false;
+    if (lo === segs) return false;
+    const start = t.readUInt16BE(starts + lo * 2);
+    if (start > cp) return false;
+    const delta = t.readUInt16BE(deltas + lo * 2);
+    const offsetAt = offsets + lo * 2;
+    const offset = t.readUInt16BE(offsetAt);
+    if (!offset) return ((cp + delta) & 0xffff) !== 0;
+    const glyphAt = offsetAt + offset + (cp - start) * 2;
+    if (glyphAt + 2 > end) return false;
+    const glyph = t.readUInt16BE(glyphAt);
+    return glyph !== 0 && ((glyph + delta) & 0xffff) !== 0;
   };
 }
 
-/** Groups of consecutive code points mapped to consecutive glyphs. */
+/** Groups of consecutive code points mapped to consecutive glyphs, read within the subtable. */
 function format12(t: Buffer, at: number): (cp: number) => boolean {
   const groups = t.readUInt32BE(at + 12);
-  if (at + 16 + groups * 12 > t.length) throw new RangeError('cmap format 12 is cut short');
+  if (at + 16 + groups * 12 > Math.min(t.length, at + t.readUInt32BE(at + 4))) throw new RangeError('cmap format 12 is cut short');
   return (cp) => {
-    for (let g = 0; g < groups; g++) {
-      const e = at + 16 + g * 12;
-      const start = t.readUInt32BE(e);
-      if (cp < start) return false;
-      if (cp <= t.readUInt32BE(e + 4)) return t.readUInt32BE(e + 8) + (cp - start) !== 0;
+    // The last group starting at or before the code point (start codes rise).
+    let lo = 0;
+    let hi = groups;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (t.readUInt32BE(at + 16 + mid * 12) <= cp) lo = mid + 1;
+      else hi = mid;
     }
-    return false;
+    if (!lo) return false;
+    const e = at + 16 + (lo - 1) * 12;
+    const start = t.readUInt32BE(e);
+    return cp <= t.readUInt32BE(e + 4) && t.readUInt32BE(e + 8) + (cp - start) !== 0;
   };
 }

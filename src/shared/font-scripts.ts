@@ -56,11 +56,18 @@ export interface FontCoverage {
 /** What a font covers, given whether it maps a code point to a glyph. */
 export function fontCoverageOf(has: (codePoint: number) => boolean): FontCoverage {
   const scripts = scriptsCovered(has);
+  const mapped = (c: string) => has(c.codePointAt(0)!);
   const first = FONT_SCRIPTS.find((s) => s.id === scripts[0]);
-  if (first) return { scripts, sample: first.sample };
-  // No alphabet: show what it does have (a file of capitals, figures or symbols), skipping controls and spaces.
+  if (first) {
+    // The alphabet's own sample when the file has all of it; otherwise its first letters the file does have, so the
+    // sample is never drawn in a fallback font.
+    if ([...first.sample].every((c) => c === ' ' || mapped(c))) return { scripts, sample: first.sample };
+    return { scripts, sample: [...first.letters].filter(mapped).slice(0, 6).join(' ') };
+  }
+  // No alphabet: show what it does have (a file of capitals, figures, symbols or emoji), skipping controls, spaces
+  // and surrogates, up to the end of the Supplementary Ideographic Plane.
   const chars: string[] = [];
-  for (let cp = 0x21; cp <= 0xffff && chars.length < 8; cp++) if (!(cp >= 0x7f && cp <= 0xa0) && !(cp >= 0xd800 && cp <= 0xdfff) && has(cp)) chars.push(String.fromCodePoint(cp));
+  for (let cp = 0x21; cp <= 0x2ffff && chars.length < 8; cp++) if (!(cp >= 0x7f && cp <= 0xa0) && !(cp >= 0xd800 && cp <= 0xdfff) && has(cp)) chars.push(String.fromCodePoint(cp));
   return { scripts, sample: chars.join(' ') };
 }
 

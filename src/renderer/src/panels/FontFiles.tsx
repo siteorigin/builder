@@ -1,9 +1,10 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Trash2, TriangleAlert } from 'lucide-react';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { familyUses, sameFontFamily, type FontUse } from '@shared/fonts';
 import { scriptLabels } from '@shared/font-scripts';
 import { effectiveTokens } from '@generator/index';
+import { getTheme } from '@catalogue/index';
 import { applyOps, commitOps, toast, undoAction, useStore } from '../store';
 import { DraftInput, Modal } from '../components/ui';
 import { openSiteStyles } from '../lib/actions';
@@ -67,6 +68,10 @@ export function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record
     if (r) toast(`Removed ${a.name}.`, 'info', undoAction(r));
   };
   const asking = fonts.find((a) => a.id === removing);
+  // A file removed elsewhere closes its question for good: an Undo that brings it back doesn't ask again.
+  useEffect(() => {
+    if (removing && !asking) setRemoving(null);
+  }, [removing, asking]);
   return (
     <section className="font-list" aria-labelledby="font-list-title">
       <h4 id="font-list-title">Fonts</h4>
@@ -92,7 +97,7 @@ function FontRow({ a, used, onRename, onUpdate, onRemove }: { a: AssetRecord; us
   const covers = coverageText(useEditorFontFile(a.id));
   const variable = !!a.font?.weight.includes(' ');
   // Each file is named whole, since files of one family can share every other detail.
-  const named = `${a.name}, ${file}`;
+  const named = `${a.name}, ${a.originalName?.trim() || file}`;
   return (
     <li className="font-face" aria-label={named} data-font-file={file}>
       <div className="font-face-head">
@@ -101,7 +106,7 @@ function FontRow({ a, used, onRename, onUpdate, onRemove }: { a: AssetRecord; us
           {[faceLabel(a), covers, formatBytes(a.bytes), used ? 'Family in use' : 'Not used'].filter(Boolean).join(' · ')}
         </span>
         <span className="font-face-file" title={a.file}>
-          {file}
+          {a.originalName?.trim() || file}
         </span>
       </div>
       <FontSample a={a} />
@@ -156,31 +161,37 @@ function describeUses(state: ProjectState, uses: FontUse[]): string[] {
 }
 
 /**
- * What removing one file of a family the site uses does to text that keeps using the family: which remaining file
+ * What removing one file of a family the site uses does to text that keeps using the family: which remaining files
  * the browser draws it with, and what it has to fake or leave to a fallback font. `coverageOf` gives the alphabets
- * the editor has read from each file, by asset ID.
+ * the editor has read from each file, by asset ID (null while unknown); nothing is said about letters until every
+ * file involved is known.
  */
 function keepEffects(a: AssetRecord, others: AssetRecord[], coverageOf: (id: string) => string[] | null): string[] {
   const family = a.font!.family;
   const italic = a.font!.style === 'italic';
+  const kind = italic ? 'italic' : 'upright';
   const same = others.filter((o) => o.font!.style === a.font!.style);
-  if (!same.length)
-    return [
-      italic
-        ? `Italic text in ${family} would be slanted by the browser from its upright ${others.length === 1 ? 'file' : 'files'}, not drawn with real italics.`
-        : `Upright text in ${family} would be drawn with its italic ${others.length === 1 ? 'file' : 'files'}: ordinary paragraphs and headings set in it would turn italic.`
-    ];
+  // The files that would draw this file's text: its own style's, or failing that, every one left.
+  const drawers = same.length ? same : others;
+  const named = drawers.map((o) => o.originalName?.trim() || fontFileName(o)).join(', ');
   const out: string[] = [];
-  const kind = italic ? 'Italic' : 'Upright';
-  const [lo, hi] = weightRange(a.font!.weight);
-  if (!same.some((o) => weightRange(o.font!.weight)[0] <= lo && weightRange(o.font!.weight)[1] >= hi))
-    out.push(`${kind} text in ${family} at ${lo === hi ? `weight ${lo}` : `weights ${lo}–${hi}`} would be drawn with the nearest weight left, or made bolder or lighter by the browser.`);
+  if (!same.length)
+    out.push(
+      italic
+        ? `Italic text in ${family} would be slanted by the browser from its upright ${others.length === 1 ? 'file' : 'files'} (${named}), not drawn with real italics.`
+        : `Upright text in ${family} would be drawn with its italic ${others.length === 1 ? 'file' : 'files'} (${named}): ordinary paragraphs and headings set in it would turn italic.`
+    );
+  else {
+    out.push(`${italic ? 'Italic' : 'Upright'} text in ${family} would be drawn with its other ${kind} ${same.length === 1 ? 'file' : 'files'} (${named}), which may differ from this one.`);
+    const [lo, hi] = weightRange(a.font!.weight);
+    if (!same.some((o) => weightRange(o.font!.weight)[0] <= lo && weightRange(o.font!.weight)[1] >= hi))
+      out.push(`At ${lo === hi ? `weight ${lo}` : `weights ${lo}–${hi}`} it would be drawn with the nearest weight left, or made bolder or lighter by the browser.`);
+  }
   const mine = coverageOf(a.id);
-  const theirs = same.map((o) => coverageOf(o.id));
+  const theirs = drawers.map((o) => coverageOf(o.id));
   if (mine && theirs.every(Boolean)) {
     const lost = mine.filter((id) => !theirs.some((t) => t!.includes(id)));
-    if (lost.length) out.push(`${scriptLabels(lost).join(' and ')} letters in ${kind.toLowerCase()} ${family} would be drawn with a fallback font: no other ${kind.toLowerCase()} file of it has them.`);
-    else if (!out.length) out.push(`Another ${kind.toLowerCase()} file of ${family} has the same weights and alphabets, so its text should look the same.`);
+    if (lost.length) out.push(`${scriptLabels(lost).join(' and ')} letters in ${kind} ${family} would be drawn with a fallback font: ${drawers.length === 1 ? 'that file doesn’t' : 'those files don’t'} have them.`);
   }
   return out;
 }
@@ -205,7 +216,8 @@ function RemoveFontDialog({ a, onClose }: { a: AssetRecord; onClose: () => void 
   const coverage = useFamilyCoverage([a, ...others]);
   if (!snap) return null;
   const family = a.font!.family;
-  const uses = familyUses(snap.state, family);
+  const fontTokens = new Set(getTheme(snap.state.site.themeId).tokens.filter((t) => t.group === 'font').map((t) => t.id));
+  const uses = familyUses(snap.state, family, fontTokens);
   const where = describeUses(snap.state, uses);
   const code = uses.filter((u) => u.kind === 'code').length;
   const last = !others.length;
@@ -213,11 +225,13 @@ function RemoveFontDialog({ a, onClose }: { a: AssetRecord; onClose: () => void 
   const covers = coverageText(mine);
   // Nothing uses the family any more (an Undo, the AI, while this was open): it simply goes.
   const unused = !uses.length;
-  const ready = unused || choice === 'keep' || choice === 'fallback' || (choice === 'replace' && !!replacement);
+  // A choice whose option has gone (another file of the family arrived or left while this was open) is no choice.
+  const chosen = choice === 'keep' ? (last ? null : 'keep') : choice === 'fallback' ? (last ? 'fallback' : null) : choice;
+  const ready = unused || chosen === 'keep' || chosen === 'fallback' || (chosen === 'replace' && !!replacement);
   const confirm = async () => {
     if (!ready || busy) return;
     setBusy(true);
-    const fontUses = unused ? undefined : choice === 'replace' ? { replaceWith: replacement } : choice!;
+    const fontUses = unused ? undefined : chosen === 'replace' ? { replaceWith: replacement } : chosen!;
     // Applies only to the project as it was shown: a change since (an Undo, the AI) asks again.
     const r = await commitOps([{ type: 'asset.remove', assetId: a.id, ...(fontUses ? { fontUses } : {}) }], `Remove ${a.name}`, undefined, snap.revision);
     setBusy(false);
@@ -227,7 +241,7 @@ function RemoveFontDialog({ a, onClose }: { a: AssetRecord; onClose: () => void 
   };
   const option = (value: Choice, label: string, hint: string) => (
     <label className="font-remove-choice">
-      <input type="radio" name={`${id}-choice`} value={value} checked={choice === value} onChange={() => setChoice(value)} />
+      <input type="radio" name={`${id}-choice`} value={value} checked={chosen === value} onChange={() => setChoice(value)} />
       <span>
         <span className="font-remove-choice-label">{label}</span>
         <span className="field-hint">{hint}</span>
@@ -292,16 +306,17 @@ function RemoveFontDialog({ a, onClose }: { a: AssetRecord; onClose: () => void 
               {last
                 ? option('fallback', 'Let them fall back', `Every style that names ${family} draws with its next font instead.`)
                 : option('keep', `Keep using ${family}’s other ${others.length === 1 ? 'file' : 'files'}`, `Styles keep ${family}; its text is drawn as described above.`)}
-              {option('replace', 'Use another font instead', `Every style that uses ${family} switches to the font you choose.${last ? '' : ` Its other files stay in Assets.`}`)}
-              {choice === 'replace' && (
+              {option('replace', 'Use another font instead', `Styles that lead with ${family} switch to the font you choose; where it is only a backup font, it is taken out.${last ? '' : ' Its other files stay in Assets.'}`)}
+              {chosen === 'replace' && (
                 <div className="font-remove-replacement">
                   <FontSelect state={snap.state} stack={replacement} exclude={family} label="Font to use instead" onChoose={(next) => setReplacement(next)} />
                 </div>
               )}
             </div>
-            {code > 0 && last && (
+            {code > 0 && (last || chosen === 'replace') && (
               <p className="muted">
-                Code that names {family} itself is not changed: {code === 1 ? 'it draws' : 'they draw'} with {code === 1 ? 'its' : 'their'} own fallback font once this last file is gone.
+                Code that names {family} itself is not changed:{' '}
+                {last ? `${code === 1 ? 'it draws' : 'they draw'} with ${code === 1 ? 'its' : 'their'} own fallback font once this last file is gone.` : `${code === 1 ? 'it keeps' : 'they keep'} using ${family}’s other files.`}
               </p>
             )}
           </>

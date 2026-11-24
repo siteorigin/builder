@@ -158,17 +158,31 @@ export function renameFontFamily(state: ProjectState, from: string, to: string) 
 }
 
 /**
- * Every place the site uses a family, by the same rules as `fontAssetUsages`: font tokens and text styles, element
- * fonts, and project code components that name it (each once).
+ * Every place the site uses a family, by the same rules as `fontAssetUsages`: font tokens and text styles (the
+ * theme's font tokens are `fontTokens`, besides any named font.*), element fonts, and project code components that
+ * name it (each once).
  */
-export function familyUses(state: ProjectState, family: string): FontUse[] {
-  const uses = fontSlots(state)
+export function familyUses(state: ProjectState, family: string, fontTokens: ReadonlySet<string> = new Set()): FontUse[] {
+  const uses = fontSlots(state, state.components, fontTokens)
     .filter((s) => stackUsesFamily(s.get(), family))
     .map((s) => s.use);
   const named = namedIn(family);
   for (const d of projectDefinitions(state)) if (d.kind === 'code' && typeof d.source === 'string' && named(searchText(d.source))) uses.push({ kind: 'code', componentId: d.id });
   return uses;
 }
+
+/** A stack with a family taken out wherever it names it (empty when nothing else is left). */
+export function withoutFamily(stack: string, family: string): string {
+  const name = searchText(unquote(family));
+  return stack
+    .split(',')
+    .filter((part) => entryName(part) !== name)
+    .join(',')
+    .trim();
+}
+
+/** Does the stack lead with this family? */
+export const stackLeadsWith = (stack: string, family: string) => entryName(stack.split(',')[0] ?? '') === searchText(unquote(family));
 
 /** What a stack falls back to once nothing is left in it. */
 export const FALLBACK_STACK = 'system-ui, sans-serif';
@@ -178,17 +192,16 @@ export const FALLBACK_STACK = 'system-ui, sans-serif';
  * given; anywhere else it is taken out of the stack, which then falls back to its next font (or FALLBACK_STACK once
  * nothing is left). A theme's locked definitions and code are never rewritten.
  */
-export function dropFontFamily(state: ProjectState, family: string, replaceWith: string | null) {
+export function dropFontFamily(state: ProjectState, family: string, replaceWith: string | null, fontTokens: ReadonlySet<string> = new Set()) {
   const name = searchText(unquote(family));
-  for (const slot of fontSlots(state, projectDefinitions(state))) {
+  for (const slot of fontSlots(state, projectDefinitions(state), fontTokens)) {
     const parts = slot.get().split(',');
     if (!parts.some((part) => entryName(part) === name)) continue;
     if (replaceWith && entryName(parts[0]) === name) {
       slot.set(replaceWith);
       continue;
     }
-    const rest = parts.filter((part) => entryName(part) !== name).join(',').trim();
-    slot.set(rest || FALLBACK_STACK);
+    slot.set(withoutFamily(slot.get(), family) || FALLBACK_STACK);
   }
 }
 
@@ -213,11 +226,11 @@ export function fontFaceCss(state: ProjectState): string {
  * How many styles use each imported font family, keyed by asset ID (for usage counts). A project's code component
  * that names the family in its source counts once, however often it names it.
  */
-export function fontAssetUsages(state: ProjectState): Record<string, number> {
+export function fontAssetUsages(state: ProjectState, fontTokens: ReadonlySet<string> = new Set()): Record<string, number> {
   const out: Record<string, number> = {};
   const families = projectFontFamilies(state);
   if (!families.length) return out;
-  const stacks = fontSlots(state).map((s) => s.get());
+  const stacks = fontSlots(state, state.components, fontTokens).map((s) => s.get());
   const sources = projectDefinitions(state).flatMap((d) => (d.kind === 'code' && typeof d.source === 'string' ? [searchText(d.source)] : []));
   for (const { family, faces } of families) {
     const named = namedIn(family);

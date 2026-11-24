@@ -199,6 +199,8 @@ describe('removing many assets in one batch', () => {
     s.assets.assets.broken = { ...face('broken', 'Brand Sans'), file: 'static/assets/broken.exe' };
     rejects(() => applyOperations(s, [remove('img10'), remove('f1')]), /^Operation 2 \(asset\.remove\): This font is used 1 time\. /);
     rejects(() => applyOperations(s, [remove('img10'), remove('broken'), remove('f1')]), /^Operation 3 \(asset\.remove\): This font is used 1 time\. /);
+    // Nor as a file the family could be kept on.
+    rejects(() => applyOperations(s, [removeFont('f1', 'keep')]), /last file of Brand Sans/);
   });
 
   it('counts again after a font goes, whose record may be filed under another name', () => {
@@ -209,6 +211,8 @@ describe('removing many assets in one batch', () => {
     base.assets.assets.miskeyed = face('target', 'Brand Sans');
     const s = applyOperations(base, [{ type: 'token.set', tokenId: 'font.display', value: fonts.importedFontStack('Brand Sans') }]).state;
     expect(assetUsages(s).target).toBe(1);
+    // The mis-keyed record is the family's only file, never another of its own.
+    rejects(() => applyOperations(s, [removeFont('miskeyed', 'keep')]), /last file of Brand Sans/);
     scans.mockClear();
     const r = applyOperations(s, [remove('img10'), removeFont('miskeyed', 'fallback'), remove('target'), remove('img11')]).state;
     expect(r.assets.assets.target ?? r.assets.assets.miskeyed).toBeUndefined();

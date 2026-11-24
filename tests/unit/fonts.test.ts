@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
-import { resolveFontStack } from '@catalogue/fonts';
+import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { applyOperations, assetUsages } from '@engine/apply';
 import { generateProject } from '@generator/index';
 import { familyUses, fontFaceCss, importedFontStack, projectFontFamilies, renameFontFamily, stackUsesFamily } from '@shared/fonts';
@@ -89,8 +89,12 @@ describe('imported fonts', () => {
     expect(last.ok).toBe(false);
     expect(last.error?.message).toMatch(/last file of Brand Sans/);
     expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f2' }] }, { label: 'Remove' })).error?.message).toMatch(/This font is used 1 time\. Replace or remove/);
+    // Falling back, each style goes to its own next font, and one that named only the family to the default.
+    const styles = await s.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: "'Brand Sans'" }, { type: 'token.set', tokenId: 'font.body', value: "'Brand Sans', Georgia, serif" }] }, { label: 'Styles' });
+    expect(styles.ok).toBe(true);
     expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f2', fontUses: 'fallback' }] }, { label: 'Remove' })).ok).toBe(true);
     expect(s.state.tokens.overrides['font.display']).toBe('system-ui, sans-serif');
+    expect(s.state.tokens.overrides['font.body']).toBe('Georgia, serif');
     expect(s.state.assets.assets.f2).toBeUndefined();
   });
 
@@ -113,7 +117,18 @@ describe('imported fonts', () => {
     const tree = s.state.pages[pageId];
     const nodeId = tree.rootIds[0];
     expect((await s.apply({ operations: [{ type: 'node.setStyle', owner: { kind: 'page', id: pageId }, nodeId, scope: 'base', property: 'fontFamily', value: stack }] }, { label: 'Style' })).ok).toBe(true);
-    expect(familyUses(s.state, 'brand sans').map((u) => (u.kind === 'element' ? `element:${u.owner.kind}` : `${u.kind}:${'tokenId' in u ? u.tokenId : ''}`)).sort()).toEqual(['element:page', 'token:font.body', 'token:font.display']);
+    expect(familyUses(s.state, 'brand sans')).toEqual(
+      expect.arrayContaining([{ kind: 'token', tokenId: 'font.display' }, { kind: 'token', tokenId: 'font.body' }, { kind: 'element', owner: { kind: 'page', id: pageId } }])
+    );
+    expect(familyUses(s.state, 'brand sans')).toHaveLength(3);
+    const nodeFont = () => JSON.stringify(s.state.pages[pageId].nodes[nodeId]).match(/"fontFamily":"([^"]*)"/)?.[1];
+    expect(nodeFont()).toBe(stack);
+    // Choices outside the three, and stacks that aren't plain font names, are refused with nothing changed.
+    expect(validateOperation({ type: 'asset.remove', assetId: 'f1', fontUses: 'drop' }).ok).toBe(false);
+    const before = s.revision;
+    expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: { replaceWith: 'Georgia; color: red' } }] }, { label: 'Remove' })).error?.message).toMatch(/Font stacks may contain/);
+    expect(s.revision).toBe(before);
+    expect(s.state.assets.assets.f1).toBeDefined();
     // A replacement that names the family itself, or a font the site does not have, is refused.
     expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: { replaceWith: stack } }] }, { label: 'Remove' })).error?.message).toMatch(/other than Brand Sans/);
     expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: { replaceWith: "'Nowhere Sans', serif" } }] }, { label: 'Remove' })).ok).toBe(false);
@@ -121,6 +136,7 @@ describe('imported fonts', () => {
     expect(done.ok).toBe(true);
     expect(s.state.tokens.overrides['font.display']).toBe(importedFontStack('Other'));
     expect(s.state.tokens.overrides['font.body']).toBe('Georgia, serif');
+    expect(nodeFont()).toBe(importedFontStack('Other'));
     expect(JSON.stringify(s.state.pages[pageId])).not.toMatch(/Brand Sans/);
     expect(s.state.assets.assets.f1).toBeUndefined();
     // One Undo brings back the file and every style that named it.
@@ -128,7 +144,19 @@ describe('imported fonts', () => {
     expect(s.state.assets.assets.f1).toBeDefined();
     expect(s.state.tokens.overrides['font.display']).toBe(stack);
     expect(s.state.tokens.overrides['font.body']).toBe("Georgia, 'Brand Sans', serif");
-    expect(JSON.stringify(s.state.pages[pageId])).toMatch(/Brand Sans/);
+    expect(nodeFont()).toBe(stack);
+  });
+
+  it('puts a font that lists the removed family as a backup in its place without it', async () => {
+    const { s } = await make();
+    // The theme's own Lora lists 'Lora' after 'Lora Variable': chosen in place of an imported Lora, it keeps the rest.
+    await s.apply({ operations: [add(face('f1', '400', 'normal', 'Lora')), { type: 'token.set', tokenId: 'font.display', value: importedFontStack('Lora') }] }, { label: 'Import' });
+    const bundled = installedFonts(s.state).find((f) => f.name === 'Lora')!.stack;
+    expect(stackUsesFamily(bundled, 'Lora')).toBe(true);
+    const r = await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: { replaceWith: bundled } }] }, { label: 'Remove' });
+    expect(r.ok).toBe(true);
+    expect(stackUsesFamily(String(s.state.tokens.overrides['font.display']), 'Lora Variable')).toBe(true);
+    expect(stackUsesFamily(String(s.state.tokens.overrides['font.display']), 'Lora')).toBe(false);
   });
 
   it('never takes the choice for a font the site uses from an AI run', async () => {
@@ -260,13 +288,16 @@ describe('imported fonts', () => {
     // last one cannot be kept.
     expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f2' }] }, { label: 'Remove' })).error?.message).toMatch(/This font is used 2 times/);
     expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f2', fontUses: 'keep' }] }, { label: 'Remove' })).ok).toBe(true);
-    const last = await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1' }] }, { label: 'Remove' });
+    const last = await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: 'keep' }] }, { label: 'Remove' });
     expect(last.ok).toBe(false);
-    expect(last.error?.message).toMatch(/This font is used 2 times/);
+    expect(last.error?.message).toMatch(/This font is used 2 times, and it is the last file of Brand Sans/);
     expect(s.state.assets.assets.f1).toBeDefined();
     // Falling back never rewrites code: the author was told it names the font, and the file goes.
+    const sources = () => Object.fromEntries(Object.values(s.state.components).filter((d) => d.owner === 'project').map((d) => [d.id, d.source]));
+    const wrote = sources();
     expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: 'fallback' }] }, { label: 'Remove' })).ok).toBe(true);
-    expect(Object.values(s.state.components).some((d) => d.owner === 'project' && d.source?.includes("'brand   SANS'"))).toBe(true);
+    expect(sources()).toEqual(wrote);
+    expect(s.state.assets.assets.f1).toBeUndefined();
   });
 
   it('reads a style the way CSS does: a run of spaces is one, and a bare keyword is no font', async () => {

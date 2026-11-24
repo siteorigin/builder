@@ -261,9 +261,11 @@ describe('web font character coverage', () => {
   });
 
   it('reads format 12 in a WOFF2 font, beyond the Basic Multilingual Plane', async () => {
-    const cmap = cmapTable([[3, 10, cmap12([[0x410, 0x44f, 1], [0x1f600, 0x1f600, 70]])]]);
+    const cmap = cmapTable([[3, 10, cmap12([[0x30, 0x31, 0], [0x410, 0x44f, 1], [0x1f600, 0x1f600, 70]])]]);
     expect(cmapLookup(cmap)!(0x1f600)).toBe(true);
     expect(cmapLookup(cmap)!(0x1f601)).toBe(false);
+    // A group starting at glyph 0 maps its first code point to no glyph, and the next to glyph 1.
+    expect([0x30, 0x31, 0x32].map(cmapLookup(cmap)!)).toEqual([false, true, false]);
     await expect(fontCoverage(woff2([[0, cmap], [5, nameTable('Brand Cyr')], [6, os2Table(400, false)]]))).resolves.toEqual({ scripts: ['cyrillic'], sample: 'Аа Бб Жж' });
   });
 
@@ -280,6 +282,28 @@ describe('web font character coverage', () => {
     await expect(fontInfo(packed)).resolves.toMatchObject({ family: 'Brand' });
     await expect(fontCoverage(woff([['name', nameTable('Brand')], ['cmap', cmapTable([[1, 0, cmap4([{ start: 0x41, end: 0x5a, delta: 3 }])]])]]))).resolves.toBeNull();
     await expect(fontCoverage(woff([['name', nameTable('Brand')]]))).resolves.toBeNull();
+    // A compressed character map whose data is garbage.
+    const garbled = woff([['name', nameTable('Brand')], ['cmap', Buffer.alloc(400)]]);
+    garbled.fill(0xff, garbled.length - 8);
+    await expect(fontInfo(garbled)).resolves.toMatchObject({ family: 'Brand' });
+    await expect(fontCoverage(garbled)).resolves.toBeNull();
+    // A WOFF2 font that lists its character map twice keeps the first.
+    const latin = cmapTable([[3, 1, cmap4([{ start: 0x41, end: 0x5a, delta: 3 }, { start: 0x61, end: 0x7a, delta: 3 }])]]);
+    const twice = woff2([[5, nameTable('Brand')], [0, latin], [0, cmapTable([[3, 1, cmap4([{ start: 0x410, end: 0x44f, delta: 3 }])]])]]);
+    await expect(fontInfo(twice)).resolves.toMatchObject({ family: 'Brand' });
+    await expect(fontCoverage(twice)).resolves.toMatchObject({ scripts: ['latin'] });
+  });
+
+  it('reads every Unicode subtable, and shows a file only in letters it has', async () => {
+    // Latin through the Windows subtable, Cyrillic only through the Unicode-platform one.
+    const both = cmapTable([
+      [0, 3, cmap4([{ start: 0x410, end: 0x44f, delta: 100 }])],
+      [3, 1, cmap4([{ start: 0x41, end: 0x5a, delta: 3 }, { start: 0x61, end: 0x7a, delta: 3 }])]
+    ]);
+    await expect(fontCoverage(woff([['name', nameTable('Brand')], ['cmap', both]]))).resolves.toEqual({ scripts: ['latin', 'cyrillic'], sample: 'Aa Gg Rr' });
+    // Most of Latin, but not A, G or R: its sample is drawn from letters it does have.
+    const gaps = cmapTable([[3, 1, cmap4([{ start: 0x42, end: 0x46, delta: 3 }, { start: 0x48, end: 0x51, delta: 3 }, { start: 0x53, end: 0x5a, delta: 3 }, { start: 0x61, end: 0x7a, delta: 3 }])]]);
+    await expect(fontCoverage(woff([['name', nameTable('Brand')], ['cmap', gaps]]))).resolves.toEqual({ scripts: ['latin'], sample: 'B C D E F H' });
   });
 
   it('tells apart the files of one face split by alphabet, as web fonts often are', async () => {

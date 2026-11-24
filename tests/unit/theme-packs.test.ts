@@ -12,7 +12,7 @@ import { P, createPack } from '@catalogue/dsl';
 import { BUILTIN_PACKS, FOUNDATION_ALT_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
 import { defaultTheme, findTheme, getTheme, listThemes, registerPacks, themeLockEntry, themePinProblem } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, assetUsages } from '@engine/apply';
 import { FONTS_DIR, generateProject, packFileCopies } from '@generator/index';
 import { buildPack, fileSource, registerBuiltinPacks, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir } from '../../src/main/packs/loader';
@@ -267,6 +267,19 @@ describe('switching to a pack with other fonts', () => {
     expect(studioPack.fonts.map((f) => f.name)).toEqual(['Inter']);
     const chose = applyOperations(onSerif, [{ type: 'token.set', tokenId: 'type.body', value: 'Lora' }]).state;
     expect(() => applyOperations(chose, [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Lora: your site uses this font/);
+  });
+
+  it('counts an imported font chosen in a font token the theme names otherwise, and settles it when the font goes', () => {
+    // Issue 247: a use the count missed let the font go without the author seeing what changes.
+    const { components, ...meta } = FOUNDATION_PACK;
+    const serifAuthor = createPack({ ...meta, id: 'serif', name: 'Serif', version: '1.0.0', license: 'MIT', fonts: FOUNDATION_PACK.fonts, tokens: [...FOUNDATION_PACK.tokens, { id: 'type.body', label: 'Body', group: 'font', value: inter.stack }] });
+    registerPacks([...listThemes(), { ...buildPack(serifAuthor.define(components.map((c) => serifAuthor.adopt(c)))).pack, source: 'user', digest: 's1' }]);
+    const face = { id: 'f1', name: 'Brand', file: 'static/assets/brand-aaaaaaaa.woff2', mime: 'font/woff2', bytes: 1, hash: 'x', kind: 'font' as const, createdAt: '', font: { family: 'Brand Sans', weight: '400', style: 'normal' as const } };
+    const s = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'theme.apply', themeId: 'serif' }, { type: 'asset.add', asset: face }, { type: 'token.set', tokenId: 'type.body', value: "'Brand Sans', Georgia, serif" }]).state;
+    expect(assetUsages(s).f1).toBe(1);
+    expect(() => applyOperations(s, [{ type: 'asset.remove', assetId: 'f1' }])).toThrow(/This font is used 1 time/);
+    const gone = applyOperations(s, [{ type: 'asset.remove', assetId: 'f1', fontUses: 'fallback' }]).state;
+    expect(gone.tokens.overrides['type.body']).toBe('Georgia, serif');
   });
 
   it('reads a project code component for the fonts it names, and not for longer names that contain one', () => {

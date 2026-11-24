@@ -1533,11 +1533,19 @@ export class Controller {
     const a = s.state.assets.assets[assetId];
     if (!a || a.id !== assetId || !isValidFontAsset(a)) return null;
     try {
-      const path = join(s.dir, a.file);
-      const st = await fs.lstat(path);
-      if (!st.isFile() || st.size > MAX_FONT_FILE) return null;
-      const bytes = await fs.readFile(path);
-      return { bytes, coverage: await fontCoverage(bytes) };
+      // Only a file really inside the project, wherever a link in its path leads, and no larger than it was checked.
+      const [root, path] = await Promise.all([fs.realpath(s.dir), fs.realpath(join(s.dir, a.file))]);
+      const rel = relative(root, path);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+      const fh = await fs.open(path, 'r');
+      try {
+        const st = await fh.stat();
+        if (!st.isFile() || st.size > MAX_FONT_FILE) return null;
+        const bytes = await fh.readFile();
+        return { bytes, coverage: await fontCoverage(bytes) };
+      } finally {
+        await fh.close();
+      }
     } catch {
       return null;
     }
