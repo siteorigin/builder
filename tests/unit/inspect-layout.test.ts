@@ -198,9 +198,10 @@ describe('layout inspection readability checks', () => {
 
   it.skipIf(!browserInstalled)('keeps measuring through form controls that hide the form\'s own properties', async () => {
     // A control named "children" or "childNodes" replaces form.children or form.childNodes on the form element.
-    const r = await inspect(`<form ${so('form')} style="color:#ccc">Pale words in a form<input name="children" style="display:block;min-height:44px;width:200px"><input name="childNodes" style="display:block;min-height:44px;width:200px"></form>`);
-    expect(r.checks!.contrast.incomplete).toBeUndefined();
-    expect(of(r, 'low-contrast').map((i) => i.desc?.node)).toEqual(['form']);
+    const r = await inspect(`<form ${so('form')} style="color:#ccc">Pale words in a form<input ${so('guests')} name="children" style="display:block;min-height:44px;width:200px"><input ${so('note')} name="childNodes" style="display:block;min-height:44px;width:200px"></form>
+      <form ${so('loop')} style="color:#ddd">Pale words in a form whose parent is hidden<input name="parentElement" style="display:block;min-height:44px;width:200px"><input name="hasAttribute" style="display:block;min-height:44px;width:200px"></form>`);
+    for (const c of Object.values(r.checks!)) expect(c.incomplete).toBeUndefined();
+    expect(of(r, 'low-contrast').map((i) => i.desc?.node).sort()).toEqual(['form', 'loop']);
   }, 30000);
 
   it.skipIf(!browserInstalled)('judges gradients between their stops, and stacked or faded layers as only pixels could', async () => {
@@ -216,6 +217,14 @@ describe('layout inspection readability checks', () => {
       <style>.bar,.side{position:relative;height:120px}.bar::before{content:'';position:absolute;left:0;top:0;width:100px;height:24px;background:#000}.side::after{content:'';position:absolute;right:0;top:0;width:30%;height:100%;background:#000}</style>
       <div class="bar" ${so('bar')}><p ${so('barText')} style="color:#000;margin:0">Black on a black bar</p></div>
       <div class="side" ${so('side')}><p ${so('sideText')} style="color:#000;margin:0">Hi</p></div>`);
+    const more = await inspect(`
+      <div ${so('hardEdge')} style="background:linear-gradient(90deg, red 50%, #009000 50%)"><p ${so('hardText')} style="color:#000">Black on two colours meeting at an edge</p></div>
+      <div ${so('dip')} style="background:linear-gradient(90deg, rgb(50 137 60), rgb(210 96 60))"><p ${so('dipText')} style="color:#000">Black on a blend that dips between quarters</p></div>
+      <div ${so('group')} style="opacity:.5"><section style="background:#000 url('${photo}')"><div style="background:#fff"><p ${so('groupText')} style="color:#000;margin:0">A card and its photo faded together</p></div></section></div>`);
+    // Nothing is painted between stops that meet at an edge, and a dip between the quarter points is still found.
+    expect(of(more, 'contrast-unverified').map((i) => i.desc?.node)).toEqual(['dipText']);
+    // Faded together, the card still hides the photo: the text is measured (black at half strength on white fails).
+    expect(of(more, 'low-contrast').map((i) => i.desc?.node)).toEqual(['groupText']);
     const unverified = Object.fromEntries(of(r, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]));
     expect(unverified).toEqual({ blackText: 'gradient', whiteText: 'gradient', stackedText: 'layers', fadedText: 'image', photoLink: 'image', barText: 'overlay' });
     const pale = of(r, 'low-contrast');
@@ -235,8 +244,9 @@ describe('layout inspection readability checks', () => {
       <div ${so('carousel')} style="overflow:hidden;width:300px"><div style="display:flex;width:600px"><p style="flex:0 0 300px;margin:0">Slide one</p><p style="flex:0 0 300px;margin:0">Slide two</p></div></div>
       <p ${so('wideLine')} style="width:120px;white-space:nowrap;overflow:hidden;margin:0">A line that runs out of its box</p>
       <p ${so('tall')} style="height:24px;width:200px;overflow:hidden;text-overflow:ellipsis;margin:0">Several lines of words that wrap well past the height of this short box, ellipsis or not</p>
-      <p ${so('mono')} style="font-family:monospace;width:12ch"><span ${so('s1')} style="display:inline-block">1234567890</span><span ${so('s2')}>123456789012 abc</span><span ${so('s3')}> XYZ</span></p>`);
-    expect(of(r, 'clipped-text').map((i) => [i.desc?.node, i.axis]).sort()).toEqual([['tall', 'vertical'], ['wideLine', 'horizontal']]);
+      <p ${so('mono')} style="font-family:monospace;width:12ch"><span ${so('s1')} style="display:inline-block">1234567890</span><span ${so('s2')}>123456789012 abc</span><span ${so('s3')}> XYZ</span></p>
+      <p ${so('runs')} style="width:80px;white-space:nowrap;overflow:hidden;margin:0"><span style="display:inline-block;width:100px">Seen</span><span>Lost words</span></p>`);
+    expect(of(r, 'clipped-text').map((i) => [i.desc?.node, i.axis]).sort()).toEqual([['runs', 'horizontal'], ['tall', 'vertical'], ['wideLine', 'horizontal']]);
     // Inline boxes flow as lines: their outer rectangles cross without their text doing so.
     expect(of(r, 'overlap')).toEqual([]);
   }, 30000);
@@ -247,8 +257,11 @@ describe('layout inspection readability checks', () => {
       <label ${so('wrapLabel')} style="display:flex;align-items:center;min-height:44px"><input type="checkbox"> I agree to the terms</label>
       <nav ${so('menu')}><ul><li><span><a ${so('wrapped')} href="/">Go</a></span></li></ul></nav>
       <p ${so('seps')}><a href="/a">A</a> | <a href="/b">B</a></p>
-      <div role="button" style="width:100px;height:60px"><a ${so('help')} href="/help" style="display:inline-block">?</a></div>`);
-    expect(of(r, 'small-tap-target').map((i) => [i.desc?.node, i.count ?? 1]).sort()).toEqual([['far', 1], ['help', 1], ['seps', 2], ['wrapped', 1]]);
+      <div role="button" style="width:100px;height:60px"><a ${so('help')} href="/help" style="display:inline-block">?</a></div>
+      <label style="position:relative;display:inline-block;width:20px;height:20px"><input ${so('bigBox')} type="checkbox" style="position:absolute;left:0;top:0;width:48px;height:48px;margin:0"></label>
+      <input ${so('elsewhere')} type="checkbox" id="elsewhere"><label style="display:block;min-height:60px" for="elsewhere">Agree <input ${so('wrongLabel')} type="checkbox"></label>`);
+    // A label labels one control: the one it names, or else the one inside it.
+    expect(of(r, 'small-tap-target').map((i) => [i.desc?.node, i.count ?? 1]).sort()).toEqual([['elsewhere', 1], ['far', 1], ['help', 1], ['seps', 2], ['wrapped', 1], ['wrongLabel', 1]]);
     const exactly = await inspect(pageWith(['tap']), 768);
     expect(exactly.checks!.tapTargets.skipped).toBeDefined();
   }, 30000);

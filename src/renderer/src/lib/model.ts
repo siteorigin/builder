@@ -197,18 +197,28 @@ export function inspectionRef(state: ProjectState, d: InspectionDesc): Inspectio
   const inner = direct ? ref.nodeId : ref.instancePath[1];
   const partId = nearestPart(def, inner);
   const nearest = !direct || !!d.inside || partId !== partIdFor(def, inner);
-  // Inside a component placed in a project component's design, the element's own part there: a change to it reaches
-  // every placement of that design, so it is offered beside the placement's part, never instead of it.
-  const innerDef = !direct && def.owner === 'project' && def.kind === 'managed' && ref.instancePath.length === 2 ? resolveRef(state, ref).def : undefined;
-  const innerPart = innerDef?.tree ? nearestPart(innerDef, ref.nodeId) : undefined;
-  const definition: InspectionRef | undefined = innerPart
-    ? { owner: { kind: 'component', id: def.id }, nodeId: inner, partId: innerPart, ...(innerPart !== partIdFor(innerDef, ref.nodeId) || d.inside ? { match: 'nearest-part' as const } : {}) }
-    : undefined;
+  // A component placed in a project component's design, or an element of it: named there too, by its own part, where
+  // a change reaches every placement of that design. It is offered beside the placement's part, never instead of it.
+  const projectDesign = def.owner === 'project' && def.kind === 'managed';
+  const placedThere = direct ? own(def.tree.nodes, inner) : undefined;
+  let definition: InspectionRef | undefined;
+  if (projectDesign && !direct && ref.instancePath.length === 2) {
+    const innerDef = resolveRef(state, ref).def;
+    const innerPart = innerDef?.tree ? nearestPart(innerDef, ref.nodeId) : undefined;
+    if (innerPart) definition = { owner: { kind: 'component', id: def.id }, nodeId: inner, partId: innerPart, ...(innerPart !== partIdFor(innerDef, ref.nodeId) || d.inside ? { match: 'nearest-part' as const } : {}) };
+  } else if (projectDesign && placedThere?.kind === 'instance' && partId !== partIdFor(def, inner)) {
+    // The root of a component placed there (its boundary), which the design does not expose as a part of its own.
+    const placedDef = own(state.components, placedThere.definitionId);
+    const rootPart = placedDef?.kind === 'managed' && placedDef.tree ? partIdFor(placedDef, placedDef.tree.rootIds[0]) : undefined;
+    definition = { owner: { kind: 'component', id: def.id }, nodeId: inner, ...(rootPart && rootPart !== 'root' ? { partId: rootPart } : {}) };
+  }
   if (!partId) return { owner: ref.owner, nodeId: placementId, match: 'placement', ...(definition ? { definition } : {}) };
   const out: InspectionRef = { owner: ref.owner, nodeId: placementId, partId, ...(nearest ? { match: 'nearest-part' as const } : {}), ...(definition ? { definition } : {}) };
   // The list item the part is shown for. Only an element of the placement's own design carries that design's items
   // (one inside a component placed there carries that component's own); a part outside every list, or inside
   // several, has none. An item the list no longer has means the measured page was out of date: nothing is named.
+  // An element of the design shown outside every list never carries items: one that does is from an older page.
+  if (direct && items.length && !inRepeat(def, ref.nodeId)) return null;
   const list = direct && ref.owner.kind !== 'component' ? repeatedPartList(def, partId) : undefined;
   if (list && items.length) {
     const listed = new Set(placementItems(def, placement, list).map((i) => i.id));
@@ -217,6 +227,12 @@ export function inspectionRef(state: ProjectState, d: InspectionDesc): Inspectio
     if (hits.length === 1) out.itemId = hits[0];
   }
   return out;
+}
+
+/** Whether a definition's node is rendered inside one of its repeats. */
+function inRepeat(def: ComponentDefinition, nodeId: string): boolean {
+  for (let at = def.tree && findParent(def.tree, nodeId); at?.parentId; at = findParent(def.tree!, at.parentId)) if (own(def.tree!.nodes, at.parentId)?.kind === 'repeat') return true;
+  return false;
 }
 
 /** The part declared on a definition's node, or on the nearest node around it that has one. */

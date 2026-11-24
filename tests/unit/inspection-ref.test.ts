@@ -47,12 +47,13 @@ describe('inspection references', () => {
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'eyebrow', items: '' })).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id, partId: 'root', match: 'nearest-part' });
   });
 
-  it('gives a part outside the list no item, whatever items the element was rendered in', () => {
+  it('gives a part outside the list no item', () => {
     const s = fresh();
     const grid = placementOf(s, 'foundation.features.grid');
-    const card = (grid.props.items as Array<{ id: string }>)[0].id;
-    const ref = inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'heading', items: card });
-    expect(ref).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id, partId: 'heading' });
+    const page = { kind: 'page', id: s.site.homePageId };
+    expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'grid', items: '' })).toEqual({ owner: page, nodeId: grid.id, partId: 'grid' });
+    const ref = inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'heading', items: '' });
+    expect(ref).toEqual({ owner: page, nodeId: grid.id, partId: 'heading' });
     expect(placementOf(styleThrough(s, ref!), 'foundation.features.grid').overrides?.heading).toEqual({ base: { color: '#123456' } });
   });
 
@@ -76,6 +77,9 @@ describe('inspection references', () => {
     expect(placementOf(styleThrough(s, ref!), 'foundation.features.grid').itemOverrides?.cardTitle?.items['a,b%c']).toEqual({ base: { color: '#123456' } });
     // An item the list no longer has means the measured page was out of date: nothing is named, never every card.
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-title', items: 'gone' })).toBeNull();
+    // Items on an element shown outside every list: the page measured was older than the design.
+    expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'heading', items: items[1].id })).toBeNull();
+    expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-title', items: 42 } as never)).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id, partId: 'cardTitle' });
   });
 
   it('names the part of the outer placement that holds a nested component', () => {
@@ -110,6 +114,16 @@ describe('inspection references', () => {
     cardNode.children.push(inCard.id);
     const cards = placementItems(outer, placed, 'items');
     expect(cards.length).toBeGreaterThan(0);
+    // The banner itself, at its root, which the outer design exposes only through the card around it.
+    const bannerRoot = s.components['foundation.cta.banner'].tree!.rootIds[0];
+    expect(inspectionRef(s, { ctx: ctxOf(s, placed.id, inCard.id), node: bannerRoot, items: cards[0].id })).toEqual({
+      owner: { kind: 'page', id: s.site.homePageId },
+      nodeId: placed.id,
+      partId: 'card',
+      match: 'nearest-part',
+      itemId: cards[0].id,
+      definition: { owner: { kind: 'component', id: outer.id }, nodeId: inCard.id }
+    });
     const inside = inspectionRef(s, { ctx: ctxOf(s, placed.id, inCard.id), node: 'heading', items: cards[0].id });
     expect(inside).toMatchObject({ nodeId: placed.id, partId: 'card', match: 'nearest-part' });
     expect(inside?.itemId).toBeUndefined();

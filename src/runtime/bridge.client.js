@@ -69,7 +69,7 @@ function rectOf(el) {
   let r = el.getBoundingClientRect();
   if (getComputedStyle(el).display === 'contents') {
     let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
-    for (const c of el.children) {
+    for (const c of Object.getOwnPropertyDescriptor(Element.prototype, 'children').get.call(el)) {
       const cr = c.getBoundingClientRect();
       if (!cr.width && !cr.height) continue;
       x1 = Math.min(x1, cr.left); y1 = Math.min(y1, cr.top); x2 = Math.max(x2, cr.right); y2 = Math.max(y2, cr.bottom);
@@ -2037,7 +2037,7 @@ function previewState() {
     }
   };
   const visit = (node) => {
-    for (const child of node.childNodes) {
+    for (const child of Object.getOwnPropertyDescriptor(Node.prototype, 'childNodes').get.call(node)) {
       if (child.nodeType === Node.TEXT_NODE) {
         if (!child.textContent.trim()) continue;
         const range = document.createRange();
@@ -2076,7 +2076,7 @@ const MAX_PAIRS = 5000;
 const MAX_SIBLINGS = 60;
 const MAX_CLIP_TEXT_NODES = 400;
 /** Gradient colour combinations one text element is measured against. */
-const MAX_COMBINATIONS = 200;
+const MAX_COMBINATIONS = 400;
 /** The findings a report lists; each kind present keeps at least one, and the counts in `checks` are never capped. */
 const MAX_ISSUES = 40;
 
@@ -2177,7 +2177,7 @@ function mix(a, b, t) {
 }
 
 /** A gradient's colours: each stop, and points between neighbouring stops (a mix can be darker than either end). */
-const GRADIENT_SAMPLES = [0.25, 0.5, 0.75];
+const GRADIENT_SAMPLES = [1, 2, 3, 4, 5, 6, 7].map((n) => n / 8);
 const MAX_STOPS = 12;
 
 /**
@@ -2198,18 +2198,25 @@ function backgroundOf(image, read) {
     if (!color || /^(to|at|from|in|circle|ellipse|closest|farthest)$/i.test(color[1])) continue;
     const c = read(color[1]);
     if (!c) return { kind: 'unknown' };
-    stops.push(c);
+    // Where the stop starts and ends ("red 20% 40%"), to tell a hard edge from a blend.
+    const at = part.slice(color[1].length).trim().split(/\s+/).filter(Boolean);
+    stops.push({ c, from: at[0] || '', to: at[1] || at[0] || '' });
   }
   if (!stops.length || stops.length > MAX_STOPS) return { kind: stops.length ? 'layers' : 'picture' };
-  const colors = [stops[0]];
-  for (let i = 1; i < stops.length; i++) colors.push(...GRADIENT_SAMPLES.map((t) => mix(stops[i - 1], stops[i], t)), stops[i]);
+  const colors = [stops[0].c];
+  for (let i = 1; i < stops.length; i++) {
+    // Two stops at the same place meet at a hard edge: nothing is painted between them.
+    const edge = stops[i].from && stops[i].from === stops[i - 1].to;
+    if (!edge) colors.push(...GRADIENT_SAMPLES.map((t) => mix(stops[i - 1].c, stops[i].c, t)));
+    colors.push(stops[i].c);
+  }
   return { kind: 'gradient', stops: colors };
 }
 
 /** The nearest element (itself or around it) that makes a box: a wrapper with display: contents makes none. */
 function boxed(el) {
   let e = el;
-  while (e && e.parentElement && getComputedStyle(e).display === 'contents') e = e.parentElement;
+  while (e && parentOf(e) && getComputedStyle(e).display === 'contents') e = parentOf(e);
   return e;
 }
 
@@ -2223,7 +2230,7 @@ function drawn(el) {
   }
   if (!el.getClientRects().length) return false;
   if (el.checkVisibility) return el.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true });
-  for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+  for (let e = el; e && e.nodeType === 1; e = parentOf(e)) {
     const s = getComputedStyle(e);
     if (s.display === 'none' || Number(s.opacity) === 0) return false;
   }
@@ -2246,7 +2253,11 @@ const crossing = (a, b) => ({ w: Math.min(a.x + a.width, b.x + b.width) - Math.m
 // the prototypes.
 const CHILDREN = Object.getOwnPropertyDescriptor(Element.prototype, 'children').get;
 const CHILD_NODES = Object.getOwnPropertyDescriptor(Node.prototype, 'childNodes').get;
+const PARENT = Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get;
+const HAS_ATTRIBUTE = Element.prototype.hasAttribute;
 const childrenOf = (el) => CHILDREN.call(el);
+/** The element around a node; a form's control named "parentElement" would otherwise lead back into the form. */
+const parentOf = (node) => PARENT.call(node);
 
 /** The rectangles the text nodes directly inside `el` cover. */
 function textRects(el) {
@@ -2262,18 +2273,23 @@ function textRects(el) {
 
 /** The nearest element (itself or around it) the editor knows, which a finding about `el` is reported on. */
 function editorElement(el) {
-  for (let e = el; e && e !== document.documentElement; e = e.parentElement) if (e.hasAttribute('data-so-node')) return e;
+  for (let e = el; e && e !== document.documentElement; e = parentOf(e)) if (HAS_ATTRIBUTE.call(e, 'data-so-node')) return e;
   return null;
 }
 
 /** The editor's address for a finding about `el`, saying when it is about something inside the element it names. */
 function findingDesc(el) {
-  const at = editorElement(el);
-  if (!at) return null;
-  const d = descOf(at);
-  // Inside a code component, whose markup the editor does not know element by element.
-  if (at !== el && at.hasAttribute('data-so-code')) d.inside = true;
-  return d;
+  try {
+    const at = editorElement(el);
+    if (!at) return null;
+    const d = descOf(at);
+    // Inside a code component, whose markup the editor does not know element by element.
+    if (at !== el && HAS_ATTRIBUTE.call(at, 'data-so-code')) d.inside = true;
+    return d;
+  } catch {
+    // Markup whose own properties are hidden (a form's named controls) is reported without an address.
+    return null;
+  }
 }
 
 /**
@@ -2339,10 +2355,12 @@ function layerCache(read) {
           continue;
         }
         let x = px(p.left);
-        if (Number.isNaN(x)) x = Number.isNaN(px(p.right)) ? 0 : el.clientWidth - px(p.right) - w;
+        if (Number.isNaN(x)) x = el.clientWidth - px(p.right) - w;
         let y = px(p.top);
-        if (Number.isNaN(y)) y = Number.isNaN(px(p.bottom)) ? 0 : el.clientHeight - px(p.bottom) - h;
-        layer.overlays.push({ x: r.left + el.clientLeft + x, y: r.top + el.clientTop + y, width: w, height: h });
+        if (Number.isNaN(y)) y = el.clientHeight - px(p.bottom) - h;
+        // With neither side set it sits where it would have been in the flow, which computed styles do not give.
+        if (Number.isNaN(x) || Number.isNaN(y)) layer.overlays.push(boxOf(r));
+        else layer.overlays.push({ x: r.left + el.clientLeft + x - el.scrollLeft, y: r.top + el.clientTop + y - el.scrollTop, width: w, height: h });
       }
     }
     cache.set(el, layer);
@@ -2369,14 +2387,17 @@ function textContrast(el, read, layerOf, pictures) {
     return c.w > 1 && c.h > 1;
   });
   const chain = [];
-  for (let e = el; e && e.nodeType === 1; e = e.parentElement) chain.unshift(e);
+  for (let e = el; e && e.nodeType === 1; e = parentOf(e)) chain.unshift(e);
   const layers = chain.map(layerOf);
   // The innermost opaque surface hides everything painted under it, unless it, or a box around it, is faded: then
   // what is under the faded box shows through.
   let cover = -1;
   for (let i = layers.length - 1; i >= 0 && cover < 0; i--) if (layers[i].bg.a >= 1) cover = i;
-  const faded = cover >= 0 && layers.some((l, i) => i <= cover && l.opacity < 1);
-  const shows = (i) => i >= cover || faded;
+  // A box faded at or around the cover lets what is under that box show through; what is inside it with the cover
+  // stays hidden.
+  let fadedAt = -1;
+  for (let j = cover; j >= 0 && fadedAt < 0; j--) if (layers[j].opacity < 1) fadedAt = j;
+  const shows = (i) => i >= cover || i < fadedAt;
   for (let i = 0; i < layers.length; i++) {
     if (!shows(i)) continue;
     const kind = layers[i].image.kind;
@@ -2459,15 +2480,15 @@ function sentences() {
   const prose = new Map();
   return (el, s) => {
     if (el.tagName !== 'A' || s.display !== 'inline') return false;
-    let block = el.parentElement;
-    while (block && getComputedStyle(block).display === 'inline') block = block.parentElement;
+    let block = parentOf(el);
+    while (block && getComputedStyle(block).display === 'inline') block = parentOf(block);
     if (!block) return false;
     if (!prose.has(block)) {
       let words = false;
       const tw = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
       for (let t = tw.nextNode(), n = 0; t && !words && n < 2000; t = tw.nextNode(), n++) {
         if (!/[\p{L}\p{N}]/u.test(t.textContent)) continue;
-        const control = t.parentElement?.closest(INTERACTIVE);
+        const control = parentOf(t)?.closest(INTERACTIVE);
         words = !(control && block.contains(control));
       }
       prose.set(block, words);
@@ -2530,14 +2551,17 @@ function readability(vw, deadline) {
     const layerOf = layerCache(read);
     const pictures = [];
     for (const p of document.querySelectorAll('img, video, canvas, iframe, object, embed, svg image')) {
-      const r = p.getBoundingClientRect();
-      if (r.width > 1 && r.height > 1 && drawn(p)) pictures.push({ el: p, rect: boxOf(r) });
+      const going = each(checks.contrast, () => {
+        const r = p.getBoundingClientRect();
+        if (r.width > 1 && r.height > 1 && drawn(p)) pictures.push({ el: p, rect: boxOf(r) });
+      });
+      if (!going) break;
     }
     // Contrast: every element with text of its own.
     const seen = new Set();
     const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
     for (let t = walker.nextNode(); t; t = walker.nextNode()) {
-      const el = t.parentElement;
+      const el = parentOf(t);
       if (!el || seen.has(el) || !t.textContent.trim()) continue;
       if (seen.size >= MAX_TEXT_ELEMENTS) {
         checks.contrast.incomplete = true;
@@ -2585,7 +2609,7 @@ function readability(vw, deadline) {
             checks.clippedText.incomplete = true;
             break;
           }
-          const holder = t.parentElement;
+          const holder = parentOf(t);
           if (!t.textContent.trim() || !holder || !drawn(holder)) continue;
           const hs = holder === el ? s : getComputedStyle(holder);
           // An ellipsis shortens a line on purpose; a line clamp, the lines after it.
@@ -2593,12 +2617,17 @@ function readability(vw, deadline) {
           const clamp = clamped(hs) || clamped(s);
           const range = document.createRange();
           range.selectNodeContents(t);
+          // Text wholly to one side is lost from a line the box cuts, unless the block holding it lies wholly outside
+          // too (the next slide of a carousel, waiting off screen).
+          let block = holder;
+          while (block !== el && parentOf(block) && getComputedStyle(block).display === 'inline') block = parentOf(block);
+          const br = block.getBoundingClientRect();
+          const offScreen = block !== el && (br.left >= clip.right - 1 || br.right <= clip.left + 1);
           for (const r of range.getClientRects()) {
             if (!r.width || !r.height) continue;
             // More than a quarter of a line outside the box: tight line heights let glyphs reach a little past it.
             const outY = hidesY && !clamp ? Math.max(0, r.bottom - clip.bottom) + Math.max(0, clip.top - r.top) : 0;
-            const straddles = r.left < clip.right - 1 && r.right > clip.left + 1;
-            const outX = hidesX && !ellipsis && straddles ? Math.max(0, r.right - clip.right) + Math.max(0, clip.left - r.left) : 0;
+            const outX = hidesX && !ellipsis && !offScreen ? Math.max(0, r.right - clip.right) + Math.max(0, clip.left - r.left) : 0;
             if (outY > Math.max(2, r.height / 4)) cut = { holder, axis: 'vertical' };
             else if (outX > Math.max(2, r.height / 2)) cut = { holder, axis: 'horizontal' };
             if (cut) break;
@@ -2620,9 +2649,12 @@ function readability(vw, deadline) {
     // siblings flow as text: their outer rectangles cross without their lines doing so.)
     const parents = new Set();
     for (const el of document.querySelectorAll('[data-so-node]')) {
-      let p = el.parentElement;
-      while (p && p !== document.documentElement && getComputedStyle(p).display === 'contents') p = p.parentElement;
-      if (p) parents.add(p);
+      const going = each(checks.overlaps, () => {
+        let p = parentOf(el);
+        while (p && p !== document.documentElement && getComputedStyle(p).display === 'contents') p = parentOf(p);
+        if (p) parents.add(p);
+      });
+      if (!going) break;
     }
     let pairs = 0;
     overlap: for (const p of parents) {
@@ -2640,6 +2672,7 @@ function readability(vw, deadline) {
       });
       if (!going) break;
       // Every pair is checked; sweeping down the page, a box only meets those that start above its bottom.
+      checks.overlaps.checked += (boxes.length * (boxes.length - 1)) / 2;
       boxes.sort((a, b) => a.rect.y - b.rect.y);
       for (let i = 0; i < boxes.length; i++) {
         const a = boxes[i];
@@ -2651,17 +2684,17 @@ function readability(vw, deadline) {
           const b = boxes[j];
           const c = crossing(a.rect, b.rect);
           if (c.w <= 2 || c.h <= 2) continue;
-          checks.overlaps.failed++;
-          each(checks.overlaps, () => {
+          const recorded = each(checks.overlaps, () => {
+            checks.overlaps.failed++;
             const other = findingDesc(b.el);
             overlaps.add(a.el, { overlap: { width: Math.round(c.w), height: Math.round(c.h) } }, `Overlaps a neighbouring box by ${Math.round(c.w)}×${Math.round(c.h)}px.`, { with: { ...(other ? { desc: other } : {}), text: textPreview(b.el) } });
           });
+          if (!recorded) break overlap;
         }
       }
-      checks.overlaps.checked += (boxes.length * (boxes.length - 1)) / 2;
     }
     // Tap targets, at phone width: every control smaller than a fingertip, measured on its own box (a checkbox or
-    // radio button counts the label around it), except a link inside a sentence.
+    // radio button also counts the label around it that labels it), except a link inside a sentence.
     if (vw < PHONE_MAX_WIDTH) {
       const inSentence = sentences();
       for (const el of document.querySelectorAll(INTERACTIVE)) {
@@ -2673,8 +2706,12 @@ function readability(vw, deadline) {
           if (!r) return;
           if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
             const label = el.closest('label');
-            const lr = label?.getBoundingClientRect();
-            if (lr && lr.width && lr.height) r = boxOf(lr);
+            const lr = label && label.control === el ? label.getBoundingClientRect() : null;
+            if (lr && lr.width && lr.height) {
+              const x1 = Math.min(r.x, lr.left);
+              const y1 = Math.min(r.y, lr.top);
+              r = { x: x1, y: y1, width: Math.max(r.x + r.width, lr.right) - x1, height: Math.max(r.y + r.height, lr.bottom) - y1 };
+            }
           }
           checks.tapTargets.checked++;
           // Measured sizes can fall a fraction short of a whole pixel.
@@ -2892,7 +2929,7 @@ window.addEventListener('message', async (e) => {
       // the answer from its first message: what settling and images leave of 7s goes to the readability checks.
       const started = Date.now();
       await settled(started + 4000);
-      send('inspectResult', { requestId: m.payload.requestId, report: await inspect(Date.now() + 2500, started + 7000) });
+      send('inspectResult', { requestId: m.payload.requestId, report: await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000) });
       break;
     }
     case 'revision':
