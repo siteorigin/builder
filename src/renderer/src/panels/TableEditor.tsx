@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import type { TableProp } from '@shared/types';
 import type { TableEdit } from '@engine/table';
@@ -32,10 +32,30 @@ type After = { at: number; from: string } & (
   | { kind: 'moved'; axis: 'row' | 'column'; id: string; direction: TableMove; index: number; start: number; title: string }
 );
 
+/** A single-line field whose whole text shows below it, wrapped, while it has focus and is too long to fit. */
+function FullText({ children }: { children: ReactNode }) {
+  const [full, setFull] = useState<string | null>(null);
+  const read = (e: SyntheticEvent) => {
+    const el = e.target;
+    if (el instanceof HTMLInputElement) setFull(el.scrollWidth > el.clientWidth + 1 ? el.value : null);
+  };
+  return (
+    <div className="table-full" onFocus={read} onInput={read} onBlur={() => setFull(null)}>
+      {children}
+      {full && (
+        <p className="table-full-text" aria-hidden="true">
+          {full}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /**
- * A table property: its columns, named, reordered, added and removed, and its rows, each a disclosure with one
- * field per column. Every change is one step naming its row and column by ID (`onTable`), so a step taken right
- * after typing in a cell never puts back what the cell held before.
+ * A table property, shown as the table it is: a header over its values, each row a disclosure that opens one field
+ * per column in place, and below it the columns, named, reordered, added and removed. Every change is one step
+ * naming its row and column by ID (`onTable`), so a step taken right after typing in a cell never puts back what
+ * the cell held before.
  */
 export function TableEditor({ name, schema, value, onTable }: { name: string; schema: TableProp; value: unknown; onTable: (edit: TableEdit) => Promise<boolean> }) {
   const table = readTable(value, schema.default);
@@ -43,7 +63,10 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
   const [open, setOpen] = useState<string | null>(null);
   const [said, setSaid] = useState({ text: '', count: 0 });
   const after = useRef<After | null>(null);
-  const wantFocus = useRef<{ key: string; from: string; until: number } | null>(null);
+  const wantFocus = useRef<{ key: string; from: string; until: number; owner?: Element | null } | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  // The table is a tab stop of its own only while it has something to scroll to.
+  const [scrolls, setScrolls] = useState(false);
   const uid = useId();
   const key = (k: string) => `${uid}${k}`;
   const find = (k: string) => document.getElementById(key(k));
@@ -94,13 +117,27 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
     if (Date.now() >= want.until) return void (wantFocus.current = null);
     // Still only from where the step left focus: the author may have moved on before the control appeared.
     const active = document.activeElement;
-    if (active && active !== document.body && active !== find(want.from)) return void (wantFocus.current = null);
+    if (active && active !== document.body && active !== find(want.from) && active !== want.owner) return void (wantFocus.current = null);
     const el = find(want.key);
     if (!el) return;
     wantFocus.current = null;
     el.focus();
     if (want.key.startsWith('colname-') && el instanceof HTMLInputElement) el.select();
   });
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const check = () => {
+      // What is visible of the table, scrollbars aside: an open row's fields are this wide however far it scrolls.
+      el.style.setProperty('--table-view', `${el.clientWidth}px`);
+      setScrolls(el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1);
+    };
+    check();
+    const seen = new ResizeObserver(check);
+    seen.observe(el);
+    if (el.firstElementChild) seen.observe(el.firstElementChild);
+    return () => seen.disconnect();
+  }, []);
   /** Send a step, remembering it until it lands; a step the project refuses is forgotten at once. */
   const step = (pending: After, edit: TableEdit) => {
     after.current = pending;
@@ -117,6 +154,13 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
     const from = `${axis === 'row' ? 'row' : 'col'}${direction}-${id}`;
     step({ kind: 'moved', axis, id, direction, index, start, title, at: Date.now(), from }, axis === 'row' ? { action: 'moveRow', rowId: id, index } : { action: 'moveColumn', columnId: id, index });
   };
+  /** A click on a value opens its row with that value's field ready to type in. */
+  const editCell = (rowId: string, columnId: string) => {
+    if (open === rowId) return void find(`cell-${rowId}-${columnId}`)?.focus();
+    // The press may have focused the scrolling frame: that is where the step left focus, so it may move on from there.
+    wantFocus.current = { key: `cell-${rowId}-${columnId}`, from: `rowhead-${rowId}`, until: Date.now() + FOCUS_MS, owner: document.activeElement };
+    setOpen(rowId);
+  };
   return (
     <div className="field table-editor" role="group" aria-labelledby={key('label')} data-table={name}>
       <div className="field-label" id={key('label')}>
@@ -124,107 +168,9 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
         <span className="insp-count">{tableCount(table)}</span>
       </div>
 
-      <div className="table-editor-part" role="group" aria-labelledby={key('columns')}>
-        <div className="table-editor-heading" id={key('columns')}>
-          Columns
-        </div>
-        <div className="list-editor">
-          {columns.map((c, i) => {
-            const title = columnTitle(c, i);
-            return (
-              <div key={c.id} className="table-editor-col">
-                <DraftInput id={key(`colname-${c.id}`)} value={typeof c.label === 'string' ? c.label : ''} ariaLabel={`Column ${i + 1} name`} onCommit={(v) => void onTable({ action: 'renameColumn', columnId: c.id, value: v })} />
-                <button className="icon-btn sm" id={key(`colleft-${c.id}`)} aria-label={`Move column ${title} left`} disabled={i === 0} onClick={() => move('column', c.id, i, 'left', title)}>
-                  <ArrowLeft />
-                </button>
-                <button className="icon-btn sm" id={key(`colright-${c.id}`)} aria-label={`Move column ${title} right`} disabled={i === columns.length - 1} onClick={() => move('column', c.id, i, 'right', title)}>
-                  <ArrowRight />
-                </button>
-                <button
-                  className="icon-btn sm"
-                  id={key(`coldel-${c.id}`)}
-                  aria-label={`Remove column ${title}`}
-                  aria-disabled={removeColumnBlocked ? true : undefined}
-                  aria-describedby={removeColumnBlocked ? key('removecol-note') : undefined}
-                  title={removeColumnBlocked ?? undefined}
-                  onClick={() => {
-                    if (removeColumnBlocked) return;
-                    step({ kind: 'removed', axis: 'column', id: c.id, order: columns.map((x) => x.id), at: Date.now(), from: `coldel-${c.id}` }, { action: 'removeColumn', columnId: c.id });
-                  }}
-                >
-                  <Trash2 />
-                </button>
-              </div>
-            );
-          })}
-          <button
-            className="btn btn-sm insp-add"
-            id={key('addcol')}
-            aria-disabled={addColumnBlocked ? true : undefined}
-            aria-describedby={addColumnBlocked ? key('addcol-note') : undefined}
-            title={addColumnBlocked ?? undefined}
-            onClick={() => {
-              if (addColumnBlocked) return;
-              step({ kind: 'addedColumn', before: columns.map((x) => x.id), at: Date.now(), from: 'addcol' }, { action: 'insertColumn' });
-            }}
-          >
-            <Plus /> Add column
-          </button>
-          {addColumnBlocked && (
-            <p className="insp-note muted" id={key('addcol-note')}>
-              {addColumnBlocked}
-            </p>
-          )}
-          {removeColumnBlocked && (
-            <p className="insp-note muted" id={key('removecol-note')}>
-              {removeColumnBlocked}
-            </p>
-          )}
-        </div>
-      </div>
-
       <div className="table-editor-part" role="group" aria-labelledby={key('rows')}>
-        <div className="table-editor-heading" id={key('rows')}>
-          Rows
-        </div>
-        <div className="list-editor">
-          {rows.map((r, i) => {
-            const title = rowTitle(table, r, i);
-            const isOpen = open === r.id;
-            return (
-              <div key={r.id} className="list-editor-item">
-                <div className="list-editor-head">
-                  <button className="title" id={key(`rowhead-${r.id}`)} aria-expanded={isOpen} aria-controls={key(`rowbody-${r.id}`)} onClick={() => setOpen(isOpen ? null : r.id)}>
-                    <ChevronRight size={12} className="faint" style={{ transform: isOpen ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
-                    <span className="ellipsis">{title}</span>
-                  </button>
-                  <button className="icon-btn sm" id={key(`rowup-${r.id}`)} aria-label={`Move row ${title} up`} disabled={i === 0} onClick={() => move('row', r.id, i, 'up', title)}>
-                    <ArrowUp />
-                  </button>
-                  <button className="icon-btn sm" id={key(`rowdown-${r.id}`)} aria-label={`Move row ${title} down`} disabled={i === rows.length - 1} onClick={() => move('row', r.id, i, 'down', title)}>
-                    <ArrowDown />
-                  </button>
-                  <button
-                    className="icon-btn sm"
-                    id={key(`rowdel-${r.id}`)}
-                    aria-label={`Remove row ${title}`}
-                    onClick={() => step({ kind: 'removed', axis: 'row', id: r.id, order: rows.map((x) => x.id), at: Date.now(), from: `rowdel-${r.id}` }, { action: 'removeRow', rowId: r.id })}
-                  >
-                    <Trash2 />
-                  </button>
-                </div>
-                {/* The controlled region always exists, so aria-controls resolves while the row is closed. */}
-                <div className="list-editor-body" id={key(`rowbody-${r.id}`)} hidden={!isOpen}>
-                  {isOpen &&
-                    columns.map((c, ci) => (
-                      <Field key={c.id} label={columnTitle(c, ci)}>
-                        <DraftInput id={key(`cell-${r.id}-${c.id}`)} value={cellText(r, c.id)} onCommit={(v) => void onTable({ action: 'setCell', rowId: r.id, columnId: c.id, value: v })} />
-                      </Field>
-                    ))}
-                </div>
-              </div>
-            );
-          })}
+        <div className="table-editor-heading">
+          <span id={key('rows')}>Rows</span>
           <button
             className="btn btn-sm insp-add"
             id={key('addrow')}
@@ -238,9 +184,175 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
           >
             <Plus /> Add row
           </button>
-          {addRowBlocked && (
-            <p className="insp-note muted" id={key('addrow-note')}>
-              {addRowBlocked}
+        </div>
+        {addRowBlocked && (
+          <p className="insp-note muted" id={key('addrow-note')}>
+            {addRowBlocked}
+          </p>
+        )}
+        <div className="list-editor">
+          <div ref={scroller} className="table-grid-scroll" role={scrolls ? 'region' : undefined} tabIndex={scrolls ? 0 : undefined} aria-labelledby={scrolls ? key('rows') : undefined}>
+            <table className={`table-grid${columns.length === 1 ? ' is-single' : ''}`}>
+              <thead>
+                <tr>
+                  {rows.length > 0 && (
+                    <th scope="col" className="table-grid-toggle">
+                      <span className="sr-only">Row</span>
+                    </th>
+                  )}
+                  {columns.map((c, ci) => (
+                    <th key={c.id} scope="col" title={columnTitle(c, ci)}>
+                      <span className="ellipsis">{columnTitle(c, ci)}</span>
+                    </th>
+                  ))}
+                  {rows.length > 0 && (
+                    <th scope="col" className="table-grid-actions">
+                      <span className="sr-only">Actions</span>
+                    </th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 && (
+                  <tr>
+                    <td className="table-grid-span" colSpan={columns.length}>
+                      <p className="table-grid-empty">No rows yet. Add a row to fill in these columns.</p>
+                    </td>
+                  </tr>
+                )}
+                {rows.map((r, i) => {
+                  const title = rowTitle(table, r, i);
+                  const isOpen = open === r.id;
+                  const blank = columns.every((c) => !cellText(r, c.id).trim());
+                  const removeRow = () => step({ kind: 'removed', axis: 'row', id: r.id, order: rows.map((x) => x.id), at: Date.now(), from: `rowdel-${r.id}` }, { action: 'removeRow', rowId: r.id });
+                  return (
+                    <Fragment key={r.id}>
+                      <tr className={`table-grid-row${isOpen ? ' is-open' : ''}`}>
+                        <th scope="row" className="list-editor-head table-grid-toggle">
+                          <button className="title" id={key(`rowhead-${r.id}`)} aria-expanded={isOpen} aria-controls={key(`rowbody-${r.id}`)} title={title} onClick={() => setOpen(isOpen ? null : r.id)}>
+                            <ChevronRight size={12} style={{ transform: isOpen ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
+                            <span className="sr-only">{title}</span>
+                          </button>
+                        </th>
+                        {columns.map((c, ci) => {
+                          const text = cellText(r, c.id);
+                          return (
+                            <td key={c.id} title={text || undefined} onClick={() => editCell(r.id, c.id)}>
+                              <span className={`ellipsis${blank ? ' table-grid-blank' : ''}`}>{blank && ci === 0 ? `Row ${i + 1}` : text}</span>
+                            </td>
+                          );
+                        })}
+                        {/* A closed row keeps Remove in its own narrow rail, out of the tab order; an open row has it with its fields. */}
+                        <td className="table-grid-actions">
+                          {!isOpen && (
+                            <button className="icon-btn sm" id={key(`rowdel-${r.id}`)} tabIndex={-1} aria-label={`Remove row ${title}`} title="Remove this row" onClick={removeRow}>
+                              <Trash2 />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {/* The controlled region always exists, so aria-controls resolves while the row is closed. */}
+                      <tr id={key(`rowbody-${r.id}`)} hidden={!isOpen}>
+                        <td className="table-grid-span" colSpan={columns.length + 2}>
+                          {isOpen && (
+                            <div className="list-editor-body table-grid-form">
+                              {columns.map((c, ci) => (
+                                <FullText key={c.id}>
+                                  <Field label={columnTitle(c, ci)}>
+                                    <DraftInput id={key(`cell-${r.id}-${c.id}`)} value={cellText(r, c.id)} onCommit={(v) => void onTable({ action: 'setCell', rowId: r.id, columnId: c.id, value: v })} />
+                                  </Field>
+                                </FullText>
+                              ))}
+                              <div className="table-row-tools">
+                                <span className="table-row-move">
+                                  Move
+                                  <span className="table-move">
+                                    <button className="icon-btn sm" id={key(`rowup-${r.id}`)} aria-label={`Move row ${title} up`} disabled={i === 0} onClick={() => move('row', r.id, i, 'up', title)}>
+                                      <ArrowUp />
+                                    </button>
+                                    <button className="icon-btn sm" id={key(`rowdown-${r.id}`)} aria-label={`Move row ${title} down`} disabled={i === rows.length - 1} onClick={() => move('row', r.id, i, 'down', title)}>
+                                      <ArrowDown />
+                                    </button>
+                                  </span>
+                                </span>
+                                <button className="btn btn-sm" id={key(`rowdel-${r.id}`)} aria-label={`Remove row ${title}`} onClick={removeRow}>
+                                  <Trash2 /> Remove row
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div className="table-editor-part" role="group" aria-labelledby={key('columns')}>
+        <div className="table-editor-heading">
+          <span id={key('columns')}>Columns</span>
+          {columns.length > 1 && <span className="table-editor-cue">left to right</span>}
+          <button
+            className="btn btn-sm insp-add"
+            id={key('addcol')}
+            aria-disabled={addColumnBlocked ? true : undefined}
+            aria-describedby={addColumnBlocked ? key('addcol-note') : undefined}
+            title={addColumnBlocked ?? undefined}
+            onClick={() => {
+              if (addColumnBlocked) return;
+              step({ kind: 'addedColumn', before: columns.map((x) => x.id), at: Date.now(), from: 'addcol' }, { action: 'insertColumn' });
+            }}
+          >
+            <Plus /> Add column
+          </button>
+        </div>
+        {addColumnBlocked && (
+          <p className="insp-note muted" id={key('addcol-note')}>
+            {addColumnBlocked}
+          </p>
+        )}
+        <div className="list-editor">
+          {columns.map((c, i) => {
+            const title = columnTitle(c, i);
+            return (
+              <div key={c.id} className="table-editor-col">
+                <FullText>
+                  <DraftInput id={key(`colname-${c.id}`)} value={typeof c.label === 'string' ? c.label : ''} ariaLabel={`Column ${i + 1} name`} onCommit={(v) => void onTable({ action: 'renameColumn', columnId: c.id, value: v })} />
+                </FullText>
+                <span className="table-tools">
+                  <span className="table-move">
+                    <button className="icon-btn sm" id={key(`colleft-${c.id}`)} aria-label={`Move column ${title} left`} disabled={i === 0} onClick={() => move('column', c.id, i, 'left', title)}>
+                      <ArrowLeft />
+                    </button>
+                    <button className="icon-btn sm" id={key(`colright-${c.id}`)} aria-label={`Move column ${title} right`} disabled={i === columns.length - 1} onClick={() => move('column', c.id, i, 'right', title)}>
+                      <ArrowRight />
+                    </button>
+                  </span>
+                  <button
+                    className="icon-btn sm"
+                    id={key(`coldel-${c.id}`)}
+                    aria-label={`Remove column ${title}`}
+                    aria-disabled={removeColumnBlocked ? true : undefined}
+                    aria-describedby={removeColumnBlocked ? key('removecol-note') : undefined}
+                    title={removeColumnBlocked ?? 'Remove this column and its cells'}
+                    onClick={() => {
+                      if (removeColumnBlocked) return;
+                      step({ kind: 'removed', axis: 'column', id: c.id, order: columns.map((x) => x.id), at: Date.now(), from: `coldel-${c.id}` }, { action: 'removeColumn', columnId: c.id });
+                    }}
+                  >
+                    <Trash2 />
+                  </button>
+                </span>
+              </div>
+            );
+          })}
+          {removeColumnBlocked && (
+            <p className="insp-note muted" id={key('removecol-note')}>
+              {removeColumnBlocked}
             </p>
           )}
         </div>
