@@ -55,7 +55,7 @@ export interface ThumbCapturer {
 let guarded = false;
 /**
  * The window's session refuses every permission and download, whatever a page asks, and its pages are sandboxed as
- * the editor's preview frame is: scripts run, but nothing opens a dialog (a print, an alert) or anything else.
+ * the editor's preview frame is: scripts run, but nothing opens a dialog (a print, an alert), a window or a worker.
  */
 function guardSession() {
   const ses = electronSession.fromPartition(PARTITION);
@@ -68,7 +68,8 @@ function guardSession() {
     if (details.resourceType !== 'mainFrame' && details.resourceType !== 'subFrame') return done({});
     const headers = { ...(details.responseHeaders ?? {}) };
     const name = Object.keys(headers).find((k) => k.toLowerCase() === 'content-security-policy') ?? 'Content-Security-Policy';
-    headers[name] = [...(headers[name] ?? []), 'sandbox allow-scripts allow-same-origin'];
+    // No worker either: a service worker could answer a later preview's page without these headers.
+    headers[name] = [...(headers[name] ?? []), "sandbox allow-scripts allow-same-origin; worker-src 'none'"];
     done({ responseHeaders: headers });
   });
   return ses;

@@ -196,7 +196,8 @@ describe('the project’s thumbnail cache', () => {
 });
 
 /** A host for the queue, with the project, the preview server and photographs under the test's control. */
-function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<CaptureResult | Promise<CaptureResult>>; settle?: () => void } = {}) {
+function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<CaptureResult | Promise<CaptureResult>>; settle?: () => void; prepareFails?: number } = {}) {
+  let prepareFails = opts.prepareFails ?? 0;
   const host = {
     state,
     opening: 'open#1' as string | null,
@@ -213,6 +214,7 @@ function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<Capt
     previewServer: () => host.server,
     settle: async () => opts.settle?.(),
     prepare: async (definitionId): Promise<PreparedComponentPreview> => {
+      if (prepareFails-- > 0) return { ok: false, message: 'Could not write the preview.' };
       const key = `p${host.prepared.length}`.padEnd(16, '0');
       host.prepared.push(definitionId);
       return { ok: true, key, path: `/__siteorigin/component/${key}/`, definitionId };
@@ -327,6 +329,16 @@ describe('the thumbnail queue', () => {
     host.state = made.state;
     host.opening = 'open#2';
     expect(await thumbs.get(broken, 'open#2')).toMatchObject({ state: 'ready' });
+  });
+
+  it('tries a component whose preview could not be prepared once more before remembering it', async () => {
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state, { prepareFails: 2 });
+    expect(await thumbs.get(card, 'open#1')).toEqual({ state: 'unavailable' });
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'failed', message: 'Could not write the preview.' });
+    expect(host.captured).toBe(0);
+    host.server = 'http://127.0.0.1:5174';
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready' });
   });
 
   it('draws nothing for a component that changed while its files were being written', async () => {

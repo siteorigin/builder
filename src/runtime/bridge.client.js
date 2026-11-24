@@ -1892,8 +1892,12 @@ if (parentWin === window && previewAtStart) {
   document.documentElement.toggleAttribute('data-so-editing', false);
   window.__siteoriginThumb = async () => {
     await settled(Date.now() + 4000);
-    // Whether everything it shows had arrived: a picture taken with a font or image still on its way is not kept.
-    const loaded = [...document.images].every((i) => i.complete) && (!document.fonts || document.fonts.status === 'loaded');
+    // Whether everything in view had arrived: a picture taken with a font or image still on its way is not kept.
+    const inView = (el) => {
+      const r = el.getBoundingClientRect();
+      return r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+    };
+    const loaded = [...document.images].every((i) => i.complete || !inView(i)) && (!document.fonts || document.fonts.status === 'loaded');
     return { ...previewState(), ink: inkBounds(), loaded };
   };
 }
@@ -1917,7 +1921,8 @@ function inkBounds() {
   const generated = (el, which) => {
     const ps = getComputedStyle(el, which);
     const content = ps.content;
-    return !!content && content !== 'none' && content !== 'normal' && ps.display !== 'none' && (painted(ps) || /^["']./.test(content) || /url\(/.test(content));
+    // Text it adds (not "", a clearfix's), an image, or a box it paints.
+    return !!content && content !== 'none' && content !== 'normal' && ps.display !== 'none' && (painted(ps) || /^(["'])(?!\1$)/.test(content) || /url\(/.test(content));
   };
   /** `r` cut to `clip` (null: nothing cuts it), as { x, y, right, bottom }, or null when nothing of it is left. */
   const cut = (r, clip) => {

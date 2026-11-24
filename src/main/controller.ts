@@ -207,6 +207,8 @@ export class Controller {
   private pendingStatus: RuntimeState | null = null;
   /** Isolated component previews prepared for the preview server running now, by key, with the folder each is in. */
   private componentPreviews = new Map<string, string>();
+  /** When the files the preview server shows last changed: the project's own, or its private copy's. */
+  private filesChangedAt = 0;
   /** Photographs a prepared component preview for Insert's thumbnails; set by the app (main/thumb-capture). */
   thumbCapture: ((server: string, path: string) => Promise<CaptureResult>) | null = null;
   /** Thumbnails of the project's components for Insert, kept in the project's editor cache. */
@@ -223,7 +225,8 @@ export class Controller {
       // (as the AI's page measurements allow).
       await this.session?.exclusive(async () => undefined);
       await this.stageSync;
-      await new Promise((r) => setTimeout(r, THUMB_SETTLE_MS));
+      const wait = this.filesChangedAt + THUMB_SETTLE_MS - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     },
     prepare: (definitionId) => this.prepareComponentPreview({ definitionId }),
     release: (key) => void this.releaseComponentPreview(key),
@@ -791,6 +794,7 @@ export class Controller {
       void this.startRuntime().catch(() => undefined);
     });
     session.on('changed', (ev) => {
+      this.filesChangedAt = Date.now();
       if (this.stage) this.syncStage(session);
       else this.dev?.notifyRevision(ev.revision);
       this.broadcast();
@@ -931,6 +935,7 @@ export class Controller {
         if (!stage || this.stage !== stage || this.session !== session || this.stageTicket !== ticket) return;
         const revision = session.revision;
         await syncPreviewStage(session.dir, stage);
+        this.filesChangedAt = Date.now();
         if (this.stage === stage) this.dev?.notifyRevision(revision);
       })
       .catch(() => {

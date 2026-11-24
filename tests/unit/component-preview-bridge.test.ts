@@ -118,6 +118,10 @@ describe('the bridge in an isolated component preview', () => {
     expect(clipped!.y + clipped!.height).toBeLessThan(30);
     // A hero painted by its ::before.
     expect(await ink(`<style>.hero::before{content:'';position:absolute;inset:0;background:#00f}</style><div class="hero" style="position:relative;width:400px;height:300px"></div>`)).toEqual({ x: 0, y: 0, width: 400, height: 300 });
+    // A clearfix's empty ::after paints nothing: the full-width block around the text is not framed. Text an ::after adds is.
+    const clearfix = await ink(`<style>.cf::after{content:'';display:table;clear:both}</style><div class="cf"><span style="font:16px/20px sans-serif">Hi</span></div>`);
+    expect(clearfix!.width).toBeLessThan(100);
+    expect(await ink(`<style>.tag::after{content:'New'}</style><div class="tag" style="width:300px;height:20px"></div>`)).toEqual({ x: 0, y: 0, width: 300, height: 20 });
     // A box drawn only by its shadow.
     expect(await ink(`<div style="margin-left:100px;width:50px;height:50px;box-shadow:0 0 4px #000"></div>`)).toEqual({ x: 100, y: 0, width: 50, height: 50 });
     // Too large to look through: its whole box is framed instead of part of it.
