@@ -666,23 +666,31 @@ describe('what a constrained local run sends first (#364)', () => {
    * what develop sent before #364 (pretty-printed context, full schema, TypeScript-style signatures and every
    * tool's long description). The budgets hold today's sizes with a little room: a change that grows a prompt past
    * one should be a deliberate decision.
+   *
+   * The SEO audit (#593) is one: audit_seo is offered to every run that may read the whole site, and costs each its
+   * `audit` bytes (its grammar branch, its signature and brief, and the search settings the project summary now says
+   * the site and its pages have; a page run starts with the compact summary, which has none). Their budgets make room
+   * for it, and everything else they send still has to be a quarter smaller than before #364.
    */
+  /** What audit_seo adds to a run that offers it, with a little room. */
+  const AUDIT_BYTES = 850;
+  const PAGE_AUDIT_BYTES = 650;
   const BUDGETS = {
     // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
     // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.
-    site: { code: false, baseline: 42_641, budget: 32_400 },
-    'site (code)': { code: true, baseline: 44_027, budget: 33_700 },
+    site: { code: false, baseline: 42_641, budget: 32_400 + AUDIT_BYTES, audit: AUDIT_BYTES },
+    'site (code)': { code: true, baseline: 44_027, budget: 33_700 + AUDIT_BYTES, audit: AUDIT_BYTES },
     // A page run (#513) is measured against the site run it was before it had a scope of its own. It offers the page
     // tool and the few operations that remove, move or set the page's own settings, but nothing site-wide.
-    page: { code: false, baseline: 42_641, budget: 31_700 },
-    section: { code: false, baseline: 12_723, budget: 9_700 },
-    part: { code: false, baseline: 10_001, budget: 7_550 },
-    ask: { code: false, baseline: 13_138, budget: 9_600 },
-    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 }
+    page: { code: false, baseline: 42_641, budget: 31_700 + PAGE_AUDIT_BYTES, audit: PAGE_AUDIT_BYTES },
+    section: { code: false, baseline: 12_723, budget: 9_700, audit: 0 },
+    part: { code: false, baseline: 10_001, budget: 7_550, audit: 0 },
+    ask: { code: false, baseline: 13_138, budget: 9_600 + AUDIT_BYTES, audit: AUDIT_BYTES },
+    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 + AUDIT_BYTES, audit: AUDIT_BYTES }
   } as const;
   const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
 
-  it.each(Object.entries(BUDGETS))('keeps the %s run within its budget', async (label, { code, baseline, budget }) => {
+  it.each(Object.entries(BUDGETS))('keeps the %s run within its budget', async (label, { code, baseline, budget, audit }) => {
     const { session, run } = await setup({ toolMode: 'constrained-json' }, {}, code);
     const home = session.state.pages[session.state.site.homePageId];
     const section = home.nodes[home.rootIds[0]] as { id: string; definitionId: string };
@@ -695,7 +703,9 @@ describe('what a constrained local run sends first (#364)', () => {
     const sent = { messages: bytes(body.messages), response_format: bytes(body.response_format) };
     const total = sent.messages + sent.response_format;
     expect(total, JSON.stringify(sent)).toBeLessThanOrEqual(budget);
-    expect(1 - total / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
+    expect(1 - (total - audit) / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
+    // The room is made only where the tool is offered.
+    expect(JSON.stringify(body.response_format).includes('"audit_seo"'), label).toBe(audit > 0);
     // Still the strict grammar, in its compact form, and the context unindented, with all it said before.
     expect(body.response_format.type).toBe('json_schema');
     expect(JSON.stringify(body.response_format.json_schema.schema)).not.toContain('"type":"string","enum"');

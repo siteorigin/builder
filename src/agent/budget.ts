@@ -130,6 +130,13 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     // A check that left some of its cases unmeasured never stands in for one that measured them.
     return { ...base, ...(body?.incomplete === true ? { partial: true } : {}), target: `component-check:${componentSample(body, args)}:${id}:${Number(body?.offset ?? args.offset ?? 0)}` };
   }
+  if (item.name === 'audit_seo') {
+    // The page it was narrowed to as the result names it (a route and its page's ID are one page), the pillar, and
+    // which part of each list it showed: each is its own read, never made out of date by a part or a scope it did not show.
+    const pageId = body?.scope?.pageId ?? args.pageId ?? null;
+    const pillar = body?.scope?.pillar ?? args.pillar ?? null;
+    return { ...base, target: `seo-audit:${JSON.stringify([pageId, pillar, Number(args.offset ?? 0), Number(args.linkOffset ?? 0)])}` };
+  }
   return null;
 }
 
@@ -175,6 +182,17 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     const sample = componentSample(body, args);
     const offset = Number(body?.offset ?? args.offset ?? 0);
     return `${TOMBSTONE}inspect_component ${body?.definitionId ?? args.definitionId ?? args.componentId}${sample === 'defaults' ? '' : ` placed at ${sample}`}${offset ? ` from offset ${offset}` : ''}${rev}. Inspect it again if you need it.]`;
+  }
+  if (read.name === 'audit_seo') {
+    // A page the model named that no result confirmed is shown as far as a line allows.
+    const scope = [String(body?.scope?.pageId ?? args.pageId ?? 'site').slice(0, 80), body?.scope?.pillar ?? args.pillar].filter(Boolean).join(' ');
+    const offset = Number(args.offset ?? 0);
+    const linkOffset = Number(args.linkOffset ?? 0);
+    // What it found, so the model knows what it saw without the findings themselves.
+    const n = (v: unknown, one: string, many = `${one}s`) => `${Number(v ?? 0)} ${Number(v ?? 0) === 1 ? one : many}`;
+    const counts = body?.counts && typeof body.counts === 'object' ? ` ${n(body.total, 'finding')} (${n(body.counts.error, 'error')}, ${n(body.counts.warning, 'warning')}, ${n(body.counts.info, 'info', 'info')})` : '';
+    const orphans = Number(body?.links?.orphans ?? (body?.links?.orphan ? 1 : 0));
+    return `${TOMBSTONE}audit_seo ${scope}${offset ? ` from offset ${offset}` : ''}${linkOffset ? ` from linkOffset ${linkOffset}` : ''}${rev}.${counts}${counts && orphans ? `, ${n(orphans, 'orphan page')}` : ''}${counts ? '.' : ''} Audit again for details.]`;
   }
   const pages = Array.isArray(body?.pages) ? body!.pages : [];
   const list = pages.slice(0, 12).map((p: Record<string, unknown>) => `${p.id} ${p.route ?? ''}`.trim()).join(', ');
@@ -254,9 +272,9 @@ export function applyContextBudget(
       if (r.name === 'read_page') return changedAfter(r.pageId!);
       // A patch names its component; a later read with another hash shows a change made some other way.
       if (r.name === 'read_source') return changedAfter(r.definitionId!) || (!!r.hash && reads.some((n) => n.index > r.index && n.target === r.target && !!n.hash && n.hash !== r.hash));
-      // A measurement, an element's props and the project summary all describe the revision they were read at:
+      // A measurement, an element's props, an audit and the project summary all describe the revision they were read at:
       // only a change that moved it (whether or not a tool made it) makes them stale.
-      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'inspect_component' && r.name !== 'read_project') return false;
+      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'inspect_component' && r.name !== 'read_project' && r.name !== 'audit_seo') return false;
       return r.revision !== undefined && opts.revision !== undefined ? r.revision < opts.revision : r.index < lastMutation;
     };
     if (estimate > available * HARD_LIMIT) {

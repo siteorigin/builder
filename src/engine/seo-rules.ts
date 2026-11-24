@@ -17,7 +17,7 @@ import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
 import { showsEntryText, type SiteLink } from '@generator/checks';
 import { publishedState } from '@generator/index';
 import { bodyImageProblems } from './collections';
-import type { SeoAuditRule } from './seo-audit';
+import type { SeoAuditContext, SeoAuditRule } from './seo-audit';
 
 /**
  * The browser title lengths, in characters, that read well in search results: shorter says little about the page;
@@ -227,24 +227,30 @@ const favicon: SeoAuditRule = {
   }
 };
 
+/**
+ * The links that bring a visitor to a page from somewhere else on the website, each with the page it leads to. A link
+ * on the page itself, or in a header or footer only the page itself shows, leads nowhere new.
+ */
+export function incomingLinks({ state, documents, links }: Pick<SeoAuditContext, 'state' | 'documents' | 'links'>): Array<SiteLink & { pageId: string }> {
+  // Anything published besides pages shows both shared parts: an entry's page or a collection's index.
+  const others = documents.some((d) => d.subject.kind === 'entry') || archivePages(state).length > 0;
+  const published = new Set(documents.flatMap((d) => (d.subject.kind === 'page' ? [d.subject.pageId] : [])));
+  const showing = Object.fromEntries(SHELL_PARTS.map((part) => [part, pagesShowing(state, part).filter((p) => published.has(p.id)).map((p) => p.id)]));
+  return links().filter((l): l is SiteLink & { pageId: string } => {
+    if (!l.pageId) return false;
+    if (l.owner.kind === 'page' && l.owner.id === l.pageId) return false;
+    return l.owner.kind !== 'shell' || others || showing[l.owner.id].some((id) => id !== l.pageId);
+  });
+}
+
 /** Pages search engines may list that no link on the rest of the website leads to. */
 const unlinkedPages: SeoAuditRule = {
   id: 'unlinked-pages',
-  check({ state, documents, links }) {
+  check(context) {
+    const { state, documents } = context;
     const pages = documents.filter((d) => d.subject.kind === 'page' && d.visibility.indexable && d.subject.pageId !== state.site.homePageId);
     if (!pages.length) return [];
-    // Anything published besides pages shows both shared parts: an entry's page or a collection's index.
-    const others = documents.some((d) => d.subject.kind === 'entry') || archivePages(state).length > 0;
-    const published = new Set(documents.flatMap((d) => (d.subject.kind === 'page' ? [d.subject.pageId] : [])));
-    const showing = Object.fromEntries(SHELL_PARTS.map((part) => [part, pagesShowing(state, part).filter((p) => published.has(p.id)).map((p) => p.id)]));
-    const reached = new Set<string>();
-    for (const l of links()) {
-      if (!l.pageId) continue;
-      // A link on the page itself, or in a header or footer only the page itself shows, leads nowhere new.
-      if (l.owner.kind === 'page' && l.owner.id === l.pageId) continue;
-      if (l.owner.kind === 'shell' && !others && !showing[l.owner.id].some((id) => id !== l.pageId)) continue;
-      reached.add(l.pageId);
-    }
+    const reached = new Set(incomingLinks(context).map((l) => l.pageId));
     return pages
       .filter((d) => !reached.has((d.subject as { pageId: string }).pageId))
       .map((d) =>

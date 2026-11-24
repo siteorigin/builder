@@ -261,7 +261,7 @@ describe('read-only questions (#203)', () => {
     // The tool told the model the exact path and the value it found there.
     const located = adapter.requests[2].items.at(-1) as { content: string };
     expect(JSON.parse(located.content)).toMatchObject({ path: path.join(' → '), value: 'Monday to Friday, 9am – 5pm' });
-    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'locate_field', 'request_clarification', 'read_source']);
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification', 'read_source']);
     expect(adapter.requests[0].system).toMatch(/read-only question/);
     expect(lock).toEqual([]);
     expect(compiles).toBe(0);
@@ -454,6 +454,25 @@ describe('read-only questions (#203)', () => {
     const { result } = await run('What is on the Home page?', { mode: 'ask' });
     expect(result).toMatchObject({ status: 'cancelled', ask: true });
     expect(lock).toEqual([]);
+  });
+
+  it('audits the site’s SEO in a question and in an edit, for the whole site and one page by its route (#593)', async () => {
+    for (const mode of ['ask', 'edit'] as const) {
+      const { session, run, adapter, events } = await setup([() => [call('a1', 'audit_seo', {})], () => [call('a2', 'audit_seo', { pageId: '/about/', pillar: 'content' })], () => finish('Here is what the audit found.')]);
+      const about = Object.values(session.state.pages).find((p) => p.route === '/about/')!;
+      const asked = session.revision;
+      const { result } = await run('How is my SEO?', mode === 'ask' ? { mode: 'ask' } : {});
+      expect(result?.status, mode).toBe('no-changes');
+      expect(adapter.requests[0].tools.map((t) => t.name), mode).toContain('audit_seo');
+      const site = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+      expect(site, mode).toMatchObject({ revision: asked, scope: {}, total: expect.any(Number), counts: expect.any(Object), links: { pages: session.state.site.pageOrder.length } });
+      const page = JSON.parse((adapter.requests[2].items.at(-1) as { content: string }).content);
+      expect(page, mode).toMatchObject({ scope: { pageId: about.id, pillar: 'content' }, links: { pageId: about.id } });
+      for (const f of page.findings) expect(f.pillar).toBe('content');
+      const activities = [...events].reverse().find((e) => e.kind === 'message' && e.message?.activities?.length)?.message?.activities ?? [];
+      expect(activities.map((a) => a.label), mode).toEqual(expect.arrayContaining(['Checking site SEO', `Checking SEO for ${about.title}`]));
+      expect(session.revision, mode).toBe(asked);
+    }
   });
 });
 
