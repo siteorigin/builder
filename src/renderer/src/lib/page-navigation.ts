@@ -7,7 +7,7 @@
  */
 import { isBinding, type InstanceNode, type LinkValue, type OwnerRef, type ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { headerMenu, shellMenu } from '@engine/tree';
+import { headerMenu, isSubItem, menuGroups, shellMenu, shownUnder } from '@engine/tree';
 import { pageHeadings } from '@generator/checks';
 
 /** A visitor-facing label that still reads as the page's old name. */
@@ -95,7 +95,7 @@ export function renameLabels(state: ProjectState, pageId: string, from: string |
 export interface HeaderOrderPlan {
   /** The header's own placement and the edits that reorder its links, one move each. */
   ops: EditOperation[];
-  /** The menu's labels as it lists them now, and as it would once the edits apply. */
+  /** The menu's labels as it lists them now, and as it would once the edits apply: one per top-level link, with its submenu. */
   before: string[];
   after: string[];
 }
@@ -104,7 +104,9 @@ export interface HeaderOrderPlan {
  * Reorder the header menu's links to the pages to follow the Pages panel's order. Only links straight to a page that
  * appears once in the menu move, and only among the places such links hold now: a link to another site, an email
  * address, a section of a page, or a page linked twice stays where the author put it, and a page that is not in the
- * menu is not added. Null when there is no menu to reorder or it already follows the pages.
+ * menu is not added. A menu that groups links keeps every group whole: a top-level link moves with the links under it
+ * (a section moved with its pages in Pages brings its submenu along), and a link in a submenu moves only within that
+ * submenu, so no link joins or leaves a submenu. Null when there is no menu to reorder or it already follows the pages.
  */
 export function headerOrderPlan(state: ProjectState): HeaderOrderPlan | null {
   const menu = headerMenu(state);
@@ -121,14 +123,25 @@ export function headerOrderPlan(state: ProjectState): HeaderOrderPlan | null {
     const t = target(it);
     if (t) count.set(t, (count.get(t) ?? 0) + 1);
   }
-  const slots: number[] = [];
-  items.forEach((it, i) => {
+  const movable = (it: MenuItem) => {
     const t = target(it);
-    if (t && count.get(t) === 1) slots.push(i);
-  });
-  const sorted = slots.map((i) => items[i]).sort((a, b) => rank.get(target(a)!)! - rank.get(target(b)!)!);
-  const desired = [...items];
-  slots.forEach((slot, k) => (desired[slot] = sorted[k]));
+    return !!t && count.get(t) === 1;
+  };
+  // The menu as the header shows it: each top-level link with the links shown under it. A flat menu is all top level.
+  const under = menuGroups(menu.schema) ? shownUnder(items) : items.map(() => false);
+  const groups: MenuItem[][] = [];
+  items.forEach((it, i) => (under[i] ? groups[groups.length - 1].push(it) : groups.push([it])));
+  /** `list` with the movable links among the places they hold now sorted into Pages order, every other one in place. */
+  const follow = <T>(list: T[], head: (x: T) => MenuItem, may: (x: T) => boolean): T[] => {
+    const slots = list.flatMap((x, i) => (may(x) ? [i] : []));
+    const sorted = slots.map((i) => list[i]).sort((a, b) => rank.get(target(head(a))!)! - rank.get(target(head(b))!)!);
+    const out = [...list];
+    slots.forEach((slot, k) => (out[slot] = sorted[k]));
+    return out;
+  };
+  // A first link marked to go under the one above shows at the top level only while it is first: it stays there.
+  const wanted = follow(groups, (g) => g[0], (g) => movable(g[0]) && !isSubItem(g[0])).map((g) => [g[0], ...follow(g.slice(1), (it) => it, movable)]);
+  const desired = wanted.flat();
   if (desired.every((it, i) => it === items[i])) return null;
   // One move per link out of place, left to right: each puts the link that belongs there in its place.
   const cur = [...items];
@@ -141,7 +154,9 @@ export function headerOrderPlan(state: ProjectState): HeaderOrderPlan | null {
     ops.push({ type: 'instance.listMove', owner, nodeId: menu.node.id, prop: 'links', itemId: want.id as string, index: i });
   });
   const label = (it: MenuItem) => (typeof it?.label === 'string' && it.label.trim() ? it.label.trim() : 'Link');
-  return { ops, before: items.map(label), after: desired.map(label) };
+  // A submenu is named after its link: "Lookbook (Kitchens, Baths)".
+  const listed = (gs: MenuItem[][]) => gs.map((g) => (g.length > 1 ? `${label(g[0])} (${g.slice(1).map(label).join(', ')})` : label(g[0])));
+  return { ops, before: listed(groups), after: listed(wanted) };
 }
 
 /** Whether the shared header's menu links straight to the page. */

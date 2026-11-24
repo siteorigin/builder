@@ -287,3 +287,60 @@ describe('the header menu’s order beside the Pages order', () => {
     expect(headerOrderPlan(s)).toBeNull();
   });
 });
+
+describe('the header menu’s order with child pages in submenus', () => {
+  /** The business starter with a Lookbook page in the header menu, and Kitchens and Baths inside it, in its submenu. */
+  function lookbookMenu(): ProjectState {
+    return apply(fresh(), [
+      { type: 'page.create', pageId: 'pg_lookbook', title: 'Lookbook', addToNavigation: true },
+      { type: 'page.create', pageId: 'pg_kitchens', title: 'Kitchens', route: '/lookbook/kitchens/', addToNavigation: true },
+      { type: 'page.create', pageId: 'pg_baths001', title: 'Baths', route: '/lookbook/baths/', addToNavigation: true }
+    ]).state;
+  }
+  const rows = (s: ProjectState) => (menuOf(s, 'header').props.links as Array<{ label: string; sub?: boolean }>).map((l) => `${l.sub ? '  ' : ''}${l.label}`);
+  const titles = (s: ProjectState) => s.site.pageOrder.map((id) => s.pages[id].title);
+  const reorder = (s: ProjectState, order: string[]) => apply(s, [{ type: 'page.reorder', pageIds: order.map((t) => pageId(s, t)) }]).state;
+
+  it('brings a section’s submenu along when the section moves with its pages', () => {
+    let s = lookbookMenu();
+    expect(rows(s)).toEqual(['Home', 'About', 'Contact', 'Lookbook', '  Kitchens', '  Baths']);
+    // Pages moves Lookbook up with the pages inside it.
+    s = reorder(s, ['Home', 'Lookbook', 'Kitchens', 'Baths', 'About', 'Contact']);
+    expect(inHeaderMenu(s, 'pg_lookbook')).toBe(true);
+    const plan = headerOrderPlan(s)!;
+    expect(plan.before).toEqual(['Home', 'About', 'Contact', 'Lookbook (Kitchens, Baths)']);
+    expect(plan.after).toEqual(['Home', 'Lookbook (Kitchens, Baths)', 'About', 'Contact']);
+    const after = apply(s, plan.ops).state;
+    expect(rows(after)).toEqual(['Home', 'Lookbook', '  Kitchens', '  Baths', 'About', 'Contact']);
+    expect(titles(after)).toEqual(titles(s));
+    expect(headerOrderPlan(after)).toBeNull();
+  });
+
+  it('reorders a child page’s link within its submenu', () => {
+    let s = lookbookMenu();
+    s = reorder(s, ['Home', 'About', 'Contact', 'Lookbook', 'Baths', 'Kitchens']);
+    expect(inHeaderMenu(s, 'pg_baths001')).toBe(true);
+    const plan = headerOrderPlan(s)!;
+    expect(plan.after).toEqual(['Home', 'About', 'Contact', 'Lookbook (Baths, Kitchens)']);
+    const after = apply(s, plan.ops).state;
+    expect(rows(after)).toEqual(['Home', 'About', 'Contact', 'Lookbook', '  Baths', '  Kitchens']);
+    expect(headerOrderPlan(after)).toBeNull();
+  });
+
+  it('never takes a link out of its submenu, or puts one into another', () => {
+    let s = lookbookMenu();
+    // Pages lists Baths apart from Lookbook, first after Home: its link stays in Lookbook’s submenu, first there.
+    s = reorder(s, ['Home', 'Baths', 'About', 'Contact', 'Lookbook', 'Kitchens']);
+    const after = apply(s, headerOrderPlan(s)!.ops).state;
+    expect(rows(after)).toEqual(['Home', 'About', 'Contact', 'Lookbook', '  Baths', '  Kitchens']);
+    // A first link marked to go under the one above shows at the top level only while it is first, so it stays first.
+    let t = fresh();
+    const header = menuOf(t, 'header');
+    const [home, about, contact] = links(t, 'header');
+    header.props.links = [{ ...about, label: 'Our studio', sub: true }, contact, home];
+    expect(rows(t)).toEqual(['  Our studio', 'Contact', 'Home']);
+    t = apply(t, headerOrderPlan(t)!.ops).state;
+    expect(rows(t)).toEqual(['  Our studio', 'Home', 'Contact']);
+    expect(headerOrderPlan(t)).toBeNull();
+  });
+});
