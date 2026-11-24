@@ -1,6 +1,7 @@
 import { variantOptions } from '@shared/variants';
 import type { ProjectState, ResponsiveStyles, TokenDef } from '@shared/types';
 import { getTheme } from '@catalogue/index';
+import { linkOf } from '@shared/styles';
 import { allTrees } from './tree';
 
 export interface TokenRefSite {
@@ -42,9 +43,11 @@ export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site:
       if (n.kind === 'instance') for (const o of Object.values(n.overrides ?? {})) styles(o, t.label);
     }
   }
-  const tokenValue = (holder: Record<string, unknown>, key: string) => {
+  const groups = new Map(declaredTokens(state).map((t) => [t.id, t.group]));
+  const tokenValue = (holder: Record<string, unknown>, key: string, id: string) => {
     const v = holder[key];
-    const ref = refOf(v);
+    // A stray `token` beside a text style's metrics is not a link; the metrics are its value.
+    const ref = linkOf(v, groups.get(id));
     if (ref) return fn(ref, { label: 'Site styles', kind: 'token', replace: (next) => (holder[key] = next) });
     if (v && typeof v === 'object' && 'family' in (v as object)) {
       const fam = v as Record<string, unknown>;
@@ -52,8 +55,8 @@ export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site:
       if (fref) fn(fref, { label: 'Site styles', kind: 'token', replace: (next) => (fam.family = next) });
     }
   };
-  for (const id of Object.keys(state.tokens.overrides)) tokenValue(state.tokens.overrides as Record<string, unknown>, id);
-  for (const t of state.tokens.custom) tokenValue(t as unknown as Record<string, unknown>, 'value');
+  for (const id of Object.keys(state.tokens.overrides)) tokenValue(state.tokens.overrides as Record<string, unknown>, id, id);
+  for (const t of state.tokens.custom) tokenValue(t as unknown as Record<string, unknown>, 'value', t.id);
 }
 
 /** How many times project data refers to each token. */
@@ -68,18 +71,16 @@ export function declaredTokens(state: ProjectState): TokenDef[] {
   return [...getTheme(state.site.themeId).tokens, ...state.tokens.custom];
 }
 
-/** The first token that refers back to itself through other tokens, or null. */
+/** The first token that refers back to itself through the styles it links to, or null. */
 export function findTokenCycle(state: ProjectState): string | null {
   const declared = declaredTokens(state);
   const byId = new Map(declared.map((t) => [t.id, t]));
   const value = (id: string) => (Object.hasOwn(state.tokens.overrides, id) ? state.tokens.overrides[id] : byId.get(id)?.value);
   for (const t of declared) {
     const seen = new Set<string>();
-    let cur: string | null = t.id;
-    while (cur) {
+    for (let cur: string | null = t.id; cur; cur = linkOf(value(cur), byId.get(cur)?.group)) {
       if (seen.has(cur)) return t.id;
       seen.add(cur);
-      cur = refOf(value(cur));
     }
   }
   return null;

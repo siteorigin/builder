@@ -6,7 +6,7 @@ import { uniqueCopyName } from '@engine/definitions';
 import { pageIds, shellPageLinks } from '@generator/checks';
 import { EngineError, instancesOf } from '@engine/tree';
 import { validateState } from '@engine/validate';
-import { generateProject } from '@generator/index';
+import { effectiveTokens, generateProject } from '@generator/index';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -728,6 +728,131 @@ describe('custom site styles (§2.5, spec §7.2)', () => {
   });
 });
 
+describe('site styles that follow other styles (#201)', () => {
+  const css = (s: ProjectState) => generateProject(s).get('src/lib/siteorigin/styles/tokens.css')!;
+  const create = (s: ProjectState, group: 'space' | 'container' | 'radius' | 'shadow' | 'border' | 'font' | 'color', label: string, value: unknown) => {
+    const r = applyOperations(s, [{ type: 'token.create', group, label, value }]);
+    return { state: r.state, id: r.results[0].tokenId as string };
+  };
+  const set = (s: ProjectState, tokenId: string, value: unknown) => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
+
+  it('links a custom style of every non-text kind to another of its kind, and unlinks it again', () => {
+    const cases = [
+      ['space', '20px', 'space.md'],
+      ['container', '900px', 'container.reading'],
+      ['radius', '10px', 'radius.lg'],
+      ['shadow', '0 1px 2px rgb(0 0 0 / 0.1)', 'shadow.md'],
+      ['border', '2px solid var(--so-color-brand)', 'border.default'],
+      ['font', 'Georgia, serif', 'font.body']
+    ] as const;
+    for (const [group, literal, target] of cases) {
+      const made = create(fresh(), group, 'Mine', literal);
+      const linked = set(made.state, made.id, { token: target });
+      expect(linked.tokens.custom[0].value, group).toEqual({ token: target });
+      expect(linked.tokens.overrides[made.id], group).toBeUndefined();
+      expect(css(linked), group).toContain(`--so-${made.id.replace('.', '-')}: var(--so-${target.replace('.', '-')});`);
+      expect(errors(linked), group).toEqual([]);
+      const own = set(linked, made.id, literal);
+      expect(own.tokens.custom[0].value, group).toBe(literal);
+    }
+  });
+
+  it('creates a custom style that follows another from the start, and lets theme styles follow too', () => {
+    const made = create(fresh(), 'space', 'Gutter', { token: 'space.lg' });
+    expect(made.state.tokens.custom[0].value).toEqual({ token: 'space.lg' });
+    const theme = set(made.state, 'radius.sm', { token: 'radius.md' });
+    expect(theme.tokens.overrides['radius.sm']).toEqual({ token: 'radius.md' });
+    expect(css(theme)).toContain('--so-radius-sm: var(--so-radius-md);');
+    expect(errors(theme)).toEqual([]);
+  });
+
+  it('refuses links to missing styles, to another kind of style and in a loop', () => {
+    const made = create(fresh(), 'space', 'Gutter', '20px');
+    expect(() => set(made.state, made.id, { token: 'space.nope' })).toThrow(/does not exist/);
+    expect(() => set(made.state, 'color.brand', { token: 'color.nope' })).toThrow(/does not exist/);
+    expect(() => set(made.state, made.id, { token: 'color.brand' })).toThrow(/spacing style|space style/);
+    expect(() => set(made.state, 'font.body', { token: 'space.md' })).toThrow(/font style/);
+    expect(() => set(made.state, made.id, { token: 'space.md', extra: 1 })).toThrow(/must be \{ "token"/);
+    expect(() => set(made.state, made.id, { token: 7 })).toThrow(/must be \{ "token"/);
+    // A style that already leads nowhere cannot be followed: its followers would lose their value too.
+    const broken = fresh();
+    broken.tokens.overrides['color.accent'] = { token: 'color.missing' };
+    expect(() => set(broken, 'color.brand', { token: 'color.accent' })).toThrow(/does not exist/);
+    const wrongKind = fresh();
+    wrongKind.tokens.overrides['color.accent'] = { token: 'space.md' };
+    expect(() => set(wrongKind, 'color.brand', { token: 'color.accent' })).toThrow(/spacing style/);
+    // An older document's link with an extra key is still a link to the style it names, as tokens.css writes it.
+    const extra = fresh();
+    extra.tokens.overrides['color.accent'] = { token: 'color.missing', extra: 1 } as never;
+    expect(() => set(extra, 'color.brand', { token: 'color.accent' })).toThrow(/does not exist/);
+    // Keys an older document left beside a color's link do not hide it: tokens.css still writes the link.
+    const shaped = fresh();
+    shaped.tokens.overrides['color.accent'] = { token: 'color.brand', size: 'legacy' } as never;
+    expect(() => set(shaped, 'color.brand', { token: 'color.accent' })).toThrow(/loop/);
+    const chain = set(made.state, 'space.md', { token: made.id });
+    expect(() => set(chain, made.id, { token: 'space.md' })).toThrow(/loop/);
+    expect(() => create(fresh(), 'radius', 'Bad', { token: 'radius.nope' })).toThrow(/does not exist/);
+  });
+
+  it('refuses a text style following another text style, and leaves the style and its CSS whole', () => {
+    const s = fresh();
+    expect(() => set(s, 'text.h1', { token: 'text.h2' })).toThrow(/text style/i);
+    const custom = applyOperations(s, [{ type: 'token.create', group: 'text', label: 'Callout', value: { family: { token: 'font.body' }, size: '1rem', lineHeight: '1.5', weight: 400, tracking: '0' } }]);
+    const id = custom.results[0].tokenId as string;
+    expect(() => set(custom.state, id, { token: 'text.h2' })).toThrow(/text style/i);
+    expect(() => applyOperations(s, [{ type: 'token.create', group: 'text', label: 'Alias', value: { token: 'text.h2' } }])).toThrow(/cannot follow/);
+    const before = css(custom.state);
+    expect(() => set(custom.state, 'text.h1', { token: 'text.h2' })).toThrow(/cannot follow/);
+    expect(css(custom.state)).toBe(before);
+    const out = css(custom.state);
+    const name = `--so-${id.replace('.', '-')}`;
+    for (const k of ['family', 'size', 'line-height', 'weight', 'tracking']) expect(out).toContain(`${name}-${k}:`);
+    expect(out).toContain('--so-text-h1-size:');
+  });
+
+  it('checks spacing, page width and corner values are CSS lengths', () => {
+    const made = create(fresh(), 'space', 'Gutter', '20px');
+    for (const bad of ['red', '12px solid', '1 2', 'url(x)', '#fff'])
+      expect(() => set(made.state, made.id, bad), bad).toThrow(/length/);
+    for (const good of ['0', '1.5rem', '-8px', 'clamp(1rem, 2vw + 1rem, 3rem)', 'calc(100% - 2rem)', 'min(90vw, 1200px)'])
+      expect(set(made.state, made.id, good).tokens.custom[0].value, good).toBe(good);
+    expect(() => set(fresh(), 'container.content', 'wide')).toThrow(/length/);
+    expect(set(fresh(), 'container.content', '100%').tokens.overrides['container.content']).toBe('100%');
+    expect(() => set(fresh(), 'radius.md', 'round')).toThrow(/length/);
+    expect(() => create(fresh(), 'radius', 'Soft', 'soft')).toThrow(/length/);
+    // The theme's own values all pass the same check.
+    for (const t of effectiveTokens(fresh()).filter((x) => ['space', 'container', 'radius'].includes(x.group)))
+      expect(set(fresh(), t.id, t.value).tokens.overrides[t.id], t.id).toBe(t.value);
+  });
+
+  it('says a custom style has no theme default to go back to', () => {
+    const made = create(fresh(), 'color', 'Sea', '#2e8b57');
+    expect(() => set(made.state, made.id, null)).toThrow(/no theme default/);
+    // An override left on a custom style by an older version is the value in use, so it is not thrown away either.
+    const stray = structuredClone(made.state);
+    stray.tokens.overrides[made.id] = '#123456';
+    expect(() => set(stray, made.id, null)).toThrow(/no theme default/);
+    const mended = set(stray, made.id, '#654321');
+    expect(mended.tokens.custom[0].value).toBe('#654321');
+    expect(mended.tokens.overrides[made.id]).toBeUndefined();
+    // A theme style still goes back to the theme's value.
+    const changed = set(made.state, 'color.brand', '#123456');
+    expect(set(changed, 'color.brand', null).tokens.overrides['color.brand']).toBeUndefined();
+  });
+
+  it('keeps a followed font working for a text style family', () => {
+    expect(() => set(fresh(), 'text.h1', { family: { token: 'space.md' } })).toThrow(/existing font token/);
+    expect(() => set(fresh(), 'text.h1', { size: null })).toThrow(/Invalid size/);
+    expect(() => set(fresh(), 'text.h1', { lineHeight: null })).toThrow(/Invalid lineHeight/);
+    const made = create(fresh(), 'font', 'Accent', { token: 'font.display' });
+    const s = set(made.state, 'text.h1', { family: { token: made.id } });
+    expect(errors(s)).toEqual([]);
+    const out = css(s);
+    expect(out).toContain(`--so-${made.id.replace('.', '-')}: var(--so-font-display);`);
+    expect(out).toContain(`--so-text-h1-family: var(--so-${made.id.replace('.', '-')});`);
+  });
+});
+
 describe('validateState catches external corruption (§2.5)', () => {
   it('reports token cycles, missing tokens, bad tags, stray slots and component cycles', () => {
     const s = fresh();
@@ -1214,5 +1339,151 @@ describe('inserting a node the same batch fills (#13)', () => {
     const o = { kind: 'page', id: 'pg_home' };
     for (const good of ['n_abcd', 'n_abc123', `n_${'a'.repeat(32)}`]) expect(validateOperation({ type: 'node.insert', newNodeId: good, owner: o, primitive: 'image' }).ok, good).toBe(true);
     for (const bad of ['abc', 'n_', 'n_abc', `n_${'a'.repeat(33)}`, 'pg_abcdef', 'n_ABC123', '__proto__']) expect(validateOperation({ type: 'node.insert', newNodeId: bad, owner: o, primitive: 'image' }).ok, bad).toBe(false);
+  });
+});
+
+describe('site style lengths and older text links (#201)', () => {
+  const css = (s: ProjectState) => generateProject(s).get('src/lib/siteorigin/styles/tokens.css')!;
+  const set = (s: ProjectState, tokenId: string, value: unknown) => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
+
+  it('accepts math of lengths, and refuses names inside it, negative widths and corners, and lists', () => {
+    for (const good of ['max(1rem, 2vw)', 'calc(100% - clamp(1rem, 2vw, 3rem))', 'clamp(1.25rem, 0.8rem + 2.4vw, 2.5rem)', '0.5em'])
+      expect(set(fresh(), 'space.md', good).tokens.overrides['space.md'], good).toBe(good);
+    for (const bad of ['calc(red)', 'calc(1px + auto)', 'min()', 'clamp(1rem,, 2rem)', 'var(--so-space-md)', 'auto', '24', '1px 2px', 'calc(1px; x)', 'clamp(40rem, 80vw)', 'calc(1rem, 2rem)', 'min(, 2rem)', 'min(2rem,)', 'calc(1px+)', 'calc(1px+2px)', 'calc(1px -2px)', '12.px', 'calc(1px +(-2px))', 'calc(1px + 2)', 'calc(2 + 3)', 'calc(2px * 3px)', 'calc(2 / 1px)', 'clamp(0, 2vw, 1rem)', 'calc(1px\u00a0+\u00a02px)', 'calc(VAR(--so-space-md) * 2)'])
+      expect(() => set(fresh(), 'space.md', bad), bad).toThrow(/length/);
+    for (const good of ['+12px', '0.0', '10vmin', '100lvh', '2lh', 'calc(100dvw - 2rem)', 'calc((1rem + 2px) * 1.5)', 'calc(1px + -2px)', '100dvi', 'calc(2 * 1rem)', 'calc(10px / 2)', 'max(1rem, 2vw, 10px)'])
+      expect(set(fresh(), 'space.md', good).tokens.overrides['space.md'], good).toBe(good);
+    // Variables are not part of a length: a style that should follow another links to it.
+    for (const bad of ['calc(var(--so-space-md) * 2)', 'calc(var(--so-space-missing) * 2)', 'calc(1 + 2 * 3px)', 'max(1px, 2)'])
+      expect(() => set(fresh(), 'space.lg', bad), bad).toThrow(/length/);
+    // * and / bind before + and -.
+    for (const good of ['calc(1px + 2 * 3px)', 'calc(100% - 2rem / 2)', 'max(1px, 2px, 3px, 4px)'])
+      expect(set(fresh(), 'space.lg', good).tokens.overrides['space.lg'], good).toBe(good);
+    expect(set(fresh(), 'space.md', '-8px').tokens.overrides['space.md']).toBe('-8px');
+    expect(() => set(fresh(), 'radius.md', '-4px')).toThrow(/positive/);
+    expect(() => set(fresh(), 'container.content', '-10px')).toThrow(/positive/);
+    expect(set(fresh(), 'container.content', 'calc(100vw - 2rem)').tokens.overrides['container.content']).toBe('calc(100vw - 2rem)');
+  });
+
+  it('refuses creating a text style that follows another, even beside metrics', () => {
+    const metrics = { family: { token: 'font.body' }, size: '1rem', lineHeight: '1.5', weight: 400, tracking: '0' };
+    expect(() => applyOperations(fresh(), [{ type: 'token.create', group: 'text', label: 'Alias', value: { ...metrics, token: 'text.h2' } }])).toThrow(/cannot follow/);
+  });
+
+  it('writes every metric for a text style an older version left with a stray link, and mends it on the next edit', () => {
+    let s = fresh();
+    const h1 = effectiveTokens(s).find((t) => t.id === 'text.h1')!.value as Record<string, unknown>;
+    s.tokens.overrides['text.h1'] = { ...h1, size: '3.3rem', token: 'text.h2' } as never;
+    expect(validateState(s).some((d) => d.code === 'TOKEN_TEXT_LINK')).toBe(true);
+    const out = css(s);
+    expect(out).toContain('--so-text-h1-size: 3.3rem;');
+    expect(out).not.toMatch(/--so-text-h1: /);
+    s = set(s, 'text.h1', { weight: 600 });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h1, size: '3.3rem', weight: 600 });
+    expect(validateState(s).some((d) => d.code === 'TOKEN_TEXT_LINK')).toBe(false);
+  });
+
+  it('keeps the metrics of a text style with a stray link when the style it named is replaced', () => {
+    let s = fresh();
+    const c = applyOperations(s, [{ type: 'token.create', group: 'text', label: 'Callout', value: { family: { token: 'font.body' }, size: '1rem', lineHeight: '1.5', weight: 400, tracking: '0' } }]);
+    s = c.state;
+    const h1 = effectiveTokens(s).find((t) => t.id === 'text.h1')!.value as Record<string, unknown>;
+    s.tokens.overrides['text.h1'] = { ...h1, size: '3.3rem', token: c.results[0].tokenId } as never;
+    const after = applyOperations(s, [{ type: 'token.remove', tokenId: c.results[0].tokenId as string, replacementTokenId: 'text.h2' }]).state;
+    expect(after.tokens.custom.some((t) => t.id === c.results[0].tokenId)).toBe(false);
+    expect((after.tokens.overrides['text.h1'] as unknown as { size: string }).size).toBe('3.3rem');
+    expect(css(after)).toContain('--so-text-h1-size: 3.3rem;');
+  });
+
+  it('keeps the theme metrics of a text style linked to one that does not exist, and edits from them', () => {
+    let s = fresh();
+    const h1 = effectiveTokens(s).find((t) => t.id === 'text.h1')!.value as Record<string, unknown>;
+    s.tokens.overrides['text.h1'] = { token: 'text.missing' } as never;
+    for (const [k, v] of [['size', h1.size], ['line-height', h1.lineHeight], ['weight', h1.weight], ['tracking', h1.tracking], ['family', 'var(--so-font-display)'], ['transform', 'none']])
+      expect(css(s)).toContain(`--so-text-h1-${k}: ${v};`);
+    // Through a style of another kind, the link leads to no text style either.
+    const through = fresh();
+    through.tokens.overrides['text.h1'] = { token: 'font.body' } as never;
+    expect(css(through)).toContain(`--so-text-h1-size: ${h1.size};`);
+    expect(css(through)).not.toContain('var(--so-font-body-');
+    // A text style it does reach is followed whatever its metrics hold, as before.
+    const bold = fresh();
+    const h2 = effectiveTokens(bold).find((t) => t.id === 'text.h2')!.value as Record<string, unknown>;
+    bold.tokens.overrides['text.h2'] = { ...h2, weight: 'bold' } as never;
+    bold.tokens.overrides['text.h1'] = { token: 'text.h2' } as never;
+    expect(css(bold)).toContain('--so-text-h1-weight: var(--so-text-h2-weight);');
+    expect(css(s)).not.toContain('var(--so-text-missing');
+    s = set(s, 'text.h1', { weight: 600 });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h1, weight: 600 });
+  });
+
+  it('writes a hand-made text link metric by metric, and starts the next edit from the style it follows', () => {
+    let s = fresh();
+    s.tokens.overrides['text.h1'] = { token: 'text.h2' } as never;
+    const out = css(s);
+    for (const k of ['family', 'size', 'line-height', 'weight', 'tracking', 'transform']) expect(out).toContain(`--so-text-h1-${k}: var(--so-text-h2-${k});`);
+    expect(out).not.toContain('[object Object]');
+    const h2 = effectiveTokens(s).find((t) => t.id === 'text.h2')!.value as Record<string, unknown>;
+    s = set(s, 'text.h1', { size: '3rem' });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h2, size: '3rem' });
+  });
+
+  it('keeps links and the text family through font removal, replacement and rename', async () => {
+    const { tokenUsageCounts } = await import('@engine/tokens');
+    let s = fresh();
+    const a = applyOperations(s, [{ type: 'token.create', group: 'font', label: 'A', value: { token: 'font.display' } }]);
+    s = a.state;
+    const A = a.results[0].tokenId as string;
+    const b = applyOperations(s, [{ type: 'token.create', group: 'font', label: 'B', value: { token: A } }]);
+    s = b.state;
+    const B = b.results[0].tokenId as string;
+    s = set(s, 'text.h1', { family: { token: A } });
+    expect(tokenUsageCounts(s)[A]).toBe(2);
+    // Pointing B at itself through the replacement is refused, and nothing changes.
+    expect(() => applyOperations(s, [{ type: 'token.remove', tokenId: A, replacementTokenId: B }])).toThrow(/loop/);
+    const display = String(effectiveTokens(s).find((t) => t.id === 'font.display')!.value);
+    const detached = applyOperations(s, [{ type: 'token.remove', tokenId: A, detach: true }]).state;
+    expect(detached.tokens.custom.some((t) => t.id === A)).toBe(false);
+    expect(detached.tokens.custom.find((t) => t.id === B)?.value).toBe(display);
+    const replaced = applyOperations(s, [{ type: 'token.remove', tokenId: A, replacementTokenId: 'font.body' }]).state;
+    expect(replaced.tokens.custom.some((t) => t.id === A)).toBe(false);
+    expect(replaced.tokens.custom.find((t) => t.id === B)?.value).toEqual({ token: 'font.body' });
+    expect((replaced.tokens.overrides['text.h1'] as unknown as { family: unknown }).family).toEqual({ token: 'font.body' });
+    expect((detached.tokens.overrides['text.h1'] as unknown as { family: unknown }).family).toBe(display);
+    const out = css(detached);
+    for (const k of ['family', 'size', 'line-height', 'weight', 'tracking', 'transform']) expect(out).toContain(`--so-text-h1-${k}:`);
+    expect(errors(detached)).toEqual([]);
+  });
+});
+
+describe('older text links read the same in the editor, an edit and the export (#201)', () => {
+  const css = (s: ProjectState) => generateProject(s).get('src/lib/siteorigin/styles/tokens.css')!;
+  const set = (s: ProjectState, tokenId: string, value: unknown) => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
+
+  it('edits a text style linked to one with a written-out weight from the style it follows', async () => {
+    const { textMetrics } = await import('@shared/styles');
+    let s = fresh();
+    const h2 = effectiveTokens(s).find((t) => t.id === 'text.h2')!.value as Record<string, unknown>;
+    s.tokens.overrides['text.h2'] = { ...h2, weight: 'bold' } as never;
+    s.tokens.overrides['text.h1'] = { token: 'text.h2' } as never;
+    expect(textMetrics(effectiveTokens(s), 'text.h1')).toMatchObject({ size: h2.size, weight: 700 });
+    // A change that leaves the weight alone keeps it, as the number it stands for.
+    expect(set(s, 'text.h1', { size: '3rem' }).tokens.overrides['text.h1']).toEqual({ ...h2, size: '3rem', weight: 700 });
+    s = set(s, 'text.h1', { weight: 600 });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h2, weight: 600 });
+  });
+
+  it('shows and edits the theme metrics when the link runs through another kind of style, as the export writes them', async () => {
+    const { textMetrics } = await import('@shared/styles');
+    let s = fresh();
+    const h1 = effectiveTokens(s).find((t) => t.id === 'text.h1')!.value as Record<string, unknown>;
+    s.tokens.overrides['text.h1'] = { token: 'font.body' } as never;
+    s.tokens.overrides['font.body'] = { token: 'text.h2' } as never;
+    expect(css(s)).toContain(`--so-text-h1-size: ${h1.size};`);
+    const { getTheme } = await import('@catalogue/index');
+    const theme = getTheme(s.site.themeId).tokens.find((t) => t.id === 'text.h1')!.value;
+    expect(textMetrics(effectiveTokens(s), 'text.h1', theme)?.size).toBe(h1.size);
+    s = set(s, 'text.h1', { weight: 600 });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h1, weight: 600 });
   });
 });

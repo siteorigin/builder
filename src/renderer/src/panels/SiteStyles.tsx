@@ -2,28 +2,17 @@ import { variantOptions } from '@shared/variants';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Globe, Link2, Palette, RotateCcw } from 'lucide-react';
 import type { ProjectState, TextStyleValue, TokenDef } from '@shared/types';
-import { tokenVar } from '@shared/styles';
+import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { allTrees, instancesOf } from '@engine/tree';
-import { importedFontStack, projectFontFamilies } from '@shared/fonts';
-import { api, applyOps, getState, toast, useStore } from '../store';
+import { api, applyOps, useStore } from '../store';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
 import { CustomTokens } from './CustomTokens';
+import { FontSelect, familyName } from './FontSelect';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ForegroundSuggestion } from '@shared/contrast';
-import { fontFamilies, installedFonts } from '@catalogue/fonts';
-
-/** The font menu's "Import a font…" entry; never saved as a value. */
-const IMPORT_FONT = '__import-font';
-/** Fonts that need no download; the project's installed web fonts are listed above them. */
-const SYSTEM_FONT_CHOICES = [
-  { label: 'System sans-serif', value: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" },
-  { label: 'Georgia (serif)', value: "Georgia, 'Times New Roman', serif" },
-  { label: 'Helvetica / Arial', value: "'Helvetica Neue', Helvetica, Arial, sans-serif" },
-  { label: 'Monospace', value: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace" }
-];
 
 /**
  * What the Foundation theme uses each colour for, checked against its base CSS and component styles, so an
@@ -139,14 +128,13 @@ function tokenUses(state: ProjectState): Map<string, TokenUse> {
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const refOf = (v: unknown) => (v && typeof v === 'object' && 'token' in (v as object) ? String((v as { token: string }).token) : null);
 
-function resolveColor(tokens: TokenDef[], v: unknown, depth = 0): string {
+function resolveColor(tokens: TokenDef[], v: unknown): string {
   const ref = refOf(v);
-  if (ref && depth < 6) return resolveColor(tokens, tokens.find((t) => t.id === ref)?.value, depth + 1);
-  return String(v ?? '');
+  const end = ref ? followToken(tokens, ref) : v;
+  return typeof end === 'string' ? end : '';
 }
 
-/** The first family in a font stack, as a person would name it ("Fraunces", not "'Fraunces Variable'"). */
-const familyName = (stack: string) => (stack.split(',')[0] ?? '').replace(/['"]/g, '').replace(/\s+Variable$/i, '').trim() || stack;
+const resolvedText = followedText;
 
 const toPx = (v: string): number | null => {
   const m = /^(-?\d*\.?\d+)(rem|em|px)$/.exec(v.trim());
@@ -181,9 +169,10 @@ const sameValue = (a: unknown, b: unknown): boolean => {
 /** Pixels back in the unit the value was written in, so rem-based sizes stay rem-based. */
 const unitOf = (v: string) => (/rem\s*$/.test(v.trim()) ? 'rem' : /em\s*$/.test(v.trim()) ? 'em' : 'px');
 const fromPx = (n: number, unit: string) => (unit === 'px' ? `${n}px` : `${+(n / 16).toFixed(4)}${unit}`);
-const parseNum = (s: string) => {
+/** A typed number of pixels; negative only where the value can be (spacing). */
+const parseNum = (s: string, negative = false) => {
   const n = Number(s.trim().replace(/px$/i, ''));
-  return s.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : null;
+  return s.trim() !== '' && Number.isFinite(n) && (negative || n >= 0) ? n : null;
 };
 /** clamp(min, preferred, max) split into its three parts, or null. */
 const clampParts = (v: string): [string, string, string] | null => {
@@ -196,7 +185,7 @@ const clampParts = (v: string): [string, string, string] | null => {
  * its smallest and largest sizes, each edited on its own so the scaling in between is kept; and the CSS
  * itself one step away for anything else.
  */
-function SizeControl({ value, name, id, onCommit, cssToggle = true }: { value: string; name: string; id?: string; onCommit: (v: string) => void; cssToggle?: boolean }) {
+function SizeControl({ value, name, id, onCommit, cssToggle = true, negative = false }: { value: string; name: string; id?: string; onCommit: (v: string) => void; cssToggle?: boolean; negative?: boolean }) {
   const [asCss, setAsCss] = useState(false);
   const parts = clampParts(value);
   const range = clampRange(value);
@@ -214,7 +203,7 @@ function SizeControl({ value, name, id, onCommit, cssToggle = true }: { value: s
           value={String(range[i === 0 ? 0 : 1])}
           ariaLabel={`${name}, ${label.toLowerCase()}, in pixels`}
           onCommit={(s) => {
-            const n = parseNum(s);
+            const n = parseNum(s, negative);
             if (n === null) return false;
             const next = [...parts];
             next[i] = fromPx(n, unitOf(parts[i]));
@@ -236,7 +225,7 @@ function SizeControl({ value, name, id, onCommit, cssToggle = true }: { value: s
         </div>
       ) : simple ? (
         <span className="ss-num">
-          <DraftInput id={id} className="input sm" value={String(px)} ariaLabel={`${name}, in pixels`} onCommit={(s) => { const n = parseNum(s); if (n === null) return false; onCommit(fromPx(n, unitOf(value))); }} />
+          <DraftInput id={id} className="input sm" value={String(px)} ariaLabel={`${name}, in pixels`} onCommit={(s) => { const n = parseNum(s, negative); if (n === null) return false; onCommit(fromPx(n, unitOf(value))); }} />
           <span className="ss-unit">px</span>
         </span>
       ) : (
@@ -373,7 +362,8 @@ export function SiteStyles() {
   const themeValue = (id: string) => (theme.tokens.find((t) => t.id === id) ?? st.tokens.custom.find((t) => t.id === id))?.value;
   // A saved override that happens to equal the theme's value is not a change the owner can see.
   const changed = (id: string) => {
-    if (!(id in overrides)) return false;
+    // Your own styles have no theme value to differ from, or to go back to.
+    if (!(id in overrides) || !theme.tokens.some((t) => t.id === id)) return false;
     const v = overrides[id];
     const b = themeValue(id);
     if (byId(id)?.group === 'text') return TEXT_METRICS.some((k) => !sameValue(metricOf(v as TextStyleValue, k), metricOf(b as TextStyleValue, k)));
@@ -381,6 +371,8 @@ export function SiteStyles() {
   };
   /** A picker's changes merge with each other, never with a typed value: undo returns to what was typed. */
   const set = (id: string, value: unknown, by?: 'picker') => applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`, by ? `token:${id}:${by}` : `token:${id}`);
+  /** Linking and unlinking are steps of their own, so undo always returns to the link before. */
+  const relink = (id: string, value: unknown) => applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`);
   const group = (g: TokenDef['group']) => tokens.filter((t) => t.group === g);
   const changedNote = (ids: string[]) => {
     const n = ids.filter(changed).length;
@@ -399,7 +391,8 @@ export function SiteStyles() {
   const site = st.site;
   const updSite = (patch: Record<string, unknown>) => void applyOps([{ type: 'site.update', ...patch }], 'Update site settings');
   const changedIds = tokens.map((t) => t.id).filter(changed);
-  const savedIds = Object.keys(overrides).filter((id) => byId(id));
+  // Theme styles only: an override on one of your own styles is its value in use, with no theme value under it.
+  const savedIds = Object.keys(overrides).filter((id) => theme.tokens.some((t) => t.id === id));
   const resetAll = (e: React.MouseEvent<HTMLButtonElement>) => {
     const panel = e.currentTarget.closest('.ss');
     const trigger = e.currentTarget;
@@ -409,7 +402,7 @@ export function SiteStyles() {
   const themes = listThemes().filter((t) => !t.devOnly || dev || t.id === theme.id);
   const hex = (id: string) => resolveColor(tokens, byId(id)?.value);
   const themeHex = (id: string) => resolveColor(theme.tokens, themeValue(id));
-  const fontStack = (id: string) => String(byId(id)?.value ?? '');
+  const fontStack = (id: string) => resolvedText(tokens, id);
   const colors = group('color');
   const colorIds = colors.map((t) => t.id);
   const fontIds = group('font').map((t) => t.id);
@@ -484,7 +477,7 @@ export function SiteStyles() {
     const t = byId(id);
     if (!t) return [];
     if (t.group === 'text') {
-      const v = t.value as TextStyleValue;
+      const v = textMetrics(tokens, id, themeValue(id)) ?? undefined;
       const b = themeValue(id) as TextStyleValue;
       return TEXT_METRICS.filter((k) => !sameValue(metricOf(v, k), metricOf(b, k))).map((k) => ({ what: METRIC_NAMES[k], now: show('text', k, metricOf(v, k)), was: show('text', k, metricOf(b, k)) }));
     }
@@ -522,7 +515,7 @@ export function SiteStyles() {
                 onClick={(e) => {
                   const row = e.currentTarget.closest('[data-ss-row]');
                   const trigger = e.currentTarget;
-                  set(t.id, value);
+                  relink(t.id, value);
                   refocus(trigger, row, null, () => null);
                 }}
               >
@@ -543,7 +536,7 @@ export function SiteStyles() {
             {open && (
               <>
                 <Field label="Same as" hint="Follows another color, and changes when it does.">
-                  <select className="select sm" value={ref ?? ''} onChange={(e) => set(t.id, e.target.value ? { token: e.target.value } : value)}>
+                  <select className="select sm" value={ref ?? ''} onChange={(e) => relink(t.id, e.target.value ? { token: e.target.value } : value)}>
                     <option value="">Its own color</option>
                     {colorIds
                       .filter((id) => id !== t.id && !loops.has(id))
@@ -564,23 +557,9 @@ export function SiteStyles() {
     );
   };
 
-  const importedFonts = projectFontFamilies(st).map((f) => ({ label: f.family, value: importedFontStack(f.family) }));
-  /** Bring in a web font and use it for this style straight away. */
-  const importFontFor = async (t: TokenDef) => {
-    const r = await api.project.importAssets(undefined, 'font').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The font couldn’t be added: ${e.message}` }));
-    if (r.message) toast(r.message, r.assetIds.length ? 'info' : 'error');
-    const doc = getState().snapshot?.state.assets.assets ?? {};
-    const font = r.assetIds.map((id) => doc[id]).find((a) => a?.kind === 'font' && a.font);
-    if (font?.font) set(t.id, importedFontStack(font.font.family));
-    else if (r.assetIds.length) toast('That file is not a font. Choose a WOFF2 or WOFF file.', 'error');
-  };
-  const fontChoices = [...installedFonts(st).map((f) => ({ label: `${f.name} (${f.category})`, value: f.stack })), ...SYSTEM_FONT_CHOICES];
   const fontRow = (t: TokenDef) => {
-    const stack = String(t.value);
-    // An equivalent stack (same first family) shows as that font; the stored value stays until a new choice.
-    const primary = fontFamilies(stack)[0]?.toLowerCase();
-    const selected = [...importedFonts, ...fontChoices].find((f) => f.value === stack) ?? [...importedFonts, ...fontChoices].find((f) => fontFamilies(f.value)[0]?.toLowerCase() === primary);
-    const known = !!selected;
+    const stack = fontStack(t.id);
+    const ref = refOf(t.value);
     const selectId = `${uid}-font-${t.id}`;
     return (
       <div className={`ss-font${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row>
@@ -593,45 +572,19 @@ export function SiteStyles() {
             {changed(t.id) && (
               <>
                 {' '}
-                <ResetDot label={t.label} theme={`font, ${familyName(String(themeValue(t.id) ?? ''))}`} onReset={() => set(t.id, null)} />
+                <ResetDot label={t.label} theme={`font, ${familyName(resolvedText(theme.tokens, t.id))}`} onReset={() => set(t.id, null)} />
               </>
             )}
           </div>
-          <select
-            id={selectId}
-            className="select sm"
-            value={selected?.value ?? ''}
-            onChange={(e) => {
-              if (e.target.value === IMPORT_FONT) void importFontFor(t);
-              else set(t.id, e.target.value);
-            }}
-          >
-            {!known && <option value="">Custom: {familyName(stack)}</option>}
-            {importedFonts.length > 0 && (
-              <optgroup label="Imported fonts">
-                {importedFonts.map((f) => (
-                  <option key={f.value} value={f.value}>
-                    {f.label}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            <optgroup label="Built-in fonts">
-              {fontChoices.map((f) => (
-                <option key={f.label} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </optgroup>
-            <option value={IMPORT_FONT}>Import a font…</option>
-          </select>
+          <FontSelect id={selectId} state={st} stack={stack} follows={ref ? (byId(ref)?.label ?? ref) : null} onChoose={(next) => set(t.id, next)} />
         </div>
       </div>
     );
   };
 
   const textRow = (t: TokenDef) => {
-    const v = t.value as TextStyleValue;
+    const v = textMetrics(tokens, t.id, themeValue(t.id));
+    if (!v) return null;
     const base = (themeValue(t.id) ?? v) as TextStyleValue;
     const famRef = refOf(v.family);
     const stack = famRef ? fontStack(famRef) : String(v.family);
@@ -668,7 +621,7 @@ export function SiteStyles() {
       );
     };
     return (
-      <div className={`ss-text${open ? ' open' : ''}${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row>
+      <div className={`ss-text${open ? ' open' : ''}${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row data-token-id={t.id}>
         <div className="ss-text-head">
           <button className="ss-text-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpenText(open ? null : t.id)}>
             <ChevronRight className="chev" aria-hidden="true" />
@@ -702,7 +655,7 @@ export function SiteStyles() {
                   {!famRef && <option value="">{familyName(stack)}</option>}
                   {group('font').map((f) => (
                     <option key={f.id} value={f.id}>
-                      {f.label} ({familyName(String(f.value))})
+                      {f.label} ({familyName(fontStack(f.id))})
                     </option>
                   ))}
                 </select>
@@ -745,7 +698,10 @@ export function SiteStyles() {
   };
 
   const layoutRow = (g: TokenDef['group'], t: TokenDef, groupMax: number) => {
-    const value = String(t.value);
+    // A style that follows another is drawn and described with the value it follows.
+    const value = resolvedText(tokens, t.id);
+    const ref = refOf(t.value);
+    const follows = ref ? (byId(ref)?.label ?? ref) : null;
     const px = toPx(value);
     const size = px ?? clampRange(value)?.[1] ?? 0;
     const bg = hex('color.background') || undefined;
@@ -775,7 +731,7 @@ export function SiteStyles() {
           <i style={{ border: value.replace(/var\((--so-[a-z0-9-]+)\)/gi, (m, n: string) => resolveColor(tokens, tokens.find((x) => tokenVar(x.id) === n)?.value) || m), background: card }} />
         </span>
       );
-    const wide = g === 'border' || !!clampRange(value) || (g !== 'shadow' && px === null && value.length > 12);
+    const wide = !!follows || g === 'border' || !!clampRange(value) || (g !== 'shadow' && px === null && value.length > 12);
     const commit = (v: string) => set(t.id, v);
     return (
       <div className={`ss-token${wide ? ' wide' : ''}${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row>
@@ -787,12 +743,33 @@ export function SiteStyles() {
             <NameWithReset label={t.label} reset={changed(t.id) && <ResetDot label={name} theme={`value, ${show(g, null, themeValue(t.id))}`} onReset={() => set(t.id, null)} />} />
           </span>
         </div>
-        {g === 'border' ? (
+        {follows ? (
+          <div className="ss-follows">
+            <Link2 aria-hidden="true" />
+            <span>
+              Same as {follows}
+              {value && g !== 'shadow' && g !== 'border' && <span className="faint"> · {show(g, null, value)}</span>}
+            </span>
+            {value && (
+              <button
+                className="link-btn"
+                onClick={(e) => {
+                  const row = e.currentTarget.closest('[data-ss-row]');
+                  const trigger = e.currentTarget;
+                  relink(t.id, value);
+                  refocus(trigger, row, null, () => null);
+                }}
+              >
+                Use its own value<span className="sr-only"> for {name}</span>
+              </button>
+            )}
+          </div>
+        ) : g === 'border' ? (
           <BorderControl value={value} name={name} colors={colors} onCommit={commit} />
         ) : g === 'shadow' ? (
           <ShadowControl value={value} name={name} onCommit={commit} />
         ) : (
-          <SizeControl value={value} name={name} onCommit={commit} cssToggle={wide} />
+          <SizeControl value={value} name={name} onCommit={commit} cssToggle={wide} negative={g === 'space'} />
         )}
       </div>
     );
@@ -939,7 +916,7 @@ export function SiteStyles() {
 
       <Section title="Layout" id="tok-layout" defaultOpen={false} scope={changedNote(layoutIds)}>
         {LAYOUT_GROUPS.filter(({ group: g }) => group(g).length).map(({ group: g, label }) => {
-          const max = Math.max(...group(g).map((t) => toPx(String(t.value)) ?? clampRange(String(t.value))?.[1] ?? 0));
+          const max = Math.max(...group(g).map((t) => toPx(resolvedText(tokens, t.id)) ?? clampRange(resolvedText(tokens, t.id))?.[1] ?? 0));
           return (
             <div className="ss-group" key={g} role="group" aria-label={label}>
               <div className="ss-group-label">{label}</div>
@@ -950,7 +927,7 @@ export function SiteStyles() {
       </Section>
 
       <Section title="Your styles" id="tok-custom" defaultOpen={st.tokens.custom.length > 0} scope={st.tokens.custom.length ? String(st.tokens.custom.length) : undefined}>
-        <CustomTokens state={st} />
+        <CustomTokens state={st} onEditText={(id) => (setOpenText(id), openSection('tok-text', { focus: `[data-token-id="${CSS.escape(id)}"] .ss-text-toggle` }))} />
       </Section>
 
       <Section title="Site details" id="site-settings" defaultOpen={false}>
