@@ -573,10 +573,12 @@ describe('the starter’s sample contact details (#15)', () => {
         spans: [
           // A link that starts the paragraph is found like any other, and keeps its subject when it is replaced.
           { text: 'Email us', link: { type: 'email', target: 'hello@example.com?subject=Hi' } },
-          { text: ' or write to Hello@Example.com, call +1\u00a0555-0134 or visit 12 Harbour  Lane,Millbrook. ' },
+          { text: " or write to Hello@Example.com ('hello@example.com' works too), call +1\u00a0555-0134 (24 hours) or visit 12 Harbour  Lane,Millbrook. " },
           // Someone else's: a longer or different mailbox, a longer number, another street.
-          { text: "Not myhello@example.com, o'hello@example.com, hello@example.com.au, +1 555 01345, +44 20 1555 0134 or 12 Harbour Lane, Millbrook-East. " },
-          { text: 'Directions', link: { type: 'url', target: 'https://maps.example.org/?q=+15550134' } }
+          { text: "Not myhello@example.com, o'hello@example.com, hello@example.com.au, +1 555 01345, +44 20 1555 0134, +44 20/1555 0134 or 12 Harbour Lane, Millbrook-East. " },
+          { text: 'Directions', link: { type: 'url', target: 'https://maps.example.org/?q=+15550134' } },
+          { text: ' or ' },
+          { text: 'the front desk', link: { type: 'email', target: 'HELLO@example.com' } }
         ]
       }
     ]);
@@ -585,7 +587,9 @@ describe('the starter’s sample contact details (#15)', () => {
     // A paragraph's words come before its links, as search lists them.
     expect(shown('email')).toEqual([
       ['text', 'Hello@Example.com'],
-      ['link', 'hello@example.com']
+      ['text', 'hello@example.com'],
+      ['link', 'hello@example.com'],
+      ['link', 'HELLO@example.com']
     ]);
     // Listed on one line, as the result list shows them.
     expect(shown('phone')).toEqual([['text', '+1 555-0134']]);
@@ -594,32 +598,52 @@ describe('the starter’s sample contact details (#15)', () => {
     const spans = (after.pages[pageAt(after, '/about/').id].nodes.n_rich_para as { text: RichText }).text[0] as { spans: Array<{ text: string; link?: LinkValue }> };
     expect(spans.spans[0]).toEqual({ text: 'Email us', link: { type: 'email', target: 'studio@kloof.example?subject=Hi' } });
     const words = spans.spans.map((x) => x.text).join('');
-    expect(words).toContain('write to studio@kloof.example,');
+    expect(words).toContain("write to studio@kloof.example ('studio@kloof.example' works too)");
+    expect(spans.spans.at(-1)).toEqual({ text: 'the front desk', link: { type: 'email', target: 'studio@kloof.example' } });
     expect(words).toContain("Not myhello@example.com, o'hello@example.com, hello@example.com.au,");
   });
 
   it('takes a telephone link that dials the sample as a whole, however it is written, and no other number', () => {
     const s = fresh();
     const footer = footerOf(s);
-    const tel = (target: string) => ({ id: `i_${target.replace(/\W/g, '')}`, label: 'Call', link: { type: 'tel', target } });
-    footer.props.contact = [tel('+ 1 555 0134'), tel('+1 555 0134-5'), tel('+44 20 1555 0134')];
+    const tel = (target: string, i: number) => ({ id: `i_tel${i}`, label: 'Call', link: { type: 'tel', target } });
+    footer.props.contact = ['+ 1 555 0134', '1-555-0134', '+1 555 0134-5', '+44 20 1555 0134'].map(tel);
     const links = group(s, 'phone').filter((m) => m.field.where === 'Footer');
-    expect(links.map((m) => [m.field.label, m.match])).toEqual([['Contact links › Call › Destination', '+ 1 555 0134']]);
+    expect(links.map((m) => [m.field.label, m.match])).toEqual([
+      ['Contact links › Call › Destination', '+ 1 555 0134'],
+      ['Contact links › Call › Destination', '1-555-0134']
+    ]);
     const after = apply(s, links, '+27 21 555 0199').after;
-    expect((footerOf(after).props.contact as ListItem[]).map((i) => (i.link as LinkValue).target)).toEqual(['+27 21 555 0199', '+1 555 0134-5', '+44 20 1555 0134']);
+    expect((footerOf(after).props.contact as ListItem[]).map((i) => (i.link as LinkValue).target)).toEqual(['+27 21 555 0199', '+27 21 555 0199', '+1 555 0134-5', '+44 20 1555 0134']);
   });
 
   it('counts what the published website shows: not a draft, and the shared footer only while a published page shows it', () => {
     const s = fresh();
     const contact = pageAt(s, '/contact/');
     contact.draft = true;
+    // A draft that hides the footer is not one the footer reaches.
+    const about = pageAt(s, '/about/');
+    about.draft = true;
+    about.showFooter = false;
     const footer = group(s, 'email');
     expect(footer.map((m) => m.field.where)).toEqual(['Footer', 'Footer']);
     // One edit to the shared footer changes the draft that shows it too, and says so, as Find does.
-    expect(footer.every((m) => m.field.sharedPages === 3)).toBe(true);
+    expect(footer.every((m) => m.field.sharedPages === 2)).toBe(true);
     expect(footer.map((m) => m.field)).toEqual(findContent(s, 'hello@example.com').filter((m) => m.field.where === 'Footer').map((m) => m.field));
     for (const p of Object.values(s.pages)) if (p.id !== contact.id) p.showFooter = false;
     expect(sampleContactMatches(s)).toEqual([]);
+  });
+
+  it('reads what a page shows as the published website builds it: a button to a draft is left out there', () => {
+    const s = fresh();
+    const home = s.pages[s.site.homePageId];
+    const about = pageAt(s, '/about/');
+    home.nodes.n_mail_btn = { id: 'n_mail_btn', kind: 'link', label: 'hello@example.com', link: { type: 'page', target: about.id }, appearance: 'primary' };
+    home.rootIds.push('n_mail_btn');
+    const onHome = () => group(s, 'email').filter((m) => m.field.owner.id === home.id).map((m) => m.field.label);
+    expect(onHome()).toEqual(['Button label']);
+    about.draft = true;
+    expect(onHome()).toEqual([]);
   });
 
   it('replaces each detail everywhere in one step, the number as written and as dialled, and finds none left', () => {

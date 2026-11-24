@@ -71,9 +71,10 @@ describe('the blank starter (#15)', () => {
     expect(footer.props).toMatchObject({ siteName: 'Kloof', tagline: '', contact: [] });
     // The footer still renders, with what is true of any site: the copyright and the Home link.
     const layout = files.get('src/routes/+layout.svelte')!;
-    expect(layout).toMatch(/<C_foundation_shell_footer_\w+/);
-    expect(layout).toContain(`© ${new Date().getFullYear()} Kloof.`);
-    expect(layout).toMatch(/"label":\s*"Home"/);
+    const footerTag = /<C_foundation_shell_footer_\w+[^]*?\/>/.exec(layout)?.[0] ?? '';
+    expect(footerTag).toContain(`copyright={${JSON.stringify(`© ${new Date().getFullYear()} Kloof.`)}}`);
+    expect(footerTag).toMatch(/links=\{\[\{[^}]*"label":"Home"/);
+    expect(footerTag).toContain('contact={[]}');
   });
 });
 

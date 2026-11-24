@@ -138,7 +138,7 @@ function SampleContactReview({ groups, kept, disabled, readOnly, onSettle }: { g
   const keptLine = kept.length > 0 && (
     <p className="export-samples-kept faint" data-testid="export-samples-kept">
       {kept.length === 1 ? `${kept[0].value} is kept as you chose.` : `${kept.length} sample contact details are kept as you chose.`}{' '}
-      <button className="link-btn" disabled={disabled} onClick={() => (keepSamples(kept.map((g) => g.value), false), settle('.export-samples-head .btn'))}>
+      <button className="link-btn" disabled={disabled || readOnly} onClick={() => (keepSamples(kept.map((g) => g.value), false), settle('.export-samples-head .btn'))}>
         Review {kept.length === 1 ? 'it' : 'them'} again
       </button>
     </p>

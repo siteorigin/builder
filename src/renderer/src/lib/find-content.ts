@@ -349,8 +349,17 @@ function matchAt(f: ContentField, part: Part, start: number, end: number): Conte
 const DIAL_GAP = '[\\s().\\u2010\\u2011-]*';
 /** An email address as a whole: the characters a mailbox may have, an @, and every label of its domain. */
 const EMAIL_TOKEN = /(?<![\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-])[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*/gu;
-/** A written telephone number as a whole: from its + or first digit to its last digit, with nothing but spacing between. */
-const PHONE_RUN = new RegExp(`(?<![\\p{L}\\p{N}_+])(?:\\+${DIAL_GAP})?\\d(?:${DIAL_GAP}\\d)*`, 'gu');
+/** What joins one group of digits to the next in a longer number: a space, dot, slash or dash. */
+const JOIN = '[\\s./\\u2010\\u2011-]';
+/**
+ * The sample number written any way, and only on its own: not the end of a longer number (+44 20 1555 0134, where a
+ * digit comes just before it) or the start of one (+1 555 0134-5). A + always starts a number of its own, and words
+ * after it, "(24 hours)" say, are not part of it.
+ */
+const PHONE = new RegExp(
+  `(?<![\\p{L}\\p{N}_+])(?:\\+${DIAL_GAP}|(?<!\\d${JOIN}{1,3}))${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?![\\p{L}\\p{N}_]|${JOIN}\\d)`,
+  'gu'
+);
 const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const ADDRESS = new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_-])`, 'giu');
 
@@ -359,16 +368,21 @@ const dialsSample = (t: string) => {
   const dial = t.replace(/[^+\d]/g, '');
   return dial === SAMPLE_CONTACT.phoneDial || dial === SAMPLE_CONTACT.phoneDial.replace(/^\+/, '');
 };
-const ranges = (re: RegExp, text: string, keep: (m: string) => boolean = () => true): Array<[number, number]> =>
-  [...text.matchAll(re)].filter((m) => keep(m[0])).map((m) => [m.index ?? 0, (m.index ?? 0) + m[0].length]);
+const ranges = (re: RegExp, text: string): Array<[number, number]> => [...text.matchAll(re)].map((m) => [m.index ?? 0, (m.index ?? 0) + m[0].length]);
 
 /**
  * Where each sample detail is in words visitors read. Only a whole address or number counts: myhello@example.com,
  * o'hello@example.com or +44 20 1555 0134 is someone else's, and replacing part of it would make a wrong one.
  */
 const SAMPLE_IN_TEXT: Record<SampleContactKind, (text: string) => Array<[number, number]>> = {
-  email: (t) => ranges(EMAIL_TOKEN, t, (m) => m.toLowerCase() === SAMPLE_CONTACT.email),
-  phone: (t) => ranges(PHONE_RUN, t, dialsSample),
+  // An apostrophe may start a mailbox (o'hello@…), or quote one ('hello@…'): quotes before the address are left out.
+  email: (t) =>
+    [...t.matchAll(EMAIL_TOKEN)].flatMap((m): Array<[number, number]> => {
+      const quote = /^'*/.exec(m[0])![0].length;
+      const at = (m.index ?? 0) + quote;
+      return m[0].slice(quote).toLowerCase() === SAMPLE_CONTACT.email ? [[at, at + m[0].length - quote]] : [];
+    }),
+  phone: (t) => ranges(PHONE, t),
   address: (t) => ranges(ADDRESS, t)
 };
 
@@ -406,17 +420,16 @@ export interface SampleContactGroup {
  * are ordinary find results, so Find and Replace changes a group in one step and the inspector opens each one.
  */
 export function sampleContactMatches(state: ProjectState): SampleContactGroup[] {
+  // What the published website shows, worked out as it is built (a condition on a link to a draft reads it as gone).
+  // A shared part's reach is every page one edit to it changes, drafts too, as Find says it.
   const live = publishedState(state);
-  // The fields as Find lists them, so a shared part's reach counts every page one edit changes (a draft too), kept to
-  // those the published website shows.
-  const fields = contentFields(state).filter((f) =>
-    f.owner.kind === 'page' ? Object.hasOwn(live.pages, f.owner.id) : f.owner.kind !== 'shell' || ((f.owner.id === 'header' || f.owner.id === 'footer') && pagesShowing(live, f.owner.id).length > 0)
-  );
+  const reach = { header: pagesShowing(state, 'header').length, footer: pagesShowing(state, 'footer').length };
+  const fields = contentFields(live).map((f) => (f.owner.kind === 'shell' && f.sharedPages !== undefined && (f.owner.id === 'header' || f.owner.id === 'footer') ? { ...f, sharedPages: reach[f.owner.id] } : f));
   const groups: SampleContactGroup[] = [];
   for (const sample of SAMPLE_CONTACT_VALUES) {
     const matches: ContentMatch[] = [];
     for (const f of fields) {
-      for (const part of partsOf(state, f)) {
+      for (const part of partsOf(live, f)) {
         const type = part.kind === 'link' ? linkKind(f, part) : null;
         if (part.kind === 'link' && !type) continue;
         const found = type ? sampleInLink(sample.kind, type, part.text) : SAMPLE_IN_TEXT[sample.kind](part.text);

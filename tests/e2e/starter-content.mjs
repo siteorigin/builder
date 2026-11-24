@@ -59,6 +59,18 @@ try {
   assert.equal(await review.evaluate((el) => !!el.closest('[role="alert"]')), false, 'a review, not an error');
   assert.equal(await websiteButton.getAttribute('aria-disabled'), null, 'the review never stops the website export');
   assert.equal(await websiteButton.isDisabled(), false, 'the website export can be started while details are under review');
+  // Exported as it is, the Contact page sends enquiries to the sample address, as reported.
+  const asStarted = await exportWebsite('business-as-started');
+  assert.equal((readFileSync(join(asStarted, 'contact', 'index.html'), 'utf8').match(/mailto:hello@example\.com/g) ?? []).length, 3, 'the export went ahead with the details under review');
+  await closeDialog(exportDialog);
+
+  step('Keep it sets aside one detail, listed beside the ones still under review');
+  await openExport();
+  await address.getByRole('button', { name: 'Keep it' }).click();
+  await address.waitFor({ state: 'detached' });
+  const kept = exportDialog.getByTestId('export-samples-kept');
+  assert.match(await kept.innerText(), /12 Harbour Lane, Millbrook is kept as you chose\./);
+  assert.equal(await email.count() + (await phone.count()), 2, 'the email and number are still under review');
 
   step('Show where lists each place, and Open goes to that field in the inspector');
   await email.getByRole('button', { name: 'Show where' }).click();
@@ -90,17 +102,15 @@ try {
   await phone.getByRole('button', { name: 'Replace everywhere…' }).click();
   await replaceAll('+27 21 555 0199', 4);
 
-  step('Keep it accepts a detail the author means to publish, and the review can come back');
+  step('a kept detail can be reviewed again, and kept again');
   await openExport();
-  await address.getByRole('button', { name: 'Keep it' }).click();
-  await review.waitFor({ state: 'detached' });
-  const kept = exportDialog.getByTestId('export-samples-kept');
-  await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.textContent?.trim()), 'Review it again', 'focus moves to what took the kept detail’s place'));
-  assert.match(await kept.innerText(), /12 Harbour Lane, Millbrook is kept as you chose\./);
+  await kept.waitFor();
+  assert.equal(await review.count(), 0, 'nothing else is under review');
   await kept.getByRole('button', { name: 'Review it again' }).click();
   await address.waitFor();
   await address.getByRole('button', { name: 'Keep it' }).click();
-  await kept.waitFor();
+  await review.waitFor({ state: 'detached' });
+  await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.textContent?.trim()), 'Review it again', 'focus moves to what took the kept detail’s place'));
   await closeDialog(exportDialog);
   await openExport();
   await kept.waitFor();
