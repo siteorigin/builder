@@ -25,6 +25,7 @@ import { stopMediaWorker } from './project/assets';
 import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
+import { installHeadlessDesktop, launchMode } from './headless-desktop';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 
@@ -50,9 +51,10 @@ app.commandLine.appendSwitch('use-mock-keychain');
 // Automated runs never put a window on screen or take focus. Playwright's Electron loader defines
 // __playwright_run before this module loads; SITEORIGIN_HEADLESS=1 forces it for other drivers, and
 // SITEORIGIN_HEADED=1 shows the window when debugging a test.
-const headless =
-  process.env.SITEORIGIN_HEADED !== '1' &&
-  (process.env.SITEORIGIN_HEADLESS === '1' || typeof (globalThis as { __playwright_run?: unknown }).__playwright_run === 'function');
+const { automated, headless } = launchMode(process.env, globalThis);
+// Nor do they show a native dialog, open a link or open Finder: the test answers every chooser and sees every hand-off
+// to the desktop (headless-desktop.ts), headed or not. A normal launch keeps Electron's own.
+const desktop = automated ? installHeadlessDesktop({ dialog, shell }) : null;
 if (headless) {
   // A hidden window must keep painting, running timers and animation frames at full speed.
   app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -266,7 +268,6 @@ function registerIpc() {
     return s;
   });
   handle('app:openExternal', async (url: string) => {
-    if (headless) return;
     // Web pages, email addresses and phone numbers only, each checked: the link may come from the previewed site.
     const link = externalLink(url);
     if (link) await shell.openExternal(link.href);
@@ -551,7 +552,8 @@ async function createWindow() {
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
     const link = externalLink(url);
-    if (!headless && link) void shell.openExternal(link.href);
+    // An automated run records the link instead of opening it (headless-desktop.ts).
+    if (link) void shell.openExternal(link.href);
     return { action: 'deny' };
   });
   // The preview iframe must not navigate away from the project origin or open popups.
@@ -590,6 +592,8 @@ async function createWindow() {
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,
   // as before; elsewhere the last window closing quits, which then closes the project.
   const self = win;
+  const selfId = self.id;
+  desktop?.windows.opened(selfId);
   let closeApproved = false;
   self.on('close', (e) => {
     if (closeApproved || quitState === 'closing' || quitState === 'done' || !controller.session || self.webContents.isCrashed()) return;
@@ -642,12 +646,17 @@ async function createWindow() {
   // A new page has replaced the editor (it committed): only it may say it is ready for menu commands from here on.
   // A navigation the editor refuses never commits, so it leaves the editor ready.
   // A project ZIP file being opened for the replaced editor is called off too: its trust prompt has no one to answer it.
+  // An automated run's chooser answers belong to the editor they were set for, and expire with it.
+  let committed = false;
   self.webContents.on('did-navigate', () => {
     menuCommands.unready(self);
     controller.cancelOpen();
+    if (committed) desktop?.windows.gone(selfId, { closed: false });
+    committed = true;
   });
   self.on('closed', () => {
     if (win === self) win = null;
+    desktop?.windows.gone(selfId, { closed: true });
     // The thumbnails' hidden window goes with the editor: it must never keep the app running, or stand in for the
     // editor when macOS asks whether a window is left to show.
     thumbCapturer.dispose();
