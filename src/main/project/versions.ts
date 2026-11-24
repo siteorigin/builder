@@ -20,6 +20,15 @@ export function isVersionMedia(path: string): boolean {
   const parts = path.split('/');
   return parts.length >= 2 && parts[0] === 'static' && parts.slice(1).every((p) => p !== '' && p !== '.' && p !== '..' && !/[\\\0]/.test(p));
 }
+/**
+ * Public files a version never holds: those the generator writes from the documents (robots.txt, the sitemap), whose
+ * owner would change if a restore put a copy back, and private files no export carries (as src/main/export.ts).
+ */
+const GENERATED_STATIC = new Set(['static/robots.txt', 'static/sitemap.xml']);
+const PRIVATE_NAME = /^(\.env(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/i;
+export function heldAsMedia(path: string): boolean {
+  return isVersionMedia(path) && !GENERATED_STATIC.has(path) && !PRIVATE_NAME.test(path.slice(path.lastIndexOf('/') + 1));
+}
 const OBJECT_RE = /^[a-f0-9]{64}$/;
 const ID_RE = /^v[a-z0-9]{6,40}$/;
 /** A copy left by a save that stopped part way is removed once it is this old. */
@@ -45,6 +54,11 @@ export interface SavedVersion {
   /** Each media file, by project-relative path: the object holding it, or null when the documents name a file that
    *  was missing when the version was saved. */
   media: Record<string, string | null>;
+  /**
+   * For a version saved before a restore: the files that restore put where none were, by what it put there. Restoring
+   * this version leaves them (Undo of that restore still needs them), and says so while they still hold exactly that.
+   */
+  filled?: Record<string, string>;
 }
 
 interface VersionsFile {
@@ -65,6 +79,7 @@ function validVersion(v: unknown): v is SavedVersion {
   if (v.auto !== undefined && typeof v.auto !== 'boolean') return false;
   if (!record(v.docs) || !record(v.media)) return false;
   if (!Object.entries(v.docs).every(([p, h]) => isCanonicalPath(p) && typeof h === 'string' && OBJECT_RE.test(h))) return false;
+  if (v.filled !== undefined && (!record(v.filled) || !Object.entries(v.filled).every(([p, h]) => isVersionMedia(p) && typeof h === 'string' && OBJECT_RE.test(h)))) return false;
   return Object.entries(v.media).every(([p, h]) => isVersionMedia(p) && (h === null || (typeof h === 'string' && OBJECT_RE.test(h))));
 }
 
@@ -73,10 +88,10 @@ export function objectsOf(v: SavedVersion): Set<string> {
   return new Set([...Object.values(v.docs), ...Object.values(v.media).filter((h): h is string => !!h)]);
 }
 
-/** Whether two versions hold exactly the same documents and media. */
-export function sameContents(a: Pick<SavedVersion, 'docs' | 'media'>, b: Pick<SavedVersion, 'docs' | 'media'>): boolean {
-  const key = (m: Record<string, string | null>) => JSON.stringify(Object.entries(m).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
-  return key(a.docs) === key(b.docs) && key(a.media) === key(b.media);
+/** Whether two versions hold exactly the same documents and media, and record the same files filled. */
+export function sameContents(a: Pick<SavedVersion, 'docs' | 'media' | 'filled'>, b: Pick<SavedVersion, 'docs' | 'media' | 'filled'>): boolean {
+  const key = (m: Record<string, string | null> = {}) => JSON.stringify(Object.entries(m).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+  return key(a.docs) === key(b.docs) && key(a.media) === key(b.media) && key(a.filled) === key(b.filled);
 }
 
 /**
@@ -90,6 +105,8 @@ export class VersionStore {
   problem: string | null = null;
   /** The size of every stored object, by hash. */
   private sizes = new Map<string, number>();
+  /** Objects whose bytes were checked against their hash (or written) since the store was loaded: reused as they are. */
+  private verified = new Set<string>();
 
   constructor(readonly root: string) {}
 
@@ -130,6 +147,7 @@ export class VersionStore {
       }
     }
     this.sizes.clear();
+    this.verified.clear();
     for (const name of await fs.readdir(this.objectDir).catch(() => [] as string[])) {
       if (!OBJECT_RE.test(name)) continue;
       const st = await fs.stat(join(this.objectDir, name)).catch(() => null);
@@ -137,11 +155,18 @@ export class VersionStore {
     }
   }
 
-  /** Whether the object is stored whole: a copy cut short (by a full disk, say) is written again rather than reused. */
+  /**
+   * Whether the object is stored whole and unchanged: a copy cut short or damaged is written again rather than reused,
+   * so a new version never leans on bytes that would fail its restore. Each object is read once per opening.
+   */
   private async has(h: string, bytes: number): Promise<boolean> {
     if (!this.sizes.has(h)) return false;
     const st = await fs.stat(this.objectPath(h)).catch(() => null);
-    return !!st?.isFile() && st.size === bytes;
+    if (!st?.isFile() || st.size !== bytes) return false;
+    if (this.verified.has(h)) return true;
+    const ok = await fs.readFile(this.objectPath(h)).then((b) => sha(b) === h, () => false);
+    if (ok) this.verified.add(h);
+    return ok;
   }
 
   /** Store `buf` (if not already stored) and return its hash. */
@@ -150,6 +175,7 @@ export class VersionStore {
     if (await this.has(h, buf.length)) return h;
     await atomicWrite(this.objectPath(h), buf);
     this.sizes.set(h, buf.length);
+    this.verified.add(h);
     return h;
   }
 
@@ -193,6 +219,7 @@ export class VersionStore {
     }
     await syncDir(this.objectDir);
     this.sizes.set(h, buf.length);
+    this.verified.add(h);
     return h;
   }
 
@@ -270,6 +297,7 @@ export class VersionStore {
           continue;
         }
         this.sizes.delete(name);
+        this.verified.delete(name);
       } else if (name.endsWith('.tmp')) {
         const st = await fs.stat(path).catch(() => null);
         if (st && Date.now() - st.mtimeMs >= LEFTOVER_MS) await fs.rm(path, { force: true }).catch(() => undefined);

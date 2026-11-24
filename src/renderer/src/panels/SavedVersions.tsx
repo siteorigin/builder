@@ -112,7 +112,7 @@ export function SavedVersionsModal() {
     setError(null);
     const problem = await settled();
     if (getState().snapshot?.workspaceKey !== key) return setBusy(false);
-    const r = problem ? { ok: false, message: problem } : await api.project.restoreVersion(version.id, seen.revision, seen.files, key).catch((err: Error) => ({ ok: false, message: err.message }));
+    const r = problem ? { ok: false, message: problem } : await api.project.restoreVersion(version.id, seen.revision, { files: seen.files, replaced: seen.replaced }, key).catch((err: Error) => ({ ok: false, message: err.message }));
     setBusy(false);
     if (getState().snapshot?.workspaceKey !== key) return;
     // The project changed since the review (a field still being typed in landed, say): show what restoring does now.
@@ -122,8 +122,8 @@ export function SavedVersionsModal() {
     const m = getState().modal;
     if (m?.kind === 'history' && m.tab === 'versions') close();
     if ('unchanged' in r && r.unchanged) return toast(`Your site already matches “${version.name}”.`, 'info');
-    const done = r as { entryId?: string; revision?: number; backup?: { name: string }; replaced?: number };
-    toast(restoredNotice(version.name, !!done.backup, done.replaced ?? 0), 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
+    const done = r as { entryId?: string; revision?: number; backup?: { name: string }; replaced?: number; left?: string[] };
+    toast(restoredNotice(version.name, !!done.backup, done.replaced ?? 0, done.left ?? []), 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
   };
 
   const remove = async (version: SavedVersionInfo) => {
@@ -142,7 +142,7 @@ export function SavedVersionsModal() {
     if (getState().snapshot?.workspaceKey !== key) return;
     if (!r.ok) return setError(r.message ?? 'The version could not be deleted.');
     setOpen((o) => (o?.version.id === version.id ? null : o));
-    toast(`Deleted “${version.name}”.${r.freed ? ` Freed ${formatBytes(r.freed)}.` : ''}`, 'info');
+    toast(`Deleted “${version.name}”.${r.freed ? ` Freed up to ${formatBytes(r.freed)}.` : ''}`, 'info');
   };
 
   const r = open?.review;

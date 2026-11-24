@@ -110,6 +110,8 @@ export interface VersionReview {
   files: string[];
   /** Of those, the files there now holding something else: Undo leaves them as the version has them. */
   replaced: string[];
+  /** Files the restore that saved this version put where none were, which restoring it leaves (Undo of that needs them). */
+  left: string[];
   /** Files its documents name that were missing when it was saved: restoring can't bring them back. */
   missing: string[];
   /** The project already matches it. */
@@ -130,6 +132,8 @@ export interface RestoreVersionResult {
   unchanged?: boolean;
   /** How many files that held something else it put back: Undo leaves them, the saved work from before has them. */
   replaced?: number;
+  /** Files an earlier restore put back that this one leaves in the project folder. */
+  left?: string[];
 }
 
 export type RuntimeState =
@@ -575,10 +579,10 @@ export interface BuilderApi {
     /** What restoring saved version `id` would change now. */
     reviewVersion(id: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; review?: VersionReview }>;
     /**
-     * Restore saved version `id` as reviewed at `revision`, putting back the `files` the review listed: one Undo step for
+     * Restore saved version `id` as reviewed at `revision`, putting back the files the review listed: one Undo step for
      * the documents, after saving the work it replaces as a version. Anything else changed since is `stale`.
      */
-    restoreVersion(id: string, revision: number, files: string[], workspaceKey: string): Promise<RestoreVersionResult>;
+    restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, workspaceKey: string): Promise<RestoreVersionResult>;
     /** Delete saved version `id`, freeing what only it held. */
     deleteVersion(id: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; freed?: number }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;

@@ -181,16 +181,21 @@ describe('saved versions', () => {
     await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Logo', source: '<img src="/assets/logo.svg" alt="Logo" />\n' }] }, { label: 'Add logo' }));
     const saved = await ok(s.saveVersion('Blue logo'));
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
+    const changed: Array<{ changedDocs: string[]; changedFiles: string[] }> = [];
+    s.on('changed', (e) => changed.push(e));
 
     const { review } = await ok(s.reviewVersion(saved.id!));
     expect(review).toMatchObject({ files: [`${ASSETS}/logo.svg`], replaced: [`${ASSETS}/logo.svg`], unchanged: false });
-    const r = await ok(s.restoreVersion(saved.id!, review!.revision, review!.files));
+    const r = await ok(s.restoreVersion(saved.id!, review!.revision, { files: review!.files, replaced: review!.replaced }));
     expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>blue</svg>');
     // Only a file changed, so there is no document step to undo: the saved work is the way back.
     expect(r.entryId).toBeUndefined();
     expect(r.replaced).toBe(1);
-    const copy = readdirSync(join(dir, '.siteorigin/recovery')).find((f) => f.endsWith('static__assets__logo.svg'));
-    expect(read(dir, `.siteorigin/recovery/${copy}`).toString()).toBe('<svg>green</svg>');
+    const aside = readdirSync(join(dir, '.siteorigin/recovery')).find((f) => f.startsWith('restore-'));
+    expect(read(dir, `.siteorigin/recovery/${aside}/static/assets/logo.svg`).toString()).toBe('<svg>green</svg>');
+    // The docs match the saved version, but the files did not: the work from before is a version of its own.
+    expect(r.backup!.id).not.toBe(saved.id);
+    expect(changed.some((e) => e.changedFiles.includes(`${ASSETS}/logo.svg`) && !e.changedDocs.length)).toBe(true);
     const back = await ok(s.reviewVersion(r.backup!.id));
     await ok(s.restoreVersion(r.backup!.id, back.review!.revision));
     expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>green</svg>');
@@ -372,16 +377,17 @@ describe('saved versions, guarded', () => {
     mkdirSync(join(dir, 'static/brand'), { recursive: true });
     writeFileSync(join(dir, 'static/brand/logo.svg'), '<svg>blue</svg>');
     writeFileSync(join(dir, 'static/brand/unused.svg'), '<svg>unused</svg>');
-    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Brand', source: '<img src="/brand/logo.svg" alt="Logo" />\n<p>robots.txt</p>\n' }] }, { label: 'Add brand' }));
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Brand', source: '<img src="/brand/logo.svg" alt="Logo" />\n<a href="/robots.txt">Robots</a>\n' }] }, { label: 'Add brand' }));
     const saved = await ok(s.saveVersion('Blue brand'));
     const media = Object.keys(JSON.parse(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).versions[0].media);
     expect(media).toContain('static/brand/logo.svg');
     expect(media).not.toContain('static/brand/unused.svg');
+    expect(existsSync(join(dir, 'static/robots.txt'))).toBe(true);
     expect(media).not.toContain('static/robots.txt');
     rmSync(join(dir, 'static/brand/logo.svg'));
     const { review } = await ok(s.reviewVersion(saved.id!));
     expect(review!.files).toEqual(['static/brand/logo.svg']);
-    await ok(s.restoreVersion(saved.id!, review!.revision, review!.files));
+    await ok(s.restoreVersion(saved.id!, review!.revision, { files: review!.files, replaced: review!.replaced }));
     expect(read(dir, 'static/brand/logo.svg').toString()).toBe('<svg>blue</svg>');
   });
 
@@ -395,7 +401,7 @@ describe('saved versions, guarded', () => {
     const { review } = await ok(s.reviewVersion(saved.id!));
     expect(review!.files).toEqual([]);
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
-    expect(await s.restoreVersion(saved.id!, review!.revision, review!.files)).toMatchObject({ ok: false, stale: true });
+    expect(await s.restoreVersion(saved.id!, review!.revision, { files: review!.files, replaced: review!.replaced })).toMatchObject({ ok: false, stale: true });
     expect(s.state.site.description).toBe('Later');
     expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>green</svg>');
     expect(s.versionsInfo().list).toHaveLength(1);
@@ -410,6 +416,7 @@ describe('saved versions, guarded', () => {
       v = { ...v, id: r.backup!.id };
     }
     expect(Math.max(...s.versionsInfo().list.map((x) => x.name.length))).toBeLessThanOrEqual(80);
+    expect(s.versionsInfo().list.at(-2)!.name).toBe(`Before restoring “${'n'.repeat(49)}…”`);
     await s.close();
     const again = await reopen(dir);
     expect(again.versionsInfo().problem).toBeUndefined();
@@ -434,8 +441,14 @@ describe('saved versions, guarded', () => {
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
     rmSync(join(dir, ASSETS, 'badge.svg'));
     await describe1(s, 'Later', 'Later');
-    vi.spyOn(s as unknown as { persist: () => Promise<unknown> }, 'persist').mockRejectedValueOnce(new Error('disk full'));
+    let marked = false;
+    vi.spyOn(s as unknown as { persist: () => Promise<unknown> }, 'persist').mockImplementationOnce(async () => {
+      marked = existsSync(join(dir, '.siteorigin/versions/restoring.json'));
+      expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>blue</svg>');
+      throw new Error('disk full');
+    });
     await expect(s.restoreVersion(saved.id!, s.revision)).rejects.toThrow('disk full');
+    expect(marked).toBe(true);
     expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>green</svg>');
     expect(existsSync(join(dir, ASSETS, 'badge.svg'))).toBe(false);
     expect(existsSync(join(dir, '.siteorigin/versions/restoring.json'))).toBe(false);
@@ -469,8 +482,106 @@ describe('saved versions, guarded', () => {
   });
 });
 
+describe('saved versions, guarded further', () => {
+  /** A project whose code component shows /assets/logo.svg, saved with a blue logo. */
+  async function withLogo() {
+    const { dir, s } = await make();
+    mkdirSync(join(dir, ASSETS), { recursive: true });
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>blue</svg>');
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Logo', source: '<img src="/assets/logo.svg" alt="Logo" />\n' }] }, { label: 'Add logo' }));
+    const saved = await ok(s.saveVersion('Blue logo'));
+    return { dir, s, saved };
+  }
+
+  it('leaves a file changed by someone else while restoring, rather than putting back over it', async () => {
+    const { dir, s, saved } = await withLogo();
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
+    await describe1(s, 'Later', 'Later');
+    vi.spyOn(s as unknown as { persist: () => Promise<unknown> }, 'persist').mockImplementationOnce(async () => {
+      writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>red</svg>');
+      throw new Error('disk full');
+    });
+    await expect(s.restoreVersion(saved.id!, s.revision)).rejects.toThrow('disk full');
+    expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>red</svg>');
+  });
+
+  it('holds what a restore replaces in the work saved first, even a file the work did not name', async () => {
+    const { dir, s, saved } = await withLogo();
+    const logo = Object.values(s.state.components).find((d) => d.name === 'Logo')!;
+    await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: logo.id, source: '<p>No logo</p>\n' }] }, { label: 'Drop logo' }));
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green, kept by hand</svg>');
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    const r = await ok(s.restoreVersion(saved.id!, review!.revision, { files: review!.files, replaced: review!.replaced }));
+    expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>blue</svg>');
+    const back = await ok(s.reviewVersion(r.backup!.id));
+    expect(back.review!.files).toEqual([`${ASSETS}/logo.svg`]);
+    await ok(s.restoreVersion(r.backup!.id, back.review!.revision, { files: back.review!.files, replaced: back.review!.replaced }));
+    expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>green, kept by hand</svg>');
+  });
+
+  it('says which files an earlier restore put back are left when going back to the work from before', async () => {
+    const { dir, s, saved } = await withLogo();
+    const logo = Object.values(s.state.components).find((d) => d.name === 'Logo')!;
+    await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: logo.id, source: '<p>No logo</p>\n' }] }, { label: 'Drop logo' }));
+    rmSync(join(dir, ASSETS, 'logo.svg'));
+    const r = await ok(s.restoreVersion(saved.id!, s.revision));
+    expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>blue</svg>');
+    const back = await ok(s.reviewVersion(r.backup!.id));
+    expect(back.review!.left).toEqual([`${ASSETS}/logo.svg`]);
+    const done = await ok(s.restoreVersion(r.backup!.id, back.review!.revision));
+    expect(done.left).toEqual([`${ASSETS}/logo.svg`]);
+    // Undo of that restore would name it again, so it stays.
+    expect(existsSync(join(dir, ASSETS, 'logo.svg'))).toBe(true);
+    await ok(s.undo());
+    expect(Object.values(s.state.components).find((d) => d.name === 'Logo')!.source).toContain('/assets/logo.svg');
+  });
+
+  it('treats a missing file that appeared after the review as a change', async () => {
+    const { dir, s, saved } = await withLogo();
+    rmSync(join(dir, ASSETS, 'logo.svg'));
+    await describe1(s, 'Later', 'Later');
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(review).toMatchObject({ files: [`${ASSETS}/logo.svg`], replaced: [] });
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>new</svg>');
+    expect(await s.restoreVersion(saved.id!, review!.revision, { files: review!.files, replaced: review!.replaced })).toMatchObject({ ok: false, stale: true });
+    expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>new</svg>');
+  });
+
+  it('holds a file named by its encoded address, and never a private one', async () => {
+    const { dir, s } = await make();
+    mkdirSync(join(dir, 'static/brand'), { recursive: true });
+    writeFileSync(join(dir, 'static/brand/My Logo.svg'), '<svg>mine</svg>');
+    writeFileSync(join(dir, 'static/brand/server.key'), 'secret');
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Brand', source: '<img src="/brand/My%20Logo.svg" alt="Logo" />\n<a href="/brand/server.key">Key</a>\n' }] }, { label: 'Add brand' }));
+    await ok(s.saveVersion('Brand'));
+    const media = Object.keys(JSON.parse(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).versions[0].media);
+    expect(media).toEqual(['static/brand/My Logo.svg']);
+  });
+
+  it('refuses to save while a component added outside the app is not loaded yet', async () => {
+    const { dir, s } = await make();
+    mkdirSync(join(dir, 'siteorigin/components/proj.outside-abcde'), { recursive: true });
+    writeFileSync(join(dir, 'siteorigin/components/proj.outside-abcde/component.json'), '{}');
+    expect(await s.saveVersion('Too soon')).toMatchObject({ ok: false, message: expect.stringMatching(/components\/proj.outside-abcde/) });
+  });
+
+  it('stores an object again when its bytes were damaged in place, size and all', async () => {
+    const { dir, s } = await make();
+    const first = await ok(s.saveVersion('First'));
+    const index = JSON.parse(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8'));
+    const site = join(dir, '.siteorigin/versions/objects', index.versions[0].docs['siteorigin/site.json']);
+    writeFileSync(site, readFileSync(site, 'utf8').replace('Portfolio', 'Portfolia'));
+    await s.close();
+    const again = await reopen(dir);
+    const second = await ok(again.saveVersion('Second'));
+    await describe1(again, 'Later', 'Later');
+    await ok(again.restoreVersion(second.id!, again.revision));
+    expect((await again.reviewVersion(first.id!)).review!.problem).toBeUndefined();
+  });
+});
+
 describe('the saved version wording', () => {
-  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, site: false, styles: false, components: 0, library: false, files: [], replaced: [], missing: [], unchanged: false };
+  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, site: false, styles: false, components: 0, library: false, files: [], replaced: [], left: [], missing: [], unchanged: false };
 
   it('names pages first, at most four a line, then what else changes', () => {
     const lines = describeReview({
@@ -481,7 +592,8 @@ describe('the saved version wording', () => {
       components: 2,
       library: true,
       files: ['static/assets/a-12345678.png', 'static/brand/logo.svg'],
-      replaced: ['static/brand/logo.svg']
+      replaced: ['static/brand/logo.svg'],
+      left: ['static/proof.pdf']
     });
     expect(lines).toEqual([
       'Brings back 1 page: “About”',
@@ -492,7 +604,8 @@ describe('the saved version wording', () => {
       'Changes 2 components',
       'Changes the images and fonts in the library',
       'Puts back 1 file the site uses',
-      'Replaces 1 file changed since it was saved: logo.svg'
+      'Replaces 1 file changed since it was saved: logo.svg',
+      '1 file the earlier restore put back stays in the project folder, since its Undo needs it: proof.pdf'
     ]);
     expect(describeReview(base)).toEqual([]);
   });
@@ -502,5 +615,9 @@ describe('the saved version wording', () => {
     expect(restoredNotice('Draft', false)).toBe('Restored “Draft”.');
     // Undo takes back documents only: files put over others are pointed to the saved work.
     expect(restoredNotice('Approved', true, 2)).toBe('Restored “Approved”. Undo won’t bring back the 2 files it replaced, but your work from before, kept in Saved versions, has them.');
+    expect(restoredNotice('Approved', true, 1)).toBe('Restored “Approved”. Undo won’t bring back the 1 file it replaced, but your work from before, kept in Saved versions, has it.');
+    expect(restoredNotice('Before', true, 0, ['static/a.pdf', 'static/b.pdf'])).toBe(
+      'Restored “Before”. Your work from before is kept in Saved versions. 2 files the earlier restore put back stay in the project folder, since its Undo needs them: a.pdf, b.pdf.'
+    );
   });
 });

@@ -1229,12 +1229,12 @@ export class Controller {
     return s.reviewVersion(id);
   }
 
-  /** Restore saved version `id` as reviewed at `revision` with `files` to put back, in the opening `key` only. */
-  async restoreVersion(id: string, revision: number, files: string[], key: string): Promise<RestoreVersionResult> {
+  /** Restore saved version `id` as reviewed at `revision` with the `reviewed` files to put back, in the opening `key` only. */
+  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, key: string): Promise<RestoreVersionResult> {
     const s = this.openedAs(key);
     if (!s) return { ok: false, message: 'That project is no longer open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
-    return s.restoreVersion(id, revision, files);
+    return s.restoreVersion(id, revision, reviewed);
   }
 
   /** Delete saved version `id` in the opening `key` only. */

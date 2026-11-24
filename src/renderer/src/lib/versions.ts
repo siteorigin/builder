@@ -31,6 +31,7 @@ export function describeReview(r: VersionReview): string[] {
   const missing = r.files.length - r.replaced.length;
   if (missing) lines.push(`Puts back ${plural(missing, 'file', 'files')} the site uses`);
   if (r.replaced.length) lines.push(`Replaces ${plural(r.replaced.length, 'file', 'files')} changed since it was saved: ${r.replaced.map(fileName).join(', ')}`);
+  if (r.left.length) lines.push(leftLine(r.left));
   return lines;
 }
 
@@ -38,10 +39,17 @@ export function describeReview(r: VersionReview): string[] {
  * The notice after a restore: what came back, and that the work it replaced is kept. Undo takes back documents only,
  * so files the restore put over others are pointed to the saved work from before.
  */
-export function restoredNotice(name: string, kept: boolean, replaced = 0): string {
-  if (!kept) return `Restored “${name}”.`;
-  if (!replaced) return `Restored “${name}”. Your work from before is kept in Saved versions.`;
-  return `Restored “${name}”. Undo won’t bring back the ${plural(replaced, 'file', 'files')} it replaced, but your work from before, kept in Saved versions, has ${replaced === 1 ? 'it' : 'them'}.`;
+export function restoredNotice(name: string, kept: boolean, replaced = 0, left: string[] = []): string {
+  const parts = [`Restored “${name}”.`];
+  if (kept && !replaced) parts.push('Your work from before is kept in Saved versions.');
+  if (kept && replaced) parts.push(`Undo won’t bring back the ${plural(replaced, 'file', 'files')} it replaced, but your work from before, kept in Saved versions, has ${replaced === 1 ? 'it' : 'them'}.`);
+  if (left.length) parts.push(`${leftLine(left)}.`);
+  return parts.join(' ');
+}
+
+/** Files an earlier restore put back that restoring the work from before leaves in the project folder. */
+function leftLine(left: string[]): string {
+  return `${plural(left.length, 'file', 'files')} the earlier restore put back ${left.length === 1 ? 'stays' : 'stay'} in the project folder, since its Undo needs ${left.length === 1 ? 'it' : 'them'}: ${left.map(fileName).join(', ')}`;
 }
 
 /** A file named by its own name, for lists of missing files. */
