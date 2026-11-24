@@ -16,7 +16,12 @@ import type { TemplateMode } from './lib/template-view';
 
 export const api = window.builder;
 
-export type LeftTab = 'pages' | 'layers' | 'insert' | 'assets';
+export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets';
+/** A collection entry the Posts workspace has open. */
+export interface PostRef {
+  collectionId: string;
+  entryId: string;
+}
 export type RightTab = 'inspect' | 'chat' | 'styles';
 export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'paste-style'; ref: ElementRef; opening: string };
 
@@ -132,6 +137,12 @@ export interface State {
   settings: AppSettings | null;
   providers: ProviderStatus[];
   pageId: string | null;
+  /** The post open in the Posts workspace (shown while the Posts panel is), kept while other panels are. */
+  post: PostRef | null;
+  /** Whether the Posts workspace shows its writer, or the post on the canvas as visitors see it. */
+  postView: 'write' | 'preview';
+  /** A picture of the open post's text to bring into view once the writer shows it (Show in Assets). */
+  postReveal: { entryId: string; picture: number; seq: number } | null;
   selection: ElementRef | null;
   /** Sibling layers selected in Layers together with `selection`, which is always one of them (lib/layer-set). */
   layerSet: LayerSet | null;
@@ -260,6 +271,9 @@ export const useStore = create<State>((set) => ({
   settings: null,
   providers: [],
   pageId: null,
+  post: null,
+  postView: 'write',
+  postReveal: null,
   selection: null,
   layerSet: null,
   pagePlaces: {},

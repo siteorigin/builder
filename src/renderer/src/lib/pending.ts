@@ -132,6 +132,19 @@ export function afterSettle(fn: () => void): void {
   else fn();
 }
 
+/** Editors that hold typed text without a focused field to blur (the Posts writer): settling asks each to save it. */
+const flushers = new Set<() => unknown>();
+
+/**
+ * Register how an editor saves what it holds, for every settle (Save, leaving the project) to run and wait for: a
+ * blur alone misses text it could not save before (the AI was working, the file changed) once focus has moved on.
+ * Returns the unregister.
+ */
+export function registerFlush(fn: () => unknown): () => void {
+  flushers.add(fn);
+  return () => void flushers.delete(fn);
+}
+
 /** How the canvas asks its preview to commit an inline text edit (set while the canvas is shown). */
 export function setCanvasCommit(fn: (() => void) | null): void {
   canvasCommit = fn;
@@ -198,6 +211,7 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
     // The preview hands back an inline edit by message; a field commits as it loses focus.
     if (drafts.has(CANVAS_DRAFT)) canvasCommit?.();
     deps.blur();
+    if (flushers.size) await Promise.allSettled([...flushers].map((f) => Promise.resolve().then(f)));
     // A turn for what the blur started (a commit, an empty form closing) before anything is counted.
     await deps.wait(0);
     await until(() => !drafts.has(CANVAS_DRAFT), deps.canvasTimeoutMs ?? 3000, deps.wait);
@@ -237,4 +251,5 @@ export function resetPendingForTests(): void {
   active.length = 0;
   deferred = [];
   canvasCommit = null;
+  flushers.clear();
 }

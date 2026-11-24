@@ -4,7 +4,7 @@
 import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
-import { isListBlock, isRichBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
+import { isImageBlock, isListBlock, isRichBlock, richTextToPlain, spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
@@ -1024,7 +1024,7 @@ const isLinkValue = (v: unknown): v is LinkValue => !!v && typeof v === 'object'
 /** The links in a rich text value, in order. */
 function richLinks(value: unknown): RichSpan[] {
   const out: RichSpan[] = [];
-  for (const b of toRichText(value)) for (const list of isListBlock(b) ? b.items : [b.spans]) for (const sp of list) if (sp.link) out.push(sp);
+  for (const b of toRichText(value)) for (const list of spanRuns(b)) for (const sp of list) if (sp.link) out.push(sp);
   return out;
 }
 
@@ -1305,8 +1305,7 @@ function entryTextLinks(body: unknown): Array<{ link: LinkValue; label: string }
   };
   for (const b of Array.isArray(body) ? body : []) {
     if (!isRichBlock(b)) continue;
-    if (isListBlock(b)) b.items.forEach(spans);
-    else spans(b.spans);
+    spanRuns(b).forEach(spans);
   }
   return out;
 }
@@ -1755,7 +1754,7 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
           const v = evaluate(n.text, scope);
           for (const block of Array.isArray(v) || typeof v === 'string' ? toRichText(v) : []) {
             const level = levelOf(block.type);
-            if (level && !isListBlock(block)) add({ level, text: block.spans.map((s) => s.text).join('').replace(/\s+/g, ' ').trim(), ...where, rich: true }, scope);
+            if (level && !isListBlock(block) && !isImageBlock(block)) add({ level, text: block.spans.map((s) => s.text).join('').replace(/\s+/g, ' ').trim(), ...where, rich: true }, scope);
           }
           return;
         }

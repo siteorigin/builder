@@ -1,13 +1,26 @@
 import type { ImageUseTarget, ImageValue, OwnerRef, ProjectState, ValuePlace } from '@shared/types';
 import { allTrees } from './tree';
+import { orderedEntries } from '@shared/collections';
 
 /**
- * One use of a library image: an image value (`value`, at `place`), or a setting that names the image by ID (a page's
- * sharing image, the site's tab icon or sharing image). `target` names it for a replacement in some places; a value
- * reached through a list item with no ID, or one whose ID another item of its list shares, has none, and changes only
- * with every other use.
+ * A use in a collection entry: its featured image, or the `n`th picture in its text (counted from 1, as the Posts
+ * writer shows them).
  */
-export type ImageUse = { target: ImageUseTarget | null } & ({ place: ValuePlace; value: ImageValue } | { place?: undefined; value?: undefined });
+export interface EntryImagePlace {
+  collectionId: string;
+  entryId: string;
+  title: string;
+  field: 'featured' | 'body';
+  n?: number;
+}
+
+/**
+ * One use of a library image: an image value (`value`, at `place`), a setting that names the image by ID (a page's
+ * sharing image, the site's tab icon or sharing image), or a use in a collection entry (`entry`). `target` names it
+ * for a replacement in some places; a value reached through a list item with no ID, or one whose ID another item of
+ * its list shares, has none, and changes only with every other use, as an entry's uses do.
+ */
+export type ImageUse = { target: ImageUseTarget | null; entry?: EntryImagePlace } & ({ place: ValuePlace; value: ImageValue } | { place?: undefined; value?: undefined });
 
 /** Names a use in any revision of the project: the same place gives the same key, whatever its label or row number. */
 export function useKey(t: ImageUseTarget): string {
@@ -62,6 +75,31 @@ export function imageUses(state: ProjectState, assetId: string): ImageUse[] {
   for (const pg of Object.values(state.pages)) if (pg.seo.socialImage === assetId) out.push({ target: { kind: 'pageSharing', pageId: pg.id } });
   if (state.site.favicon === assetId) out.push({ target: { kind: 'site', field: 'favicon' } });
   if (state.site.socialImage === assetId) out.push({ target: { kind: 'site', field: 'socialImage' } });
+  out.push(...entryImageUses(state, assetId));
+  return out;
+}
+
+/**
+ * The uses of a library image in collection entries, drafts included: each entry's featured image and the pictures
+ * in its text, in the collections' and entries' own order. They are changed only with every other use.
+ */
+export function entryImageUses(state: ProjectState, assetId: string): ImageUse[] {
+  const out: ImageUse[] = [];
+  for (const id of Object.keys(state.collections ?? {}).sort()) {
+    const c = state.collections[id];
+    if (!c?.entries || typeof c.entries !== 'object') continue;
+    for (const e of orderedEntries(c)) {
+      if (!e || typeof e !== 'object') continue;
+      const at = { collectionId: id, entryId: e.id, title: typeof e.title === 'string' ? e.title : e.id };
+      if (e.featuredImage === assetId) out.push({ target: null, entry: { ...at, field: 'featured' } });
+      let n = 0;
+      for (const b of Array.isArray(e.body) ? e.body : []) {
+        if (!b || typeof b !== 'object' || b.type !== 'image') continue;
+        n++;
+        if (b.assetId === assetId) out.push({ target: null, entry: { ...at, field: 'body', n } });
+      }
+    }
+  }
   return out;
 }
 

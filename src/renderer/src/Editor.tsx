@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
+import { Check, Component, FileText, Images, Layers, Newspaper, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
 import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
 import { Toolbar } from './panels/Toolbar';
-import { Canvas, stepVisitor } from './panels/Canvas';
+import { Canvas, showEditedPage, stepVisitor } from './panels/Canvas';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
+import { PostsPanel } from './panels/PostsPanel';
+import { PostWriter } from './panels/PostWriter';
 import { LayersPanel } from './panels/LayersPanel';
 import { InsertPanel } from './panels/InsertPanel';
 import { AssetsPanel } from './panels/AssetsPanel';
@@ -22,7 +24,7 @@ import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModa
 import { ImportReviewModal } from './panels/ImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
-import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openSiteStyles, planLayers } from './lib/actions';
+import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openSiteStyles, planLayers, setMode } from './lib/actions';
 import { copySelection, pasteCopy } from './lib/clipboard';
 import { clipKeyIsEditors } from './lib/clip-keys';
 import { focusedSurface } from './lib/history';
@@ -34,6 +36,7 @@ import { closeProject, endEditingHold, saveNow } from './lib/leave';
 
 const LEFT_TABS = [
   { id: 'pages', label: 'Pages', icon: <FileText /> },
+  { id: 'posts', label: 'Posts', icon: <Newspaper /> },
   { id: 'layers', label: 'Layers', icon: <Layers /> },
   { id: 'insert', label: 'Insert', icon: <Plus /> },
   { id: 'assets', label: 'Assets', icon: <Images /> }
@@ -356,6 +359,8 @@ export function Editor() {
   // they give way, and get the room back when it grows.
   const prefs: PanelPrefs = { left: leftTab ? leftWidth : null, right: dockOpen ? rightWidth : null };
   const shown = fitPanels(windowWidth, prefs);
+  // The Posts panel's writer takes the canvas's place, except while its post is previewed there.
+  const writing = useStore((s) => s.leftTab === 'posts' && s.postView === 'write');
   const aiBusy = useStore((s) => !!s.runStatus);
   const aiPhase = useStore((s) => runPhase(s.runStatus));
   const aiReading = useStore((s) => s.runMode === 'ask');
@@ -470,6 +475,19 @@ export function Editor() {
     });
     return unsub;
   }, []);
+
+  // A post's preview ends however it is left (Back to writing, Edit, another post opened): the canvas goes back to the
+  // page the editor shows, and the writer shows again.
+  useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        if (prev.postView === 'preview' && s.postView === 'write') {
+          if (s.mode === 'preview') setMode('edit');
+          showEditedPage();
+        } else if (s.postView === 'preview' && prev.mode === 'preview' && s.mode === 'edit') setState({ postView: 'write' });
+      }),
+    []
+  );
 
   // A panel that closes around the focused control (its shortcut, its splitter's menu) hands focus to the
   // control that opens it again: the view's rail button, or the toolbar's Right panel toggle.
@@ -594,9 +612,10 @@ export function Editor() {
         </div>
         {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching. */}
         <aside id="editor-sidebar" className={`side-panel${shown.left < 250 ? ' narrow' : ''}`} style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar">
-          {(['pages', 'layers', 'insert', 'assets'] as const).map((t) => (
+          {(['pages', 'posts', 'layers', 'insert', 'assets'] as const).map((t) => (
             <div key={t} className="side-panel-view" hidden={leftTab !== t}>
               {t === 'pages' && <PagesPanel />}
+              {t === 'posts' && <PostsPanel />}
               {t === 'layers' && <LayersPanel />}
               {t === 'insert' && <InsertPanel />}
               {t === 'assets' && <AssetsPanel narrow={shown.left < 240} />}
@@ -604,7 +623,13 @@ export function Editor() {
           ))}
         </aside>
         <Seam side="left" width={shown.left} max={panelMax('left', windowWidth, prefs)} at={RAIL_WIDTH + shown.left} restore={() => setState({ leftTab: lastLeftTab.current })} />
-        <Canvas />
+        {/* While a post is being written, the canvas stays loaded under the writer, ready for Preview in site. */}
+        <div className="canvas-holder" inert={writing || undefined}>
+          <Canvas />
+        </div>
+        <div className="post-writer-holder" style={{ left: RAIL_WIDTH + shown.left, right: shown.right }} hidden={!writing}>
+          <PostWriter hidden={!writing} />
+        </div>
         <Seam side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} at={shown.right} restore={() => setState({ dockOpen: true })} />
         <aside id="editor-dock" className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }} aria-label="Right panel">
           {/* Every dock panel stays mounted, so the chat and inspector keep their state while hidden. */}

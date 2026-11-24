@@ -9,6 +9,7 @@ import { pageShowing } from '@shared/page-shell';
 import { applyOperations } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction, useStore } from '../store';
+import { flushOpenPost } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
@@ -705,4 +706,14 @@ export function openOutline(pageId?: string | null) {
 export function openSiteStyles() {
   const dm = getState().definitionMode;
   setState(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null, rightTab: 'styles', dockOpen: true } : { rightTab: 'styles', dockOpen: true });
+}
+
+/**
+ * Open a post in the writer: the Posts panel shows, with the post chosen. `picture` (counted from 1) asks the writer
+ * to bring that picture of its text into view, as Show in Assets does.
+ */
+export async function openPost(collectionId: string, entryId: string, picture?: number): Promise<void> {
+  const s = getState();
+  if (s.post?.entryId !== entryId) await flushOpenPost();
+  setState({ modal: null, leftTab: 'posts', post: { collectionId, entryId }, postView: 'write', postReveal: picture ? { entryId, picture, seq: (getState().postReveal?.seq ?? 0) + 1 } : null });
 }

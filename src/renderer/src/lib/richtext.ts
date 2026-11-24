@@ -6,13 +6,25 @@
  * RichDomNode), and this module turns it back into blocks. Marks are independent, so text can be bold and italic
  * at once, and an asterisk is just a character. Links are read back by destination, so a page link keeps its ID.
  */
-import type { GraphNode, RichBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
+import type { GraphNode, LinkValue, RichBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
 import { asParagraphList, cleanBlocks, isListBlock, linkFromTarget, mergeLists, sameRichText, toRichText, type RichPages } from '@shared/richtext';
 
 /** A text node, or an element by tag name with its children. `b` and `i` carry an inline style's bold or
  *  italic (true) or its explicit removal (false), as the browser's own commands can leave them. `check` marks a
  *  check list, `href` and `newTab` a link. */
-export type RichDomNode = string | { tag: string; b?: boolean; i?: boolean; check?: boolean; href?: string; newTab?: boolean; children: RichDomNode[] };
+export type RichDomNode = string | { tag: string; b?: boolean; i?: boolean; check?: boolean; href?: string; newTab?: boolean; image?: RichDomImage; children: RichDomNode[] };
+/** A picture placed in an article's text (the Posts writer's figures): read only in article mode. */
+export interface RichDomImage {
+  assetId: string;
+  alt: string;
+  caption?: string;
+  decorative?: boolean;
+}
+
+/** How the Posts writer reads its text: section headings (h2) and pictures are an article's, and links can go to entries. */
+export interface ArticleRead {
+  link: (href: string, newTab: boolean) => LinkValue | null;
+}
 
 const MAX_NODES = 5000;
 const MAX_DEPTH = 16;
@@ -35,13 +47,16 @@ export function richDom(v: unknown): RichDomNode[] | null {
 }
 
 const BLOCK = new Set(['p', 'div', 'section', 'article', 'header', 'footer']);
-const TEXT_BLOCK: Record<string, RichTextBlock['type']> = { h1: 'h3', h2: 'h3', h3: 'h3', h4: 'h4', h5: 'h4', h6: 'h4', blockquote: 'blockquote' };
+const TEXT_BLOCKS_ON_PAGE: Record<string, RichTextBlock['type']> = { h1: 'h3', h2: 'h3', h3: 'h3', h4: 'h4', h5: 'h4', h6: 'h4', blockquote: 'blockquote' };
+/** In an article, a section heading stays one: the title above it is the page's h1. */
+const ARTICLE_BLOCK: Record<string, RichTextBlock['type']> = { ...TEXT_BLOCKS_ON_PAGE, h1: 'h2', h2: 'h2' };
 
 /**
  * The blocks the edited element now holds. `droppedLinks` counts links whose destination cannot be stored; their
  * words stay as plain text.
  */
-export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks: RichText; droppedLinks: number } {
+export function blocksFromDom(nodes: RichDomNode[], pages: RichPages, article?: ArticleRead): { blocks: RichText; droppedLinks: number } {
+  const TEXT_BLOCK = article ? ARTICLE_BLOCK : TEXT_BLOCKS_ON_PAGE;
   const blocks: RichBlock[] = [];
   let run: RichSpan[] = [];
   let list: RichListBlock | null = null;
@@ -89,8 +104,15 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks:
     else delete inner.strong;
     if (em) inner.em = true;
     else delete inner.em;
+    // A picture between paragraphs, in an article: it ends the block before it, and its caption is its own.
+    if (article && tag === 'figure') {
+      flush();
+      const img = n.image;
+      if (img && typeof img.assetId === 'string' && img.assetId) blocks.push({ type: 'image', assetId: img.assetId, alt: img.alt ?? '', ...(img.caption ? { caption: img.caption } : {}), ...(img.decorative ? { decorative: true } : {}) });
+      return;
+    }
     if (tag === 'a' && n.href !== undefined) {
-      const link = linkFromTarget(n.href, pages, !!n.newTab);
+      const link = article ? article.link(n.href, !!n.newTab) : linkFromTarget(n.href, pages, !!n.newTab);
       if (link) inner.link = link;
       else droppedLinks++;
     }

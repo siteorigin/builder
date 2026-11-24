@@ -58,6 +58,21 @@ export function stepVisitor(dir: 'back' | 'forward'): boolean {
   return visitorStep?.(dir) ?? false;
 }
 
+/** Set while the canvas is shown: opens an address that is no page of the editor's (a post), or the page shown again. */
+let frameVisit: ((path: string | null) => boolean) | null = null;
+/**
+ * Show `path` in the preview, as the editor asks for a page: the editor's page stays the one it shows, and asking for
+ * that page again (showEditedPage) overtakes this request even before the frame gets there. False while the preview
+ * is not ready to be asked.
+ */
+export function visitAddress(path: string): boolean {
+  return frameVisit?.(path) ?? false;
+}
+/** Back to the page the editor shows, from an address visitAddress opened. */
+export function showEditedPage(): void {
+  frameVisit?.(null);
+}
+
 export function Canvas() {
   const runtime = useStore((s) => s.runtime);
   const snapshot = useStore((s) => s.snapshot);
@@ -923,6 +938,32 @@ export function Canvas() {
     visitorStep = step;
     return () => {
       visitorStep = null;
+    };
+  });
+  useEffect(() => {
+    frameVisit = (path) => {
+      if (path === null) {
+        if (ready) openShownPage();
+        return ready;
+      }
+      if (!ready) return false;
+      // Already there, with nothing asked for since.
+      if (!nav.current.request && samePath(path, frameAt.current)) return true;
+      // As a page the editor opens: "opening" until the frame says it is there, and a problem reported was about the
+      // address it is leaving. The request is the editor's latest, so a page asked for after it (Back to writing)
+      // overtakes it, and its late report is never followed.
+      setState({ frameReady: false });
+      markTimedOut(false);
+      setFrameError(null);
+      setRetrying(false);
+      if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
+      const navId = askFrame(nav.current, getState().pageId ?? '', path);
+      frameAt.current = null;
+      post('navigate', { path, navId });
+      return true;
+    };
+    return () => {
+      frameVisit = null;
     };
   });
 

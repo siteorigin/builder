@@ -438,11 +438,12 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         else if (alt !== was && alt !== now) altReview.push({ ...u.place, reason: 'custom', alt: v.alt });
       }
       // Collections' uses have no place a replacement can name yet, so they change only with every other use: each
-      // entry's featured image, and their picture fields' defaults and each entry's value. A description that was the
-      // old image's suggestion follows the new one, as above; entries have no place in the review list yet.
+      // entry's featured image and the pictures in its text, and their picture fields' defaults and each entry's value.
+      // A description that was the old image's suggestion follows the new one, as above; entries have no place in the
+      // review list yet.
       if (!op.uses) {
         for (const e of collectionEntries(state)) if (e.featuredImage === op.assetId) e.featuredImage = op.withAssetId;
-        for (const v of collectionImageValues(state, op.assetId)) {
+        for (const v of [...collectionImageValues(state, op.assetId), ...entryBodyImages(state, op.assetId)]) {
           v.assetId = op.withAssetId;
           if (!op.keepAlt && !v.decorative && (typeof v.alt === 'string' ? v.alt.trim() : '') === was) v.alt = now;
         }
@@ -573,6 +574,11 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
 
 /** Every entry of every collection. */
 const collectionEntries = (state: ProjectState) => Object.values(state.collections ?? {}).flatMap((c) => Object.values(c.entries));
+
+/** The pictures in entries' text showing `assetId`, as the values a replacement changes. */
+function entryBodyImages(state: ProjectState, assetId: string): Array<{ assetId: string | null; alt: string; decorative?: boolean }> {
+  return collectionEntries(state).flatMap((e) => (Array.isArray(e.body) ? e.body.filter((b) => b && typeof b === 'object' && b.type === 'image' && b.assetId === assetId) : [])) as Array<{ assetId: string; alt: string; decorative?: boolean }>;
+}
 
 /** The picture values of collections' image fields showing `assetId`: each field's default and each entry's value. */
 function collectionImageValues(state: ProjectState, assetId: string): ImageValue[] {

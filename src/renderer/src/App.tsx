@@ -160,6 +160,10 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     selection: placeOn(snap.state, pagePlaces, pageId),
     previewReturn: null,
     mode: 'edit',
+    // The Posts workspace opens on its list: a post of the last project is never this one's.
+    post: null,
+    postView: 'write',
+    postReveal: null,
     definitionMode: null,
     templateMode: null,
     variantStyle: null,
