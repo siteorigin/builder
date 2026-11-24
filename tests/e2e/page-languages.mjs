@@ -5,7 +5,7 @@
 // pages, and the source export must carry the server hook that does it. A site in one language keeps
 // <html lang="en"> and no server hook, before and after.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
@@ -105,11 +105,11 @@ try {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [parent] });
   }, exportsDir);
 
-  step('a site in one language: English everywhere, and no server hook');
+  step('a site in one language: English everywhere, and a server hook for the not-found page alone');
   const aboutHtml = await served('/about/');
   assert.equal(htmlLang(aboutHtml), 'en');
   assert.deepEqual(alternates(aboutHtml, '/about/'), []);
-  assert.equal(existsSync(join(dir, 'src', 'hooks.server.js')), false, 'no server hook');
+  assert.doesNotMatch(readFileSync(join(dir, 'src', 'hooks.server.js'), 'utf8'), /LANGUAGES/, 'the server hook lists no page languages');
 
   step('About duplicated as À propos, then given French and linked in Page settings');
   let state = (await snapshot()).state;
@@ -195,14 +195,14 @@ try {
   assert.equal(readFileSync(join(source.path, 'src', 'hooks.server.js'), 'utf8'), readFileSync(join(dir, 'src', 'hooks.server.js'), 'utf8'), 'the source export has the server hook');
   assert.match(readFileSync(join(source.path, 'src', 'hooks.server.js'), 'utf8'), /"\/fr\/a-propos": "fr"/);
 
-  step('unlinked and back to the site language: one language again, and the hook goes');
+  step('unlinked and back to the site language: one language again, and the hook lists no languages');
   await pageSettings('À propos');
   await win.getByRole('button', { name: 'Unlink About' }).click();
   await eventually(async () => assert.equal((await snapshot()).state.pages[fr].translationGroup, undefined));
   await language.fill('');
   await language.press('Enter');
   await eventually(async () => assert.equal('language' in (await snapshot()).state.pages[fr], false));
-  await eventually(() => assert.equal(existsSync(join(dir, 'src', 'hooks.server.js')), false, 'the server hook is removed'), 20000);
+  await eventually(() => assert.doesNotMatch(readFileSync(join(dir, 'src', 'hooks.server.js'), 'utf8'), /LANGUAGES/, 'the server hook no longer lists page languages'), 20000);
   assert.doesNotMatch(readFileSync(join(dir, 'src', 'routes', '+layout.svelte'), 'utf8'), /pageLanguages/, 'the layout no longer follows page languages');
   await eventually(
     async () => {
