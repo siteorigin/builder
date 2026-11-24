@@ -35,6 +35,8 @@ export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 export const BRAND_DESCRIPTION =
   'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once). Send only what changes. Fonts must be installed; an error lists the choices.';
 
+export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand colors and installed fonts, at once. Send only what changes.';
+
 export function brandToolSchema(state: ProjectState): JsonSchema {
   const fonts = installedFontNames(state);
   const font = (description: string) => ({ type: 'string', enum: fonts, description });

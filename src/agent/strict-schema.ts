@@ -257,6 +257,16 @@ function mapChildren(node: JsonSchema, map: (child: JsonSchema) => JsonSchema): 
 }
 
 /**
+ * The same schema without `type: "string"` beside an enum of strings, which says nothing the enum does not. Every
+ * grammar compiler reads the enum first; only the bytes go.
+ */
+export function dropEnumTypes(schema: JsonSchema): JsonSchema {
+  const out = mapChildren(schema, dropEnumTypes);
+  if (out.type === 'string' && Array.isArray(out.enum) && out.enum.length && out.enum.every((v) => typeof v === 'string')) delete out.type;
+  return out;
+}
+
+/**
  * The same schema with each repeated subtree moved into `$defs`, whenever writing it once and referring to it is
  * shorter than repeating it. `inlineDefinitions` gives back exactly the input, so a grammar accepts the same
  * replies either way. A schema that already has definitions is returned as it is.

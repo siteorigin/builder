@@ -1,7 +1,8 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { newId } from '@shared/ids';
 import { checkLocalBaseURL, localContextWindow, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
-import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall } from './types';
+import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall, ToolDefinition } from './types';
+import type { JsonSchema } from './strict-schema';
 import { redact } from './types';
 import { envelopeInstructions, envelopeSchema, FINISH_ACTION, parseEnvelope, partialStatus, stripThinking } from './constrained';
 import { localModelProfile, type LocalModelProfile } from './models';
@@ -127,14 +128,12 @@ function serverParam(body: string): string {
 /** A refusal of the structured response format, or of the grammar the server builds from it. */
 const FORMAT_REFUSED =
   /(?:unknown|unsupported|unrecognized|invalid|extra)[^.]*(?:response_format|json_schema)|(?:response_format|json_schema)[^.]*(?:not supported|unsupported|unknown|invalid|not permitted|failed)|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
-/** What servers say when a schema's `$ref` or `$defs` is beyond them (llama.cpp, vLLM, Ollama, LM Studio wordings). */
-const DEFINITIONS_REFUSED = /\$ref|\$defs|resolv\w* ref|json schema|schema[^.]*(?:not supported|unsupported|unrecognized|invalid|conver|compil)|(?:unsupported|unrecognized|invalid)[^.]*schema/i;
-
-/** Whether a request went out with a schema that uses shared definitions. */
-function sentDefinitions(sent: Record<string, unknown>): boolean {
-  const schema = (sent.response_format as { json_schema?: { schema?: Record<string, unknown> } } | undefined)?.json_schema?.schema;
-  return !!schema && Object.hasOwn(schema, '$defs');
-}
+/**
+ * A refusal of what a schema contains, such as a `$ref` or `$defs` the server cannot follow, or the grammar it
+ * failed to build (llama.cpp, vLLM, Ollama and LM Studio wordings).
+ */
+const SCHEMA_REFUSED =
+  /\$ref|\$defs|resolv\w* ref|json schema|schema[^.]*(?:not supported|unsupported|unrecognized|invalid|conver|compil)|(?:unsupported|unrecognized|invalid)[^.]*schema|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
 
 const CONTEXT_FULL = /context (size|length|window)|exceeds? .*context|n_ctx|too many tokens|prompt is too long/i;
 
@@ -400,8 +399,10 @@ export class LocalAdapter implements AgentModelAdapter {
   private profile: LocalModelProfile;
   private mode: 'native' | 'constrained-json';
   private responseFormat: 'json_schema' | 'json_object' | 'none' = 'json_schema';
-  /** The schema goes out with shared definitions until a server refuses them; then it is written out in full. */
-  private sharedDefs = true;
+  /** The schema goes out compact until a server refuses it; then it is written out in full. */
+  private compactSchema = true;
+  /** Both forms of the envelope schema for a tool set, built once for the retries and turns that offer it. */
+  private envelopes = new WeakMap<ToolDefinition[], { inline: JsonSchema; compact: JsonSchema | null }>();
   private usageOption = true;
   private fetchImpl: typeof globalThis.fetch;
   /** The context size the author set in Settings. */
@@ -512,17 +513,32 @@ export class LocalAdapter implements AgentModelAdapter {
     };
     if (this.usageOption) body.stream_options = { include_usage: true };
     if (constrained) {
-      if (this.responseFormat === 'json_schema') body.response_format = { type: 'json_schema', json_schema: { name: 'agent_action', strict: true, schema: envelopeSchema(req.tools, { shared: this.sharedDefs }) } };
+      if (this.responseFormat === 'json_schema') {
+        const { inline, compact } = this.envelope(req.tools);
+        body.response_format = { type: 'json_schema', json_schema: { name: 'agent_action', strict: true, schema: this.compactSchema && compact ? compact : inline } };
+      }
       else if (this.responseFormat === 'json_object') body.response_format = { type: 'json_object' };
     } else if (req.tools.length) body.tools = req.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
     return body;
   }
 
+  /** The envelope schema for a tool set, and its compact form when that differs. */
+  private envelope(tools: ToolDefinition[]): { inline: JsonSchema; compact: JsonSchema | null } {
+    let entry = this.envelopes.get(tools);
+    if (!entry) {
+      const inline = envelopeSchema(tools);
+      const compact = envelopeSchema(tools, { compact: true });
+      entry = { inline, compact: JSON.stringify(compact) === JSON.stringify(inline) ? null : compact };
+      this.envelopes.set(tools, entry);
+    }
+    return entry;
+  }
+
   /**
-   * Drop a request option the server refused by name. The reply is still checked when the grammar is gone. A schema
-   * with shared definitions steps down to the same schema written out in full before the grammar is given up.
+   * Drop a request option the server refused by name. The reply is still checked when the grammar is gone. A compact
+   * schema the server cannot read steps down to the same schema written out in full before the grammar is given up.
    */
-  private fallBack(status: number, body: string, constrained: boolean, sent: Record<string, unknown>): boolean {
+  private fallBack(status: number, body: string, constrained: boolean, tools: ToolDefinition[]): boolean {
     if (status !== 400 && status !== 422) return false;
     const text = serverMessage(body);
     const param = serverParam(body);
@@ -533,10 +549,13 @@ export class LocalAdapter implements AgentModelAdapter {
       return true;
     }
     if (!constrained || this.responseFormat === 'none') return false;
-    const shared = this.responseFormat === 'json_schema' && this.sharedDefs && sentDefinitions(sent);
-    if (names('response_format', FORMAT_REFUSED) || (shared && names('response_format', DEFINITIONS_REFUSED))) {
-      if (shared) this.sharedDefs = false;
-      else this.responseFormat = this.responseFormat === 'json_schema' ? 'json_object' : 'none';
+    // A refusal of the schema's content (not of the format itself) gets the full schema before the format goes.
+    if (this.responseFormat === 'json_schema' && this.compactSchema && this.envelope(tools).compact && names('response_format.json_schema', SCHEMA_REFUSED)) {
+      this.compactSchema = false;
+      return true;
+    }
+    if (names('response_format', FORMAT_REFUSED)) {
+      this.responseFormat = this.responseFormat === 'json_schema' ? 'json_object' : 'none';
       return true;
     }
     return false;
@@ -583,7 +602,7 @@ export class LocalAdapter implements AgentModelAdapter {
         return;
       }
       if (result.kind === 'http') {
-        if (fallbacks < MAX_FALLBACKS && this.fallBack(result.status, result.body, constrained, body)) {
+        if (fallbacks < MAX_FALLBACKS && this.fallBack(result.status, result.body, constrained, req.tools)) {
           fallbacks++;
           continue;
         }

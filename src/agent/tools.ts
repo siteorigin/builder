@@ -12,9 +12,9 @@ import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
 import { agentProps, catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { getTree, findParent, displayName } from '@engine/tree';
-import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
-import { BRAND_ARGS, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
-import { runSelectionTool, SELECTION_ARGS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
+import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
+import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
+import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
 import { examplesFor, exampleSection } from './examples';
 import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
@@ -99,6 +99,32 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   ...SELECTION_DESCRIPTIONS
 };
 
+/**
+ * The descriptions' rules in fewer words, for a grammar-constrained local model (see `ToolDefinition.brief`). Empty:
+ * the name and signature say it all. A tool missing here keeps its description.
+ */
+const BRIEFS: Partial<Record<ToolName, string>> = {
+  read_project: 'Pages, header/footer and project components. sections adds site tokens, or the catalogue: every component with its properties, parts and variants, and the icon names.',
+  read_page: 'Its sections with props (and list item IDs), variants and styles.',
+  inspect_element: 'One node: props, property schema, style parts, variants and slots. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
+  search_components: '',
+  read_component: "A component's property schema, parts, variants, slots and examples.",
+  search_assets: 'Images by name and description, each with its assetId (names can repeat). You cannot see images.',
+  read_source: "A component's Svelte source. Only project code components can be patched.",
+  apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the hash from read_source.',
+  inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, images that failed to load (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors.',
+  validate_project: '"schema" checks references, routes and structure; "component" also compiles every component.',
+  request_clarification:
+    'Ask the user one question and wait for the answer: when they ask to be interviewed or to choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
+  locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
+  upsert_page_with_sections: UPSERT_BRIEF,
+  update_site_brand: BRAND_BRIEF,
+  ...SELECTION_BRIEFS
+};
+
+/** A tool's description, with its brief when it has one. */
+const describe = (name: ToolName) => ({ description: DESCRIPTIONS[name], ...(BRIEFS[name] !== undefined ? { brief: BRIEFS[name] } : {}) });
+
 /** Operations the assistant never sends: images are added only by the verified importer, theme updates by the
  *  user, and pastes come from the editor's own Copy. */
 const NEVER_OFFERED = new Set<OperationType>(['asset.add', 'asset.relink', 'theme.refresh', 'node.paste']);
@@ -153,7 +179,7 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
       const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps)).min(1).max(30) }) : TOOL_ARGS[name];
       const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
       delete schema.$schema;
-      return { name, description: DESCRIPTIONS[name], parameters: schema };
+      return { name, ...describe(name), parameters: schema };
     });
 }
 
@@ -193,7 +219,8 @@ function askTools(codeEnabled: boolean): ToolDefinition[] {
     const args = name === 'request_clarification' ? TOOL_ARGS.request_clarification.omit({ widenScope: true }) : TOOL_ARGS[name];
     const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
     delete schema.$schema;
-    return { name, description: DESCRIPTIONS[name], parameters: schema };
+    // A question asks back only when it is ambiguous, which the question's own instructions say.
+    return { name, ...describe(name), ...(name === 'request_clarification' ? { brief: 'Ask the author one short question and wait for the answer.' } : {}), parameters: schema };
   });
 }
 
@@ -234,8 +261,8 @@ export function toolsForRun(opts: {
   }
   if (opts.definition) return { tools: general, mode: 'general', focused: false };
   const macros: ToolDefinition[] = [
-    { name: 'upsert_page_with_sections', description: DESCRIPTIONS.upsert_page_with_sections, parameters: upsertToolSchema(state) },
-    { name: 'update_site_brand', description: DESCRIPTIONS.update_site_brand, parameters: brandToolSchema(state) }
+    { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state) },
+    { name: 'update_site_brand', ...describe('update_site_brand'), parameters: brandToolSchema(state) }
   ];
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
   // do (styling every card of a selected one, say).

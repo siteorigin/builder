@@ -60,6 +60,16 @@ export const SELECTION_DESCRIPTIONS: Record<keyof typeof SELECTION_ARGS, string>
   request_wider_scope: 'Ask the user for permission to change more than the selected element, when the request cannot be done inside it.'
 };
 
+/** The same rules for a grammar-constrained local model, which reads every byte before it answers. */
+export const SELECTION_BRIEFS: Record<keyof typeof SELECTION_ARGS, string> = {
+  update_selected_props: 'Send only the properties that change.',
+  edit_selected_list: 'Update, insert, remove or move one item of a list.',
+  edit_selected_table: 'Set a cell, rename a column, or insert, remove or move a row or column, by the IDs in its content.',
+  style_selected_element:
+    'scope phone, tablet or desktop styles one screen size, base all. Prefer tokens such as {"token":"space.lg"}. objectPosition is a focal point "X% Y%" (each 0 to 100, one decimal). translateX/Y take a length ("-4px"), scale a factor (1.03), rotate degrees, transformOrigin center or an edge or corner ("top left"), transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration ms, transitionEasing ease, ease-out, linear or smooth. A repeated part (a card) is styled for every item unless itemId names one; null values return it to the shared style.',
+  request_wider_scope: 'Ask permission to change more than the selected element.'
+};
+
 export interface SelectionTarget {
   owner: OwnerRef;
   nodeId: string;
@@ -233,6 +243,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
     tools.push({
       name: 'update_selected_props',
       description: SELECTION_DESCRIPTIONS.update_selected_props,
+      brief: SELECTION_BRIEFS.update_selected_props,
       parameters: {
         type: 'object',
         properties: {
@@ -250,6 +261,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
     tools.push({
       name: 'edit_selected_list',
       description: SELECTION_DESCRIPTIONS.edit_selected_list,
+      brief: SELECTION_BRIEFS.edit_selected_list,
       parameters: {
         type: 'object',
         properties: {
@@ -269,6 +281,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
     tools.push({
       name: 'edit_selected_table',
       description: SELECTION_DESCRIPTIONS.edit_selected_table,
+      brief: SELECTION_BRIEFS.edit_selected_table,
       parameters: {
         type: 'object',
         properties: {
@@ -294,6 +307,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   tools.push({
     name: 'style_selected_element',
     description: SELECTION_DESCRIPTIONS.style_selected_element,
+      brief: SELECTION_BRIEFS.style_selected_element,
     parameters: {
       type: 'object',
       properties: {
@@ -322,6 +336,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   tools.push({
     name: 'request_wider_scope',
     description: SELECTION_DESCRIPTIONS.request_wider_scope,
+      brief: SELECTION_BRIEFS.request_wider_scope,
     parameters: { type: 'object', properties: { question: { type: 'string', maxLength: 300 } }, required: ['question'], additionalProperties: false }
   });
   return tools;

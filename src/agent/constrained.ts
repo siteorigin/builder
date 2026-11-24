@@ -4,7 +4,10 @@
  * it onto an ordinary tool call, so scope checks, validation and undo are the same as for any provider.
  */
 import type { ToolDefinition } from './types';
-import { decodeStrictValue, OPEN_VALUE_KEY, shareDefinitions, toStrictSchema, type JsonSchema } from './strict-schema';
+import { decodeStrictValue, dropEnumTypes, OPEN_VALUE_KEY, shareDefinitions, toStrictSchema, type JsonSchema } from './strict-schema';
+import { SIGNATURE_LEGEND, signatures } from './signature';
+
+export { signature } from './signature';
 
 /** The action that ends the run's turn loop. It is not a tool: the adapter turns it into a final answer. */
 export const FINISH_ACTION = 'finish';
@@ -17,10 +20,10 @@ function actionBranch(tool: string, args: JsonSchema): JsonSchema {
 const FINISH_ARGS: JsonSchema = { type: 'object', properties: { message: { type: 'string' } }, required: ['message'], additionalProperties: false };
 
 /**
- * The strict response schema for a set of tools. `shared` writes each repeated subtree once, under `$defs`: a
- * smaller request and grammar for a server that follows local references, and the same replies accepted.
+ * The strict response schema for a set of tools. `compact` is the same grammar in fewer bytes, for a server that
+ * follows local references: no type beside an enum of strings, and each repeated subtree written once under `$defs`.
  */
-export function envelopeSchema(tools: ToolDefinition[], opts: { shared?: boolean } = {}): JsonSchema {
+export function envelopeSchema(tools: ToolDefinition[], opts: { compact?: boolean } = {}): JsonSchema {
   const schema: JsonSchema = {
     type: 'object',
     properties: {
@@ -30,48 +33,26 @@ export function envelopeSchema(tools: ToolDefinition[], opts: { shared?: boolean
     required: ['brief_status', 'action'],
     additionalProperties: false
   };
-  return opts.shared ? shareDefinitions(schema) : schema;
+  return opts.compact ? shareDefinitions(dropEnumTypes(schema)) : schema;
 }
 
-/** A compact signature for a strict schema; a grammar constrains the output but the model never sees it. */
-export function signature(schema: JsonSchema): string {
-  if (Array.isArray(schema.enum)) return schema.enum.map((v) => JSON.stringify(v)).join('|');
-  if (Array.isArray(schema.anyOf)) {
-    const branches = schema.anyOf as JsonSchema[];
-    if (branches.some(isOpenObject)) return 'json';
-    return branches.map(signature).join(' | ');
-  }
-  if (isOpenObject(schema)) return 'json-object';
-  if (schema.type === 'array') {
-    const inner = signature(schema.items as JsonSchema);
-    return inner.includes('|') ? `(${inner})[]` : `${inner}[]`;
-  }
-  if (schema.type === 'object') {
-    const required = new Set((schema.required as string[] | undefined) ?? []);
-    const fields = Object.entries(schema.properties as Record<string, JsonSchema>).map(([k, v]) => `${k}${required.has(k) ? '' : '?'}: ${signature(v)}`);
-    return `{${fields.join(', ')}}`;
-  }
-  return String(schema.type);
-}
-
-function isOpenObject(schema: JsonSchema): boolean {
-  const props = schema.properties as Record<string, unknown> | undefined;
-  return schema.type === 'object' && !!props && Object.keys(props).length === 1 && OPEN_VALUE_KEY in props;
-}
-
-/** Instructions added to the system prompt, since the tools are not sent in the native format. */
+/**
+ * Instructions added to the system prompt, since the tools are not sent in the native format. Each tool is its
+ * signature and its brief: the system prompt above it does not describe the tools again.
+ */
 export function envelopeInstructions(tools: ToolDefinition[]): string {
-  const lines = tools.map((t) => `- ${t.name} ${signature(toStrictSchema(t.parameters))}\n  ${t.description}`);
+  const { types, tools: sigs } = signatures(tools.map((t) => toStrictSchema(t.parameters)));
+  const open = [...types, ...sigs].some((s) => /(?<![\w-])json(?![\w-])|json-object/.test(s));
+  const lines = tools.map((t, i) => {
+    const about = t.brief ?? t.description;
+    return `- ${t.name} ${sigs[i]}${about ? `\n  ${about}` : ''}`;
+  });
   return `
 
-Response format (this overrides anything above about calling several tools in a turn):
-Reply with exactly one JSON object and nothing else:
-{"brief_status":"<a few words on what you are doing>","action":{"tool":"<tool name>","args":{...}}}
-Each reply makes exactly one tool call; you get its result in the next message.
-When the whole request is done, use the tool "${FINISH_ACTION}" with args {"message":"<one or two plain sentences saying what changed, or the advice the user asked for>"}.
-A field typed "json" takes a plain string, number, boolean or null directly. An object or array goes in as {"${OPEN_VALUE_KEY}":"<the value encoded as a JSON string>"}. A field typed "json-object" always uses that form.
-
-Tools:
+Reply with one JSON object only: {"brief_status":"<a few words on what you are doing>","action":{"tool":"<name>","args":{…}}}
+One tool call per reply, whatever the text above says; its result comes next. When the request is done, call "${FINISH_ACTION}" with {"message":"<one or two plain sentences: what changed, or the answer or advice asked for>"}.
+${SIGNATURE_LEGEND}${open ? ` A json field takes a string, number, boolean or null as it is; an object or array goes in as {"${OPEN_VALUE_KEY}":"<its JSON text>"}, as a json-object field always does.` : ''}
+${types.length ? `Types:\n${types.join('\n')}\n` : ''}Tools:
 ${lines.join('\n')}`;
 }
 
