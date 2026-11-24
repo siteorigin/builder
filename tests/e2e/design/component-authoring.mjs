@@ -192,6 +192,9 @@ await select(/^Stack/);
 await inspector.getByRole('button', { name: /^More actions for/ }).first().click();
 await win.getByRole('menuitem', { name: /^Create component/ }).click();
 await modal.waitFor();
+// The name field holds focus once the menu that opened the dialog has closed.
+await pause(300);
+if (!(await modal.getByLabel('Component name').evaluate((el) => el === document.activeElement))) throw new Error('Create component did not keep focus on its name field; refusing to write');
 await shot('create-empty', ['Component name']);
 await shot('create-in-context', ['Component name'], { themes: ['light'], window: true });
 await modal.getByLabel('Component name').fill('Feature highlight');
@@ -213,7 +216,7 @@ await closeModal();
 await openRename('Retired price strip');
 await apply([{ type: 'component.remove', definitionId: spareDef }], 'Delete component');
 await pause(500);
-await shot('rename-deleted', ['This component has been deleted']);
+await shot('rename-deleted', ['has been deleted']);
 await closeModal();
 
 // ---- Make unique ----
@@ -253,7 +256,7 @@ for (let n = await modal.locator('.schema-row').count(); n > 0; n--) {
   if ((await row.locator('.schema-row-toggle').getAttribute('aria-expanded')) !== 'true') await row.locator('.schema-row-toggle').click();
   await row.getByRole('button', { name: /^Remove / }).click();
 }
-await shot('properties-empty', ['No properties yet.']);
+await shot('properties-empty', ['No properties yet']);
 await closeModal();
 
 // ---- Properties: one of every type ----
@@ -273,7 +276,8 @@ await modal.getByLabel('Type').nth(1).focus();
 await shot('properties-focus', ['Add property'], { themes: ['light'] });
 
 // A row's settings open, for the types with the most to set.
-const toggleFor = (name) => modal.getByRole('button', { name: new RegExp(`^${name} settings`) });
+// Named by label and code name ("Badge icon, badge settings: …"), or the code name alone where they match.
+const toggleFor = (name) => modal.getByRole('button', { name: new RegExp(`(^|, )${name} settings`) });
 for (const name of ['columns', 'tone', 'speakers']) await toggleFor(name).click();
 await toggleFor('columns').scrollIntoViewIfNeeded();
 await win.setViewportSize({ width: VIEWPORT.width, height: 2000 });
@@ -313,7 +317,7 @@ await second.fill('body');
 await second.press('Enter');
 await pause(200);
 await modal.getByRole('button', { name: 'Save' }).click();
-await modal.locator('.scope-note.danger').first().waitFor();
+await modal.locator('.code-problems').first().waitFor();
 await shot('properties-error', ['camelCase']);
 await closeModal();
 
