@@ -302,9 +302,9 @@ function textLines(input: string, markdown: boolean): string[] {
   let open: string[] | null = null;
   for (const raw of input.split(/\r?\n/)) {
     // A line that goes on from a break keeps a deliberate space at its start (a non-breaking one).
-    const line = open === null ? raw.trim() : raw.replace(/^[ \t]+/, '').trimEnd();
-    const goesOn = markdown && BREAK_AT_END.test(line);
-    const piece = goesOn ? line.slice(0, -1) : line;
+    const line: string = open === null ? raw.trim() : raw.replace(/^[ \t]+/, '').trimEnd();
+    const goesOn: boolean = markdown && BREAK_AT_END.test(line);
+    const piece: string = goesOn ? line.slice(0, -1) : line;
     if (open === null) open = [piece];
     else open.push(piece);
     if (!goesOn) {
