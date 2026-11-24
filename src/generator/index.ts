@@ -217,7 +217,8 @@ export function encodeMailto(target: string): string {
 }
 
 export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveContext): { href: string; newTab?: boolean; download?: string } | null {
-  if (!link || link.type === 'none' || !link.target) return null;
+  // A destination that is not text (a hand edit, a theme pack's layout) goes nowhere rather than failing the build.
+  if (!link || link.type === 'none' || !link.target || typeof link.target !== 'string') return null;
   let href = '';
   switch (link.type) {
     case 'document': {

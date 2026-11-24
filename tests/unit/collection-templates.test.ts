@@ -334,6 +334,57 @@ describe('content checks on entries’ pages', () => {
   });
 });
 
+describe('after the last review', () => {
+  it('judges a layout link by what each entry’s page shows, and an entry’s own text only where its page shows it', () => {
+    const r = applyOperations(blog(), [
+      { type: 'page.create', pageId: 'pg_plans', title: 'Plans' },
+      { type: 'page.update', pageId: 'pg_plans', draft: true }
+    ]);
+    let s = r.state;
+    const column = Object.values(template(s).nodes).find((n) => n.name === 'Reading column')!;
+    const button = applyOperations(s, [{ type: 'node.insert', owner: POSTS, parentId: column.id, primitive: 'button', text: 'Our plans' }]);
+    const id = button.results[0].nodeId as string;
+    // Shown with a reading time, which every post with text has: the website shows it, so the export stops.
+    s = run(button.state, { type: 'node.setContent', owner: POSTS, nodeId: id, field: 'link', value: { type: 'page', target: 'pg_plans' } }, { type: 'node.setBinding', owner: POSTS, nodeId: id, field: 'when', binding: { $entry: 'readingTime' } });
+    expect(publicationPlan(s).draftLinks.filter((l) => l.owner.kind === 'template')).toHaveLength(1);
+    // A post's own text linking to the draft stops it too, until the layout no longer shows the text.
+    s = run(s, { type: 'node.remove', owner: POSTS, nodeId: id }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['See [the plans](/plans/).'] });
+    expect(publicationPlan(s).draftLinks.map((l) => l.owner)).toEqual([{ kind: 'entry', id: 'en_winter' }]);
+    s = run(s, { type: 'node.remove', owner: POSTS, nodeId: bound(s, 'body').id });
+    expect(publicationPlan(s).draftLinks).toEqual([]);
+  });
+
+  it('reports a layout link to a missing section once, naming every entry it is missing on', () => {
+    const s0 = blog();
+    const s = run(s0, { type: 'node.setContent', owner: POSTS, nodeId: bound(s0, 'title').id, field: 'anchor', value: 'top-title' });
+    const column = Object.values(template(s).nodes).find((n) => n.name === 'Reading column')!;
+    const r = applyOperations(s, [{ type: 'node.insert', owner: POSTS, parentId: column.id, primitive: 'button', text: 'Notes' }]);
+    const withLink = run(r.state, { type: 'node.setContent', owner: POSTS, nodeId: r.results[0].nodeId as string, field: 'link', value: { type: 'anchor', target: 'notes' } });
+    const issues = missingSectionLinks(withLink).filter((i) => i.owner.kind === 'template');
+    expect(issues).toHaveLength(1);
+    expect([...(issues[0].entries ?? [])].sort()).toEqual(['en_spring', 'en_winter']);
+  });
+
+  it('never fails on a damaged choice a condition compares, or a layout link whose destination is not text', () => {
+    let s = run(blog(), { type: 'collection.update', collectionId: 'posts', fields: { season: { type: 'enum', label: 'Season', default: 'winter', options: [{ value: 'winter', label: 'Winter' }] } } });
+    s = run(s, { type: 'node.setBinding', owner: POSTS, nodeId: bound(s, 'excerpt').id, field: 'when', binding: { $entry: 'field.season' }, eq: 'winter' });
+    const damaged = structuredClone(s);
+    delete (damaged.collections.posts.settings.fields.season as { options?: unknown }).options;
+    expect(() => validateState(damaged)).not.toThrow();
+    expect(validateState(damaged).some((d) => d.code === 'COLLECTION_INVALID')).toBe(true);
+    const odd = structuredClone(s);
+    const link = Object.values(odd.collections.posts.settings.template.nodes).find((n) => n.kind === 'link')!;
+    (link as { link: unknown }).link = { type: 'anchor', target: 42 };
+    expect(() => generateProject(odd)).not.toThrow();
+  });
+
+  it('gives a draft listed first the published entry after it, and one listed last the one before it', () => {
+    const s = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_later', title: 'Later', publishedAt: '2026-12-01' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_early', title: 'Early', publishedAt: '2025-01-01' });
+    expect(entryNeighbours(s, 'posts', 'en_later')).toEqual({ next: s.collections.posts.entries.en_spring });
+    expect(entryNeighbours(s, 'posts', 'en_early')).toEqual({ prev: s.collections.posts.entries.en_winter });
+  });
+});
+
 describe('a cached run', () => {
   it('makes every entry’s page and the stylesheet again for a layout edit, and a neighbour’s page for a new title', () => {
     // A second collection with published entries of its own, whose pages a posts change never reaches.

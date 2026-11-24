@@ -761,6 +761,7 @@ function templateSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpR
   const b = op.binding;
   if (!isEntryBinding(b)) fail(`A collection's layout shows the entry's fields: bind to { "$entry": field }. Properties, list items and UI state belong to components.`);
   const schema = entryFieldSchema(collection, b.$entry) ?? fail(`Entries of ${collection.settings.name} have no field "${String(b.$entry).slice(0, 60)}".`);
+  if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) fail(`"${schema.label}" is damaged: it has no choices. Set its choices in the collection's settings first.`);
   if (field === 'datetime' && !ENTRY_DATE_FIELDS.has(b.$entry)) fail(`"${schema.label}" is not a date: a text can state the publication date (publishedAt) or the last update (updatedAt).`);
   const ok = acceptedTypes(node, field, nested);
   if (ok && !ok.includes(schema.type)) fail(`"${schema.label}" cannot be shown as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}: it needs a ${ok.join(' or ')} field.`);

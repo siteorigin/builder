@@ -629,6 +629,8 @@ function entryBindingProblems(state: ProjectState, collection: Collection, n: Gr
       out.push(`shows "${String(b.$entry).slice(0, 60)}", which entries of ${collection.settings.name} do not have.`);
       continue;
     }
+    // A choice field without its options is reported with the collection's settings; nothing more is read from it.
+    if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) continue;
     if (!ENTRY_CONTENT_FIELDS.has(slot.field)) {
       out.push(`takes its ${slot.field === 'variant' ? 'variant' : slot.field} from "${schema.label}"; that is the layout's own, the same for every entry. Only content can show an entry's field.`);
       continue;

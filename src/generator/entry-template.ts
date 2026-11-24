@@ -109,8 +109,10 @@ function emptyFor(node: GraphNode, field: string, nested?: PropSchema): unknown 
  * The value an entry binding gives one place in a node: `field` is the node's field (`text`, `datetime`, `image`,
  * `prop`...), `nested` the placed component's property schema for `prop`. Undefined leaves the place empty.
  */
-function boundValue(read: EntryReadContext, node: GraphNode, field: string, entryField: string, nested?: PropSchema): unknown {
+function boundValue(read: EntryReadContext, node: GraphNode, field: string, entryField: string, nested?: PropSchema, withoutBody = false): unknown {
   const schema = entryFieldSchema(read.collection, entryField);
+  // The entry's text left out where it is placed, and nowhere else (a condition on it still holds as it does).
+  if (withoutBody && entryField === 'body') return field === 'prop' ? (nested ? asType(nested.type, []) : undefined) : asType('richtext', []);
   if (!schema) return emptyFor(node, field, nested);
   if (field === 'datetime') return ENTRY_DATE_FIELDS.has(entryField) ? entryFieldValue(read, entryField, 'raw') : undefined;
   // A number or yes/no property takes the value itself (the minutes of a reading time); a text, as readers see it.
@@ -133,8 +135,9 @@ function boundValue(read: EntryReadContext, node: GraphNode, field: string, entr
 /** The entry's page as a tree of literal values: the template read for `entry`. `template` is never changed. */
 export function materializeTemplate(state: ProjectState, collection: Collection, entry: EntryDoc, neighbours: EntryNeighbours, opts: { body?: boolean } = {}): NodeTree {
   const template = collection.settings.template;
-  // Without the entry's text (`body: false`), for checks that read the entry's own text on their own.
-  if (opts.body === false) entry = { ...entry, body: [] };
+  // Without the entry's text where it is placed (`body: false`), for checks that read the entry's own text on their
+  // own. Everything else, conditions on the text or its reading time included, is as the website has it.
+  const withoutBody = opts.body === false;
   const nodes: Record<string, GraphNode> = structuredClone(template?.nodes && typeof template.nodes === 'object' ? template.nodes : {});
   const read: EntryReadContext = { state, collection, entry, neighbours };
   const hidden = new Set<string>();
@@ -157,7 +160,7 @@ export function materializeTemplate(state: ProjectState, collection: Collection,
       for (const [prop, v] of Object.entries(node.props ?? {})) {
         if (!isBindingRef(v)) continue;
         const nested = own(def?.properties, prop);
-        const value = isEntryBinding(v) ? boundValue(read, node, 'prop', v.$entry, nested) : nested?.default;
+        const value = isEntryBinding(v) ? boundValue(read, node, 'prop', v.$entry, nested, withoutBody) : nested?.default;
         if (value === undefined) delete (node.props as Record<string, unknown>)[prop];
         else (node.props as Record<string, unknown>)[prop] = structuredClone(value);
       }
@@ -169,7 +172,7 @@ export function materializeTemplate(state: ProjectState, collection: Collection,
       const v = r[field];
       if (!isBindingRef(v)) continue;
       // A layout's structure and look (a tag, a button's style) are the same on every entry: only content reads one.
-      const value = isEntryBinding(v) && ENTRY_CONTENT_FIELDS.has(field) ? boundValue(read, node, field, v.$entry) : emptyFor(node, field);
+      const value = isEntryBinding(v) && ENTRY_CONTENT_FIELDS.has(field) ? boundValue(read, node, field, v.$entry, undefined, withoutBody) : emptyFor(node, field);
       if (value === undefined) delete r[field];
       else r[field] = structuredClone(value);
     }
@@ -194,3 +197,35 @@ export function materializeTemplate(state: ProjectState, collection: Collection,
   const rootIds = (Array.isArray(template?.rootIds) ? template.rootIds : []).filter((id) => visible(id));
   return { rootIds, nodes };
 }
+
+/**
+ * Whether an entry's page shows its text: an element (or placed section) of its layout that shows the text is on the
+ * page for it. `article` is the layout read for the entry (materializeTemplate), with its node IDs.
+ */
+export function showsBody(collection: Collection, article: NodeTree): boolean {
+  const nodes = collection.settings.template?.nodes ?? {};
+  const placed = new Set(
+    Object.values(nodes)
+      .filter((n) => n && typeof n === 'object' && bindingPlaces(n).some((v) => isEntryBinding(v) && v.$entry === 'body'))
+      .map((n) => n.id)
+  );
+  if (!placed.size) return false;
+  const seen = new Set<string>();
+  const visit = (id: string): boolean => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    if (placed.has(id)) return true;
+    const n = own(article.nodes, id) as (GraphNode & { children?: unknown; slots?: Record<string, unknown> }) | undefined;
+    if (!n) return false;
+    const kids = [...(Array.isArray(n.children) ? n.children : []), ...Object.values(n.slots ?? {}).flatMap((ids) => (Array.isArray(ids) ? ids : []))];
+    return kids.some((k) => typeof k === 'string' && visit(k));
+  };
+  return article.rootIds.some(visit);
+}
+
+/** The values a node shows that could read an entry field: its content fields and a placed section's properties. */
+function bindingPlaces(n: GraphNode): unknown[] {
+  const r = n as unknown as Record<string, unknown>;
+  return n.kind === 'instance' ? Object.values(n.props ?? {}) : ['text', 'image', 'link', 'label'].map((f) => r[f]);
+}
+

@@ -18,7 +18,7 @@ import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
-import { entryNeighbours, materializeTemplate } from './entry-template';
+import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { selectedVariantStyles, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 
@@ -1242,6 +1242,8 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   ];
   const out: SectionLinkIssue[] = [];
   const seen = new Map<string, SectionLinkIssue>();
+  // A layout link's entries lacking its section, gathered across the entries' pages before they are written once.
+  const lackingOf = new Map<SectionLinkIssue, Set<string>>();
   // Links in a panel kept in the page hidden are in its HTML, where the build follows them; the sections they go to
   // count only where a visitor can see them.
   for (const src of sources)
@@ -1261,17 +1263,22 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       if (!issue) continue;
       const had = seen.get(id);
       if (had) {
-        if (src.entry && issue.entries?.length) had.entries = [...new Set([...(had.entries ?? []), ...issue.entries])];
+        if (src.entry && issue.entries?.length) issue.entries.forEach((e) => lackingOf.get(had)?.add(e));
         continue;
       }
       seen.set(id, issue);
+      if (src.entry && issue.entries) lackingOf.set(issue, new Set(issue.entries));
       out.push(issue);
     }
+  for (const [issue, ids] of lackingOf) issue.entries = [...ids];
   // An entry's text: its page has the layout's and the header and footer's sections, and none of a page's.
   for (const a of articles) {
     const { entry } = a;
     const owner = { kind: 'entry' as const, id: entry.id };
-    entryTextLinks(entry.body).forEach(({ link, label }, i) => {
+    const links = entryTextLinks(entry.body);
+    // Text the entry's layout does not show has no links a visitor or the build could follow.
+    if (!links.length || !showsBody(a.collection, a.article())) continue;
+    links.forEach(({ link, label }, i) => {
       const key = `body:${i}`;
       if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
         if (!idsOf(link.target).has(link.anchor)) out.push({ owner, nodeId: '', key, label, inText: true, fragment: link.anchor, pageId: link.target });
@@ -1433,8 +1440,9 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to });
     }
   // A published entry's text: a link to a draft entry, a page link to a draft page, or a typed address of one.
-  for (const { entry } of entries) {
+  for (const { entry, collection } of entries) {
     if (draftEntryIds.has(entry.id)) continue;
+    const found: DraftLink[] = [];
     for (const { link, label } of entryTextLinks(entry.body)) {
       const to: (DraftTarget & { anchor?: string }) | null =
         link.type === 'entry' && draftEntryIds.has(link.target)
@@ -1444,8 +1452,10 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
             : link.type === 'url'
               ? draftAtAddress(state, link.target, withheld)
               : null;
-      if (to) draftLinks.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, inText: true, ...to });
+      if (to) found.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, inText: true, ...to });
     }
+    // Text the entry's layout does not show links nowhere on the website.
+    if (found.length && showsBody(collection, entryArticle(state, collection, entry))) draftLinks.push(...found);
   }
   return { published, drafts, draftLinks };
 }
