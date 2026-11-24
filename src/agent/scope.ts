@@ -2,8 +2,10 @@
  * Scope authority for AI runs. The application decides what a run may change; the model cannot widen it
  * by declaring a different scope. A request sent with a selection attached is limited to that element
  * until the user explicitly approves a wider change. A part selected inside a placement (its heading, one card) is
- * limited to that part: its own content and styles, never the rest of the placement.
+ * limited to that part: its own content and styles, never the rest of the placement. A request about one page is
+ * limited to that page's sections and its own settings.
  */
+import type { ChatContext } from '@shared/api';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
@@ -26,14 +28,35 @@ export interface PartAuthority {
 
 /**
  * - site: anything the request needs.
+ * - page: one page's sections (adding, changing, reordering and removing them) and its own settings, never another
+ *   page, the shared header and footer (apart from a menu link to this page that the page tool adds), site styles or a
+ *   component's design.
  * - selection: one element and what is inside it; with `part`, only what that part of a placement shows.
  * - component: one component's whole design, edited everywhere: every node of it (all its top-level nodes) and its
  *   own contract (properties, defaults, parts, variants and slots). Every change applies to every placement.
  */
 export type Authority =
   | { kind: 'site' }
+  | { kind: 'page'; pageId: string; label: string }
   | { kind: 'selection'; owner: OwnerRef; nodeId: string; label: string; part?: PartAuthority }
   | { kind: 'component'; definitionId: string; label: string };
+
+/** How a page is named where a run's limit is said: "the About page". */
+export const pageLabel = (title: unknown) => `the ${(typeof title === 'string' && title.trim()) || 'current'} page`;
+
+/**
+ * What a request may change as it starts, from what it was sent with. A request that chose its scope says so; one
+ * saved before scopes could be chosen means what it meant then: its selection, its component, or the whole site.
+ */
+export function requestAuthority(ctx: Pick<ChatContext, 'pageId' | 'pageTitle' | 'selection' | 'selectionLabel' | 'component' | 'scope'> | undefined, state: ProjectState): Authority {
+  if (ctx?.scope === 'page' && !ctx.component) {
+    // Named as it is now: the run's messages talk about the page the author sees.
+    const live = Object.hasOwn(state.pages, ctx.pageId) ? state.pages[ctx.pageId].title : ctx.pageTitle;
+    return { kind: 'page', pageId: ctx.pageId, label: pageLabel(live) };
+  }
+  if (ctx?.scope === 'site' && !ctx.component) return { kind: 'site' };
+  return authorityFor(ctx?.selection ?? null, ctx?.selectionLabel ?? null, ctx?.component, state);
+}
 
 /**
  * `component`: the component the author is editing everywhere; a selection inside it narrows the run further.
@@ -229,8 +252,10 @@ function writesDefault(state: ProjectState, op: EditOperation): string | null {
 }
 
 /** Whether a run may change a component's own contract (its properties, parts, variants, slots and bindings). These
- *  are visual edits to a managed component, never code, so they do not depend on Developer mode. */
+ *  are visual edits to a managed component, never code, so they do not depend on Developer mode. A page's run never
+ *  may: a component's contract shows on every page it is placed on. */
 export function canEditContracts(authority: Authority): boolean {
+  if (authority.kind === 'page') return false;
   return authority.kind !== 'selection' || authority.owner.kind === 'component';
 }
 
@@ -430,14 +455,64 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
   return null;
 }
 
+/** Settings of a page that are its own. A new route moves the pages inside it and keeps the old address working
+ *  site-wide, and a translation joins or leaves another page's group, so neither is the page's alone. */
+const PAGE_SETTINGS = new Set(['title', 'navLabel', 'seoTitle', 'description', 'noindex', 'searchHidden', 'draft', 'language', 'showHeader', 'showFooter', 'socialImage', 'articleDate', 'byline', 'excerpt', 'article', 'newsHidden']);
+
+/** What a page's run may also do, granted by the tool call that sends the batch: never by the model. */
+export interface AuthorityGrants {
+  /** The menu links to the page that the page tool compiled, because the call asked for them (addToHeaderNav,
+   *  addToFooterNav). Only these exact insertions reach the shared header and footer. */
+  navigation?: EditOperation[];
+}
+
+const sameOp = (a: EditOperation, b: EditOperation) => a === b || JSON.stringify(a) === JSON.stringify(b);
+
+function checkPageOne(state: ProjectState, op: EditOperation, authority: Extract<Authority, { kind: 'page' }>, grants: AuthorityGrants): string | null {
+  const { label } = authority;
+  if (!Object.hasOwn(state.pages, authority.pageId)) return `${label[0].toUpperCase()}${label.slice(1)} is no longer in the site.`;
+  const mine = (o: OwnerRef | undefined) => o?.kind === 'page' && o.id === authority.pageId;
+  const outside = `${op.type} changes something outside ${label}.`;
+  switch (op.type) {
+    case 'page.update': {
+      if (op.pageId !== authority.pageId) return `page.update changes another page, not ${label}.`;
+      const wider = Object.keys(op).filter((k) => k !== 'type' && k !== 'pageId' && !PAGE_SETTINGS.has(k));
+      return wider.length ? `page.update ${wider.join(' and ')} changes more than ${label}: it reaches other pages.` : null;
+    }
+    // Both add a new component to the site, which every page can then place.
+    case 'component.makeUnique':
+    case 'component.convertToCode':
+      return `${op.type} adds a new component to the site, which changes more than ${label}.`;
+    case 'instance.listInsert':
+      // A menu link to this page, added because the page tool was asked to add it.
+      if (op.owner.kind === 'shell' && (grants.navigation ?? []).some((g) => sameOp(g, op))) return null;
+      break;
+  }
+  switch (OP_REACH[op.type] ?? 'wider') {
+    case 'node':
+      return mine((op as { owner?: OwnerRef }).owner) ? null : outside;
+    case 'insert':
+      return mine((op as Extract<EditOperation, { type: 'node.insert' }>).owner) ? null : `node.insert adds content outside ${label}.`;
+    case 'copy':
+      // The source is only read, so it may be anywhere; the copy must land on the page.
+      return mine((op as Extract<EditOperation, { type: 'node.copy' }>).toOwner) ? null : `node.copy adds content outside ${label}.`;
+    case 'definition':
+      // A component's contract shows wherever it is placed, on every page.
+      return `${op.type} changes a component's design, which shows on every page it is placed on: more than ${label}.`;
+    default:
+      return `${op.type} changes more than ${label}.`;
+  }
+}
+
 /**
- * Returns null when every operation stays within the authority, otherwise a reason. Within a selection, each operation
- * is checked against the project as the operations before it leave it, so a batch cannot bind a field and then write
- * the default it bound.
+ * Returns null when every operation stays within the authority, otherwise a reason. Within a selection or a page, each
+ * operation is checked against the project as the operations before it leave it, so a batch cannot bind a field and
+ * then write the default it bound, and a section a batch adds can be changed later in it.
  */
-export function checkAuthority(state: ProjectState, ops: EditOperation[], authority: Authority): string | null {
+export function checkAuthority(state: ProjectState, ops: EditOperation[], authority: Authority, grants: AuthorityGrants = {}): string | null {
   if (authority.kind === 'site') return null;
   if (authority.kind === 'component') return checkComponentAuthority(state, ops, authority);
+  if (authority.kind === 'page') return walkOperations(state, ops, (draft, op) => checkPageOne(draft, op, authority, grants));
   return walkOperations(state, ops, (draft, op) => checkOne(draft, op, authority));
 }
 
@@ -500,5 +575,7 @@ export const WIDEN_NO = 'No, only change the selection';
 /** The two answers to a request for more than the authority allows: the first allows it. */
 export function widenChoices(authority: Authority): [string, string] {
   if (authority.kind === 'component') return [`Yes, allow changes beyond ${authority.label}`, `No, only change ${authority.label}`];
+  // Allowing more lets the run change anything on the site, so the answer says that.
+  if (authority.kind === 'page') return ['Yes, allow changes across the whole site', `No, only change ${authority.label}`];
   return [WIDEN_YES, WIDEN_NO];
 }

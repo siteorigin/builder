@@ -15,6 +15,8 @@ import { DEFAULT_LOCAL_PROFILE, type LocalModelProfile } from '@agent/models';
 import { findForbiddenShapes } from '@agent/strict-schema';
 import { FOCUSED_WINDOW_TOKENS } from '@agent/tools';
 import { contextVerdict, estimateRequestTokens } from '@agent/budget';
+import { pageGlance, pageGlanceChars } from '@agent/context';
+import { applyOperations } from '@engine/apply';
 import type { CanonicalItem, ToolDefinition } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { closedPort, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
@@ -51,8 +53,8 @@ async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOp
     codeEnabled: async () => codeEnabled
   });
   const header = session.state.site.shell.header.rootIds[0];
-  const run = async (text: string, selection: ElementRef | null = null, selectionLabel: string | null = null, mode?: ChatContext['mode'], component?: { id: string; name: string }) => {
-    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel, viewport: 1280, ...(mode ? { mode } : {}), ...(component ? { component } : {}) };
+  const run = async (text: string, selection: ElementRef | null = null, selectionLabel: string | null = null, mode?: ChatContext['mode'], component?: { id: string; name: string }, scope?: ChatContext['scope']) => {
+    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel, viewport: 1280, ...(mode ? { mode } : {}), ...(component ? { component } : {}), ...(scope ? { scope } : {}) };
     const r = await orch.send(text, ctx);
     expect(r.ok).toBe(true);
     await expect.poll(() => orch.busy || busy, { timeout: 5000, interval: 5 }).toBe(false);
@@ -572,8 +574,12 @@ describe('what a constrained local run sends first (#364)', () => {
    */
   const BUDGETS = {
     // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
-    site: { code: false, baseline: 42_641, budget: 31_400 },
-    'site (code)': { code: true, baseline: 44_027, budget: 32_700 },
+    // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.
+    site: { code: false, baseline: 42_641, budget: 32_400 },
+    'site (code)': { code: true, baseline: 44_027, budget: 33_700 },
+    // A page run (#513) is measured against the site run it was before it had a scope of its own. It offers the page
+    // tool and the few operations that remove, move or set the page's own settings, but nothing site-wide.
+    page: { code: false, baseline: 42_641, budget: 31_700 },
     section: { code: false, baseline: 12_723, budget: 9_700 },
     part: { code: false, baseline: 10_001, budget: 7_550 },
     ask: { code: false, baseline: 13_138, budget: 9_600 },
@@ -589,7 +595,7 @@ describe('what a constrained local run sends first (#364)', () => {
     // The two selections the editor sends: a whole section, and one part of it.
     const selection: ElementRef | null = label === 'section' ? { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: section.id } : label === 'part' ? { owner: { kind: 'page', id: home.id }, instancePath: [section.id], nodeId: def.parts.heading.nodeId, partId: 'heading' } : null;
     server.script(envelopeReply('finish', { message: 'Done.' }));
-    await run('Hello', selection, selection ? 'Hero' : null, label.startsWith('ask') ? 'ask' : undefined);
+    await run('Hello', selection, selection ? 'Hero' : null, label.startsWith('ask') ? 'ask' : undefined, undefined, label === 'page' ? 'page' : undefined);
     const body = server.requests.find((r) => r.method === 'POST')!.body;
     const sent = { messages: bytes(body.messages), response_format: bytes(body.response_format) };
     const total = sent.messages + sent.response_format;
@@ -602,7 +608,10 @@ describe('what a constrained local run sends first (#364)', () => {
     const context = JSON.parse(/<editor_context>\n(\{.*\})\n<\/editor_context>/s.exec(body.messages.at(-1).content)![1]);
     expect(context.selection === null, label).toBe(!selection);
     if (selection) expect(context.selection.currentProps ?? context.selection.node.props).toHaveProperty('heading');
-    expect(context.allowedScope, label).toMatch(label.startsWith('ask') ? /^nothing: this is a read-only question$/ : label === 'section' ? /^only Hero \(.*\) unless the user approves more via request_wider_scope$/ : label === 'part' ? /^only the selected part "heading" of Hero/ : /^whole site$/);
+    expect(context.allowedScope, label).toMatch(label.startsWith('ask') ? /^nothing: this is a read-only question$/ : label === 'section' ? /^only Hero \(.*\) unless the user approves more via request_wider_scope$/ : label === 'part' ? /^only the selected part "heading" of Hero/ : label === 'page' ? /^only the Home page \(page pg_\w+\): its sections and its own settings/ : /^whole site$/);
+    // An edit that may change the page starts with its sections; one about a selection starts from the selection.
+    expect(Array.isArray(context.currentPage.sections), label).toBe(label === 'page' || label.startsWith('site'));
+    if (Array.isArray(context.currentPage.sections)) expect(context.currentPage.sections.map((x: { id: string }) => x.id)).toEqual(home.rootIds);
     // A question can still be about code; an edit run without code has no code tool to explain.
     expect('customCode' in context, label).toBe(code || label.startsWith('ask'));
   });
@@ -694,5 +703,81 @@ describe('a request that fails on the local setup (#83)', () => {
     await expect.poll(() => orch.busy, { timeout: 5000, interval: 5 }).toBe(false);
     const asked = [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message?.result;
     expect(asked).toMatchObject({ status: 'failed', repair: 'settings', summary: 'Connected, but the server has no models loaded.' });
+  });
+});
+
+describe('the open page in the first request (#513)', () => {
+  it("fits a long page's sections into an eighth of the window, and lists each one it shows whole", () => {
+    let state = createStarterState('business', 'Test', false);
+    const home = state.site.homePageId;
+    // Thirty sections, most with headings longer than a glance shows, in a script that costs about a token a character.
+    const heading = '長い見出しの文章'.repeat(10);
+    state = applyOperations(state, Array.from({ length: 22 }, () => ({ type: 'node.insert' as const, owner: { kind: 'page' as const, id: home }, componentId: 'intro.page', props: { heading } }))).state;
+    const roots = state.pages[home].rootIds;
+    expect(roots).toHaveLength(30);
+    expect([pageGlanceChars(8192), pageGlanceChars(32_768), pageGlanceChars(400_000)]).toEqual([1024, 4096, 4096]);
+    for (const window of [8192, 16_384, 32_768])
+      for (const indent of [undefined, 1]) {
+        const max = pageGlanceChars(window);
+        const g = pageGlance(state, home, max, indent)!;
+        const label = `${window} ${indent ?? 'compact'}`;
+        expect(JSON.stringify(g, null, indent).length, label).toBeLessThanOrEqual(max);
+        const shown = g.sections as Array<{ id: string; componentId: string; text?: string }>;
+        // The first sections in order, each with its ID and component, and a count of the rest.
+        expect(shown.map((x) => x.id), label).toEqual(roots.slice(0, shown.length));
+        expect(shown.every((x) => typeof x.componentId === 'string'), label).toBe(true);
+        expect(shown.length + ((g.omittedSections as number | undefined) ?? 0), label).toBe(30);
+        expect(shown.length, label).toBeLessThanOrEqual(12);
+        for (const x of shown) if (x.text) expect(x.text.length, label).toBeLessThanOrEqual(64);
+      }
+    // Texts go before sections do: the larger window lists twelve, with their words, each cut to 64 characters.
+    const wide = pageGlance(state, home, pageGlanceChars(32_768))!;
+    const listed = wide.sections as Array<{ text?: string; lists?: Array<{ prop: string; items: number }> }>;
+    expect([listed.length, wide.omittedSections]).toEqual([12, 18]);
+    expect(listed[0].text).toBe('Calm, considered spaces for everyday life');
+    expect(listed[2].lists).toEqual([{ prop: 'items', items: 3 }]);
+    const cut = pageGlance(applyOperations(state, [{ type: 'node.move', owner: { kind: 'page', id: home }, nodeId: roots.at(-1)!, parentId: null, index: 0 }]).state, home, 4096)!;
+    expect((cut.sections as Array<{ text: string }>)[0].text).toBe(`${heading.slice(0, 63)}…`);
+    // Short of room even without words: fewer sections, still in order, and the rest counted.
+    const tight = pageGlance(state, home, 400)!;
+    expect(JSON.stringify(tight).length).toBeLessThanOrEqual(400);
+    expect((tight.sections as unknown[]).length).toBeGreaterThan(0);
+    expect((tight.sections as unknown[]).length).toBeLessThan(8);
+    expect((tight.sections as Array<{ id: string; text?: string }>).every((x, i) => x.id === roots[i] && x.text === undefined)).toBe(true);
+    expect(tight.omittedSections).toBe(30 - (tight.sections as unknown[]).length);
+    // A News list fills itself from the site's articles: what it stores counts for nothing.
+    const news = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: home }, index: 0, componentId: 'content.news' }]).state;
+    expect((pageGlance(news, home, 4096)!.sections as Array<{ componentId: string; lists?: unknown }>)[0]).toMatchObject({ componentId: 'content.news' });
+    expect((pageGlance(news, home, 4096)!.sections as Array<{ lists?: unknown }>)[0].lists).toBeUndefined();
+    // An empty page says so in a few bytes, and a page that has gone gives nothing.
+    const empty = applyOperations(state, [{ type: 'page.create', pageId: 'pg_empty001', title: 'Empty', route: '/empty/' }]).state;
+    expect(pageGlance(empty, 'pg_empty001', 1024)).toEqual({ id: 'pg_empty001', title: 'Empty', route: '/empty/', sections: [] });
+    expect(pageGlance(state, 'pg_gone', 1024)).toBeNull();
+  });
+
+  const chatPosts = () => server.requests.filter((r) => r.method === 'POST');
+  /** The app's own estimate of a native request as it went out. */
+  const estimateOf = (body: Record<string, any>) => {
+    const tools: ToolDefinition[] = (body.tools ?? []).map((t: { function: ToolDefinition }) => t.function);
+    const items = body.messages.slice(1).map((m: { content: string }) => ({ kind: 'user' as const, text: m.content }));
+    return estimateRequestTokens(body.messages[0].content, tools, items);
+  };
+
+  it('sends a page run its page, with room to answer, in a 12K and a 32K window', async () => {
+    for (const window of [12_288, 32_768]) {
+      const before = chatPosts().length;
+      const { session, run } = await setup({ contextWindow: window, toolMode: 'native' });
+      server.script(textReply('It reads well.'));
+      const { result } = await run('What would you change on this page?', null, null, undefined, undefined, 'page');
+      expect(result?.status, String(window)).toBe('no-changes');
+      const posts = chatPosts().slice(before);
+      expect(posts, String(window)).toHaveLength(1);
+      const body = posts[0].body;
+      expect(estimateOf(body) + body.max_tokens, String(window)).toBeLessThanOrEqual(window);
+      expect(body.max_tokens, String(window)).toBeGreaterThanOrEqual(1024);
+      const context = JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec(body.messages.at(-1).content)![1]);
+      expect(context.allowedScope, String(window)).toMatch(/^only the Home page/);
+      expect(context.currentPage.sections.map((x: { id: string }) => x.id), String(window)).toEqual(session.state.pages[session.state.site.homePageId].rootIds);
+    }
   });
 });

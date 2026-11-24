@@ -10,11 +10,11 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
-import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, type Authority } from '@agent/scope';
+import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, requestAuthority, widenChoices, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
-import { catalogueIndex } from '@agent/context';
+import { catalogueIndex, pageGlanceChars } from '@agent/context';
 import { applyOperations } from '@engine/apply';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -23,6 +23,7 @@ import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
 import { turnState } from '@shared/turns';
 import { undoableId } from '../../src/renderer/src/lib/result';
+import { estimateRequestTokens } from '@agent/budget';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -536,6 +537,272 @@ describe('scope authority', () => {
     expect(env.session.state.tokens.overrides['color.brand']).toBeUndefined();
     expect(JSON.stringify(env.adapter.requests[1].items.at(-1))).toMatch(/Keep changes within the selection/);
     expect(JSON.stringify(env.adapter.requests[2].items.at(-1))).toContain('SCOPE_MISMATCH');
+  });
+});
+
+describe('page scope (#513)', () => {
+  const starter = () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = state.site.homePageId;
+    const about = Object.values(state.pages).find((p) => p.route === '/about/')!.id;
+    return { state, home, about, own: { kind: 'page' as const, id: about }, first: state.pages[about].rootIds[0] };
+  };
+  const pageCtx = (pageId: string, pageTitle: string): ChatContext => ({ pageId, pageTitle, selection: null, selectionLabel: null, viewport: 1280, scope: 'page' });
+  const editorContext = (req: { items: unknown[] }) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((req.items.at(-1) as { text: string }).text)![1]);
+  const toolResult = (req: { items: unknown[] }) => JSON.stringify(req.items.at(-1));
+
+  it('starts a request from the scope it was sent with, and an older one as it was meant', () => {
+    const { state, home, about, first, own } = starter();
+    expect(requestAuthority(pageCtx(about, 'Old title'), state)).toEqual({ kind: 'page', pageId: about, label: 'the About page' });
+    expect(requestAuthority({ ...pageCtx(about, 'About'), scope: 'site' }, state)).toEqual({ kind: 'site' });
+    // The chosen scope decides, whatever else the request carries.
+    expect(requestAuthority({ ...pageCtx(about, 'About'), scope: 'site', selection: { owner: own, instancePath: [], nodeId: first }, selectionLabel: 'Intro' }, state)).toEqual({ kind: 'site' });
+    expect(requestAuthority({ ...pageCtx(about, 'About'), selection: { owner: own, instancePath: [], nodeId: first }, selectionLabel: 'Intro' }, state)).toEqual({ kind: 'page', pageId: about, label: 'the About page' });
+    // A title read back damaged still names a page.
+    expect(requestAuthority({ ...pageCtx('pg_gone', 7 as unknown as string) }, state)).toEqual({ kind: 'page', pageId: 'pg_gone', label: 'the current page' });
+    // Sent before the scope could be chosen: the whole site with nothing selected, the selection with something.
+    expect(requestAuthority({ ...pageCtx(home, 'Home'), scope: undefined }, state)).toEqual({ kind: 'site' });
+    expect(requestAuthority({ ...pageCtx(about, 'About'), scope: undefined, selection: { owner: own, instancePath: [], nodeId: first }, selectionLabel: 'Intro' }, state)).toMatchObject({ kind: 'selection', nodeId: first });
+    expect(requestAuthority({ ...pageCtx(about, 'About'), scope: 'selection', selection: { owner: own, instancePath: [], nodeId: first }, selectionLabel: 'Intro' }, state)).toMatchObject({ kind: 'selection', nodeId: first });
+    const page: Authority = { kind: 'page', pageId: about, label: 'the About page' };
+    expect(canEditContracts(page)).toBe(false);
+    expect(widenChoices(page)).toEqual(['Yes, allow changes across the whole site', 'No, only change the About page']);
+  });
+
+  it("allows the page's own sections and settings, and nothing beyond them", () => {
+    const { state, home, about, own, first } = starter();
+    const authority: Authority = { kind: 'page', pageId: about, label: 'the About page' };
+    const allow = (...ops: unknown[]) => expect(checkAuthority(state, ops as EditOperation[], authority)).toBeNull();
+    const deny = (pattern: RegExp, ...ops: unknown[]) => expect(checkAuthority(state, ops as EditOperation[], authority)).toMatch(pattern);
+    // Sections: added at the top level, moved, changed, styled, removed, detached; one added in a batch can be filled in it.
+    allow({ type: 'node.insert', owner: own, parentId: null, index: 0, componentId: 'cta.banner' });
+    allow({ type: 'node.move', owner: own, nodeId: first, parentId: null, index: 2 });
+    allow({ type: 'instance.setProp', owner: own, nodeId: first, prop: 'heading', value: 'Hello' });
+    allow({ type: 'node.setStyle', owner: own, nodeId: first, scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } });
+    allow({ type: 'node.remove', owner: own, nodeId: first });
+    allow({ type: 'component.detachInstance', owner: own, nodeId: first });
+    allow({ type: 'node.insert', owner: own, newNodeId: 'n_fresh1', componentId: 'cta.banner' }, { type: 'instance.setProp', owner: own, nodeId: 'n_fresh1', prop: 'heading', value: 'New' });
+    // A section copied in from another page; never one copied out of it.
+    allow({ type: 'node.copy', owner: { kind: 'page', id: home }, nodeId: state.pages[home].rootIds[0], toOwner: own });
+    deny(/node\.copy adds content outside the About page/, { type: 'node.copy', owner: own, nodeId: first, toOwner: { kind: 'page', id: home } });
+    // Its own settings, but not its address or translations, which reach other pages.
+    allow({ type: 'page.update', pageId: about, title: 'About us', navLabel: 'About', description: 'Who we are', showFooter: false, seoTitle: 'About us' });
+    deny(/page\.update route changes more than the About page/, { type: 'page.update', pageId: about, route: '/team/' });
+    deny(/linkTranslationTo/, { type: 'page.update', pageId: about, linkTranslationTo: null });
+    deny(/another page/, { type: 'page.update', pageId: home, title: 'Start' });
+    // Another page, the shared header and footer, site styles and components' designs.
+    deny(/outside the About page/, { type: 'instance.setProp', owner: { kind: 'page', id: home }, nodeId: state.pages[home].rootIds[0], prop: 'heading', value: 'Hi' });
+    deny(/outside the About page/, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: state.site.shell.header.rootIds[0], prop: 'siteName', value: 'Hi' });
+    deny(/node\.insert adds content outside/, { type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'cta.banner' });
+    for (const op of [{ type: 'page.create', title: 'Team', route: '/team/' }, { type: 'page.remove', pageId: about, replacementPageId: home }, { type: 'page.reorder', pageIds: [about, home] }, { type: 'page.setHome', pageId: about }, { type: 'page.duplicate', pageId: about }, { type: 'token.set', tokenId: 'color.brand', value: '#000080' }, { type: 'site.update', name: 'Other' }])
+      deny(/changes more than the About page/, op);
+    deny(/adds a new component to the site/, { type: 'component.makeUnique', owner: own, nodeId: first });
+    deny(/adds a new component to the site/, { type: 'component.convertToCode', owner: own, nodeId: first });
+    deny(/shows on every page it is placed on/, { type: 'component.setPropSchema', definitionId: (state.pages[about].nodes[first] as InstanceNode).definitionId, prop: 'extra', schema: { type: 'string', label: 'Extra', default: '' } });
+    // One operation beyond the page refuses the whole batch.
+    deny(/changes more than the About page/, { type: 'instance.setProp', owner: own, nodeId: first, prop: 'heading', value: 'Hello' }, { type: 'token.set', tokenId: 'color.brand', value: '#000080' });
+    // A page that has gone limits nothing to it.
+    const gone = structuredClone(state);
+    delete gone.pages[about];
+    expect(checkAuthority(gone, [{ type: 'node.remove', owner: own, nodeId: first }], authority)).toBe('The About page is no longer in the site.');
+  });
+
+  it('adds only the menu link the page tool asked for to the shared menus', () => {
+    const { state, about } = starter();
+    const authority: Authority = { kind: 'page', pageId: about, label: 'the About page' };
+    const link = (shell: 'header' | 'footer', label = 'About', target = about) => ({ type: 'instance.listInsert', owner: { kind: 'shell', id: shell }, nodeId: state.site.shell[shell].rootIds[0], prop: 'links', item: { label, link: { type: 'page', target } } }) as EditOperation;
+    expect(checkAuthority(state, [link('header')], authority)).toMatch(/outside the About page/);
+    expect(checkAuthority(state, [link('header')], authority, { navigation: [link('header')] })).toBeNull();
+    expect(checkAuthority(state, [link('footer')], authority, { navigation: [link('footer')] })).toBeNull();
+    // Not another link (another label, or the same label to another page), nor the same link in the other menu.
+    expect(checkAuthority(state, [link('header', 'Elsewhere')], authority, { navigation: [link('header')] })).toMatch(/outside the About page/);
+    expect(checkAuthority(state, [link('header', 'About', state.site.homePageId)], authority, { navigation: [link('header')] })).toMatch(/outside the About page/);
+    expect(checkAuthority(state, [link('footer')], authority, { navigation: [link('header')] })).toMatch(/outside the About page/);
+  });
+
+  it('limits a page run to its page, and starts it with the page and its own tools', async () => {
+    let about = '';
+    const env = await setup([
+      (req) => {
+        const names = req.tools.map((t) => t.name);
+        expect(names).toContain('upsert_page_with_sections');
+        expect(names).not.toContain('update_site_brand');
+        const context = editorContext(req);
+        expect(context.currentPage.sections.map((s: { id: string }) => s.id)).toEqual(env.session.state.pages[about].rootIds);
+        expect(context.currentPage.sections[0]).toMatchObject({ componentId: 'intro.page', text: 'A small studio with a long view' });
+        expect(context.allowedScope).toMatch(/^only the About page \(page pg_\w+\): its sections and its own settings/);
+        return [call('p1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })];
+      },
+      (req) => {
+        expect(toolResult(req)).toMatch(/SCOPE_MISMATCH.*token\.set changes more than the About page\. This request is limited to the About page/);
+        return [call('p2', 'upsert_page_with_sections', { slug: 'services', sections: [{ componentId: 'intro.page', props: { heading: 'Services' } }] })];
+      },
+      (req) => {
+        expect(toolResult(req)).toMatch(/SCOPE_MISMATCH.*only build that page, not \/services\//);
+        return [call('p3', 'upsert_page_with_sections', { slug: '/about/', removeOtherSections: true, sections: [{ componentId: 'intro.page', props: { heading: 'Who we are' } }, { componentId: 'cta.banner' }] })];
+      },
+      () => finish('Rebuilt the About page.')
+    ]);
+    about = Object.values(env.session.state.pages).find((p) => p.route === '/about/')!.id;
+    const { result } = await env.run('Rewrite this page', pageCtx(about, 'About'));
+    expect(result?.status).toBe('completed');
+    expect(env.session.state.tokens.overrides['color.brand']).toBeUndefined();
+    expect(Object.values(env.session.state.pages).some((p) => p.route === '/services/')).toBe(false);
+    const page = env.session.state.pages[about];
+    expect(page.rootIds.map((id) => (env.session.state.components[(page.nodes[id] as InstanceNode).definitionId]?.componentId))).toEqual(['intro.page', 'cta.banner']);
+    expect((page.nodes[page.rootIds[0]] as InstanceNode).props.heading).toBe('Who we are');
+  });
+
+  it('widens a page run to the whole site only when the user says yes', async () => {
+    const asked = (env: Awaited<ReturnType<typeof setup>>) => env.events.find((e) => e.message?.questions)?.message?.questions?.[0];
+    for (const answer of ['yes', 'no'] as const) {
+      const env = await setup([
+        () => [call('w1', 'request_clarification', { question: 'Make navy the brand colour everywhere?', widenScope: true })],
+        (req) => {
+          // Allowed: the site's own tools are back.
+          expect(req.tools.some((t) => t.name === 'update_site_brand')).toBe(answer === 'yes');
+          return [call('w2', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })];
+        },
+        () => finish('Done.')
+      ]);
+      const home = env.session.state.site.homePageId;
+      const r = await env.orch.send('Use navy everywhere', pageCtx(home, 'Home'));
+      for (let i = 0; i < 200 && !asked(env); i++) await new Promise((res) => setTimeout(res, 10));
+      const q = asked(env)!;
+      expect(q.choices).toEqual(['Yes, allow changes across the whole site', 'No, only change the Home page']);
+      env.orch.answer(r.runId!, q.id!, q.choices[answer === 'yes' ? 0 : 1]);
+      while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+      expect(env.session.state.tokens.overrides['color.brand']).toBe(answer === 'yes' ? '#000080' : undefined);
+      if (answer === 'no') {
+        expect(JSON.stringify(env.adapter.requests[1].items.at(-1))).toMatch(/Keep changes within the Home page/);
+        expect(toolResult(env.adapter.requests[2])).toContain('SCOPE_MISMATCH');
+      }
+    }
+  });
+
+  it('refuses a request whose scope does not match what it carries', async () => {
+    const env = await setup([]);
+    const home = env.session.state.site.homePageId;
+    const sel = { owner: { kind: 'page' as const, id: home }, instancePath: [], nodeId: env.session.state.pages[home].rootIds[0] };
+    const unreadable = 'Your message could not be read. Try sending it again.';
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), selection: sel, selectionLabel: 'Hero' })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection' })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'everything' as never })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), mode: 'ask' })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', pageCtx('pg_gone', 'Prices'))).toEqual({ ok: false, message: 'Prices is no longer in the site. Choose what to change, then send again.' });
+    // An element chosen on another page, or in a component's design, is never this page's selection.
+    const about = Object.values(env.session.state.pages).find((p) => p.route === '/about/')!.id;
+    expect(await env.orch.send('Hi', { ...pageCtx(about, 'About'), scope: 'selection', selection: sel, selectionLabel: 'Hero' })).toEqual({ ok: false, message: unreadable });
+    const design = Object.values(env.session.state.components).find((d) => d.tree)!;
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection', selection: { owner: { kind: 'component', id: design.id }, instancePath: [], nodeId: design.tree!.rootIds[0] }, selectionLabel: 'Root' })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), component: { id: design.id, name: design.name } })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), mode: 'review' as never })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 7 as unknown as string) })).toEqual({ ok: false, message: unreadable });
+    // A shared part is the header or the footer, whatever the request says it is about.
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection', selection: { owner: { kind: 'shell', id: 'constructor' }, instancePath: [], nodeId: 'n_x' }, selectionLabel: 'X' })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: undefined, selection: { owner: { kind: 'shell', id: 'constructor' }, instancePath: [], nodeId: 'n_x' }, selectionLabel: 'X' })).toEqual({ ok: false, message: unreadable });
+    // The header or footer, chosen on this page, is.
+    for (const shell of ['header', 'footer'] as const) {
+      const root = env.session.state.site.shell[shell].rootIds[0];
+      const fine = await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection', selection: { owner: { kind: 'shell', id: shell }, instancePath: [], nodeId: root }, selectionLabel: shell });
+      expect(fine.ok, shell).toBe(true);
+      while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    }
+  });
+
+  it('ends a request whose page was removed before it started, without holding the project', async () => {
+    for (const failing of [false, true]) await removedBeforeStart(failing);
+  });
+
+  async function removedBeforeStart(abortFails: boolean) {
+    const dir = mkdtempSync(join(tmpdir(), 'so-agent-'));
+    dirs.push(dir);
+    const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
+    const adapter = new FakeAdapter([() => finish('Done.')]);
+    let open!: () => void;
+    const gate = new Promise<void>((res) => (open = res));
+    const events: AiEvent[] = [];
+    const orch = new Orchestrator({
+      session: () => session,
+      // The adapter is prepared while the author goes on editing.
+      adapter: async () => (await gate, { adapter, model: 'fake', provider: 'openai' }),
+      emit: (e) => events.push(e),
+      compileAll: async () => [],
+      inspectLayout: async () => ({ issues: [] }),
+      onBusyChange: () => undefined
+    });
+    const about = Object.values(session.state.pages).find((p) => p.route === '/about/')!.id;
+    expect((await orch.send('Tidy this page', pageCtx(about, 'About'))).ok).toBe(true);
+    expect((await session.apply({ operations: [{ type: 'page.remove', pageId: about, replacementPageId: session.state.site.homePageId }], expectedRevision: session.revision }, { label: 'Remove About', source: 'user' })).ok).toBe(true);
+    // Letting go of the project can fail (a disk that cannot be written): that is said, never a clean end.
+    if (abortFails) session.abortRun = async () => Promise.reject(new Error('disk full'));
+    open();
+    while (orch.busy) await new Promise((res) => setTimeout(res, 10));
+    const result = [...events].reverse().find((e) => e.message?.result)?.message?.result;
+    expect(adapter.requests).toHaveLength(0);
+    if (abortFails) {
+      expect(result).toMatchObject({ status: 'failed', summary: 'About is no longer in the site. The request could not let go of the project (disk full). Reopen the project before going on.' });
+      return;
+    }
+    expect(result).toMatchObject({ status: 'failed', summary: 'About is no longer in the site. Nothing in the site was changed.' });
+    // Nothing is held: the author's next change goes straight in.
+    expect((await session.apply({ operations: [{ type: 'site.update', name: 'Still mine' }], expectedRevision: session.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
+  }
+
+  it('keeps links an earlier request left on other pages for a run that may connect them', async () => {
+    const env = await setup([
+      // The whole site: About's banner links to a page that does not exist yet.
+      () => [call('l1', 'upsert_page_with_sections', { slug: '/about/', sections: [{ componentId: 'cta.banner', props: { heading: 'Talk to us', primaryLink: '/contact-us/' } }] })],
+      () => finish('Done.'),
+      () => finish('Done.'),
+      // Continued on Home alone, once the page exists.
+      () => finish('Nothing else to do here.'),
+      // Continued with the whole site.
+      () => finish('Connected.')
+    ]);
+    const state = () => env.session.state;
+    const home = state().site.homePageId;
+    const about = Object.values(state().pages).find((p) => p.route === '/about/')!.id;
+    const banner = () => Object.values(state().pages[about].nodes).find((n) => n.kind === 'instance' && state().components[n.definitionId]?.componentId === 'cta.banner') as InstanceNode;
+    const first = await env.run('Point the About banner at a Contact us page');
+    expect(first.result).toMatchObject({ incomplete: true, pendingLinks: [expect.objectContaining({ route: '/contact-us/', pageId: about })] });
+    expect((await env.session.apply({ operations: [{ type: 'page.create', title: 'Contact us', route: '/contact-us/' }], expectedRevision: env.session.revision }, { label: 'Add page', source: 'user' })).ok).toBe(true);
+    const contact = Object.values(state().pages).find((p) => p.route === '/contact-us/')!.id;
+    // Limited to Home, the run may not connect About's link: it says so, and keeps it.
+    const second = await env.run('continue', pageCtx(home, 'Home'));
+    expect(second.result).toMatchObject({ incomplete: true, pendingLinks: [expect.objectContaining({ route: '/contact-us/', pageId: about })] });
+    expect(second.result?.summary).toMatch(/Links to \/contact-us\/ on other pages are still waiting, because this request may change only the Home page\. To connect them, choose Whole site and reply "continue"\.$/);
+    // Continue would send the same limited request again, so it is not offered as the way on.
+    expect(second.result?.summary).not.toMatch(/Press Continue/);
+    expect(banner().props.primaryLink).toEqual({ type: 'none', target: '' });
+    // The whole site connects it.
+    const third = await env.run('continue', { ...pageCtx(home, 'Home'), scope: 'site' });
+    expect(third.result?.status).toBe('completed');
+    expect(third.result?.incomplete).toBeUndefined();
+    expect(banner().props.primaryLink).toEqual({ type: 'page', target: contact });
+  });
+
+  it('sends the request without the page glance when only that keeps it inside a known window', async () => {
+    const caps = { contextWindowKnown: true, maxOutputTokens: 2000 } as const;
+    // Long enough that both windows below give the glance room for every section's text: only the fit decides.
+    const text = `Tidy this page. ${'Keep the tone warm, the copy short and every heading plain. '.repeat(400)}`;
+    // Measured once with room to spare, at a window that still offers the small tool set.
+    const roomy = await setup([() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: 60_000 } });
+    await roomy.run(text, pageCtx(roomy.session.state.site.homePageId, 'Home'));
+    const req = roomy.adapter.requests[0];
+    expect(editorContext(req).currentPage.sections).toHaveLength(8);
+    const needed = estimateRequestTokens(req.system, req.tools, req.items);
+    expect(pageGlanceChars(needed)).toBeGreaterThan(JSON.stringify(editorContext(req).currentPage, null, 1).length);
+    // One token short of room for the reply: the sections go without their words, every one still listed by ID.
+    for (const [window, words] of [[needed + 1024, true], [needed + 1023, false]] as const) {
+      const env = await setup([() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: window } });
+      const { result } = await env.run(text, pageCtx(env.session.state.site.homePageId, 'Home'));
+      expect(result?.error, String(window)).toBeUndefined();
+      const sent = editorContext(env.adapter.requests[0]).currentPage;
+      expect(sent).toMatchObject({ id: env.session.state.site.homePageId, title: 'Home' });
+      expect(sent.sections.map((x: { id: string }) => x.id), String(window)).toEqual(env.session.state.pages[env.session.state.site.homePageId].rootIds);
+      expect(sent.sections.some((x: { text?: string }) => x.text), String(window)).toBe(words);
+    }
   });
 });
 

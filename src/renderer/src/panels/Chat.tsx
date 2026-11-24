@@ -1,14 +1,14 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatImageRef, type ChatMessage, type FieldLocation } from '@shared/api';
-import { refKey, type ElementRef, type ProjectState } from '@shared/types';
+import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type FieldLocation } from '@shared/api';
+import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
-import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatTarget';
+import { chatContextFor, composerScope, editScope, retryView, targetOf } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId as undoableTurn } from '../lib/result';
@@ -71,12 +71,13 @@ function summaryOf(r: NonNullable<ChatMessage['result']>) {
 
 /**
  * What a sent request was allowed to change, as its caption and the run strip name it. An edit with no element
- * chosen can reach the whole site, so it says so rather than naming only the page it started on.
+ * chosen reaches its page, or the whole site (as every one sent before the page could be chosen could), and says which
+ * rather than naming only the page it started on.
  */
 function scopeOf(ctx?: ChatContext | null, state?: ProjectState): string {
   if (!ctx) return '';
   const inComponent = typeof ctx.component?.name === 'string';
-  if (ctx.mode !== 'ask' && !ctx.selectionLabel && !inComponent && ctx.pageTitle) return `Whole site · from ${ctx.pageTitle}`;
+  if (ctx.mode !== 'ask' && !ctx.selectionLabel && !inComponent && ctx.pageTitle) return ctx.scope === 'page' ? `This page · ${ctx.pageTitle}` : `Whole site · from ${ctx.pageTitle}`;
   // A part of a placed component can change the whole placement (agent/scope.ts), which is the real boundary.
   if (ctx.mode !== 'ask' && ctx.selection && !inComponent) {
     const boundary = boundaryOf(state, ctx.selection);
@@ -166,15 +167,6 @@ export function Chat() {
   const shownConversation = useRef<string | null>(null);
   const history = useStore((s) => s.snapshot?.history);
   const rightTab = useStore((s) => s.rightTab);
-  // Choosing a different element scopes the next message to it again; otherwise the choice made with the
-  // scope toggle stays, message after message.
-  const selectionKey = selection ? refKey(selection) : null;
-  const lastSelection = useRef(selectionKey);
-  useEffect(() => {
-    if (selectionKey === lastSelection.current) return;
-    lastSelection.current = selectionKey;
-    if (selectionKey && !getState().chatContextEnabled.selection) setState({ chatContextEnabled: { ...getState().chatContextEnabled, selection: true } });
-  }, [selectionKey]);
 
   const provider = providers.find((p) => p.id === settings?.ai.provider);
   const configured = !!provider?.configured;
@@ -336,6 +328,9 @@ export function Chat() {
   const { page, component } = scope;
   const selLabel = scope.selectionLabel;
   const sel = selLabel?.toLowerCase();
+  /** How far the next message goes, as the composer sends it: the selection only while something is selected. */
+  const chosen = editScope(scope, ctxOn.scope);
+  const toSelection = chosen === 'selection';
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
   // edited everywhere offers none.
@@ -347,11 +342,11 @@ export function Chat() {
       ? // A question's strongest use is finding where something is edited, so its starters ask that about what is here.
         page
         ? [
-            selLabel && ctxOn.selection ? `Where do I change the ${sel} in the Inspector?` : `What can I change on the “${page.title}” page, and where?`,
+            selLabel && toSelection ? `Where do I change the ${sel} in the Inspector?` : `What can I change on the “${page.title}” page, and where?`,
             `Which parts of the “${page.title}” page are shared with other pages?`
           ].map((text) => ({ text, kind: 'ask' }))
         : []
-      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: ctxOn });
+      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: { page: ctxOn.page, selection: toSelection } });
   const stepNow = currentStep(working?.activities);
   // The run strip is the one place that says what a run is doing now: an edit's current step, or its phase. A question
   // is always "Reading the site", as the dock tab and the canvas say it, followed by its current step.
@@ -803,62 +798,77 @@ export function Chat() {
                   <Component /> <span className="ellipsis">{component.name}</span>
                 </span>
               ) : (
-                page &&
-                (!askMode && !selLabel ? (
-                  // With nothing selected an edit can reach any page, so the chip says that first.
-                  <span className="chip" title={`The AI starts from ${page.title} and can change any page, including the shared header and footer.`}>
-                    <Globe /> <span className="ellipsis">Whole site · from {page.title}</span>
-                  </span>
-                ) : (
+                page && (
                   <span className="chip" title="The AI starts from the page you are viewing.">
                     <FileText /> <span className="ellipsis">{page.title}</span>
                   </span>
-                ))
+                )
               )}
-              {selLabel && askMode && ctxOn.selection && (
+              {selLabel && askMode && toSelection && (
                 // A question changes nothing, so the selection only says what it is about.
                 <span className="chip" title="The AI starts from the selected element">
                   <MousePointerClick /> <span className="ellipsis">{selLabel}</span>
                 </span>
               )}
-              {selLabel && !askMode && (
-                // What the next message may change: the selected element only, or anything on the site (the whole
-                // component, while it is edited everywhere).
-                <Segmented<'selection' | 'site'>
+              {!askMode && (component ? selLabel : page) && (
+                // What the next message may change: the selected element only, its page, or anything on the site (the
+                // element or the whole component, while a component is edited everywhere).
+                <Segmented<ChatEditScope>
                   label="What the AI may change"
-                  value={ctxOn.selection ? 'selection' : 'site'}
-                  onChange={(v) => setState({ chatContextEnabled: { ...ctxOn, selection: v === 'selection' } })}
+                  value={component ? (toSelection ? 'selection' : 'site') : chosen}
+                  onChange={(v) => setState({ chatContextEnabled: { ...ctxOn, scope: v } })}
                   options={[
-                    {
-                      value: 'selection',
-                      // A part of a component is scoped to the whole component placement (see agent/scope.ts), so
-                      // the option names that boundary rather than only the part.
-                      title: scope.selection?.instancePath.length ? `Only ${boundary ?? 'the component'}, the component containing ${selLabel}` : `Only ${selLabel}`,
-                      label: (
-                        <>
-                          <MousePointerClick /> <span className="ellipsis">{boundary ?? selLabel}</span>
-                        </>
-                      )
-                    },
-                    component
-                      ? {
-                          value: 'site',
-                          title: `All of ${component.name}, everywhere it is used`,
-                          label: (
-                            <>
-                              <Component /> Whole component
-                            </>
-                          )
-                        }
-                      : {
-                          value: 'site',
-                          title: 'Whole site',
-                          label: (
-                            <>
-                              <Globe /> Whole site
-                            </>
-                          )
-                        }
+                    ...(selLabel
+                      ? [
+                          {
+                            value: 'selection' as const,
+                            // A part of a component is scoped to the whole component placement (see agent/scope.ts), so
+                            // the option names that boundary rather than only the part.
+                            title: scope.selection?.instancePath.length ? `Only ${boundary ?? 'the component'}, the component containing ${selLabel}` : `Only ${selLabel}`,
+                            label: (
+                              <>
+                                <MousePointerClick /> <span className="ellipsis">{boundary ?? selLabel}</span>
+                              </>
+                            )
+                          }
+                        ]
+                      : []),
+                    ...(component
+                      ? [
+                          {
+                            value: 'site' as const,
+                            title: `All of ${component.name}, everywhere it is used`,
+                            label: (
+                              <>
+                                <Component /> Whole component
+                              </>
+                            )
+                          }
+                        ]
+                      : page
+                        ? [
+                            {
+                              // The page's sections and its own settings; anything else is asked about first.
+                              value: 'page' as const,
+                              title: `This page · ${page.title}`,
+                              label: (
+                                <>
+                                  <FileText /> This page
+                                </>
+                              )
+                            },
+                            {
+                              // Any page, the shared header and footer, and the site's styles.
+                              value: 'site' as const,
+                              title: `Whole site · from ${page.title}`,
+                              label: (
+                                <>
+                                  <Globe /> Whole site
+                                </>
+                              )
+                            }
+                          ]
+                        : [])
                   ]}
                 />
               )}
@@ -898,10 +908,10 @@ export function Chat() {
                   : running
                     ? 'Draft your next message…'
                     : askMode
-                      ? selLabel && ctxOn.selection
+                      ? selLabel && toSelection
                         ? `Ask about the ${sel}…`
                         : 'Ask how this site works…'
-                      : selLabel && ctxOn.selection
+                      : selLabel && toSelection
                         ? boundary
                           ? `Describe a change to ${boundary}…`
                           : `Describe a change to the ${sel}…`
@@ -1321,7 +1331,8 @@ function ResultCard({
         // Editing a component everywhere happens in Edit, never in Preview.
         ...(view ? { ...(view.pageId ? { pageId: view.pageId } : {}), definitionMode: view.definitionMode, ...(view.definitionMode ? { mode: 'edit' as const } : {}) } : {}),
         selection: view?.selection ?? null,
-        chatContextEnabled: { page: true, selection: !!view?.selection },
+        // As far as it reached when it was sent: its element, its page, or the whole site.
+        chatContextEnabled: { page: true, scope: view?.scope ?? 'selection' },
         // Tried again as it was sent: a question stays a question.
         chatMode: ctx?.mode === 'ask' ? 'ask' : 'edit'
       });

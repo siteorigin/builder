@@ -65,8 +65,11 @@ export function isArticleHeader(state: ProjectState, def: ComponentDefinition, p
   );
 }
 
+/** Long enough for any valid route: four levels of 60 characters and their slashes. */
+const SLUG_CHARS = 250;
+
 export const UPSERT_ARGS = z.object({
-  slug: z.string().min(1).max(120).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
+  slug: z.string().min(1).max(SLUG_CHARS).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
   title: z.string().min(1).max(80).optional().describe('Page title. Defaults to one made from the slug for a new page.'),
   navLabel: z.string().max(40).optional(),
   description: z.string().max(320).optional().describe('Search engine description.'),
@@ -419,12 +422,15 @@ const stillWaiting = (state: ProjectState, p: PendingLink) => {
   return !!slot && (slot.value as LinkValue | undefined)?.type === 'none';
 };
 
-/** `skip` names links this call replaces with a value of its own: they are neither filled nor kept. */
-function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string, pageId: string, skip?: (p: PendingLink) => boolean): { ops: EditOperation[]; filled: PendingLink[] } {
+/**
+ * `skip` names links this call replaces with a value of its own: they are neither filled nor kept. A run limited to one
+ * page (`limit`) fills only links on that page: one waiting on another page keeps waiting.
+ */
+function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string, pageId: string, skip?: (p: PendingLink) => boolean, limit?: string | null): { ops: EditOperation[]; filled: PendingLink[] } {
   const ops: EditOperation[] = [];
   const filled: PendingLink[] = [];
   for (const p of memory.pendingLinks) {
-    if (p.route !== route || skip?.(p)) continue;
+    if (p.route !== route || skip?.(p) || (limit && p.pageId !== limit)) continue;
     filled.push(p);
     if (!stillWaiting(state, p)) continue;
     ops.push({
@@ -440,26 +446,33 @@ function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string,
 }
 
 /** Connect links whose page now exists, however that page was made. Returns the routes still missing. */
-export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, key: string): Promise<{ outcome?: ToolOutcome; missing: string[]; error?: string }> {
+/**
+ * `deferred`: routes that exist, whose links wait on pages a run limited to one page may not change; a run that may
+ * change those pages connects them.
+ */
+export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, key: string): Promise<{ outcome?: ToolOutcome; missing: string[]; deferred: string[]; error?: string }> {
   const state = host.state();
   memory.pendingLinks = memory.pendingLinks.filter((p) => stillWaiting(state, p));
   const ops: EditOperation[] = [];
   const filled: PendingLink[] = [];
+  const limit = host.pageLimit?.()?.pageId ?? null;
   for (const route of new Set(memory.pendingLinks.map((p) => p.route))) {
     const page = pageAtRoute(state, route);
     if (!page) continue;
-    const r = pendingLinkOps(state, memory, route, page.id);
+    const r = pendingLinkOps(state, memory, route, page.id, undefined, limit);
     ops.push(...r.ops);
     filled.push(...r.filled);
   }
   let outcome: ToolOutcome | undefined;
   if (ops.length) {
     const res = await host.apply(ops, host.revision(), 'Connect page links', key);
-    if (!res.ok) return { missing: [...new Set(memory.pendingLinks.map((p) => p.route))], error: res.error?.message ?? 'The links could not be connected.' };
+    if (!res.ok) return { missing: [...new Set(memory.pendingLinks.map((p) => p.route))], deferred: [], error: res.error?.message ?? 'The links could not be connected.' };
     outcome = { ok: true, mutated: true, ops, results: res.results, content: { ok: true } };
   }
   memory.pendingLinks = memory.pendingLinks.filter((p) => !filled.includes(p));
-  return { outcome, missing: [...new Set(memory.pendingLinks.map((p) => p.route))] };
+  // Only a route no page has is missing: a link on another page that a run limited to one page leaves waiting is not.
+  const routes = [...new Set(memory.pendingLinks.map((p) => p.route))];
+  return { outcome, missing: routes.filter((r) => !pageAtRoute(state, r)), deferred: limit ? routes.filter((r) => pageAtRoute(state, r)) : [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +672,15 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   const found = findPage(state, rawArgs.slug);
   if (found.error) return fieldError([{ field: 'slug', message: found.error }], 'Nothing was applied.');
   const { route, page } = found;
+  // A run limited to one page builds only that page: never another one, nor a new one.
+  const limit = host.pageLimit?.() ?? null;
+  if (limit && page?.id !== limit.pageId) {
+    const own = Object.hasOwn(state.pages, limit.pageId) ? state.pages[limit.pageId].route : null;
+    const message = own
+      ? `This request is limited to ${limit.label} (${own}), so upsert_page_with_sections can only build that page, not ${route}. Nothing was applied. Use slug "${own}", or ask the user with request_clarification (widenScope: true) before changing other pages.`
+      : `${limit.label} is no longer in the site. Nothing was applied.`;
+    return { ok: false, content: { ok: false, revision: host.revision(), error: { code: 'SCOPE_MISMATCH', message } } };
+  }
 
   // Repairing: the rejected page is still held, so only the named sections come back.
   let args: UpsertArgs = rawArgs;
@@ -841,6 +863,8 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   }
   const label = args.navLabel || page?.navLabel || title;
   const nav: Record<string, string> = {};
+  /** The menu links this call asked for: a run limited to the page may add these to the shared menus, and no more. */
+  const navigation: EditOperation[] = [];
   for (const [shell, wanted] of [['header', args.addToHeaderNav], ['footer', args.addToFooterNav]] as const) {
     if (!wanted) continue;
     const r = navOps(scratch, shell, pageId, label);
@@ -853,14 +877,15 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
         return fieldError([{ field: shell === 'header' ? 'addToHeaderNav' : 'addToFooterNav', message: (e as Error).message }], 'Nothing was applied. Use a shorter navLabel, or leave this page out of that menu.');
       }
       push(op);
+      navigation.push(op);
     }
   }
-  const pending = pendingLinkOps(scratch, memory, route, pageId, superseded);
+  const pending = pendingLinkOps(scratch, memory, route, pageId, superseded, limit?.pageId);
   for (const op of pending.ops) push(op);
 
   if (!ops.length) return { ok: true, content: { ok: true, pageId, route, created: false, revision: host.revision(), note: 'Nothing needed to change.' } };
 
-  const res = await host.apply(ops, host.revision(), createOp ? `Add page ${title}` : `Update ${title}`, callId);
+  const res = await host.apply(ops, host.revision(), createOp ? `Add page ${title}` : `Update ${title}`, callId, { navigation });
   if (!res.ok) {
     keepDraft();
     return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
@@ -892,7 +917,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   });
   memory.drafts.delete(route);
 
-  const waiting = [...new Set(memory.pendingLinks.map((p) => p.route))];
+  const waiting = [...new Set(memory.pendingLinks.map((p) => p.route))].filter((r) => !pageAtRoute(after, r));
   const fullNav = Object.entries(nav).filter(([, s]) => s === 'full').map(([k]) => k);
   const content = {
     ok: true,
@@ -910,7 +935,8 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
 }
 
 /** Tool schema for one project: each section is typed by its component, with closed props. */
-export function upsertToolSchema(state: ProjectState): JsonSchema {
+/** `only`: the route of the one page a run may build; the call then cannot link the page to a translation either. */
+export function upsertToolSchema(state: ProjectState, only?: string): JsonSchema {
   const defs: ComponentDefinition[] = [
     // A theme component already in the project is typed as installed, as the section check reads it: a newer
     // theme's properties (a heading level, say) are not there until Project health updates it.
@@ -942,13 +968,13 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
     type: 'object',
     $defs: { image: IMAGE_SCHEMA },
     properties: {
-      slug: { type: 'string', maxLength: 120, description: 'Page path such as "services". "home" is the home page.' },
+      slug: { type: 'string', maxLength: SLUG_CHARS, description: only ? `This request may build only the page at ${only}: use "${only}".` : 'Page path such as "services". "home" is the home page.' },
       title: { type: 'string', maxLength: 80 },
       navLabel: { type: 'string', maxLength: 40 },
       description: { type: 'string', maxLength: 320, description: 'Search engine description.' },
       draft: { type: 'boolean', description: DRAFT_DESCRIPTION },
       language: { type: 'string', maxLength: 20, description: LANGUAGE_DESCRIPTION },
-      translationOf: { type: 'string', maxLength: 120, description: TRANSLATION_DESCRIPTION },
+      ...(only ? {} : { translationOf: { type: 'string', maxLength: 120, description: TRANSLATION_DESCRIPTION } }),
       articleDate: { type: 'string', description: ARTICLE_DATE_DESCRIPTION },
       byline: { type: 'string', maxLength: 80 },
       excerpt: { type: 'string', maxLength: 320 },

@@ -13,7 +13,7 @@ import type { ChatContext } from '@shared/api';
 
 const page = (id: string): OwnerRef => ({ kind: 'page', id });
 const at = (owner: OwnerRef, nodeId: string, more: Partial<ElementRef> = {}): ElementRef => ({ owner, instancePath: [], nodeId, ...more });
-const enabled = { page: true, selection: true };
+const enabled = { page: true, scope: 'selection' as const };
 
 /** The Business starter: Home holds a hero, logos, features (a list of cards), media, stats, gallery, testimonials, cta. */
 function business() {
@@ -43,7 +43,8 @@ describe('a selection the project no longer has is let go when the project chang
     // The AI composer never offers (or sends) the element that has gone, even before the editor lets it go.
     const scope = composerScope(t.s, view(sel, t.home));
     expect(scope).toMatchObject({ selection: null, selectionLabel: null });
-    expect(chatContextFor(t.s, scope, { enabled, viewport: 1280 })).toMatchObject({ pageId: t.home, selection: null, selectionLabel: null });
+    // An edit about it goes to its page instead, never the whole site.
+    expect(chatContextFor(t.s, scope, { enabled, viewport: 1280 })).toMatchObject({ pageId: t.home, selection: null, selectionLabel: null, scope: 'page' });
     expect(composerScope(inserted.state, view(sel, t.home))).toMatchObject({ selection: sel, selectionLabel: 'Section' });
     // A placement whose component has gone (a hand-edited document) is no target either.
     const broken = structuredClone(inserted.state);

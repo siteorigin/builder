@@ -343,6 +343,11 @@ export type RunStatus = 'preparing' | 'running' | 'awaiting-input' | 'validating
 /** edit: the AI may change the site. ask: a read-only question; the AI reads the site and changes nothing. */
 export type ChatMode = 'edit' | 'ask';
 
+/** How far an edit on a page may reach: the selected element, the page, or the whole site. */
+export type ChatEditScope = 'selection' | 'page' | 'site';
+
+export const CHAT_EDIT_SCOPES: readonly ChatEditScope[] = ['selection', 'page', 'site'];
+
 export interface ChatContext {
   pageId: string;
   pageTitle: string;
@@ -354,6 +359,13 @@ export interface ChatContext {
    * and `pageId` is only the page the editor showed it on. Absent for a request about the site.
    */
   component?: { id: string; name: string };
+  /**
+   * What an edit on a page may change, as the author chose it: the selected element, the page (`pageId`, its sections
+   * and its own settings), or the whole site. A page or site request is sent without its selection. Absent in
+   * questions, in requests about a component edited everywhere, and in requests sent before the scope could be chosen,
+   * which were limited to their selection when they had one and could change the whole site otherwise.
+   */
+  scope?: ChatEditScope;
   viewport: number;
   /** Library images the author attached to the request, by asset ID. The AI is told their IDs and what the library says about them (name, size, description, alt text), never the pictures or their files. */
   assetIds?: string[];

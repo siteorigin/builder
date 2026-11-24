@@ -51,7 +51,8 @@ export function findStubPages(before: ProjectState, after: ProjectState, request
   return out;
 }
 
-export function completenessNudge(stubs: StubPage[], missingRoutes: string[], macroTools: boolean, rejected: string[] = [], wanted: MissingPage[] = []): string {
+/** `limitedTo`: the page a run may change, named; it cannot create the pages its links wait for. */
+export function completenessNudge(stubs: StubPage[], missingRoutes: string[], macroTools: boolean, rejected: string[] = [], wanted: MissingPage[] = [], limitedTo?: string): string {
   const lines = ['Before finishing, the app found work that looks unfinished:'];
   for (const r of rejected) lines.push(`- The page ${r} was rejected with errors and has not been built.`);
   for (const w of wanted)
@@ -63,9 +64,11 @@ export function completenessNudge(stubs: StubPage[], missingRoutes: string[], ma
   for (const s of stubs) lines.push(`- ${s.title} (${s.route}) has ${s.sections === 0 ? 'no sections' : 'only an opening section'}.`);
   for (const r of missingRoutes) lines.push(`- Links point to ${r}, but no page uses that route yet.`);
   lines.push(
-    macroTools
-      ? 'Finish these now: call upsert_page_with_sections once per page with its full list of sections, and create or relink any missing page.'
-      : 'Finish these now: add the sections each page needs, and create or relink any missing page.'
+    limitedTo
+      ? `Finish these now on ${limitedTo}, the only page this request may change: relink a link to a missing page to one that exists, or ask the user with request_clarification (widenScope: true) before creating pages.`
+      : macroTools
+        ? 'Finish these now: call upsert_page_with_sections once per page with its full list of sections, and create or relink any missing page.'
+        : 'Finish these now: add the sections each page needs, and create or relink any missing page.'
   );
   lines.push('If one of these is already what the user asked for, leave it and finish. You will not be asked again.');
   return lines.join('\n');
