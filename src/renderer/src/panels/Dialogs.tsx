@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Box, CircleAlert, Component, FileText, History, House, Info, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, Undo2, User } from 'lucide-react';
+import { Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
 import { uniqueCopyName } from '@engine/definitions';
-import type { PageLinkUse } from '@engine/page-links';
+import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
 import { applyOps, api, getState, projectHistory, setState, toast, useStore } from '../store';
@@ -13,7 +13,7 @@ import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { goToShellPart, selectPage } from '../lib/actions';
 import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-removal';
-import { sectionOptions } from '../lib/sections';
+import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { HistoryTabs, SavedVersionsModal } from './SavedVersions';
 
 /** The longest name a component can have. */
@@ -56,8 +56,8 @@ function Subject({ id, icon, name, note, tone }: { id?: string; icon: React.Reac
 }
 
 interface Detail {
-  /** `change`: what the action does. `keep`: what stays as it is. `note`: anything else worth knowing. */
-  kind: 'change' | 'keep' | 'note';
+  /** `change`: what the action does. `keep`: what stays as it is. `lose`: what goes with it. `risk`: what may break. `note`: anything else worth knowing. */
+  kind: 'change' | 'keep' | 'note' | 'lose' | 'risk';
   icon: React.ReactNode;
   text: React.ReactNode;
 }
@@ -85,7 +85,7 @@ function Count({ length, max }: { length: number; max: number }) {
 }
 
 /** A list that can be scrolled by keyboard, with a tab stop only when it actually overflows. */
-function ScrollList({ className, labelledBy, children }: { className: string; labelledBy: string; children: React.ReactNode }) {
+function ScrollList({ className, labelledBy, label, children }: { className: string; labelledBy?: string; label?: string; children: React.ReactNode }) {
   const ref = useRef<HTMLUListElement>(null);
   const [scrolls, setScrolls] = useState(false);
   useLayoutEffect(() => {
@@ -93,7 +93,7 @@ function ScrollList({ className, labelledBy, children }: { className: string; la
     if (el) setScrolls(el.scrollHeight > el.clientHeight + 1);
   });
   return (
-    <ul ref={ref} className={className} aria-labelledby={labelledBy} tabIndex={scrolls ? 0 : undefined}>
+    <ul ref={ref} className={className} aria-labelledby={labelledBy} aria-label={label} tabIndex={scrolls ? 0 : undefined}>
       {children}
     </ul>
   );
@@ -515,12 +515,51 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
   );
 }
 
-/** How a link in the review reads: its label in quotes, where it is, and the section it jumps to. */
-function RemovedPageLink({ use }: { use: PageLinkUse }) {
+/*
+ * The page dialogs join the confirmation family too: a badge for the action, the page set apart with its address,
+ * the decision the action needs (where links go, where links to its sections land), then one line for each thing
+ * that changes, goes, stays and can be undone. Deleting a page can be undone, so it takes the recoverable step
+ * (an outlined red action), as a discard does; making a page Home is the accent's.
+ */
+
+/**
+ * The glyph for where a link lives: the shared header or footer, a page, a component, or a collection entry's text
+ * (a post or case study, shown with the glyph the Pages panel gives a dated article).
+ */
+function holderIcon(owner: LinkHolder) {
+  if (owner.kind === 'shell') return owner.id === 'header' ? <PanelTop data-shared="" /> : <PanelBottom data-shared="" />;
+  if (owner.kind === 'entry') return <Newspaper />;
+  return owner.kind === 'component' ? <Component /> : <FileText />;
+}
+
+/**
+ * How a link in the review reads: where it is, its label in quotes, and where it will land. A link that jumped to a
+ * section shows that section's ID, then the place chosen for it on the new page (or that one is still to choose).
+ */
+function RemovedPageLink({ use, landing }: { use: PageLinkUse; landing?: { text: string; pending?: boolean } }) {
   return (
     <li>
-      <span className="delete-page-link-label">“{use.label}”</span> <span className="muted">{use.card ? 'card ' : ''}in {use.where}</span>
-      {use.link.anchor && <span className="delete-page-route"> #{use.link.anchor}</span>}
+      {holderIcon(use.owner)}
+      <span className="page-dialog-where">{use.where}</span>
+      <span className="page-dialog-label">“{use.label}”</span>
+      {use.link.anchor && (
+        <span className="page-dialog-dest">
+          <span className="page-dialog-address" data-old={landing ? '' : undefined}>
+            #{use.link.anchor}
+          </span>
+          {landing && (
+            <>
+              <span className="page-dialog-arrow" aria-hidden="true">
+                →
+              </span>
+              <span className="sr-only">{landing.pending ? 'still needs a place' : 'will open'}</span>
+              <span className="page-dialog-landing" data-pending={landing.pending || undefined} aria-hidden={landing.pending || undefined}>
+                {landing.text}
+              </span>
+            </>
+          )}
+        </span>
+      )}
     </li>
   );
 }
@@ -530,6 +569,16 @@ const UNCHOSEN = '\u0000unchosen';
 
 /** No page chosen yet: shown when the replacement picked before has gone. */
 const NO_PAGE = '';
+
+/** Pages filed under `page` by address (`/services/garden-design/` under `/services/`): deleting it leaves them. */
+function pagesUnder(st: ProjectState, pageId: string) {
+  const route = st.pages[pageId]?.route;
+  if (!route || route === '/') return [];
+  return st.site.pageOrder.filter((id) => id !== pageId && st.pages[id]?.route.startsWith(route)).map((id) => st.pages[id]);
+}
+
+/** Labels in quotes, joined the way a sentence lists them. */
+const quoted = (uses: PageLinkUse[]) => listAll([...new Set(uses.map((u) => `“${u.label}”`))]);
 
 export function DeletePageModal({ pageId }: { pageId: string }) {
   const snap = useStore((s) => s.snapshot);
@@ -548,6 +597,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   const key = [snap?.workspaceKey, pageId, replacement, snap?.revision].join('\u0000');
   const choices = sections.key === key ? sections.choices : new Map<string, string>();
   const [busy, setBusy] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
   const review = reviewPageRemoval(st, pageId, replacement);
   const refs = review.uses.length;
   const plan = planPageRemoval(st, pageId, replacement, choices);
@@ -583,43 +633,184 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
     // The row that opened this is gone: keyboard focus goes to the current page's row.
     setTimeout(() => document.querySelector<HTMLElement>('[role="listbox"][aria-label="Pages"] [role="option"][aria-selected="true"]')?.focus(), 0);
   };
-  const linkHint = refs ? ` The ${refs} link${refs === 1 ? '' : 's'} below that point here will point to it.` : '';
+  const draft = isDraftPage(st, page);
+  const asks = refs > 0 || isHome;
+  const missing = target ? review.missing : [];
+  const open = missing.filter((m) => !choices.has(m.fragment)).length;
+  const under = pagesUnder(st, pageId);
+  const linkWord = (n: number) => `${n} link${n === 1 ? '' : 's'}`;
+  // Home with only drafts beside it: nothing can take its place until another page is published.
+  const noHome = isHome && !others.length;
+  // What the replacement choice means, said under it where it needs saying: a page still to choose, a draft that
+  // would stop the export, or the new home page's move. A published page needs nothing: the line below says it.
+  const outcome = !target ? (
+    noHome ? (
+      'Every other page is a draft. Publish one to make it the home page.'
+    ) : (
+      `Choose the page ${isHome ? 'that becomes the home page' : `its ${linkWord(refs)} open instead`}.`
+    )
+  ) : isHome ? (
+    <>
+      “{target.title}” moves from <span className="page-dialog-address">{target.route}</span> to <span className="page-dialog-address">/</span>, the home page’s address.
+    </>
+  ) : isDraftPage(st, target) ? (
+    `“${target.title}” is a draft: your site can’t be exported until it is published, or until you choose a published page here.`
+  ) : undefined;
+  // Where each section the links jump to will land on the replacement page, as chosen so far.
+  const landings = new Map<string, { text: string; pending?: boolean }>();
+  for (const m of missing) {
+    const choice = choices.get(m.fragment);
+    const text = choice === undefined ? undefined : choice === '' ? 'top of page' : options.find((o) => o.value === choice)?.text;
+    landings.set(m.fragment, text === undefined ? { text: 'to choose', pending: true } : { text: choice === '' ? text : `“${text}”` });
+  }
+  // Once every section has a place and the plan is still refused, the choices behind it: those giving a section a
+  // new ID when that would take an ID away, else one that no longer fits the page, else every section picked.
+  const refused = !!target && !open && !plan.operations;
+  // Top of page ('') can never be refused, so only a section picked is a candidate.
+  const placed = missing.filter((m) => !!choices.get(m.fragment));
+  const named = placed.filter((m) => (plan.lost.length ? choices.get(m.fragment)!.startsWith(SECTION_NODE) : !options.some((o) => o.value === choices.get(m.fragment))));
+  const implicated = new Set(refused ? (named.length ? named : placed).map((m) => m.fragment) : []);
+  // Several new IDs that together take one away can't be told apart: the tray says so as a group, blaming no field.
+  const jointly = refused && plan.lost.length > 0 && implicated.size > 1;
+  const lostIds = plan.lost.map((id) => `#${id}`).join(', ');
+  // Why Delete page cannot be pressed yet, said beside it, with a way straight to the choice that unblocks it.
+  const need: { text: string; act?: string } | null =
+    !asks || plan.operations
+      ? null
+      : !target
+        ? noHome
+          ? { text: 'Publish another page to delete this one.' }
+          : { text: isHome ? 'The site needs a new home page.' : 'Its links need a page to go to.', act: 'Choose' }
+        : open
+          ? { text: `${open === 1 ? 'A section still needs' : `${open} sections still need`} a place on “${target.title}”.`, act: 'Choose' }
+          : plan.lost.length
+            ? jointly
+              ? { text: `${implicated.size} choices together would break other links.`, act: 'Change one' }
+              : { text: 'One choice would break other links.', act: 'Change it' }
+            : implicated.size > 1
+              ? { text: 'Sections chosen can’t be used now.', act: 'Choose again' }
+              : { text: 'A section chosen can’t be used now.', act: 'Choose again' };
+  // While the AI works, whatever else still blocks the deletion stays in view.
+  const blocked = aiBusy ? { text: `The AI is making changes.${need ? ` ${need.text}` : ' You can delete this page when it stops.'}`, act: need?.act } : need;
+  // The first choice still open or refused: its field (label included) scrolled into view, then the select focused.
+  const goToChoice = () => {
+    const el = body.current?.querySelector<HTMLSelectElement>('select[data-unset], select[aria-invalid="true"], select[data-refused]');
+    (el?.closest<HTMLElement>('.field') ?? el)?.scrollIntoView({ block: 'nearest' });
+    el?.focus({ preventScroll: true });
+  };
+  const details: Detail[] = [];
+  // The address the new home page leaves stops working: said right under the choice that decides it, ahead of any
+  // section choices.
+  const homeRisk: Detail | null =
+    isHome && target
+      ? {
+          kind: 'risk',
+          icon: <TriangleAlert />,
+          text: (
+            <>
+              Once your site is published again, <span className="page-dialog-address">{target.route}</span> stops working, so bookmarks and links from other sites to it will break.
+            </>
+          )
+        }
+      : null;
+  if (refs)
+    details.push({
+      kind: 'change',
+      icon: <CornerDownRight />,
+      text: (
+        <>
+          <span>
+            {linkWord(refs)} on your site {target ? <>will open <strong>“{target.title}”</strong></> : 'will open the page you choose'}.{' '}
+            <span className="page-dialog-quiet">{refs === 1 ? 'Its' : 'Their'} words stay as they are.</span>
+          </span>
+          <ScrollList className="page-dialog-list" labelledBy="delete-page-links">
+            {review.uses.map((u, i) => (
+              <RemovedPageLink key={i} use={u} landing={u.link.anchor && target ? (landings.get(u.link.anchor) ?? { text: 'same section' }) : undefined} />
+            ))}
+          </ScrollList>
+        </>
+      )
+    });
+  if (review.cards.length)
+    details.push({
+      kind: 'lose',
+      icon: <CircleMinus />,
+      text: (
+        <>
+          <span id="delete-page-cards">{review.cards.length === 1 ? 'Its card is removed from the page list it is in.' : `Its ${review.cards.length} cards are removed from the page lists they are in.`}</span>
+          <ScrollList className="page-dialog-list" labelledBy="delete-page-cards">
+            {review.cards.map((u, i) => (
+              <RemovedPageLink key={i} use={u} />
+            ))}
+          </ScrollList>
+        </>
+      )
+    });
+  if (under.length)
+    details.push({
+      kind: 'keep',
+      icon: <ShieldCheck />,
+      text:
+        under.length === 1
+          ? `“${under[0].title}” stays on your site at its own address.`
+          : `${listAll(under.slice(0, 2).map((p) => `“${p.title}”`).concat(under.length > 2 ? [`${under.length - 2} more`] : []))} stay on your site at their own addresses.`
+    });
+  details.push({ kind: 'note', icon: <Undo2 />, text: 'You can undo this.' });
   return (
     <Modal
       title={`Delete “${page.title}”?`}
       describedBy="delete-page-desc"
-      icon={<Trash2 style={{ color: 'var(--red)' }} />}
+      icon={<Badge icon={<Trash2 />} tone="caution" />}
       onClose={close}
       busy={busy}
       footer={
         <>
-          <button className="btn" onClick={close} disabled={busy}>
+          <span className="page-dialog-status" role="status">
+            {blocked && (
+              <>
+                {aiBusy ? <Sparkles /> : <Info />}
+                <span>
+                  {blocked.text}
+                  {blocked.act && (
+                    <>
+                      {' '}
+                      <button type="button" className="page-dialog-status-action" onClick={goToChoice}>
+                        {blocked.act}
+                      </button>
+                    </>
+                  )}
+                </span>
+              </>
+            )}
+          </span>
+          <SafeButton onClick={close} disabled={busy}>
             Cancel
-          </button>
-          <button className="btn btn-danger-fill" disabled={!plan.operations || busy || aiBusy} onClick={() => void remove()}>
+          </SafeButton>
+          <button className="btn btn-danger" disabled={!plan.operations || busy || aiBusy} onClick={() => void remove()}>
             Delete page
           </button>
         </>
       }
     >
-      <div className="col delete-page-body" style={{ gap: 12 }}>
-        <p id="delete-page-desc" style={{ margin: 0 }}>
-          The page at <span className="delete-page-route">{page.route}</span> and its content are removed from your site. You can undo this.
+      <div ref={body} className="confirm page-dialog">
+        <p id="delete-page-desc" className="confirm-lead">
+          The page and everything on it are removed from your site.
+          {/* Its own address keeps no redirect (the engine moves only addresses already kept for it); a draft was never published. */}
+          {!isHome && !draft && ' Once you publish again, bookmarks and links from other sites to its address stop working.'}
         </p>
-        {(refs > 0 || isHome) && (
-          <Field
-            label={isHome ? 'New home page' : 'Point existing links to'}
-            hint={
-              isHome
-                ? target
-                  ? `${target.title} becomes the home page and moves from ${target.route} to /.${linkHint}`
-                  : others.length
-                    ? 'Another page must become the home page.'
-                    : 'Every other page is a draft. Publish one to make it the home page.'
-                : `The ${refs} link${refs === 1 ? '' : 's'} below point${refs === 1 ? 's' : ''} to this page now.`
-            }
-          >
-            <select className="select" value={replacement ?? NO_PAGE} disabled={busy} onChange={(e) => setPicked(e.target.value)}>
+        <Subject
+          icon={isHome ? <House /> : <FileText />}
+          name={page.title}
+          note={
+            <>
+              <span className="page-dialog-address">{page.route}</span>
+              {isHome ? ' · Home page' : draft ? ' · Draft' : ''}
+            </>
+          }
+        />
+        {asks && (
+          <Field label={isHome ? 'New home page' : `Send its ${linkWord(refs)} to`} hint={outcome}>
+            <select className="select" aria-required="true" data-unset={(!replacement && !noHome) || undefined} value={replacement ?? NO_PAGE} disabled={busy || noHome} onChange={(e) => setPicked(e.target.value)}>
               {!replacement && (
                 <option value={NO_PAGE} disabled>
                   Choose a page…
@@ -640,54 +831,63 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
             </select>
           </Field>
         )}
-        {refs > 0 && (
-          <ul className="delete-page-links" aria-label={`Links that will go to ${target?.title ?? 'the new page'}`}>
-            {review.uses.map((u, i) => (
-              <RemovedPageLink key={i} use={u} />
-            ))}
-          </ul>
-        )}
-        {review.cards.length > 0 && (
-          <div className="col" style={{ gap: 6 }}>
-            <p className="delete-page-note" id="delete-page-cards" style={{ margin: 0 }}>
-              {review.cards.length === 1 ? 'Its card is removed from the page list it is in:' : `Its ${review.cards.length} cards are removed from the page lists they are in:`}
-            </p>
-            <ul className="delete-page-links" aria-labelledby="delete-page-cards">
-              {review.cards.map((u, i) => (
-                <RemovedPageLink key={i} use={u} />
-              ))}
-            </ul>
+        {homeRisk && <Details items={[homeRisk]} />}
+        {target && missing.length > 0 && (
+          <div className="page-dialog-sections" role="group" aria-labelledby="delete-page-sections" aria-describedby="delete-page-sections-note">
+            <div>
+              <div className="page-dialog-heading" id="delete-page-sections">
+                Links to sections “{target.title}” doesn’t have
+              </div>
+              <p className="page-dialog-block-note" id="delete-page-sections-note">
+                Choose where each lands on “{target.title}”. The list below shows where every link will go.
+              </p>
+            </div>
+            {missing.map((m) => {
+              const choice = choices.get(m.fragment);
+              // A refused choice says why beside itself, and the footer's action brings the author here.
+              const error = !implicated.has(m.fragment) || jointly
+                ? undefined
+                : plan.lost.length
+                  ? `This would take ${lostIds} away from “${target.title}”, where other links still go. Choose Top of page or another section.`
+                  : 'This section can’t take these links now. Choose again, or choose Top of page.';
+              return (
+                <Field
+                  key={m.fragment}
+                  label={
+                    <>
+                      {quoted(m.uses)} <span className="page-dialog-address">#{m.fragment}</span>
+                    </>
+                  }
+                  error={error}
+                >
+                  <select className="select" aria-required="true" data-unset={choice === undefined || undefined} data-refused={(jointly && implicated.has(m.fragment)) || undefined} value={choice ?? UNCHOSEN} disabled={busy} onChange={(e) => choose(m.fragment, e.target.value)}>
+                    <option value={UNCHOSEN} disabled>
+                      Choose a section…
+                    </option>
+                    <option value="">Top of page</option>
+                    {options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.text}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              );
+            })}
+            {jointly && (
+              <div className="scope-note danger" role="alert">
+                <CircleAlert />
+                <span>
+                  Together, the sections chosen would take <span className="page-dialog-address">{lostIds}</span> away from “{target.title}”, where other links still go. Choose Top of page for one of them.
+                </span>
+              </div>
+            )}
           </div>
         )}
-        {target &&
-          review.missing.map((m) => {
-            const labels = m.uses.map((u) => `“${u.label}”`);
-            return (
-              <Field
-                key={m.fragment}
-                label={`Links to #${m.fragment}`}
-                hint={`${target.title} has no section with this ID. Choose where ${labels.length > 1 ? `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]} go` : `${labels[0]} goes`} instead.`}
-              >
-                <select className="select" value={choices.get(m.fragment) ?? UNCHOSEN} disabled={busy} onChange={(e) => choose(m.fragment, e.target.value)}>
-                  <option value={UNCHOSEN} disabled>
-                    Choose a section…
-                  </option>
-                  <option value="">Top of page</option>
-                  {options.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.text}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            );
-          })}
-        {plan.lost.length > 0 && (
-          <p className="delete-page-note" role="alert">
-            Giving those sections new IDs would take {plan.lost.map((id) => `#${id}`).join(', ')} away from {target?.title}, where other links still go. Choose a different section for one of them.
-          </p>
-        )}
-        {aiBusy && <p className="delete-page-note">The AI is making changes. Stop it to delete this page.</p>}
+        <span id="delete-page-links" hidden>
+          {`Links that will open ${target?.title ?? 'the page you choose'}`}
+        </span>
+        <Details items={details} />
       </div>
     </Modal>
   );
@@ -740,10 +940,10 @@ export function SetHomeModal({ pageId }: { pageId: string }) {
       const n = st.site.shell[l.part].nodes[l.nodeId];
       rows.set(key, { link: l, where: owners.get(l.part)!.size > 1 && n ? `${part} · ${displayName(st, n)}` : part, count: 1 });
     }
-    return { moves, to: new Map(moves.map((m) => [m.pageId, m.to])), first: links[0], rows: [...rows.values()] };
+    return { moves, to: new Map(moves.map((m) => [m.pageId, m.to])), first: links[0], rows: [...rows.values()], total: links.length };
   }, [st, page, gone, pageId, keep]);
   if (!snap || !st || !page || !review) return null;
-  const { moves, to, first, rows } = review;
+  const { moves, to, first, rows, total } = review;
   const vacated = page.route;
   const taker = keep ? undefined : moves.find((m) => m.to === vacated);
   const confirm = async () => {
@@ -760,80 +960,114 @@ export function SetHomeModal({ pageId }: { pageId: string }) {
     close();
     toast(`${page.title} is now the home page.`, 'info', first ? { label: 'Review links', run: () => reviewShellLink(first) } : undefined);
   };
+  const former = moves.find((m) => m.pageId !== pageId);
+  // Which shared parts hold the links, so the heading names only those.
+  const parts = [rows.some((r) => r.link.part === 'header') && 'header', rows.some((r) => r.link.part === 'footer') && 'footer'].filter(Boolean).join(' and ');
   return (
     <Modal
       title={`Make “${page.title}” the home page?`}
       describedBy="set-home-desc"
-      icon={<House />}
+      icon={<Badge icon={<House />} />}
       onClose={close}
       busy={busy}
       footer={
         <>
-          <button className="btn" onClick={close} disabled={busy}>
+          <span className="page-dialog-status" role="status">
+            {snap.aiBusy && (
+              <>
+                <Sparkles />
+                The AI is making changes. You can change the home page when it stops.
+              </>
+            )}
+          </span>
+          <SafeButton onClick={close} disabled={busy}>
             Cancel
-          </button>
-          <button className="btn btn-primary" onClick={() => void confirm()} disabled={busy || snap.aiBusy} title={snap.aiBusy ? 'The AI is making changes. Stop it to change the home page.' : undefined}>
+          </SafeButton>
+          <button className="btn btn-primary" onClick={() => void confirm()} disabled={busy || snap.aiBusy}>
             Make home page
           </button>
         </>
       }
     >
-      <div className="col set-home" style={{ gap: 14 }}>
-        <div>
-          <p id="set-home-desc" style={{ margin: '0 0 8px' }}>
-            {moves.length === 1 ? 'This page' : 'These pages'} change address. Links inside your site follow them; links from other sites and bookmarks still use the old addresses.
-          </p>
-          <ul className="set-home-moves" aria-label="Address changes">
-            {moves.map((m) => (
-              <li key={m.pageId}>
-                <span className="set-home-title">{st.pages[m.pageId].title}</span>
-                <span className="set-home-route">{m.from}</span>
-                <span aria-hidden="true">→</span>
+      <div className="confirm page-dialog">
+        <p id="set-home-desc" className="confirm-lead">
+          Visitors who open your site’s address will land on “{page.title}”.{former ? ` “${st.pages[former.pageId].title}” moves to an address of its own.` : ''} Links inside your site follow both pages.
+        </p>
+        <ul className="page-dialog-moves" aria-label="Address changes">
+          {moves.map((m) => (
+            <li key={m.pageId} data-home={m.pageId === pageId || undefined}>
+              {m.pageId === pageId ? <House /> : <FileText />}
+              <span className="page-dialog-move-title">{st.pages[m.pageId].title}</span>
+              <span className="page-dialog-move-path">
+                <span className="page-dialog-address" data-old="">
+                  {m.from}
+                </span>
+                <span className="page-dialog-arrow" aria-hidden="true">
+                  →
+                </span>
                 <span className="sr-only">moves to</span>
-                <span className="set-home-route">{m.to}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <label className="set-home-keep">
-            <input type="checkbox" checked={keep} disabled={busy} onChange={(e) => setKeep(e.target.checked)} />
-            Keep {vacated} working
+                <span className="page-dialog-address">{m.to}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+        <div className="page-dialog-option" data-off={!keep || undefined}>
+          <label>
+            <input type="checkbox" checked={keep} disabled={busy} aria-describedby="set-home-keep-note" onChange={(e) => setKeep(e.target.checked)} />
+            <span>
+              Keep <span className="page-dialog-address">{vacated}</span> working
+            </span>
           </label>
-          <p className="field-hint" style={{ margin: '4px 0 0 22px' }}>
-            {keep
-              ? `Visitors with an old link or bookmark to ${vacated} are sent to ${page.title} at /.`
-              : taker
-                ? `${vacated} will show ${st.pages[taker.pageId].title} instead, once your site is published again.`
-                : `${vacated} stops working once your site is published again.`}
+          <p id="set-home-keep-note" className="page-dialog-option-note" aria-live="polite">
+            {keep ? <ShieldCheck /> : <TriangleAlert />}
+            <span>
+              {keep ? (
+                <>
+                  Bookmarks and links from other sites to <span className="page-dialog-address">{vacated}</span> are sent to “{page.title}” at <span className="page-dialog-address">/</span> instead of breaking.
+                </>
+              ) : taker ? (
+                <>
+                  Once your site is published again, <span className="page-dialog-address">{vacated}</span> shows “{st.pages[taker.pageId].title}”, so bookmarks and links from other sites to it reach the wrong page.
+                </>
+              ) : (
+                <>
+                  Once your site is published again, <span className="page-dialog-address">{vacated}</span> stops working, so bookmarks and links from other sites to it will break.
+                </>
+              )}
+            </span>
           </p>
         </div>
         {rows.length > 0 && (
-          <div>
-            <div className="set-home-heading">Links to review</div>
-            <ul className="set-home-links" aria-label="Header and footer links to review">
+          <div className="page-dialog-block">
+            <div className="page-dialog-heading" id="set-home-links">
+              {total === 1 ? `A ${parts} link will use a new address` : `${total} ${parts} links will use new addresses`}
+            </div>
+            <p className="page-dialog-block-note">{total === 1 ? 'Its words stay as they are, so check it still reads right.' : 'Their words stay as they are, so check they still read right.'}</p>
+            <ScrollList className="page-dialog-list page-dialog-links" label="Header and footer links to review">
               {rows.map(({ link: l, where, count }, i) => (
                 <li key={`${l.part}:${l.nodeId}:${i}`}>
-                  <span className="set-home-part">{where}</span>
-                  <span className="set-home-label">
+                  {l.part === 'header' ? <PanelTop data-shared="" /> : <PanelBottom data-shared="" />}
+                  <span className="page-dialog-where">{where}</span>
+                  <span className="page-dialog-label">
                     {l.label ? `“${l.label}”` : 'A link without text'}
                     {count > 1 ? ` (${count} links)` : ''}
                   </span>
-                  <span aria-hidden="true">→</span>
-                  <span className="sr-only">will go to</span>
-                  <span className="set-home-route">
-                    {to.get(l.pageId)}
-                    {l.anchor ? `#${l.anchor}` : ''}
+                  <span className="page-dialog-dest">
+                    <span className="page-dialog-arrow" aria-hidden="true">
+                      →
+                    </span>
+                    <span className="sr-only">will go to</span>
+                    <span className="page-dialog-address">
+                      {to.get(l.pageId)}
+                      {l.anchor ? `#${l.anchor}` : ''}
+                    </span>
                   </span>
                 </li>
               ))}
-            </ul>
-            <p className="field-hint" style={{ margin: '4px 0 0' }}>
-              Their words stay as they are. Edit the header or footer if they should read differently.
-            </p>
+            </ScrollList>
           </div>
         )}
-        {snap.aiBusy && <p className="field-hint" style={{ margin: 0 }}>The AI is making changes. Stop it to change the home page.</p>}
+        <Details items={[{ kind: 'note', icon: <Undo2 />, text: 'You can undo this.' }]} />
       </div>
     </Modal>
   );

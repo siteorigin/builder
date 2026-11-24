@@ -3421,22 +3421,69 @@ button.code-problem:focus-visible { outline-offset: -2px; }
   .pages-head-menu.btn { width: 26px; padding: 0; justify-content: center; }
   .pages-add-field { grid-template-columns: minmax(0, 1fr); gap: 3px; }
 }
-.delete-page-route { font-weight: 500; overflow-wrap: anywhere; }
-/* Make home page: each move and each link to review is one row, the addresses in the code face. */
-.set-home-moves, .set-home-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.set-home-moves li, .set-home-links li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; color: var(--text-2); }
-.set-home-title, .set-home-label { font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
-.set-home-route { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
-.set-home-part { min-width: 48px; font-size: 12px; color: var(--text-3); }
-.set-home-heading { font-weight: 500; margin-bottom: 6px; }
-.set-home-keep { display: flex; align-items: center; gap: 6px; font-weight: 500; }
-.set-home-keep input { margin: 0; accent-color: var(--accent); }
-/* The links a deletion moves, by label and place, for review before deleting. Long lists scroll in the dialog. */
-.delete-page-links { margin: 0; padding: 8px 10px; list-style: none; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
-.delete-page-links li { overflow-wrap: anywhere; }
-.delete-page-link-label { font-weight: 500; }
-.delete-page-body { overflow-wrap: anywhere; }
-.delete-page-note { margin: 0; color: var(--text-2); }
+/* ---------- Page dialogs (Dialogs.tsx: Delete page, Make home page) ----------
+   Members of the confirmation family (.confirm-*): the page set apart with its address, then the decision the action
+   needs, then one line for each thing that changes, goes, stays and can be undone. Addresses and section IDs are in
+   the code face. Header and footer rows carry the shared parts' glyph in their green; link lists are bounded and
+   scroll by keyboard, as the placement list does. */
+.page-dialog { overflow-wrap: anywhere; }
+.page-dialog .field-hint { line-height: 1.45; text-wrap: pretty; }
+.page-dialog-address { font-family: var(--mono); font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.page-dialog-address[data-old] { color: var(--text-2); }
+/* In the subject's quiet note the address keeps the note's ink. */
+.confirm-subject-note .page-dialog-address { color: inherit; }
+/* A select still showing its prompt reads as unset, not as a choice. */
+.page-dialog .select[data-unset] { color: var(--text-3); }
+.page-dialog-heading { font-weight: 600; color: var(--text); }
+/* The choices a deletion still needs are grouped in one tray, ahead of what it changes. */
+.page-dialog-sections { display: flex; flex-direction: column; gap: 10px; padding: 11px 12px 12px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border-strong); }
+.page-dialog-sections .field > label { color: var(--text); }
+.page-dialog .confirm-details > li > span { flex: 1; min-width: 0; }
+.page-dialog-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 196px; overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); font-weight: 400; color: var(--text-2); }
+.page-dialog-list:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.page-dialog-list li { display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; line-height: 1.45; }
+.page-dialog-list li + li { border-top: 1px solid var(--border); }
+.page-dialog-list li > svg, .page-dialog-moves li > svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--text-2); }
+/* A list sits closer to its own line than to the next one. */
+.page-dialog .confirm-details .page-dialog-list { margin-bottom: 5px; }
+/* A list inside a detail line keeps its own glyph colours, whatever the line's kind. */
+.page-dialog .confirm-details .page-dialog-list li > svg { width: 14px; height: 14px; color: var(--text-2); }
+.page-dialog .page-dialog-list li > svg[data-shared] { color: var(--green); }
+.page-dialog-where { flex: 0 1 auto; min-width: 52px; max-width: 34%; font-size: 12px; line-height: 1.6; color: var(--text-2); }
+.page-dialog-label { flex: 1; min-width: 0; font-weight: 500; color: var(--text); }
+/* Where a link will land: one left-aligned column, so the arrows and addresses line up row to row. */
+.page-dialog-dest { flex: none; width: 44%; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; font-size: 12px; line-height: 1.6; }
+.page-dialog-links .page-dialog-dest { width: 28%; flex-wrap: nowrap; }
+.page-dialog-dest > .page-dialog-address { min-width: 0; }
+.page-dialog-landing { font-size: 12px; color: var(--text); }
+.page-dialog-landing[data-pending] { color: var(--text-3); }
+.page-dialog-quiet { color: var(--text-2); }
+.page-dialog-arrow { flex: none; color: var(--text-3); }
+/* Make home page: both moves in one list, each page's old address quiet and its new one plain. */
+.page-dialog-moves { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); }
+.page-dialog-moves li { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 9px; row-gap: 1px; padding: 8px 11px; }
+.page-dialog-moves li + li { border-top: 1px solid var(--border); }
+.page-dialog-moves li > svg { grid-row: span 2; }
+.page-dialog-move-title { font-weight: 600; color: var(--text); }
+.page-dialog-move-path { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; }
+.page-dialog-option { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border-strong); }
+.page-dialog-option[data-off] { border-color: color-mix(in srgb, var(--red) 32%, transparent); }
+.page-dialog-option label { display: flex; align-items: flex-start; gap: 8px; font-weight: 600; color: var(--text); }
+.page-dialog-option input { margin: 3px 0 0; flex: none; accent-color: var(--accent); }
+.page-dialog-option-note { margin: 0 0 0 21px; display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+.page-dialog-option-note svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }
+.page-dialog-option[data-off] .page-dialog-option-note { color: var(--text); }
+.page-dialog-option[data-off] .page-dialog-option-note svg { color: var(--red); }
+.page-dialog-block { display: flex; flex-direction: column; }
+.page-dialog-block-note { margin: 2px 0 0; font-size: 12px; color: var(--text-2); }
+/* Why the action cannot be taken yet, beside the action itself. */
+.page-dialog-status { margin-right: auto; display: flex; align-items: flex-start; gap: 6px; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+.page-dialog-status svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--text-3); }
+/* Takes the author to the choice that unblocks the action. */
+.page-dialog-status-action { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); cursor: pointer; }
+.page-dialog-status-action:hover { color: var(--accent-hover); text-decoration-color: currentColor; }
+.page-dialog-status-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+@media (forced-colors: active) { .page-dialog-option[data-off] { border-color: CanvasText; } }
 /* Assets: one image's details replace the grid. Flat on the panel (no card inside a panel), in three
    bands split by straight dividers: what it is and where it is used, what it says, what you can do. */
 .asset-detail { display: flex; flex-direction: column; padding: 0 14px 20px; }
