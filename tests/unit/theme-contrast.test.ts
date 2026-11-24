@@ -398,6 +398,27 @@ describe('what ships', () => {
     ]);
   });
 
+  it('measures a button in a dark section on its hover mix, not its resting fill, and offers no change to the dark section color', () => {
+    const results = evaluatePairs(business({ 'color.inverse': '#707070', 'color.on-inverse': '#ffffff' }), PAIRS);
+    expect(byId(results, 'dark-button')).toMatchObject({ status: 'pass', fg: '#707070', bg: '#ffffff' });
+    expect(ratioOf(byId(results, 'dark-button'))).toBeCloseTo(4.952144, 5);
+    const hover = byId(results, 'dark-button-hover');
+    expect(hover).toMatchObject({ status: 'fail', fg: '#707070' });
+    expect(ratioOf(hover)).toBeCloseTo(4.2621, 4);
+    expect(suggestForeground(business({ 'color.inverse': '#707070', 'color.on-inverse': '#ffffff' }), PAIRS, hover as never)).toBeNull();
+  });
+
+  it('measures the focus outline against the page, cards and alternate sections at 3:1', () => {
+    const results = evaluatePairs(business({ 'color.focus': '#8c8c8c' }), PAIRS);
+    expect(['focus-background', 'focus-surface', 'focus-surface-alt'].map((id) => [id, byId(results, id).status])).toEqual([
+      ['focus-background', 'pass'],
+      ['focus-surface', 'pass'],
+      ['focus-surface-alt', 'fail']
+    ]);
+    expect(byId(results, 'focus-surface-alt')).toMatchObject({ min: 3, fg: '#8c8c8c', bg: '#f2efe8' });
+    expect(ratioOf(byId(results, 'focus-surface-alt'))).toBeCloseTo(2.9283, 4);
+  });
+
   it('lists the pairs that involve a token as foreground or background, hover mixes included', () => {
     expect(pairsOf(PAIRS, 'color.on-brand').map((p) => p.id)).toEqual(expect.arrayContaining(['button', 'button-hover', 'light-button', 'light-button-hover']));
     expect(pairsOf(PAIRS, 'color.brand').map((p) => p.id).sort()).toEqual(['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'light-button-hover']);

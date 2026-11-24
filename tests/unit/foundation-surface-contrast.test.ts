@@ -5,7 +5,8 @@
  * buttons and links the test drops the theme's primitives (a primary button, a text button, a link and a check
  * list) on its ground, inside a light card where the section has one, and into faded body text. Ratios are worked
  * out from the computed colours with the WCAG formula: 3:1 for focus outlines, button edges and check marks, 4.5:1
- * for text, at rest and on hover.
+ * for text, at rest and on hover. Each spot also says which colour it draws in: the ground's own text colour on a
+ * dark or brand ground, the theme's brand and focus colours on a light one.
  */
 import { existsSync } from 'node:fs';
 import { posix } from 'node:path';
@@ -18,57 +19,84 @@ import { parseColor, type Rgba } from '@shared/color';
 import { compositeOver, contrastBetween } from '@shared/contrast';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
+import { applyOperations } from '@engine/apply';
 import { STYLES_DIR, effectiveTokens, generateProject } from '@generator/index';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const ORIGIN = 'https://site.test';
 
+/** The colour a ground draws in: the theme's own (brand links and buttons, the focus colour), or a dark or brand ground's text colour. */
+type Ink = 'theme' | 'on-inverse' | 'on-brand';
 /** Where the theme's primitives are dropped in a section: on its ground, in a light card, or in faded rich text (links and checks only). */
 interface Spot {
   selector: string;
-  kind: 'all' | 'rich';
+  ink: Ink;
+  rich?: boolean;
 }
 interface Placement {
   name: string;
   component: string;
   tone: string;
   spots: Spot[];
+  /** Placed as a copy of the definition, as Make unique and Duplicate leave it: a project id, the same parts. */
+  copy?: boolean;
+  /** Moved inside another placement's container, as a section placed in a Section's slot. */
+  nestIn?: string;
+  /** The colour the section's own controls draw their focus outline in, where it is the same for all of them. */
+  ownInk?: Ink;
 }
 
-const on = (selector: string, kind: Spot['kind'] = 'all'): Spot => ({ selector, kind });
 const INNER = "[class$='__inner']";
+const at = (selector: string, ink: Ink, rich = false): Spot => ({ selector, ink, rich });
 const PLACEMENTS: Placement[] = [
-  ...['default', 'muted', 'inverse', 'brand'].map((tone) => ({ name: `hero.centered ${tone}`, component: 'hero.centered', tone, spots: [on(INNER)] })),
-  { name: 'hero.split inverse', component: 'hero.split', tone: 'inverse', spots: [on(INNER)] },
-  { name: 'contact.details inverse', component: 'contact.details', tone: 'inverse', spots: [on(INNER), on("[class$='__method']")] },
-  // The Call to action's panel is the brand ground by default, dark or soft in its other tones.
-  ...['default', 'inverse', 'muted'].map((tone) => ({ name: `cta.banner ${tone}`, component: 'cta.banner', tone, spots: [on("[class$='__panel']")] })),
-  { name: 'content.text inverse', component: 'content.text', tone: 'inverse', spots: [on(INNER), on('.so-rich', 'rich')] },
-  { name: 'layout.section inverse', component: 'layout.section', tone: 'inverse', spots: [on(INNER)] },
-  // White cards inside a dark section keep the theme's own colours.
-  { name: 'pricing.plans inverse', component: 'pricing.plans', tone: 'inverse', spots: [on(INNER), on("[class$='__plan']")] },
-  { name: 'features.grid inverse', component: 'features.grid', tone: 'inverse', spots: [on(INNER), on("[class$='__card']")] },
-  { name: 'contact.form inverse', component: 'contact.form', tone: 'inverse', spots: [on('.so-form__inner')] }
+  { name: 'hero.centered default', component: 'hero.centered', tone: 'default', spots: [at(INNER, 'theme')] },
+  { name: 'hero.centered muted', component: 'hero.centered', tone: 'muted', spots: [at(INNER, 'theme')] },
+  { name: 'hero.centered inverse', component: 'hero.centered', tone: 'inverse', spots: [at(INNER, 'on-inverse')] },
+  { name: 'hero.centered brand', component: 'hero.centered', tone: 'brand', spots: [at(INNER, 'on-brand')], ownInk: 'on-brand' },
+  { name: 'hero.split inverse', component: 'hero.split', tone: 'inverse', spots: [at(INNER, 'on-inverse')], ownInk: 'on-inverse' },
+  { name: 'contact.details inverse', component: 'contact.details', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at("[class$='__method']", 'theme')] },
+  // The Call to action's panel is the brand ground by default, dark or soft in its other tones; around it is the page.
+  { name: 'cta.banner default', component: 'cta.banner', tone: 'default', spots: [at("[class$='__panel']", 'on-brand')], ownInk: 'on-brand' },
+  { name: 'cta.banner inverse', component: 'cta.banner', tone: 'inverse', spots: [at("[class$='__panel']", 'on-inverse'), at(INNER, 'theme')], ownInk: 'on-inverse' },
+  { name: 'cta.banner muted', component: 'cta.banner', tone: 'muted', spots: [at("[class$='__panel']", 'theme')], ownInk: 'theme' },
+  { name: 'content.text inverse', component: 'content.text', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at('.so-rich', 'on-inverse', true)] },
+  { name: 'layout.section inverse', component: 'layout.section', tone: 'inverse', spots: [at(INNER, 'on-inverse')] },
+  // A light section placed in a dark one starts afresh.
+  { name: 'intro.page default in a dark section', component: 'intro.page', tone: 'default', spots: [at(INNER, 'theme')], nestIn: 'layout.section inverse' },
+  // White cards inside a dark section keep the theme's own colours, in a copy of the section too.
+  { name: 'pricing.plans inverse', component: 'pricing.plans', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at("[class$='__plan']", 'theme')] },
+  { name: 'features.grid inverse', component: 'features.grid', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at("[class$='__card']", 'theme')] },
+  { name: 'features.grid inverse copy', component: 'features.grid', tone: 'inverse', copy: true, spots: [at(INNER, 'on-inverse'), at("[class$='__card']", 'theme')] },
+  { name: 'testimonials.grid inverse', component: 'testimonials.grid', tone: 'inverse', spots: [at("[class$='__card']", 'theme')] },
+  { name: 'contact.form inverse', component: 'contact.form', tone: 'inverse', spots: [at('.so-form__inner', 'on-inverse')], ownInk: 'on-inverse' },
+  { name: 'site.search inverse', component: 'site.search', tone: 'inverse', spots: [at('.so-search__inner', 'on-inverse')], ownInk: 'on-inverse' }
 ];
 
 const page = (target: string): LinkValue => ({ type: 'page', target });
 
-/** The exported site's files and its stylesheets, in the order the layout imports them. */
+/** The exported site's files and its stylesheets, in the order the layout imports them, and the colours each ink computes to. */
 function exportedSite(opts: { placements?: Placement[]; header?: { surface?: string; root?: ResponsiveStyles } }) {
-  const s = createStarterState('business', 'Test Studio', false);
+  let s = createStarterState('business', 'Test Studio', false);
+  const defs = (opts.placements ?? []).map((p) => {
+    const id = installComponent(s, p.component);
+    if (!p.copy) return id;
+    const copied = applyOperations(s, [{ type: 'component.duplicate', definitionId: id, name: `Spare ${p.component}` }]);
+    s = copied.state;
+    return copied.results[0].definitionId as string;
+  });
   const [homeId, aboutId, contactId] = s.site.pageOrder;
   const home = s.pages[homeId];
   home.rootIds = [];
   home.nodes = {};
   // Every action gets somewhere to go, so it is a link a keyboard can reach.
   const links = { primaryLink: page(contactId), secondaryLink: page(aboutId), actionLink: page(contactId) };
-  for (const p of opts.placements ?? []) {
-    const def = s.components[installComponent(s, p.component)];
+  (opts.placements ?? []).forEach((p, i) => {
+    const def = s.components[defs[i]];
     const node = makeInstance(def, Object.fromEntries(Object.entries(links).filter(([k]) => k in def.properties)));
     node.variants = { tone: p.tone };
     home.nodes[node.id] = node;
     home.rootIds.push(node.id);
-  }
+  });
   const header = Object.values(s.site.shell.header.nodes)[0] as InstanceNode;
   header.props = {
     ...header.props,
@@ -86,7 +114,22 @@ function exportedSite(opts: { placements?: Placement[]; header?: { surface?: str
     const c = parseColor(String(tokens.find((t) => t.id === id)!.value))!;
     return `rgb(${c.r}, ${c.g}, ${c.b})`;
   };
-  return { files, css, colors: { brand: computed('color.brand'), onBrand: computed('color.on-brand'), focus: computed('color.focus') } };
+  const colors = {
+    brand: computed('color.brand'),
+    onBrand: computed('color.on-brand'),
+    focus: computed('color.focus'),
+    inverse: computed('color.inverse'),
+    onInverse: computed('color.on-inverse')
+  };
+  return { files, css, colors };
+}
+type Colors = ReturnType<typeof exportedSite>['colors'];
+
+/** What a spot's ink paints: links and text buttons, a primary button's fill, and the focus outline. */
+function inkColors(ink: Ink, c: Colors) {
+  if (ink === 'on-inverse') return { link: c.onInverse, fill: c.onInverse, outline: c.onInverse };
+  if (ink === 'on-brand') return { link: c.onBrand, fill: c.onBrand, outline: c.onBrand };
+  return { link: c.brand, fill: c.brand, outline: c.focus };
 }
 
 /** Every case's layout and home page as one script that defines `window.mountCase(name)`. */
@@ -139,38 +182,44 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
 }
 
 /** A computed colour as Chromium writes it: rgb(), rgba() or color(srgb ...), the last for a color-mix(). */
-function rgba(css: string): Rgba {
+function rgba(css: string, where: string): Rgba {
   const legacy = css.match(/^rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)$/);
   if (legacy) return { r: +legacy[1], g: +legacy[2], b: +legacy[3], a: legacy[4] === undefined ? 1 : +legacy[4] };
   const srgb = css.match(/^color\(srgb ([\d.e-]+) ([\d.e-]+) ([\d.e-]+)(?: \/ ([\d.e-]+))?\)$/);
   if (srgb) return { r: +srgb[1] * 255, g: +srgb[2] * 255, b: +srgb[3] * 255, a: srgb[4] === undefined ? 1 : +srgb[4] };
-  throw new Error(`Unexpected computed colour: ${css}`);
+  throw new Error(`${where}: unexpected computed colour ${css}`);
 }
 
 /** One element's computed colours, and the background and opacity of each element above it, nearest first. */
 interface Sample {
+  id: string;
   label: string;
-  role: 'primary' | 'text' | 'link' | 'check' | 'control' | 'menu' | 'current';
+  /** `light`: a light button, filled with the brand's text colour on every ground. */
+  role: 'primary' | 'light' | 'text' | 'link' | 'check' | 'control' | 'menu' | 'current';
+  /** The colour this element should draw its focus outline in, links and button fill in, when the test knows it. */
+  ink?: Ink;
   color: string;
   background: string;
   outline: { color: string; style: string; width: string; focusVisible: boolean } | null;
-  check?: { mark: string; disc: string };
-  /** A current-page link's underline. */
-  current?: string;
+  /** A check list item's disc (::before) and mark (::after), with what makes the mark show. */
+  check?: { mark: string; disc: string; content: string; width: string };
+  /** A current-page link's underline (::after). */
+  current?: { color: string; content: string; height: string };
   above: Array<{ background: string; opacity: string }>;
   opacity: string;
 }
 
-// Run in the browser, so they are passed as text (the Node project has no DOM types). Both read colours only once
+// Run in the browser, so they are passed as text (the Node project has no DOM types). Colours are read only once
 // every transition has finished (see settle): the theme's reduced-motion rule leaves a 0.01ms one on every property.
-const SAMPLE_FN = `(el, role) => {
+const SAMPLE_FN = `(el) => {
   const cs = getComputedStyle(el);
+  const role = el.dataset.role;
   const above = [];
   for (let p = el.parentElement; p; p = p.parentElement) above.push({ background: getComputedStyle(p).backgroundColor, opacity: getComputedStyle(p).opacity });
-  const outline = null;
-  const check = role === 'check' ? { mark: getComputedStyle(el, '::after').borderRightColor, disc: getComputedStyle(el, '::before').backgroundColor } : undefined;
-  const current = role === 'current' ? getComputedStyle(el, '::after').backgroundColor : undefined;
-  return { label: el.dataset.label, role, color: cs.color, background: cs.backgroundColor, outline, check, current, above, opacity: cs.opacity };
+  const after = getComputedStyle(el, '::after');
+  const check = role === 'check' ? { mark: after.borderRightColor, disc: getComputedStyle(el, '::before').backgroundColor, content: after.content, width: after.borderRightWidth } : undefined;
+  const current = role === 'current' ? { color: after.backgroundColor, content: after.content, height: after.height } : undefined;
+  return { id: el.dataset.probeId, label: el.dataset.label, role, ink: el.dataset.ink || undefined, color: cs.color, background: cs.backgroundColor, outline: null, check, current, above, opacity: cs.opacity };
 }`;
 
 const OUTLINE_FN = `(el) => {
@@ -178,48 +227,73 @@ const OUTLINE_FN = `(el) => {
   return { color: f.outlineColor, style: f.outlineStyle, width: f.outlineWidth, focusVisible: el.matches(':focus-visible') };
 }`;
 
+/** Labels an element for sampling: a numeric id to find it by, a name for messages, its role and the ink it should draw in. */
+const LABEL_FN = `(el, label, role, ink) => {
+  window.__probes = (window.__probes || 0) + 1;
+  el.dataset.probeId = String(window.__probes);
+  el.dataset.label = label;
+  el.dataset.role = role;
+  if (ink) el.dataset.ink = ink;
+}`;
+
 /** What one sample shows: each ratio it must reach, with the minimum, named for the failure message. */
 function ratios(s: Sample): Array<[what: string, ratio: number, min: number]> {
+  const color = (css: string) => rgba(css, s.label);
   const white: Rgba = { r: 255, g: 255, b: 255, a: 1 };
-  // The ground: every background above, painted top down over white.
-  const ground = [...s.above].reverse().reduce((under, a) => compositeOver(rgba(a.background), under), white);
-  // Opacity on the element or above it fades everything it paints.
+  // The ground: every background above, painted top down over white (the grounds here are opaque and unfaded).
+  const ground = [...s.above].reverse().reduce((under, a) => compositeOver(color(a.background), under), white);
+  // Opacity on the element or above it fades what it paints as one group: composed first, then laid on the ground.
   const fade = [s.opacity, ...s.above.map((a) => a.opacity)].reduce((f, o) => f * +o, 1);
-  const painted = (css: string, under: Rgba) => {
-    const c = rgba(css);
-    return compositeOver({ ...c, a: c.a * fade }, under);
-  };
+  const shown = (c: Rgba) => compositeOver({ ...c, a: c.a * fade }, ground);
   const out: Array<[string, number, number]> = [];
-  if (s.outline) out.push(['focus outline', contrastBetween(painted(s.outline.color, ground), ground), 3]);
-  if (s.role === 'primary') {
-    const fill = painted(s.background, ground);
-    out.push(['button edge', contrastBetween(fill, ground), 3], ['button text', contrastBetween(painted(s.color, fill), fill), 4.5]);
+  if (s.outline) out.push(['focus outline', contrastBetween(shown(color(s.outline.color)), ground), 3]);
+  if (s.role === 'primary' || s.role === 'light') {
+    const fill = color(s.background);
+    expect(fill.a, `${s.label}: an opaque button fill`).toBe(1);
+    out.push(['button edge', contrastBetween(shown(fill), ground), 3], ['button text', contrastBetween(shown(compositeOver(color(s.color), fill)), shown(fill)), 4.5]);
   }
-  if (s.role === 'text' || s.role === 'link' || s.role === 'menu') out.push(['text', contrastBetween(painted(s.color, ground), ground), 4.5]);
+  if (s.role === 'text' || s.role === 'link' || s.role === 'menu') out.push(['text', contrastBetween(shown(color(s.color)), ground), 4.5]);
   if (s.check) {
-    // The li carries no background of its own: the disc lies on the ground, the mark on the disc.
-    const disc = painted(s.check.disc, ground);
-    out.push(['check mark', contrastBetween(painted(s.check.mark, disc), disc), 3]);
+    // The li has no background: the disc lies on the ground and the (opaque) mark on the disc, faded together.
+    const mark = color(s.check.mark);
+    expect(mark.a, `${s.label}: an opaque check mark`).toBe(1);
+    out.push(['check mark', contrastBetween(shown(mark), shown(color(s.check.disc))), 3]);
   }
-  if (s.current) out.push(['current-page mark', contrastBetween(painted(s.current, ground), ground), 3]);
+  if (s.current) out.push(['current-page mark', contrastBetween(shown(color(s.current.color)), ground), 3]);
   return out;
 }
 
 const failures = (samples: Sample[]) =>
   samples.flatMap((s) => ratios(s).filter(([, r, min]) => r < min).map(([what, r, min]) => `${s.label}: ${what} ${r.toFixed(2)}:1 < ${min}:1`));
 
+/** The samples whose colours are not the ones their ink paints: the focus outline, and a link's or a button fill's colour. */
+function wrongInk(samples: Sample[], c: Colors): string[] {
+  const out: string[] = [];
+  for (const s of samples) {
+    if (!s.ink) continue;
+    const want = inkColors(s.ink, c);
+    if (s.outline && s.outline.color !== want.outline) out.push(`${s.label}: focus outline ${s.outline.color}, not ${want.outline}`);
+    if ((s.role === 'link' || s.role === 'text') && s.color !== want.link) out.push(`${s.label}: ${s.color}, not ${want.link}`);
+    if (s.role === 'primary' && s.background !== want.fill) out.push(`${s.label}: fill ${s.background}, not ${want.fill}`);
+    if (s.check && s.check.mark !== want.link) out.push(`${s.label}: mark ${s.check.mark}, not ${want.link}`);
+  }
+  return out;
+}
+
 describe.skipIf(!browserInstalled)('Foundation colours on dark and brand grounds (#206)', () => {
   let browser: Browser;
   let script: string;
-  const sites = {
-    sections: exportedSite({ placements: PLACEMENTS }),
-    'header-dark': exportedSite({ header: { surface: 'inverse' } }),
-    // An author's own dark header: the phone menu used to stay cream under the header's light text.
-    'header-custom': exportedSite({ header: { root: { base: { background: '#1d2b4f', color: '#ffffff' } } } }),
-    'header-default': exportedSite({})
-  };
+  let sites: Record<'sections' | 'header-dark' | 'header-custom' | 'header-gradient' | 'header-default', ReturnType<typeof exportedSite>>;
 
   beforeAll(async () => {
+    sites = {
+      sections: exportedSite({ placements: PLACEMENTS }),
+      'header-dark': exportedSite({ header: { surface: 'inverse' } }),
+      // An author's own dark header: the phone menu used to stay cream under the header's light text.
+      'header-custom': exportedSite({ header: { root: { base: { background: '#1d2b4f', color: '#ffffff' } } } }),
+      'header-gradient': exportedSite({ header: { root: { base: { background: 'linear-gradient(90deg, #1d2b4f, #14211d)', color: '#ffffff' } } } }),
+      'header-default': exportedSite({})
+    };
     const [bundled, launched] = await Promise.allSettled([
       bundleSites(Object.fromEntries(Object.entries(sites).map(([name, site]) => [name, site.files]))),
       chromium.launch({ headless: true, executablePath: chromium.executablePath(), timeout: 30_000 })
@@ -254,142 +328,144 @@ describe.skipIf(!browserInstalled)('Foundation colours on dark and brand grounds
     }
   }
 
-  /** Waits out every transition: the theme's reduced-motion rule still runs a 0.01ms one on every property. */
-  const settle = (p: Page) => p.evaluate('Promise.all(document.getAnimations().map((a) => a.finished.catch(() => {})))');
-  const at = (label: string) => `document.querySelector(${JSON.stringify(`[data-label=${JSON.stringify(label)}]`)})`;
-  const sample = async (p: Page, label: string) => (await p.evaluate(`(${SAMPLE_FN})(${at(label)}, ${at(label)}.dataset.role)`)) as Sample;
-  const focusable = (s: Sample) => s.role !== 'check' && s.role !== 'menu';
+  /** Waits out every transition (the theme's reduced-motion rule still runs a 0.01ms one on every property), for at most two seconds. */
+  const settle = (p: Page) =>
+    p.evaluate('Promise.race([Promise.all(document.getAnimations().map((a) => a.finished.catch(() => {}))), new Promise((done) => setTimeout(done, 2000))])');
+  const byId = (id: string) => `document.querySelector('[data-probe-id="${id}"]')`;
+  const sample = async (p: Page, id: string) => (await p.evaluate(`(${SAMPLE_FN})(${byId(id)})`)) as Sample;
+  const label = (p: Page, selector: string, js: string) => p.evaluate(`(() => { const label = ${LABEL_FN}; document.querySelectorAll(${JSON.stringify(selector)}).forEach((el, i) => { ${js} }); })()`);
 
   /** Samples every labelled element: at rest, with its keyboard focus outline, and hovered. */
   async function sampleAll(p: Page): Promise<{ rest: Sample[]; hover: Sample[] }> {
     await settle(p);
-    const labels = (await p.evaluate(`[...document.querySelectorAll('[data-label]')].map((el) => el.dataset.label)`)) as string[];
+    const ids = (await p.evaluate(`[...document.querySelectorAll('[data-probe-id]')].map((el) => el.dataset.probeId)`)) as string[];
     const rest: Sample[] = [];
-    for (const label of labels) rest.push(await sample(p, label));
+    for (const id of ids) rest.push(await sample(p, id));
     // A Tab first, so focus moved by script after it shows the keyboard outline.
     await p.keyboard.press('Tab');
-    for (const s of rest.filter(focusable)) {
-      await p.evaluate(`${at(s.label)}.focus()`);
+    for (const s of rest.filter((r) => r.role !== 'check' && r.role !== 'menu')) {
+      await p.evaluate(`${byId(s.id)}.focus()`);
       await settle(p);
-      s.outline = (await p.evaluate(`(${OUTLINE_FN})(${at(s.label)})`)) as Sample['outline'];
+      s.outline = (await p.evaluate(`(${OUTLINE_FN})(${byId(s.id)})`)) as Sample['outline'];
     }
     await p.evaluate('document.activeElement?.blur()');
     const hover: Sample[] = [];
-    for (const s of rest.filter((r) => r.role === 'primary' || r.role === 'text' || r.role === 'link')) {
-      const el = p.locator(`[data-label=${JSON.stringify(s.label)}]`);
-      await el.scrollIntoViewIfNeeded();
-      await el.hover();
+    for (const s of rest.filter((r) => ['primary', 'light', 'text', 'link'].includes(r.role))) {
+      await p.locator(`[data-probe-id="${s.id}"]`).hover();
       await settle(p);
-      hover.push({ ...(await sample(p, s.label)), label: `${s.label} (hover)` });
+      hover.push({ ...(await sample(p, s.id)), label: `${s.label} (hover)` });
     }
     return { rest, hover };
   }
 
-  it('reads on every tone: focus outlines, buttons, links and check marks, at rest and on hover, and white cards keep the theme colours', async () => {
+  /** Every element focused showed a keyboard outline, at least 2px wide, to measure. */
+  const unoutlined = (samples: Sample[]) => samples.filter((s) => s.outline && !(s.outline.focusVisible && s.outline.style !== 'none' && parseFloat(s.outline.width) >= 2)).map((s) => s.label);
+
+  it('reads on every tone: focus outlines, buttons, links and check marks, at rest and on hover, in the colours of their ground', async () => {
     await withPage('sections', 1280, async (p) => {
-      // Each placement's root, in page order, then the primitives dropped in each of its spots.
+      // Each placement's root, in page order, checked by its tone; then its own controls and the primitives dropped in each spot.
       const placed = await p.evaluate(
         `((placements) => {
+          const label = ${LABEL_FN};
           const roots = [...document.querySelectorAll('main > *')];
           if (roots.length !== placements.length) return 'Expected ' + placements.length + ' sections, found ' + roots.length;
-          const label = (el, name, role) => { el.dataset.label = name; el.dataset.role = role; };
-          placements.forEach((pl, i) => {
+          for (const [i, pl] of placements.entries()) {
             const root = roots[i];
-            // The section's own controls, as an author leaves them.
+            if (!new RegExp('--(tone-)?' + pl.tone + '(\\\\s|$)').test(root.className)) return pl.name + ' has classes ' + root.className;
             root.querySelectorAll('a[href], button:not(:disabled), input:not([type=hidden]):not(:disabled), textarea, select, summary').forEach((el, j) => {
               if (el.closest('.so-form__trap')) return;
-              const role = el.matches('.so-btn--primary') ? 'primary' : el.matches('.so-btn--text') ? 'text' : 'control';
-              label(el, pl.name + ' own ' + j + ' ' + (el.textContent.trim() || el.getAttribute('name') || el.tagName), role);
+              const role = el.matches('.so-btn--primary') ? 'primary' : el.matches('.so-btn--light') ? 'light' : el.matches('.so-btn--text') ? 'text' : 'control';
+              label(el, pl.name + ' own ' + j + ' ' + (el.getAttribute('name') || el.textContent.trim().slice(0, 30) || el.tagName), role, pl.ownInk);
             });
             for (const spot of pl.spots) {
               const at = root.querySelector(spot.selector);
-              if (!at) return void (label(root, pl.name + ' missing ' + spot.selector, 'control'));
+              if (!at) return pl.name + ' has no ' + spot.selector;
               const where = pl.name + ' ' + spot.selector;
               const box = document.createElement('div');
-              box.innerHTML = spot.kind === 'rich'
+              box.innerHTML = spot.rich
                 ? '<p><a class="so-link" href="#link">An inline link</a></p><ul class="so-rich--check"><li>A checked item</li></ul>'
                 : '<a class="so-btn so-btn--primary" href="#primary">Primary</a> <a class="so-btn so-btn--text" href="#text">Read more</a> <a class="so-link" href="#link">A link</a><ul class="so-rich so-rich--check"><li>A checked item</li></ul>';
               at.append(box);
-              box.querySelectorAll('.so-btn--primary').forEach((el) => label(el, where + ' primary', 'primary'));
-              box.querySelectorAll('.so-btn--text').forEach((el) => label(el, where + ' text button', 'text'));
-              box.querySelectorAll('.so-link').forEach((el) => label(el, where + ' link', 'link'));
-              box.querySelectorAll('li').forEach((el) => label(el, where + ' check', 'check'));
+              box.querySelectorAll('.so-btn--primary').forEach((el) => label(el, where + ' primary', 'primary', spot.ink));
+              box.querySelectorAll('.so-btn--text').forEach((el) => label(el, where + ' text button', 'text', spot.ink));
+              // A rich-text link takes the text colour around it; only its outline follows the ground.
+              box.querySelectorAll('.so-link').forEach((el) => label(el, where + ' link', spot.rich ? 'control' : 'link', spot.ink));
+              box.querySelectorAll('li').forEach((el) => label(el, where + ' check', 'check', spot.ink));
             }
-          });
+          }
+          for (const [i, pl] of placements.entries()) {
+            if (!pl.nestIn) continue;
+            const host = roots[placements.findIndex((h) => h.name === pl.nestIn)];
+            host.querySelector(${JSON.stringify(INNER)}).append(roots[i]);
+          }
           return null;
         })(${JSON.stringify(PLACEMENTS)})`
       );
       expect(placed).toBeNull();
       // The footer is dark by default, and its links are faded.
-      await p.evaluate(`document.querySelectorAll('footer a[href]').forEach((el, i) => { el.dataset.label = 'footer link ' + i; el.dataset.role = 'control'; })`);
+      await label(p, 'footer a[href]', "label(el, 'footer link ' + i, 'control', 'on-inverse')");
       const { rest, hover } = await sampleAll(p);
-      expect(rest.filter((s) => s.label.includes(' missing '))).toEqual([]);
-      // Every focusable element showed a keyboard outline to measure.
-      expect(rest.filter((s) => s.outline && !(s.outline.focusVisible && s.outline.style !== 'none' && parseFloat(s.outline.width) >= 2)).map((s) => s.label)).toEqual([]);
-      for (const name of ['hero.centered brand', 'cta.banner default', 'hero.centered inverse', 'content.text inverse', 'footer link']) expect(rest.some((s) => s.label.startsWith(name)), name).toBe(true);
+      const colors = sites.sections.colors;
+      expect(unoutlined(rest)).toEqual([]);
+      for (const name of [...PLACEMENTS.map((pl) => pl.name), 'footer link']) expect(rest.some((s) => s.label.startsWith(name)), name).toBe(true);
+      // The marks measured are drawn: a check mark and its 14% disc.
+      for (const s of rest.filter((r) => r.check)) {
+        expect(s.check!.content, s.label).not.toBe('none');
+        expect(parseFloat(s.check!.width), s.label).toBeGreaterThanOrEqual(2);
+        expect(rgba(s.check!.disc, s.label).a, s.label).toBeCloseTo(0.14, 2);
+      }
+      expect(wrongInk(rest, colors)).toEqual([]);
       expect(failures(rest)).toEqual([]);
       expect(failures(hover)).toEqual([]);
+      // A filled button changes colour on hover, wherever it is.
+      const resting = new Map(rest.map((s) => [s.id, s]));
+      expect(hover.filter((h) => (h.role === 'primary' || h.role === 'light') && h.background === resting.get(h.id)!.background).map((h) => h.label)).toEqual([]);
+      expect(rest.filter((s) => s.role === 'light').length).toBeGreaterThanOrEqual(3);
     });
-  }, 120_000);
-
-  it('keeps the theme colours on light grounds: brand buttons, links and check marks and the focus colour', async () => {
-    await withPage('sections', 1280, async (p) => {
-      await p.evaluate(`(() => {
-        const root = document.querySelectorAll('main > *')[0];
-        root.querySelector("[class$='__inner']").insertAdjacentHTML('beforeend', '<a class="so-btn so-btn--primary" href="#p" data-probe="primary">P</a><a class="so-link" href="#l" data-probe="link">L</a><ul class="so-rich so-rich--check"><li data-probe="check">C</li></ul>');
-        const card = document.querySelectorAll('main > *')[${PLACEMENTS.findIndex((pl) => pl.component === 'pricing.plans')}].querySelector("[class$='__plan']");
-        card.insertAdjacentHTML('beforeend', '<a class="so-link" href="#l2" data-probe="card-link">L</a>');
-      })()`);
-      await settle(p);
-      const read = async (probe: string, js: string) => {
-        await settle(p);
-        return p.evaluate(`(() => { const el = document.querySelector('[data-probe=${probe}]'); return ${js}; })()`);
-      };
-      const { brand, onBrand, focus } = sites.sections.colors;
-      expect(await read('primary', 'getComputedStyle(el).backgroundColor')).toBe(brand);
-      expect(await read('primary', 'getComputedStyle(el).color')).toBe(onBrand);
-      expect(await read('link', 'getComputedStyle(el).color')).toBe(brand);
-      expect(await read('card-link', 'getComputedStyle(el).color')).toBe(brand);
-      expect(await read('check', "getComputedStyle(el, '::after').borderRightColor")).toBe(brand);
-      await p.keyboard.press('Tab');
-      for (const probe of ['primary', 'link', 'card-link']) {
-        await p.evaluate(`document.querySelector('[data-probe=${probe}]').focus()`);
-        expect(await read(probe, 'getComputedStyle(el).outlineColor'), probe).toBe(focus);
-      }
-    });
-  }, 60_000);
+  }, 180_000);
 
   it('shows a dark header’s action and links readably, and its current-page mark in the header’s text colour', async () => {
     await withPage('header-dark', 1280, async (p) => {
-      await p.evaluate(`(() => {
-        const cta = document.querySelector('.so-header__cta'); cta.dataset.label = 'header action'; cta.dataset.role = 'primary';
-        document.querySelectorAll('.so-header__nav ul a, .so-header__brand').forEach((el, i) => { el.dataset.label = 'header link ' + i; el.dataset.role = 'control'; });
-        const current = document.querySelector('.so-header__nav ul a');
-        current.setAttribute('aria-current', 'page');
-        current.dataset.role = 'current';
-      })()`);
+      await label(p, '.so-header__cta', "label(el, 'header action', 'primary', 'on-inverse')");
+      await label(p, '.so-header__nav ul a', "label(el, 'header link ' + i, i ? 'link' : 'current', 'on-inverse')");
+      await label(p, '.so-header__brand', "label(el, 'header brand', 'control', 'on-inverse')");
+      await p.evaluate(`document.querySelector('.so-header__nav ul a').setAttribute('aria-current', 'page')`);
       const { rest, hover } = await sampleAll(p);
-      expect(rest.map((s) => s.label)).toContain('header action');
-      expect(rest.filter((s) => s.current).length).toBe(1);
+      const headerColor = (await p.evaluate(`getComputedStyle(document.querySelector('header.so-header')).color`)) as string;
+      expect(rest.map((s) => s.label).sort()).toEqual(['header action', 'header brand', 'header link 0', 'header link 1']);
+      const current = rest.find((s) => s.current)!.current!;
+      expect(current.content).not.toBe('none');
+      expect(parseFloat(current.height)).toBeGreaterThanOrEqual(2);
+      expect(current.color).toBe(headerColor);
+      expect(unoutlined(rest)).toEqual([]);
+      // Header links fade to 72% of the header's text colour; their own colour is not the ink.
+      expect(wrongInk(rest.filter((s) => s.role !== 'link'), sites['header-dark'].colors)).toEqual([]);
       expect(failures(rest)).toEqual([]);
       expect(failures(hover)).toEqual([]);
     });
   }, 60_000);
 
-  for (const [name, why] of [
-    ['header-custom', 'an author’s own dark background and light text'],
-    ['header-dark', 'the Dark background'],
-    ['header-default', 'the page background']
+  for (const [name, why, background] of [
+    ['header-custom', 'an author’s own dark background and light text', 'rgb(29, 43, 79)'],
+    ['header-gradient', 'an author’s own gradient and light text', null],
+    ['header-dark', 'the Dark background', null],
+    ['header-default', 'the page background', null]
   ] as const) {
     it(`opens the phone menu in the header’s own colours, with ${why}`, async () => {
       await withPage(name, 390, async (p) => {
         await p.locator('.so-header__toggle').click();
         await p.locator('.so-header__nav').waitFor({ state: 'visible' });
         await settle(p);
-        const header = (await p.evaluate(`getComputedStyle(document.querySelector('header.so-header')).backgroundColor`)) as string;
-        expect(await p.evaluate(`getComputedStyle(document.querySelector('.so-header__nav')).backgroundColor`)).toBe(header);
-        await p.evaluate(`document.querySelectorAll('.so-header__nav ul a').forEach((el, i) => { el.dataset.label = 'menu link ' + i; el.dataset.role = 'menu'; })`);
-        const samples = (await p.evaluate(`[...document.querySelectorAll('[data-label]')].map((el) => (${SAMPLE_FN})(el, el.dataset.role))`)) as Sample[];
+        const paint = `(el) => { const cs = getComputedStyle(el); return [cs.backgroundColor, cs.backgroundImage, cs.color]; }`;
+        const [headerColor, headerImage, headerText] = (await p.evaluate(`(${paint})(document.querySelector('header.so-header'))`)) as string[];
+        const [navColor, navImage] = (await p.evaluate(`(${paint})(document.querySelector('.so-header__nav'))`)) as string[];
+        if (background) expect([headerColor, headerText]).toEqual([background, 'rgb(255, 255, 255)']);
+        expect([navColor, navImage]).toEqual([headerColor, headerImage]);
+        if (name === 'header-gradient') return expect(navImage).toMatch(/^linear-gradient/);
+        // The links' contrast is measured on an opaque header colour.
+        expect(rgba(headerColor, name).a).toBe(1);
+        await label(p, '.so-header__nav ul a', "label(el, 'menu link ' + i, 'menu')");
+        const samples = (await p.evaluate(`[...document.querySelectorAll('[data-probe-id]')].map((el) => (${SAMPLE_FN})(el))`)) as Sample[];
         expect(samples.length).toBe(2);
         expect(failures(samples)).toEqual([]);
       });
