@@ -189,7 +189,7 @@ export interface DialogLike {
 
 /** The parts of Electron's shell module replaced. */
 export interface ShellLike {
-  openExternal: (url: string, options?: unknown) => Promise<void>;
+  openExternal: (url: string, options?: any) => Promise<void>;
   showItemInFolder: (path: string) => void;
   openPath: (path: string) => Promise<string>;
 }

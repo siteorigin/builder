@@ -56,9 +56,28 @@ describe('a session before it starts', () => {
       ['session.start', 'session'],
       ['session.describe', 'session'],
       ['window.info', 'observe'],
+      ['window.close', 'act'],
+      ['menu.list', 'observe'],
+      ['menu.invoke', 'act'],
+      ['desktop.setAnswers', 'fixture'],
+      ['desktop.events', 'observe'],
+      ['files.stageImport', 'fixture'],
+      ['files.list', 'observe'],
       ['session.close', 'session']
     ]);
-    expect(Object.fromEntries(d.capabilities.map((c: any) => [c.op, c.defaultTimeoutMs]))).toEqual({ 'session.start': 180000, 'session.describe': 15000, 'window.info': 10000, 'session.close': 60000 });
+    expect(Object.fromEntries(d.capabilities.map((c: any) => [c.op, c.defaultTimeoutMs]))).toEqual({
+      'session.start': 180000,
+      'session.describe': 15000,
+      'window.info': 10000,
+      'window.close': 10000,
+      'menu.list': 10000,
+      'menu.invoke': 10000,
+      'desktop.setAnswers': 10000,
+      'desktop.events': 10000,
+      'files.stageImport': 10000,
+      'files.list': 10000,
+      'session.close': 60000
+    });
   });
 
   it('fingerprints the build by the bytes of its files', async () => {
@@ -198,7 +217,7 @@ describe('starting', () => {
 
 describe('the app environment', () => {
   it('passes on only what an app needs to run, then the session’s own folders, headless', () => {
-    const paths = { root: '/r', profile: '/r/profile', workspace: '/r/workspace', projects: '/r/workspace/SiteOrigin', home: '/r/home', tmp: '/r/tmp', artifacts: '/r/artifacts' };
+    const paths = { root: '/r', profile: '/r/profile', workspace: '/r/workspace', projects: '/r/workspace/SiteOrigin', imports: '/r/imports', exports: '/r/exports', home: '/r/home', tmp: '/r/tmp', artifacts: '/r/artifacts' };
     const base = {
       PATH: '/bin',
       DISPLAY: ':0',
