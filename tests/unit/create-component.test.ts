@@ -10,7 +10,7 @@ import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { partStyleControls, placementStyleControls } from '@shared/styles';
 import { ProjectSession } from '../../src/main/project/session';
-import { boundaryOf, createComponentTarget, descOf, selectionFromChain } from '../../src/renderer/src/lib/model';
+import { boundaryOf, createComponentTarget, descOf, designCtx, selectionFromChain } from '../../src/renderer/src/lib/model';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -166,12 +166,14 @@ describe('where Create component… is offered (#173)', () => {
 
   it('leaves out the shared header and footer, parts inside a placement, missing nodes and a read-only project', () => {
     const { s, page, section, kinds, at } = library();
-    // A paragraph of its own in the shared header: anything else would be offered, but the header is shared.
-    const shelled = structuredClone(s);
-    const para = { ...structuredClone(s.pages[page.id].nodes[kinds.text]), id: 'n_shell0000' };
-    shelled.site.shell.header.nodes[para.id] = para;
-    shelled.site.shell.header.rootIds.push(para.id);
-    expect(createComponentTarget({ state: shelled }, at({ kind: 'shell', id: 'header' }, para.id))).toBeNull();
+    // A paragraph of its own in the shared header or footer: anything else would be offered, but they are shared.
+    for (const part of ['header', 'footer'] as const) {
+      const shelled = structuredClone(s);
+      const para = { ...structuredClone(s.pages[page.id].nodes[kinds.text]), id: 'n_shell0000' };
+      shelled.site.shell[part].nodes[para.id] = para;
+      shelled.site.shell[part].rootIds.push(para.id);
+      expect(createComponentTarget({ state: shelled }, at({ kind: 'shell', id: part }, para.id)), part).toBeNull();
+    }
     // A reference through a placement never names the page's own node of the same ID.
     expect(createComponentTarget({ state: s }, at(page, kinds.text, [section]))).toBeNull();
     const sectionDef = s.components[(s.pages[page.id].nodes[section] as InstanceNode).definitionId];
@@ -278,15 +280,20 @@ describe('a component made from a section (#173)', () => {
     const styled = applyOperations(rooted, [{ type: 'node.setStyle', owner: page, nodeId: cta, partId: 'panel', scope: 'base', property: 'background', value: '#123456' }]).state;
     expect(() => applyOperations(styled, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its Panel part/);
     expect(() => applyOperations(styled, [{ type: 'component.createFromNode', owner: page, nodeId: cta, name: 'Band' }])).toThrow(/own styles on its Panel part/);
-    // A record with nothing in it styles nothing.
+    // A record with nothing in it styles nothing; one with a style at any size does.
     const blank = structuredClone(rooted);
     (blank.pages[page.id].nodes[cta] as InstanceNode).overrides!.panel = { base: {} };
     expect(() => applyOperations(blank, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).not.toThrow();
+    (blank.pages[page.id].nodes[cta] as InstanceNode).overrides!.panel = { base: {}, phone: { background: '#123456' } };
+    expect(() => applyOperations(blank, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its Panel part/);
     // Code that reads only its part classes, not the class it is given, keeps its root styles only on a page.
     const partsOnly = structuredClone(rooted);
     const code = partsOnly.components[(partsOnly.pages[page.id].nodes[cta] as InstanceNode).definitionId];
     code.source = '<script>\n\tlet { heading = \'\', so_o = undefined } = $props();\n</script>\n\n<section class={so_o?.root}>{heading}</section>\n';
     expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).toThrow(/own styles on its root/);
+    // Code that reads the class from its props object places it: nothing would be lost.
+    code.source = '<script>\n\tlet p = $props();\n</script>\n\n<section class={p.class ?? p.so_o?.root}>{p.heading}</section>\n';
+    expect(() => applyOperations(partsOnly, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }])).not.toThrow();
   });
 });
 
@@ -315,6 +322,20 @@ describe('the canvas finds a component made from a section (#173)', () => {
     expect(selectionFromChain(s, chain.slice(2), null, false)).toEqual(at([], placed));
     expect(selectionFromChain(s, chain, null, false)).toEqual(at([], placed));
     expect(selectionFromChain(s, chain, at([], placed), false)).toMatchObject(at([placed], heading));
+    // Its own design (a list's rows, say) still renders in the placement's context, not the section's.
+    expect(designCtx(s, at([], placed))).toBe(`page:${page.id}|${placed}`);
+  });
+
+  it('finds a placement whose design root happens to share its ID', () => {
+    const { s: base, page, card, cardDef } = library();
+    const s = structuredClone(base);
+    const def = s.components[cardDef.id];
+    const old = def.tree!.rootIds[0];
+    def.tree!.nodes[card] = { ...def.tree!.nodes[old], id: card };
+    delete def.tree!.nodes[old];
+    def.tree!.rootIds = [card];
+    def.parts.root.nodeId = card;
+    expect(descOf(s, { owner: page, instancePath: [], nodeId: card })).toEqual({ ctx: `page:${page.id}|${card}`, node: card, items: '' });
   });
 
 });

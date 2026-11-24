@@ -57,6 +57,16 @@ export function descOf(state: ProjectState, ref: ElementRef): BridgeDesc {
   return { ctx, node: nodeId, items };
 }
 
+/**
+ * The context a placement's own design renders in, where its nodes (a list's rows among them) are found on the page:
+ * the placement's, whichever component renders its outer element.
+ */
+export function designCtx(state: ProjectState, ref: ElementRef): string {
+  const n = nodeAt(state, ref);
+  const def = n?.kind === 'instance' ? state.components[n.definitionId] : undefined;
+  return def?.kind === 'managed' && def.tree ? `${ctxOf(ref)}|${ref.nodeId}` : ctxOf(ref);
+}
+
 const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
 
 /** Resolve the definition and node a reference points at. */

@@ -2158,6 +2158,16 @@ function rootControls(state: ProjectState, node: InstanceNode): { styleControls?
  * A code component takes a placement's styles on its inner parts only on a page, and on its root inside a design only
  * through the class it places: styles that would no longer apply are refused rather than quietly lost.
  */
+/**
+ * Whether code may place the `class` it is given, on any sign of it (read from its props object, or passed on with
+ * the rest of them): refused only when it plainly does not.
+ */
+function mayPlaceClass(def: ComponentDefinition): boolean {
+  if (codePlacesClass(def)) return true;
+  const src = (def.source ?? '').replace(/<style\b[\s\S]*?<\/style>/g, '');
+  return /\.\s*class\b/.test(src) || /\$\$(rest)?props\b/i.test(src) || /\{\s*\.\.\./.test(src);
+}
+
 function refuseCodePartStylesInto(state: ProjectState, tree: NodeTree, ids: string[]) {
   for (const id of ids) {
     const n = tree.nodes[id];
@@ -2165,7 +2175,7 @@ function refuseCodePartStylesInto(state: ProjectState, tree: NodeTree, ids: stri
     const def = own(state.components, n.definitionId);
     if (def?.kind !== 'code') continue;
     const sets = (p: string) => Object.values(n.overrides![p] ?? {}).some((scope) => !!scope && Object.keys(scope).length > 0);
-    const styled = Object.keys(n.overrides).find((p) => sets(p) && (p !== 'root' || !codePlacesClass(def)));
+    const styled = Object.keys(n.overrides).find((p) => sets(p) && (p !== 'root' || !mayPlaceClass(def)));
     if (styled) fail(`"${n.name ?? def.name}" has its own styles on its ${styled === 'root' ? 'root' : `${own(def.parts, styled)?.label ?? styled} part`}, which this code component takes only on a page. Reset them first, or create the component from a different element.`);
   }
 }
