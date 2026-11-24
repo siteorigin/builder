@@ -189,7 +189,12 @@ describe('a missing page is offered explicitly, and a page that goes by another 
   });
 
   it('does not duplicate a destination renamed to another title, menu label or address, or in another language', () => {
-    const base = () => lighthouse();
+    // The page's Japanese title gives it a Japanese contact address: give it a neutral one, so only the field each case sets names it.
+    const base = () => {
+      const made = lighthouse();
+      made.state.pages[made.second].route = '/page/';
+      return made;
+    };
     type Rename = (p: PageDoc) => void;
     const renames: Array<[string, Rename]> = [
       ['Get in touch', (p) => (p.title = 'Get in touch')],
