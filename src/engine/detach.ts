@@ -6,7 +6,8 @@
  * design stay placements, given the values and styles they were shown with.
  */
 import type { DetachedFrom, GraphNode, InstanceNode, NodeTree, ProjectState, PropSchema } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, slotChildren } from '@shared/types';
+import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
 import { toRichText } from '@shared/richtext';
@@ -94,7 +95,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     const allowed = n.kind === 'text' ? TEXT_TAG_SET : ELEMENT_TAG_SET;
     const plain = n.kind === 'text' ? 'p' : 'div';
     if (!isBinding(n.tag)) return allowed.has(n.tag) ? n.tag : plain;
-    const schema: PropSchema | undefined = '$prop' in n.tag ? own(def.properties, n.tag.$prop) : (own(at.scope.fields, n.tag.$item) as PropSchema | undefined);
+    const schema: PropSchema | undefined = '$prop' in n.tag ? propBindingSchema(def.properties, n.tag) : (own(at.scope.fields, n.tag.$item) as PropSchema | undefined);
     const options = schema?.type === 'enum' ? schema.options.map((o) => o.value).filter((o) => allowed.has(o)) : [];
     const fallback = schema?.type === 'enum' && options.includes(schema.default) ? schema.default : (options[0] ?? plain);
     const v = evaluate(n.tag, at.scope);
@@ -216,7 +217,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       if (Object.keys(variants).length) n.variants = variants;
       else delete n.variants;
     }
-    if (src.slots) n.slots = Object.fromEntries(Object.entries(src.slots).map(([slot, ids]) => [slot, ids.flatMap((c) => emit(c, at))]));
+    if (src.slots) n.slots = Object.fromEntries(Object.keys(src.slots).map((slot) => [slot, slotChildren(src, slot).flatMap((c) => emit(c, at))]));
     // What the design and the placement give its root lands on its own placement now, where it beats its design: only
     // what beat that design before goes there, so an option of its own that won still wins.
     const innerRoot = inner?.kind === 'managed' ? inner.tree?.rootIds[0] : undefined;
@@ -260,7 +261,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         });
       }
       case 'slot': {
-        const content = own(inst.slots, src.slot) ?? [];
+        const content = slotChildren(inst, src.slot);
         const uses = slotUses.get(src.slot) ?? 0;
         slotUses.set(src.slot, uses + 1);
         // The content moves here; a slot the design shows again (once per list item) gets its own copies.
@@ -276,8 +277,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const props = effectiveProps(state, def, inst, { props: {} }, op.owner.id);
   const roots = emit(rootId, { scope: { props }, items: {}, repeats: [] });
   if (!roots.length) fail(`“${label}” shows nothing with its current settings, so there is nothing to detach. Delete it instead, or change its settings first.`);
-  for (const [slot, ids] of Object.entries(inst.slots ?? {})) {
-    if (ids.length && !slotUses.has(slot))
+  for (const slot of Object.keys(inst.slots ?? {})) {
+    if (slotChildren(inst, slot).length && !slotUses.has(slot))
       fail(`“${label}” has content in its ${def.slots?.[slot]?.label ?? slot} that its current settings do not show. Move or remove that content first, so detaching keeps everything on the page.`);
   }
   const top = added.find((n) => n.id === roots[0])!;
