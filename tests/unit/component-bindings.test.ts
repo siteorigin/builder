@@ -15,12 +15,14 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { usedIcons } from '@generator/runtime-files';
-import { P, eq, item, managed, ne, prop, type ComponentSpec } from '@catalogue/dsl';
+import { P, eq, item, ne, prop, type ComponentSpec } from '@catalogue/dsl';
+import { FOUNDATION } from '@catalogue/foundation/pack';
 import { nodeClass } from '@generator/index';
 import { isCardLink } from '@generator/card-links';
 import { validateOperation } from '@shared/ops';
 import { axesOf } from '@shared/variants';
 
+const { managed } = FOUNDATION;
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const owner = (def: ComponentDefinition) => ({ kind: 'component' as const, id: def.id });

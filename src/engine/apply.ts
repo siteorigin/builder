@@ -23,9 +23,9 @@ import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, tex
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
-import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily } from '@shared/fonts';
+import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
-import { getTheme, listThemes } from '@catalogue/index';
+import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
@@ -1884,6 +1884,14 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
     conflicts.push(...contractConflicts(state, def, next));
     mapping.set(def.id, next);
   }
+  // Fonts ship with their theme. One the site chose itself (a site style, a text style, an element's font, a project
+  // component's code) would silently fall back to a system font under a theme without it.
+  const current = getTheme(state.site.themeId);
+  const fontTokens = new Set(current.tokens.filter((t) => t.group === 'font').map((t) => t.id));
+  for (const f of current.fonts)
+    // A font the project imported itself stays whatever the theme.
+    if (!theme.fonts.some((n) => n.family.toLowerCase() === f.family.toLowerCase()) && !projectFontFamilies(state).some((p) => p.family.toLowerCase() === f.family.toLowerCase()) && siteChoosesFamily(state, f.family, fontTokens))
+      conflicts.push(`${f.name}: your site uses this font, which ${theme.name} does not include. Choose another font first.`);
   if (conflicts.length) throw new EngineError('CONFLICT', `${theme.name} is not compatible with this project: ${conflicts.join(' ')}`, { conflicts });
   const install = (next: ComponentDefinition) => {
     const existing = own(state.components, next.id);
@@ -1920,7 +1928,7 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
     }
   }
   state.site.themeId = theme.id;
-  state.themeLock.theme = { id: theme.id, version: theme.version };
+  state.themeLock.theme = themeLockEntry(theme);
   return { rebound: mapping.size };
 }
 

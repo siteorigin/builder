@@ -12,3 +12,7 @@ await probe.close();
 FileHandle.sync = async function () {
   if (this.fd < 0) throw Object.assign(new Error('EBADF: bad file descriptor, fsync'), { code: 'EBADF' });
 };
+
+// The authored theme packs, registered as the app registers their built releases at startup.
+const { registerBuiltinPacks } = await import('../../src/main/packs/build');
+registerBuiltinPacks();

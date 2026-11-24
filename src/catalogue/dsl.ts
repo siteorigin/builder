@@ -1,6 +1,7 @@
 /**
  * Small authoring helpers for catalogue component definitions.
- * The helpers only build plain static data; nothing here runs when a pack is loaded into a project.
+ * The helpers only build plain static data; nothing here runs when a pack is loaded into a project. A pack starts
+ * with `createPack`, whose helpers stamp every definition with the pack's ID, version and licence.
  */
 import type {
   Bindable,
@@ -29,6 +30,7 @@ import type {
 } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
 import { toRichText, type RichListType } from '@shared/richtext';
+import type { AuthoredPack, PackMeta } from './pack';
 
 export const prop = (name: string): Binding => ({ $prop: name });
 export const item = (name: string): Binding => ({ $item: name });
@@ -146,48 +148,82 @@ export interface ComponentSpec {
   examples?: ComponentDefinition['examples'];
 }
 
-export const PACK_ID = 'foundation';
-export const PACK_VERSION = '0.1.0';
-
-export function definitionIdFor(componentId: string): string {
-  return `${PACK_ID}.${componentId}`;
+/** The pack-bound helpers a pack's component modules are written with. */
+export interface PackAuthor {
+  readonly meta: PackMeta;
+  /** The installed definition ID of one of this pack's components: `{pack}.{componentId}`. */
+  definitionId(componentId: string): string;
+  provenance(componentId: string): { pack: string; packVersion: string; componentId: string };
+  /** A managed component of this pack, built from its spec. */
+  managed(spec: ComponentSpec): ComponentDefinition;
+  /** Another pack's definition, as this pack's own (an alternate implementation of the same contract). */
+  adopt(def: ComponentDefinition): ComponentDefinition;
+  /** The finished pack, with its components in catalogue order. */
+  define(components: ComponentDefinition[]): AuthoredPack;
 }
 
-export function managed(spec: ComponentSpec): ComponentDefinition {
-  const b = new TreeBuilder();
-  const rootId = spec.build(b);
-  // Shared variant helpers may style nodes a particular component does not have; keep only real nodes.
-  const variantAxes = spec.variantAxes && Object.fromEntries(
-    Object.entries(spec.variantAxes).map(([axis, a]) => [
-      axis,
-      {
-        ...a,
-        options: Object.fromEntries(
-          Object.entries(a.options).map(([id, v]) => [id, v.styles ? { ...v, styles: Object.fromEntries(Object.entries(v.styles).filter(([nid]) => nid in b.nodes)) } : v])
-        )
-      }
-    ])
-  );
+/**
+ * Start a pack from its ID, version, licence, tokens, base CSS and fonts. Its components are written with the
+ * helpers this returns, so every definition carries the pack's own identity.
+ */
+export function createPack(meta: PackMeta): PackAuthor {
+  const definitionId = (componentId: string) => `${meta.id}.${componentId}`;
+  const provenance = (componentId: string) => ({ pack: meta.id, packVersion: meta.version, componentId });
   return {
-    schemaVersion: SCHEMA_VERSION,
-    id: definitionIdFor(spec.componentId),
-    componentId: spec.componentId,
-    contractVersion: 1,
-    kind: 'managed',
-    owner: 'theme',
-    name: spec.name,
-    description: spec.description,
-    category: spec.category,
-    tags: spec.tags,
-    icon: spec.icon,
-    properties: spec.properties,
-    parts: spec.parts,
-    slots: spec.slots,
-    variantAxes,
-    tree: { rootIds: [rootId], nodes: b.nodes },
-    provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: spec.componentId },
-    license: 'GPL-3.0-or-later',
-    examples: spec.examples
+    meta,
+    definitionId,
+    provenance,
+    managed(spec) {
+      const b = new TreeBuilder();
+      const rootId = spec.build(b);
+      // Shared variant helpers may style nodes a particular component does not have; keep only real nodes.
+      const variantAxes = spec.variantAxes && Object.fromEntries(
+        Object.entries(spec.variantAxes).map(([axis, a]) => [
+          axis,
+          {
+            ...a,
+            options: Object.fromEntries(
+              Object.entries(a.options).map(([id, v]) => [id, v.styles ? { ...v, styles: Object.fromEntries(Object.entries(v.styles).filter(([nid]) => nid in b.nodes)) } : v])
+            )
+          }
+        ])
+      );
+      return {
+        schemaVersion: SCHEMA_VERSION,
+        id: definitionId(spec.componentId),
+        componentId: spec.componentId,
+        contractVersion: 1,
+        kind: 'managed',
+        owner: 'theme',
+        name: spec.name,
+        description: spec.description,
+        category: spec.category,
+        tags: spec.tags,
+        icon: spec.icon,
+        properties: spec.properties,
+        parts: spec.parts,
+        slots: spec.slots,
+        variantAxes,
+        tree: { rootIds: [rootId], nodes: b.nodes },
+        provenance: provenance(spec.componentId),
+        license: meta.license,
+        examples: spec.examples
+      };
+    },
+    adopt(def) {
+      // Spread keeps every key where it was, so the definition serializes in the same order as the original.
+      const c = structuredClone(def);
+      return { ...c, id: definitionId(def.componentId!), provenance: { ...c.provenance, ...provenance(def.componentId!) }, license: meta.license };
+    },
+    define(components) {
+      const seen = new Set<string>();
+      for (const c of components) {
+        if (c.id !== definitionId(c.componentId ?? '') || c.provenance?.pack !== meta.id || c.provenance?.packVersion !== meta.version) throw new Error(`${c.id} does not belong to pack ${meta.id}@${meta.version}.`);
+        if (seen.has(c.id)) throw new Error(`Pack ${meta.id} lists ${c.id} twice.`);
+        seen.add(c.id);
+      }
+      return { ...meta, components };
+    }
   };
 }
 

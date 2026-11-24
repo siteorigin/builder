@@ -354,6 +354,8 @@ export function SiteStyles() {
   // Which paired colours the theme sets against each other, and whether they are readable as they stand.
   const contrast = useMemo(() => buildContrastModel(tokens, snap ? getTheme(snap.state.site.themeId).contrastPairs : []), [tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
   const contrastStatus = useContrastStatus(contrast);
+  const refusedPacks = useStore((s) => s.packs.refused);
+  const packsDir = useStore((s) => s.packs.userDir);
   if (!snap) return null;
   const st = snap.state;
   const theme = getTheme(st.site.themeId);
@@ -847,6 +849,26 @@ export function SiteStyles() {
               <div className="ss-theme-hint" id={`${uid}-theme-hint`}>
                 Switching keeps your content and changes. You can undo it.
               </div>
+            )}
+            {theme.id !== st.site.themeId && (
+              <div className="ss-theme-hint" role="note">
+                This site's theme, “{st.site.themeId}”, is not installed, so {theme.name}'s styles are shown.
+              </div>
+            )}
+            {refusedPacks.length > 0 && (
+              <details className="ss-packs-refused">
+                <summary>
+                  {refusedPacks.length === 1 ? '1 theme pack' : `${refusedPacks.length} theme packs`} could not be loaded
+                </summary>
+                <ul>
+                  {refusedPacks.map((r) => (
+                    <li key={r.dir}>
+                      <strong>{r.packId ?? r.dir.split(/[\\/]/).pop()}</strong>: {r.reason}
+                    </li>
+                  ))}
+                </ul>
+                {packsDir && <p className="faint">Installed packs are read from {packsDir} when SiteOrigin Builder starts.</p>}
+              </details>
             )}
           </div>
         </div>

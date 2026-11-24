@@ -7,7 +7,8 @@ import type { ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } fr
 import { externalLink } from '@shared/links';
 import { visitorStepKey } from '@shared/preview-keys';
 import { checkLocalBaseURL } from '@shared/local';
-import { Controller, defaultProjectsFolder } from './controller';
+import { Controller, defaultProjectsFolder, resourcesDir } from './controller';
+import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from './packs/installed';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
@@ -206,6 +207,8 @@ function handle(channel: string, fn: (...args: never[]) => unknown) {
 
 function registerIpc() {
   handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, dev: !app.isPackaged }));
+  handle('app:catalogue', () => installedCatalogue());
+  handle('packs:preview', (packId: unknown, file: unknown) => packPreview(packId, file));
   handle('app:getSettings', async () => (await loadSettings()).settings);
   handle('app:setSettings', async (patch: SettingsPatch) => {
     const before = (await loadSettings()).settings.ai;
@@ -622,10 +625,16 @@ function buildMenu() {
 // One app instance at a time: a second one would race this one's settings, recents and project locks.
 // Launching the app again focuses the existing window instead.
 if (!app.requestSingleInstanceLock()) app.exit(0);
+/** Settles once startup (theme packs, IPC, the menu) is done: no window may open before then. */
+let markStarted!: () => void;
+const started = new Promise<void>((resolve) => (markStarted = resolve));
+
 app.on('second-instance', () => {
-  // On macOS the app can be running with no window; launching it again opens one.
+  // On macOS the app can be running with no window; launching it again opens one, once startup is done.
   if (!win) {
-    if (app.isReady()) void createWindow();
+    void started.then(() => {
+      if (!win) void createWindow();
+    });
     return;
   }
   if (headless) return;
@@ -651,8 +660,11 @@ app.whenReady().then(async () => {
   // Deny unsolicited permission requests (camera, notifications, etc.).
   electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
   electronSession.defaultSession.on('will-download', (e) => e.preventDefault());
+  // Theme packs are loaded before anything can open a project or ask for the catalogue.
+  await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
   registerIpc();
   buildMenu();
+  markStarted();
   // Registered once, not per window: macOS brings up a new window after the last one closes.
   nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
   await createWindow();

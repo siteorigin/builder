@@ -551,6 +551,16 @@ describe('source export helpers', () => {
     expect(JSON.parse(readFileSync(join(dest, 'package-lock.json'), 'utf8')).packages[''].engines.node).toBe('>=22.17.0');
   });
 
+  it('brings a README from before fonts came with the theme up to date', async () => {
+    const dest = temp();
+    write(dest, 'README.md', readFileSync(join(__dirname, 'fixtures', 'npm-fonts-readme.md'), 'utf8'));
+    await finishExportedSource(dest, createStarterState('blank', 'Old Name', false), join(dest, 'missing.md'));
+    const readme = readFileSync(join(dest, 'README.md'), 'utf8');
+    expect(readme).toBe(projectReadme('Old Name'));
+    expect(readme).toContain('The fonts come with the theme, in `src/lib/siteorigin/fonts/`');
+    expect(readme).not.toContain('installed from npm');
+  });
+
   it("keeps a README the owner has edited", async () => {
     const dest = temp();
     expect(isGeneratedReadme(projectReadme('Old').replace(/\n/g, '\r\n'))).toBe(true);

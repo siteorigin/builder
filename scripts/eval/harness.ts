@@ -15,6 +15,9 @@ import { estimateRequestTokens, estimateTokens } from '@agent/budget';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
+import { registerBuiltinPacks } from '../../src/main/packs/build';
+
+registerBuiltinPacks();
 
 /** Bump when the report or trace shape changes. */
 export const REPORT_SCHEMA_VERSION = 1;

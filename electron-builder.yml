@@ -18,6 +18,12 @@ extraResources:
     to: templates
   - from: resources/starter-assets
     to: resources/starter-assets
+  # Theme pack releases built by `npm run build:packs`. The development fixtures ship too, hidden from the theme
+  # picker, so a project switched to one while developing still opens for editing.
+  - from: resources/packs
+    to: resources/packs
+  - from: resources/packs-dev
+    to: resources/packs-dev
 
 mac:
   category: public.app-category.developer-tools

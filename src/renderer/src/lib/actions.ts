@@ -135,7 +135,7 @@ function elementOps(at: InsertAt, spec: { primitive: Primitive }, nodeId?: strin
   return [{ type: 'node.insert', ...named, owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...spec }];
 }
 
-export async function insert(spec: { componentId?: string; definitionId?: string; primitive?: Primitive }, label: string) {
+export async function insert(spec: { componentId?: string; definitionId?: string; primitive?: Primitive; variants?: Record<string, string> }, label: string) {
   const isSection = !spec.primitive;
   const at = insertionPoint(isSection ? 'section' : 'element');
   if (!at) return;

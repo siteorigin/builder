@@ -17,7 +17,7 @@ import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
 import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
-import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
+import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
@@ -254,7 +254,7 @@ export class Controller {
   /** What the preview is doing; a project only a newer version can generate never has one. */
   private runtimeStatus(): RuntimeState {
     const s = this.session;
-    if (s && previewUnavailable(s)) return { state: 'unavailable', message: PREVIEW_UNAVAILABLE };
+    if (s && previewUnavailable(s)) return { state: 'unavailable', message: s.readOnly?.preview ?? PREVIEW_UNAVAILABLE };
     return (this.dev?.status ?? this.pendingStatus ?? { state: 'idle' }) as RuntimeState;
   }
 
@@ -645,7 +645,8 @@ export class Controller {
               ? `${e.message} It is open read-only here. If that app is no longer running, unlock the project to edit it.`
               : `${e.message} It is open read-only.`,
             canUnlock: locked,
-            lockToken: locked ? e.owner.token : undefined
+            lockToken: locked ? e.owner.token : undefined,
+            ...(e instanceof ThemeUnavailableError ? { preview: `${e.message} The preview needs it too.` } : {})
           });
         } catch {
           return { ok: false, message: inFolder(e.message, dir) };

@@ -1,6 +1,7 @@
 import type { ComponentDefinition, TableValue } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import { P, PACK_ID, PACK_VERSION, definitionIdFor } from '../dsl';
+import { P } from '../dsl';
+import { FOUNDATION } from './pack';
 
 /**
  * Data table: named columns and rows of plain text, for timetables and side-by-side comparisons. A theme code
@@ -192,7 +193,7 @@ const DEFAULT_TABLE: TableValue = {
 
 export const dataTable: ComponentDefinition = {
   schemaVersion: SCHEMA_VERSION,
-  id: definitionIdFor('data.table'),
+  id: FOUNDATION.definitionId('data.table'),
   componentId: 'data.table',
   contractVersion: 1,
   kind: 'code',
@@ -217,6 +218,6 @@ export const dataTable: ComponentDefinition = {
     tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
   source: TABLE_SOURCE,
-  provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: 'data.table' },
-  license: 'GPL-3.0-or-later'
+  provenance: FOUNDATION.provenance('data.table'),
+  license: FOUNDATION.meta.license
 };

@@ -2,7 +2,7 @@ import type { GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, PageDoc,
 import { SCHEMA_VERSION, GENERATOR_VERSION } from '@shared/types';
 import { installComponent, makeInstance } from '@engine/install';
 import { newId } from '@shared/ids';
-import { getTheme } from './index';
+import { getTheme, themeLockEntry } from './index';
 import { canonicalRich } from './dsl';
 import { TEMPLATE_VERSION } from './fonts';
 
@@ -46,6 +46,7 @@ function page(id: string, title: string, route: string, nodes: GraphNode[], seo:
 }
 
 function emptyState(name: string, themeId = 'foundation'): ProjectState {
+  // The theme the site records is the one it is made with, even when the one asked for is not installed here.
   const theme = getTheme(themeId);
   return {
     manifest: {
@@ -64,14 +65,14 @@ function emptyState(name: string, themeId = 'foundation'): ProjectState {
       description: '',
       homePageId: '',
       pageOrder: [],
-      themeId,
+      themeId: theme.id,
       shell: { header: { rootIds: [], nodes: {} }, footer: { rootIds: [], nodes: {} } }
     },
     pages: {},
     components: {},
     tokens: { schemaVersion: SCHEMA_VERSION, overrides: {}, custom: [] },
     assets: { schemaVersion: SCHEMA_VERSION, assets: {} },
-    themeLock: { schemaVersion: SCHEMA_VERSION, theme: { id: theme.id, version: theme.version }, components: {} }
+    themeLock: { schemaVersion: SCHEMA_VERSION, theme: themeLockEntry(theme), components: {} }
   };
 }
 

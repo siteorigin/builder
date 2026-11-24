@@ -1,7 +1,10 @@
 import type { ComponentDefinition } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import { P, PACK_ID, PACK_VERSION, definitionIdFor, managed, tok } from '../dsl';
+import { P, tok } from '../dsl';
+import { FOUNDATION } from './pack';
 import { mutedStyles } from './common';
+
+const { managed } = FOUNDATION;
 
 const HEADER_SOURCE = `<script>
 	/**
@@ -492,7 +495,7 @@ const HEADER_SOURCE = `<script>
 
 export const header: ComponentDefinition = {
   schemaVersion: SCHEMA_VERSION,
-  id: definitionIdFor('shell.header'),
+  id: FOUNDATION.definitionId('shell.header'),
   componentId: 'shell.header',
   contractVersion: 1,
   kind: 'code',
@@ -528,8 +531,8 @@ export const header: ComponentDefinition = {
   },
   parts: { root: { nodeId: 'root', label: 'Header', styleControls: ['paddingBlock', 'background', 'color', 'border', 'shadow', 'hidden'] } },
   source: HEADER_SOURCE,
-  provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: 'shell.header' },
-  license: 'GPL-3.0-or-later'
+  provenance: FOUNDATION.provenance('shell.header'),
+  license: FOUNDATION.meta.license
 };
 
 export const footer = managed({

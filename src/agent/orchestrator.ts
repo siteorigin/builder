@@ -54,16 +54,6 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Font family names bundled with the theme, from its @fontsource packages ("@fontsource-variable/dm-sans" → "DM Sans Variable"). */
-function bundledFonts(fontImports: string[]): string[] {
-  const special: Record<string, string> = { dm: 'DM', ibm: 'IBM', pt: 'PT', jetbrains: 'JetBrains' };
-  return fontImports.map((pkg) => {
-    const variable = pkg.startsWith('@fontsource-variable/');
-    const name = pkg.replace(/^@fontsource(-variable)?\//, '').split('-').map((w) => special[w] ?? w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-    return variable ? `${name} Variable` : name;
-  });
-}
-
 export interface RunSession {
   dir: string;
   state: ProjectState;
@@ -258,7 +248,7 @@ Working rules:
 
 Things that are easy to get wrong:
 - The site name (site.update name) only sets the browser title and metadata. The visible brand lives in the shared header and footer props: header "siteName"; footer "siteName", "tagline", "copyright" and the "contact" list (email and phone links). When you rename or rebrand the site, update those props too, and replace placeholder contact details.
-- Fonts: only these font families are installed: ${bundledFonts(installedFonts(state).map((f) => f.package)).join(', ')}. Any other family name falls back to a system font. System stacks (system-ui, Georgia, ui-serif, ui-monospace) are always fine. Change fonts with token.set on font.body / font.display.
+- Fonts: only these font families are installed: ${installedFonts(state).map((f) => f.family).join(', ')}. Any other family name falls back to a system font. System stacks (system-ui, Georgia, ui-serif, ui-monospace) are always fine. Change fonts with token.set on font.body / font.display.
 - Icons: icon props accept only the icon names listed by read_project with sections ["catalogue"] (for example sparkles, compass, leaf, phone, mail). Unknown names are rejected.
 - Text styles: textStyle is always a token reference such as { "token": "text.h2" }, never a bare string.
 

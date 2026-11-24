@@ -1,6 +1,7 @@
 import type { ComponentDefinition } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import { P, PACK_ID, PACK_VERSION, definitionIdFor } from '../dsl';
+import { P } from '../dsl';
+import { FOUNDATION } from './pack';
 
 /**
  * Site search: a search box that finds pages of the site by their title and the words they show, and lists them as
@@ -304,7 +305,7 @@ const SEARCH_SOURCE = `<script>
 
 export const siteSearch: ComponentDefinition = {
   schemaVersion: SCHEMA_VERSION,
-  id: definitionIdFor('site.search'),
+  id: FOUNDATION.definitionId('site.search'),
   componentId: 'site.search',
   contractVersion: 1,
   kind: 'code',
@@ -330,6 +331,6 @@ export const siteSearch: ComponentDefinition = {
     tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
   source: SEARCH_SOURCE,
-  provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: 'site.search' },
-  license: 'GPL-3.0-or-later'
+  provenance: FOUNDATION.provenance('site.search'),
+  license: FOUNDATION.meta.license
 };

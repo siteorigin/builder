@@ -1,6 +1,7 @@
 import type { ComponentDefinition } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
-import { P, PACK_ID, PACK_VERSION, definitionIdFor } from '../dsl';
+import { P } from '../dsl';
+import { FOUNDATION } from './pack';
 
 /** Hidden "honeypot" field names each service recognises as spam traps. */
 export const FORM_PROVIDERS: Array<[string, string]> = [
@@ -445,7 +446,7 @@ ${FIELD_NAME_SOURCE}
 
 export const contactForm: ComponentDefinition = {
   schemaVersion: SCHEMA_VERSION,
-  id: definitionIdFor('contact.form'),
+  id: FOUNDATION.definitionId('contact.form'),
   componentId: 'contact.form',
   contractVersion: 1,
   kind: 'code',
@@ -501,8 +502,8 @@ export const contactForm: ComponentDefinition = {
     tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
   source: FORM_SOURCE,
-  provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: 'contact.form' },
-  license: 'GPL-3.0-or-later'
+  provenance: FOUNDATION.provenance('contact.form'),
+  license: FOUNDATION.meta.license
 };
 
 /** Whether a contact form instance is connected to a form service. Mirrors the component's own `connected`. */

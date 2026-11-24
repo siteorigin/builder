@@ -10,18 +10,19 @@ import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { StorageInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '@engine/apply';
-import { listThemes } from '@catalogue/index';
+import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { generateProject, GENERATOR_VERSION } from '@generator/index';
+import { generateProject, GENERATOR_VERSION, packFileCopies } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
+import { packFileInfo, readPackFile } from '../packs/files';
 import { checkSvelteSource, componentSources } from '../codecheck';
-import { atomicWrite, ensureDir, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
+import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -225,8 +226,17 @@ export interface LockOwner {
 }
 
 /** Why a project is open read-only. */
+/** The project's theme pack is not available here, so it opens read-only (see themePinProblem). */
+export class ThemeUnavailableError extends ProjectFormatError {
+  constructor(message: string) {
+    super(message, true);
+  }
+}
+
 export interface ReadOnlyInfo {
   reason: string;
+  /** Why there is no preview, when it is not that a newer app made the project. */
+  preview?: string;
   /** The lock may belong to a crashed or unreachable app; the user can take it over. */
   canUnlock: boolean;
   /** The owner the user is shown: unlocking takes over this owner only. */
@@ -337,7 +347,7 @@ export class ProjectSession extends EventEmitter {
    */
   private seenOnDisk = new Map<string, { stamp: string; hash: string }>();
   /** The hash of each generated file's latest content, by absolute path, so unchanged content is not hashed again. */
-  private contentHashes = new Map<string, { content: string; hash: string }>();
+  private contentHashes = new Map<string, { content: string | Buffer; hash: string }>();
   /**
    * How long a file must have been left alone before its stat alone is trusted to show a later change: well past the
    * coarsest timestamps (two seconds on FAT), so a change in the same tick as the last one is never missed.
@@ -455,6 +465,9 @@ export class ProjectSession extends EventEmitter {
     // Validate the final state (after any rollback) before generating anything from it.
     const fatal = validateState(s.state).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not opened to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
+    // Generating from another copy of the site's theme would restyle it before anyone edited anything.
+    const pin = themePinProblem(s.state);
+    if (pin) throw new ThemeUnavailableError(pin);
     // With a file in conflict the update waits: its stored version is the user's to choose first.
     if (s.migrationDue && !s.pending.size) await s.publishMigration();
     else await s.publishGenerated(false);
@@ -833,6 +846,8 @@ export class ProjectSession extends EventEmitter {
           const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
           if (bad.length) return { ok: false, message: `The external code for "${def.name}" has problems, so it was not kept: ${bad[0].message}` };
         }
+        const pin = themePinProblem(next);
+        if (pin) return { ok: false, message: `The external version of ${path} was not kept: ${pin}` };
         if (builder !== null) await atomicWrite(this.local('recovery', `${stamp}.builder`), builder);
         const nextDocs = stateToDocs(next);
         changed = await this.diffDocs(this.docs, nextDocs);
@@ -1087,6 +1102,9 @@ export class ProjectSession extends EventEmitter {
    * instead of recording a new step (undo and redo).
    */
   private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number }): Promise<SessionEvent> {
+    // A state whose theme is not available here would be generated from the wrong pack.
+    const pin = themePinProblem(next);
+    if (pin) throw new Error(pin);
     // Generate first: a generator failure must not leave canonical documents half-published.
     const generated = { clean: this.generate(next, false), dev: this.generate(next, true) };
     const nextDocs = stateToDocs(next);
@@ -1213,19 +1231,38 @@ export class ProjectSession extends EventEmitter {
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
     const authored = new Set(stateToAuthoredSources(this.state).keys());
-    const hashes = new Map<string, { content: string; hash: string }>();
-    const hashOf = (abs: string, content: string) => {
+    const hashes = new Map<string, { content: string | Buffer; hash: string }>();
+    const hashOf = (abs: string, content: string | Buffer) => {
       const was = this.contentHashes.get(abs);
       const hash = was && was.content === content ? was.hash : sha(content);
       hashes.set(abs, { content, hash });
       return hash;
     };
     this.conflicts = this.conflicts.filter((c) => c.kind !== 'generated');
+    // The theme's font files are copied from its pack beside the generated text, under the same ownership rules.
+    const copies = new Map<string, string | Buffer>();
+    for (const c of packFileCopies(this.state)) {
+      if (authored.has(c.path) || clean.has(c.path)) continue;
+      try {
+        copies.set(c.path, await readPackFile(c.pack, c.file));
+      } catch (e) {
+        // A damaged or missing pack file costs that font's update, not the save: a copy already in the project stays,
+        // still claimed, so it is neither replaced nor removed as obsolete.
+        console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
+        // Only a copy that already is the pack's validated file is kept: another theme's file of the same name is not.
+        // A copy that cannot be read stays claimed, so it is never removed and a missing one is still noticed.
+        if (!known(c.path)) continue;
+        const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
+        const h = disk === null ? null : sha(disk);
+        if (h === null) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
+        else if (ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
+      }
+    }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
-    const project = [...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
+    const project = [...copies, ...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
     const seen = await inBatches(project, (f) => this.seenHash(f.abs));
     // Decide first which project files are someone else's now, so no editor variant shadows them in the preview.
-    const plan: Array<{ path: string; content: string; abs: string; hash: string; stamp: string | null }> = [];
+    const plan: Array<{ path: string; content: string | Buffer; abs: string; hash: string; stamp: string | null }> = [];
     const desired: Record<string, string> = {};
     for (const [i, { path, content, abs }] of project.entries()) {
       const was = this.contentHashes.get(abs)?.hash;
@@ -1377,7 +1414,8 @@ export class ProjectSession extends EventEmitter {
 
   private async restoreGeneratedLocked(path: string) {
     const clean = this.generate(this.state, false);
-    const content = clean.get(path);
+    const copy = packFileCopies(this.state).find((c) => c.path === path);
+    const content = clean.get(path) ?? (copy ? await readPackFile(copy.pack, copy.file) : undefined);
     if (content === undefined) throw new Error('That file is no longer generated.');
     const abs = safeJoin(this.dir, path);
     // Kept byte for byte before it is replaced; a file that cannot be read is never replaced unkept.
@@ -1494,15 +1532,20 @@ export class ProjectSession extends EventEmitter {
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
       }
+      const pin = themePinProblem(next);
+      if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: pin, recoverable: false } };
       // Any authored code that is new or changed must pass the safety checks before it can be saved. Imports
       // are followed into the components as they will be once this batch is saved, whichever order it made them in.
       const resolve = componentSources(next.components);
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
-        // Placing a theme's own component (the contact form, say) authors no code: it ships with the app.
-        if (def.owner === 'theme' && listThemes().some((t) => t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
-        // Code the AI writes is held to a stricter policy than code a developer writes.
-        const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai', filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
+        // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
+        // whichever pack reuses it.
+        if (def.owner === 'theme' && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.kind === 'code' && c.source === def.source))) continue;
+        // Code the AI writes is held to a stricter policy than code a developer writes, and so is an installed pack's
+        // own code, which nobody here wrote or reviewed.
+        const installed = def.owner === 'theme' && listThemes().some((t) => t.source === 'user' && t.components.some((c) => c.id === def.id));
+        const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai' || installed, filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }
@@ -2082,6 +2125,8 @@ export class ProjectSession extends EventEmitter {
     const already = new Set(fatal(this.state).map((d) => d.message));
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${broken.message}`, recoverable: false } };
+    const pin = themePinProblem(next);
+    if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${pin}`, recoverable: false } };
     // That check sees the project as loaded. An edit made outside the app that has not been loaded yet would slip
     // past it, so the restore waits for it.
     const unloaded = await this.unloadedEdit(new Set(Object.keys(entry.docs)));
@@ -2424,6 +2469,8 @@ export class ProjectSession extends EventEmitter {
       }
       const errors = validateState(next, { sectionLinks: false }).filter(blocksSaving);
       if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
+      const pin = themePinProblem(next);
+      if (pin) return { ok: false, message: `The changed files were not loaded: ${pin}` };
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
         const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');

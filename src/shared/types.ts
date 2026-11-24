@@ -523,7 +523,11 @@ export interface ProjectManifest {
 
 export interface ThemeLock {
   schemaVersion: number;
-  theme: { id: string; version: string };
+  /**
+   * The theme pack in use. `digest` pins an installed (not bundled) pack's exact release, so a different copy
+   * under the same version is noticed before it restyles the site.
+   */
+  theme: { id: string; version: string; digest?: string };
   components: Record<string, { componentId: string; version: string; hash: string }>;
 }
 

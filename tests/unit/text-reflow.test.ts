@@ -244,9 +244,13 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
   const fontSizeOf = async (page: Page, selector: string) =>
     (await page.evaluate(`parseFloat(getComputedStyle(document.querySelector(${JSON.stringify(selector)})).fontSize)`)) as number;
   const measure = async (page: Page) => (await page.evaluate(MEASURE)) as Layout;
-  /** Read after two frames: the theme's reduced-motion rule still runs a 0.01ms transition, as on the skip link. */
+  /**
+   * Read once every transition has finished: the theme's reduced-motion rule still runs a 0.01ms transition, as on
+   * the skip link, and its start can wait a few frames (longer while the theme's web fonts load), so a fixed number
+   * of frames is not enough. CSS transitions always end, and one cut short by another counts as done.
+   */
   const focused = async (page: Page) => {
-    await page.evaluate('new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))');
+    await page.evaluate('Promise.all(document.getAnimations().map((a) => a.finished.catch(() => {})))');
     return (await page.evaluate(FOCUSED)) as Focused | null;
   };
   const tab = async (page: Page) => {
