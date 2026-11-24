@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { STYLE_PROPS, STYLE_PROP_MAP, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
+import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
@@ -128,6 +128,7 @@ describe('grid tracks and row spans (#352)', () => {
     expect(tracks('1.5fr 1fr')).toEqual(['grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr)']);
     expect(tracks('auto-fit-sm')).toEqual(['grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr))']);
     expect(tracks('auto-fit-md')).toEqual(['grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr))']);
+    expect(STYLE_PROP_MAP.gridTemplate.options!.map((o) => o.value)).toEqual(['1fr 1fr', '1fr 2fr', '2fr 1fr', '1fr 1.5fr', '1.5fr 1fr', 'auto-fit-sm', 'auto-fit-md']);
     for (const o of STYLE_PROP_MAP.gridTemplate.options!) expect(validateStyleValue('gridTemplate', o.value), o.value).toBeNull();
   });
 
@@ -136,7 +137,9 @@ describe('grid tracks and row spans (#352)', () => {
     expect(tracks('2fr repeat(2, 1fr)')).toEqual(['grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr))']);
     expect(tracks('minmax(10rem, 1fr) auto max-content')).toEqual(['grid-template-columns: minmax(10rem, 1fr) auto max-content']);
     expect(tracks('minmax(0, 2fr) 25%')).toEqual(['grid-template-columns: minmax(0, 2fr) 25%']);
-    expect(tracks('clamp(12rem, 20vw, 16rem) 1fr')).toEqual(['grid-template-columns: clamp(12rem, 20vw, 16rem) minmax(0, 1fr)']);
+    // Math is floored at zero, so a minifier folding it never writes a negative size the browser would drop.
+    expect(tracks('clamp(12rem, 20vw, 16rem) 1fr')).toEqual(['grid-template-columns: max(0px, clamp(12rem, 20vw, 16rem)) minmax(0, 1fr)']);
+    expect(tracks('calc(1px - 2px) minmax(calc(10rem - 1px), 1fr)')).toEqual(['grid-template-columns: max(0px, calc(1px - 2px)) minmax(max(0px, calc(10rem - 1px)), 1fr)']);
     // Case and spacing as typed change nothing but the spaces between columns.
     expect(tracks('  1FR\t 16REM  AUTO ')).toEqual(['grid-template-columns: minmax(0, 1fr) 16REM auto']);
     expect(tracks('minmax( 10rem ,1fr )')).toEqual(['grid-template-columns: minmax(10rem, 1fr)']);
@@ -147,6 +150,17 @@ describe('grid tracks and row spans (#352)', () => {
     expect(tracks('repeat(auto-fill, minmax(240px, 1fr))')).toEqual(['grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr))']);
     expect(tracks('REPEAT(AUTO-FILL, 200px)')).toEqual(['grid-template-columns: repeat(auto-fill, min(100%, 200px))']);
     expect(tracks('repeat(auto-fit, minmax(16rem, auto))')).toEqual(['grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), auto))']);
+    expect(tracks('repeat(auto-fill, minmax(18rem, 30rem))')).toEqual(['grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 30rem))']);
+  });
+
+  it('reads the fr shares image sizing needs', () => {
+    expect(gridTemplateShares('2fr repeat(2, 1fr)')).toEqual([2, 1, 1]);
+    expect(gridTemplateShares('minmax(0, 3fr) 1fr')).toEqual([3, 1]);
+    expect(gridTemplateShares('1fr 2fr')).toEqual([1, 2]);
+    // As many as fit, or nothing the stylesheet writes, never makes a column wider than the grid.
+    for (const v of ['auto-fit-sm', 'repeat(auto-fill, 12rem)', 'repeat(99, 1fr)', 5]) expect(gridTemplateShares(v), String(v)).toBe('whole');
+    // A fixed or content-sized column can.
+    for (const v of ['16rem 1fr', 'minmax(10rem, 1fr) 1fr', 'auto 1fr', '25% 1fr']) expect(gridTemplateShares(v), v).toBeNull();
   });
 
   it('counts at most 12 columns, repeats included', () => {
@@ -155,7 +169,13 @@ describe('grid tracks and row spans (#352)', () => {
     expect(validateStyleValue('gridTemplate', 'repeat(6, 1fr) repeat(3, 1fr 2fr)')).toBeNull();
     expect(validateStyleValue('gridTemplate', 'repeat(6, 1fr) repeat(3, 1fr 2fr) auto')).toMatch(/more than 12 columns/);
     expect(validateStyleValue('gridTemplate', 'repeat(7, 1fr 1fr)')).toMatch(/column sizes/);
+    expect(validateStyleValue('gridTemplate', 'repeat(12, 1fr)')).toBeNull();
     expect(tracks('repeat(13, 1fr)')).toEqual([]);
+    // At most 300 characters, however valid the columns.
+    const long = (n: number) => Array(n).fill('minmax(1.0000000000000rem, 1fr)').join(' ');
+    expect(long(9).length).toBeLessThanOrEqual(300);
+    expect(validateStyleValue('gridTemplate', long(9))).toBeNull();
+    expect(validateStyleValue('gridTemplate', long(12))).toMatch(/column sizes/);
   });
 
   it('refuses anything outside the grammar, and writes nothing for it from a hand-edited document', () => {
@@ -165,7 +185,9 @@ describe('grid tracks and row spans (#352)', () => {
       'repeat(2, repeat(2, 1fr))', 'repeat(2,)', 'repeat(auto-fit, minmax(0, 1fr))', 'repeat(auto-fit, 0px)', 'repeat(auto-fit, 1fr)', 'repeat(auto-fit, minmax(1fr, 2fr))',
       'repeat(auto-fit, minmax(18rem, 1fr)) 1fr', '1fr repeat(auto-fill, 10rem)', 'repeat(auto-fit, minmax(18rem, 1fr), 2)', 'repeat(auto-fit, minmax(-4rem, 1fr))',
       'repeat(auto-fill, calc(1px - 2px))', 'repeat(auto-fit, minmax(.0rem, 1fr))',
-      'minmax(10rem, 1fr', '1fr) (2fr', 'calc(1px + var(--x)) 1fr', 'attr(data-x) 1fr', '1fr; color: red', '1fr } body { display: none', ''
+      'minmax(10rem, 1fr', '1fr) (2fr', 'calc(1px + var(--x)) 1fr', 'attr(data-x) 1fr', '1fr; color: red', '1fr } body { display: none', '',
+      // Math nested deeper than browsers read.
+      `calc(${'('.repeat(20)}1px${')'.repeat(21)} 1fr`
     ];
     for (const v of bad) {
       expect(validateStyleValue('gridTemplate', v), v).not.toBeNull();
@@ -178,9 +200,16 @@ describe('grid tracks and row spans (#352)', () => {
   it('spans one to six rows', () => {
     for (const v of ['1', '2', '6', 3, ' 4 ']) expect(validateStyleValue('rowSpan', v as string), String(v)).toBeNull();
     for (const v of ['0', '7', 'full', 1.5, '2 / 3']) expect(validateStyleValue('rowSpan', v as string), String(v)).not.toBeNull();
-    expect(styleToCss('rowSpan', 2)).toEqual(['grid-row: span 2 / span 2']);
+    for (let n = 1; n <= 6; n++) expect(styleToCss('rowSpan', n)).toEqual([`grid-row: span ${n} / span ${n}`]);
     expect(styleToCss('rowSpan', ' 6 ')).toEqual(['grid-row: span 6 / span 6']);
     expect(styleToCss('rowSpan', 9)).toEqual([]);
+    // A hand-edited object is no span: nothing written, and nothing thrown on the way.
+    const odd = { toString: null } as never;
+    expect(styleToCss('rowSpan', odd)).toEqual([]);
+    expect(wideOnlyStyle('rowSpan', odd)).toBe(false);
+    expect(wideOnlyStyle('columnSpan', odd)).toBe(false);
+    expect(wideOnlyStyle('rowSpan', ' 2 ')).toBe(true);
+    expect(wideOnlyStyle('rowSpan', 1)).toBe(false);
     for (const kind of ['text', 'image', 'link', 'icon', 'element']) expect(styleSetFor({ kind }), kind).toContain('rowSpan');
   });
 
@@ -202,6 +231,7 @@ describe('grid tracks and row spans (#352)', () => {
     expect(ruleOf(section(text, WIDE), item)).toContain('grid-column: span 2 / span 2');
     expect(section(text, null)).not.toContain('18rem');
     expect(section(text, null)).not.toContain('grid-row');
+    expect(section(text, null)).not.toContain('grid-column');
     expect(section(text, PHONE)).not.toContain('grid-row');
     // Set for phones, they apply there too.
     s = applyOperations(s, [set(gridId, 'phone', 'gridTemplate', '5rem 1fr'), set(itemId, 'phone', 'rowSpan', 3)]).state;
@@ -220,6 +250,9 @@ describe('grid tracks and row spans (#352)', () => {
     const gridId = r.results[0].nodeId as string;
     const ok = applyOperations(r.state, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: '16rem 1fr 14rem' }]).state;
     expect(home(ok).nodes[gridId].styles?.base?.gridTemplate).toBe('16rem 1fr 14rem');
+    // Kept on one line with single spaces, as the inspector's field shows it.
+    const spaced = applyOperations(ok, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: ' 16rem\n  minmax( 0 , 1fr )\t14rem ' }]).state;
+    expect(home(spaced).nodes[gridId].styles?.base?.gridTemplate).toBe('16rem minmax( 0 , 1fr ) 14rem');
     expect(() => applyOperations(ok, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: '1fr url(x)' }])).toThrow(/Invalid characters/);
     expect(() => applyOperations(ok, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: 'minmax(1fr, 2fr)' }])).toThrow(/column sizes/);
     expect(() => applyOperations(ok, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'rowSpan', value: 7 }])).toThrow(/must be one of/);

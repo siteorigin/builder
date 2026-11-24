@@ -1357,6 +1357,8 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     const err = validateStyleValue(op.property, op.value);
     if (err) fail(err);
     checkTokenRef(state, op.value);
+    // Column sizes are kept on one line with single spaces, as the inspector's field shows them.
+    if (STYLE_PROP_MAP[op.property].kind === 'tracks' && typeof op.value === 'string') op = { ...op, value: op.value.trim().replace(/\s+/g, ' ') };
     // A literal family on an element follows the same rule as a font token; keywords and var() name no family.
     if (op.property === 'fontFamily' && typeof op.value === 'string' && !/^(inherit|initial|unset|revert|revert-layer|var\(.*)$/i.test(op.value.trim())) {
       const font = resolveFontStack(state, op.value);

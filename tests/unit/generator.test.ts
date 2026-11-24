@@ -510,9 +510,21 @@ describe('SEO and performance', () => {
     // Custom fr shares, repeats included, size like the presets (#352): an item may sit in the widest column.
     gridNode.styles = { base: { layout: 'grid', gridTemplate: '2fr repeat(2, minmax(0, 1fr))' } };
     expect(gridSizes(s)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 50vw, 100vw']);
-    // A fixed or content-sized column leaves the others' widths unknown: the whole width.
-    gridNode.styles = { base: { layout: 'grid', gridTemplate: '16rem 1fr 14rem' } };
-    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
+    // Spanning two of them: the widest run of two.
+    wrap.styles = { base: { columnSpan: '2' } };
+    expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 900px, (min-width: 768px) 75vw, 100vw');
+    // A span saved with spaces around it is the full width CSS gives it.
+    wrap.styles = { base: { columnSpan: ' full ' } };
+    expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');
+    wrap.styles = {};
+    // Shares adding up to less than one each take their share of the whole grid.
+    gridNode.styles = { base: { layout: 'grid', gridTemplate: '.25fr .25fr' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 300px, (min-width: 768px) 25vw, 100vw']);
+    // A fixed or content-sized column can push the others past the grid: their width is unknown, so no hint.
+    for (const template of ['16rem 1fr 14rem', '1600px 1fr', 'minmax(10rem, 1fr) 1fr', 'auto 1fr']) {
+      gridNode.styles = { base: { layout: 'grid', gridTemplate: template } };
+      expect(gridSizes(s), template).toEqual([null]);
+    }
   });
 
   it('keeps a width the image holds whatever its column, even when it overflows the column', () => {

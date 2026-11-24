@@ -213,6 +213,11 @@ describe('the Inspector’s inherited styles match the generated CSS', () => {
     const span = compare(state, def, 'heading', 'rowSpan', 'grid-row');
     expect(span.map((r) => r.rendered)).toEqual([undefined, cssOf('rowSpan', '2'), cssOf('rowSpan', '2')]);
     agree(span);
+    // A variant's taller span wins from tablet up; the design's own phone span still applies on phones.
+    const variant = grid({ node: { grid: { base: { layout: 'grid' } }, heading: { base: { rowSpan: '2' }, phone: { rowSpan: 2 } } }, layout: { heading: { base: { rowSpan: 3 } } } });
+    const spans = compare(variant.state, variant.def, 'heading', 'rowSpan', 'grid-row');
+    expect(spans.map((r) => r.rendered)).toEqual([cssOf('rowSpan', 2), cssOf('rowSpan', 3), cssOf('rowSpan', 3)]);
+    agree(spans);
   });
 
   it('keeps column sizes for all sizes off phones, and lets them override the column count from tablet up (#205)', () => {

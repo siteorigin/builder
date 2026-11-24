@@ -298,7 +298,7 @@ const MAX_RESULT_CHARS = 24000;
 /** What a transform, transition or grid property takes, for the read_project list: its range, unit or grammar. */
 function valueHint(p: StylePropDef): string {
   if (p.id === 'gridTemplate')
-    return ` or up to ${MAX_GRID_TRACKS} column sizes: fr shares, lengths, auto, minmax(min, max) and repeat(count, sizes), such as "16rem 1fr 14rem" or "2fr repeat(2, 1fr)"; "repeat(auto-fit, minmax(18rem, 1fr))" (or auto-fill) for as many columns as fit, each at least 18rem. Set for all sizes it applies from tablet up; set it at scope phone to use it on phones`;
+    return ` or up to ${MAX_GRID_TRACKS} column sizes (repeats counted in full): fr shares, lengths, auto, minmax(min, max) with a min that is not fr, and repeat(count, sizes), such as "16rem 1fr 14rem" or "2fr repeat(2, 1fr)"; "repeat(auto-fit, minmax(18rem, 1fr))" (or auto-fill) for as many columns as fit, each at least that plain length (or the whole grid when narrower). Set for all sizes it applies from tablet up; set it at scope phone to use it on phones`;
   if (p.id === 'columnSpan' || p.id === 'rowSpan') return ' (a grid child; above 1 for all sizes it applies from tablet up, set it at scope phone to span there)';
   if (p.group !== 'motion') return '';
   if (p.id === 'translateX' || p.id === 'translateY') return ` (0 or one length such as "-4px": at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or em, or ${TRANSLATE_LIMITS['%']}% either way)`;

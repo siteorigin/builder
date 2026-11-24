@@ -429,6 +429,8 @@ export function isTokenLength(value: string, { negative = true }: { negative?: b
 const FR_RE = new RegExp(`^${CSS_NUMBER}fr$`, 'i');
 const TRACK_KEYWORDS = new Set(['auto', 'min-content', 'max-content']);
 const MAX_TRACKS_TEXT = 300;
+/** How deep brackets nest in a column-size value: browsers drop a declaration whose math nests too deep. */
+const MAX_TRACKS_DEPTH = 8;
 /** The column-size presets that are not a track list of their own. */
 const AUTO_FIT_PRESETS: Record<string, string> = {
   'auto-fit-sm': 'repeat(auto-fit, minmax(min(100%, 14rem), 1fr))',
@@ -462,7 +464,9 @@ function trackBreadth(raw: string): Breadth | null {
     return fr > 0 ? { css: t.toLowerCase(), kind: 'fr', fr } : null;
   }
   if (TRACK_KEYWORDS.has(t.toLowerCase())) return { css: t.toLowerCase(), kind: 'keyword' };
-  return isTokenLength(t, { negative: false }) ? { css: t, kind: 'length' } : null;
+  if (!isTokenLength(t, { negative: false })) return null;
+  // Math can work out below zero, which CSS clamps but a minifier may fold into a negative size the browser drops.
+  return { css: /^[a-z]+\(/i.test(t) ? `max(0px, ${t})` : t, kind: 'length' };
 }
 
 /**
@@ -495,6 +499,8 @@ export function parseGridTemplate(raw: string): GridTemplate | string {
   if (preset) return { css: preset, fr: [] };
   const bad = `"${value.slice(0, 60)}" is not a list of column sizes. Use up to ${MAX_GRID_TRACKS} of: 1fr, a length such as 16rem, auto, minmax(12rem, 1fr) or repeat(3, 1fr); or repeat(auto-fit, minmax(18rem, 1fr)) for as many as fit.`;
   if (!value || value.length > MAX_TRACKS_TEXT || !isSafeCssValue(value)) return bad;
+  let depth = 0;
+  for (const ch of value) if ((depth += ch === '(' ? 1 : ch === ')' ? -1 : 0) > MAX_TRACKS_DEPTH) return bad;
   const auto = callArgs(value, 'repeat');
   if (auto && /^auto-(fit|fill)$/i.test(auto[0])) {
     if (auto.length !== 2) return bad;
@@ -532,11 +538,15 @@ export function parseGridTemplate(raw: string): GridTemplate | string {
   return css.length ? { css: css.join(' '), fr } : bad;
 }
 
-/** Each column's fr share when a column-size value is only fr shares (for sizing images), else null. */
-export function gridTemplateShares(value: unknown): number[] | null {
+/**
+ * How a column-size value divides a grid, for sizing images: each column's fr share when it is only fr shares;
+ * 'whole' when no column can be wider than the grid (as many as fit, its minimum capped at the grid's width, or a
+ * value the stylesheet does not write); null when a fixed or content-sized column can push the columns past it.
+ */
+export function gridTemplateShares(value: unknown): number[] | 'whole' | null {
   const parsed = typeof value === 'string' ? parseGridTemplate(value) : null;
-  if (!parsed || typeof parsed === 'string' || !parsed.fr.length || parsed.fr.some((f) => f === null)) return null;
-  return parsed.fr as number[];
+  if (!parsed || typeof parsed === 'string' || !parsed.fr.length) return 'whole';
+  return parsed.fr.every((f) => f !== null) ? (parsed.fr as number[]) : null;
 }
 
 /**
@@ -1051,13 +1061,15 @@ export function scopeForWidth(width: number): 'phone' | 'tablet' | 'desktop' {
  * placement overrides) also keep a multi-column grid off phones, so the component's own phone layout still applies.
  */
 export function wideOnlyStyle(prop: string, value: unknown, wideColumns = false): boolean {
-  if (prop === 'columnSpan') return value !== 'full' && Number(value) > 1;
+  // Only text and numbers read as a count: a hand-edited object is no span (and Number() can throw on one).
+  const n = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+  if (prop === 'columnSpan') return n > 1;
   // A phone's single column has no room to lay a tall card beside others: it keeps one row.
-  if (prop === 'rowSpan') return Number(value) > 1;
+  if (prop === 'rowSpan') return n > 1;
   // Column sizes for all sizes are uneven or as-many-as-fit tracks: a phone keeps its own column count.
   if (prop === 'gridTemplate') return true;
   if (!wideColumns) return false;
-  return prop === 'columns' && Number(value) > 1;
+  return prop === 'columns' && n > 1;
 }
 
 /** Whether a source of styles sets column sizes for All sizes that the stylesheet writes (see `withColumnSizes`). */
