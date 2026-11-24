@@ -1,6 +1,6 @@
 import type { EditOperation } from '@shared/ops';
 import type { GraphNode, NodeTree, OwnerRef, ProjectState, TableValue } from '@shared/types';
-import { isComparison } from '@shared/types';
+import { conditionRef, isComparison } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { displayName, enclosingRepeatProp } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
@@ -201,7 +201,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (!node) return gone('element');
       const schema = boundSchema(def, node.id, op.binding);
       if (!schema) return gone('property');
-      return found({ value: node[op.field], list: enclosingRepeatProp(def, node.id) ?? null, schema });
+      // Only an item field depends on the list around the node; a property reads the same whatever repeats it.
+      return found({ value: node[op.field], schema, ...('$item' in op.binding ? { list: enclosingRepeatProp(def, node.id) ?? null } : {}) });
     }
     case 'component.setPropDefault': {
       // The schema is part of the field: it decides how the default is read.
@@ -264,6 +265,11 @@ export function fieldKey(operations: EditOperation[]): string {
       const o: Record<string, unknown> = { ...op };
       // An instance's style with no part is its root's.
       if (op.type === 'node.setStyle' && o.partId === undefined) o.partId = 'root';
+      // A condition is one rule, whether it compares with "is" or "is not": a newer value for it replaces an older one.
+      if (op.type === 'node.setBinding' && o.ne !== undefined) {
+        o.eq = o.ne;
+        delete o.ne;
+      }
       return Object.entries(o)
         .filter(([, v]) => v !== undefined)
         .map(([k, v]) => {
@@ -312,10 +318,19 @@ export function shownField(op: EditOperation, read: unknown): string | null {
   else if (op.type === 'instance.setProp' && !op.itemId) v = o.value ?? (o.schema as { default?: unknown } | undefined)?.default;
   // A page list's empty card field shows its page's value, which is what the author sees there.
   else if (op.type === 'instance.setProp' && followsPage(o.value) && typeof o.shows === 'string' && o.shows.trim()) v = o.shows;
-  // A condition shows the value it compares with; one that only tests for a value has none.
-  else if (op.type === 'node.setBinding') v = isComparison(o.value) ? ('eq' in o.value ? o.value.eq : o.value.ne) : undefined;
+  // A condition is shown whole: what it reads and how, so a rule replaced by another is never shown as nothing.
+  else if (op.type === 'node.setBinding') v = conditionText(o.value);
   else if (op.type !== 'node.rename') v = o.value;
   return blank(v) ? '' : shownValue(v);
+}
+
+/** A saved condition in words: "title is Draft", "seats is not 1", "featured has a value"; undefined for none. */
+function conditionText(c: unknown): string | undefined {
+  const ref = conditionRef(c);
+  if (!ref) return undefined;
+  const name = '$prop' in ref ? ref.$prop : ref.$item;
+  if (!isComparison(c)) return `${name} has a value`;
+  return 'eq' in c ? `${name} is ${String(c.eq)}` : `${name} is not ${String(c.ne)}`;
 }
 
 /** Where the field `op` writes is, in the author's words: a page title, "Header", a style or file name. */

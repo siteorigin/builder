@@ -40,26 +40,40 @@ describe('project session', () => {
     expect(s.state.tokens.custom[0].id).toBe('color.custom-teal');
   });
 
-  it('undoes and redoes a visibility rule and "hide when empty" on a component’s design (#368)', async () => {
+  it('undoes and redoes a visibility rule and "hide when empty" on a component’s design, step by step (#368)', async () => {
     const { s } = await make();
-    const home = s.state.pages[s.state.site.homePageId];
+    const homeId = s.state.site.homePageId;
+    const home = s.state.pages[homeId];
     const placed = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => s.state.components[n.definitionId]?.componentId === 'features.grid')!;
     const forked = await s.apply({ operations: [{ type: 'component.fork', definitionId: placed.definitionId }] }, { label: 'Copy' });
     const defId = String(forked.results?.[0]?.definitionId);
     const owner = { kind: 'component' as const, id: defId };
-    const nodes = () => s.state.components[defId].tree!.nodes;
+    /** What the design and the placement hold: the badge's flag, the icon's rule, and the placement's heading. */
+    const now = () => {
+      const nodes = s.state.components[defId].tree!.nodes;
+      return { collapse: (nodes['card-icon-wrap'] as { collapseEmpty?: boolean }).collapseEmpty ?? false, when: nodes['card-icon'].when ?? null, heading: (s.state.pages[homeId].nodes[placed.id] as InstanceNode).props.heading };
+    };
+    const heading = now().heading;
+    const rule = { ref: { $item: 'icon' }, ne: 'star' };
     expect((await s.apply({ operations: [{ type: 'node.setContent', owner, nodeId: 'card-icon-wrap', field: 'collapseEmpty', value: true }] }, { label: 'Hide empty container' })).ok).toBe(true);
+    // A page edit between the two design edits: each step restores its own document and leaves the others alone.
+    expect((await s.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId }, nodeId: placed.id, prop: 'heading', value: 'What we do' }] }, { label: 'Edit heading' })).ok).toBe(true);
     expect((await s.apply({ operations: [{ type: 'node.setBinding', owner, nodeId: 'card-icon', field: 'when', binding: { $item: 'icon' }, ne: 'star' }] }, { label: 'Set show condition' })).ok).toBe(true);
-    expect(nodes()['card-icon'].when).toEqual({ ref: { $item: 'icon' }, ne: 'star' });
-    await s.undo();
-    expect(nodes()['card-icon'].when).toBeUndefined();
-    expect(nodes()['card-icon-wrap']).toMatchObject({ collapseEmpty: true });
-    await s.undo();
-    expect(nodes()['card-icon-wrap']).not.toHaveProperty('collapseEmpty');
-    await s.redo();
-    await s.redo();
-    expect(nodes()['card-icon-wrap']).toMatchObject({ collapseEmpty: true });
-    expect(nodes()['card-icon'].when).toEqual({ ref: { $item: 'icon' }, ne: 'star' });
+    const steps = [
+      { collapse: true, when: rule, heading: 'What we do' },
+      { collapse: true, when: null, heading: 'What we do' },
+      { collapse: true, when: null, heading },
+      { collapse: false, when: null, heading }
+    ];
+    expect(now()).toEqual(steps[0]);
+    for (const expected of steps.slice(1)) {
+      expect((await s.undo()).ok).toBe(true);
+      expect(now()).toEqual(expected);
+    }
+    for (const expected of steps.slice(0, -1).reverse()) {
+      expect((await s.redo()).ok).toBe(true);
+      expect(now()).toEqual(expected);
+    }
   });
 
   it('writes, undoes and reopens an old address kept working, and gives its route back to a page (#37)', async () => {

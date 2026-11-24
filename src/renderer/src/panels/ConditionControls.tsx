@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import type { ComponentDefinition, ConditionValue, GraphNode, OwnerRef } from '@shared/types';
 import { applyOps } from '../store';
 import { DraftInput, Section, SwitchRow } from '../components/ui';
@@ -28,7 +28,7 @@ export function ConditionControls({ def, node, level }: { def: ComponentDefiniti
         <SwitchRow
           checked={collapse}
           label="Hide container when all items inside are hidden"
-          hint="Leaves the container out, with its spacing and background, when no item inside it is shown."
+          hint="Leaves the container out, spacing and background too, when the rules of the items inside hide them all. Repeated items count as shown while their list has any."
           onChange={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'collapseEmpty', value: v }], v ? 'Hide empty container' : 'Always show container')}
         />
       )}
@@ -55,8 +55,18 @@ function ConditionRow({
   const all = [...sources.props, ...sources.item];
   const source = rule?.source;
   const input = source ? comparisonInput(source.schema) : null;
-  const save = (next: { binding: ConditionRule['binding']; test: ConditionTest; value?: ConditionValue } | null) =>
+  // A value just typed is committed as its field loses focus, which choosing "is" or "is not" makes it do, before the
+  // project has answered: that choice keeps the value typed, not the one shown a moment before. Any change to the
+  // saved rule (the answer itself, an undo) makes the saved one current again.
+  const typed = useRef<{ key: string; value: ConditionValue } | null>(null);
+  const saved = JSON.stringify(node[field] ?? null);
+  useEffect(() => {
+    typed.current = null;
+  }, [saved]);
+  const save = (next: { binding: ConditionRule['binding']; test: ConditionTest; value?: ConditionValue } | null) => {
+    typed.current = next && next.value !== undefined ? { key: sourceKey(next.binding), value: next.value } : null;
     void applyOps([ruleOp(owner, node.id, field, next)], `${next ? 'Set' : 'Clear'} ${UNDO_LABEL[field]}`);
+  };
   const pickSource = (key: string) => {
     const s = all.find((x) => x.key === key);
     // A new source starts as a presence test: a value compared with one source rarely fits another.
@@ -66,7 +76,8 @@ function ConditionRow({
     if (!rule || !source) return;
     if (test === 'set') return save({ binding: rule.binding, test });
     // "Is" and "is not" swap keeping the value; a presence test starts from the property's default.
-    save({ binding: rule.binding, test, value: rule.test !== 'set' ? rule.value : startValue(source.schema) });
+    const current = typed.current?.key === source.key ? typed.current.value : rule.value;
+    save({ binding: rule.binding, test, value: rule.test !== 'set' ? current : startValue(source.schema) });
   };
   const missing = rule && !source;
   const name = rule ? ('$prop' in rule.binding ? rule.binding.$prop : rule.binding.$item) : '';
@@ -155,7 +166,10 @@ function ConditionValueInput({ source, value, label, onChange }: { source: Condi
           }}
         />
       );
-    case 'text':
-      return <DraftInput ariaLabel={label} value={typeof value === 'string' ? value : ''} placeholder="Text to compare with" onCommit={(v) => onChange(v)} />;
+    case 'text': {
+      // Text with several lines (an answer, a description) is compared whole, line breaks and all.
+      const multiline = source.schema.type === 'string' && !!source.schema.multiline;
+      return <DraftInput ariaLabel={label} multiline={multiline} rows={multiline ? 2 : undefined} value={typeof value === 'string' ? value : ''} placeholder="Text to compare with" onCommit={(v) => onChange(v)} />;
+    }
   }
 }
