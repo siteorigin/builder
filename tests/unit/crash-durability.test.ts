@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cpSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
