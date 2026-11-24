@@ -2,22 +2,36 @@
 
 const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.ico', '_siteorigin']);
 
+/** Combining marks NFKD splits off accented letters ("é" is "e" and an accent). */
+const ACCENTS = /[\u0300-\u036f]/g;
+
 export function slugify(text: string): string {
-  return text
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .replace(/&/g, ' and ')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60);
+  return (
+    text
+      .normalize('NFKD')
+      .replace(ACCENTS, '')
+      .toLowerCase()
+      .replace(/&/g, ' and ')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+/, '')
+      .slice(0, 60)
+      // Trimmed after the cut, which may land on the hyphen between two words.
+      .replace(/-+$/, '')
+  );
 }
 
+/**
+ * A route as someone may type it ("About Us", "/Café Menu"): each segment lowercased, without accents, and with its
+ * spaces as hyphens. Anything else a segment cannot hold is left for validateRoute to refuse, so a reserved or
+ * hidden name ("_app") is never quietly turned into an ordinary one.
+ */
 export function normalizeRoute(input: string): string {
   const parts = input
+    .normalize('NFKD')
+    .replace(ACCENTS, '')
     .trim()
     .split('/')
-    .map((p) => p.trim().toLowerCase())
+    .map((p) => p.trim().toLowerCase().replace(/\s+/g, '-'))
     .filter(Boolean);
   return parts.length ? `/${parts.join('/')}/` : '/';
 }

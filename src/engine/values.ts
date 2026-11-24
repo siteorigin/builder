@@ -1,5 +1,5 @@
 import type { ChoiceOption, ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
-import { cleanBlocks, ENTRY_LINK_PREFIX, isListBlock, isRichBlock, linkFromTarget, mergeLists, parseRichText } from '@shared/richtext';
+import { cleanBlocks, ENTRY_LINK_PREFIX, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText } from '@shared/richtext';
 import { collectionRoutes, findEntry } from '@shared/collections';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
@@ -18,6 +18,12 @@ export interface LinkScope {
   entries?: boolean;
 }
 
+/** A page link's section, written after its route or ID: empty or not an ID, there is no section to go to. */
+function anchorOf(anchor: string, label: string): string {
+  if (!/^[A-Za-z][\w-]*$/.test(anchor)) fail(`${label}: "${anchor.slice(0, 40)}" is not a valid anchor.`);
+  return anchor;
+}
+
 export function normalizeLink(v: unknown, state: ProjectState, label: string, scope: LinkScope = {}): LinkValue {
   if (v === null || v === undefined || v === '') return { type: 'none', target: '' };
   if (typeof v === 'string') {
@@ -26,10 +32,13 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
     if (/^mailto:/i.test(v)) return normalizeLink({ type: 'email', target: v.slice(7) }, state, label);
     if (/^tel:/i.test(v)) return normalizeLink({ type: 'tel', target: v.slice(4) }, state, label);
     if (v.startsWith('#')) return normalizeLink({ type: 'anchor', target: v.slice(1) }, state, label);
-    if (Object.hasOwn(state.pages, v)) return { type: 'page', target: v };
-    const byRoute = Object.values(state.pages).find((p) => p.route === v || p.route === `/${v.replace(/^\/|\/$/g, '')}/`);
-    if (byRoute) return { type: 'page', target: byRoute.id };
-    fail(`${label}: "${v}" is not a page ID, route, https URL, mailto:, tel: or #anchor.`);
+    // A page by its ID or route, with an optional #anchor for a section on it, as rich text links take one.
+    const hash = v.indexOf('#');
+    const path = hash < 0 ? v : v.slice(0, hash);
+    const page = Object.hasOwn(state.pages, path) ? path : Object.values(state.pages).find((p) => p.route === path || p.route === `/${path.replace(/^\/|\/$/g, '')}/`)?.id;
+    if (page && hash < 0) return { type: 'page', target: page };
+    if (page) return normalizeLink({ type: 'page', target: page, anchor: anchorOf(v.slice(hash + 1), label) }, state, label);
+    fail(`${label}: "${v}" is not a page ID, route (with an optional #anchor), https URL, mailto:, tel: or #anchor.`);
   }
   if (typeof v !== 'object') fail(`${label}: expected a link object.`);
   const l = v as Partial<LinkValue>;
@@ -48,7 +57,7 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
       if (!/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(target)) fail(`${label}: "${target}" is not a valid email address.`);
       break;
     case 'tel':
-      if (!/^[+0-9 ().-]{3,30}$/.test(target)) fail(`${label}: "${target}" is not a valid telephone number.`);
+      if (!isTelephone(target)) fail(`${label}: "${target}" is not a valid telephone number.`);
       break;
     case 'anchor':
       if (!/^[A-Za-z][\w-]*$/.test(target.replace(/^#/, ''))) fail(`${label}: "${target}" is not a valid anchor.`);
