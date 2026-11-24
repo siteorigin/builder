@@ -361,6 +361,13 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       expect(await commit()).toEqual([p('Address\n'), p('Lone item')]);
     });
 
+    it('reads comments as the browser does, so no words after one are lost', async () => {
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await pasteRaw('<p>Keep</p><p title="<!--">After a marker in an attribute</p><!--><p>After a short comment</p><<!---->style>Shown</style>', 'Keep');
+      expect(await commit()).toEqual([p('Keep'), p('After a marker in an attribute'), p('After a short comment'), p('<style>Shown')]);
+    });
+
     it('reads a paste of many empty comments in one pass', async () => {
       await editAt('r', 'word');
       const started = Date.now();

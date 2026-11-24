@@ -1090,31 +1090,18 @@ function pastedHref(raw) {
 }
 
 /**
- * Copied HTML without its comments, which hold nothing a paste keeps (Word's conditional blocks among them), in one
- * pass: the browser's own parser is slow on a long run of them. An unclosed one runs to the end, as it does in HTML.
- */
-function withoutComments(html) {
-  let out = '';
-  let at = 0;
-  for (let open = html.indexOf('<!--'); open >= 0; open = html.indexOf('<!--', at)) {
-    out += html.slice(at, open);
-    const close = html.indexOf('-->', open + 4);
-    if (close < 0) return out;
-    at = close + 3;
-  }
-  return out + html.slice(at);
-}
-
-/**
- * Copied HTML as markup the rich text can hold, or '' when it holds no words. It is parsed inert (nothing runs or
- * loads) and read in one pass, in reading order, as lines: each block (a paragraph, heading, quote or list item)
- * is a line of its own, a block inside a list item, quote or heading is another line of that kind, and the items
+ * Copied HTML as markup the rich text can hold, or '' when it holds no words. It is read in one pass, in reading
+ * order, as lines: each block (a paragraph, heading, quote or list item) is a line of its own, a block inside a list item, quote or heading is another line of that kind, and the items
  * of a list inside a list join the outer one, as the rich text holds them. Every element written is a new one:
  * only these blocks, bold, italic, line breaks, and a link's address and new tab.
  */
 function pastedRich(html) {
   if (!html || html.length > 2000000) return '';
-  const src = new DOMParser().parseFromString(withoutComments(html), 'text/html').body;
+  // Parsed as a template's contents: inert (nothing runs or loads), and read as a fragment, so markup before the
+  // copy's body (comments, Word's conditional blocks) never goes through the slow path of a whole document's parse.
+  const holder = document.createElement('template');
+  holder.innerHTML = html;
+  const src = holder.content;
   /** { kind: '' (words outside any block) | 'p' | 'h3' | 'h4' | 'blockquote' | 'li', list, runs: [{ text } | { br }] with marks } */
   const lines = [];
   let line = null;
