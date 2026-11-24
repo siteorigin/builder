@@ -40,12 +40,12 @@ import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner } from '@shared/collections';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
-import { isListBlock, toRichText } from '@shared/richtext';
+import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { teaserFields } from '@shared/page-teasers';
 import { dropFontFamily, familyUses, fontAssetUsages, isValidFontAsset, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily, stackLeadsWith, withoutFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
-import { catalogueComponent, getTheme, listThemes, themeLockEntry } from '@catalogue/index';
+import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
@@ -65,6 +65,7 @@ import { declaredTokens, findTokenCycle, forEachTokenRef, tokenPropUsageCounts, 
 import { slotDecl, slotFill, slotLandingProblem } from './slots';
 import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
+import { addPageStarter } from './page-starters';
 import {
   componentRemove,
   codeImports,
@@ -743,24 +744,8 @@ function pageCreate(state: ProjectState, op: Op<'page.create'>): OpResult {
   claimRoute(state, route);
   const id = op.pageId ?? newId('pg');
   const page: PageDoc = { schemaVersion: SCHEMA_VERSION, id, title: op.title.trim(), route, seo: {}, showHeader: true, showFooter: true, rootIds: [], nodes: {} };
-  if (op.starter === 'intro') {
-    const defId = installComponent(state, 'intro.page');
-    const intro = makeInstance(state.components[defId], { eyebrow: '', heading: op.title.trim(), lead: '' });
-    page.nodes[intro.id] = intro;
-    page.rootIds.push(intro.id);
-  }
-  if (op.starter === 'article') {
-    // The header shows the page's own title, date, byline and excerpt; the text section below is the body. A theme
-    // without one of them makes the article without it.
-    const has = (id: string) => !!catalogueComponent(state.site.themeId, id);
-    const header = has('content.article') ? makeInstance(state.components[installComponent(state, 'content.article')], { eyebrow: '' }) : null;
-    const body = has('content.text') ? makeInstance(state.components[installComponent(state, 'content.text')], { heading: '', body: toRichText(['Write the article here.']) }) : null;
-    for (const n of [header, body]) {
-      if (!n) continue;
-      page.nodes[n.id] = n;
-      page.rootIds.push(n.id);
-    }
-  }
+  // The starter's sections, from the components the theme has (see page-starters).
+  if (op.starter) addPageStarter(state, page, op.starter);
   // An article is dated when it is made: the date given, or today for the article starter.
   const articleDate = op.articleDate ?? (op.starter === 'article' ? todayArticleDate() : undefined);
   applyArticle(page, { articleDate, byline: op.byline, excerpt: op.excerpt, newsHidden: op.newsHidden });

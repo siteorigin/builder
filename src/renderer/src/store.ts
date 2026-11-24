@@ -15,6 +15,7 @@ import type { PostRef } from './lib/posts';
 import { notePlace, type PagePlaces } from './lib/page-place';
 import type { TemplateMode } from './lib/template-view';
 import type { DefinitionMode } from './lib/studio';
+import type { ChatFocusRequest } from './lib/page-start';
 
 export const api = window.builder;
 
@@ -222,6 +223,11 @@ export interface State {
   chatContextEnabled: { page: boolean; scope: ChatEditScope };
   /** What the next message is: a change for the AI to make, or a read-only question. */
   chatMode: ChatMode;
+  /**
+   * Write with AI asked for the message box, for the page it was asked on in this opening of the project: Chat puts
+   * focus there once it shows (a provider that is still loading can swap the box in late), then lets the request go.
+   */
+  chatFocus: ChatFocusRequest | null;
   /** Sample contact details the author chose to publish as they are, so the export stops reviewing them. */
   keptSamples: string[];
   /** A field to bring into view and focus once its component shows in the Inspector ("Open in inspector"). */
@@ -317,6 +323,7 @@ export const useStore = create<State>((set) => ({
   chatRequest: null,
   chatContextEnabled: { page: true, scope: 'selection' },
   chatMode: 'edit',
+  chatFocus: null,
   keptSamples: [],
   inspectorFocus: null,
   heldEdits: [],

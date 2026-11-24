@@ -1109,8 +1109,11 @@ iframe { color-scheme: light dark; }
 .frame-status .spinner { width: 13px; height: 13px; }
 .frame-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .frame-status.empty { gap: 10px; color: var(--text); }
-.frame-status.empty .link-btn { display: inline-flex; flex: none; align-items: center; gap: 4px; min-height: 24px; }
-.frame-status.empty .link-btn svg { width: 13px; height: 13px; }
+/* The words go first, then the actions shrink, clipped with an ellipsis: an action is never cut off unseen. */
+.frame-status.empty > span { flex-shrink: 1000; }
+.frame-status.empty .link-btn { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 4px; min-height: 24px; }
+.frame-status.empty .link-btn span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.frame-status.empty .link-btn svg { flex: none; width: 13px; height: 13px; }
 .overlay-layer { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
 /* Outlines are clipped to the page so they never spill onto the pasteboard. */
 .overlay-clip { position: absolute; inset: 0; overflow: hidden; border-radius: 6px; }
@@ -1259,7 +1262,7 @@ iframe { color-scheme: light dark; }
 .canvas-empty { position: absolute; left: 0; right: 0; display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
 .canvas-empty .empty-card { pointer-events: auto; max-width: 340px; padding: 22px 24px; gap: 8px; border-color: var(--border-strong); }
 :where(:root[data-appearance='dark']) { .canvas-empty .empty-card { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.1), var(--shadow-md); } }
-.canvas-empty .empty-card .btn { margin-top: 6px; }
+.canvas-empty .empty-card .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
 .canvas-state { position: absolute; inset: 0; display: grid; place-items: center; z-index: 6; }
 .canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
 .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
