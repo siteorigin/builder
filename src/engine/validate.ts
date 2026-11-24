@@ -2,6 +2,7 @@ import type { GraphNode, ImageValue, ProjectState, ResponsiveStyles } from '@sha
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { validateRoute } from '@shared/routes';
+import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, subtreeIds } from './tree';
 import { normalizeTable } from './table';
@@ -9,6 +10,7 @@ import { bindingProblem, bindingSlots, boundSchema } from './schema';
 import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle } from './tokens';
 import { missingSectionLinks, pageHeadings, unlinkedButtons } from '@generator/checks';
+import { isDraftPage } from '@generator/index';
 import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
@@ -55,6 +57,18 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     const key = p.route.toLowerCase();
     if (routes.has(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${p.title} and ${routes.get(key)} share ${p.route}.`, owner: { kind: 'page', id } });
     routes.set(key, p.title);
+    if (p.language !== undefined && !isLanguageCode(p.language))
+      out.push({ severity: 'warning', code: 'LANGUAGE_INVALID', message: `${p.title}: “${shownValue(p.language)}” is not a language code, so the page uses the site language.`, owner: { kind: 'page', id } });
+  }
+  // Translations in the same language cannot tell visitors apart. Published ones then list none of their versions;
+  // a draft only matters once it is published.
+  for (const clash of translationClashes(state)) {
+    const published = translationMembers(state, clash.group)
+      .filter((p) => !isDraftPage(state, p))
+      .map((p) => pageLanguage(state.site, p).toLowerCase());
+    const live = new Set(published).size < published.length;
+    const effect = live ? 'Until then, the website lists none of their translations.' : 'Publishing the draft as it is would stop the website listing their translations.';
+    out.push({ severity: 'warning', code: 'TRANSLATION_LANGUAGE', message: `${translationClashMessage(clash)} ${effect}`, owner: { kind: 'page', id: clash.b.id } });
   }
   // Old addresses kept working: each is a route of its own, so no page may use it, and it names a page.
   const redirects: unknown = state.site.redirects;

@@ -34,7 +34,8 @@ const PAGE_FIELDS: Record<string, string[]> = {
   draft: ['draft'],
   showHeader: ['showHeader'],
   showFooter: ['showFooter'],
-  socialImage: ['seo', 'socialImage']
+  socialImage: ['seo', 'socialImage'],
+  language: ['language']
 };
 const SITE_FIELDS = ['name', 'language', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel'];
 
@@ -71,6 +72,8 @@ function withRoutes(state: ProjectState, value: unknown, read: Record<string, un
 export function readField(state: ProjectState, op: EditOperation): FieldRead | null {
   switch (op.type) {
     case 'page.update': {
+      // Linking translations changes other pages too: a gesture, never held.
+      if (op.linkTranslationTo !== undefined) return null;
       const page = has(state.pages, op.pageId);
       if (!page) return gone('page');
       const keys = Object.keys(PAGE_FIELDS).filter((k) => (op as Record<string, unknown>)[k] !== undefined);

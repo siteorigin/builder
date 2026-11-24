@@ -467,6 +467,13 @@ export interface PageDoc extends NodeTree {
    * page and only asks search engines not to list it. The Home page is never a draft.
    */
   draft?: boolean;
+  /** The language this page is written in, as a code such as "fr" or "en-AU". Absent: the site's language. */
+  language?: string;
+  /**
+   * Pages sharing this key are the same page in different languages: each lists every other as an alternate
+   * version. No two pages of one group are in the same language. The key means nothing beyond that.
+   */
+  translationGroup?: string;
 }
 
 export interface SiteDoc {

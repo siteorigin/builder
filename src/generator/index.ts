@@ -33,6 +33,7 @@ import { usedPackFonts } from '@catalogue/fonts';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, validateRoute } from '@shared/routes';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
+import { HTML_ATTR, HTML_START, isLanguageCode, pageLanguage, sameLanguage, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
@@ -54,6 +55,8 @@ export interface GenerateOptions {
 export type FileMap = Map<string, string>;
 
 export const GEN_ROOT = 'src/lib/siteorigin';
+/** The server hook a site in more than one language has. SvelteKit runs one: a project's own would clash with it. */
+export const HOOKS_SERVER_FILE = 'src/hooks.server.js';
 export const GENERATED_DIR = `${GEN_ROOT}/generated`;
 export const RUNTIME_DIR = `${GEN_ROOT}/runtime`;
 export const STYLES_DIR = `${GEN_ROOT}/styles`;
@@ -1726,14 +1729,23 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   }
   head.push(`\t<meta name="twitter:card" content=${js(base && social ? 'summary_large_image' : 'summary')} />`);
   if (page.seo.noindex) head.push(`\t<meta name="robots" content="noindex" />`);
+  // The same page in other languages, and this one among them: each version lists the same set.
+  // Without a public address they are site paths, resolved as authored links are, so they hold under any sub-path.
+  const alternates = pageAlternates(state, page);
+  for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${base ? js(base + alt.route) : `resolve(${js(alt.route)})`}} />`);
+  const ldScript = (ld: Record<string, unknown>) => `\t{@html ${js(`<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`)}}`;
   // Structured data: the home page describes the website itself, once a public URL is known.
   if (base && page.id === site.homePageId && !page.seo.noindex) {
     const ld: Record<string, unknown> = { '@context': 'https://schema.org', '@type': 'WebSite', name: site.name, url: base + '/' };
     if (site.description) ld.description = site.description;
-    if (/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(site.language)) ld.inLanguage = site.language;
-    head.push(`\t{@html ${js(`<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`)}}`);
+    if (isLanguageCode(site.language)) ld.inLanguage = site.language;
+    head.push(ldScript(ld));
   }
-  const imports = renderImports(ctx.imports);
+  // On a site in more than one language, every page also says which language it is in.
+  if (base && !page.seo.noindex && languagesByRoute(state).length) {
+    head.push(ldScript({ '@context': 'https://schema.org', '@type': 'WebPage', name: page.seo.title || page.title, url: base + page.route, inLanguage: pageLanguage(site, page) }));
+  }
+  const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : ''].filter(Boolean).join('\n');
   return (
     HEADER_NOTE(`siteorigin/pages/${page.id}.json`) +
     (imports ? `<script>\n${imports}\n</script>\n\n` : '') +
@@ -1776,6 +1788,10 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const favicon = state.site.favicon && state.assets.assets[state.site.favicon];
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
   const iconType = favicon ? favicon.mime : 'image/svg+xml';
+  // A site in more than one language keeps <html lang> right as visitors move between its pages.
+  const languages = languagesByRoute(state).length
+    ? `\n\tconst pageLanguages = ${routeLanguagesJs(state, '\t')};\n\t$effect(() => {\n\t\tconst id = page.route.id;\n\t\tdocument.documentElement.lang = id && Object.hasOwn(pageLanguages, id) ? pageLanguages[id] : ${js(siteLanguage(state.site))};\n\t});`
+    : '';
   // Until the bridge is running, no form on the page can be sent: the editor never sends a message from the site on
   // the author's behalf (issue #193). The hold is in place before any form's own code, and the bridge removes it.
   const devBridge = opts.instrument
@@ -1791,7 +1807,7 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import { page } from '$app/state';
 	import { asset } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
-${imports}${devBridge}
+${imports}${languages}${devBridge}
 
 	let { children } = $props();
 	// A message typed into a form and not sent comes back when the visitor returns with Back.
@@ -1828,7 +1844,7 @@ export const trailingSlash = 'always';
 `;
 
 export function generateAppHtml(state: ProjectState): string {
-  const lang = /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(state.site.language) ? state.site.language : 'en';
+  const lang = siteLanguage(state.site);
   return `<!doctype html>
 <html lang="${lang}">
 	<head>
@@ -1841,6 +1857,81 @@ export function generateAppHtml(state: ProjectState): string {
 	</body>
 </html>
 `;
+}
+
+/**
+ * Route IDs of the pages written in another language than the site's, with that language, sorted by route. Empty
+ * for a site in one language: it then has no page-language files at all.
+ */
+export function routeLanguages(state: ProjectState): Array<[string, string]> {
+  const site = siteLanguage(state.site);
+  const out: Array<[string, string]> = [];
+  for (const id of state.site.pageOrder) {
+    const page = state.pages[id];
+    if (!page) continue;
+    const language = pageLanguage(state.site, page);
+    if (!sameLanguage(language, site)) out.push([routeId(page.route), language]);
+  }
+  return out.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** The languages of pages in another language than the site's, by route ID, as a script expression. */
+function routeLanguagesJs(state: ProjectState, indent = ''): string {
+  return JSON.stringify(Object.fromEntries(languagesByRoute(state)), null, '\t').replace(/\n/g, '\n' + indent);
+}
+
+/** routeLanguages as a file depends on it: on the list alone, not on every page that goes into it. */
+const languagesByRoute = (state: ProjectState) => derived(state, 'routeLanguages', routeLanguages);
+
+/**
+ * Server hook that gives each prerendered or previewed page the language it is written in: app.html names the site's,
+ * and the opening <html> tag of a page in another language gets that page's lang instead. Only a site in more than
+ * one language has this file. It carries its own list of languages, so it never depends on another generated file.
+ */
+export function generateHooksServer(state: ProjectState): string {
+  return `// Generated by SiteOrigin Builder from siteorigin/pages/*.json. Gives each page's <html lang> the language the
+// page is written in: pages not listed here are in the site's language, which src/app.html names.
+const languages = ${routeLanguagesJs(state)};
+
+// The document's opening <html> tag, after any doctype and comments, and each of its attributes.
+const START = new RegExp(${js(HTML_START.source)}, 'i');
+const ATTR = new RegExp(${js(HTML_ATTR.source)}, 'g');
+
+/** @type {import('@sveltejs/kit/hooks').Handle} */
+export function handle({ event, resolve }) {
+	const id = event.route.id;
+	const lang = id && Object.hasOwn(languages, id) ? languages[id] : null;
+	if (!lang) return resolve(event);
+	let first = true;
+	return resolve(event, {
+		transformPageChunk: ({ html }) => {
+			// The opening tag comes first: its lang is replaced, or added when it has none.
+			if (!first) return html;
+			first = false;
+			return html.replace(START, (_, before, tag, attrs, end) => {
+				let found = false;
+				const own = attrs.replace(ATTR, (attr, space, name) => (name.toLowerCase() === 'lang' ? ((found = true), \`\${space}lang="\${lang}"\`) : attr));
+				return \`\${before}<\${tag}\${found ? own : \`\${own} lang="\${lang}"\`}\${end}\`;
+			});
+		}
+	});
+}
+`;
+}
+
+/**
+ * The versions of a published page in each language it has, itself among them, in page order: what its
+ * alternate-language links name. None for a draft, for a page without translations, and for a set whose pages
+ * clash on language (which the editor never lets happen).
+ */
+export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ language: string; route: string; pageId: string }> {
+  const group = translationGroup(page);
+  if (!group || isDraftPage(state, page)) return [];
+  const members = translationMembers(state, group)
+    .filter((p) => state.site.pageOrder.includes(p.id) && !isDraftPage(state, p))
+    .map((p) => ({ language: pageLanguage(state.site, p), route: p.route, pageId: p.id }));
+  const languages = new Set(members.map((m) => m.language.toLowerCase()));
+  return members.length < 2 || languages.size < members.length ? [] : members;
 }
 
 /**
@@ -2164,6 +2255,8 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
   files.set('src/routes/+layout.svelte', file(`layout${mode}`, (s) => generateLayout(s, opts)));
   files.set('src/routes/+layout.js', LAYOUT_TS);
   files.set('src/app.html', file('app.html', generateAppHtml));
+  // Pages in another language decide only whether the hook exists, so that is asked of the plain state.
+  if (routeLanguages(state).length) files.set(HOOKS_SERVER_FILE, file('hooks.server.js', generateHooksServer));
   for (const id of state.site.pageOrder) {
     const page = state.pages[id];
     if (page) files.set(pageFile(page), file(`page:${id}${mode}`, (s) => generatePage(s, s.pages[id], opts)));

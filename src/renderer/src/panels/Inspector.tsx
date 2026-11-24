@@ -50,7 +50,8 @@ import { StyleControls } from './StyleControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, definitionView, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
-import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
+import { askAiAbout, deleteSelection, duplicateSelection, selectPage, structuralTarget } from '../lib/actions';
+import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
 import { defaultReach, designContent, designContentOp, forwardedProp, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
@@ -1522,6 +1523,56 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   );
 }
 
+/** The language a page is written in, and the same page in other languages. */
+function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
+  const site = siteLanguage(state.site);
+  const peers = translationPeers(state, page);
+  const group = linkedGroup(state, page);
+  const own = typeof page.language === 'string' ? page.language : '';
+  // A page with translations joins only pages without any of their own: two sets are never merged. A page whose
+  // language one of the versions already has is shown, but cannot be chosen until one of them changes language.
+  const candidates = state.site.pageOrder
+    .map((id) => state.pages[id])
+    .filter((p) => p && p.id !== page.id && !peers.includes(p) && (!group || !linkedGroup(state, p)))
+    .map((p) => ({ page: p, clash: linkClash(state, page, p) }));
+  const link = (pageId: string, to: string | null, label: string) => void applyOps([{ type: 'page.update', pageId, linkTranslationTo: to }], label);
+  return (
+    <Section title="Language" id="page-language" level={LEVEL}>
+      <Field label="Language" hint={own ? 'A language code, such as fr or en-GB. Clear it to use the site language.' : 'Uses the site language. Enter a code such as fr or en-GB if this page is written in another language.'}>
+        <DraftInput value={own} placeholder={site} onCommit={(v) => void applyOps([{ type: 'page.update', pageId: page.id, language: v.trim() }], 'Change page language')} ariaLabel="Page language" />
+      </Field>
+      <Field label="Translations" hint="Browsers and search engines learn which pages are the same page in other languages. For visitors to switch, add a link or button to the other version and choose it under Page.">
+        {peers.length > 0 && (
+          <ul className="insp-translations" aria-label="Translations of this page">
+            {peers.map((p) => (
+              <li key={p.id}>
+                <button className="insp-mini grow ellipsis" onClick={() => selectPage(p.id)} title={`Open ${p.title}`}>
+                  {p.title}
+                </button>
+                <span className="mono faint">
+                  {pageLanguage(state.site, p)}
+                  {isDraftPage(state, p) ? ' · draft' : ''}
+                </span>
+                <button className="btn btn-sm" onClick={() => link(p.id, null, 'Unlink translation')} aria-label={`Unlink ${p.title}`}>
+                  Unlink
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <select className="select" value="" aria-label="Link a translation" onChange={(e) => e.target.value && link(page.id, e.target.value, 'Link translation')}>
+          <option value="">{peers.length ? 'Link another version…' : 'Link the same page in another language…'}</option>
+          {candidates.map(({ page: p, clash }) => (
+            <option key={p.id} value={p.id} disabled={!!clash}>
+              {p.title} ({pageLanguage(state.site, p)}){clash ? ` · two versions would be in ${clash.language}` : ''}
+            </option>
+          ))}
+        </select>
+      </Field>
+    </Section>
+  );
+}
+
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
   const assetSort = useStore((s) => s.assetSort);
@@ -1577,6 +1628,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />
         <p className="insp-note field-hint">Other pages keep their own choice. Editing the header or footer changes it on every page that shows it.</p>
       </Section>
+      <PageLanguage page={page} state={state} />
       <Section title="Search & sharing" id="page-seo" level={LEVEL}>
         <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
           <DraftInput value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
