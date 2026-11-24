@@ -3,23 +3,24 @@
  * generated from the selected component's own contract, and each call compiles to ordinary edit operations
  * that the run's authority still checks.
  */
-import { findVariant, variantOptions } from '@shared/variants';
+import { variantOptions } from '@shared/variants';
 import { z } from 'zod';
 import { isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
 import { getTree } from '@engine/tree';
 import { TABLE_ACTIONS, TABLE_LIMITS, type TableAction } from '@engine/table';
-import { checkProps, fieldError, type FieldIssue } from './macros';
+import { checkProps, chooseVariants, fieldError, variantsJsonSchema, type FieldIssue } from './macros';
 import { propJsonSchema, propsJsonSchema, type JsonSchema } from './propschema';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
 import { repeatedPartList } from '@shared/item-styles';
+import { partReach, type PartReach } from './scope';
 
 type ContentField = Extract<EditOperation, { type: 'node.setContent' }>['field'];
 
 export const SELECTION_ARGS = {
-  update_selected_props: z.object({ props: z.record(z.string(), z.unknown()).optional(), variant: z.string().optional() }),
+  update_selected_props: z.object({ props: z.record(z.string(), z.unknown()).optional(), variant: z.string().optional(), variants: z.record(z.string(), z.string()).optional() }),
   edit_selected_list: z.object({
     prop: z.string(),
     action: z.enum(['update', 'insert', 'remove', 'move']),
@@ -131,6 +132,18 @@ function resolve(state: ProjectState, target: SelectionTarget): Resolved | null 
   return { tree, node, properties: nodeFields(node) };
 }
 
+/**
+ * What a part selected inside a placement shows, or null when the selection is the whole placement (or a code
+ * component's, whose parts cannot say what they show). The run may change only that; see checkAuthority.
+ */
+function selectedPartReach(r: Resolved, target: SelectionTarget): PartReach | null {
+  if (!target.partId || !r.def || !Object.hasOwn(r.def.parts, target.partId)) return null;
+  // A code component has no tree to say what its parts show: only the part's own styles.
+  if (!r.def.tree) return target.partId === 'root' ? null : partReach(r.def, '');
+  const nodeId = r.def.parts[target.partId].nodeId;
+  return r.def.tree.rootIds[0] === nodeId ? null : partReach(r.def, nodeId);
+}
+
 const STYLE_VALUE: JsonSchema = {
   anyOf: [
     { type: 'string' },
@@ -200,23 +213,38 @@ function emptiedBy(field: PropSchema, v: unknown): string | null {
  * The tools for a selection, or null when they cannot cover it: inside a component's own definition, or on a
  * layout element whose content lives in its children. Those selections use the general tools.
  */
-export function selectionTools(state: ProjectState, target: SelectionTarget | null): ToolDefinition[] | null {
+/**
+ * `widened`: the user has let the run change more than the selection, so a selected item no longer limits its styles.
+ */
+export function selectionTools(state: ProjectState, target: SelectionTarget | null, opts: { widened?: boolean } = {}): ToolDefinition[] | null {
   if (!target || target.nested || target.owner.kind === 'component') return null;
   const r = resolve(state, target);
   if (!r || !Object.keys(r.properties).length) return null;
   const tools: ToolDefinition[] = [];
-  const variants = r.def ? [...new Set(variantOptions(r.def).map((o) => o.id))] : [];
-  tools.push({
-    name: 'update_selected_props',
-    description: SELECTION_DESCRIPTIONS.update_selected_props,
-    parameters: {
-      type: 'object',
-      properties: { props: propsJsonSchema({ properties: r.properties }), ...(variants.length ? { variant: { type: 'string', enum: variants, description: 'Visual variant.' } } : {}) },
-      additionalProperties: false
-    }
-  });
+  // A selected part offers only what it shows; its placement's variants change the whole section.
+  // Widened, the run may change the whole placement: every part and property is offered again.
+  const reach = opts.widened ? null : selectedPartReach(r, target);
+  // A placement property shown in a repeated part shows in every item, not only the selected one.
+  const placementWide = (k: string) => !!reach && reach.props.has(k) && !(target.itemId !== undefined && reach.repeated);
+  const shown = reach ? Object.fromEntries(Object.entries(r.properties).filter(([k]) => placementWide(k))) : r.properties;
+  const variants = r.def && !reach ? [...new Set(variantOptions(r.def).map((o) => o.id))] : [];
+  const byAxis = r.def && !reach ? variantsJsonSchema(r.def, true) : null;
+  if (Object.keys(shown).length || variants.length)
+    tools.push({
+      name: 'update_selected_props',
+      description: SELECTION_DESCRIPTIONS.update_selected_props,
+      parameters: {
+        type: 'object',
+        properties: {
+          props: propsJsonSchema({ properties: shown }),
+          ...(variants.length ? { variant: { type: 'string', enum: variants, description: 'Visual variant: one option, on whichever axis has it. To set several axes, use variants.' } } : {}),
+          ...(byAxis ? { variants: byAxis } : {})
+        },
+        additionalProperties: false
+      }
+    });
   // A computed list (news, an article header) is filled from the site's pages: it has no items to edit.
-  const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, ListSchema]>;
+  const lists = Object.entries(r.properties).filter(([k, s]) => s.type === 'list' && !s.feed && (!reach || placementWide(k) || reach.itemFields.has(k))) as Array<[string, ListSchema]>;
   if (lists.length) {
     const fields = listFields(lists);
     tools.push({
@@ -256,9 +284,12 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
         additionalProperties: false
       }
     });
-  const parts = r.def ? Object.keys(r.def.parts) : [];
+  const parts = r.def ? Object.keys(r.def.parts).filter((p) => !reach || p === target.partId || reach.nodes.has(r.def!.parts[p].nodeId)) : [];
   // Parts shown once per list item, which can be styled for one item alone.
   const perItem = r.def ? parts.filter((p) => repeatedPartList(r.def!, p)) : [];
+  // With one item selected, its part is styled for that item alone unless the user widens the request.
+  // A selected item limits a run to its own style until the user widens it: omitted, itemId is that item.
+  const itemOnly = !!target.itemId && !!reach && !opts.widened;
   const selectedItem = target.itemId ? ` The selected item is "${target.itemId}".` : '';
   tools.push({
     name: 'style_selected_element',
@@ -271,7 +302,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
           ? {
               itemId: {
                 type: 'string',
-                description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style. Omit to style every item.${selectedItem}`
+                description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style.${itemOnly ? ` Omitted, it is the selected item "${target.itemId}": styling every item needs request_wider_scope first.` : ` Omit to style every item.${selectedItem}`}`
               },
               resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles; then apply styles, which may be empty.' }
             }
@@ -321,15 +352,25 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     const a = args as z.infer<(typeof SELECTION_ARGS)['update_selected_props']>;
     const issues: FieldIssue[] = [];
     const def: ComponentDefinition = r.def ?? ({ name: 'Element', properties: r.properties } as ComponentDefinition);
-    const { props, deferred } = checkProps(def, a.props ?? {}, state, 'props', issues);
+    // Checked against the element's own values, as the engine checks them: one sent back unchanged is kept.
+    const { props, deferred } = checkProps(def, a.props ?? {}, state, 'props', issues, r.node.kind === 'instance' ? r.node.props : undefined);
     // A selection edit cannot create pages, so a link must point at one that exists.
     for (const d of deferred) issues.push({ field: `props.${d.prop}${d.itemIndex !== undefined ? `[${d.itemIndex}].${d.field}` : ''}`, message: `no page uses the route ${d.route}` });
-    if (a.variant !== undefined && (!r.def || 'error' in findVariant(r.def, a.variant))) issues.push({ field: 'variant', message: `must be one of: ${(r.def ? [...new Set(variantOptions(r.def).map((o) => o.id))] : []).join(', ') || 'none'}` });
+    let chosen: Record<string, string> | undefined;
+    if (a.variant === undefined && a.variants === undefined) chosen = undefined;
+    else if (!r.def) issues.push({ field: a.variant !== undefined ? 'variant' : 'variants', message: 'this element has no variants' });
+    else {
+      const found: FieldIssue[] = [];
+      chosen = chooseVariants(r.def, a.variant, a.variants, '', found);
+      // The selected element's own options are the only ones there are, so the message lists them.
+      for (const i of found) issues.push(i.field === 'variant' ? { field: 'variant', message: `must be one of: ${[...new Set(variantOptions(r.def).map((o) => o.id))].join(', ') || 'none'}` } : i);
+    }
     if (issues.length) return fieldError(issues, note);
     const ops: EditOperation[] = Object.entries(props).map(([prop, value]) =>
       r.node.kind === 'instance' ? { type: 'instance.setProp', owner, nodeId, prop, value } : { type: 'node.setContent', owner, nodeId, field: prop as ContentField, value }
     );
-    if (a.variant !== undefined) ops.push({ type: 'instance.setVariant', owner, nodeId, variant: a.variant });
+    // One choice per axis, so tone and layout sent together each keep the other.
+    for (const [axis, variant] of Object.entries(chosen ?? {})) ops.push({ type: 'instance.setVariant', owner, nodeId, variant, axis });
     return applySelected(ops, host, 'Edit selection', callId);
   }
 
@@ -363,13 +404,17 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
       // One item is checked here; the list's length rules are the engine's, against the real list.
       const list = { name: schema.label, properties: { [a.prop]: { ...schema, min: undefined, max: undefined } } } as unknown as ComponentDefinition;
       const fieldIssues: FieldIssue[] = [];
-      const checked = checkProps(list, { [a.prop]: [a.fields ?? {}] }, state, 'fields', fieldIssues);
+      // An update is checked against the item it changes, as the engine checks it: a field sent back unchanged is kept.
+      const was = a.action === 'update' ? items.find((i) => i.id === itemId) : undefined;
+      const sent = { ...(a.fields ?? {}), ...(was ? { id: was.id } : {}) };
+      const checked = checkProps(list, { [a.prop]: [sent] }, state, 'fields', fieldIssues, was ? { [a.prop]: [was] } : undefined);
       for (const i of fieldIssues) {
         const field = i.field.replace(`fields.${a.prop}[0]`, 'fields');
         if (!misshapen.has(field)) issues.push({ field, message: i.message });
       }
       if (checked.deferred.length) issues.push({ field: `fields.${checked.deferred[0].field}`, message: `no page uses the route ${checked.deferred[0].route}` });
-      fields = (checked.props[a.prop] as Array<Record<string, unknown>>)?.[0] ?? {};
+      const { id: _id, ...checkedFields } = (checked.props[a.prop] as Array<Record<string, unknown>>)?.[0] ?? {};
+      fields = checkedFields;
       if (a.action === 'update' && !Object.keys(fields).length) issues.push({ field: 'fields', message: 'send the fields to change' });
     }
     if (issues.length) return fieldError(issues, note);
@@ -402,6 +447,8 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
   const perItem = r.node.kind === 'instance' && r.def ? Object.keys(r.def.parts).filter((p) => repeatedPartList(r.def!, p)) : [];
   // One item's style needs a repeated part: the one named, the selected one, or the only one there is.
   const partId = r.node.kind === 'instance' ? (a.partId ?? target.partId ?? (a.itemId && perItem.length === 1 ? perItem[0] : undefined)) : undefined;
+  // While the run is limited to a selected item, a part shown for every item is styled for that item alone.
+  if (a.itemId === undefined && target.itemId !== undefined && partId && perItem.includes(partId) && host.selectionLimited?.() !== false && selectedPartReach(r, target)) a.itemId = target.itemId;
   if (r.node.kind !== 'instance' && a.partId) return fieldError([{ field: 'partId', message: 'this element has no parts' }], note);
   if (a.itemId !== undefined && (!partId || !perItem.includes(partId)))
     return fieldError([{ field: a.partId ? 'partId' : 'itemId', message: perItem.length ? `to style one item, name a repeated part: ${perItem.join(', ')}` : 'this element has no part repeated per item' }], note);

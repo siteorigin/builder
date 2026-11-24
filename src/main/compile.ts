@@ -14,12 +14,24 @@ export async function compileProject(state: ProjectState): Promise<Diagnostic[]>
       try {
         compile(source, { filename: path, generate, runes: true });
       } catch (e) {
-        const err = e as { message: string; start?: { line: number } };
+        const err = e as { message: string; code?: string; start?: { line: number }; end?: { line?: number } };
         const def = Object.values(state.components).find((d) => d.sourcePath === path || path.includes(d.id.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()));
-        out.push({ severity: 'error', code: 'COMPILE', message: `${def ? def.name : path}${err.start ? ` (line ${err.start.line})` : ''}: ${err.message.split('\n')[0]}` });
+        const reason = err.message.split('\n')[0];
+        out.push({ severity: 'error', code: 'COMPILE', message: `${def ? def.name : path}${err.start ? ` (line ${err.start.line})` : ''}: ${reason}`, site: compileSite(path, source, err, reason) });
         break;
       }
     }
   }
   return out;
+}
+
+/**
+ * What identifies a compile error across edits: its file, the compiler's reason and the source it is on with a line of
+ * context either side (spacing evened out), never its line or column number, which move when anything above it changes,
+ * nor the component's name, which a rename changes. The same reason on another construct is a different error, even
+ * where the construct's own line reads the same (a closing tag in another row).
+ */
+function compileSite(path: string, source: string, err: { code?: string; start?: { line: number }; end?: { line?: number } }, reason: string): string {
+  const lines = err.start ? source.split('\n').slice(Math.max(0, err.start.line - 2), Math.max(err.start.line, err.end?.line ?? err.start.line) + 1) : [];
+  return JSON.stringify([path, err.code ?? reason, lines.join(' ').replace(/\s+/g, ' ').trim().slice(0, 300)]);
 }

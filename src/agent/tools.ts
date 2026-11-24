@@ -10,20 +10,28 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
-import { agentProps, catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, tokensSummary } from './context';
+import { agentProps, catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
 import { examplesFor, exampleSection } from './examples';
 import { locateField } from '@engine/locate';
+import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component']), id: z.string() });
 
 export const TOOL_ARGS = {
   read_project: z.object({ sections: z.array(z.enum(['pages', 'tokens', 'catalogue', 'components', 'shell'])).optional() }),
   read_page: z.object({ pageId: z.string(), nodeId: z.string().optional().describe('Optional subtree to read.') }),
-  inspect_element: z.object({ owner, nodeId: z.string() }),
+  inspect_element: z.object({
+    owner,
+    nodeId: z.string(),
+    prop: z.string().optional().describe('Read one content field whole instead of the node: a property of a placed component, or "text" for a text element.'),
+    itemId: z.string().optional().describe('With prop, for a list: the item whose field to read.'),
+    field: z.string().optional().describe('With prop and itemId: the field of that item.'),
+    offset: z.number().int().min(0).optional().describe('With prop: where to go on reading a long value, from the next a previous read returned.')
+  }),
   search_components: z.object({ query: z.string().describe('Words such as "pricing", "team", "image text".'), limit: z.number().int().min(1).max(20).optional() }),
   read_component: z.object({ componentId: z.string().optional(), definitionId: z.string().optional() }),
   search_assets: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }),
@@ -71,7 +79,8 @@ export type ToolName = keyof typeof TOOL_ARGS;
 const DESCRIPTIONS: Record<ToolName, string> = {
   read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, or the theme catalogue: every component with its compact property signature, style parts and variants, plus the valid icon names.',
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
-  inspect_element: 'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree.',
+  inspect_element:
+    'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree. With prop, read one content field whole instead (long rich text as Markdown), a part at a time: call again with the offset each part returns until next is null.',
   search_components: 'Search the theme catalogue by keywords. Returns componentIds you can insert with node.insert.',
   read_component: 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.',
   search_assets: 'List imported images by name and description, with the assetId that identifies each one (two images can share a name). You cannot see image contents.',
@@ -93,21 +102,11 @@ const DESCRIPTIONS: Record<ToolName, string> = {
 /** Operations the assistant never sends: images are added only by the verified importer, theme updates by the
  *  user, and pastes come from the editor's own Copy. */
 const NEVER_OFFERED = new Set<OperationType>(['asset.add', 'asset.relink', 'theme.refresh', 'node.paste']);
-/** Operations that need Developer mode. */
-export const CODE_OPERATIONS = new Set<OperationType>(['component.createCode', 'component.updateSource', 'component.convertToCode']);
+/** Operations that need Developer mode, shown only to runs that have it. */
+export { CODE_OPERATIONS };
 
 /** Whether an operation creates or copies code: a code operation, or a copy of a code component (as the editor checks). */
-export function copiesCode(state: ProjectState, op: EditOperation): boolean {
-  if (CODE_OPERATIONS.has(op.type)) return true;
-  const isCode = (id: unknown) => typeof id === 'string' && Object.hasOwn(state.components, id) && state.components[id].kind === 'code';
-  if (op.type === 'component.duplicate') return isCode(op.definitionId);
-  if (op.type === 'component.makeUnique') {
-    const tree = op.owner.kind === 'page' ? state.pages[op.owner.id] : op.owner.kind === 'shell' ? state.site.shell[op.owner.id as 'header' | 'footer'] : state.components[op.owner.id]?.tree;
-    const n = tree && Object.hasOwn(tree.nodes, op.nodeId) ? tree.nodes[op.nodeId] : undefined;
-    return n?.kind === 'instance' && isCode(n.definitionId);
-  }
-  return false;
-}
+export const copiesCode = (state: ProjectState, op: EditOperation): boolean => developerModeReason(state, op) !== null;
 const CODE_TOOLS = new Set<ToolName>(['read_source', 'apply_source_patch']);
 /** Editing a component's own contract. Rarely needed, so left out of the schema unless the run can use it. */
 const DEFINITION_OPERATIONS = new Set<OperationType>([
@@ -208,6 +207,8 @@ export function toolsForRun(opts: {
   ask?: boolean;
   /** The small set whatever the window: the request would not fit beside the general tools. */
   focused?: boolean;
+  /** The selection a run started from, once the user has let it change more. */
+  widened?: SelectionTarget | null;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
@@ -219,14 +220,19 @@ export function toolsForRun(opts: {
     // An image can only be chosen by its asset ID, so a selection with one, or a request that attached images, can
     // also look them up and ask the user to choose between them by sight.
     const assets = usesImage(micro) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
-    return { tools: focused ? [...micro, ...assets] : [...micro, ...general], mode: 'selection', focused };
+    // Content too long to show whole in the selection can still be read whole, a part at a time, before it is changed.
+    const reads = selectionAbridged(state, selection) ? general.filter((t) => t.name === 'inspect_element') : [];
+    return { tools: focused ? [...micro, ...reads, ...assets] : [...micro, ...general], mode: 'selection', focused };
   }
   if (opts.definition) return { tools: general, mode: 'general', focused: false };
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', description: DESCRIPTIONS.upsert_page_with_sections, parameters: upsertToolSchema(state) },
     { name: 'update_site_brand', description: DESCRIPTIONS.update_site_brand, parameters: brandToolSchema(state) }
   ];
-  return { tools: [...macros, ...(focused ? general.filter((t) => t.name !== 'apply_operations') : general)], mode: 'site', focused };
+  // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
+  // do (styling every card of a selected one, say).
+  const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
+  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations') : general)], mode: 'site', focused };
 }
 
 /** An image in the project's library, or null for an unknown ID or a font. */
@@ -264,6 +270,8 @@ export interface ToolHost {
   macros?: MacroMemory;
   /** The element a selection-scoped run is working on. */
   selection?(): SelectionTarget | null;
+  /** Whether the run is still limited to its selection: the user has not let it change more. */
+  selectionLimited?(): boolean;
 }
 
 export interface ToolOutcome {
@@ -339,6 +347,12 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'inspect_element': {
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_element']>;
+      if (a.prop !== undefined) {
+        const read = readField(state, { owner: a.owner, nodeId: a.nodeId, prop: a.prop, itemId: a.itemId, field: a.field, offset: a.offset });
+        if (!read.ok) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: read.message } };
+        return { ok: true, content: { revision: host.revision(), ...read.content } };
+      }
+      if (a.itemId !== undefined || a.field !== undefined || a.offset !== undefined) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'itemId, field and offset read one field: name its prop too.' } };
       try {
         const tree = getTree(state, a.owner);
         const n = tree.nodes[a.nodeId];

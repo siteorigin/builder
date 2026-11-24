@@ -15,7 +15,8 @@ import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
-import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
+import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
+import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
@@ -1738,7 +1739,8 @@ export class ProjectSession extends EventEmitter {
    * Validate and apply an edit batch. `runId` identifies the AI run that holds the writer lock;
    * manual edits are rejected while a run is active.
    */
-  apply(batch: EditBatch, opts: CommitOptions & { runId?: string; idempotencyKey?: string }): Promise<ApplyResult> {
+  /** `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies. */
+  apply(batch: EditBatch, opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean }): Promise<ApplyResult> {
     return this.serialize(async () => {
       const fingerprint = sha(JSON.stringify(batch.operations));
       if (opts.idempotencyKey && this.idempotency.has(opts.idempotencyKey)) {
@@ -1760,6 +1762,9 @@ export class ProjectSession extends EventEmitter {
         if (!v.ok) return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: v.message, recoverable: true } };
         ops.push(v.op);
       }
+      // Checked here, in turn with every other edit and with the editor's clipboard, so what it copies is what lands.
+      const code = opts.codeAllowed === false ? developerModeRefusal(this.state, ops, { clipboards: this.clipboards }) : null;
+      if (code) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `${code} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
       // Paste places what the editor copied; an AI run never sends it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'node.paste'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'node.paste is only for the editor. Use node.copy.', recoverable: true } };
@@ -2913,9 +2918,8 @@ export class ProjectSession extends EventEmitter {
     const next: ProjectState = { ...this.state, pages: { ...this.state.pages, [pageId]: { ...page, rootIds: put.tree.rootIds, nodes: put.tree.nodes } } };
     // What it brings back must still make sense with everything changed since (a component or image it uses may be
     // gone). Diagnostics are told apart by where they are, as two missing images on one page share a message.
-    const key = (x: Diagnostic) => `${x.code}|${x.owner?.kind}:${x.owner?.id}|${x.nodeId}|${x.message}`;
-    const known = new Set(validateState(this.state, { sectionLinks: false }).filter(blocksSaving).map(key));
-    const introduced = validateState(next, { sectionLinks: false }).filter((x) => blocksSaving(x) && !known.has(key(x)));
+    const known = new Set(validateState(this.state, { sectionLinks: false }).filter(blocksSaving).map(diagnosticKey));
+    const introduced = validateState(next, { sectionLinks: false }).filter((x) => blocksSaving(x) && !known.has(diagnosticKey(x)));
     if (introduced.length) return refuse(introduced.map((x) => x.message).join(' '));
     let ev: SessionEvent;
     try {

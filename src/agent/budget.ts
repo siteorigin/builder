@@ -106,7 +106,9 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
   if (item.name === 'inspect_element') {
     const owner = args.owner ?? body?.owner;
     if (!owner?.id || !args.nodeId) return null;
-    return { ...base, target: `element:${owner.kind}:${owner.id}:${args.nodeId}` };
+    // One field read a part at a time: each part is its own read, never made out of date by the next part or another field.
+    const field = args.prop !== undefined ? `:field:${JSON.stringify([args.prop, args.itemId ?? null, args.field ?? null, Number(args.offset ?? 0)])}` : '';
+    return { ...base, target: `element:${owner.kind}:${owner.id}:${args.nodeId}${field}` };
   }
   if (item.name === 'inspect_layout') {
     const pageId = body?.pageId ?? args.pageId;

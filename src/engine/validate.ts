@@ -25,11 +25,23 @@ export interface Diagnostic {
   owner?: { kind: string; id: string };
   nodeId?: string;
   /**
-   * Where in its owner the problem is, for telling it apart from others of its kind (see `introducedDiagnostics`):
-   * unlike the message, it stays the same when a page or component it names is renamed, or a repair changes the wording.
+   * Where in its owner the problem is, for telling it apart from others of its kind (see `introducedDiagnostics` and
+   * `diagnosticKey`): unlike the message, it stays the same when a page or component it names is renamed, or a repair
+   * changes the wording. It identifies the problem where its message cannot: a compile error's file and construct (its
+   * message names a line that moves), or which of several links in one placement it is.
    */
   site?: string;
 }
+
+/**
+ * What tells two diagnostics apart, as `introducedDiagnostics` with `byNode` does: one that names its place (`site`) by
+ * its code, owner and place, any other by its code, owner, element and message. The same message in two places is two
+ * problems.
+ */
+export const diagnosticKey = (d: Diagnostic): string => {
+  const owner = `${d.code}|${d.owner?.kind ?? ''}:${d.owner?.id ?? ''}`;
+  return d.site !== undefined ? `${owner}|@${d.site}` : `${owner}|${d.nodeId ?? ''}|${d.message}`;
+};
 
 /**
  * Errors in what the site shows that an edit may still introduce: the author fixes them later (a link to a section
@@ -329,7 +341,11 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     const message = i.pageId
       ? `${where}: ${what} goes to #${i.fragment} on ${state.pages[i.pageId].title}, but that page has no section with that ID. ${fix}`
       : `${where}: ${what} goes to #${i.fragment}, but ${listed((i.pages ?? []).map((id) => state.pages[id].title))} ${(i.pages ?? []).length > 1 ? 'have' : 'has'} no section with that ID. ${fix}`;
-    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId });
+    // Which link it is, where one placement shows several with the same text (one per card, say).
+    // Which link it is, and where it goes: a link in text by its text, since another link added before it renumbers it. The
+    // pages missing the section are left out, so fixing one of them never makes the link look newly broken.
+    const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
+    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
   // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
   // ones), and the pictures of a project component, which can only show images.

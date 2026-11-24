@@ -176,7 +176,8 @@ const ESCAPABLE = '\\*[]#>+-.)';
 /** `\|` reads as nothing: it separates two marked runs that touch, and at a line's start means "a plain paragraph". */
 const SEPARATOR = '\\|';
 const MAX_MARK_DEPTH = 4;
-const LINK_RE = /\[((?:\\.|[^[\]\\])+)\]\(\s*(?:<([^<>\s]+)>|((?:[^\s()]|\([^\s()]*\))+))(\s+"new tab")?\s*\)/y;
+// An address in <…> may hold spaces (a phone number written with them) or brackets.
+const LINK_RE = /\[((?:\\.|[^[\]\\])+)\]\(\s*(?:<([^<>\n]+)>|((?:[^\s()]|\([^\s()]*\))+))(\s+"new tab")?\s*\)/y;
 
 /** Where the closing run for an opening run of `n` asterisks starts, or -1. */
 function findClose(text: string, from: number, n: number, escapes: boolean): number {
@@ -365,7 +366,7 @@ function spansToMarkdown(spans: RichSpan[], pages: RichPages): string {
       const gap = marked(s) && marked(spans[i - 1]) ? SEPARATOR : '';
       if (!s.link) return gap + body;
       const target = linkToTarget(s.link, pages);
-      return `[${body}](${/[()]/.test(target) ? `<${target}>` : target}${s.link.newTab ? ' "new tab"' : ''})`;
+      return `[${body}](${/[()\s]/.test(target) ? `<${target}>` : target}${s.link.newTab ? ' "new tab"' : ''})`;
     })
     .join('');
 }

@@ -10,7 +10,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
-import { authorityFor, canEditContracts, checkAuthority, OP_REACH, type Authority } from '@agent/scope';
+import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
@@ -18,6 +18,7 @@ import { catalogueIndex } from '@agent/context';
 import { applyOperations } from '@engine/apply';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
+import { diagnosticKey, validateState } from '@engine/validate';
 import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
 
@@ -1115,6 +1116,66 @@ describe('run budget, parallel calls and validation', () => {
     expect(result?.canUndo).toBe(true);
   });
 
+  it('treats an error with the same message as one already there, but somewhere else, as new (#132)', async () => {
+    const message = 'A link points to a page that does not exist.';
+    const at = (nodeId: string) => ({ severity: 'error' as const, code: 'LINK_MISSING', message, owner: { kind: 'page', id: 'pg_home' }, nodeId });
+    const about = (s: ProjectSession) => Object.values(s.state.pages).find((p) => p.route === '/about/')!;
+    let session: ProjectSession;
+    let repaired = '';
+    const env = await setup(
+      [
+        () => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.update', pageId: about(session).id, title: 'About the studio' }] })],
+        () => finish('Retitled it.'),
+        (req) => {
+          repaired = (req.items.at(-1) as { text: string }).text;
+          return [call('c2', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.update', pageId: about(session).id, title: 'Our studio' }] })];
+        },
+        () => finish('Retitled it and fixed the new link.')
+      ],
+      {
+        // The project already has the error on n_old; the first title adds the same one on n_new, the second fixes it.
+        compileAll: async (s) => [at('n_old'), ...(about(s).title === 'About the studio' ? [at('n_new')] : [])]
+      }
+    );
+    session = env.session;
+    const { result } = await env.run('Retitle the about page');
+    expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(true);
+    // Only the new one is sent back, with where it is.
+    expect(repaired).toMatch(/Validation found new errors/);
+    expect(repaired).toContain('node n_new');
+    expect(repaired).not.toContain('n_old');
+    expect(result?.status).toBe('completed');
+    expect(result?.summary).toBe('Retitled it and fixed the new link.');
+    expect(result?.validation).toContain('1 pre-existing issue remain.');
+  });
+
+  it('treats an error that went from one place and came back at another, same count and message, as new (#132)', async () => {
+    const message = 'A link points to a page that does not exist.';
+    const at = (nodeId: string) => ({ severity: 'error' as const, code: 'LINK_MISSING', message, owner: { kind: 'page', id: 'pg_home' }, nodeId });
+    const about = (s: ProjectSession) => Object.values(s.state.pages).find((p) => p.route === '/about/')!;
+    let session: ProjectSession;
+    const env = await setup(
+      [() => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.update', pageId: about(session).id, title: 'About the studio' }] })], () => finish('Done.'), () => finish('Done again.'), () => finish('Really done.')],
+      { compileAll: async (s) => [at(about(s).title === 'About the studio' ? 'n_new' : 'n_old')] }
+    );
+    session = env.session;
+    const { result } = await env.run('Retitle the about page');
+    expect(result?.status).toBe('failed');
+    expect(about(session).title).not.toBe('About the studio');
+  });
+
+  it('treats a compile error that moved along the same line as new, even with the same message (#132)', async () => {
+    const error = (column: number) => ({ severity: 'error' as const, code: 'COMPILE', message: 'Card (line 1): Attributes need to be unique', site: `src/lib/components/custom/Card.svelte:1:${column}` });
+    const env = await setup(
+      [() => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Pricing', starter: 'empty' }] })], () => finish('Done.'), () => finish('Done again.'), () => finish('Really done.')],
+      { compileAll: async (s) => [error(Object.values(s.state.pages).some((p) => p.title === 'Pricing') ? 21 : 7)] }
+    );
+    const { result } = await env.run('Add a pricing page');
+    // The run never fixed what it moved, so it is rolled back rather than finished with it.
+    expect(result?.status).toBe('failed');
+    expect(Object.values(env.session.state.pages).some((p) => p.title === 'Pricing')).toBe(false);
+  });
+
   it('reverts when repairs run out (Validating → Repairing → failed)', async () => {
     const { session, run } = await setup(
       [
@@ -2130,6 +2191,28 @@ describe('requests that create pages over several steps (#88)', () => {
     expect(cta.props.primaryLink).toEqual({ type: 'page', target: pageAt(session.state, '/reader-requests/')!.id });
   });
 
+  it('connects a link that was waiting when a run stopped at its step limit, once Continue builds its page (#132)', async () => {
+    const reads = (n: number): Turn[] => Array.from({ length: n }, (_, i) => () => [call(`r${i}`, 'read_project', {})]);
+    const { session, run } = await setup([
+      () => [call('s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks', '/reader-requests/')] })],
+      ...reads(LIMITS.modelTurns - 1),
+      // Continue builds the missing page; the link that waited across the stop connects in the same change.
+      () => [call('u', 'upsert_page_with_sections', { slug: 'reader-requests', title: 'Reader requests', sections: [banner('Ask us for a book')] })],
+      () => finish('Added Reader requests.')
+    ]);
+    const first = await run('Add Staff picks with a link to a new Reader requests page');
+    expect(first.result).toMatchObject({ status: 'completed', incomplete: true, error: 'turn limit' });
+    const staff = pageAt(session.state, '/staff-picks/')!;
+    const cta = () => pageAt(session.state, '/staff-picks/')!.nodes[staff.rootIds[0]] as unknown as { props: Record<string, unknown> };
+    expect(first.result?.pendingLinks).toEqual([expect.objectContaining({ route: '/reader-requests/', pageId: staff.id, nodeId: staff.rootIds[0], prop: 'primaryLink' })]);
+    expect(first.result?.checks).toContainEqual({ status: 'issue', text: 'Links to /reader-requests/ do not go anywhere yet.' });
+    expect(cta().props.primaryLink).toEqual({ type: 'none', target: '' });
+    const { result } = await run('Continue');
+    expect(result?.status).toBe('completed');
+    expect(result?.incomplete).toBeUndefined();
+    expect(cta().props.primaryLink).toEqual({ type: 'page', target: pageAt(session.state, '/reader-requests/')!.id });
+  });
+
   it('counts a page made by hand before Continue, and connects the link that was waiting for it without another edit', async () => {
     const { session, run, adapter } = await setup([
       () => [calls(['s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks', '/reader-requests/')] }], ['r', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.create', title: 'Reader requests', route: '/reader-requests/' }] }])],
@@ -2171,3 +2254,276 @@ describe('requests that create pages over several steps (#88)', () => {
 });
 
 const pageAtRoute = (s: ProjectState, route: string) => Object.values(s.pages).find((p) => p.route === route);
+
+describe('Developer mode and code components (#132)', () => {
+  const batch = (operations: unknown[]) => ({ expectedRevision: 0, operations });
+  const resultOf = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const codeDefs = (s: ProjectState) => Object.values(s.components).filter((d) => d.kind === 'code').map((d) => d.id).sort();
+
+  it('refuses to copy a code component with Developer mode off, with the reason, and still copies a managed one', async () => {
+    let session: ProjectSession;
+    const header = () => session.state.site.shell.header.rootIds[0];
+    const managed = () => Object.values(session.state.components).find((d) => d.kind !== 'code' && d.category !== 'shell')!;
+    const env = await setup(
+      [
+        () => [call('d1', 'apply_operations', batch([{ type: 'component.duplicate', definitionId: 'foundation.shell.header', name: 'Header copy' }]))],
+        () => [call('d2', 'apply_operations', batch([{ type: 'component.makeUnique', owner: { kind: 'shell', id: 'header' }, nodeId: header() }]))],
+        () => [call('d3', 'apply_operations', batch([{ type: 'component.fork', definitionId: 'foundation.shell.header' }]))],
+        // The header this fork names is installed by the theme switch before it: it is checked as the batch leaves it.
+        () => [call('d4', 'apply_operations', batch([{ type: 'theme.apply', themeId: 'foundation-alt' }, { type: 'component.fork', definitionId: 'foundation-alt.shell.header' }]))],
+        () => [call('d5', 'apply_operations', batch([{ type: 'component.duplicate', definitionId: managed().id, name: 'Section copy' }]))],
+        () => finish('Copied the section; the header is code, which needs Developer mode.')
+      ],
+      { codeEnabled: false }
+    );
+    session = env.session;
+    const before = codeDefs(session.state);
+    const headerDef = (session.state.site.shell.header.nodes[header()] as InstanceNode).definitionId;
+    const { result } = await env.run('Duplicate the header and this section');
+    expect(result?.status).toBe('completed');
+    for (const i of [1, 2, 3, 4]) {
+      const r = resultOf(env.adapter.requests[i]);
+      expect(r.error?.code, `call ${i}`).toBe('SCOPE_MISMATCH');
+      expect(r.error?.message, `call ${i}`).toMatch(/is a code component\..*copies its Svelte source into a new code component.*Developer mode is off for this user/);
+    }
+    expect(resultOf(env.adapter.requests[5]).ok).toBe(true);
+    expect(codeDefs(session.state)).toEqual(before);
+    expect(session.state.site.themeId).toBe('foundation');
+    expect((session.state.site.shell.header.nodes[header()] as InstanceNode).definitionId).toBe(headerDef);
+    expect(Object.values(session.state.components).some((d) => d.name === 'Section copy' && d.kind !== 'code')).toBe(true);
+  });
+
+  it('refuses an editor batch whose paste comes before a copy of a code component, with the clipboard it will apply with (#132)', async () => {
+    const env = await setup([]);
+    const session = env.session;
+    const home = session.state.site.homePageId;
+    const copied = await session.copy(home, session.state.pages[home].rootIds[0], session.revision);
+    expect(copied.ok).toBe(true);
+    const ops: EditOperation[] = [
+      { type: 'node.paste', clipboardId: copied.clipboardId!, toOwner: { kind: 'page', id: home } },
+      { type: 'component.duplicate', definitionId: 'foundation.shell.header', name: 'Header copy' }
+    ];
+    const before = codeDefs(session.state);
+    const refused = await session.apply({ operations: ops }, { label: 'Paste', source: 'user', codeAllowed: false });
+    expect(refused).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
+    expect(refused.error?.message).toMatch(/is a code component.*Turn on Developer mode in Settings/);
+    expect(codeDefs(session.state)).toEqual(before);
+    // The paste alone is fine.
+    expect((await session.apply({ operations: [ops[0]] }, { label: 'Paste', source: 'user', codeAllowed: false })).ok).toBe(true);
+  });
+
+  it('refuses a code operation anywhere in a batch, not only first (#132)', async () => {
+    let session: ProjectSession;
+    const hero = () => session.state.pages[session.state.site.homePageId].rootIds[0];
+    const owner = () => ({ kind: 'page', id: session.state.site.homePageId });
+    const env = await setup(
+      [() => [call('c1', 'apply_operations', batch([{ type: 'node.rename', owner: owner(), nodeId: hero(), name: 'Opening' }, { type: 'component.convertToCode', owner: owner(), nodeId: hero() }]))], () => finish('That needs Developer mode.')],
+      { codeEnabled: false }
+    );
+    session = env.session;
+    const before = codeDefs(session.state);
+    await env.run('Turn the hero into code');
+    expect(resultOf(env.adapter.requests[1]).error?.message).toMatch(/Developer mode is off/);
+    expect(codeDefs(session.state)).toEqual(before);
+    expect(session.revision).toBe(0);
+  });
+});
+
+describe('repair baseline identity (#132)', () => {
+  // One code component, its source changed between checks.
+  const made = applyOperations(createStarterState('business', 'Test', false), [{ type: 'component.createCode', name: 'Card', source: '<div></div>\n' }]);
+  const cardId = (made.results[0] as { definitionId: string }).definitionId;
+  const compileKeys = async (source: string) => {
+    const state = structuredClone(made.state);
+    state.components[cardId].source = source;
+    return (await compileProject(state)).filter((d) => d.code === 'COMPILE').map(diagnosticKey);
+  };
+
+  it('knows a compile error by its construct: moved along or down the file it is the same, another construct is new', async () => {
+    const [first] = await compileKeys('<div id="a" id="a"></div>\n');
+    expect(first).toBeDefined();
+    expect(await compileKeys('\n\n    <div id="a" id="a"></div>\n')).toEqual([first]);
+    expect(await compileKeys('<nav id="a" id="a"></nav>\n')).not.toEqual([first]);
+    // The same faulty line in another row is another error.
+    const [rowA] = await compileKeys('<h2>Alpha</h2>\n<div id="a" id="a"></div>\n<h2>Beta</h2>\n<div></div>\n');
+    const [rowB] = await compileKeys('<h2>Alpha</h2>\n<div></div>\n<h2>Beta</h2>\n<div id="a" id="a"></div>\n');
+    expect(rowA).toBeDefined();
+    expect(rowB).not.toBe(rowA);
+  });
+
+  it('tells apart the same broken section link in two cards of one placement', () => {
+    const s0 = createStarterState('business', 'Test', false);
+    const home = s0.site.homePageId;
+    const plans = (links: [string, string]) =>
+      applyOperations(s0, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'pricing.plans', newNodeId: 'n_plans', props: { plans: links.map((link, i) => ({ id: `i_${i}`, name: `Plan ${i}`, price: '$1', actionLabel: 'Details', actionLink: link })) } }]).state;
+    const keys = (s: ProjectState) => validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map(diagnosticKey);
+    const first = keys(plans(['#missing', '/']));
+    const second = keys(plans(['/', '#missing']));
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(second[0]).not.toBe(first[0]);
+    // The same row's link sent to another page's missing section is another broken link.
+    const about = Object.values(s0.pages).find((p) => p.route === '/about/')!.id;
+    const contact = Object.values(s0.pages).find((p) => p.route === '/contact/')!.id;
+    const toPage = (pageId: string) =>
+      keys(applyOperations(s0, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'pricing.plans', newNodeId: 'n_plans', props: { plans: [{ id: 'i_0', name: 'Plan', price: '$1', actionLabel: 'Details', actionLink: { type: 'page', target: pageId, anchor: 'missing' } }] } }]).state);
+    expect(toPage(about)).toHaveLength(1);
+    expect(toPage(contact)[0]).not.toBe(toPage(about)[0]);
+  });
+
+  it('keeps a broken link the same when another link is added before it in the text, or one of its pages gains the section', () => {
+    const s0 = createStarterState('business', 'Test', false);
+    const home = s0.site.homePageId;
+    const keys = (s: ProjectState) => validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map(diagnosticKey);
+    const withText = (body: string) => applyOperations(s0, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'content.text', newNodeId: 'n_text', props: { body } }]).state;
+    const alone = keys(withText('Read [the plan](#missing) first.'));
+    expect(alone).toHaveLength(1);
+    expect(keys(withText('See [the about page](/about/) and read [the plan](#missing) first.'))).toEqual(alone);
+    // A header link to a section most pages lack: giving one page that section leaves it the same broken link.
+    const header = s0.site.shell.header.rootIds[0];
+    const linked = applyOperations(s0, [{ type: 'instance.listInsert', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'links', item: { label: 'Plans', link: '#plans' } }]).state;
+    const before = keys(linked);
+    expect(before).toHaveLength(1);
+    const section = linked.pages[home].rootIds[0];
+    const fixedOne = applyOperations(linked, [{ type: 'node.setContent', owner: { kind: 'page', id: home }, nodeId: section, field: 'anchor', value: 'plans' }]).state;
+    expect(keys(fixedOne)).toEqual(before);
+  });
+});
+
+describe('part scope rules (#132)', () => {
+  const base = () => createStarterState('business', 'Test', false);
+  const placeOn = (state: ProjectState, componentId: string, props: Record<string, unknown> = {}) => {
+    const home = state.site.homePageId;
+    const { state: next, results } = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId, props }]);
+    const nodeId = (results[0] as { nodeId: string }).nodeId;
+    return { state: next, owner: { kind: 'page' as const, id: home }, nodeId, def: next.components[(next.pages[home].nodes[nodeId] as InstanceNode).definitionId] };
+  };
+  const partOf = (owner: { kind: 'page'; id: string }, nodeId: string, region: string, extra: Partial<{ partId: string; itemPath: string[]; instancePath: string[] }> = {}) =>
+    authorityFor({ owner, instancePath: extra.instancePath ?? [nodeId], nodeId: region, ...(extra.partId ? { partId: extra.partId } : {}), ...(extra.itemPath ? { itemPath: extra.itemPath } : {}) }, 'the section');
+
+  it('keeps a page-list card title from changing the link its whole card shows by (#132)', () => {
+    const s0 = base();
+    const about = Object.values(s0.pages).find((p) => p.route === '/about/')!.id;
+    const { state, owner, nodeId } = placeOn(s0, 'content.pages', { items: [{ pageLink: { type: 'page', target: about }, title: 'About us' }] });
+    const item = ((state.pages[owner.id].nodes[nodeId] as InstanceNode).props.items as ListItem[])[0].id;
+    const authority = partOf(owner, nodeId, 'card-text', { partId: 'cardText', itemPath: [item] });
+    const set = (field: string, value: unknown): EditOperation => ({ type: 'instance.setProp', owner, nodeId, prop: 'items', itemId: item, field, value });
+    // The description is shown only here; the link and the title also decide whether the whole card shows.
+    expect(checkAuthority(state, [set('description', 'Who we are')], authority)).toBeNull();
+    expect(checkAuthority(state, [set('pageLink', { type: 'none', target: '' })], authority)).toMatch(/fields of the item that the selected part does not show/);
+    expect(checkAuthority(state, [set('title', '')], partOf(owner, nodeId, 'card-title', { partId: 'cardTitle', itemPath: [item] }))).toMatch(/selected part/);
+  });
+
+  it('keeps a placement property shown in every card from a one-card selection, and allows it for the part across cards (#132)', () => {
+    const s0 = base();
+    const { state, owner, nodeId, def } = placeOn(s0, 'features.grid');
+    // A project copy whose card titles take their tag from a placement property.
+    const fork = structuredClone(def);
+    fork.id = 'proj.cards-test';
+    fork.owner = 'project';
+    fork.properties.cardLevel = { type: 'enum', label: 'Card heading', default: 'h3', options: [{ value: 'h3', label: 'H3' }, { value: 'h4', label: 'H4' }] };
+    (fork.tree!.nodes['card-title'] as { tag: unknown }).tag = { $prop: 'cardLevel' };
+    state.components[fork.id] = fork;
+    (state.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId = fork.id;
+    const item = ((state.pages[owner.id].nodes[nodeId] as InstanceNode).props.items as ListItem[])[0].id;
+    const level: EditOperation = { type: 'instance.setProp', owner, nodeId, prop: 'cardLevel', value: 'h4' };
+    expect(checkAuthority(state, [level], partOf(owner, nodeId, 'card-title', { partId: 'cardTitle', itemPath: [item] }))).toMatch(/changes more of the section than the selected part/);
+    expect(checkAuthority(state, [level], partOf(owner, nodeId, 'card-title', { partId: 'cardTitle' }))).toBeNull();
+  });
+
+  it('limits a code component part, and a part of a nested component, to what they can show on their own (#132)', () => {
+    const s0 = base();
+    const header = s0.site.shell.header.rootIds[0];
+    const owner = { kind: 'shell' as const, id: 'header' };
+    const def = s0.components[(s0.site.shell.header.nodes[header] as InstanceNode).definitionId];
+    expect(def.kind).toBe('code');
+    // A part of the code component other than its root.
+    const partId = 'brand';
+    def.parts.brand = { nodeId: 'brand', label: 'Brand' };
+    expect(authorityFor({ owner, instancePath: [header], nodeId: 'root', partId: 'root' }, 'Header', null, s0)).not.toHaveProperty('part');
+    const code = authorityFor({ owner, instancePath: [header], nodeId: def.parts[partId].nodeId, partId }, 'Header', null, s0);
+    expect(code).toMatchObject({ kind: 'selection', part: { partId } });
+    expect(checkAuthority(s0, [{ type: 'node.setStyle', owner, nodeId: header, partId, scope: 'base', property: 'color', value: '#123456' }], code)).toBeNull();
+    expect(checkAuthority(s0, [{ type: 'instance.setProp', owner, nodeId: header, prop: 'siteName', value: 'Renamed' }], code)).toMatch(/more of Header than the selected part/);
+    const nested = authorityFor({ owner, instancePath: [header, 'n_inner'], nodeId: 'n_inner' }, 'Header');
+    expect(checkAuthority(s0, [{ type: 'instance.listInsert', owner, nodeId: header, prop: 'links' }], nested)).toMatch(/inside another component placed in Header/);
+  });
+
+  it('keeps content in a slot every card shows, and a list repeated in every card, from a one-card selection (#132)', () => {
+    const s0 = base();
+    const { state: placed, owner, nodeId, def } = placeOn(s0, 'features.grid');
+    // A project copy whose cards render a slot.
+    const { state: forked, results } = applyOperations(placed, [{ type: 'component.fork', definitionId: def.id }]);
+    const id = (results[0] as { definitionId: string }).definitionId;
+    const { state } = applyOperations(forked, [
+      { type: 'component.setSlot', definitionId: id, slot: 'extra', label: 'Extra' },
+      { type: 'node.insert', owner: { kind: 'component', id }, parentId: 'card', primitive: 'slot', bind: 'extra' },
+      { type: 'node.insert', owner, parentId: nodeId, slot: 'extra', primitive: 'paragraph', text: 'Shown in every card', newNodeId: 'n_extra' }
+    ]);
+    const item = ((state.pages[owner.id].nodes[nodeId] as InstanceNode).props.items as ListItem[])[0].id;
+    const edit: EditOperation = { type: 'node.setContent', owner, nodeId: 'n_extra', field: 'text', value: 'Changed' };
+    expect(checkAuthority(state, [edit], partOf(owner, nodeId, 'card', { partId: 'card', itemPath: [item] }))).toMatch(/outside the selected part/);
+    expect(checkAuthority(state, [edit], partOf(owner, nodeId, 'card', { partId: 'card' }))).toBeNull();
+    // Adding to that slot adds to every card too.
+    expect(checkAuthority(state, [{ type: 'node.insert', owner, parentId: nodeId, slot: 'extra', primitive: 'paragraph', text: 'More' }], partOf(owner, nodeId, 'card', { partId: 'card', itemPath: [item] }))).toMatch(/outside the selected part/);
+    // A list repeated inside each card shows the same items in every card.
+    const nested = structuredClone(state.components[id]);
+    nested.tree!.nodes['inner-repeat'] = { id: 'inner-repeat', kind: 'repeat', list: { $prop: 'details' }, children: ['inner-text'] } as never;
+    nested.tree!.nodes['inner-text'] = { id: 'inner-text', kind: 'text', tag: 'p', text: { $item: 'note' } } as never;
+    (nested.tree!.nodes.card as { children: string[] }).children.push('inner-repeat');
+    expect(partReach(nested, 'inner-text').itemFields.get('details')).toBeUndefined();
+    expect(partReach(nested, 'card').itemFields.get('items')).toBeDefined();
+    // However many containers lie between the two repeats.
+    const deep = structuredClone(nested);
+    let parent = 'card';
+    for (let i = 0; i < 60; i++) {
+      deep.tree!.nodes[`wrap-${i}`] = { id: `wrap-${i}`, kind: 'element', tag: 'div', children: [] } as never;
+      (deep.tree!.nodes[parent] as { children: string[] }).children.push(`wrap-${i}`);
+      parent = `wrap-${i}`;
+    }
+    (deep.tree!.nodes.card as { children: string[] }).children = (deep.tree!.nodes.card as { children: string[] }).children.filter((c) => c !== 'inner-repeat');
+    (deep.tree!.nodes[parent] as { children: string[] }).children.push('inner-repeat');
+    expect(partReach(deep, 'inner-text').itemFields.get('details')).toBeUndefined();
+    // A list also passed to another component outside the part changes there too.
+    const forwarded = structuredClone(state.components[id]);
+    forwarded.tree!.nodes['echo'] = { id: 'echo', kind: 'instance', definitionId: def.id, props: { items: { $prop: 'items' } } } as never;
+    forwarded.tree!.rootIds.push('echo');
+    expect(partReach(forwarded, 'card-title').itemFields.get('items')).toBeUndefined();
+    expect(partReach(state.components[id], 'card-title').itemFields.get('items')).toBeDefined();
+  });
+
+  it('lets a container part change the content placed in its slot, and nothing else (#132)', () => {
+    const s0 = base();
+    const { state: placed, owner, nodeId } = placeOn(s0, 'layout.section');
+    const { state, results } = applyOperations(placed, [{ type: 'node.insert', owner, parentId: nodeId, slot: 'content', primitive: 'paragraph', text: 'Inside' }]);
+    const paragraph = (results[0] as { nodeId: string }).nodeId;
+    const authority = partOf(owner, nodeId, 'inner', { partId: 'container' });
+    expect(checkAuthority(state, [{ type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Changed' }], authority)).toBeNull();
+    // A second placeholder for the same slot outside the part shows the same content there.
+    const def = state.components[(state.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId];
+    const twice = structuredClone(def);
+    twice.tree!.nodes['again'] = { id: 'again', kind: 'slot', slot: 'content' } as never;
+    twice.tree!.rootIds.push('again');
+    expect(partReach(twice, 'inner').slots.has('content')).toBe(false);
+    expect(partReach(def, 'inner').slots.has('content')).toBe(true);
+    expect(checkAuthority(state, [{ type: 'node.insert', owner, parentId: nodeId, slot: 'content', primitive: 'paragraph', text: 'More' }], authority)).toBeNull();
+    expect(checkAuthority(state, [{ type: 'node.setStyle', owner, nodeId, partId: 'root', scope: 'base', property: 'background', value: '#000000' }], authority)).toMatch(/other than the selected one/);
+    // A contract edit reaches every placement, more than the part.
+    const inDef: Authority = { kind: 'selection', owner: { kind: 'component', id: 'proj.x' }, nodeId: 'n', label: 'Card', part: { regionNodeId: 'inner', partId: 'container' } };
+    expect(checkAuthority(state, [{ type: 'component.setPropSchema', definitionId: 'proj.x', prop: 'extra', schema: { type: 'string', label: 'Extra', default: '' } }], inDef)).not.toBeNull();
+  });
+
+  it('asks before a bound default is written in a definition, but not for a field the engine never writes to a default (#132)', () => {
+    const s0 = base();
+    const { state: placed, owner, nodeId } = placeOn(s0, 'cta.banner');
+    const { state, results } = applyOperations(placed, [{ type: 'component.makeUnique', owner, nodeId }]);
+    const id = (results[0] as { definitionId: string }).definitionId;
+    const def = state.components[id];
+    const button = Object.values(def.tree!.nodes).find((n) => n.kind === 'link')!;
+    (button as { appearance: unknown }).appearance = { $prop: 'heading' };
+    const heading = Object.values(def.tree!.nodes).find((n) => n.kind === 'text' && JSON.stringify((n as { text: unknown }).text) === JSON.stringify({ $prop: 'heading' }))!;
+    const inDef: Authority = { kind: 'selection', owner: { kind: 'component', id }, nodeId: def.tree!.rootIds[0], label: 'Banner' };
+    expect(checkAuthority(state, [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: heading.id, field: 'text', value: 'New default' }], inDef)).toMatch(/default of the "heading" property/);
+    expect(checkAuthority(state, [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: button.id, field: 'appearance', value: 'secondary' }], inDef)).toBeNull();
+  });
+});

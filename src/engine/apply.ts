@@ -2611,6 +2611,31 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
   return { rebound: mapping.size };
 }
 
+/**
+ * Walk a batch as applyOperations applies it, asking `check` about each operation against the project as the operations
+ * before it leave it. Returns the first reason `check` gives, or null: also where the engine refuses the batch, which
+ * then applies nothing anyway. The project is copied only when there is a later operation to check.
+ */
+export function walkOperations(state: ProjectState, ops: EditOperation[], check: (state: ProjectState, op: EditOperation) => string | null, ctx: ApplyContext = {}): string | null {
+  let draft: ProjectState | null = null;
+  const assetUses: NonNullable<ApplyContext['assetUses']> = {};
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses };
+  for (const [i, op] of ops.entries()) {
+    const reason = check(draft ?? state, op);
+    if (reason) return reason;
+    if (i === ops.length - 1) break;
+    draft ??= clone(state);
+    if (op.type !== 'asset.remove') assetUses.counts = undefined;
+    try {
+      applyOperation(draft, op, batch);
+      dropDepartedItemStyles(draft);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
   const draft = clone(state);
   const results: OpResult[] = [];

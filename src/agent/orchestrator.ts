@@ -6,13 +6,14 @@ import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
 import { getTheme } from '@catalogue/index';
-import { introducedDiagnostics, type Diagnostic } from '@engine/validate';
+import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
-import { assetSummary, copiesCode, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
+import { assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { compactProjectSummary, describeSelection, projectSummary } from './context';
 import { authorityFor, canEditContracts, checkAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
+import { developerModeRefusal } from '@engine/developer-mode';
 import { selectionTarget } from './selection';
 import { applyContextBudget, contextVerdict, estimateRequestTokens } from './budget';
 import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, type MissingPage, type WantedPage } from './completeness';
@@ -648,15 +649,31 @@ export class Orchestrator {
     /** The project the run reads: as asked about for a question, as it is now for an edit. */
     const readState = () => (ask ? startState : session.state);
     const readRevision = () => (ask ? startRevision : session.revision);
-    let authority: Authority = authorityFor(userMsg.context?.selection ?? null, userMsg.context?.selectionLabel ?? null, userMsg.context?.component);
+    let authority: Authority = authorityFor(userMsg.context?.selection ?? null, userMsg.context?.selectionLabel ?? null, userMsg.context?.component, session.state);
     /** A request about a component's own design keeps the tools for it, even after the user widens it. */
     const definitionRun = authority.kind === 'component' || (authority.kind === 'selection' && authority.owner.kind === 'component');
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
-    // Problems the project already had (including components that already fail to build) are not the run's.
-    const baseline: Diagnostic[] = ask ? [] : [...session.diagnostics(), ...(await this.deps.compileAll().catch(() => []))].filter((d) => d.severity === 'error');
-    /** Errors the run brought in: told apart from the baseline as the save gate tells them (a rename is not one). */
-    const freshErrors = (diags: Diagnostic[]) => introducedDiagnostics(baseline, diags.filter((d) => d.severity === 'error'));
+    // Problems the project already had (including components that already fail to build) are not the run's. Each is
+    // known by where it is (`diagnosticKey`, as the save gate tells them, so a rename is not one) and counted: the same
+    // message somewhere new is a new problem.
+    const baseline = new Map<string, number>();
+    if (!ask) for (const d of [...session.diagnostics(), ...(await this.deps.compileAll().catch(() => []))]) if (d.severity === 'error') baseline.set(diagnosticKey(d), (baseline.get(diagnosticKey(d)) ?? 0) + 1);
+    /** The errors among `diags` the run introduced, and those it found already there (each one matched once). */
+    const sortErrors = (diags: Diagnostic[]) => {
+      const left = new Map(baseline);
+      const fresh: Diagnostic[] = [];
+      const known: Diagnostic[] = [];
+      for (const d of diags) {
+        if (d.severity !== 'error') continue;
+        const n = left.get(diagnosticKey(d)) ?? 0;
+        if (n > 0) {
+          left.set(diagnosticKey(d), n - 1);
+          known.push(d);
+        } else fresh.push(d);
+      }
+      return { fresh, known };
+    };
 
     const codeEnabled = (await this.deps.codeEnabled?.()) ?? true;
     const selected = selectionTarget(userMsg.context?.selection);
@@ -669,6 +686,7 @@ export class Orchestrator {
       toolsForRun({
         state: session.state,
         selection: authority.kind === 'selection' ? selected : null,
+        widened: authority.kind === 'site' ? selected : null,
         capabilities,
         codeEnabled,
         // Contract edits are visual changes to managed components: offered whenever the run may change a component's
@@ -750,7 +768,9 @@ export class Orchestrator {
               ? 'whole site'
               : authority.kind === 'component'
                 ? `only the ${authority.label} component's own design (owner component:${authority.definitionId}): its nodes and its properties, defaults, parts, variants and slots, unless the user approves more via request_clarification with widenScope`
-                : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via request_clarification with widenScope`,
+                : authority.part
+                  ? `only the selected part${authority.part.partId ? ` "${authority.part.partId}"` : ''}${authority.part.itemId ? ` of item ${authority.part.itemId}` : ''} of ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}): the content it shows and its styles, nothing else in the component, unless the user approves more via ${current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification with widenScope'}`
+                  : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via request_clarification with widenScope`,
           // A selection or component edit needs that, not the whole site; the rest is one read away if it is widened.
           project: authority.kind !== 'site' ? compactProjectSummary(readState(), readRevision()) : projectSummary(readState(), readRevision()),
           ...(examples.length ? { workedExamples: examples } : {})
@@ -769,12 +789,11 @@ export class Orchestrator {
     /** The final checks: each page check's latest result, then validation and the build, from `diags`. */
     const buildChecks = (diags: Diagnostic[]): ChatCheck[] => {
       // Errors that were there before the run and still are: one the run fixed is not reported as remaining.
-      const fresh = new Set(freshErrors(diags));
-      const remaining = new Set(diags.filter((d) => d.severity === 'error' && !fresh.has(d)).map((d) => d.message)).size;
+      const remaining = sortErrors(diags).known.length;
       return [
         ...inspections.checks(session.state),
         { status: 'pass', text: 'Project structure, links and references are valid.' },
-        { status: 'pass', text: baseline.length ? 'No new build errors.' : 'All components build without errors.' },
+        { status: 'pass', text: baseline.size ? 'No new build errors.' : 'All components build without errors.' },
         ...(remaining ? [{ status: 'issue' as const, text: `${remaining} pre-existing issue${remaining === 1 ? '' : 's'} remain.` }] : [])
       ];
     };
@@ -793,6 +812,7 @@ export class Orchestrator {
       macros,
       // Stays valid for the rest of a turn in which the user widens the scope.
       selection: () => selected,
+      selectionLimited: () => authority.kind === 'selection',
       state: readState,
       revision: readRevision,
       diagnostics: () => session.diagnostics(),
@@ -803,23 +823,37 @@ export class Orchestrator {
         // Asset records are created only by the verified importer, never by the model.
         if (operations.some((o) => o.type === 'asset.add' || o.type === 'asset.relink'))
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The assistant cannot add images. Ask the user to import them, then use search_assets.' } };
-        const codeOp = operations.find((o) => copiesCode(session.state, o));
-        if (codeOp && !codeEnabled)
-          return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'Custom code is turned off for this user (Developer mode is off). Build this with theme components, layout primitives and styles instead.' } };
+        // Code, and copies that would make new code (duplicating a code component, say), need Developer mode.
+        if (!codeEnabled) {
+          const refusal = developerModeRefusal(session.state, operations);
+          if (refusal)
+            return {
+              ok: false,
+              revision: session.revision,
+              error: {
+                code: 'SCOPE_MISMATCH',
+                message: `${operations.some((o) => CODE_OPERATIONS.has(o.type)) ? 'Custom code is turned off for this user (Developer mode is off).' : `${refusal} Developer mode is off for this user.`} Build this with theme components, layout primitives and styles instead.`
+              }
+            };
+        }
         // The shared header and footer are edited in place; removing one would empty it on every page.
         const shellRoot = operations.find((o) => o.type === 'node.remove' && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds.includes(o.nodeId));
         if (shellRoot)
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The shared header and footer cannot be removed. Edit their properties with instance.setProp and instance.listInsert instead.' } };
         const denied = checkAuthority(session.state, operations, authority);
-        if (denied)
+        if (denied) {
+          // Named as the run is offered it: the small selection tools ask with their own tool.
+          const widen = current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification (widenScope: true)';
+          const limit = authority.kind === 'selection' ? (authority.part ? `one part of ${authority.label}` : authority.label) : 'a selection';
           return {
             ok: false,
             revision: session.revision,
             error: {
               code: 'SCOPE_MISMATCH',
-              message: `${denied} ${authority.kind === 'component' ? `This request is about the ${authority.label} component, edited everywhere, so changes are limited to its design.` : `This request was sent with ${authority.kind === 'selection' ? authority.label : 'a selection'} selected, so changes are limited to it.`} Ask the user with request_clarification (widenScope: true) if more is needed.`
+              message: `${denied} ${authority.kind === 'component' ? `This request is about the ${authority.label} component, edited everywhere, so changes are limited to its design.` : `This request was sent with ${limit} selected, so changes are limited to it.`} Nothing in this batch was applied. Ask the user with ${widen} before changing more.`
             }
           };
+        }
         return session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}` });
       },
       compileAll: () => this.deps.compileAll(),
@@ -941,7 +975,7 @@ export class Orchestrator {
       if (signal.aborted) throw new Error('Cancelled');
       const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
       if (signal.aborted) throw new Error('Cancelled');
-      const fresh = freshErrors(diags);
+      const { fresh } = sortErrors(diags);
       if (fresh.length) {
         v.status = 'error';
         v.detail = fresh.map((d) => d.message).join(' ');
@@ -1196,7 +1230,7 @@ export class Orchestrator {
             if (signal.aborted) throw new Error('Cancelled');
             const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
             if (signal.aborted) throw new Error('Cancelled');
-            const fresh = freshErrors(diags);
+            const { fresh } = sortErrors(diags);
             if (fresh.length) {
               v.status = 'error';
               v.detail = fresh.map((d) => d.message).join(' ');
@@ -1207,7 +1241,9 @@ export class Orchestrator {
               repairs++;
               this.setStatus('repairing');
               addActivity('Fixing a problem', 'repair');
-              items.push({ kind: 'user', text: `Validation found new errors. Fix them, then finish:\n${fresh.map((d) => `- ${d.message}`).join('\n')}` });
+              // Each is named with where it is, since an error the project already had may say the same thing.
+              const where = (d: Diagnostic) => (d.owner ? ` (${d.owner.kind} ${d.owner.id}${d.nodeId ? `, node ${d.nodeId}` : ''})` : d.site ? ` (at ${d.site})` : '');
+              items.push({ kind: 'user', text: `Validation found new errors. Fix them, then finish:\n${fresh.map((d) => `- ${d.message}${where(d)}`).join('\n')}` });
               msg.text = '';
               continue outer;
             }
