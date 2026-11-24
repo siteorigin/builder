@@ -4,7 +4,7 @@ import { applyOperations } from '@engine/apply';
 import type { ChatMessage } from '@shared/api';
 import type { InstanceNode, ListItem } from '@shared/types';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId } from '../../src/renderer/src/lib/result';
-import { canCarryOn, resultAsSaid, runStanding, turnState, type TurnHistory } from '@shared/turns';
+import { canCarryOn, resultAsSaid, runStanding, summaryNow, turnState, type TurnHistory } from '@shared/turns';
 
 describe('AI result card', () => {
   it('counts only passing checks as passed, keeping unchecked ones apart from site problems', () => {
@@ -295,5 +295,22 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
     expect(standingNote({ ...marked('a5', 'r5'), result: { ...marked('a5', 'r5').result!, incomplete: true } }, steps([]))).toBe(
       'These changes were undone once. History no longer shows whether they were redone since. This request can no longer be continued: send it again to start over.'
     );
+    // An earlier turn is never continued, so it gets no word on continuing.
+    expect(standingNote(partial, steps([{ runId: 'r1', applied: false }]), false)).toBeUndefined();
+    expect(standingNote(partial, steps([]), false)).toBe('History no longer shows whether these changes are in the site.');
+    expect(standingNote({ ...marked('a5', 'r5'), result: { ...marked('a5', 'r5').result!, incomplete: true } }, steps([]), false)).toBe('These changes were undone once. History no longer shows whether they were redone since.');
+  });
+
+  it('drops the app saying an unfinished turn’s changes are kept once that no longer holds, keeping what the assistant said', () => {
+    const stopped = 'I reached the limit of 40 tool calls before finishing, so I stopped here. The changes so far are checked and kept, and you can undo them in one step. Reply "continue" to carry on.';
+    const missing = 'This request is not finished yet. The page Reader requests was not built. The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it.';
+    const at = (summary: string, entries: Array<{ runId?: string; applied: boolean }>) => summaryNow(turnState(turn('a1', 'r1', { summary, incomplete: true }), steps(entries))!);
+    expect(at(stopped, [{ runId: 'r1', applied: true }])).toBe(stopped);
+    expect(at(missing, [{ runId: 'r1', applied: true }])).toBe(missing);
+    expect(at(stopped, [{ runId: 'r1', applied: false }])).toBe('I reached the limit of 40 tool calls before finishing, so I stopped here.');
+    expect(at(missing, [{ runId: 'r1', applied: false }])).toBe('This request is not finished yet. The page Reader requests was not built.');
+    expect(at(missing, [])).toBe('This request is not finished yet. The page Reader requests was not built.');
+    // A finished turn says what it said, whatever its standing.
+    expect(summaryNow(turnState(turn('a2', 'r2', { summary: 'The changes made so far are checked and kept.' }), steps([{ runId: 'r2', applied: false }]))!)).toBe('The changes made so far are checked and kept.');
   });
 });

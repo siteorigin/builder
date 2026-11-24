@@ -464,7 +464,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
     });
 
     it('replaces only History that is surely older when a previous-format completion is finished (issue 276)', async () => {
-      const finishOld = async (prepare: (historyPath: string) => void) => {
+      const finishOld = async (prepare: (historyPath: string) => void, version = SCHEMA_VERSION - 1) => {
         const { dir, s } = await make();
         expect(await s.beginRun('run_v')).toBeNull();
         expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_v', history: false })).ok).toBe(true);
@@ -473,7 +473,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
         disarm?.();
         const journalPath = join(dir, '.siteorigin/journal.json');
         const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
-        journal.history.schemaVersion = SCHEMA_VERSION - 1;
+        journal.history.schemaVersion = version;
         writeFileSync(journalPath, JSON.stringify(journal));
         const historyPath = join(dir, '.siteorigin/history/history.json');
         prepare(historyPath);
@@ -489,6 +489,14 @@ describe('crash durability', { timeout: 300_000 }, () => {
       expect(JSON.parse(readFileSync(newer.historyPath, 'utf8')).schemaVersion).toBe(SCHEMA_VERSION + 1);
       const unreadable = await finishOld((p) => mkdirSync(p, { recursive: true }));
       expect(statSync(unreadable.historyPath).isDirectory()).toBe(true);
+      // Nor is anything that is not History, or replaced by a journal whose format is not one this app wrote.
+      for (const odd of ['null', '[]']) {
+        const kept = await finishOld((p) => writeFileSync(p, odd));
+        expect(readFileSync(kept.historyPath, 'utf8')).toBe(odd);
+      }
+      const saved = JSON.stringify({ schemaVersion: SCHEMA_VERSION - 1, entries: [], cursor: 0, droppedRuns: { run_old: 'undone' } });
+      const invalid = await finishOld((p) => writeFileSync(p, saved), 0);
+      expect(readFileSync(invalid.historyPath, 'utf8')).toBe(saved);
     });
 
     it('never trusts a previous-format completion that also changes files', async () => {

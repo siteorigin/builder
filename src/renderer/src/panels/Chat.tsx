@@ -10,7 +10,7 @@ import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatT
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId as undoableTurn } from '../lib/result';
-import { turnState } from '@shared/turns';
+import { summaryNow, turnState } from '@shared/turns';
 import { composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
@@ -1143,7 +1143,8 @@ function ResultCard({
   const stepsId = useId();
   /** Project history holds the turn's change as undone now, from chat, the toolbar or History alike (issue 276). */
   const reverted = turn.standing === 'undone';
-  const note = standingNote(m, history);
+  // Only the conversation's latest turn is ever continued, so only it is told how.
+  const note = standingNote(m, history, latest);
   const head = turn.undoneEarlier ? { icon: <RotateCcw />, label: 'Undone earlier' } : outcome(r);
   const steps = m.activities ?? [];
   const stopped = r.status === 'cancelled';
@@ -1305,7 +1306,7 @@ function ResultCard({
         {(!reverted || showReport) && (
         <>
         <div className="result-summary">
-          <Md text={summaryOf(r)} />
+          <Md text={summaryOf({ ...r, summary: summaryNow(turn) })} />
         </div>
         {!reverted && note && <p className="result-standing">{note}</p>}
         {locations.length > 0 && (

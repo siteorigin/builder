@@ -82,18 +82,20 @@ export function resumableId(messages: ChatMessage[], history?: TurnHistory | nul
  * What a card says about where its turn's change stands, beyond its heading, when that changes what can be done
  * with it: a turn undone once by an earlier version, or an unfinished one that can no longer be continued.
  */
-export function standingNote(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, history: TurnHistory | null | undefined): string | undefined {
+export function standingNote(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, history: TurnHistory | null | undefined, last = true): string | undefined {
   const turn = turnState(m, history);
   if (!turn) return undefined;
   const unfinished = !!turn.result.incomplete && turn.result.canUndo && !canCarryOn(turn);
-  const again = 'This request can no longer be continued: send it again to start over.';
-  if (turn.undoneEarlier) return `These changes were undone once. History no longer shows whether they were redone since.${unfinished ? ` ${again}` : ''}`;
+  // Only the conversation's last turn is ever continued: an earlier one gets no word on continuing.
+  const again = last ? ' This request can no longer be continued: send it again to start over.' : '';
+  if (turn.undoneEarlier) return `These changes were undone once. History no longer shows whether they were redone since.${unfinished ? again : ''}`;
   if (!unfinished) return undefined;
   if (turn.standing === 'undone') {
+    if (!last) return undefined;
     const redoable = !!history?.entries.some((e) => e.runId === m.runId && !e.applied);
-    return redoable ? 'These changes were undone, so this request can only be continued once they are redone.' : `These changes were undone. ${again}`;
+    return redoable ? 'These changes were undone, so this request can only be continued once they are redone.' : `These changes were undone.${again}`;
   }
-  return `History no longer shows whether these changes are in the site. ${again}`;
+  return `History no longer shows whether these changes are in the site.${again}`;
 }
 
 /**

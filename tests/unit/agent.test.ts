@@ -2315,6 +2315,25 @@ describe('requests that create pages over several steps (#88)', () => {
     const said = adapter.requests[3].items.flatMap((i) => (i.kind === 'assistant' ? [i.text] : [])).join('\n');
     expect(said).toContain('These changes were undone afterwards.');
     expect(said).not.toContain('Changes made so far');
+    expect(said).not.toContain('checked and kept');
+  });
+
+  it('tells the model when History no longer shows whether an unfinished turn’s changes are in the site (issue 276)', async () => {
+    const { run, orch, adapter } = await setup([
+      () => [calls(['s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks', '/reader-requests/')] }], ['r', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.create', title: 'Reader requests', route: '/reader-requests/' }] }])],
+      () => finish('Added Staff picks.'),
+      () => finish('Done.'),
+      () => finish('Staff picks is there.')
+    ]);
+    const first = await run('Add Staff picks with a link to a new Reader requests page');
+    expect(first.result?.incomplete).toBe(true);
+    // As a turn whose step History has forgotten.
+    orch.conversation!.messages.find((m) => m.role === 'assistant' && m.runId === first.runId)!.runId = 'run_forgotten';
+    await run('Is Staff picks there?', { mode: 'ask' });
+    const said = adapter.requests.at(-1)!.items.flatMap((i) => (i.kind === 'assistant' ? [i.text] : [])).join('\n');
+    expect(said).toContain('Whether these changes are still in the site is not known.');
+    expect(said).not.toContain('checked and kept');
+    expect(said).not.toContain('Changes made so far');
   });
 
   it('keeps a blank page blank when the request is continued', async () => {

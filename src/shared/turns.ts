@@ -52,6 +52,21 @@ export function turnState(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, his
 }
 
 /**
+ * What the app said about an unfinished turn's changes when it ended: that they are kept and the request can be
+ * continued. Both stop holding once the turn is undone, or once History no longer shows whether it is.
+ */
+const KEPT_CLAIMS = [' The changes so far are checked and kept, and you can undo them in one step. Reply "continue" to carry on.', ' The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it.'];
+
+/**
+ * A turn's summary as it still holds: an unfinished turn that changed the site and cannot be carried on from loses
+ * the app's own sentences saying its changes are kept and it can be continued. The assistant's words stay.
+ */
+export function summaryNow(turn: TurnState): string {
+  if (!turn.result.incomplete || !turn.result.canUndo || canCarryOn(turn)) return turn.result.summary;
+  return KEPT_CLAIMS.reduce((s, claim) => s.replace(claim, ''), turn.result.summary);
+}
+
+/**
  * Whether an unfinished turn can be carried on from: one that changed the site only while its changes are known to be
  * in it, since what it made and the links it left waiting are gone once it is undone. One that changed nothing can.
  */

@@ -5,7 +5,7 @@ import { turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type Ch
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
-import { canCarryOn, turnState, type TurnHistory } from '@shared/turns';
+import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/turns';
 import { getTheme } from '@catalogue/index';
 import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
@@ -805,8 +805,10 @@ export class Orchestrator {
         // A run stopped at its budget lists what it already did, so "continue" picks up where it left off: only while
         // those changes are known to be in the site.
         const done = r?.incomplete && r.canUndo && r.changes.length && turn?.standing === 'applied' ? ` Changes made so far: ${r.changes.map((c) => c.label).join('; ')}.` : '';
-        const standing = undone ? ' These changes were undone afterwards.' : turn?.undoneEarlier ? ' These changes were undone afterwards, and may have been redone since.' : '';
-        const said = r?.summary || h.text ? (r?.summary || h.text) + done + standing : '';
+        const unsure = !!r?.incomplete && r.canUndo && turn?.standing === 'unknown' && !turn.undoneEarlier;
+        const standing = undone ? ' These changes were undone afterwards.' : turn?.undoneEarlier ? ' These changes were undone afterwards, and may have been redone since.' : unsure ? ' Whether these changes are still in the site is not known.' : '';
+        const summary = turn ? summaryNow(turn) : '';
+        const said = summary || h.text ? (summary || h.text) + done + standing : '';
         const text = [said, ...unanswered].filter(Boolean).join(' ');
         if (text) items.push({ kind: 'assistant', text, toolCalls: [] });
       }

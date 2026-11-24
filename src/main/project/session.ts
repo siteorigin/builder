@@ -1263,13 +1263,14 @@ export class ProjectSession extends EventEmitter {
     // reading, where the change leaves each AI step is kept in its place, not where it stood before (issue 276).
     const historyPath = this.local('history', 'history.json');
     if (usableJournalHistory(journal.history)) await atomicWrite(historyPath, toJson(journal.history));
-    else if (readableJournalHistory(journal.history)) {
+    else if (readableJournalHistory(journal.history) && olderFormat(journal.history.schemaVersion)) {
       // Only History that is surely gone or surely older is replaced: one that cannot be read is left as it is.
       const saved = await fs.readFile(historyPath, 'utf8').then(
-        (t) => ({ file: JSON.parse(t) as { schemaVersion?: unknown } | null }),
-        (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? { file: null } : null)
+        (t) => ({ absent: false, file: JSON.parse(t) as unknown }),
+        (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? { absent: true, file: null } : null)
       ).catch(() => null);
-      if (saved && (saved.file === null || (typeof saved.file === 'object' && olderFormat(saved.file.schemaVersion)))) await atomicWrite(historyPath, toJson(usableHistory(journal.history)));
+      const older = (f: unknown) => !!f && typeof f === 'object' && !Array.isArray(f) && Array.isArray((f as HistoryFile).entries) && olderFormat((f as HistoryFile).schemaVersion);
+      if (saved && (saved.absent || older(saved.file))) await atomicWrite(historyPath, toJson(usableHistory(journal.history)));
     }
     if (Number.isInteger(journal.revision)) await this.writeRevision(journal.revision!);
     const finished = typeof journal.finishRun === 'string';
