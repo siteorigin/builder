@@ -149,6 +149,9 @@ await shot('table-no-rows', tableShows('0 rows'), BOTH);
 
 await setTable(Array.from({ length: 12 }, (_, i) => `Week ${i + 1}`), [Array.from({ length: 12 }, (_, i) => `Topic ${i + 1}`)]);
 await shot('table-column-limit', tableShows('at most 12 columns'), LIGHT);
+// Scrolled sideways: the first column stays beside the disclosures, and both edges show there is more.
+await tableEd.locator('.table-grid-scroll').evaluate((el) => (el.scrollLeft = 200));
+await shot('table-scrolled', async () => (await tableEd.locator('.table-grid-frame.more-left.more-right').count()) === 1, LIGHT);
 
 await setTable(['Day', 'Workshop'], Array.from({ length: 60 }, (_, i) => [`Day ${i + 1}`, `Session ${i + 1}`]));
 await tableEd.getByRole('button', { name: 'Add row' }).scrollIntoViewIfNeeded();
@@ -211,6 +214,19 @@ await across.focus();
 await win.keyboard.press('Shift+Tab');
 await win.keyboard.press('Tab');
 await shot('focus-keyboard', () => across.evaluate((el) => el === document.activeElement && el.matches(':focus-visible')), LIGHT);
+await win.evaluate(() => document.activeElement?.blur());
+
+// A coordinate outside the picture: the field says what was typed and why it wasn't used.
+await across.click();
+await across.fill('140');
+await across.press('Enter');
+await shot('focus-invalid', async () => (await win.locator('.focus-error').innerText()).includes('140'), LIGHT);
+// Typing in the field again takes the message away; the saved 20 stays.
+await across.click();
+await across.fill('');
+await until(async () => (await win.locator('.focus-error').count()) === 0, 'the error to clear');
+await across.fill('20');
+await across.press('Enter');
 await win.evaluate(() => document.activeElement?.blur());
 
 // A size that inherits: the phone shows the all-sizes point as placeholders.
