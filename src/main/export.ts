@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, promises as fs, readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
-import type { AssetRecord, PageDoc, ProjectState } from '@shared/types';
+import type { AssetRecord, NodeTree, PageDoc, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
@@ -13,7 +13,7 @@ import { STARTER_ASSETS } from '@catalogue/starters';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { describeDraftLink, draftTarget, netlifyFormClashes, publicationPlan, unlinkedButtons } from '@generator/checks';
+import { describeDraftLink, draftTarget, netlifyFormClashes, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
@@ -857,15 +857,20 @@ export function runtimeFontWarnings(state: ProjectState): string[] {
 /** How many unlinked buttons an export warning names before it sums up the rest. */
 const UNLINKED_LISTED = 6;
 
+/** The trees the site renders, named for a warning: the pages in site order, then the shared header and footer when a page shows them. */
+function siteTrees(state: ProjectState): Array<{ tree: NodeTree; label: string }> {
+  const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
+  const shell = SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => ({ tree: state.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' }));
+  return [...pages.map((p) => ({ tree: p, label: p.title })), ...shell];
+}
+
 /**
  * Warnings for buttons the site leaves out because they have no destination: the pages (and the shared header or
  * footer, when a page shows it) in site order, each button named by where it is and its label.
  */
 export function unlinkedButtonWarnings(state: ProjectState): string[] {
-  const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
-  const shell = SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => ({ tree: state.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' }));
   const found: string[] = [];
-  for (const { tree, label } of [...pages.map((p) => ({ tree: p, label: p.title })), ...shell]) {
+  for (const { tree, label } of siteTrees(state)) {
     for (const b of unlinkedButtons(state, tree)) {
       const node = tree.nodes[b.nodeId];
       const where = node && node.kind === 'instance' ? `${label} · ${displayName(state, node)}` : label;
@@ -877,6 +882,18 @@ export function unlinkedButtonWarnings(state: ProjectState): string[] {
     found.length === 1
       ? 'A button has no link, so it was left out of the site. Choose where it goes in the editor, or hide it:'
       : `${found.length} buttons have no link, so they were left out of the site. Choose where each one goes in the editor, or hide it:`;
+  const more = found.length - UNLINKED_LISTED;
+  return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
+}
+
+/** Warnings for header menu links with nowhere to go, which the site shows as words that lead nowhere: where each is, and its label. */
+export function unlinkedMenuLinkWarnings(state: ProjectState): string[] {
+  const found = siteTrees(state).flatMap(({ tree, label }) => unlinkedMenuLinks(state, tree).map((m) => `${label}: “${m.label}”`));
+  if (!found.length) return [];
+  const lead =
+    found.length === 1
+      ? 'A menu link has no destination, so it goes nowhere. Choose where it goes in the editor, or remove it from the menu:'
+      : `${found.length} menu links have no destination, so they go nowhere. Choose where each one goes in the editor, or remove it from the menu:`;
   const more = found.length - UNLINKED_LISTED;
   return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
 }

@@ -21,7 +21,7 @@ export function inlineLinkProblem(href: string, pages: RichPages): string | null
   if (linkFromTarget(t, pages)) return null;
   if (/^https?:/i.test(t)) return 'That web address is not complete. Use a full address, such as https://example.com.';
   if (/^mailto:/i.test(t)) return 'That is not a complete email address, such as hello@example.com.';
-  if (/^tel:/i.test(t)) return 'A phone number uses only digits, spaces and + ( ) . -';
+  if (/^tel:/i.test(t)) return 'A phone number has at least 3 digits and uses only digits, spaces and + ( ) . -';
   const hash = t.indexOf('#');
   if (hash >= 0 && !SECTION.test(t.slice(hash + 1))) return 'A section name starts with a letter and uses only letters, numbers, - and _.';
   const path = hash < 0 ? t : t.slice(0, hash);
@@ -42,6 +42,6 @@ export function linkFieldProblem(type: LinkValue['type'], target: string, state:
   } catch {
     if (type === 'url') return BARE_DOMAIN.test(t) ? `A web address starts with https://, such as https://${t.length > 60 ? 'example.com' : t}.` : 'Use a full web address, such as https://example.com.';
     if (type === 'email') return 'Use a complete email address, such as hello@example.com.';
-    return 'A phone number uses only digits, spaces and + ( ) . -, from 3 to 30 characters.';
+    return 'A phone number uses only digits, spaces and + ( ) . -, from 3 to 30 characters with at least 3 digits.';
   }
 }

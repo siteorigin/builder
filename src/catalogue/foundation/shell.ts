@@ -357,14 +357,16 @@ const HEADER_SOURCE = `<script>
 	</div>
 </header>
 
+<!-- A link with nowhere to go yet shows its words as a placeholder (an <a> without href): it neither jumps to the top
+     of the page nor closes the menu, and a submenu under it still opens from its button. -->
 {#snippet menuLink(item)}
 	<a
-		href={href(item.link) ?? '#'}
+		href={href(item.link)}
 		download={download(item.link)}
 		target={item.link?.newTab ? '_blank' : undefined}
 		rel={item.link?.newTab ? 'noopener noreferrer' : undefined}
 		aria-current={isCurrent(item.link) ? 'page' : undefined}
-		onclick={chose}>{item.label}</a
+		onclick={href(item.link) ? chose : undefined}>{item.label}</a
 	>
 {/snippet}
 
@@ -524,7 +526,7 @@ const HEADER_SOURCE = `<script>
 		text-decoration: none;
 		transition: color 150ms ease;
 	}
-	.so-header__nav ul a:hover,
+	.so-header__nav ul a[href]:hover,
 	.so-header__nav ul a[aria-current='page'] {
 		color: inherit;
 	}
@@ -614,7 +616,7 @@ const HEADER_SOURCE = `<script>
 		border-radius: var(--so-radius-sm);
 		overflow-wrap: anywhere;
 	}
-	.so-header__nav .so-header__sub a:hover {
+	.so-header__nav .so-header__sub a[href]:hover {
 		background: color-mix(in srgb, currentColor 7%, transparent);
 	}
 	.so-header__nav .so-header__sub a[aria-current='page'] {
@@ -721,7 +723,7 @@ const HEADER_SOURCE = `<script>
 			padding-inline-start: 4px;
 			font-size: 1rem;
 		}
-		.so-header__nav .so-header__sub a:hover {
+		.so-header__nav .so-header__sub a[href]:hover {
 			background: none;
 		}
 	}

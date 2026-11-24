@@ -9,7 +9,7 @@ import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
 import { entryRoute, findEntry } from '@shared/collections';
-import { anchorCapable, anchorsInUse, displayName, findParent } from '@engine/tree';
+import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
 import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
@@ -660,6 +660,42 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
 /** The unlinked buttons one node of a page or shell tree renders: the node itself, or those inside a placement. */
 export function unlinkedButtonsAt(state: ProjectState, tree: NodeTree, nodeId: string): UnlinkedButton[] {
   return tree.nodes[nodeId] ? unlinkedButtons(state, { ...tree, rootIds: [nodeId] }) : [];
+}
+
+/** A link in a header's menu with words and nowhere to go. */
+export interface UnlinkedMenuLink {
+  /** The header's node in the page or shell tree (the outermost placement, for a header inside a component). */
+  nodeId: string;
+  /** The menu item, in the header's `links`. */
+  itemId: string;
+  label: string;
+}
+
+/**
+ * Links in a header menu (the theme's header, or a copy of it) that have words but nowhere to go: the site shows the
+ * words, which lead nowhere. A top-level link with others shown under it is left out: its submenu still opens from
+ * the button beside it, so it can be a heading of its own.
+ */
+export function unlinkedMenuLinks(state: ProjectState, tree: NodeTree): UnlinkedMenuLink[] {
+  const out: UnlinkedMenuLink[] = [];
+  walkRendered(state, tree, {
+    code: (def, props, reportId) => {
+      if (shippedCode(state, def) !== 'shell.header' || !Array.isArray(props.links)) return;
+      const schema = def.properties.links;
+      const fields = schema?.type === 'list' ? schema.fields : {};
+      // Each item's fields as the site gets them: what it holds, else the field's default.
+      const field = (item: unknown, k: string) => (item && typeof item === 'object' && Object.hasOwn(item, k) ? (item as Record<string, unknown>)[k] : fields[k]?.default);
+      const items: unknown[] = props.links;
+      const under = shownUnder(items);
+      items.forEach((item, i) => {
+        const label = String(field(item, 'label') ?? '').trim();
+        if (!label || resolveLink(field(item, 'link') as LinkValue | undefined, { state })) return;
+        if (!under[i] && under[i + 1]) return;
+        out.push({ nodeId: reportId, itemId: String((item as { id?: unknown } | null)?.id ?? i), label });
+      });
+    }
+  });
+  return out;
 }
 
 /** Where a piece of shown content is stored: a field of the page or shell node itself, or a field of its placement. */

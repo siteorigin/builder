@@ -23,16 +23,14 @@ export function slugify(text: string): string {
 /**
  * A route as someone may type it ("About Us", "/Café Menu"): each segment lowercased, without accents, and with its
  * spaces as hyphens. Anything else a segment cannot hold is left for validateRoute to refuse, so a reserved or
- * hidden name ("_app") is never quietly turned into an ordinary one.
+ * hidden name ("_app") is never quietly turned into an ordinary one, and a segment of accents alone stays one.
  */
 export function normalizeRoute(input: string): string {
   const parts = input
-    .normalize('NFKD')
-    .replace(ACCENTS, '')
-    .trim()
     .split('/')
-    .map((p) => p.trim().toLowerCase().replace(/\s+/g, '-'))
-    .filter(Boolean);
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => p.normalize('NFD').replace(ACCENTS, '').trim().toLowerCase().replace(/\s+/g, '-') || p.toLowerCase());
   return parts.length ? `/${parts.join('/')}/` : '/';
 }
 

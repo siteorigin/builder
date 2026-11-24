@@ -40,5 +40,10 @@ describe('normalizeRoute', () => {
     expect(validateRoute(normalizeRoute('/_app/'))).not.toBeNull();
     expect(validateRoute(normalizeRoute('/a/../b/'))).toMatch(/"\."/);
     expect(validateRoute(normalizeRoute('/a&b/'))).toMatch(/may only contain/);
+    // A full-width slash is not a folder, and a segment of accents alone is not the Home page.
+    expect(normalizeRoute('/a／b/')).toBe('/a／b/');
+    expect(validateRoute(normalizeRoute('/a／b/'))).toMatch(/may only contain/);
+    expect(normalizeRoute('/\u0301/')).not.toBe('/');
+    expect(validateRoute(normalizeRoute('/\u0301/'))).toMatch(/may only contain/);
   });
 });

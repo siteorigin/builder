@@ -346,6 +346,30 @@ describe('links and buttons', () => {
     expect(placeholderImageCount(s)).toBe(5);
   });
 
+  it('counts placeholder images inside components placed in a design and in its slots', () => {
+    const s = fresh();
+    const before = placeholderImageCount(s);
+    const banner = defOf(s, 'cta.banner');
+    const placements = s.site.pageOrder.flatMap((id) => Object.values(s.pages[id].nodes)).filter((n) => n.kind === 'instance' && n.definitionId === banner.id).length;
+    expect(placements).toBeGreaterThan(0);
+    const root = banner.tree!.nodes[banner.tree!.rootIds[0]] as { children: string[] };
+    // A hero inside the banner's design shows its placeholder wherever the banner is placed.
+    const hero = makeInstance(defOf(s, 'hero.split'), {});
+    banner.tree!.nodes[hero.id] = hero;
+    root.children.push(hero.id);
+    expect(placeholderImageCount(s)).toBe(before + placements);
+    // So does a hero in the slot of a section inside the design; a slot nothing fills adds nothing.
+    const section = s.components[installComponent(s, 'layout.section')];
+    const slot = (Object.values(section.tree!.nodes).find((n) => n.kind === 'slot') as { slot: string }).slot;
+    const slotted = makeInstance(defOf(s, 'hero.split'), {});
+    const holder = makeInstance(section, {});
+    holder.slots = { [slot]: [slotted.id] };
+    const empty = makeInstance(section, {});
+    for (const n of [slotted, holder, empty]) banner.tree!.nodes[n.id] = n;
+    root.children.push(holder.id, empty.id);
+    expect(placeholderImageCount(s)).toBe(before + 2 * placements);
+  });
+
   it('labels footer navigation regions by their headings', () => {
     const files = generateProject(fresh());
     const footer = [...files.entries()].find(([p]) => p.endsWith('shell-footer.svelte'))![1];

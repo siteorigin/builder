@@ -10,9 +10,9 @@ import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
-import { unlinkedButtons } from '@generator/checks';
+import { unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { linkSvelte } from '@generator/runtime-files';
-import { unlinkedButtonWarnings } from '../../src/main/export';
+import { unlinkedButtonWarnings, unlinkedMenuLinkWarnings } from '../../src/main/export';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../../src/renderer/src/lib/unlinked';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -124,6 +124,9 @@ describe('buttons without a destination in visitor output', () => {
     button.appearance = 'link';
     const html = fromPricing(await renderHome(s));
     expect(elementWith(html, 'Call us today')).toMatch(/^<span\b/);
+    // It is not left out, so it is not reported as a button visitors won't see.
+    expect(unlinkedButtons(s, home(s)).map((b) => b.label)).not.toContain('Call us today');
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED' && d.message.includes('Call us today'))).toEqual([]);
   });
 });
 
@@ -494,5 +497,62 @@ describe('reporting buttons without a destination', () => {
     expect(w[0]).toMatch(/^10 buttons/);
     expect(w).toHaveLength(8);
     expect(w[7]).toBe('…and 4 more.');
+  });
+});
+
+describe('header menu links without a destination (#208)', () => {
+  const none = { type: 'none', target: '' };
+  const headerOf = (s: ProjectState) => s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+  const about = (s: ProjectState) => ({ type: 'page', target: pageNamed(s, 'About').id });
+
+  it('finds each menu link with words and nowhere to go, but not a heading whose submenu still opens', () => {
+    const s = fresh();
+    const header = headerOf(s);
+    expect(unlinkedMenuLinks(s, s.site.shell.header)).toEqual([]);
+    header.props.links = [
+      { id: 'i1', label: 'Services', link: none },
+      { id: 'i2', label: 'Design', link: none, sub: true },
+      { id: 'i3', label: 'About', link: about(s), sub: true },
+      { id: 'i4', label: 'Soon', link: none },
+      { id: 'i5', label: '  ', link: none },
+      { id: 'i6', label: 'Gone', link: { type: 'page', target: 'pg_missing' } }
+    ];
+    expect(unlinkedMenuLinks(s, s.site.shell.header)).toEqual([
+      { nodeId: header.id, itemId: 'i2', label: 'Design' },
+      { nodeId: header.id, itemId: 'i4', label: 'Soon' },
+      { nodeId: header.id, itemId: 'i6', label: 'Gone' }
+    ]);
+    // A first link marked to go under the one above has none above it: it heads the next one's submenu.
+    header.props.links = [
+      { id: 'i1', label: 'Shop', link: none, sub: true },
+      { id: 'i2', label: 'Gifts', link: none, sub: true }
+    ];
+    expect(unlinkedMenuLinks(s, s.site.shell.header)).toEqual([{ nodeId: header.id, itemId: 'i2', label: 'Gifts' }]);
+    // An item saved without its label shows the field's default words.
+    header.props.links = [{ id: 'i1', link: none }];
+    expect(unlinkedMenuLinks(s, s.site.shell.header)).toEqual([{ nodeId: header.id, itemId: 'i1', label: 'Page' }]);
+  });
+
+  it('says so in Project health, on the header', () => {
+    const s = fresh();
+    headerOf(s).props.links = [{ id: 'i1', label: 'About', link: about(s) }, { id: 'i2', label: 'Soon', link: none }];
+    const found = validateState(s).filter((d) => d.code === 'MENU_LINK_UNLINKED');
+    expect(found).toEqual([expect.objectContaining({ severity: 'warning', owner: { kind: 'shell', id: 'header' }, nodeId: headerOf(s).id })]);
+    expect(found[0].message).toMatch(/the “Soon” menu link has no destination/);
+    // It is not a button left out of the site.
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toEqual([]);
+  });
+
+  it('warns on export about each one, and not when no page shows the header', () => {
+    const s = fresh();
+    headerOf(s).props.links = [{ id: 'i1', label: 'Soon', link: none }, { id: 'i2', label: 'Later', link: none }];
+    expect(unlinkedMenuLinkWarnings(s)).toEqual([
+      '2 menu links have no destination, so they go nowhere. Choose where each one goes in the editor, or remove it from the menu:',
+      'Header: “Soon”',
+      'Header: “Later”'
+    ]);
+    expect(unlinkedButtonWarnings(s)).toEqual([]);
+    for (const id of s.site.pageOrder) s.pages[id].showHeader = false;
+    expect(unlinkedMenuLinkWarnings(s)).toEqual([]);
   });
 });

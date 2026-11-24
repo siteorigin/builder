@@ -16,9 +16,9 @@ describe('page links written as text', () => {
     const about = aboutOf(s);
     const team = { type: 'page', target: about.id, anchor: 'team' };
     expect(about.route).toBe('/about/');
-    for (const v of ['/about/#team', '/about#team', `${about.id}#team`]) {
+    for (const v of ['/about/#team', '/about#team', 'about#team', `${about.id}#team`]) {
       expect(normalizeLink(v, s, 'Link'), v).toEqual(team);
-      expect(linkFromTarget(v, s.pages), v).toEqual(team);
+      if (v !== 'about#team') expect(linkFromTarget(v, s.pages), v).toEqual(team);
     }
     // Without an anchor, as before.
     expect(normalizeLink('/about/', s, 'Link')).toEqual({ type: 'page', target: about.id });
@@ -26,11 +26,14 @@ describe('page links written as text', () => {
     expect(normalizeLink(about.id, s, 'Link')).toEqual({ type: 'page', target: about.id });
     // The home page's route takes an anchor too.
     expect(normalizeLink('/#contact', s, 'Link')).toEqual({ type: 'page', target: s.site.homePageId, anchor: 'contact' });
+    // A web address keeps its own fragment, and a section on this page stays one.
+    expect(normalizeLink('https://example.com/about/#team', s, 'Link')).toEqual({ type: 'url', target: 'https://example.com/about/#team' });
+    expect(normalizeLink('#team', s, 'Link')).toEqual({ type: 'anchor', target: 'team' });
   });
 
   it('refuses an anchor that is empty or not a valid id, and a page that does not exist', () => {
     const s = fresh();
-    for (const v of ['/about/#', '/about/#9team', '/about/#te am', '/missing/#team']) {
+    for (const v of ['/about/#', '/about/##team', '/about/#9team', '/about/#te am', '/missing/#team']) {
       expect(() => normalizeLink(v, s, 'Link'), v).toThrow(/Link: /);
       expect(linkFromTarget(v, s.pages), v).toBeNull();
     }
@@ -53,6 +56,20 @@ describe('telephone links', () => {
       expect(() => normalizeLink(`tel:${target}`, s, 'Link'), target).toThrow(/is not a valid telephone number/);
       expect(linkFromTarget(`tel:${target}`, s.pages), target).toBeNull();
     }
+  });
+
+  it('leaves a number saved before the rule unlinked, and still lets the item around it be edited', () => {
+    const s = fresh();
+    const header = headerOf(s);
+    header.props.links = [{ id: 'i_call', label: 'Call', link: { type: 'tel', target: '---' } }];
+    // It goes nowhere on the site, where it used to be an empty tel: link.
+    expect(resolveLink({ type: 'tel', target: '---' }, { state: s })).toBeNull();
+    expect(resolveLink({ type: 'tel', target: '(1)-2' }, { state: s })).toBeNull();
+    const at = { owner: { kind: 'shell' as const, id: 'header' }, nodeId: header.id, prop: 'links', itemId: 'i_call' };
+    const r = applyOperations(s, [{ type: 'instance.setProp', ...at, field: 'label', value: 'Call us' }]);
+    expect(headerOf(r.state).props.links).toMatchObject([{ id: 'i_call', label: 'Call us', link: { type: 'tel', target: '---' } }]);
+    // A number typed now must dial.
+    expect(() => applyOperations(r.state, [{ type: 'instance.setProp', ...at, field: 'link', value: { type: 'tel', target: '( )' } }])).toThrow(/is not a valid telephone number/);
   });
 
   it('keeps numbers that dial', () => {

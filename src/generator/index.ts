@@ -70,7 +70,7 @@ import { publicUrl } from '@shared/public-url';
 import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
-import { asParagraphList, isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
+import { asParagraphList, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
@@ -239,6 +239,8 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       href = `mailto:${encodeMailto(link.target)}`;
       break;
     case 'tel':
+      // A number saved before numbers needed three digits dials nothing: it shows its words alone.
+      if (!isTelephone(link.target)) return null;
       href = `tel:${link.target.replace(/[^+0-9]/g, '')}`;
       break;
     case 'anchor':
