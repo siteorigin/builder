@@ -1197,22 +1197,48 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   let keptEntryIds: Set<string> | undefined;
   const entryIdsOf = (hidden?: boolean) => (hidden ? (keptEntryIds ??= treeIds(state, [state.site.shell.header, state.site.shell.footer], new Set(LAYOUT_IDS), true)) : entryIds);
   // Each published entry's page as the website has it: its collection's layout read for it (what the entry lacks left
-  // out), so a section is counted only on the entries that show it.
-  const articles = published.map((e) => ({ ...e, tree: entryArticle(state, e.collection, e.entry) }));
+  // out), so a section is counted only on the entries that show it. Read only where it can matter: a section ID the
+  // stored layout has nowhere is on no entry's page, whatever the entry.
+  const articles = published.map((e) => {
+    let tree: NodeTree | undefined;
+    return { ...e, article: () => (tree ??= entryArticle(state, e.collection, e.entry)) };
+  });
+  const layoutIds = new Map<string, Set<string>>();
+  const storedIdsOf = (collectionId: string, hidden?: boolean) => {
+    const key = `${hidden ? 'kept' : 'shown'}:${collectionId}`;
+    const template = state.collections[collectionId]?.settings?.template;
+    if (!layoutIds.has(key)) layoutIds.set(key, template?.nodes ? treeIds(state, [template], new Set(entryIdsOf(hidden)), !!hidden) : entryIdsOf(hidden));
+    return layoutIds.get(key)!;
+  };
   const articleIds = new Map<string, Set<string>>();
   const idsOnEntry = (a: (typeof articles)[number], hidden?: boolean) => {
     const key = `${hidden ? 'kept' : 'shown'}:${a.entry.id}`;
-    if (!articleIds.has(key)) articleIds.set(key, treeIds(state, [a.tree], new Set(entryIdsOf(hidden)), !!hidden));
+    if (!articleIds.has(key)) articleIds.set(key, treeIds(state, [a.article()], new Set(entryIdsOf(hidden)), !!hidden));
     return articleIds.get(key)!;
   };
+  // The site's own sections and the header's and footer's are on every entry's page; one only the layout has is on
+  // the pages of the entries that show it.
+  const lacks = (a: (typeof articles)[number], fragment: string, hidden?: boolean) =>
+    !storedIdsOf(a.collection.settings.id, hidden).has(fragment) || (!entryIdsOf(hidden).has(fragment) && !idsOnEntry(a, hidden).has(fragment));
   /** The published entries whose page lacks a section with this ID. */
-  const lackingIn = (fragment: string, hidden: boolean | undefined) => articles.filter((a) => !idsOnEntry(a, hidden).has(fragment)).map((a) => a.entry.id);
+  const lackingIn = (fragment: string, hidden: boolean | undefined) => articles.filter((a) => lacks(a, fragment, hidden)).map((a) => a.entry.id);
+  /** Whether a collection's stored layout has a link these checks follow; its entries' pages are read only then. */
+  const layoutLinks = new Map<string, boolean>();
+  const hasSectionLinks = (collectionId: string) => {
+    if (!layoutLinks.has(collectionId)) {
+      const template = state.collections[collectionId]?.settings?.template;
+      // A placed section's links can depend on the words each entry gives it: a layout with one is always read.
+      const placed = !!template?.nodes && Object.values(template.nodes).some((n) => n?.kind === 'instance');
+      layoutLinks.set(collectionId, placed || (!!template?.nodes && renderedLinks(state, template, false, true).some(({ link }) => (link.type === 'page' && !!link.anchor) || link.type === 'anchor')));
+    }
+    return layoutLinks.get(collectionId)!;
+  };
   // The header and footer are checked on the pages that show each: they can differ.
   const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[]; entry?: (typeof articles)[number] }> = [
     ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0),
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] })),
     // A collection's layout, as each of its published entries shows it.
-    ...articles.map((a) => ({ owner: { kind: 'template' as const, id: a.collection.settings.id }, tree: a.tree, on: [] as PageDoc[], entry: a }))
+    ...articles.filter((a) => hasSectionLinks(a.collection.settings.id)).map((a) => ({ owner: { kind: 'template' as const, id: a.collection.settings.id }, tree: a.article(), on: [] as PageDoc[], entry: a }))
   ];
   const out: SectionLinkIssue[] = [];
   const seen = new Map<string, SectionLinkIssue>();
@@ -1226,7 +1252,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
         const missing = src.on.filter((p) => !idsOf(p.id, hidden).has(fragment)).map((p) => p.id);
-        const lacking = src.owner.kind === 'shell' ? lackingIn(fragment, hidden) : src.entry && !idsOnEntry(src.entry, hidden).has(fragment) ? [src.entry.entry.id] : [];
+        const lacking = src.owner.kind === 'shell' ? lackingIn(fragment, hidden) : src.entry && lacks(src.entry, fragment, hidden) ? [src.entry.entry.id] : [];
         if (missing.length || lacking.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}) };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once; one in a layout, once for all the
@@ -1251,7 +1277,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
         if (!idsOf(link.target).has(link.anchor)) out.push({ owner, nodeId: '', key, label, inText: true, fragment: link.anchor, pageId: link.target });
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
-        if (!idsOnEntry(a).has(fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
+        if (lacks(a, fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
       }
     });
   }
@@ -1366,13 +1392,26 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
   // An entry shows both shared parts, and its collection's layout.
   const entryShown = entries.length > draftEntries.length;
   const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
+  // A layout's links go where the layout says, whatever the entry, apart from Previous and Next, which never lead to a
+  // draft: one with no link to a page, an entry or an address has none to a draft on any entry's page.
+  const mayLink = new Map<string, boolean>();
+  const layoutMayLinkToDraft = (collectionId: string) => {
+    if (!mayLink.has(collectionId)) {
+      const t = state.collections[collectionId]?.settings?.template;
+      const placed = !!t?.nodes && Object.values(t.nodes).some((n) => n?.kind === 'instance');
+      mayLink.set(collectionId, !!t?.nodes && (draftIds.size > 0 || withheld.size > 0) && (placed || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes))));
+    }
+    return mayLink.get(collectionId)!;
+  };
   const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
     ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
     // Each collection's layout, as each published entry shows it: its own words on the layout's buttons, and only the
-    // elements that entry shows.
-    ...entries.filter((e) => !draftEntryIds.has(e.entry.id)).map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry) }))
+    // elements that entry shows. Read only for a layout that links where a draft could be at all.
+    ...entries
+      .filter((e) => !draftEntryIds.has(e.entry.id) && layoutMayLinkToDraft(e.collection.settings.id))
+      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry) }))
   ];
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
