@@ -63,7 +63,8 @@ const PRESETS = ['fade', 'lift', 'scale-subtle'];
 /** Starts watching the page, and gives back what stops it. */
 export function observeAppear() {
 	if (typeof IntersectionObserver !== 'function' || typeof MutationObserver !== 'function' || typeof matchMedia !== 'function') return () => {};
-	const motion = matchMedia('screen and (prefers-reduced-motion: no-preference)');
+	// The stylesheet keeps printouts whole on its own, so only the visitor's wish for less motion stops this.
+	const motion = matchMedia('(prefers-reduced-motion: no-preference)');
 	const armed = new Set();
 	let checked = new WeakSet();
 	let on = false;
