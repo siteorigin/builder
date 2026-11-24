@@ -14,6 +14,7 @@ import { compactPropsSchema, hasOpenSchema, propsJsonSchema } from '@agent/props
 import { propSchemaSummary } from '@agent/context';
 import { P } from '@catalogue/dsl';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
+import { envelopeInstructions } from '@agent/constrained';
 import { selectionTools } from '@agent/selection';
 import { applyContextBudget, estimateRequestTokens } from '@agent/budget';
 import { findStubPages } from '@agent/completeness';
@@ -729,7 +730,7 @@ describe('update_site_brand', () => {
 
 describe('asking the user (#22)', () => {
   it('tells a focused site run to ask with request_clarification, and lets it finish with advice', async () => {
-    const { adapter, run } = await setup([() => finish('Try: Talk to us, whenever suits you.')], { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' });
+    const { adapter, run } = await setup([() => finish('Try: Talk to us, whenever suits you.')], { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'native' });
     const { result } = await run('Interview me about the Contact page, then suggest a headline in chat only');
     expect(result?.status).toBe('no-changes');
     expect(result?.summary).toBe('Try: Talk to us, whenever suits you.');
@@ -737,6 +738,17 @@ describe('asking the user (#22)', () => {
     expect(tools.map((t) => t.name)).toContain('request_clarification');
     expect(system).toMatch(/request_clarification asks the user one question[^\n]*interview them[^\n]*one question per call/);
     expect(system).toContain('when the user asked only for advice or ideas, with that advice');
+  });
+
+  it('gives a constrained site run the same rules beside the tool, once (#364)', async () => {
+    const { adapter, run } = await setup([() => finish('Try: Talk to us, whenever suits you.')], { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' });
+    await run('Interview me about the Contact page, then suggest a headline in chat only');
+    const { system, tools } = adapter.requests[0];
+    // What the local model reads: the instructions, then each tool's signature and brief.
+    const prompt = system + envelopeInstructions(tools);
+    expect(prompt).toMatch(/\n- request_clarification [^\n]*\n  Ask the user one question[^\n]*interviewed[^\n]*One question per call; then act on the answer\./);
+    expect(prompt).toContain('what changed, or the answer or advice asked for');
+    expect(system).not.toContain('request_clarification asks the user one question');
   });
 });
 
@@ -848,7 +860,18 @@ describe('selection tools', () => {
     expect(nodeAt(session.state, 1).props).toEqual(before);
     // The hero has an image, so it can also look up assets and ask which one to use; it has no list.
     expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['update_selected_props', 'style_selected_element', 'request_wider_scope', 'search_assets', 'request_clarification']);
+    // A constrained model reads the image rules beside the tools it uses for them.
+    const prompt = adapter.requests[0].system + envelopeInstructions(adapter.requests[0].tools);
+    expect(prompt).toContain('An image is set by its assetId');
+    expect(prompt).toMatch(/\n- request_clarification [^\n]*assetIds[^\n]*\n  [^\n]*To choose between images, pass assetIds: they see the pictures\./);
+    expect(prompt).toMatch(/\n- search_assets [^\n]*\n  [^\n]*\(names can repeat\)\. You cannot see images\./);
+  });
+
+  it('still tours the tools for a focused model that calls them natively', async () => {
+    const { session, adapter, run } = await setup([() => finish()], { ...focused, toolCalling: 'native' });
+    await run('Tighten this headline', heroRef(session.state));
     expect(adapter.requests[0].system).toContain('request_clarification with assetIds lets the user choose between images by sight');
+    expect(adapter.requests[0].system).toContain('- update_selected_props changes its content; send only what changes.');
   });
 
   it('lets a focused run on the hero offer same-named photos and set the one the author picks (#12)', async () => {
