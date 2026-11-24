@@ -1,0 +1,80 @@
+/** Where an AI turn's change stands in the site now, read from History rather than from what the turn said. */
+import type { ChatMessage, HistoryInfo } from './api';
+
+type TurnResult = NonNullable<ChatMessage['result']>;
+
+/** The part of History a turn's standing is read from. */
+export type TurnHistory = { entries: ReadonlyArray<Pick<HistoryInfo['entries'][number], 'runId' | 'applied'>>; droppedRuns?: HistoryInfo['droppedRuns'] };
+
+/** Applied: the change is in the site. Undone: it is not. Unknown: History has no record of the turn's step. */
+export type TurnStanding = 'applied' | 'undone' | 'unknown';
+
+/** What earlier versions appended to a turn's summary when it was undone from chat. */
+const UNDONE_MARK = ' (Undone.)';
+
+/**
+ * A result as the assistant gave it. Earlier versions recorded Undo turn by appending "(Undone.)" to the summary and
+ * clearing canUndo, which no Redo ever took back (issue 276). Read back, that is the original summary, a turn that
+ * did change the site, and `undoneOnce`: it was undone at least once, whatever it is now. Nothing is rewritten. The
+ * mark was only ever added to the summary, so one the turn's own `text` says too is the assistant's words.
+ */
+export function resultAsSaid(r: TurnResult, text?: string): { result: TurnResult; undoneOnce: boolean } {
+  if (r.status !== 'completed' || r.canUndo !== false || typeof r.summary !== 'string' || !r.summary.endsWith(UNDONE_MARK) || (!!text && text === r.summary)) return { result: r, undoneOnce: false };
+  return { result: { ...r, summary: r.summary.slice(0, -UNDONE_MARK.length), canUndo: true }, undoneOnce: true };
+}
+
+/** Where a run's step stands: from History's step while it holds one, else from what it noted when letting it go. */
+export function runStanding(runId: string | undefined, history: TurnHistory | null | undefined): TurnStanding {
+  if (!runId || !history) return 'unknown';
+  for (let i = history.entries.length - 1; i >= 0; i--) if (history.entries[i].runId === runId) return history.entries[i].applied ? 'applied' : 'undone';
+  const dropped = history.droppedRuns && Object.hasOwn(history.droppedRuns, runId) ? history.droppedRuns[runId] : undefined;
+  return dropped === 'applied' || dropped === 'undone' ? dropped : 'unknown';
+}
+
+export interface TurnState {
+  /** The result as it was said. */
+  result: TurnResult;
+  /** Where the turn's change stands; unknown for a turn that changed nothing. */
+  standing: TurnStanding;
+  /**
+   * Undone once, by what an earlier version recorded, and History no longer shows whether it was redone since: the
+   * turn is not called either applied or undone.
+   */
+  undoneEarlier: boolean;
+}
+
+/** An assistant turn's result as it was said, and where its change stands in the site now. */
+export function turnState(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, history: TurnHistory | null | undefined): TurnState | null {
+  if (!m.result) return null;
+  const { result, undoneOnce } = resultAsSaid(m.result, m.text);
+  const standing = result.canUndo ? runStanding(m.runId, history) : 'unknown';
+  return { result, standing, undoneEarlier: undoneOnce && standing === 'unknown' };
+}
+
+/**
+ * What the app said about an unfinished turn's changes when it ended: that they are kept and the request can be
+ * continued. Both stop holding once the turn is undone, or once History no longer shows whether it is.
+ */
+const KEPT_CLAIMS = [' The changes so far are checked and kept, and you can undo them in one step. Reply "continue" to carry on.', ' The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it.'];
+
+/**
+ * A turn's summary as it still holds: an unfinished turn that changed the site and cannot be carried on from loses
+ * the app's own sentences saying its changes are kept and it can be continued. The assistant's words stay.
+ */
+export function summaryNow(turn: TurnState): string {
+  const said = turn.result.summary;
+  // A transcript is read back from disk: a summary that is not text is none.
+  if (typeof said !== 'string') return '';
+  if (!turn.result.incomplete || !turn.result.canUndo || canCarryOn(turn)) return said;
+  // The app ended the summary with them; the same words anywhere else (a page title, say) are left alone.
+  const claim = KEPT_CLAIMS.find((c) => said.endsWith(c));
+  return claim ? said.slice(0, -claim.length) : said;
+}
+
+/**
+ * Whether an unfinished turn can be carried on from: one that changed the site only while its changes are known to be
+ * in it, since what it made and the links it left waiting are gone once it is undone. One that changed nothing can.
+ */
+export function canCarryOn(turn: TurnState | null): boolean {
+  return !!turn?.result.incomplete && (!turn.result.canUndo || turn.standing === 'applied');
+}

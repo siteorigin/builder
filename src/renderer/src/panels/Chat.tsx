@@ -9,7 +9,8 @@ import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDra
 import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId } from '../lib/result';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId as undoableTurn } from '../lib/result';
+import { summaryNow, turnState } from '@shared/turns';
 import { composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
@@ -193,12 +194,9 @@ export function Chat() {
   const workingUser = working ? msgs[msgs.indexOf(working) - 1] : null;
   // Undo turn is offered only while that turn is the newest step in the project's undo history: history
   // undoes in order, so any later edit (manual or AI) makes an older turn's Undo fail.
-  const topRun = history?.canUndo ? [...history.entries].reverse().find((e) => e.applied)?.runId : undefined;
-  const undoableId = topRun ? msgs.find((m) => m.role === 'assistant' && m.runId === topRun && m.result?.canUndo)?.id : undefined;
-  const resumable = running ? undefined : resumableId(msgs);
-  // Turns whose changes project history now holds as undone (each step of the run undone, none redone).
-  const appliedRuns = new Set((history?.entries ?? []).filter((e) => e.runId && e.applied).map((e) => e.runId));
-  const revertedRuns = new Set((history?.entries ?? []).filter((e) => e.runId && !e.applied && !appliedRuns.has(e.runId)).map((e) => e.runId));
+  const undoableId = undoableTurn(msgs, history);
+  // Work that has been undone is not continued from (its card offers a fresh attempt instead): History says which.
+  const resumable = running ? undefined : resumableId(msgs, history);
   const retryable = running ? undefined : retryableId(msgs);
   const firstAsk = msgs.find((m) => m.role === 'user')?.text;
   const title = msgs.length ? (conversation?.title && conversation.title !== 'New conversation' ? conversation.title : firstAsk ?? 'New conversation') : 'New conversation';
@@ -605,13 +603,11 @@ export function Chat() {
               live={m.runId === activeRunId && running}
               awaiting={waiting}
               undoable={m.id === undoableId}
-              reverted={!!m.runId && revertedRuns.has(m.runId)}
               latest={i === msgs.length - 1}
               canCompose={configured}
               asking={asking}
               onUndo={undoTurn}
-              // Work that has been undone is not continued from: its card offers a fresh attempt instead.
-              onContinue={m.id === resumable && !sending && configured && !(m.runId && revertedRuns.has(m.runId)) ? () => continueRequest(msgs[i - 1]) : undefined}
+              onContinue={m.id === resumable && !sending && configured ? () => continueRequest(msgs[i - 1]) : undefined}
               onRetry={m.id === retryable && !sending && configured ? () => retryRequest(msgs[i - 1]) : undefined}
             />
           )
@@ -1006,7 +1002,6 @@ function AssistantMessage({
   live,
   awaiting,
   undoable,
-  reverted,
   latest,
   canCompose,
   asking,
@@ -1018,7 +1013,6 @@ function AssistantMessage({
   live: boolean;
   awaiting: boolean;
   undoable: boolean;
-  reverted: boolean;
   latest: boolean;
   canCompose: boolean;
   asking: WaitingQuestion | null;
@@ -1068,7 +1062,7 @@ function AssistantMessage({
       {!r && answers}
       {/* A finished turn is one card that leads with its result; what was asked and answered on the way sits inside it. */}
       {r && (
-        <ResultCard m={m} undoable={undoable} reverted={reverted} latest={latest} canCompose={canCompose} onUndo={onUndo} onContinue={onContinue} onRetry={onRetry}>
+        <ResultCard m={m} undoable={undoable} latest={latest} canCompose={canCompose} onUndo={onUndo} onContinue={onContinue} onRetry={onRetry}>
           {answers.length > 0 ? answers : null}
         </ResultCard>
       )}
@@ -1124,7 +1118,6 @@ function openChange(c: ChatChange) {
 function ResultCard({
   m,
   undoable,
-  reverted,
   latest,
   canCompose,
   onUndo,
@@ -1134,7 +1127,6 @@ function ResultCard({
 }: {
   m: ChatMessage;
   undoable: boolean;
-  reverted: boolean;
   latest: boolean;
   canCompose: boolean;
   onUndo: (runId: string) => void;
@@ -1142,13 +1134,21 @@ function ResultCard({
   onRetry?: () => void;
   children?: ReactNode;
 }) {
-  const r = m.result!;
+  const history = useStore((s) => s.snapshot?.history);
+  // The turn as it was said, and where its change stands now: History's to say, however it was undone or redone.
+  const turn = turnState(m, history)!;
+  const r = turn.result;
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const [open, setOpen] = useState(false);
   const stepsId = useId();
-  const head = outcome(r);
+  /** Project history holds the turn's change as undone now, from chat, the toolbar or History alike (issue 276). */
+  const reverted = turn.standing === 'undone';
+  // Only the conversation's latest turn is ever continued, so only it is told how.
+  const note = standingNote(m, history, latest);
+  const head = turn.undoneEarlier ? { icon: <RotateCcw />, label: 'Undone earlier' } : outcome(r);
   const steps = m.activities ?? [];
   const stopped = r.status === 'cancelled';
+  /** The run's own changes were rolled back as it ended. */
   const failedOrStopped = r.status === 'failed' || r.status === 'cancelled';
   // A turn undone from project history keeps its record, with its changes listed as undone.
   const undone = failedOrStopped || reverted;
@@ -1295,6 +1295,8 @@ function ResultCard({
                 </ul>
               </div>
             )}
+            {/* Whether it can still be continued is about the site now, so it is not tucked away with the old report. */}
+            {note && <p className="result-standing">{note}</p>}
             <button className="checks-toggle report-toggle" aria-expanded={showReport} onClick={() => setShowReport(!showReport)}>
               Before the undo
               <ChevronDown aria-hidden="true" />
@@ -1304,8 +1306,9 @@ function ResultCard({
         {(!reverted || showReport) && (
         <>
         <div className="result-summary">
-          <Md text={summaryOf(r)} />
+          <Md text={summaryOf({ ...r, summary: summaryNow(turn) })} />
         </div>
+        {!reverted && note && <p className="result-standing">{note}</p>}
         {locations.length > 0 && (
           <ul className="locations" aria-label="Where to change it">
             {locations.map((l, i) => (

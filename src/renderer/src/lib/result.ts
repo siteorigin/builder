@@ -5,6 +5,7 @@ import { locateField } from '@engine/locate';
 import { refExists, resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
 import { editableDesign, requestComponentId } from './chatTarget';
+import { canCarryOn, resultAsSaid, turnState, type TurnHistory } from '@shared/turns';
 
 /** Checks that need attention, read from the wording of results stored before checks carried a status. */
 const ISSUE = /wider than the screen|overflows its box|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)|^stopped at /i;
@@ -68,11 +69,44 @@ export function locationTarget(state: ProjectState, currentPageId: string | null
 
 /**
  * The result that offers Continue: the conversation's last message, when it is a request that ended unfinished.
- * An older unfinished card does not, since a newer request has moved on from it.
+ * An older unfinished card does not, since a newer request has moved on from it, and neither does one that changed
+ * the site unless its changes are known to be in it: once undone, there is nothing to carry on from until a Redo.
  */
-export function resumableId(messages: ChatMessage[]): string | undefined {
+export function resumableId(messages: ChatMessage[], history?: TurnHistory | null): string | undefined {
   const last = messages.at(-1);
-  return last?.role === 'assistant' && last.result?.incomplete && (last.result.status === 'completed' || last.result.status === 'no-changes') ? last.id : undefined;
+  if (last?.role !== 'assistant' || !last.result?.incomplete || (last.result.status !== 'completed' && last.result.status !== 'no-changes')) return undefined;
+  return canCarryOn(turnState(last, history)) ? last.id : undefined;
+}
+
+/**
+ * What a card says about where its turn's change stands, beyond its heading, when that changes what can be done
+ * with it: a turn undone once by an earlier version, or an unfinished one that can no longer be continued.
+ */
+export function standingNote(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, history: TurnHistory | null | undefined, last = true): string | undefined {
+  const turn = turnState(m, history);
+  if (!turn) return undefined;
+  const unfinished = !!turn.result.incomplete && turn.result.canUndo && !canCarryOn(turn);
+  // Only the conversation's last turn is ever continued: an earlier one gets no word on continuing.
+  const again = last ? ' This request can no longer be continued: send it again to start over.' : '';
+  if (turn.undoneEarlier) return `These changes were undone once. History no longer shows whether they were redone since.${unfinished ? again : ''}`;
+  if (!unfinished) return undefined;
+  if (turn.standing === 'undone') {
+    if (!last) return undefined;
+    const redoable = !!history?.entries.some((e) => e.runId === m.runId && !e.applied);
+    return redoable ? 'These changes were undone, so this request can only be continued once they are redone.' : `These changes were undone.${again}`;
+  }
+  return `History no longer shows whether these changes are in the site.${again}`;
+}
+
+/**
+ * The turn that offers Undo turn: the one whose step is the newest applied in History, whichever way History got
+ * there. History undoes in order, so any later edit, manual or AI, takes it away, and a Redo from the toolbar or
+ * History that reapplies the turn brings it back (issue 276).
+ */
+export function undoableId(messages: ChatMessage[], history: (TurnHistory & { canUndo: boolean }) | null | undefined): string | undefined {
+  if (!history?.canUndo) return undefined;
+  const top = [...history.entries].reverse().find((e) => e.applied)?.runId;
+  return top ? messages.find((m) => m.role === 'assistant' && m.runId === top && !!m.result && resultAsSaid(m.result, m.text).result.canUndo)?.id : undefined;
 }
 
 /**

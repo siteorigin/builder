@@ -77,6 +77,8 @@ export interface HistoryInfo {
   undoLabel?: string;
   redoLabel?: string;
   entries: Array<{ id: string; label: string; source: string; time: string; applied: boolean; runId?: string }>;
+  /** AI runs whose step History has let go, and whether it was applied or undone when it went (issue 276). */
+  droppedRuns?: Record<string, 'applied' | 'undone'>;
 }
 
 /** One saved version of the site, as History lists it (issue 260). */

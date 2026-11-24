@@ -11,7 +11,9 @@ import type { AiEvent, ChatContext, ChatMessage, Conversation, RunStatus } from 
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
+import { turnState } from '@shared/turns';
 import { ProjectSession } from '../../src/main/project/session';
+import { undoableId } from '../../src/renderer/src/lib/result';
 
 vi.stubGlobal('window', { builder: { platform: 'test' } });
 
@@ -198,15 +200,30 @@ describe('AI events reach only their own conversation', () => {
     const run = await orch.send('Retitle the home page', ctx, open.id);
     expect(run.ok).toBe(true);
     await finished();
-    const reply = () => store.getState().conversation?.messages.find((m) => m.runId === run.runId && m.role === 'assistant');
+    const messages = () => store.getState().conversation?.messages ?? [];
+    const reply = () => messages().find((m) => m.runId === run.runId && m.role === 'assistant');
+    /** History as the panel receives it in the project's snapshot, copied across the bridge. */
+    const history = () => structuredClone(session.historyInfo());
     expect(reply()?.result?.canUndo).toBe(true);
+    expect(turnState(reply()!, history())?.standing).toBe('applied');
+    expect(undoableId(messages(), history())).toBe(reply()!.id);
 
-    // The Undo is not part of any request: it names the conversation that is open, which shows it.
+    // The Undo is not part of any request, and the transcript keeps the turn as it was said (issue 276): it sends no
+    // event, so nothing of it can show in another conversation. The conversation on screen reads it from History.
+    const said = structuredClone(reply());
     const mark = events.length;
     expect((await orch.undoTurn(run.runId!)).ok).toBe(true);
-    expect(events.slice(mark).map((e) => `${e.kind} ${e.runId} ${e.conversationId}`)).toEqual([`message  ${open.id}`]);
-    expect(reply()?.result?.canUndo).toBe(false);
-    expect(reply()?.result?.summary).toMatch(/\(Undone\.\)$/);
+    expect(events.slice(mark)).toEqual([]);
+    expect(store.getState().conversation?.id).toBe(open.id);
+    expect(reply()).toEqual(said);
+    expect(turnState(reply()!, history())?.standing).toBe('undone');
+    expect(undoableId(messages(), history())).toBeUndefined();
+
+    // A Redo from the toolbar puts it back in the same conversation, offered Undo turn again.
+    expect((await session.redo()).ok).toBe(true);
+    expect(events.slice(mark)).toEqual([]);
+    expect(turnState(reply()!, history())?.standing).toBe('applied');
+    expect(undoableId(messages(), history())).toBe(reply()!.id);
   });
 
   it('ignores message and text events tagged with another conversation, or with none', () => {

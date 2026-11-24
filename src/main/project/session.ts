@@ -130,6 +130,8 @@ export function statTrusted(st: Pick<BigIntStats, 'mtimeNs' | 'ctimeNs'>, now: n
   return settled(st.mtimeNs) && settled(st.ctimeNs);
 }
 const HISTORY_LIMIT = 100;
+/** How many let-go AI runs History remembers the standing of (see HistoryFile.droppedRuns). */
+const DROPPED_RUN_LIMIT = 200;
 /** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */
 export const LOCK_HEARTBEAT_MS = 30_000;
 export const LOCK_STALE_MS = 2 * 60_000;
@@ -289,7 +291,15 @@ interface HistoryFile {
   entries: HistoryEntry[];
   /** Number of entries currently applied (entries beyond this are redoable). */
   cursor: number;
+  /**
+   * AI runs whose step History has let go, and whether that step was applied or undone when it went, so the chat
+   * turn that made it still shows where its change stands (issue 276). Oldest first, at most DROPPED_RUN_LIMIT.
+   */
+  droppedRuns?: Record<string, DroppedRun>;
 }
+
+/** Where an AI run's step stood when History let it go: still in the site, or undone. */
+type DroppedRun = 'applied' | 'undone';
 
 /**
  * The publication journal: everything one change does, written durably before any of it is. Recovery rolls it
@@ -1248,8 +1258,20 @@ export class ProjectSession extends EventEmitter {
     await this.syncFoldersOf(allPaths as string[]);
     // Held versions are recorded before the journal goes, so a second crash cannot lose them.
     await this.saveConflicts();
-    // The undo position and revision the change left, then the run it finished: all before the journal goes.
-    if (usableJournalHistory(journal.history)) await atomicWrite(this.local('history', 'history.json'), toJson(journal.history));
+    // The undo position and revision the change left, then the run it finished: all before the journal goes. Steps
+    // saved in an older format are not installed. When the saved History is of that format too, and so is dropped on
+    // reading, where the change leaves each AI step is kept in its place, not where it stood before (issue 276).
+    const historyPath = this.local('history', 'history.json');
+    if (usableJournalHistory(journal.history)) await atomicWrite(historyPath, toJson(journal.history));
+    else if (readableJournalHistory(journal.history) && olderFormat((journal.history as HistoryFile).schemaVersion)) {
+      // Only History that is surely gone or surely older is replaced: one that cannot be read is left as it is.
+      const saved = await fs.readFile(historyPath, 'utf8').then(
+        (t) => ({ absent: false, file: JSON.parse(t) as unknown }),
+        (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? { absent: true, file: null } : null)
+      ).catch(() => null);
+      const older = (f: unknown) => !!f && typeof f === 'object' && !Array.isArray(f) && Array.isArray((f as HistoryFile).entries) && olderFormat((f as HistoryFile).schemaVersion);
+      if (saved && (saved.absent || older(saved.file))) await atomicWrite(historyPath, toJson(usableHistory(journal.history)));
+    }
     if (Number.isInteger(journal.revision)) await this.writeRevision(journal.revision!);
     const finished = typeof journal.finishRun === 'string';
     if (finished) await removeDurable(marker);
@@ -1935,6 +1957,7 @@ export class ProjectSession extends EventEmitter {
    */
   private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }, revision: number): { history: HistoryFile; pruned: boolean; entryId: string } {
     const h = structuredClone(this.history);
+    noteDropped(h, h.entries.slice(h.cursor), 'undone');
     h.entries = h.entries.slice(0, h.cursor);
     const last = h.entries[h.entries.length - 1];
     let id: string;
@@ -1960,7 +1983,10 @@ export class ProjectSession extends EventEmitter {
       });
     }
     const pruned = h.entries.length > HISTORY_LIMIT;
-    if (pruned) h.entries = h.entries.slice(h.entries.length - HISTORY_LIMIT);
+    if (pruned) {
+      noteDropped(h, h.entries.slice(0, h.entries.length - HISTORY_LIMIT), 'applied');
+      h.entries = h.entries.slice(h.entries.length - HISTORY_LIMIT);
+    }
     h.cursor = h.entries.length;
     return { history: h, pruned, entryId: id };
   }
@@ -2060,24 +2086,32 @@ export class ProjectSession extends EventEmitter {
     const blobDir = this.local('history', 'blobs');
     const sizes = await this.blobSizes();
     const pinned = this.pinnedBlobs();
+    // Trimmed on a copy, installed only once it is saved: a failed save leaves History as the disk has it, and the
+    // versions it names are kept.
+    const next: HistoryFile = { ...this.history, entries: [...this.history.entries] };
     const total = () => {
-      const all = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs)]);
+      const all = new Set([...pinned, ...next.entries.flatMap(entryBlobs)]);
       let bytes = 0;
       for (const b of all) bytes += sizes.get(b) ?? 0;
       return bytes;
     };
     let dropped = 0;
-    while (this.history.entries.length > 1 && total() > this.historyByteLimit) {
+    while (next.entries.length > 1 && total() > this.historyByteLimit) {
       // The oldest applied group goes first. With nothing applied, trim redo from its far end instead:
       // dropping the first redo group would leave the next one expecting documents that never return.
-      if (this.history.cursor > 0) {
-        this.history.entries.shift();
-        this.history.cursor--;
-      } else this.history.entries.pop();
+      if (next.cursor > 0) {
+        noteDropped(next, next.entries.slice(0, 1), 'applied');
+        next.entries.shift();
+        next.cursor--;
+      } else {
+        noteDropped(next, next.entries.slice(-1), 'undone');
+        next.entries.pop();
+      }
       dropped++;
     }
     if (dropped) {
-      await atomicWrite(this.local('history', 'history.json'), toJson(this.history));
+      await atomicWrite(this.local('history', 'history.json'), toJson(next));
+      this.history = next;
       this.emit('history');
     }
     const keep = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs), ...(await this.blobsNamedOnDisk())]);
@@ -2367,6 +2401,8 @@ export class ProjectSession extends EventEmitter {
         if (!drop || info.reclaim?.key !== key) return { ok: false, message: 'The project changed since the space was worked out. Check what will be freed, then try again.' };
         const h = this.history;
         const next: HistoryFile = { ...h, entries: h.entries.slice(drop.from, drop.to), cursor: h.cursor - drop.from };
+        noteDropped(next, h.entries.slice(0, drop.from), 'applied');
+        noteDropped(next, h.entries.slice(drop.to), 'undone');
         await atomicWrite(this.local('history', 'history.json'), toJson(next));
         this.history = next;
         this.emit('history');
@@ -2398,7 +2434,8 @@ export class ProjectSession extends EventEmitter {
       canRedo: h.cursor < h.entries.length && !this.activeRun,
       undoLabel: h.entries[h.cursor - 1]?.label,
       redoLabel: h.entries[h.cursor]?.label,
-      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId }))
+      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId })),
+      ...(h.droppedRuns ? { droppedRuns: { ...h.droppedRuns } } : {})
     };
   }
 
@@ -3505,7 +3542,39 @@ function emptyHistory(): HistoryFile {
  * older format is dropped when it is read, which also covers a crash partway through updating the project.
  */
 function usableHistory(file: HistoryFile | null): HistoryFile {
-  return file && file.schemaVersion === SCHEMA_VERSION ? file : emptyHistory();
+  if (file && file.schemaVersion === SCHEMA_VERSION) return file;
+  const h = emptyHistory();
+  // An older format's steps go, but where each AI step stood when they went is still true of the site, so its chat
+  // turn keeps it (issue 276). A newer format, or an undo position that does not fit its steps, says nothing sure.
+  const older = !!file && typeof file === 'object' && olderFormat(file.schemaVersion);
+  if (older && Array.isArray(file.entries) && Number.isInteger(file.cursor) && file.cursor >= 0 && file.cursor <= file.entries.length) {
+    const before = file.droppedRuns && typeof file.droppedRuns === 'object' && !Array.isArray(file.droppedRuns) ? Object.entries(file.droppedRuns) : [];
+    for (const [runId, status] of before) if (status === 'applied' || status === 'undone') noteDropped(h, [{ runId } as HistoryEntry], status);
+    // By each step's own place: a malformed one is skipped where it stands, never moving another across the cursor.
+    noteDropped(h, file.entries.slice(0, file.cursor), 'applied');
+    noteDropped(h, file.entries.slice(file.cursor), 'undone');
+  }
+  return h;
+}
+
+/** A format version before this one: the first format had none. */
+function olderFormat(v: unknown): boolean {
+  return v === undefined || (Number.isInteger(v) && (v as number) > 0 && (v as number) < SCHEMA_VERSION);
+}
+
+/** Note in `h` each AI step of `dropped`, which History is letting go, as standing `status` (see HistoryFile.droppedRuns). */
+function noteDropped(h: HistoryFile, dropped: Array<HistoryEntry | null | undefined>, status: DroppedRun) {
+  const runs = dropped.flatMap((e) => (e && typeof e === 'object' && typeof e.runId === 'string' && e.runId ? [e.runId] : []));
+  if (!runs.length) return;
+  const map: Record<string, DroppedRun> = { ...h.droppedRuns };
+  for (const runId of runs) {
+    // The newest standing goes last, so the oldest are the first let go past the limit.
+    delete map[runId];
+    map[runId] = status;
+  }
+  const ids = Object.keys(map);
+  for (const runId of ids.slice(0, Math.max(0, ids.length - DROPPED_RUN_LIMIT))) delete map[runId];
+  h.droppedRuns = map;
 }
 
 /** Compare disk content with the expected document, ignoring JSON formatting and treating a missing authored source as empty. */
