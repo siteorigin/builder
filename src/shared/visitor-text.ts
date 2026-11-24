@@ -3,10 +3,10 @@ import { siteLanguage } from './languages';
 import { clipText } from './not-found';
 
 /**
- * The words a generated site says on its own, around the author's content: the skip link, the menu button, landmark
- * names, a contact form's progress, search results, the image viewer and the video player. Each comes in the
- * language of the page it is on, from the author's own wording for that language when there is one, then the
- * built-in wording for the language, then English.
+ * The words a generated site says on its own, around the author's content: the skip link, the menu and submenu
+ * buttons, landmark names, a contact form's progress, search results, the image viewer and the video player. Each
+ * comes in the language of the page it is on, from the author's own wording for that language when there is one,
+ * then the built-in wording for the language, then English.
  */
 
 export interface VisitorTextField {
@@ -23,6 +23,7 @@ export const VISITOR_TEXT_KEYS = [
   'skipLink',
   'menu',
   'mainNav',
+  'submenu',
   'home',
   'formSubmit',
   'formSending',
@@ -71,6 +72,7 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'skipLink', label: 'Skip link', hint: 'The first link keyboard users reach, which jumps past the header.' },
       { key: 'menu', label: 'Menu button', hint: 'The menu button on phones. Screen readers also say whether the menu is open.' },
       { key: 'mainNav', label: 'Main navigation', hint: 'The name screen readers give the header’s links.' },
+      { key: 'submenu', label: 'Submenu button', hint: 'The button beside a header link that shows the links under it.', fills: ['link'] },
       { key: 'home', label: 'Home link', hint: 'The name of the logo’s link on a header without a site name, whose logo has no alternative text.' }
     ]
   },
@@ -131,6 +133,7 @@ const EN: VisitorText = {
   skipLink: 'Skip to content',
   menu: 'Menu',
   mainNav: 'Main',
+  submenu: '{link} submenu',
   home: 'Home',
   formSubmit: 'Send message',
   formSending: 'Sending…',
@@ -169,6 +172,7 @@ const AR: VisitorText = {
   skipLink: 'انتقل إلى المحتوى',
   menu: 'القائمة',
   mainNav: 'القائمة الرئيسية',
+  submenu: 'قائمة {link} الفرعية',
   home: 'الصفحة الرئيسية',
   formSubmit: 'إرسال الرسالة',
   formSending: 'جارٍ الإرسال…',
@@ -207,6 +211,7 @@ const HE: VisitorText = {
   skipLink: 'דילוג לתוכן',
   menu: 'תפריט',
   mainNav: 'תפריט ראשי',
+  submenu: 'תפריט המשנה של {link}',
   home: 'דף הבית',
   formSubmit: 'שליחת ההודעה',
   formSending: 'בשליחה…',

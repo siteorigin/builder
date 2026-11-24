@@ -158,8 +158,9 @@ const PHONE = '+1 555 0134';
 const SERVICE = 'https://forms.test/f/abc123';
 
 /**
- * A site in Arabic with an About page in Hebrew and a Contact page in English, a contact form on its home page and
- * a phone link in its footer; the author has their own Arabic wording for the menu button.
+ * A site in Arabic with an About page in Hebrew and a Contact page in English, a contact form on its home page, a
+ * Contact link in the header's About submenu and a phone link in its footer; the author has their own Arabic wording
+ * for the menu button.
  */
 function trilingualSite() {
   let s = fresh();
@@ -171,6 +172,8 @@ function trilingualSite() {
   const form = makeInstance(s.components[installComponent(s, 'contact.form')], { provider: 'endpoint', endpoint: SERVICE, submitLabel: '' });
   home.nodes[form.id] = form;
   home.rootIds.push(form.id);
+  const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+  header.props = { ...header.props, links: (header.props.links as Array<{ label: string }>).map((l) => (l.label === 'Contact' ? { ...l, sub: true } : l)) };
   const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
   footer.props = { ...footer.props, contact: [{ id: 'c1', label: PHONE, link: { type: 'tel', target: '+15550134' } }] };
   const files = generateProject(s);
@@ -289,14 +292,15 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
     const page = await open(390);
     try {
       await page.evaluate(() => ((globalThis as unknown as { same: boolean }).same = true));
-      const steps: Array<[string, string, string, string, string, string]> = [
-        // route, lang, dir, the menu button's name (the author's own in Arabic), the skip link, the navigation's name
-        [site.routes.home, 'ar', 'rtl', 'اعرض القائمة', 'انتقل إلى المحتوى', 'القائمة الرئيسية'],
-        [site.routes.he, 'he', 'rtl', 'תפריט', 'דילוג לתוכן', 'תפריט ראשי'],
-        [site.routes.en, 'en', 'ltr', 'Menu', 'Skip to content', 'Main'],
-        [site.routes.home, 'ar', 'rtl', 'اعرض القائمة', 'انتقل إلى المحتوى', 'القائمة الرئيسية']
+      const steps: Array<[string, string, string, string, string, string, string]> = [
+        // route, lang, dir, the menu button's name (the author's own in Arabic), the skip link, the navigation's name,
+        // the About submenu button's name
+        [site.routes.home, 'ar', 'rtl', 'اعرض القائمة', 'انتقل إلى المحتوى', 'القائمة الرئيسية', 'قائمة About الفرعية'],
+        [site.routes.he, 'he', 'rtl', 'תפריט', 'דילוג לתוכן', 'תפריט ראשי', 'תפריט המשנה של About'],
+        [site.routes.en, 'en', 'ltr', 'Menu', 'Skip to content', 'Main', 'About submenu'],
+        [site.routes.home, 'ar', 'rtl', 'اعرض القائمة', 'انتقل إلى المحتوى', 'القائمة الرئيسية', 'قائمة About الفرعية']
       ];
-      for (const [route, lang, dir, menu, skip, nav] of steps) {
+      for (const [route, lang, dir, menu, skip, nav, submenu] of steps) {
         await page.evaluate((id) => (globalThis as unknown as { go: (id: string) => void }).go(id), route);
         const read = (await page.evaluate(READ)) as { lang: string; dir: string; direction: string; overflow: number; toggleSide: string };
         expect([route, read.lang, read.dir, read.direction]).toEqual([route, lang, dir, dir]);
@@ -312,6 +316,14 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
         await expect(page.getByRole('navigation', { name: nav, exact: true }).count()).resolves.toBe(1);
         await expect(page.locator('.so-header__menu[open]').count()).resolves.toBe(1);
         expect(await menuName(page)).toBe(menu);
+        // The button beside About shows the links under it, indented from the start edge of the page: the right
+        // when it runs right to left.
+        await page.getByRole('button', { name: submenu, exact: true }).click();
+        const indent = await page.locator('.so-header__sub').evaluate((el) => {
+          const style = (globalThis as unknown as { getComputedStyle: (e: unknown) => { borderLeftWidth: string; borderRightWidth: string } }).getComputedStyle(el);
+          return [style.borderLeftWidth, style.borderRightWidth];
+        });
+        expect(indent).toEqual(dir === 'rtl' ? ['0px', '2px'] : ['2px', '0px']);
         await page.locator('.so-header__toggle').click();
         await expect(page.locator('.so-header__menu[open]').count()).resolves.toBe(0);
       }
