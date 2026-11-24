@@ -58,7 +58,7 @@ interface ActionsModule {
   placeAsset(assetId: string, shown: string): Promise<boolean>;
   insert(spec: { primitive?: string; componentId?: string; definitionId?: string; text?: string }, label: string): Promise<void>;
   insertPlan(spec: { primitive?: string; componentId?: string; definitionId?: string }): { role: string; at: Placement['at'] };
-  insertionPoint(kind: 'section' | 'element'): Placement['at'];
+  insertionPoint(kind: 'section' | 'element', from?: unknown): Placement['at'];
 }
 
 interface ReviewModule {
@@ -752,13 +752,13 @@ describe('placing a library image from Assets (issue #13)', () => {
   });
 
   it('reads a part or repeated item of a placed section as that section when inserting, on a page and inside Edit everywhere (#510)', async () => {
-    const { owner, page, gallery, item, galleryName } = await library();
+    const { home, owner, page, gallery, item, galleryName } = await library();
     const state = () => session!.state;
     const rootIds = () => [...page().rootIds];
     const definitionOf = (id: string) => state().components[(page().nodes[id] as InstanceNode).definitionId];
     const content = (id: string) => (page().nodes[id] as InstanceNode).slots?.content ?? [];
-    const picture = Object.values(definitionOf(gallery).tree!.nodes).find((n) => n.kind === 'image')!;
-    const pick = { owner, instancePath: [gallery], nodeId: picture.id, itemPath: [item] };
+    // The Gallery's own Image part, in one of its repeated items.
+    const pick = { owner, instancePath: [gallery], nodeId: definitionOf(gallery).parts.image.nodeId, partId: 'image', itemPath: [item] };
 
     // A picture in one item of the Gallery, which takes no content: a section, and an element in a new section of its own,
     // go right after the Gallery, and the Insert line says so. First on Home as it is (it ends in a component that takes
@@ -807,10 +807,12 @@ describe('placing a library image from Assets (issue #13)', () => {
     expect(content(last)).toEqual(lastContent);
     store.setState({ selection: container });
     const length = rootIds().length;
+    const beforeSection = rootIds();
     await actions.insert({ componentId: 'layout.section' }, 'Section');
     expect(rootIds()).toHaveLength(length + 1);
     expect(rootIds()[0]).toBe(first);
-    expect(rootIds().at(-1)).toBe(last);
+    expect(beforeSection).not.toContain(rootIds()[1]);
+    expect(rootIds().slice(2)).toEqual(beforeSection.slice(1));
 
     // Edit everywhere: a section placed in a component's design is read the same way, from a part of it.
     const stack = (await write([{ type: 'node.insert', owner, parentId: first, slot: 'content', primitive: 'stack' }])).results![0].nodeId as string;
@@ -819,9 +821,20 @@ describe('placing a library image from Assets (issue #13)', () => {
     const root = state().components[card].tree!.rootIds[0];
     const nested = (await write([{ type: 'node.insert', owner: inside, parentId: root, componentId: 'layout.section' }])).results![0].nodeId as string;
     const nestedDef = state().components[(state().components[card].tree!.nodes[nested] as InstanceNode).definitionId];
-    store.setState({ definitionMode: { definitionId: card }, selection: { owner: inside, instancePath: [nested], nodeId: nestedDef.parts.container.nodeId, partId: 'container' } });
+    const part = { owner: inside, instancePath: [nested], nodeId: nestedDef.parts.container.nodeId, partId: 'container', itemPath: ['row-1'] };
+    store.setState({ definitionMode: { definitionId: card, returnPageId: home }, selection: part });
     expect(actions.insertionPoint('element')).toEqual({ owner: inside, parentId: nested, slot: 'content' });
     expect(actions.insertionPoint('section')).toEqual({ owner: inside, parentId: root });
+    // The part given outright is read the same, whatever the selection holds.
+    store.setState({ selection: null });
+    expect(actions.insertionPoint('element', part)).toEqual({ owner: inside, parentId: nested, slot: 'content' });
+    expect(actions.insertionPoint('section', part)).toEqual({ owner: inside, parentId: root });
+    // And the click puts the element in the nested section's slot.
+    store.setState({ selection: part });
+    await actions.insert({ primitive: 'heading' }, 'Heading');
+    const slotted = (state().components[card].tree!.nodes[nested] as InstanceNode).slots?.content ?? [];
+    expect(slotted).toHaveLength(1);
+    expect(state().components[card].tree!.nodes[slotted[0]]).toMatchObject({ kind: 'text' });
   });
 
   it('keeps a formatting command its own Undo step, even right after typing in the same field', async () => {

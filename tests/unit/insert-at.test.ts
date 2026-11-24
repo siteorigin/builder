@@ -297,11 +297,11 @@ describe('a part or repeated item inside a placed section inserts beside that se
         const picks: Array<[string, ElementRef, string]> = [
           ['a part of the first Section', container(p, p.intro), p.intro],
           ['a part of a card inside the second Section’s grid', part(p, p.card, placement(p, p.card).tree!.rootIds[0]), p.section],
-          ['a part of the last component', inBand(p), p.band]
+          ['a part of the Closing band', inBand(p), p.band]
         ];
-        for (const [, from, enclosing] of picks) {
+        for (const [name, from, enclosing] of picks) {
           const at = insertAt(p.state, p.owner, 'section', from)!;
-          expect(at).toEqual({ owner: p.owner, parentId: null, index: home(p.state).rootIds.indexOf(enclosing) + 1 });
+          expect(at, name).toEqual({ owner: p.owner, parentId: null, index: home(p.state).rootIds.indexOf(enclosing) + 1 });
           expect(after(p, at)).toBe(enclosing);
           expect(sectionWhere(p.state, at)).toEqual({ lead: 'after', target: nodeLabel(p.state, p.owner, enclosing) });
           // The placement itself picked says the same.
@@ -361,7 +361,9 @@ describe('a part or repeated item inside a placed section inserts beside that se
         }
         expect(insertAt(p.state, p.owner, 'section', inBand(p, { itemPath: item }))).toEqual({ owner: p.owner, parentId: null, index: home(p.state).rootIds.indexOf(p.band) + 1 });
         // Two levels deep (a repeated item of a component placed in a section's design) is still the outer placement.
-        expect(insertAt(p.state, p.owner, 'section', { owner: p.owner, instancePath: [p.intro, 'nested'], nodeId: 'deep', itemPath: item })).toEqual({ owner: p.owner, parentId: null, index: 1 });
+        const deep: ElementRef = { owner: p.owner, instancePath: [p.intro, 'nested'], nodeId: 'deep', itemPath: item };
+        expect(insertAt(p.state, p.owner, 'section', deep)).toEqual({ owner: p.owner, parentId: null, index: 1 });
+        expect(insertAt(p.state, p.owner, 'element', deep)).toEqual({ owner: p.owner, parentId: p.intro, slot: 'content' });
       });
     });
   }
@@ -381,5 +383,7 @@ describe('a part or repeated item inside a placed section inserts beside that se
     expect(insertAt(state, owner, 'section', from)).toEqual({ owner, parentId: root });
     expect(insertAt(state, owner, 'section', from)).toEqual(insertAt(state, owner, 'section', ref(owner, first)));
     expect(insertAt(state, owner, 'element', from)).toEqual(insertAt(state, owner, 'element', ref(owner, first)));
+    // A repeated item of it too.
+    for (const role of ['section', 'element'] as const) expect(insertAt(state, owner, role, { ...from, itemPath: ['row-1'] })).toEqual(insertAt(state, owner, role, from));
   });
 });
