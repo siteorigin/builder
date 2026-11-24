@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
 
-const { WORK, cleanup } = scratch('site-details');
+const { WORK, SHOTS, cleanup } = scratch('site-details');
 const { app, win, errors } = await launch(WORK);
 await createProject(win, { name: 'Kloof Studio', parentDir: join(WORK, 'sites'), starter: 'business' });
 const dir = join(WORK, 'sites', 'kloof-studio');
@@ -30,7 +30,7 @@ const menu = (label) =>
 
 const status = () => win.locator('.toolbar .save-state');
 const head = () => win.locator('#dock-panel-styles button.section-head', { hasText: 'Site details' });
-const details = () => win.locator('#dock-panel-styles .section').filter({ has: head() });
+const details = () => win.locator('#dock-panel-styles .section').filter({ has: win.locator('button.section-head', { hasText: 'Site details' }) });
 const field = (name) => details().locator('.field').filter({ has: win.locator('label', { hasText: name }) });
 const input = (name) => field(name).getByRole('textbox', { name, exact: true });
 const error = (name) => field(name).locator('.field-error');
@@ -59,6 +59,7 @@ const describedBy = await input('Public URL').getAttribute('aria-describedby');
 assert.equal(await error('Public URL').getAttribute('id'), describedBy, 'the reason describes the field');
 assert.equal(await status().innerText(), 'Unsaved change', 'the toolbar does not claim the change is saved');
 assert.equal(site().baseUrl, undefined, 'nothing invalid was saved');
+await field('Public URL').screenshot({ path: join(SHOTS, 'site-details-url-refused.png') });
 
 step('Add https:// saves the address it offers and clears the reason');
 await field('Public URL').getByRole('button', { name: 'Add https://' }).click();
