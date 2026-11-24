@@ -924,6 +924,56 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .section-head[aria-expanded='false'] svg.chev { transform: rotate(-90deg); }
 .section-body { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 11px; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* Component authoring. Where a shared design is used, and the property editor: one compact row per property
+   (label, code name, type, a summary of its settings), with the rest behind the row's disclosure. */
+.placement-list { list-style: none; margin: 0; padding: 0; max-height: 168px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.placement-list li { display: flex; align-items: center; gap: 12px; min-height: 28px; padding: 3px 10px; }
+.placement-list li + li { border-top: 1px solid var(--border); }
+.placement-count { flex: none; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.placement-list li .grow { overflow-wrap: anywhere; }
+.placement-reach { color: var(--text-2); }
+/* Errors in these forms carry the danger icon with their words, and mark the field they belong to. */
+.authoring-form :is(.input, .textarea)[aria-invalid='true']:not(:focus) { border-color: var(--red); }
+:is(.authoring-form, .schema-row) .field-error { display: flex; align-items: flex-start; gap: 5px; line-height: 1.4; }
+:is(.authoring-form, .schema-row) .field-error::before { content: ''; flex: none; width: 13px; height: 13px; margin-top: 2px; background: var(--red); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E") center / contain no-repeat; }
+.schema-row .field-error { color: var(--text); }
+.schema-editor { display: flex; flex-direction: column; gap: 4px; padding: 2px 4px 4px; }
+.schema-head { position: sticky; top: 0; z-index: 2; display: flex; flex-direction: column; gap: 6px; padding: 2px 0 4px; background: var(--panel); }
+.schema-intro .mono { white-space: nowrap; }
+.schema-label { font-weight: 500; }
+.schema-name:not(:focus) { color: var(--text-2); }
+.schema-bar { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.schema-intro { flex: 1; min-width: 0; margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.schema-problems { flex: none; border-color: var(--red); background: var(--red-soft); color: var(--red); }
+.schema-problems:hover:not(:disabled) { background: var(--raised); }
+.schema-add { flex: none; }
+.schema-undo { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 3px 4px 3px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text); }
+.schema-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) 112px minmax(0, 1.3fr); align-items: center; gap: 6px; }
+.schema-cols { padding: 0 5px 5px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 500; color: var(--text-2); }
+.schema-cols > span { padding-left: 9px; }
+.schema-cols > span:last-child { padding-left: 8px; }
+.schema-row { min-width: 0; margin: 0; padding: 4px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); transition: background-color 120ms; }
+.schema-row:has(:focus-visible) { background: var(--accent-soft); }
+.schema-row.open { margin-block: 2px; border-color: var(--border-strong); background: var(--panel-2); }
+.schema-row.open:has(:focus-visible) { background: color-mix(in srgb, var(--accent) 4%, var(--panel-2)); }
+.schema-row.invalid { border-color: var(--red); }
+.schema-row :is(.input, .select, .textarea)[aria-invalid='true'] { border-color: var(--red); }
+.schema-row-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 5px 0 8px; border: 0; border-radius: var(--r-sm); background: var(--hover); font-size: 12px; color: var(--text-2); text-align: left; }
+.schema-row-toggle:hover:not(:disabled) { background: var(--active); color: var(--text); }
+.schema-row-toggle .ellipsis { flex: 1; min-width: 0; }
+.schema-chevron { width: 14px; height: 14px; flex: none; color: var(--text-2); transition: transform 120ms; }
+.schema-row-toggle[aria-expanded='true'] .schema-chevron { transform: rotate(180deg); }
+.schema-toggle-alert { width: 13px; height: 13px; flex: none; color: var(--red); }
+.schema-row-error { display: flex; align-items: flex-start; gap: 5px; padding: 5px 3px 2px; font-size: 12px; line-height: 1.4; color: var(--text); }
+.schema-row-error svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--red); }
+.schema-row-settings:not([hidden]) { display: flex; flex-direction: column; gap: 8px; margin-top: 5px; padding: 10px 6px 4px; border-top: 1px solid var(--border); }
+.schema-row-settings .textarea { min-height: 54px; font-size: 12px; }
+.schema-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.schema-check { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; min-height: 26px; font-size: 12px; color: var(--text); }
+.schema-check input { margin: 0; accent-color: var(--accent); }
+.schema-row-foot { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+.schema-empty { padding: 36px 24px; }
+.schema-empty .btn svg { width: 15px; height: 15px; }
 /* A changed value is marked by a small reset button beside its label (the mark is the action), so unset
    rows keep their controls at full width. */
 .reset-dot { display: inline-grid; place-items: center; width: 24px; height: 24px; margin: -4px 0; flex: none; border: 0; border-radius: var(--r-xs); background: none; color: var(--accent-text); }
