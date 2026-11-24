@@ -92,6 +92,8 @@ try {
       'desktop.events:observe',
       'files.stageImport:fixture',
       'files.list:observe',
+      'ui.snapshot:observe',
+      'ui.locate:observe',
       'session.close:session'
     ]
   );

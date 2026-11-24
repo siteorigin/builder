@@ -91,10 +91,13 @@ describe('replies', () => {
     expect(errorInfo(new DriverError('BUSY', 'later', { retryable: true }))).toEqual({ code: 'BUSY', message: 'later', retryable: true });
   });
 
-  it('version 1 has a fixed set of error codes', () => {
+  it('version 1 has a fixed set of error codes, added to and never changed', () => {
     expect([...ERROR_CODES].sort()).toEqual(
       [
         'ALREADY_STARTED',
+        'AMBIGUOUS_TARGET',
+        'STALE_REF',
+        'TARGET_NOT_FOUND',
         'APP_EXITED',
         'BAD_REQUEST',
         'BUILD_MISSING',

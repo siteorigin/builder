@@ -1611,8 +1611,21 @@ export function Canvas() {
     requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is(input, button, [tabindex="0"])')?.focus());
   };
 
+  // Where the selection shows on the page, as the page's own element ids: what the outline is drawn around.
+  const selectionShown = selection ? descFor(selection) : null;
+
   return (
-    <main ref={canvasRef} tabIndex={-1} className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`} aria-label="Website preview">
+    <main
+      ref={canvasRef}
+      tabIndex={-1}
+      className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`}
+      aria-label="Website preview"
+      // Read by the test driver's UI snapshots (tests/driver): which opening of a project this is, whether the frame's
+      // page is ready, and the selection (absent: none; empty: one that does not show on this page).
+      data-opening={workspaceKey}
+      data-frame={frameReady ? 'ready' : 'loading'}
+      data-selection={selection ? (selectionShown ? JSON.stringify(selectionShown) : '') : undefined}
+    >
       {runtimeCard && <div className="canvas-state">{runtimeCard}</div>}
       {/* Said in the strip above the page (see frame-status below), and here for screen readers. */}
       <p className="sr-only" role="status">

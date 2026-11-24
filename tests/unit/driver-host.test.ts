@@ -63,6 +63,8 @@ describe('a session before it starts', () => {
       ['desktop.events', 'observe'],
       ['files.stageImport', 'fixture'],
       ['files.list', 'observe'],
+      ['ui.snapshot', 'observe'],
+      ['ui.locate', 'observe'],
       ['session.close', 'session']
     ]);
     expect(Object.fromEntries(d.capabilities.map((c: any) => [c.op, c.defaultTimeoutMs]))).toEqual({
@@ -76,6 +78,8 @@ describe('a session before it starts', () => {
       'desktop.events': 10000,
       'files.stageImport': 10000,
       'files.list': 10000,
+      'ui.snapshot': 15000,
+      'ui.locate': 15000,
       'session.close': 60000
     });
   });
@@ -95,6 +99,8 @@ describe('a session before it starts', () => {
   it('answers what it cannot do with the matching error', async () => {
     const s = new Session({ appRoot });
     expect(err(await s.call(req('window.info'))).error.code).toBe('NOT_STARTED');
+    expect(err(await s.call(req('ui.snapshot'))).error.code).toBe('NOT_STARTED');
+    expect(err(await s.call(req('ui.locate', { args: { role: 'button' } }))).error.code).toBe('NOT_STARTED');
     expect(err(await s.call(req('window.click'))).error).toMatchObject({ code: 'UNKNOWN_OP', details: { ops: Object.keys(OPERATIONS) } });
     const broken = err(await s.call('{"v":1,'));
     expect([broken.id, broken.error.code]).toEqual([null, 'BAD_REQUEST']);

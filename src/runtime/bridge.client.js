@@ -3660,6 +3660,9 @@ style.textContent =
   ' html[data-so-editing] [data-appear-state]:not(#so-editor) { animation: none !important; }';
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);
+// This document's page is hydrated and its bridge is listening, in Edit and in Preview alike (data-so-editing alone
+// cannot tell a page previewed as visitors see it from one still loading). The test driver reads it.
+document.documentElement.toggleAttribute('data-so-bridge', true);
 const previewAtStart = previewState();
 // An isolated component preview opened on its own, with no editor frame around it: the editor photographs it for
 // the thumbnails in Insert (src/main/thumb-capture.ts). It shows as visitors see it, and offers one call that waits
