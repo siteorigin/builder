@@ -174,7 +174,7 @@ function optionalContent(def: ComponentDefinition): Set<string> {
     if ('$item' in ref) {
       const list = enclosingRepeatProp(def, nodeId);
       if (list) out.add(`${list}[]${ref.$item}`);
-    } else out.add(ref.field ? `${ref.$prop}.${ref.field}` : ref.$prop);
+    } else if ('$prop' in ref) out.add(ref.field ? `${ref.$prop}.${ref.field}` : ref.$prop);
   };
   for (const n of Object.values(def.tree?.nodes ?? {})) {
     add(n.id, n.when, 'when');
