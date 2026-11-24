@@ -6,6 +6,7 @@ import { applyOps, commitOps, undoAction } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import { newId } from '@shared/ids';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
@@ -1475,9 +1476,11 @@ export function Canvas() {
     const drop = async (at: InsertAt) => {
       if (getState().snapshot?.workspaceKey !== opening) return;
       const w = whereFor(st, at, role);
-      const r = await commitOps(insertOps(at, drag.spec, role), `Insert ${drag.name}`, undefined, revision);
+      // Named here, so what is selected is the thing dropped, not the last node the change made (a column of a new Grid).
+      const named = newId('n');
+      const r = await commitOps(insertOps(at, drag.spec, role, named), `Insert ${drag.name}`, undefined, revision);
       if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-      const id = r.results?.at(-1)?.nodeId as string | undefined;
+      const id = r.results?.some((x) => x?.nodeId === named) ? named : undefined;
       const now = getState();
       // Selected while the author is still on the page (or layout) it went on, with the arrival cue once the page shows it.
       const here = owner.kind === 'template' ? now.templateMode?.collectionId === owner.id : now.pageId === owner.id && !now.templateMode;

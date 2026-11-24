@@ -41,7 +41,7 @@ import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@s
 import { validateRoute } from '@shared/routes';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { articleRows, feedLimit, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
-import { cascadeStyles, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
+import { cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
 import type { EditOperation } from '@shared/ops';
@@ -367,6 +367,11 @@ function countStyles(styles: ResponsiveStyles | undefined): number {
   return Object.values(styles ?? {}).reduce((n, sc) => n + Object.keys(sc ?? {}).length, 0);
 }
 const changes = (n: number) => `${n} change${n === 1 ? '' : 's'}`;
+
+/** The values of some properties only, across sizes and states. */
+function pickStyles(styles: ResponsiveStyles | undefined, props: string[]): ResponsiveStyles {
+  return Object.fromEntries(Object.entries(styles ?? {}).map(([k, sc]) => [k, Object.fromEntries(Object.entries(sc ?? {}).filter(([p]) => props.includes(p)))])) as ResponsiveStyles;
+}
 
 /** The nearest repeat enclosing a node in a definition tree, if any. */
 const enclosingRepeat = enclosingRepeatProp;
@@ -849,6 +854,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       ? focusImage(state, devUrl, shownImage(state, { owner, instancePath: [node.id], nodeId: rootNodeId }, rootNode.image), [selectedVariantStyles(def, node.variants, rootNodeId), [rootNode.styles]], 'This picture can’t be shown here.')
       : undefined;
   const overrides = countStyles(node.overrides?.[styledPart]);
+  // The part that lays out what is placed in the section (a Section's Container): its columns are arranged here,
+  // without a trip through Parts.
+  const columns = columnLayoutPart(def);
+  const columnPart = columns ? def.parts[columns.partId] : undefined;
+  const columnChanges = columns ? countStyles(pickStyles(node.overrides?.[columns.partId], columns.controls)) : 0;
   const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
   const makeUnique = () => setState({ modal: { kind: 'make-unique', owner, nodeId: node.id, definitionId: def.id } });
@@ -1013,6 +1023,20 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           />
         </FieldHome>
       </Section>
+      {columns && columnPart && (
+        <Section title="Column layout" id="columns" level={LEVEL} scope={[columnPart.label, columnChanges ? changes(columnChanges) : ''].filter(Boolean).join(' · ')}>
+          <StyleControls
+            styles={node.overrides?.[columns.partId]}
+            inherited={designStyles(def, columnPart.nodeId, node.variants)}
+            wideColumns
+            allowed={columns.controls}
+            only
+            tokens={tokens}
+            onSet={onStyle(columns.partId)}
+            target={`the ${columnPart.label.toLowerCase()}`}
+          />
+        </Section>
+      )}
       {axes.length > 0 && (
         <Section title="Design" id="design" level={LEVEL}>
           {axes.map(([axisId, axis]) => (

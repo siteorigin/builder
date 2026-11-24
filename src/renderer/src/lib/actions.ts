@@ -368,9 +368,10 @@ export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = 
 export async function insert(spec: InsertSpec, label: string) {
   const { role, at } = insertPlan(spec);
   if (!at) return;
-  const r = await applyOps(insertOps(at, spec, role), `Insert ${label}`);
-  const id = r?.at(-1)?.nodeId as string | undefined;
-  if (!id) return;
+  // Named here, so what is selected is the thing inserted, not the last node the change made (a column of a new Grid).
+  const id = newId('n');
+  const r = await applyOps(insertOps(at, spec, role, id), `Insert ${label}`);
+  if (!r?.some((x) => x?.nodeId === id)) return;
   // Selected, and outlined with the arrival cue once the page shows it (scrolled to as it mounts). Inserted while
   // previewing (the command menu), it is just selected: Edit shows it as the author left it.
   const ref: ElementRef = { owner: at.owner, instancePath: [], nodeId: id };

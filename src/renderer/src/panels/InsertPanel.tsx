@@ -590,6 +590,8 @@ const MINE_SHOWN = 4;
 /** The tiles and results that open a larger preview beside the panel: sections and saved components. */
 const peekable = (kind?: string) => kind === 'section' || kind === 'component';
 
+/** The group of column layouts, offered above the theme's sections. */
+const COLUMN_LAYOUTS = 'Column layouts';
 const KIND_SUBJECT: Record<Kind, string> = { section: 'Sections go', element: 'Elements go', component: 'Components go' };
 
 /** How far, in pixels, a pressed tile moves before it is dragged rather than clicked. */
@@ -1070,7 +1072,7 @@ export function InsertPanel() {
     const shipped: Item = { ...base, hay: `${base.hay} theme default ${named.join(' ')}`.toLowerCase().trim(), ...(named.length ? { defaults: named.join(' · ') } : {}) };
     return [shipped, ...options];
   });
-  const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon }));
+  const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: basicHay(b), group: b.layout ? COLUMN_LAYOUTS : 'Basic elements', spec: basicSpec(b), icon: b.icon }));
   // Code components show only in Developer mode, as its setting promises. The library reads by name, and a separate
   // copy (Make unique) sits under the component it was copied from, so a family stays together.
   const defs = Object.values(st.components).filter((d) => d.owner === 'project' && d.category !== 'shell' && (dev || d.kind !== 'code'));
@@ -1162,7 +1164,8 @@ export function InsertPanel() {
   // Components as a group go to one place only when each of them does.
   const componentTo = mine.length && mine.every((it) => sameWhere(whereOf(it), whereOf(mine[0]))) ? whereOf(mine[0]) : null;
   const where: Record<Kind, Where> = { section: sectionTo, element: elementTo, component: componentTo };
-  const topKind: Kind = mine.length || dev ? 'component' : 'section';
+  // The first group shown speaks for the panel at rest: Your components when they lead, else the column layouts.
+  const topKind: Kind = mine.length || dev ? 'component' : 'element';
 
   // One insert at a time: a second click or Enter before the first has landed would read the same insertion point
   // and put both in one place.
@@ -1327,7 +1330,7 @@ export function InsertPanel() {
     if (k !== scrolled) setScrolled(k);
   };
   const jumpToElements = () => {
-    const g = bodyRef.current?.querySelector<HTMLElement>('.insert-group[data-kind="element"]');
+    const g = bodyRef.current?.querySelector<HTMLElement>('.insert-group[data-group="basics"]');
     if (!g) return;
     const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches;
     g.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'instant' });
@@ -1622,6 +1625,26 @@ export function InsertPanel() {
   };
   const libraryWho = (it: Item) =>
     [it.code ? 'code component' : 'component', it.variant ? `${it.variant.axis.toLowerCase()} option of ${it.name}` : '', it.copyOf ? `copy of ${it.copyOf}` : '', it.themeCopy ? `copy of the theme's ${it.themeCopy} section` : ''].filter(Boolean).join(', ');
+  // Basic elements, and the column layouts offered near the top of the panel: a Grid with its columns ready to fill.
+  const elementGroup = (group: 'columns' | 'basics', label: string, list: Item[]) => (
+    <section className="insert-group" data-kind="element" data-group={group} aria-labelledby={`${id}-${group}`}>
+      <h4 className="insert-head" id={`${id}-${group}`}>
+        {label}
+      </h4>
+      <TileGrid
+        items={list}
+        labelledBy={`${id}-${group}`}
+        className={`compact${narrow ? ' list' : ''}`}
+        cols={narrow ? 1 : 2}
+        render={(it) => (
+          <button className={`insert-tile basic${justAdded(it) ? ' just-added' : ''}`} {...tileProps(it)}>
+            {iconFor(it)}
+            <strong>{it.name}</strong>
+          </button>
+        )}
+      />
+    </section>
+  );
   const yours = (
     <section className="insert-group" data-kind="component" aria-labelledby={`${id}-yours`}>
       <h4 className="insert-head" id={`${id}-yours`}>
@@ -1867,6 +1890,7 @@ export function InsertPanel() {
         ) : (
           <>
             {(components > 0 || dev) && yours}
+            {elementGroup('columns', COLUMN_LAYOUTS, elements.filter((it) => it.group === COLUMN_LAYOUTS))}
             {[...groups.entries()].map(([group, list], gi) => (
               <section key={group} className="insert-group" data-kind="section" aria-labelledby={`${id}-g${gi}`}>
                 <h4 className="insert-head" id={`${id}-g${gi}`}>
@@ -1890,23 +1914,7 @@ export function InsertPanel() {
                 />
               </section>
             ))}
-            <section className="insert-group" data-kind="element" aria-labelledby={`${id}-basics`}>
-              <h4 className="insert-head" id={`${id}-basics`}>
-                Basic elements
-              </h4>
-              <TileGrid
-                items={elements}
-                labelledBy={`${id}-basics`}
-                className={`compact${narrow ? ' list' : ''}`}
-                cols={narrow ? 1 : 2}
-                render={(it) => (
-                  <button className={`insert-tile basic${justAdded(it) ? ' just-added' : ''}`} {...tileProps(it)}>
-                    {iconFor(it)}
-                    <strong>{it.name}</strong>
-                  </button>
-                )}
-              />
-            </section>
+            {elementGroup('basics', 'Basic elements', elements.filter((it) => it.group !== COLUMN_LAYOUTS))}
             {components === 0 && !dev && yours}
           </>
         )}

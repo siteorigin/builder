@@ -169,16 +169,44 @@ export const insertAt = (state: ProjectState, owner: OwnerRef, role: InsertRole,
  * that fill it.
  */
 export function insertOps(at: InsertAt, spec: InsertSpec, role: InsertRole, nodeId?: string): EditOperation[] {
-  const named = nodeId ? { newNodeId: nodeId } : {};
-  const what = Object.fromEntries(Object.entries(spec).filter(([, v]) => v !== undefined)) as InsertSpec;
+  const { columns, ...rest } = spec;
+  const starter = rest.primitive === 'grid' && columns !== undefined ? starterColumns(columns) : 0;
+  // A Grid that starts with its columns is named here, so the same change can fill it.
+  const id = nodeId ?? (starter ? newId('n') : undefined);
+  const named = id ? { newNodeId: id } : {};
+  const what = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)) as InsertSpec;
+  const fill = starter ? columnOps(at.owner, id!, starter) : [];
   if (role === 'element' && at.owner.kind === 'page' && !at.parentId) {
     const sectionId = newId('n');
     return [
       { type: 'node.insert', newNodeId: sectionId, owner: at.owner, parentId: null, index: at.index, componentId: 'layout.section' },
-      { type: 'node.insert', ...named, owner: at.owner, parentId: sectionId, slot: 'content', ...what }
+      { type: 'node.insert', ...named, owner: at.owner, parentId: sectionId, slot: 'content', ...what },
+      ...fill
     ];
   }
-  return [{ type: 'node.insert', ...named, owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...what }];
+  return [{ type: 'node.insert', ...named, owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...what }, ...fill];
+}
+
+/** How many empty columns a column layout starts with: two to four, or none for a count that is not one. */
+function starterColumns(n: number): number {
+  return Number.isInteger(n) && n >= 2 && n <= 4 ? n : 0;
+}
+
+/**
+ * The rest of a column layout, once its Grid is in: that many columns side by side on desktop (one above the other
+ * on smaller screens, as any Grid starts), each an empty Stack named for its place, so Layers and Insert's line say
+ * which column is which and a click on the column's frame on the canvas selects it for Insert to fill.
+ */
+function columnOps(owner: OwnerRef, gridId: string, n: number): EditOperation[] {
+  const ops: EditOperation[] = [
+    { type: 'node.rename', owner, nodeId: gridId, name: 'Columns' },
+    { type: 'node.setStyle', owner, nodeId: gridId, scope: 'desktop', property: 'columns', value: n }
+  ];
+  for (let i = 1; i <= n; i++) {
+    const column = newId('n');
+    ops.push({ type: 'node.insert', newNodeId: column, owner, parentId: gridId, primitive: 'stack' }, { type: 'node.rename', owner, nodeId: column, name: `Column ${i}` });
+  }
+  return ops;
 }
 
 /** Where an insert lands, in words: "after" + "Split hero". `node`: the target is an element, not the page itself.

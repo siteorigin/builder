@@ -247,6 +247,31 @@ export function placementStyleControls(def: Pick<ComponentDefinition, 'kind' | '
   return list ? [...new Set([...list, 'hidden'])] : def.kind === 'code' ? CODE_PART_CONTROLS : undefined;
 }
 
+/** The controls that arrange content in columns, in the order Column layout shows them. */
+const COLUMN_CONTROLS = ['layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap', 'align', 'justify'];
+
+/**
+ * The part of a design that lays out what is placed in its slot (a Section's Container), with the column controls
+ * it offers, so a placement's inspector can offer them directly rather than through Parts. Only when exactly one part
+ * (other than the root) holds a slot, and it lets its layout change: a design that offers no such part, or several,
+ * has none. Read from the installed definition, so a Section installed before Column sizes and the separate gaps were
+ * offered offers what it has.
+ */
+export function columnLayoutPart(def: Pick<ComponentDefinition, 'kind' | 'parts' | 'tree'>): { partId: string; controls: string[] } | null {
+  const tree = def.kind === 'managed' ? def.tree : undefined;
+  if (!tree) return null;
+  const nodeOf = (id: string) => (Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined);
+  const holders = Object.entries(def.parts).filter(([id, part]) => {
+    const node = id === 'root' ? undefined : nodeOf(part.nodeId);
+    return node?.kind === 'element' && node.children.some((c) => nodeOf(c)?.kind === 'slot');
+  });
+  if (holders.length !== 1) return null;
+  const [partId] = holders[0];
+  const offered = offeredStyleProps(partStyleControls(def, partId));
+  const controls = COLUMN_CONTROLS.filter((c) => offered.includes(c));
+  return controls.includes('layout') ? { partId, controls } : null;
+}
+
 /** The property IDs a control list offers: an empty or missing list offers every one. */
 export function offeredStyleProps(list: string[] | undefined): string[] {
   return list?.length ? list : STYLE_PROPS.map((p) => p.id);
