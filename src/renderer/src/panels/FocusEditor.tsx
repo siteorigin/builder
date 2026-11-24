@@ -151,6 +151,16 @@ export function FocusEditor({
   const showing = !!image && !!src && failed !== src && !image.missing;
   const cropped = showing && !unreached && fit !== 'contain' && ratio !== null && sourceRatio !== null ? cropAxis(sourceRatio, ratio) : null;
   const crop = cropped && sourceRatio !== null && ratio !== null ? coverCrop(sourceRatio, ratio, point) : null;
+  // Choosing a ratio, fit or size that starts a crop grows the editor from a small reference into the full picture:
+  // bring it into view if it grew past the panel's edge. Not when another element is selected or its picture loads.
+  const root = useRef<HTMLDivElement>(null);
+  const cropKey = `${scope}|${ratio}|${String(fit)}`;
+  const seen = useRef({ target, cropKey, cropping: !!crop });
+  useEffect(() => {
+    const was = seen.current;
+    if (crop && !was.cropping && was.target === target && was.cropKey !== cropKey) root.current?.scrollIntoView({ block: 'nearest' });
+    seen.current = { target, cropKey, cropping: !!crop };
+  });
 
   const pointAt = (e: React.PointerEvent): FocalPoint => {
     const r = pad.current!.getBoundingClientRect();
@@ -374,7 +384,7 @@ export function FocusEditor({
     </label>
   );
   return (
-    <div className={`focus-editor${crop ? ' is-cropping' : ' is-idle'}`}>
+    <div ref={root} className={`focus-editor${crop ? ' is-cropping' : ' is-idle'}`}>
       {crop ? (
         <>
           {captionLine}
