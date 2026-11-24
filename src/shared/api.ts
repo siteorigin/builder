@@ -248,6 +248,18 @@ export interface CreateProjectOptions {
   attempt?: string;
 }
 
+/** A copy of the open project, made in `parentDir` in a folder named after `name` (#176). */
+export interface DuplicateProjectOptions {
+  /** The copy's own name, shown in Recent projects and the toolbar; the site's visitor-facing name is kept. */
+  name: string;
+  parentDir: string;
+  /** The snapshot's workspaceKey of the opening Duplicate was chosen in: any other opening refuses it. */
+  opening: string;
+}
+
+/** Where a refused Duplicate belongs in its dialog: beside the name, beside the folder, or for the whole form. */
+export type DuplicateProjectResult = { ok: true; dir: string; name: string } | { ok: false; field: 'name' | 'location' | 'form'; message: string };
+
 /**
  * What creating a project does about its website tools: install them from copies already on this computer, download
  * some of them, or (without a lock to check) possibly download some.
@@ -630,7 +642,8 @@ export interface BuilderApi {
     trustAndOpen(dir: string): Promise<{ ok: boolean; message?: string }>;
     /** ok is false when the author chose to keep editing a change that could not be saved. */
     close(): Promise<{ ok: boolean }>;
-    duplicate(): Promise<{ ok: boolean; message?: string; dir?: string }>;
+    /** Copy the open project's source to a new folder, which is trusted and listed in Recent projects; the open project stays open. */
+    duplicate(opts: DuplicateProjectOptions): Promise<DuplicateProjectResult>;
     reveal(path?: string): Promise<void>;
   };
   project: {

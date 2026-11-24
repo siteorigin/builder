@@ -826,6 +826,11 @@ export interface ProjectManifest {
   schemaVersion: number;
   projectId: string;
   name: string;
+  /**
+   * The author's own name for this working copy (#176), given when the project was duplicated: Recent projects and the
+   * toolbar show it in place of the site's name, through every rename of the site. Visitors never see it.
+   */
+  workingCopyName?: string;
   createdAt: string;
   template: { id: string; version: string };
   generator: string;

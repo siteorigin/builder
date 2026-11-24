@@ -197,23 +197,22 @@ describe('a project another app is editing', () => {
     const before = snapshotTree(dir);
     const { c } = controller();
     await c.trustAndOpen(dir);
-    for (const target of [join(dir, 'copy'), join(dir, '..draft'), join(dir, 'missing', 'copy')]) {
-      env.saveTo = target;
-      expect(await c.duplicate()).toEqual({ ok: false, message: 'Choose a location outside the project folder.' });
+    // The copy's folder is named after it, in the folder chosen for it: here, the project itself or a folder in it.
+    for (const [parentDir, name] of [[dir, 'copy'], [join(dir, '..draft'), 'copy'], [join(dir, 'missing'), 'copy']]) {
+      expect(await c.duplicate({ name, parentDir, opening: c.openingKey! })).toEqual({ ok: false, field: 'location', message: 'Choose a folder outside the project folder.' });
     }
     // Through a linked folder that leads back into the project, to a folder not made yet.
     const link = join(temp('links'), 'back');
     symlinkSync(dir, link);
-    env.saveTo = join(link, 'new', 'copy');
-    expect((await c.duplicate()).ok).toBe(false);
+    expect(await c.duplicate({ name: 'copy', parentDir: join(link, 'new'), opening: c.openingKey! })).toEqual({ ok: false, field: 'location', message: 'Choose a folder outside the project folder.' });
     await c.close();
     expect(snapshotTree(dir)).toEqual(before);
     // A new folder elsewhere is still fine.
     const { c: again } = controller();
     await again.trustAndOpen(dir);
-    env.saveTo = join(temp('elsewhere'), 'copy');
-    expect((await again.duplicate()).ok).toBe(true);
-    expect(existsSync(join(env.saveTo, 'siteorigin.project.json'))).toBe(true);
+    const elsewhere = temp('elsewhere');
+    expect((await again.duplicate({ name: 'copy', parentDir: elsewhere, opening: again.openingKey! })).ok).toBe(true);
+    expect(existsSync(join(elsewhere, 'copy', 'siteorigin.project.json'))).toBe(true);
   });
 });
 

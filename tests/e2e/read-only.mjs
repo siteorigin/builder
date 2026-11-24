@@ -92,11 +92,12 @@ for (const [what, call, dest] of [
   assert.equal(r.ok, false, `${what} is refused`);
   assert.equal(existsSync(dest), false, `${what} writes nothing`);
 }
-await app.evaluate(({ dialog }, target) => {
-  dialog.showSaveDialog = async () => ({ canceled: false, filePath: target });
-}, join(dir, 'copy'));
-const dup = await win.evaluate(() => window.builder.projects.duplicate());
+const dup = await win.evaluate(async (parentDir) => {
+  const snap = await window.builder.project.snapshot();
+  return window.builder.projects.duplicate({ name: 'copy', parentDir, opening: snap.workspaceKey });
+}, dir);
 assert.equal(dup.ok, false, 'Duplicate into the project is refused');
+assert.equal(dup.field, 'location', 'the refusal is about the folder');
 
 step('closing removes the copy and leaves the folder byte-identical');
 await closeProject();

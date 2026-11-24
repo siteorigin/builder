@@ -4,7 +4,7 @@ import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } fro
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ComponentExportResult, ComponentImportResult, CreateProjectOptions, ExportFormat, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { ComponentExportResult, ComponentImportResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -16,7 +16,7 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, pageLanguageWarning, publicUrlWarning, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
+import { builtPhotosMessage, pageLanguageWarning, publicUrlWarning, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -35,6 +35,7 @@ import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, renameRecent, trust, untrust } from './settings';
+import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
 import { importedCode, planComponentPackage } from '@engine/component-package';
@@ -186,6 +187,8 @@ export class Controller {
   quitting = false;
   /** New projects being made (or unpacked from a ZIP file), each until it is shown or has gone again. */
   private creations = new Map<Promise<unknown>, AbortController>();
+  /** Copies of the open project under way (see duplicate). */
+  private duplicates = new Set<Promise<unknown>>();
   /** Every open under way, so its window going can call off a project ZIP file being opened. */
   private openAborts = new Set<AbortController>();
   /** The open whose ZIP file is being unpacked now: the one the unpacking dialog's Cancel means. */
@@ -503,7 +506,7 @@ export class Controller {
       await this.attach(staged, {}, toolsMissing);
       // The project is open and working: a recent-projects list that cannot be saved must not undo it.
       // Under the name it has by now: the editor shows it from the moment it is attached, and may have renamed it.
-      await addRecent(dir, staged.state.site.name).catch(() => undefined);
+      await addRecent(dir, projectDisplayName(staged.state)).catch(() => undefined);
       progress({ step: 'done', message: 'Ready' });
       return { ok: true };
     } catch (e) {
@@ -730,7 +733,7 @@ export class Controller {
       else await session.close();
       this.send('runtime:status', { state: 'error', message: `The project could not be opened: ${(e as Error).message}` });
     });
-    if (!session.readOnly) await addRecent(dir, session.state.site.name).catch(() => undefined);
+    if (!session.readOnly) await addRecent(dir, projectDisplayName(session.state)).catch(() => undefined);
     return { ok: true };
   }
 
@@ -809,11 +812,12 @@ export class Controller {
       if (!this.stage) void this.dev?.stop();
       void this.startRuntime().catch(() => undefined);
     });
-    // The Recent projects entry follows a rename as soon as it is made, and an undo of one, or one made outside.
-    let listedName = session.state.site.name;
+    // The Recent projects entry follows a rename as soon as it is made, and an undo of one, or one made outside. A
+    // working copy keeps its own name through them (#176).
+    let listedName = projectDisplayName(session.state);
     session.on('changed', (ev) => {
-      if (!session.readOnly && session.state.site.name !== listedName) {
-        listedName = session.state.site.name;
+      if (!session.readOnly && projectDisplayName(session.state) !== listedName) {
+        listedName = projectDisplayName(session.state);
         void renameRecent(session.dir, listedName).catch(() => undefined);
       }
       this.filesChangedAt = Date.now();
@@ -1238,7 +1242,7 @@ export class Controller {
       await s.close();
       // Its entry in Recent projects leaves with the name it has now, whichever way it was left: back to Welcome or
       // for another project. A list that cannot be saved never stops the close.
-      if (!s.readOnly) await renameRecent(s.dir, s.state.site.name).catch(() => undefined);
+      if (!s.readOnly) await renameRecent(s.dir, projectDisplayName(s.state)).catch(() => undefined);
     } finally {
       // The next project loads its own workspace state, or starts empty.
       this.localState = {};
@@ -1246,25 +1250,104 @@ export class Controller {
     }
   }
 
-  async duplicate(): Promise<{ ok: boolean; message?: string; dir?: string }> {
+  /**
+   * Copy the open project to a new folder named after `opts.name` in `opts.parentDir` (#176), as the opening it was
+   * chosen in left it. The copy gets its own project ID and keeps the name it is given in Recent projects and the
+   * toolbar (`workingCopyName`), whatever its site is called; the site's visitor-facing name and every page are copied
+   * as they are. The new folder is claimed first, so a folder already there (empty or not, another copy's or an
+   * export's) is never taken over, and the copy is built in a private folder beside it and moved into place in one
+   * step, so a copy that fails leaves nothing behind. The open project stays open, and nothing in its folder is
+   * written. Quitting waits for a copy under way.
+   */
+  async duplicate(opts: DuplicateProjectOptions): Promise<DuplicateProjectResult> {
+    if (this.quitting) return { ok: false, field: 'form', message: 'SiteOrigin Builder is quitting, so the project was not copied.' };
+    const run = this.duplicateProject(opts);
+    this.duplicates.add(run);
+    try {
+      return await run;
+    } finally {
+      this.duplicates.delete(run);
+    }
+  }
+
+  /** Wait for every copy under way (quitting): each finishes, or removes what it made. */
+  async settleDuplicates(): Promise<void> {
+    while (this.duplicates.size) await Promise.all([...this.duplicates].map((run) => run.catch(() => undefined)));
+  }
+
+  get isDuplicating(): boolean {
+    return this.duplicates.size > 0;
+  }
+
+  private async duplicateProject(opts: DuplicateProjectOptions): Promise<DuplicateProjectResult> {
     const s = this.session;
-    if (!s) return { ok: false };
-    const r = await dialog.showSaveDialog(this.getWindow()!, { title: 'Duplicate project', defaultPath: `${s.dir}-copy`, buttonLabel: 'Duplicate' });
-    if (r.canceled || !r.filePath) return { ok: false };
-    if (existsSync(r.filePath)) return { ok: false, message: 'Choose a new folder name; that location already exists.' };
+    const stale = { ok: false as const, field: 'form' as const, message: 'The project was closed or opened again before it was copied. Choose Duplicate project again.' };
+    const current = () => this.session === s && this.workspaceKey === opts.opening;
+    if (!s || !opts || !current()) return stale;
+    const name = typeof opts.name === 'string' ? opts.name.replace(/\s+/g, ' ').trim() : '';
+    if (!name) return { ok: false, field: 'name', message: 'Enter a name for the copy.' };
+    if (name.length > MAX_COPY_NAME) return { ok: false, field: 'name', message: `Use a name of up to ${MAX_COPY_NAME} characters.` };
+    if (typeof opts.parentDir !== 'string' || !isAbsolute(opts.parentDir)) return { ok: false, field: 'location', message: 'Choose a folder for the copy.' };
+    const dest = join(opts.parentDir, projectFolderName(name));
     // The copy would land inside the folder it copies, and write into a project that may be read-only here.
-    if (isInside(s.dir, r.filePath)) return { ok: false, message: 'Choose a location outside the project folder.' };
-    await copyProjectSource(s.dir, r.filePath);
-    const dest = canonicalDir(r.filePath);
-    const manifestPath = join(dest, MANIFEST_FILE);
-    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-    manifest.projectId = newId('p', 12);
-    manifest.name = `${manifest.name} copy`;
-    manifest.createdAt = new Date().toISOString();
-    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
-    await trust(dest, await configHash(dest));
-    await addRecent(dest, manifest.name);
-    return { ok: true, dir: dest };
+    if (isInside(s.dir, dest)) return { ok: false, field: 'location', message: 'Choose a folder outside the project folder.' };
+    const taken = { ok: false as const, field: 'location' as const, message: `A folder named “${basename(dest)}” is already there. Choose another name or folder.` };
+    // Claimed in the folder the author chose, which must still be there: a folder renamed or removed meanwhile is not
+    // made again under its old name.
+    try {
+      await fs.mkdir(dest);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') return taken;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: false, field: 'location', message: `${opts.parentDir} is no longer there. Choose another folder.` };
+      if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return { ok: false, field: 'location', message: `SiteOrigin Builder does not have permission to write to ${opts.parentDir}. Choose another folder.` };
+      if (code === 'ENOSPC') return { ok: false, field: 'form', message: 'Your disk is full. Free up some space and try again.' };
+      return { ok: false, field: 'location', message: `The copy could not be made in ${opts.parentDir}: ${(e as Error).message}` };
+    }
+    const tmp = `${dest}.${randomUUID()}.tmp`;
+    // The claim is this attempt's to remove until the move begins: Windows lets go of it then, and a folder made in
+    // its place meanwhile is someone else's.
+    let claimed = true;
+    try {
+      // Made beside the claim, never with folders above it: a parent moved meanwhile is not made again.
+      await fs.mkdir(tmp);
+      // Read in turn with the project's own writes, so a save never lands halfway through the copy, and only while the
+      // opening it was asked in is still the open one.
+      await s.exclusive(async () => {
+        if (!current()) throw Object.assign(new Error('stale'), { code: 'STALE_OPENING' });
+        await copyProjectSource(s.dir, tmp);
+      });
+      const manifestPath = join(tmp, MANIFEST_FILE);
+      const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+      manifest.projectId = newId('p', 12);
+      manifest.name = name;
+      manifest.workingCopyName = name;
+      manifest.createdAt = new Date().toISOString();
+      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+      await replaceEmptyFolder(tmp, dest, () => {
+        if (process.platform === 'win32') claimed = false;
+      });
+    } catch (e) {
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+      // Only while it is still the empty folder claimed above.
+      if (claimed) await fs.rmdir(dest).catch(() => undefined);
+      const err = e as NodeJS.ErrnoException;
+      if (err.code === 'STALE_OPENING') return stale;
+      if (err.code === 'ENOENT' && !existsSync(opts.parentDir)) return { ok: false, field: 'location', message: `${opts.parentDir} is no longer there. Choose another folder.` };
+      if (err.code === 'EEXIST') return taken;
+      if (err.code === 'ENOSPC') return { ok: false, field: 'form', message: 'Your disk is full. Free up some space and try again.' };
+      return { ok: false, field: 'form', message: `The project could not be copied: ${err.message}` };
+    }
+    const dir = canonicalDir(dest);
+    // The copy is trusted only as the original is: setup files changed since it was trusted are asked about when the
+    // copy is opened. Being trusted, and listed, are conveniences: the copy is made either way.
+    await configHash(dir)
+      .then(async (hash) => {
+        if (await isTrusted(s.dir, hash)) await trust(dir, hash);
+      })
+      .catch(() => undefined);
+    await addRecent(dir, name).catch(() => undefined);
+    return { ok: true, dir, name };
   }
 
   /**

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Sparkles, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
+import { projectDisplayName } from '@shared/project-name';
 import { api, editRunStatus, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
 import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -153,6 +154,9 @@ export function Toolbar() {
   };
   const act = save.kind === 'error' ? () => setState({ modal: { kind: 'health' } }) : save.kind === 'wait' ? goToHeld : openAi;
   const siteName = state.site.name;
+  // What the author calls this project: a working copy's own name (#176), otherwise the site's.
+  const projectName = projectDisplayName(state);
+  const named = projectName === siteName ? projectName : `${projectName} (site name: ${siteName})`;
   const defName = definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
   const placeName = defName ?? page?.title ?? '';
   const isHome = !definitionMode && page?.id === state.site.homePageId;
@@ -205,7 +209,7 @@ export function Toolbar() {
             className="project-title"
             aria-haspopup="menu"
             aria-expanded={false}
-            title={defName ? `Editing ${defName} everywhere, in ${siteName}: switch page, or open project options` : `${siteName} / ${placeName}: switch page, or open project options`}
+            title={defName ? `Editing ${defName} everywhere, in ${named}: switch page, or open project options` : `${named} / ${placeName}: switch page, or open project options`}
             onClick={(e) =>
               menu.openAt(
                 e.currentTarget,
@@ -222,17 +226,25 @@ export function Toolbar() {
                   { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
                   { separator: true },
                   { label: 'Show project folder', icon: <FolderSearch />, onSelect: () => void api.projects.reveal() },
-                  { label: 'Duplicate project…', icon: <Copy />, onSelect: () => void api.projects.duplicate().then((r) => r.ok && toast(`Duplicated to ${r.dir}`)) },
+                  { label: 'Duplicate project…', icon: <Copy />, onSelect: () => sendCommand('duplicate-project') },
                   { label: 'History…', icon: <History />, onSelect: () => setState({ modal: { kind: 'history' } }) },
                   { label: 'Save version…', icon: <BookmarkPlus />, onSelect: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
                   { separator: true },
                   { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void closeProject() }
                 ],
-                state.site.name
+                projectName
               )
             }
           >
-            <strong className="site ellipsis">{siteName}</strong>
+            <strong className="site ellipsis">{projectName}</strong>
+            {/* A working copy shows its site's name too, so two copies of different sites never read alike. */}
+            {projectName !== siteName && (
+              <span className="brand ellipsis">
+                <span aria-hidden="true">· </span>
+                <span className="sr-only">site name </span>
+                {siteName}
+              </span>
+            )}
             <span className="sep" aria-hidden="true">/</span>
             <span className={`page${defName ? ' def' : ''}`}>
               {/* The house names the home page, unless the page's own name already says so. */}

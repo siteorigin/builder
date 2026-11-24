@@ -654,6 +654,13 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
 .new-project-form .switch::before { content: ''; position: absolute; inset: -2px 0; }
 
 /* A whole path, selectable: the folders it sits in quiet, the folder it names in full ink. */
+/* Duplicate project (#176): the copy's name, a line on what it is for, and its folder. */
+.duplicate-form { display: flex; flex-direction: column; gap: 10px; }
+.duplicate-note { margin: 0; font-size: 12px; line-height: 1.45; text-wrap: pretty; }
+.duplicate-form > .duplicate-note:first-child { font-size: 13px; }
+.duplicate-form .scope-note { font-size: 12px; }
+.duplicate-form .scope-note > svg { margin-top: 2px; }
+.duplicate-form .scope-note > span { text-wrap: pretty; }
 .path-readout { display: flex; align-items: flex-start; gap: 8px; min-width: 0; min-height: 32px; margin: 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 16px; color: var(--text-2); user-select: text; }
 .path-readout > svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--text-3); }
 .path-readout .path-text { min-width: 0; overflow-wrap: anywhere; }
@@ -836,6 +843,8 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
    floor, and only then shortens itself rather than push the chevron out of the button. Whole numbers: a lone item
    with a shrink factor under 1 takes only that fraction of the overflow. */
 .project-title .site { flex: 0 100000 auto; min-width: 56px; font-weight: 500; color: var(--text-2); }
+/* A working copy's site name (#176) gives way before the copy's own name does. */
+.project-title .brand { flex: 0 1000000 auto; min-width: 0; color: var(--text-3); font-weight: 400; }
 .project-title .sep { color: var(--text-3); flex: none; }
 .project-title .page { display: inline-flex; align-items: center; gap: 4px; min-width: 48px; max-width: 200px; flex: 0 1 auto; color: var(--text); font-weight: 600; }
 .project-title .page svg { width: 13px; height: 13px; flex: none; color: var(--text-2); }

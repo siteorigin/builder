@@ -314,7 +314,12 @@ function registerIpc() {
   handle('projects:cancelOpen', () => controller.cancelUnpacking());
   handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
   handle('projects:close', () => controller.closeProject());
-  handle('projects:duplicate', () => controller.duplicate());
+  handle('projects:duplicate', (opts?: unknown) => {
+    const o = (opts ?? {}) as { name?: unknown; parentDir?: unknown; opening?: unknown };
+    if (typeof o.name !== 'string' || typeof o.parentDir !== 'string' || typeof o.opening !== 'string')
+      return { ok: false, field: 'form', message: 'The project could not be copied: no name or folder was given.' };
+    return controller.duplicate({ name: o.name, parentDir: o.parentDir, opening: o.opening });
+  });
   handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
   handle('project:snapshot', () => controller.snapshot());
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());
@@ -845,7 +850,7 @@ app.on('will-quit', () => {
 // leaves the app running. A close already under way still has a preview to stop and its private copy to remove.
 let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
 app.on('before-quit', (e) => {
-  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating)) return;
+  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) return;
   e.preventDefault();
   // Quit again while the editor's question is open: re-ask, which brings back Wait or Leave Anyway if it hung.
   if (quitState === 'asking') void controller.mayLeave();
@@ -862,6 +867,8 @@ app.on('before-quit', (e) => {
       // no project being opened replaces the one closed for it.
       controller.quitting = true;
       await controller.stopCreating();
+      // A copy of the project under way finishes, or removes what it made, before the project closes.
+      await controller.settleDuplicates();
       await controller.close();
     } finally {
       quitState = 'done';
