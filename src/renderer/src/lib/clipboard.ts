@@ -4,7 +4,7 @@
  * depends on the original.
  */
 import { api, applyOps, getState, setState, toast } from '../store';
-import { focusInLayers, focusSelectedRow, groupName, insertionPoint, planLayers, type InsertAt } from './actions';
+import { focusInLayers, focusSelectedRow, groupName, insertionPoint, planLayers, type InsertAt, type LayersPlan } from './actions';
 import { layerRef } from './layer-set';
 import { refLabel } from './model';
 
@@ -23,17 +23,16 @@ export function forgetCopy() {
 }
 
 /** Copy the selected section or element (the whole section when a part of one is selected), or the sections or
- *  elements selected together in Layers. False when nothing is selected to copy. */
-export function copySelection(): boolean {
-  const s = getState();
-  const plan = planLayers(s);
-  if (!plan || !s.snapshot) return false;
+ *  elements selected together in Layers; or what `plan` names (a menu's, made as it opened). False when nothing is
+ *  selected to copy. */
+export function copySelection(plan: LayersPlan | null = planLayers()): boolean {
+  if (!plan) return false;
   const g = plan.group;
   if (g.owner.kind !== 'page') {
     toast(g.owner.kind === 'shell' ? 'The shared header and footer are shared by the pages that show them, so they aren’t copied.' : 'Copy sections from a page. Inside a component, use Duplicate.', 'error');
     return true;
   }
-  const snap = s.snapshot;
+  const snap = plan.snap;
   const label = plan.several ? groupName(snap.state, g) : refLabel(snap.state, layerRef(g.owner, g.ids[0]));
   const sameProject = () => getState().snapshot?.dir === snap.dir;
   const failed = (message?: string) => {
@@ -46,7 +45,7 @@ export function copySelection(): boolean {
     label,
     section: g.parentId === null,
     count: g.ids.length,
-    primary: at(s.selection?.nodeId),
+    primary: at(plan.selection?.nodeId),
     anchor: at(plan.anchor),
     previous: copied,
     clipboardId: api.project.copy(g.owner.id, plan.several ? g.ids : g.ids[0], snap.revision).then(

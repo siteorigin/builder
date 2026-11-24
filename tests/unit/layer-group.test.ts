@@ -59,7 +59,7 @@ const actions = (await load('../../src/renderer/src/lib/actions')) as {
   moveToPage: (pageId: string, plan?: Plan | null) => Promise<string[] | null>;
 };
 const { getState, setState } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void };
-const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: () => boolean; pasteCopy: () => boolean; forgetCopy: () => void };
+const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: (plan?: Plan | null) => boolean; pasteCopy: () => boolean; forgetCopy: () => void };
 
 function refresh<T>(r: T): T {
   setState({ snapshot: { state: session.state, revision: session.revision, history: session.historyInfo(), workspaceKey: opening, aiBusy: false, dir: 'project' } as unknown as ProjectSnapshot });
@@ -241,6 +241,23 @@ describe('sections selected together in Layers', () => {
     expect(ids!.map((id) => session.state.pages[aboutId()].nodes[id].anchor)).toEqual(['gallery', 'praise']);
   });
 
+  it('a link that already went nowhere and moves with its section is not counted again', async () => {
+    const r = await bridge.project.apply(
+      {
+        operations: [
+          { type: 'node.insert', newNodeId: 'n_carrier', owner: home(), parentId: null, index: 0, componentId: 'layout.section' },
+          { type: 'node.insert', owner: home(), parentId: 'n_carrier', slot: 'content', primitive: 'button', text: 'Nowhere' }
+        ]
+      },
+      { label: 'Button' }
+    );
+    const button = r.results![1].nodeId as string;
+    await bridge.project.apply({ operations: [{ type: 'node.setContent', owner: home(), nodeId: button, field: 'link', value: { type: 'page', target: homeId(), anchor: 'nowhere' } }] }, { label: 'Link' });
+    setState({ selection: ref(home(), 'n_carrier'), layerSet: null });
+    expect(await actions.moveToPage(aboutId())).toHaveLength(1);
+    expect(getState().toasts.at(-1)).toMatchObject({ kind: 'info', text: 'Moved Section to the end of About.' });
+  });
+
   it('deletes both as one change, with one Undo beside its notice', async () => {
     const before = JSON.stringify(session.state.pages[homeId()]);
     pickGalleryAndTestimonials();
@@ -310,6 +327,36 @@ describe('copying several selected together, as Layers and ⌘C/⌘V do', () => 
     expect(getState().layerSet).toEqual({ owner: home(), ids: [c1, c2], anchor: c2 });
   });
 
+  it('a menu\'s Copy copies what the menu was opened for, even if the selection moved on since', async () => {
+    pickGalleryAndTestimonials();
+    const plan = actions.planLayers();
+    setState({ selection: ref(home(), roots()[0]) });
+    clipboard.copySelection(plan);
+    await vi.waitFor(() => expect(getState().toasts.at(-1)?.text).toBe('Copied Gallery and Testimonials. Paste them on any page with ⌘V.'));
+  });
+
+  it('pastes containers beside the containers selected, never into the last of them', async () => {
+    const r = await bridge.project.apply(
+      {
+        operations: [
+          { type: 'node.insert', newNodeId: 'n_boxes', owner: home(), parentId: null, index: 0, componentId: 'layout.section' },
+          { type: 'node.insert', owner: home(), parentId: 'n_boxes', slot: 'content', primitive: 'container' },
+          { type: 'node.insert', owner: home(), parentId: 'n_boxes', slot: 'content', primitive: 'container' }
+        ]
+      },
+      { label: 'Boxes' }
+    );
+    expect(r.ok).toBe(true);
+    const [b1, b2] = slotIds('n_boxes');
+    setState({ selection: ref(home(), b2), layerSet: { owner: home(), ids: [b1, b2], anchor: b1 } });
+    clipboard.copySelection();
+    await vi.waitFor(() => expect(getState().toasts.at(-1)?.text).toMatch(/^Copied/));
+    clipboard.pasteCopy();
+    await vi.waitFor(() => expect(slotIds('n_boxes')).toHaveLength(4));
+    expect(slotIds('n_boxes').slice(0, 2)).toEqual([b1, b2]);
+    expect((session.state.pages[homeId()].nodes[b2] as { children: string[] }).children).toEqual([]);
+  });
+
   it('pastes two sections on another page, in order, as one change, selected together', async () => {
     pickGalleryAndTestimonials();
     clipboard.copySelection();
@@ -350,6 +397,7 @@ describe('copying several sections side by side', () => {
     const gallery = sectionOf('media.gallery');
     expect(await session.copy(homeId(), ['n_holder', inner], session.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/side by side/) });
     expect(await session.copy(homeId(), [gallery, sectionOf('testimonials.grid'), gallery], session.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/named twice/) });
+    expect(await session.copy(homeId(), [gallery, gallery], session.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/named twice/) });
     const one = await session.copy(homeId(), gallery, session.revision);
     const r = await session.apply({ operations: [{ type: 'node.paste', clipboardId: one.clipboardId!, toOwner: home(), parentId: null }] }, { label: 'Paste', source: 'user' });
     expect(r.results![0].nodeIds).toEqual([r.results![0].nodeId]);

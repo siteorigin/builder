@@ -225,7 +225,7 @@ export function LayersPanel() {
       ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
       ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), plan, pages, count, primary), 0) }] : []),
       { separator: true },
-      ...(g.owner.kind === 'page' ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => void copySelection() }] : []),
+      ...(g.owner.kind === 'page' ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => void copySelection(plan) }] : []),
       { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateLayers(plan, true) },
       { separator: true },
       { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteLayers(plan) }
@@ -316,7 +316,7 @@ export function LayersPanel() {
       ...(editable
         ? [
             ...(visibility.length || styleItems.length ? [{ separator: true }] : []),
-            ...(ref.owner.kind === 'page' && !definitionMode ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => void copySelection() }] : []),
+            ...(ref.owner.kind === 'page' && !definitionMode ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => void copySelection(plan) }] : []),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             { separator: true },
             { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }

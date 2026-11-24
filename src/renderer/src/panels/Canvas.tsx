@@ -1215,8 +1215,9 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
         if (e.relatedTarget && !ref.current?.contains(e.relatedTarget as Node)) focusIn.current = false;
       }}
     >
-      {canReorder && (
-        // Pointer-only, so it is hidden from assistive tech: Move up and Move down are its equivalent.
+      {canReorder && !group && (
+        // Pointer-only, so it is hidden from assistive tech: Move up and Move down are its equivalent. A drag moves one
+        // element, so it is not offered while layers are selected together (the arrows move them all).
         <span className="icon-btn grip" aria-hidden="true" title="Drag to move" aria-label="Drag to move" onPointerDown={onGrip}>
           <GripVertical />
         </span>

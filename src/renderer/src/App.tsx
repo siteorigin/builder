@@ -12,7 +12,7 @@ import { forgetCopy } from './lib/clipboard';
 import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { endEditingHold, prepareToLeave, projectClosed } from './lib/leave';
-import { keepPagesValid } from './lib/model';
+import { keepPagesValid, onGonePage } from './lib/model';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -40,8 +40,10 @@ export function App() {
         // that is closing names no opening, and is not one.
         if (s.screen !== 'editor' || (snap.workspaceKey && snap.workspaceKey !== s.snapshot?.workspaceKey)) openSnapshot(snap);
         else {
-          // Keep the current page, and the one editing everywhere returns to, valid.
-          setState({ snapshot: snap, runtime: snap.runtime, ...keepPagesValid(snap.state, s.pageId, s.definitionMode) });
+          // Keep the current page, and the one editing everywhere returns to, valid. A selection on a page that has gone
+          // (an Undo took it away) goes with it, so a Redo that brings the page back never leaves it selected, and
+          // acted on, while another page is open.
+          setState({ snapshot: snap, runtime: snap.runtime, ...keepPagesValid(snap.state, s.pageId, s.definitionMode), ...(onGonePage(snap.state, s.selection) ? { selection: null } : {}) });
         }
       }),
       api.on('project:closed', () => {

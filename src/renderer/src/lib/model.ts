@@ -194,6 +194,9 @@ export function keepPagesValid(state: ProjectState, pageId: string | null, defin
   };
 }
 
+/** Whether the selection is on a page the project no longer has (an Undo took it away): it goes with that page. */
+export const onGonePage = (state: ProjectState, selection: ElementRef | null) => selection?.owner.kind === 'page' && !Object.hasOwn(state.pages, selection.owner.id);
+
 /**
  * Where a selected shared header or footer shows: on how many pages, and whether the page on screen is one. An Undo
  * or the AI can hide it on that page while it stays selected, and edits to it still reach the pages that show it.

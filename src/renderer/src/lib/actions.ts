@@ -225,9 +225,30 @@ export async function moveToPage(pageId: string, plan = planLayers(), follow = f
   // one they carry to a section of the page they left), found on a copy of the project before it is sent.
   let broken = 0;
   try {
-    const key = (i: ReturnType<typeof missingSectionLinks>[number]) => JSON.stringify([i.owner, i.nodeId, i.fragment, i.pageId ?? null, i.label]);
-    const before = new Set(missingSectionLinks(st).map(key));
-    broken = missingSectionLinks(applyOperations(st, ops).state).filter((i) => !before.has(key(i))).length;
+    const out = applyOperations(st, ops);
+    // Each moved node's copy, back to the node it was copied from: a break a moved link already had is not new.
+    const source = new Map<string, string>();
+    const pair = (from: string, to: string) => {
+      source.set(to, from);
+      const a = st.pages[g.owner.id].nodes[from];
+      const b = out.state.pages[pageId].nodes[to];
+      if (!a || !b) return;
+      const lb = childLists(b);
+      childLists(a).forEach((l, i) => l.ids.forEach((id, j) => lb[i]?.ids[j] && pair(id, lb[i].ids[j])));
+    };
+    g.ids.forEach((id, i) => typeof out.results[i]?.nodeId === 'string' && pair(id, out.results[i].nodeId as string));
+    const moved = new Set(source.values());
+    type Issue = ReturnType<typeof missingSectionLinks>[number];
+    // A link that stays put counts again when it breaks on one more page (a shared header's); one that moves, by itself.
+    const key = (i: Issue, after: boolean) => {
+      const from = after && i.owner.kind === 'page' && i.owner.id === pageId ? source.get(i.nodeId) : undefined;
+      const owner = from ? g.owner : i.owner;
+      const nodeId = from ?? i.nodeId;
+      const travels = owner.kind === 'page' && owner.id === g.owner.id && moved.has(nodeId);
+      return JSON.stringify([owner, nodeId, i.fragment, i.pageId ?? null, i.label, travels ? null : [...(i.pages ?? [])].sort()]);
+    };
+    const before = new Set(missingSectionLinks(st).map((i) => key(i, false)));
+    broken = missingSectionLinks(out.state).filter((i) => !before.has(key(i, true))).length;
   } catch {
     // The project refuses it, and says why.
   }

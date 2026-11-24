@@ -3,6 +3,7 @@ import type { ElementRef, InstanceNode, NodeTree, OwnerRef, ProjectState } from 
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { onGonePage } from '../../src/renderer/src/lib/model';
 import { duplicateOps, extendTo, groupOf, liveSet, moveIntoOps, moveStepOps, moveToPageOps, rangeOf, removeOps, toggle, besideOf, type LayerSet, type PickResult } from '../../src/renderer/src/lib/layer-set';
 
 /** The Business starter: Home holds hero, logos, features, media, stats, gallery, testimonials, cta. */
@@ -164,6 +165,18 @@ describe('picking several layers in Layers', () => {
     expect(rangeOf(home, t.gallery, t.gallery)).toEqual([t.gallery]);
     // The same node ID selected in another tree is not this set's.
     expect(liveSet(home, at({ kind: 'page', id: t.aboutId }, t.gallery), set)).toBeNull();
+  });
+
+  it('a selection on a page an Undo took away goes with it, so a Redo never brings it back selected off screen', () => {
+    const t = business();
+    const dup = apply(t.s, [{ type: 'page.duplicate', pageId: t.homeId }]);
+    const copyId = dup.results[0].pageId as string;
+    const sel = at({ kind: 'page', id: copyId }, dup.state.pages[copyId].rootIds[0]);
+    expect(onGonePage(dup.state, sel)).toBe(false);
+    expect(onGonePage(t.s, sel)).toBe(true);
+    expect(onGonePage(t.s, at(t.owner, t.gallery))).toBe(false);
+    expect(onGonePage(t.s, { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: 'x' })).toBe(false);
+    expect(onGonePage(t.s, null)).toBe(false);
   });
 
   it('a layer moved away from the others (an Undo, the AI) leaves the set; the ones still beside the selection stay', () => {
