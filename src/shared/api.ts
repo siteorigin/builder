@@ -539,6 +539,25 @@ export interface FontFileData {
   coverage: FontCoverage | null;
 }
 
+/** A component saved as a package file (see exportComponent). */
+export interface ComponentExportResult {
+  ok: boolean;
+  path?: string;
+  notes?: string[];
+  message?: string;
+}
+
+/** A component package imported (see importComponent), with the history entry that undoes it. */
+export interface ComponentImportResult {
+  ok: boolean;
+  definitionId?: string;
+  name?: string;
+  entryId?: string;
+  /** The project's revision once it landed. */
+  revision?: number;
+  message?: string;
+}
+
 export interface ImportChoices {
   /** The opening of the project the files were reviewed in (its snapshot's workspaceKey); any other refuses the import. */
   opening: string;
@@ -634,6 +653,13 @@ export interface BuilderApi {
      * done differently from what was asked (a copy that would be no smaller), without anything having failed.
      */
     importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }>;
+    /**
+     * Save a project component as a package file another project can import, where the author chooses. `notes` says
+     * what the package leaves out. Neither `ok` nor a message: the chooser was closed.
+     */
+    exportComponent(definitionId: string): Promise<ComponentExportResult>;
+    /** Import a component package the author chooses, as one change: the component, what it needs, its styles and images. */
+    importComponent(): Promise<ComponentImportResult>;
     /**
      * An imported font file's bytes and the alphabets it covers, for samples drawn in the file itself. Null once the
      * project (`opening`, its workspace key) has closed, or when the file can't be read.

@@ -529,6 +529,44 @@ export async function importAsset(
   return { record, existing: false, ...noted };
 }
 
+/**
+ * Store an image a component package carries, as the library stores a file it imports: checked, resized copies made,
+ * and written only while `fence` allows. The same picture already in the library is that record. An SVG is stored
+ * only when it is already as the library would rebuild it: one the rebuild would change holds something (a script, an
+ * event handler, a remote file) that no site image may, and is refused rather than quietly changed.
+ */
+export async function importPackageImage(
+  projectDir: string,
+  image: { name: string; mime: string; ext: string; bytes: Buffer },
+  existing: AssetRecord[],
+  fence: WriteFence = unfenced,
+  createdAt = new Date().toISOString()
+): Promise<{ record: AssetRecord; existing: boolean }> {
+  const shown = `${image.name.trim().slice(0, 80) || 'Image'}${image.ext}`;
+  const refuse = refusal(shown, 'was not imported');
+  if (!image.mime.startsWith('image/') || !MIME[image.ext] || MIME[image.ext] !== image.mime) throw refuse('it is not a picture the library takes.');
+  if (image.bytes.length > MAX_BYTES) throw new Error(`${shown} is larger than 25 MB.`);
+  const p = await prepareBytes(shown, image.bytes, image.mime, image.ext, refuse);
+  if (image.mime === 'image/svg+xml' && !p.buf.equals(image.bytes)) throw refuse('it holds scripts, links or other content a site’s images may not have.');
+  const dup = existing.find((a) => a.hash === p.hash && a.mime === p.mime);
+  if (dup) return { record: dup, existing: true };
+  const { stored, files } = await planStore(p, refuse);
+  if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
+  const record: AssetRecord = {
+    id: newId('a'),
+    name: image.name.trim().slice(0, 200) || 'Image',
+    file: stored.file,
+    mime: stored.mime,
+    bytes: stored.bytes,
+    hash: stored.hash,
+    kind: 'image',
+    createdAt,
+    ...(stored.width !== undefined ? { width: stored.width, height: stored.height } : {}),
+    ...(stored.variants ? { variants: stored.variants } : {})
+  };
+  return { record, existing: false };
+}
+
 /** A file the importer named, inside static/assets/: the only kind a library image or document may be restored to. */
 const LIBRARY_FILE = new RegExp(`^static/assets/[a-z0-9][a-z0-9-]*\\.(jpg|png|webp|gif|avif|svg|${DOCUMENT_EXTENSIONS.join('|')})$`);
 

@@ -100,6 +100,13 @@ export interface CheckOptions {
    * such an import cannot be checked and is refused.
    */
   resolve?: (path: string) => string | null | undefined;
+  /** Who wrote code held to the strict policy, as its messages name them. Defaults to the assistant. */
+  author?: string;
+  /**
+   * Files strict code may import besides project code components and the runtime helpers: the exact files the app
+   * generates for the project's own designs (`src/lib/siteorigin/generated/…`), which no one hand-writes.
+   */
+  generated?: (path: string) => boolean;
 }
 
 /** The props a component passes on to places that load a URL, apply CSS or open a link. */
@@ -136,7 +143,7 @@ async function checkSibling(path: string, opts: CheckOptions, reach: Reach): Pro
   if (source === null || source === undefined) return null;
   reach.visiting.add(path);
   try {
-    const r = await check(source, { strict: true, resolve: opts.resolve }, reach);
+    const r = await check(source, { strict: true, resolve: opts.resolve, author: opts.author, generated: opts.generated }, reach);
     const checked = { errors: r.problems.filter((p) => p.severity === 'error'), sinks: r.sinks };
     reach.done.set(path, checked);
     return checked;
@@ -178,11 +185,16 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
     seen.add(key);
     problems.push({ severity, message, ...(line ? { line } : {}) });
   };
-  const forbid = (what: string, node: Node) => add('error', `Code written by the assistant may not use ${what}.`, node);
+  const author = opts.author ?? 'Code written by the assistant';
+  const forbid = (what: string, node: Node) => add('error', `${author} may not use ${what}.`, node);
+  const generated = (spec: string) => {
+    const p = resolveSpec(spec);
+    return !!p && !!opts.generated?.(p);
+  };
   const checkSpec = (spec: unknown, node: Node) => {
     if (typeof spec !== 'string') return;
     if (!importAllowed(spec)) add('error', `"${spec}" is not available in this project. Use relative imports inside src/lib, $lib, svelte or $app modules only.`, node);
-    else if (strict && !importAllowed(spec, true)) forbid(`"${spec}"`, node);
+    else if (strict && !importAllowed(spec, true) && !generated(spec)) forbid(`"${spec}"`, node);
   };
   /** Capability names reached as a property (obj.fetch) or by destructuring ({ fetch } = window). */
   const checkCapability = (name: string, node: Node, onGlobal: boolean, called: boolean) => {
@@ -214,11 +226,11 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
       const path = spec && importAllowed(spec, true) ? resolveSpec(spec) : null;
       if (!path?.startsWith(`${COMPONENT_DIR}/`)) continue;
       const checked = await checkSibling(path, opts, reach);
-      const refuse = (why: string) => add('error', `Code written by the assistant may not import "${spec}", ${why}.`, st);
+      const refuse = (why: string) => add('error', `${author} may not import "${spec}", ${why}.`, st);
       if (checked === null) refuse(opts.resolve ? 'which is not a component in this project' : 'because that component cannot be checked here');
       else if (checked.errors[0]) {
         const first = checked.errors[0];
-        const reason = first.message.match(/^Code written by the assistant may not use (.*)\.$/)?.[1];
+        const reason = first.message.startsWith(`${author} may not use `) ? first.message.slice(`${author} may not use `.length, -1) : undefined;
         refuse(`which ${reason ? `uses ${reason}` : `has a problem: ${first.message.replace(/\.$/, '')}`}${first.line ? ` (line ${first.line})` : ''}`);
       }
       if (checked) for (const sp of st.specifiers as Node[]) if (sp.type === 'ImportDefaultSpecifier') componentSinks.set(String((sp.local as Node).name), checked.sinks);

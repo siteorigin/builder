@@ -20,7 +20,8 @@ import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
+import { defFile, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
+import type { ComponentImport } from '@engine/component-package';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
@@ -1806,8 +1807,11 @@ export class ProjectSession extends EventEmitter {
    * Validate and apply an edit batch. `runId` identifies the AI run that holds the writer lock;
    * manual edits are rejected while a run is active.
    */
-  /** `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies. */
-  apply(batch: EditBatch, opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean }): Promise<ApplyResult> {
+  /**
+   * `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies.
+   * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
+   */
+  apply(batch: EditBatch, opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport }): Promise<ApplyResult> {
     return this.serialize(async () => {
       const fingerprint = sha(JSON.stringify(batch.operations));
       if (opts.idempotencyKey && this.idempotency.has(opts.idempotencyKey)) {
@@ -1830,7 +1834,12 @@ export class ProjectSession extends EventEmitter {
         ops.push(v.op);
       }
       // Checked here, in turn with every other edit and with the editor's clipboard, so what it copies is what lands.
-      const code = opts.codeAllowed === false ? developerModeRefusal(this.state, ops, { clipboards: this.clipboards }) : null;
+      const importing = ops.some((o) => o.type === 'component.import');
+      // A package is read and checked by the editor's import, which is the only way one reaches a project.
+      if (importing && (opts.source === 'ai' || opts.runId))
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can import a component package. Ask the user to import it from the component library.', recoverable: true } };
+      const context = { clipboards: this.clipboards, ...(opts.componentImport ? { componentImport: opts.componentImport } : {}) };
+      const code = opts.codeAllowed === false ? developerModeRefusal(this.state, ops, context) : null;
       if (code) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `${code} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
       // Paste places what the editor copied; an AI run never sends it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'node.paste'))
@@ -1847,7 +1856,7 @@ export class ProjectSession extends EventEmitter {
       let next: ProjectState;
       let results;
       try {
-        ({ state: next, results } = applyOperations(this.state, ops, { clipboards: this.clipboards }));
+        ({ state: next, results } = applyOperations(this.state, ops, context));
       } catch (e) {
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
@@ -1857,6 +1866,9 @@ export class ProjectSession extends EventEmitter {
       // Any authored code that is new or changed must pass the safety checks before it can be saved. Imports
       // are followed into the components as they will be once this batch is saved, whichever order it made them in.
       const resolve = componentSources(next.components);
+      // A package's code was written by someone else, for another project: it is held to the assistant's policy, and
+      // may import the designs it came with as the app generates them here.
+      const designs = importing ? new Set(Object.values(next.components).filter((d) => d.kind === 'managed').map(defFile)) : null;
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
@@ -1865,11 +1877,19 @@ export class ProjectSession extends EventEmitter {
         // Code the AI writes is held to a stricter policy than code a developer writes, and so is an installed pack's
         // own code, which nobody here wrote or reviewed.
         const installed = def.owner === 'theme' && listThemes().some((t) => t.source === 'user' && t.components.some((c) => c.id === def.id));
-        const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai' || installed, filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
+        const errors = (
+          await checkSvelteSource(def.source, {
+            strict: opts.source === 'ai' || installed || importing,
+            filename: def.sourcePath,
+            resolve,
+            ...(designs ? { author: 'Code in a component package', generated: (p: string) => designs.has(p) } : {})
+          })
+        ).filter((p) => p.severity === 'error');
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }
-      const introduced = introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
+      // An import is checked place by place: a problem in what it brings is new even if another component has the same.
+      const introduced = importing ? this.introducedProblems(next) : introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
       if (introduced.length)
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;

@@ -83,6 +83,7 @@ import {
 } from './definitions';
 import { contractConflicts, hiddenSlotContent, themeRefresh } from './theme-updates';
 import { detachInstance } from './detach';
+import { importComponentPackage, type ComponentImport } from './component-package';
 
 export type OpResult = Record<string, unknown>;
 
@@ -123,6 +124,8 @@ export interface ApplyContext {
    * child), was never served there, and keeps nothing at it. applyOperations fills it.
    */
   addressesAtStart?: ReadonlySet<string>;
+  /** A component package the editor read and checked, which a `component.import` in the batch names (see component-package.ts). */
+  componentImport?: ComponentImport;
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -289,6 +292,11 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     }
     case 'component.remove':
       return componentRemove(state, op);
+    case 'component.import': {
+      const input = ctx.componentImport;
+      if (!input || input.id !== op.importId) fail('That component package is no longer open. Import it again.');
+      return importComponentPackage(state, input, { setToken: (st, tokenId, value) => void tokenSet(st, { type: 'token.set', tokenId, value }) });
+    }
     case 'component.setPropSchema':
       return setPropSchema(state, op);
     case 'component.removePropSchema':

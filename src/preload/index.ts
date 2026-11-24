@@ -55,6 +55,8 @@ const api: BuilderApi = {
     redo: invoke('project:redo'),
     reviewImport: invoke('project:reviewImport'),
     importAssets: invoke('project:importAssets'),
+    exportComponent: invoke('project:exportComponent'),
+    importComponent: invoke('project:importComponent'),
     fontFile: invoke('project:fontFile'),
     webCopyPlan: invoke('project:webCopyPlan'),
     makeWebCopy: invoke('project:makeWebCopy'),
@@ -118,4 +120,12 @@ const api: BuilderApi = {
 
 contextBridge.exposeInMainWorld('builder', api);
 // Development-only hooks; the main process registers these handlers only in unpackaged builds.
-contextBridge.exposeInMainWorld('builderTest', { exportStatic: invoke('test:exportStatic'), exportSource: invoke('test:exportSource'), previewComponent: invoke('test:previewComponent'), thumbCaptures: invoke('test:thumbCaptures'), inspectLayout: invoke('test:inspectLayout') });
+contextBridge.exposeInMainWorld('builderTest', {
+  exportStatic: invoke('test:exportStatic'),
+  exportSource: invoke('test:exportSource'),
+  previewComponent: invoke('test:previewComponent'),
+  thumbCaptures: invoke('test:thumbCaptures'),
+  inspectLayout: invoke('test:inspectLayout'),
+  exportComponent: invoke('test:exportComponent'),
+  importComponent: invoke('test:importComponent')
+});

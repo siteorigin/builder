@@ -312,6 +312,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       }
       case 'component.remove':
         return plain(op, `Removed the ${quoted(before.components[op.definitionId]?.name ?? 'component')} component`);
+      case 'component.import':
+        return plain(op, `Imported the ${quoted(res.definitionId ? componentName(res.definitionId) : 'component')} component`);
       case 'component.setPropSchema':
       case 'component.removePropSchema': {
         const had = before.components[op.definitionId]?.properties[op.prop];

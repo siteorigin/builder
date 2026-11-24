@@ -287,6 +287,7 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'component.createCode': 'wider',
   'component.updateSource': 'wider',
   'component.remove': 'wider',
+  'component.import': 'wider',
   'component.setPropSchema': 'definition',
   'component.removePropSchema': 'wider',
   // A new default changes every placement without a value of its own.

@@ -1,8 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2 } from 'lucide-react';
+import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload } from 'lucide-react';
 import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
+import type { ComponentExportResult, ComponentImportResult } from '@shared/api';
 import { childLists, findParent, placesOf } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
@@ -1397,6 +1398,7 @@ export function InsertPanel() {
       ...(source ? [{ heading: source }] : []),
       { label: 'Rename', icon: <Pencil />, onSelect: () => setState({ modal: { kind: 'rename-component', definitionId: def.id } }) },
       ...edit,
+      { label: 'Export…', icon: <Download />, hint: 'For another site', onSelect: () => void exportDefinition(def) },
       { separator: true },
       { heading: count ? `Used ${usedTimes(count)}` : needs.length ? 'Not placed anywhere' : 'Not used anywhere' },
       ...places.flatMap(placeItems),
@@ -1412,6 +1414,21 @@ export function InsertPanel() {
     if (!r) refocus.current = null;
     if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
     toast(`Deleted ${def.name}`, 'info', undoAction(r));
+  };
+  // A package file another project can import: the chooser and the writing happen in the app.
+  const exportDefinition = async (def: ComponentDefinition) => {
+    const r: ComponentExportResult = await api.project.exportComponent(def.id).catch((e: Error) => ({ ok: false, message: `${def.name} couldn’t be exported: ${e.message}` }));
+    if (r.ok) toast([`Exported ${def.name}.`, ...(r.notes ?? [])].join(' '), 'info');
+    else if (r.message) toast(r.message, 'error');
+  };
+  const importPackage = async () => {
+    const workspaceKey = getState().snapshot?.workspaceKey;
+    const r: ComponentImportResult = await api.project.importComponent().catch((e: Error) => ({ ok: false, message: `The component couldn’t be imported: ${e.message}` }));
+    if (!r.ok) {
+      if (r.message) toast(r.message, 'error');
+      return;
+    }
+    toast(`Imported ${r.name ?? 'the component'}`, 'info', workspaceKey && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey }) : undefined);
   };
   const manage = (it: Item) => {
     const def = st.components[it.spec.definitionId!];
@@ -1461,6 +1478,14 @@ export function InsertPanel() {
         <Plus />
       </span>
       <strong>New code component</strong>
+    </button>
+  );
+  const importTile = (
+    <button className="insert-tile new" data-kind="import" data-key="import" onClick={() => void importPackage()}>
+      <span className="ico">
+        <Upload />
+      </span>
+      <strong>Import component…</strong>
     </button>
   );
   // Four components before Show all; a component's own options (in Variants) come with it.
@@ -1528,13 +1553,12 @@ export function InsertPanel() {
           </span>
         </div>
       )}
-      {(components > 0 || dev) && (
-        <TileGrid
+      <TileGrid
           items={shownMine}
           labelledBy={`${id}-yours`}
           className="compact list managed"
           cols={1}
-          extra={[showAll, newCode].filter(Boolean) as ReactNode[]}
+          extra={[showAll, newCode, importTile].filter(Boolean) as ReactNode[]}
           render={(it) => (
             <button
               className={`insert-tile project${it.depth ? ' sub' : ''}${it.variant ? ' option' : ''}${justAdded(it) ? ' just-added' : ''}`}
@@ -1565,7 +1589,6 @@ export function InsertPanel() {
             )
           }
         />
-      )}
     </section>
   );
 
