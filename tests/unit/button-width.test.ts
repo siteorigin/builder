@@ -88,8 +88,11 @@ beforeAll(async () => {
   if (BROWSER) browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath(), timeout: 30_000 });
 }, 60_000);
 afterAll(async () => {
-  await browser?.close();
-  roots.forEach((d) => rmSync(d, { recursive: true, force: true }));
+  try {
+    await browser?.close();
+  } finally {
+    roots.forEach((d) => rmSync(d, { recursive: true, force: true }));
+  }
 });
 
 /**
