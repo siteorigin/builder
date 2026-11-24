@@ -305,7 +305,7 @@ const HEADER_SOURCE = `<script>
 		     or closing it folds any open submenu away. -->
 		<details class="so-header__menu" bind:this={menu} ontoggle={() => (openSub = null)}>
 			<summary bind:this={toggle} class="so-header__toggle" aria-controls="so-site-nav">
-				<span class="so-visually-hidden">{text().menuOpen}</span>
+				<span class="so-visually-hidden">{text().menu}</span>
 				<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
 					<path class="so-header__icon-open" d="M4 7h16M4 12h16M4 17h16" />
 					<path class="so-header__icon-close" d="M6 6l12 12M18 6L6 18" />

@@ -21,8 +21,7 @@ export interface VisitorTextField {
 
 export const VISITOR_TEXT_KEYS = [
   'skipLink',
-  'menuOpen',
-  'menuClose',
+  'menu',
   'mainNav',
   'home',
   'formSubmit',
@@ -70,8 +69,7 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
     label: 'Header and navigation',
     fields: [
       { key: 'skipLink', label: 'Skip link', hint: 'The first link keyboard users reach, which jumps past the header.' },
-      { key: 'menuOpen', label: 'Open menu', hint: 'The menu button on phones, while the menu is closed.' },
-      { key: 'menuClose', label: 'Close menu', hint: 'The menu button on phones, while the menu is open.' },
+      { key: 'menu', label: 'Menu button', hint: 'The menu button on phones. Screen readers also say whether the menu is open.' },
       { key: 'mainNav', label: 'Main navigation', hint: 'The name screen readers give the header’s links.' },
       { key: 'home', label: 'Home link', hint: 'The name of the logo’s link on a header without a site name, whose logo has no alternative text.' }
     ]
@@ -131,8 +129,7 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
 
 const EN: VisitorText = {
   skipLink: 'Skip to content',
-  menuOpen: 'Open menu',
-  menuClose: 'Close menu',
+  menu: 'Menu',
   mainNav: 'Main',
   home: 'Home',
   formSubmit: 'Send message',
@@ -170,8 +167,7 @@ const EN: VisitorText = {
 
 const AR: VisitorText = {
   skipLink: 'انتقل إلى المحتوى',
-  menuOpen: 'فتح القائمة',
-  menuClose: 'إغلاق القائمة',
+  menu: 'القائمة',
   mainNav: 'القائمة الرئيسية',
   home: 'الصفحة الرئيسية',
   formSubmit: 'إرسال الرسالة',
@@ -209,8 +205,7 @@ const AR: VisitorText = {
 
 const HE: VisitorText = {
   skipLink: 'דילוג לתוכן',
-  menuOpen: 'פתיחת התפריט',
-  menuClose: 'סגירת התפריט',
+  menu: 'תפריט',
   mainNav: 'תפריט ראשי',
   home: 'דף הבית',
   formSubmit: 'שליחת ההודעה',

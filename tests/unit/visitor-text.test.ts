@@ -62,48 +62,48 @@ describe('visitor text', () => {
         expect([...text[f.key].matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort(), `${code} ${f.key}`).toEqual([...(f.fills ?? [])].sort());
       }
     }
-    expect(builtInVisitorText('ar').menuOpen).toBe('فتح القائمة');
+    expect(builtInVisitorText('ar').menu).toBe('القائمة');
     expect(builtInVisitorText('iw')).toBe(builtInVisitorText('he'));
     // A language without wording of its own reads English.
     expect(builtInVisitorText('fr-CA')).toBe(builtInVisitorText('en'));
   });
 
   it('takes the author’s wording for the exact language, then its primary language, then the built-in wording', () => {
-    const site = { visitorText: { ar: { menuOpen: 'اعرض القائمة', skipLink: 'إلى المحتوى' }, 'ar-eg': { skipLink: 'على طول للمحتوى' }, fr: { menuOpen: 'Ouvrir le menu' } } };
-    expect(visitorTextFor(site, 'ar')).toMatchObject({ menuOpen: 'اعرض القائمة', skipLink: 'إلى المحتوى', menuClose: 'إغلاق القائمة' });
-    expect(visitorTextFor(site, 'ar-EG')).toMatchObject({ menuOpen: 'اعرض القائمة', skipLink: 'على طول للمحتوى' });
-    expect(visitorTextFor(site, 'fr')).toMatchObject({ menuOpen: 'Ouvrir le menu', menuClose: 'Close menu' });
+    const site = { visitorText: { ar: { menu: 'اعرض القائمة', skipLink: 'إلى المحتوى' }, 'ar-eg': { skipLink: 'على طول للمحتوى' }, fr: { menu: 'Ouvrir le menu' } } };
+    expect(visitorTextFor(site, 'ar')).toMatchObject({ menu: 'اعرض القائمة', skipLink: 'إلى المحتوى', mainNav: 'القائمة الرئيسية' });
+    expect(visitorTextFor(site, 'ar-EG')).toMatchObject({ menu: 'اعرض القائمة', skipLink: 'على طول للمحتوى' });
+    expect(visitorTextFor(site, 'fr')).toMatchObject({ menu: 'Ouvrir le menu', mainNav: 'Main' });
     // Hebrew never takes Arabic wording.
-    expect(visitorTextFor(site, 'he').menuOpen).toBe('פתיחת התפריט');
+    expect(visitorTextFor(site, 'he').menu).toBe('תפריט');
     // site.json edited by hand: anything but text, or text that shows nothing, is no wording.
-    for (const visitorText of [null, 'x', [], { ar: 'x' }, { ar: { menuOpen: 7 } }, { ar: { menuOpen: ' \u200b ' } }] as unknown[])
-      expect(visitorTextFor({ visitorText } as never, 'ar').menuOpen).toBe('فتح القائمة');
+    for (const visitorText of [null, 'x', [], { ar: 'x' }, { ar: { menu: 7 } }, { ar: { menu: ' \u200b ' } }] as unknown[])
+      expect(visitorTextFor({ visitorText } as never, 'ar').menu).toBe('القائمة');
   });
 
   it('is set piece by piece through the site’s settings, and cleared back to the built-in wording', () => {
-    let s = apply(fresh(), { type: 'site.update', visitorText: { language: 'AR', text: { menuOpen: '  اعرض القائمة  ', skipLink: 'إلى المحتوى' } } });
-    expect(s.site.visitorText).toEqual({ ar: { menuOpen: 'اعرض القائمة', skipLink: 'إلى المحتوى' } });
-    s = apply(s, { type: 'site.update', visitorText: { language: 'he', text: { menuOpen: 'תפריט' } } });
+    let s = apply(fresh(), { type: 'site.update', visitorText: { language: 'AR', text: { menu: '  اعرض القائمة  ', skipLink: 'إلى المحتوى' } } });
+    expect(s.site.visitorText).toEqual({ ar: { menu: 'اعرض القائمة', skipLink: 'إلى المحتوى' } });
+    s = apply(s, { type: 'site.update', visitorText: { language: 'he', text: { menu: 'תפריט' } } });
     // One piece changes without touching the others.
     s = apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { skipLink: '' } } });
-    expect(s.site.visitorText).toEqual({ ar: { menuOpen: 'اعرض القائمة' }, he: { menuOpen: 'תפריט' } });
+    expect(s.site.visitorText).toEqual({ ar: { menu: 'اعرض القائمة' }, he: { menu: 'תפריט' } });
     // Wording that shows nothing clears it; a language left with none goes, and so does the map.
-    s = apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { menuOpen: '\u200b' } } });
-    s = apply(s, { type: 'site.update', visitorText: { language: 'he', text: { menuOpen: ' ' } } });
+    s = apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { menu: '\u200b' } } });
+    s = apply(s, { type: 'site.update', visitorText: { language: 'he', text: { menu: ' ' } } });
     expect(s.site.visitorText).toBeUndefined();
-    expect(() => apply(s, { type: 'site.update', visitorText: { language: '__proto__', text: { menuOpen: 'x' } } })).toThrow(/Language must be a code/);
+    expect(() => apply(s, { type: 'site.update', visitorText: { language: '__proto__', text: { menu: 'x' } } })).toThrow(/Language must be a code/);
     // A piece that does not exist is turned down, naming the ones that do, even beside real ones.
-    expect(() => apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { nonsense: 'x' } } })).toThrow(/“nonsense” is not a piece of visitor text\. Use one of: skipLink, menuOpen/);
-    expect(() => apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { '': 'x', menuOpen: 'y' } } })).toThrow(/“” is not a piece of visitor text/);
+    expect(() => apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { nonsense: 'x' } } })).toThrow(/“nonsense” is not a piece of visitor text\. Use one of: skipLink, menu,/);
+    expect(() => apply(s, { type: 'site.update', visitorText: { language: 'ar', text: { '': 'x', menu: 'y' } } })).toThrow(/“” is not a piece of visitor text/);
     // Wording kept by hand under another case is read, and folded under the lower-case code by the next edit.
     const hand = structuredClone(s);
-    hand.site.visitorText = { 'Ar-Eg': { menuOpen: 'اعرض', skipLink: '\u200b', menuClose: 7 } } as never;
-    expect(visitorTextFor(hand.site, 'ar-EG')).toMatchObject({ menuOpen: 'اعرض', skipLink: 'انتقل إلى المحتوى', menuClose: 'إغلاق القائمة' });
-    expect(apply(hand, { type: 'site.update', visitorText: { language: 'ar-EG', text: { menuClose: 'أغلق' } } }).site.visitorText).toEqual({ 'ar-eg': { menuOpen: 'اعرض', menuClose: 'أغلق' } });
+    hand.site.visitorText = { 'Ar-Eg': { menu: 'اعرض', skipLink: '\u200b', mainNav: 7 } } as never;
+    expect(visitorTextFor(hand.site, 'ar-EG')).toMatchObject({ menu: 'اعرض', skipLink: 'انتقل إلى المحتوى', mainNav: 'القائمة الرئيسية' });
+    expect(apply(hand, { type: 'site.update', visitorText: { language: 'ar-EG', text: { mainNav: 'الرئيسية' } } }).site.visitorText).toEqual({ 'ar-eg': { menu: 'اعرض', mainNav: 'الرئيسية' } });
     // Kept under two spellings, each piece comes from the lower-case one first, then the others; an edit keeps them all.
-    hand.site.visitorText = { 'AR-EG': { skipLink: 'تخطَّ', menuOpen: 'قديم' }, 'ar-eg': { menuOpen: 'اعرض' } };
-    expect(visitorTextFor(hand.site, 'ar-eg')).toMatchObject({ menuOpen: 'اعرض', skipLink: 'تخطَّ' });
-    expect(apply(hand, { type: 'site.update', visitorText: { language: 'ar-eg', text: { menuClose: 'أغلق' } } }).site.visitorText).toEqual({ 'ar-eg': { menuOpen: 'اعرض', skipLink: 'تخطَّ', menuClose: 'أغلق' } });
+    hand.site.visitorText = { 'AR-EG': { skipLink: 'تخطَّ', menu: 'قديم' }, 'ar-eg': { menu: 'اعرض' } };
+    expect(visitorTextFor(hand.site, 'ar-eg')).toMatchObject({ menu: 'اعرض', skipLink: 'تخطَّ' });
+    expect(apply(hand, { type: 'site.update', visitorText: { language: 'ar-eg', text: { mainNav: 'الرئيسية' } } }).site.visitorText).toEqual({ 'ar-eg': { menu: 'اعرض', skipLink: 'تخطَّ', mainNav: 'الرئيسية' } });
   });
 
   it('gives the not-found page its default wording in the site’s language', () => {
@@ -120,16 +120,16 @@ describe('the generated wording', () => {
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   it('carries the wording of each language the site’s pages are in, and fills names in once', async () => {
-    let s = apply(fresh(), { type: 'site.update', language: 'ar', visitorText: { language: 'ar', text: { menuOpen: 'اعرض القائمة' } } });
+    let s = apply(fresh(), { type: 'site.update', language: 'ar', visitorText: { language: 'ar', text: { menu: 'اعرض القائمة' } } });
     const about = byTitle(s, 'About').id;
     s = apply(s, { type: 'page.update', pageId: about, language: 'he' });
     const files = generateProject(s);
     const module = files.get(`${RUNTIME_DIR}/visitor-text.js`)!;
     expect(module).toContain('const SITE = "ar";');
-    expect(module).toContain('"menuOpen": "اعرض القائمة"');
-    expect(module).toContain('"menuOpen": "פתיחת התפריט"');
+    expect(module).toContain('"menu": "اعرض القائمة"');
+    expect(module).toContain('"menu": "תפריט"');
     // Only the languages in use: no English.
-    expect(module).not.toContain('"Open menu"');
+    expect(module).not.toContain('"Menu"');
     mkdirSync(join(dir, 'runtime'), { recursive: true });
     writeFileSync(join(dir, 'runtime', 'visitor-text.js'), module);
     const { fill, fillParts } = (await import(/* @vite-ignore */ pathToFileURL(join(dir, 'runtime', 'visitor-text.js')).href)) as {
@@ -163,7 +163,7 @@ const SERVICE = 'https://forms.test/f/abc123';
  */
 function trilingualSite() {
   let s = fresh();
-  s = apply(s, { type: 'site.update', language: 'ar', visitorText: { language: 'ar', text: { menuOpen: 'اعرض القائمة' } } });
+  s = apply(s, { type: 'site.update', language: 'ar', visitorText: { language: 'ar', text: { menu: 'اعرض القائمة' } } });
   s = apply(s, { type: 'page.update', pageId: byTitle(s, 'About').id, language: 'he' });
   s = apply(s, { type: 'page.update', pageId: byTitle(s, 'Contact').id, language: 'en' });
   const home = s.pages[s.site.homePageId];
@@ -246,6 +246,22 @@ const READ = `(() => {
   };
 })()`;
 
+/**
+ * The menu button's name as Chromium's accessibility tree gives it to screen readers. The button is a native
+ * disclosure's summary, which has no ARIA role for a role query to find.
+ */
+async function menuName(page: Page): Promise<string | undefined> {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { root } = await cdp.send('DOM.getDocument', { depth: 0 });
+    const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '.so-header__toggle' });
+    const { nodes } = await cdp.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false });
+    return nodes[0]?.name?.value;
+  } finally {
+    await cdp.detach();
+  }
+}
+
 describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a browser', () => {
   let browser: Browser;
   let script: string;
@@ -276,8 +292,8 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
       const steps: Array<[string, string, string, string, string, string]> = [
         // route, lang, dir, the menu button's name (the author's own in Arabic), the skip link, the navigation's name
         [site.routes.home, 'ar', 'rtl', 'اعرض القائمة', 'انتقل إلى المحتوى', 'القائمة الرئيسية'],
-        [site.routes.he, 'he', 'rtl', 'פתיחת התפריט', 'דילוג לתוכן', 'תפריט ראשי'],
-        [site.routes.en, 'en', 'ltr', 'Open menu', 'Skip to content', 'Main'],
+        [site.routes.he, 'he', 'rtl', 'תפריט', 'דילוג לתוכן', 'תפריט ראשי'],
+        [site.routes.en, 'en', 'ltr', 'Menu', 'Skip to content', 'Main'],
         [site.routes.home, 'ar', 'rtl', 'اعرض القائمة', 'انتقل إلى المحتوى', 'القائمة الرئيسية']
       ];
       for (const [route, lang, dir, menu, skip, nav] of steps) {
@@ -285,16 +301,19 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
         const read = (await page.evaluate(READ)) as { lang: string; dir: string; direction: string; overflow: number; toggleSide: string };
         expect([route, read.lang, read.dir, read.direction]).toEqual([route, lang, dir, dir]);
         // The names a screen reader hears, from the accessibility tree.
-        await expect(page.getByRole('button', { name: menu, exact: true }).count()).resolves.toBe(1);
+        expect(await menuName(page)).toBe(menu);
         await expect(page.getByRole('link', { name: skip, exact: true }).count()).resolves.toBe(1);
         // The menu button sits at the end of the header's row: on the left when the page runs right to left.
         expect(read.toggleSide).toBe(dir === 'rtl' ? 'left' : 'right');
         expect(read.overflow).toBeLessThanOrEqual(0);
-        // Opening the menu shows the navigation, named in the page's language, and says how to close it.
-        await page.getByRole('button', { name: menu, exact: true }).click();
+        // Opening the menu shows the navigation, named in the page's language. The button keeps its name (the browser
+        // says whether the menu is open) and closes it again.
+        await page.locator('.so-header__toggle').click();
         await expect(page.getByRole('navigation', { name: nav, exact: true }).count()).resolves.toBe(1);
-        await expect(page.getByRole('button', { name: builtInVisitorText(lang).menuClose, exact: true }).count()).resolves.toBe(1);
-        await page.getByRole('button', { name: builtInVisitorText(lang).menuClose, exact: true }).click();
+        await expect(page.locator('.so-header__menu[open]').count()).resolves.toBe(1);
+        expect(await menuName(page)).toBe(menu);
+        await page.locator('.so-header__toggle').click();
+        await expect(page.locator('.so-header__menu[open]').count()).resolves.toBe(0);
       }
       // The same document all along: the layout and the header stayed while the page changed.
       expect(await page.evaluate(() => (globalThis as unknown as { same?: boolean }).same)).toBe(true);
