@@ -17,6 +17,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { reviewEntryId, reviewNote, standingNote, undoableId } from '../../src/renderer/src/lib/result';
 import { reviewPlan, stepChangeText, turnName } from '../../src/renderer/src/lib/turn-review';
 import { ownAddress, ownAddresses, stepChanges } from '../../src/main/project/turn-review';
+import { defFile } from '@generator/index';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -285,9 +286,8 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
     expect(review!.changes).toEqual([{ owner: 'Staff picks', property: 'Draft', change: 'changed', before: 'Yes', after: 'No' }]);
     expect(review!.later.map((l) => l.relation)).toEqual(['separate']);
     expect(review!.revert).toEqual({ ok: false, reason: expect.stringMatching(/^Undoing it on its own would leave a problem: a published page would link to a draft/) });
-    // A link added after the turn to the page it published depends on it.
-    await linkHero(s, { type: 'page', target: s.state.site.pageOrder[1] });
-    await linkHero(s, { type: 'page', target: PICKS });
+    // A link added after the turn to the page it published, beside the one Home already had, depends on it.
+    await ok(s.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId(s) }, nodeId: hero(s), prop: 'secondaryLink', value: { type: 'page', target: PICKS } }] }, { label: 'Change second link' }));
     expect((await s.reviewAiEntry(entryId)).review!.later.at(-1)).toMatchObject({ relation: 'depends', reason: 'It adds a link to “Staff picks”, which this turn published.' });
   });
 
@@ -297,9 +297,16 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
     await ok(s.apply({ operations: [{ type: 'component.fork', definitionId: (s.state.pages[homeId(s)].nodes[hero(s)] as InstanceNode).definitionId }] }, { label: 'Fork hero' }));
     const def = (s.state.pages[homeId(s)].nodes[hero(s)] as InstanceNode).definitionId;
     expect(s.state.components[def].owner).toBe('project');
-    expect(await s.beginRun('run_design')).toBeNull();
-    await ok(s.apply({ operations: [{ type: 'component.rename', definitionId: def, name: 'Shop hero' }] }, { label: 'AI', source: 'ai', runId: 'run_design', history: false }));
+    // Renamed only, the design shows the same: a later edit where it is used is separate.
+    expect(await s.beginRun('run_rename')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'component.rename', definitionId: def, name: 'Shop hero' }] }, { label: 'AI', source: 'ai', runId: 'run_rename', history: false }));
     expect(await s.completeRun('AI: Rename the hero')).toBe(true);
+    const renamed = s.historyInfo().entries.at(-1)!.id;
+    await ok(s.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId(s) }, nodeId: hero(s), prop: 'heading', value: 'Read here' }] }, { label: 'Change heading' }));
+    expect((await s.reviewAiEntry(renamed)).review!.later.map((l) => l.relation)).toEqual(['separate']);
+    expect(await s.beginRun('run_design')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'component.setPropDefault', definitionId: def, prop: 'lead', value: 'Books we love.' }] }, { label: 'AI', source: 'ai', runId: 'run_design', history: false }));
+    expect(await s.completeRun('AI: Change the hero')).toBe(true);
     const entryId = s.historyInfo().entries.at(-1)!.id;
     await setHomeTitle(s, 'Kept');
     await ok(s.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId(s) }, nodeId: hero(s), prop: 'heading', value: 'Read with us' }] }, { label: 'Change heading' }));
@@ -316,6 +323,106 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
     const removed = await s.reviewAiEntry(entryId);
     expect(removed.review!.later.map((l) => l.relation)).toEqual(['separate', 'separate']);
     expect(removed.review!.revert).toEqual({ ok: true });
+  });
+
+  it('refuses when code the turn changed would come back importing a design deleted since, or rendering itself', async () => {
+    const { s } = await make();
+    // A design of the site's own, imported by Card's code.
+    const section = s.state.pages[homeId(s)].rootIds[1];
+    const made = await ok(s.apply({ operations: [{ type: 'component.createFromNode', owner: { kind: 'page', id: homeId(s) }, nodeId: section, name: 'Logos' }] }, { label: 'Make component' }));
+    const logos = s.state.components[(made as { results?: Array<{ definitionId?: string }> }).results![0].definitionId!];
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Card', source: `<script>\n\timport Logos from '../generated/${defFile(logos).split('/').at(-1)}';\n</script>\n<Logos />\n` }] }, { label: 'Add Card' }));
+    const card = Object.values(s.state.components).find((d) => d.name === 'Card')!;
+    expect(await s.beginRun('run_card')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: card.id, source: '<p>card</p>\n' }] }, { label: 'AI', source: 'ai', runId: 'run_card', history: false }));
+    expect(await s.completeRun('AI: Simplify Card')).toBe(true);
+    const entryId = s.historyInfo().entries.at(-1)!.id;
+    const placed = s.state.pages[homeId(s)].rootIds.find((id) => (s.state.pages[homeId(s)].nodes[id] as InstanceNode).definitionId === logos.id)!;
+    await ok(s.apply({ operations: [{ type: 'node.remove', owner: { kind: 'page', id: homeId(s) }, nodeId: placed }] }, { label: 'Remove logos' }));
+    await ok(s.apply({ operations: [{ type: 'component.remove', definitionId: logos.id }] }, { label: 'Delete Logos' }));
+    const { review } = await s.reviewAiEntry(entryId);
+    expect(review!.later.map((l) => l.relation)).toEqual(['separate', 'separate']);
+    expect(review!.revert).toEqual({ ok: false, reason: expect.stringMatching(/^Undoing it on its own would leave a problem: the code for “Card” would have problems: It imports/) });
+
+    // Code A rendered B until the turn took that out; B was then changed to render A.
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Bee', source: '<p>b</p>\n' }] }, { label: 'Add Bee' }));
+    const bee = Object.values(s.state.components).find((d) => d.name === 'Bee')!;
+    const file = (d: { sourcePath?: string }) => d.sourcePath!.split('/').at(-1)!;
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Ay', source: `<script>\n\timport Bee from './${file(bee)}';\n</script>\n<Bee />\n` }] }, { label: 'Add Ay' }));
+    const ay = Object.values(s.state.components).find((d) => d.name === 'Ay')!;
+    expect(await s.beginRun('run_ay')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: ay.id, source: '<p>a</p>\n' }] }, { label: 'AI', source: 'ai', runId: 'run_ay', history: false }));
+    expect(await s.completeRun('AI: Simplify Ay')).toBe(true);
+    const ayTurn = s.historyInfo().entries.at(-1)!.id;
+    await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: bee.id, source: `<script>\n\timport Ay from './${file(ay)}';\n</script>\n<Ay />\n` }] }, { label: 'Change Bee' }));
+    const loop = await s.reviewAiEntry(ayTurn);
+    expect(loop.review!.later.map((l) => l.relation)).toEqual(['separate']);
+    expect(loop.review!.revert).toEqual({ ok: false, reason: expect.stringMatching(/would each render the next, without end\.$/) });
+  });
+
+  it('keeps a code import that asks for a file with a query', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Badge', source: '<p>badge</p>\n' }] }, { label: 'Add Badge' }));
+    const badge = Object.values(s.state.components).find((d) => d.name === 'Badge')!;
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Card', source: `<script>\n\timport text from './${badge.sourcePath!.split('/').at(-1)}?raw';\n</script>\n<pre>{text}</pre>\n` }] }, { label: 'Add Card' }));
+    const card = Object.values(s.state.components).find((d) => d.name === 'Card')!;
+    expect(await s.beginRun('run_raw')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: card.id, source: '<p>card</p>\n' }] }, { label: 'AI', source: 'ai', runId: 'run_raw', history: false }));
+    expect(await s.completeRun('AI: Simplify Card')).toBe(true);
+    const entryId = s.historyInfo().entries.at(-1)!.id;
+    await setHomeTitle(s, 'Kept');
+    expect((await s.reviewAiEntry(entryId)).review!.revert).toEqual({ ok: true });
+  });
+
+  it('keeps a later link to an address an old address of the page still answers at once the turn is undone', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'site.update', baseUrl: 'https://books.example' }] }, { label: 'Set website address' }));
+    await ok(s.apply({ operations: [{ type: 'page.create', pageId: PICKS, title: 'Staff picks', route: '/picks/' }] }, { label: 'Add page' }));
+    // Moved away, its old address kept for it.
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, route: '/staff-picks/' }] }, { label: 'Move page' }));
+    expect(await s.beginRun('run_move')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, route: '/picks/' }] }, { label: 'AI', source: 'ai', runId: 'run_move', history: false }));
+    expect(await s.completeRun('AI: Move Staff picks back')).toBe(true);
+    const entryId = s.historyInfo().entries.at(-1)!.id;
+    await linkHero(s, { type: 'url', target: 'https://books.example/picks/' });
+    const { review } = await s.reviewAiEntry(entryId);
+    expect(review!.later.map((l) => l.relation)).toEqual(['separate']);
+    expect(review!.revert).toEqual({ ok: true });
+  });
+
+  it('counts only links a later change added beyond those the page held when the turn ended', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'page.create', pageId: PICKS, title: 'Staff picks', route: '/staff-picks/' }] }, { label: 'Add page' }));
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, draft: true }] }, { label: 'Make draft' }));
+    await linkHero(s, { type: 'page', target: PICKS });
+    expect(await s.beginRun('run_publish')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, draft: false }] }, { label: 'AI', source: 'ai', runId: 'run_publish', history: false }));
+    expect(await s.completeRun('AI: Publish Staff picks')).toBe(true);
+    const entryId = s.historyInfo().entries.at(-1)!.id;
+    // A second link added and taken out again: what is left is the link Home already had.
+    const second = (value: unknown) => ok(s.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId(s) }, nodeId: hero(s), prop: 'secondaryLink', value }] }, { label: 'Change second link' }));
+    await second({ type: 'page', target: PICKS });
+    await second({ type: 'none', target: '' });
+    expect((await s.reviewAiEntry(entryId)).review!.later.map((l) => l.relation)).toEqual(['separate', 'separate']);
+  });
+
+  it('reads a typed link on the public URL the turn moved the site to when checking for draft links', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'site.update', baseUrl: 'https://old.example' }] }, { label: 'Set website address' }));
+    await ok(s.apply({ operations: [{ type: 'page.create', pageId: PICKS, title: 'Staff picks', route: '/staff-picks/' }] }, { label: 'Add page' }));
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, draft: true }] }, { label: 'Make draft' }));
+    // Typed on the address the site is about to move to.
+    await linkHero(s, { type: 'url', target: 'https://books.example/staff-picks/' });
+    expect(await s.beginRun('run_launch')).toBeNull();
+    await ok(
+      s.apply({ operations: [{ type: 'site.update', baseUrl: 'https://books.example' }, { type: 'page.update', pageId: PICKS, draft: false }] }, { label: 'AI', source: 'ai', runId: 'run_launch', history: false })
+    );
+    expect(await s.completeRun('AI: Launch on the new address')).toBe(true);
+    const entryId = s.historyInfo().entries.at(-1)!.id;
+    await setHomeTitle(s, 'Kept');
+    const { review } = await s.reviewAiEntry(entryId);
+    expect(review!.later.map((l) => l.relation)).toEqual(['separate']);
+    expect(review!.revert).toEqual({ ok: false, reason: expect.stringMatching(/^Undoing it on its own would leave a problem: a published page would link to a draft/) });
   });
 
   it('treats a later change to the site settings the turn also changed as depending on it', async () => {

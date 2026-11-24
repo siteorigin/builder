@@ -23,14 +23,14 @@ import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
+import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
 import { sendsFormMessages, type ComponentImport } from '@engine/component-package';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, componentSources } from '../codecheck';
-import { asRoute, COMPONENT_DOC, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
+import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
@@ -3316,6 +3316,7 @@ export class ProjectSession extends EventEmitter {
     // the designs it changed that later work may build on.
     const made = new Map<string, { title: string; how: 'added' | 'published' }>();
     const addresses = new Set<string>();
+    const moved = new Set<string>();
     const designs = new Set<string>();
     let siteBefore: unknown = null;
     for (const v of versions ?? []) {
@@ -3324,11 +3325,20 @@ export class ProjectSession extends EventEmitter {
       const title = a && typeof a === 'object' && typeof a.title === 'string' ? a.title : 'a page';
       const published = !!b && typeof b === 'object' && b.draft === true && !!a && typeof a === 'object' && a.draft !== true;
       if (page && a && typeof a === 'object' && (!b || published)) made.set(page, { title, how: b ? 'published' : 'added' });
-      if (page && a && typeof a === 'object' && typeof a.route === 'string' && (!b || published || b.route !== a.route)) addresses.add(asRoute(a.route).toLowerCase());
+      if (page && a && typeof a === 'object' && typeof a.route === 'string') {
+        if (!b || published) addresses.add(asRoute(a.route).toLowerCase());
+        else if (b.route !== a.route) moved.add(asRoute(a.route).toLowerCase());
+      }
+      // A design is what placements show: its name and description are only what the library calls it.
       const design = v.path.match(COMPONENT_DOC)?.[1] ?? Object.values(this.state.components).find((d) => d.sourcePath === v.path)?.id;
-      if (design && v.before !== null && v.after !== null) designs.add(design);
+      const shown = (d: unknown) => (d && typeof d === 'object' ? { ...d, name: undefined, description: undefined, tags: undefined, category: undefined } : d);
+      if (design && v.before !== null && v.after !== null && JSON.stringify(shown(v.before)) !== JSON.stringify(shown(v.after))) designs.add(design);
       if (v.path === `${DOC_DIR}/site.json`) siteBefore = v.before;
     }
+    // An address a page moved to is lost by taking the move back only when nothing else answered at it before the
+    // turn: an old address kept for the page still leads there.
+    const kept = new Set(((siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : this.state.site).redirects ?? []).map((r) => (typeof r?.from === 'string' ? asRoute(r.from).toLowerCase() : '')));
+    for (const a of moved) if (!kept.has(a)) addresses.add(a);
     // A link typed as the site's own address names it by the public URL the site has now, or had before the turn.
     const bases = siteBases(this.state.site, siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : null);
     const pageIds = new Set(made.keys());
@@ -3342,9 +3352,13 @@ export class ProjectSession extends EventEmitter {
         return text;
       }
     };
+    // Each document as it was when the turn ended, before any later step changed it: a link it already held then is no
+    // later change's doing, whatever later steps added and took away around it.
+    const atTurn = new Map<string, unknown>();
     const later: TurnLaterChange[] = [];
     for (const e of h.entries.slice(at + 1, h.cursor)) {
       const own = await this.stepVersions(e);
+      for (const v of own ?? []) if (!atTurn.has(v.path)) atTurn.set(v.path, v.before);
       const paths = Object.keys(e.docs).filter((p) => Object.hasOwn(entry.docs, p));
       const shared = paths.find((p) => entry.docs[p].before === null && entry.docs[p].after !== null) ?? paths[0];
       let reason: string | undefined;
@@ -3354,7 +3368,8 @@ export class ProjectSession extends EventEmitter {
       for (const v of own ?? []) {
         if (reason) break;
         const current = now(v.path);
-        if (linksInto(v.after, pageIds, addresses, bases) > linksInto(v.before, pageIds, addresses, bases) && linksInto(current, pageIds, addresses, bases) > 0) {
+        const links = (doc: unknown) => linksInto(doc, pageIds, addresses, bases);
+        if (links(v.after) > links(v.before) && links(current) > links(atTurn.get(v.path) ?? null)) {
           const one = made.size === 1 ? [...made.values()][0] : null;
           reason = one ? `It adds a link to “${one.title}”, which this turn ${one.how}.` : 'It adds a link to a page this turn added or published.';
           continue;
@@ -3427,7 +3442,7 @@ export class ProjectSession extends EventEmitter {
     // the link is and where it goes, not by its words.
     const where = (l: { owner: object; nodeId: string; inText: boolean; pageId?: string; entryId?: string; anchor?: string }) => JSON.stringify([l.owner, l.nodeId, l.inText, l.pageId, l.entryId, l.anchor]);
     const stranded = new Set(publicationPlan(this.state).draftLinks.map(where));
-    const withBase = next.site.baseUrl || !this.state.site.baseUrl ? next : { ...next, site: { ...next.site, baseUrl: this.state.site.baseUrl } };
+    const withBase = next.site.baseUrl === this.state.site.baseUrl ? next : { ...next, site: { ...next.site, baseUrl: this.state.site.baseUrl } };
     const draft = [...publicationPlan(next).draftLinks, ...(withBase === next ? [] : publicationPlan(withBase).draftLinks)].find((l) => !stranded.has(where(l)));
     if (draft) return problem(`a published page would link to a draft${draft.label ? ` (“${draft.label}”)` : ''}, which stops the website export.`);
     // Code that needs a component the turn added, which nothing above reads.
@@ -3440,12 +3455,23 @@ export class ProjectSession extends EventEmitter {
     // imported may have been deleted since. Only the site's own components are looked for; the rest of src/lib is
     // the app's, there whatever was undone.
     const resolve = componentSources(next.components);
-    const modules = (path: string) => !path.startsWith('src/lib/siteorigin/custom/') || resolve(path) !== undefined;
+    const generated = new Set(Object.values(next.components).map(defFile));
+    const modules = (spec: string) => {
+      // A Vite query (?raw) asks for the same file.
+      const path = spec.replace(/[?#].*$/, '');
+      if (path.startsWith('src/lib/siteorigin/custom/')) return resolve(path) !== undefined;
+      // A component's generated file is there only while the component is; other generated modules are the app's.
+      if (path.startsWith(`${GENERATED_DIR}/`) && path.includes('.svelte')) return generated.has(path);
+      return true;
+    };
     for (const def of Object.values(next.components)) {
       if (def.kind !== 'code' || def.source === undefined || def.source === this.state.components[def.id]?.source) continue;
       const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve, modules })).filter((p) => p.severity === 'error');
       if (bad.length) return problem(`the code for “${def.name}” would have problems: ${bad[0].message}`);
     }
+    // Nor may restored code close a loop with code changed since, a component that ends up rendering itself.
+    const loop = componentCycle(next);
+    if (loop && !componentCycle(this.state)) return problem(`${loop.map((id) => next.components[id]?.name ?? id).join(' → ')} would each render the next, without end.`);
     return { review, next, entry };
   }
 

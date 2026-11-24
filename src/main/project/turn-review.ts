@@ -6,6 +6,7 @@
 import type { StepChange } from '@shared/api';
 import type { GraphNode, NodeTree, ProjectState, SiteDoc } from '@shared/types';
 import { displayName } from '@engine/tree';
+import { codeImports } from '@engine/definitions';
 import { publicUrl } from '@shared/public-url';
 import { CUSTOM_SOURCE_RE, DOC_DIR, MANIFEST_FILE, collectionDocPath, collectionPathOf, componentDocPath, entryDocPath } from './documents';
 
@@ -371,4 +372,36 @@ export function ownUrlLinks(state: ProjectState, addresses: ReadonlySet<string>,
     for (const [eid, e] of Object.entries(c.entries)) walk(e, words((e as unknown as Obj).title) ?? c.settings.name, entryDocPath(id, eid));
   }
   return out;
+}
+
+/**
+ * Components that render one another in a loop, as the IDs along it (the first repeated at the end), or null. A design
+ * renders what it places, and code what it imports, read from its source as well as what it declares: the check the
+ * project itself makes reads only the declarations, which code written by hand does not always make.
+ */
+export function componentCycle(state: ProjectState): string[] | null {
+  const defs = Object.values(state.components);
+  const deps = (id: string): string[] => {
+    const d = state.components[id];
+    if (!d) return [];
+    if (d.kind === 'code') return defs.filter((t) => codeImports(state, d, t.id)).map((t) => t.id);
+    return Object.values(d.tree?.nodes ?? {}).flatMap((n) => (n.kind === 'instance' ? [n.definitionId] : []));
+  };
+  const seen = new Map<string, 'open' | 'done'>();
+  const visit = (id: string, path: string[]): string[] | null => {
+    if (seen.get(id) === 'done') return null;
+    if (seen.get(id) === 'open') return [...path.slice(path.indexOf(id)), id];
+    seen.set(id, 'open');
+    for (const dep of deps(id)) {
+      const c = visit(dep, [...path, id]);
+      if (c) return c;
+    }
+    seen.set(id, 'done');
+    return null;
+  };
+  for (const id of Object.keys(state.components).sort()) {
+    const c = visit(id, []);
+    if (c) return c;
+  }
+  return null;
 }
