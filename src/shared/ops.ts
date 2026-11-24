@@ -67,12 +67,8 @@ export const OPERATION_SCHEMAS = {
     showHeader: z.boolean().optional().describe('Whether this page shows the site\'s shared header. Only this page changes; the footer setting is separate.'),
     showFooter: z.boolean().optional().describe('Whether this page shows the site\'s shared footer. Only this page changes; the header setting is separate.'),
     socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.'),
-    language: z.string().max(20).optional().describe('The language this page is written in, as a code such as "fr" or "en-AU". "" makes it use the site language again.'),
-    linkTranslationTo: z
-      .string()
-      .nullable()
-      .optional()
-      .describe('Page ID of the same page in another language: links the two as translations of each other, and one joins any versions the other already has (two pages that both have other versions cannot be linked). Every version must be in a different language; a page without one of its own is in the site language. null unlinks this page from its translations.')
+    language: z.string().max(20).optional().describe('Language code such as "fr", when not the site language. "" uses the site language.'),
+    linkTranslationTo: z.string().nullable().optional().describe('Page ID of this page in another language: links them, joining any versions the other has. Each version needs its own language. null unlinks.')
   }),
   'page.duplicate': z.object({ type: z.literal('page.duplicate'), pageId: z.string(), title: z.string().optional() }),
   'page.reorder': z.object({ type: z.literal('page.reorder'), pageIds: z.array(z.string()) }),

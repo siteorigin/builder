@@ -30,9 +30,8 @@ export const SECTION_ARGS = z.object({
 export type SectionInput = Omit<z.infer<typeof SECTION_ARGS>, 'index'>;
 
 const DRAFT_DESCRIPTION = 'true keeps the page as a draft: editable and previewed, but left out of the exported website. false publishes it. Omit to leave it as it is. The home page is never a draft.';
-const LANGUAGE_DESCRIPTION = 'The language this page is written in, as a code such as "fr" or "en-GB", when it is not the site language. "" makes it use the site language. Omit to leave it as it is.';
-const TRANSLATION_DESCRIPTION =
-  'Slug of an existing page this page is a translation of, such as "about": the two become versions of each other, and this page joins any versions the other already has (two pages that both have other versions cannot be linked). Every version must be in a different language; a page without a language of its own is in the site language. "" unlinks it from its translations. Omit to leave it as it is.';
+const LANGUAGE_DESCRIPTION = 'Language code such as "fr", when not the site language. "" uses the site language. Omit to leave it.';
+const TRANSLATION_DESCRIPTION = 'Slug of the page this one translates, such as "about": links them, joining any versions it has. Each version needs its own language; a page without one uses the site language. "" unlinks. Omit to leave it.';
 
 export const UPSERT_ARGS = z.object({
   slug: z.string().min(1).max(120).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
