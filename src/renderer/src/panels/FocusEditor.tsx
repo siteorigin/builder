@@ -85,6 +85,8 @@ export function FocusEditor({
   const revision = useStore((s) => s.snapshot?.revision ?? 0);
   const captionId = useId();
   const pad = useRef<HTMLDivElement>(null);
+  const fields = useRef<HTMLDivElement>(null);
+  const lastSend = useRef<Promise<{ text: string; made?: number }> | null>(null);
   const src = image?.src ?? null;
   // The picture's own size: from the library when it is recorded, else measured once it loads.
   const [measured, setMeasured] = useState<{ src: string; w: number; h: number } | null>(null);
@@ -95,7 +97,7 @@ export function FocusEditor({
   // A drag keeps its point to itself until the pointer is released; then a committed value shows (and is what
   // a typed coordinate builds on) until the snapshot reaches the revision the change made, or it is refused.
   // Other changes landing meanwhile don't end it.
-  const gesture = useRef<{ pointer: number; key: string; revision: number } | null>(null);
+  const gesture = useRef<{ pointer: number; key: string; revision: number; flushing: boolean } | null>(null);
   const [draft, setDraft] = useState<FocalPoint | null>(null);
   const [pending, setPending] = useState<{ text: string; until?: number } | null>(null);
   // Escape cancels a drag: the pad never has focus, so it listens on the window for the drag's lifetime.
@@ -135,7 +137,9 @@ export function FocusEditor({
   const committed = pending && (pending.until === undefined || revision < pending.until) ? parseFocus(pending.text) : null;
   const latest = committed ?? stored;
   const point = draft ?? latest;
-  const cropped = !unreached && fit !== 'contain' && ratio !== null && sourceRatio !== null ? cropAxis(sourceRatio, ratio) : null;
+  // Only a picture that is really showing can be cropped here.
+  const showing = !!image && !!src && failed !== src && !image.missing;
+  const cropped = showing && !unreached && fit !== 'contain' && ratio !== null && sourceRatio !== null ? cropAxis(sourceRatio, ratio) : null;
   const crop = cropped && sourceRatio !== null && ratio !== null ? coverCrop(sourceRatio, ratio, point) : null;
 
   const pointAt = (e: React.PointerEvent): FocalPoint => {
@@ -151,19 +155,31 @@ export function FocusEditor({
   const commit = (make: (base: FocalPoint) => string, guard?: 'base' | number) => {
     const mine: { text: string; until?: number } = { text: make(latest) };
     setPending(mine);
-    void commits.current!.send(make, onSet, guard).then(({ text, made }) => {
+    const sent = commits.current!.send(make, onSet, guard);
+    lastSend.current = sent;
+    void sent.then(({ text, made }) => {
+      if (lastSend.current === sent) lastSend.current = null;
       setPending((p) => (p !== mine ? p : made === undefined ? null : { text, until: made }));
     });
   };
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!crop || e.button !== 0 || gesture.current) return;
     e.preventDefault();
+    // A coordinate still being typed is saved now, through its own commit, so it can't land on top of this pick later.
+    // The pick then builds on that save, or on one already on its way.
+    if (document.activeElement instanceof HTMLElement && fields.current?.contains(document.activeElement)) document.activeElement.blur();
+    const flushed = lastSend.current;
     // Keys typed into the preview never reach this window: take focus out of it, so Escape can cancel the drag.
     if (document.activeElement instanceof HTMLIFrameElement) document.activeElement.blur();
     const el = e.currentTarget;
     const id = e.pointerId;
     el.setPointerCapture(id);
-    gesture.current = { pointer: id, key: target, revision };
+    const started = { pointer: id, key: target, revision, flushing: !!flushed };
+    gesture.current = started;
+    void flushed?.then(({ made }) => {
+      started.flushing = false;
+      if (made !== undefined) started.revision = made;
+    });
     setDraft(pointAt(e));
     stopEscape();
     escape.current = (k) => {
@@ -187,9 +203,11 @@ export function FocusEditor({
     // Cleared first, so the capture's release that follows finds no drag to cancel.
     end();
     // The element, size or project changed under the drag (an Undo, say): the drag no longer applies.
-    if (g.key !== target || g.revision !== revision) return;
-    if (typeof value === 'string' && parseFocus(value) && sameFocus(parseFocus(value)!, next)) return;
-    commit(() => formatFocus(next), g.revision);
+    if (g.key !== target || (!g.flushing && revision > g.revision)) return;
+    // Nothing to do when the point is already the one held here, judged against any change still landing.
+    const held = committed ?? (typeof value === 'string' ? parseFocus(value) : null);
+    if (!g.flushing && held && sameFocus(held, next)) return;
+    commit(() => formatFocus(next), g.flushing ? 'base' : g.revision);
   };
   const cancel = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gesture.current?.pointer === e.pointerId) end();
@@ -203,8 +221,15 @@ export function FocusEditor({
     // value, so Across then Down typed quickly keeps both and never keeps a refused one.
     commit((base) => formatFocus({ ...base, [axis]: n }), 'base');
   };
-  const isCenter = committed ? sameFocus(committed, FOCUS_CENTER) : typeof value === 'string' && parseFocus(value) !== null && sameFocus(parseFocus(value)!, FOCUS_CENTER);
+  const isCenter = sameFocus(latest, FOCUS_CENTER);
   const setHere = value !== undefined;
+  // The fields read the point the picture shows: the one being dragged, then one on its way, then the saved one.
+  const live = draft ?? committed;
+  const fieldText = (axis: 'x' | 'y') => {
+    const saved = setHere ? parseFocus(value) : null;
+    return live ? String(live[axis]) : saved ? String(saved[axis]) : '';
+  };
+  const fieldClass = `input sm style-input${setHere || live ? ' is-set' : ' is-inherited'}`;
   const sizeName = SIZE_NAME[size];
   const where = scope === 'base' && previewed ? `In the ${sizeName} preview` : `On ${sizeName}`;
   const ratioPct = crop ? Math.round((cropped === 'y' ? crop.h : crop.w) * 100) : 0;
@@ -212,58 +237,68 @@ export function FocusEditor({
   let caption: string;
   if (!image) caption = '';
   else if (image.missing) caption = image.missing;
-  else if (!src || failed === src) caption = 'The picture shows here once the preview is running.';
+  else if (!src) caption = 'The picture shows here once the preview is running.';
+  else if (failed === src) caption = 'The picture couldn’t load, so its crop can’t be shown here.';
   else if (sourceRatio === null) caption = '';
   else if (unreached) caption = `Phone, tablet and desktop each keep their own ${label.toLowerCase()}, so this one shows at no size.`;
   else if (fit === 'contain') caption = `${where}, Image fit shows the whole picture, so nothing is cropped.`;
-  else if (!cropped && uncertain) caption = `${where} its height is set, so the site may crop it. Choose an aspect ratio to see and control the crop.`;
-  else if (!cropped) caption = `${where} the whole picture shows. Choose an aspect ratio to crop it.`;
-  else caption = `${where} ${ratioPct}% of the picture’s ${cropped === 'y' ? 'height' : 'width'} shows. Drag to choose what stays in view.`;
+  else if (!cropped && uncertain) caption = `${where}, its height is set, so the site may crop it. Choose an aspect ratio to see and control the crop.`;
+  else if (!cropped) caption = `${where}, the whole picture shows. Choose an aspect ratio to crop it.`;
+  else caption = `${where}, ${ratioPct}% of the picture’s ${cropped === 'y' ? 'height' : 'width'} shows. Click or drag to set the focus ${scope === 'base' ? 'for All sizes' : `on ${sizeName} only`}.`;
   // Under All sizes, a previewed size that keeps its own focus is why another size's crop is shown.
   if (caption && scope === 'base' && !previewed && !unreached && !image?.missing) caption += ' The size in the preview keeps its own.';
   if (caption && custom) caption += ' Custom CSS also sets the crop, so the site may differ.';
   if (caption && image?.note) caption += ` ${image.note}`;
 
+  const captionLine = caption && (
+    <p className="focus-caption" id={captionId}>
+      {caption}
+    </p>
+  );
   return (
-    <div className="focus-editor">
-      {image && src && failed !== src && !image.missing && (
-        <div
-          ref={pad}
-          className={`focus-pad${crop ? ' is-cropped' : ''}${draft ? ' is-dragging' : ''}`}
-          style={sourceRatio ? { aspectRatio: String(sourceRatio) } : undefined}
-          role="img"
-          aria-label={[caption, `${label}: ${describeFocus(point)}.`].filter(Boolean).join(' ')}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={cancel}
-          onLostPointerCapture={cancel}
-        >
-          <img
-            src={src}
-            alt=""
-            draggable={false}
-            onLoad={(e) => {
-              const el = e.currentTarget;
-              if (el.naturalWidth > 0 && el.naturalHeight > 0) setMeasured({ src, w: el.naturalWidth, h: el.naturalHeight });
-            }}
-            onError={() => setFailed(src)}
-          />
-          {crop && <div className="focus-window" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.w * 100}%`, height: `${crop.h * 100}%` }} />}
-          <div className="focus-mark" style={{ left: `${point.x}%`, top: `${point.y}%` }} />
+    <div className={`focus-editor${crop ? '' : ' is-idle'}`}>
+      {/* With nothing to choose, the reason comes first. */}
+      {!crop && captionLine}
+      {showing && (
+        <div className="focus-stage">
+          <div
+            ref={pad}
+            className={`focus-pad${crop ? ' is-cropped' : ''}${draft ? ' is-dragging' : ''}`}
+            style={sourceRatio ? { aspectRatio: String(sourceRatio) } : undefined}
+            role="img"
+            aria-label={[caption, `${label}: ${describeFocus(point)}.`].filter(Boolean).join(' ')}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={cancel}
+            onLostPointerCapture={cancel}
+          >
+            {/* The picture and its crop are clipped to its shape; the point is not, so it stays whole at an edge. */}
+            <div className="focus-clip">
+              <img
+                src={src}
+                alt=""
+                draggable={false}
+                onLoad={(e) => {
+                  const el = e.currentTarget;
+                  if (el.naturalWidth > 0 && el.naturalHeight > 0) setMeasured({ src, w: el.naturalWidth, h: el.naturalHeight });
+                }}
+                onError={() => setFailed(src)}
+              />
+              {crop && <div className="focus-window" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.w * 100}%`, height: `${crop.h * 100}%` }} />}
+            </div>
+            {crop && <div className="focus-mark" style={{ left: `${point.x}%`, top: `${point.y}%` }} />}
+          </div>
         </div>
       )}
-      {caption && (
-        <p className="focus-caption" id={captionId}>
-          {caption}
-        </p>
-      )}
-      <div className="focus-fields" role="group" aria-label={`${label} as percentages`}>
+      {crop && captionLine}
+      <div ref={fields} className="focus-fields" role="group" aria-label={`${label} as percentages`}>
+        {!crop && <span className="focus-saved">{scope === 'base' ? 'Used if cropped, at sizes without their own' : `Used on ${sizeName} if cropped`}</span>}
         <label className="focus-field">
           <span>Across</span>
           <DraftInput
-            className={`input sm style-input${setHere ? ' is-set' : ' is-inherited'}`}
-            value={setHere && parseFocus(value) ? String(parseFocus(value)!.x) : ''}
+            className={fieldClass}
+            value={fieldText('x')}
             placeholder={String(stored.x)}
             ariaLabel={`${label} across, percent from the left`}
             aria-describedby={caption ? captionId : undefined}
@@ -274,8 +309,8 @@ export function FocusEditor({
         <label className="focus-field">
           <span>Down</span>
           <DraftInput
-            className={`input sm style-input${setHere ? ' is-set' : ' is-inherited'}`}
-            value={setHere && parseFocus(value) ? String(parseFocus(value)!.y) : ''}
+            className={fieldClass}
+            value={fieldText('y')}
             placeholder={String(stored.y)}
             ariaLabel={`${label} down, percent from the top`}
             aria-describedby={caption ? captionId : undefined}

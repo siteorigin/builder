@@ -874,18 +874,30 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .style-custom { display: flex; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; }
 .style-input.mono { font-family: var(--mono); font-size: 12px; }
 /* Image focus: the whole picture with the crop it gets at the chosen size, and the point that stays in view. */
-.focus-editor { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; min-width: 0; margin-top: 2px; }
-.focus-pad { position: relative; align-self: center; max-width: 100%; max-height: 176px; overflow: hidden; border-radius: var(--r-sm); background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border); touch-action: none; user-select: none; }
-.focus-pad img { display: block; width: 100%; height: 100%; max-height: 176px; object-fit: fill; pointer-events: none; }
+.focus-editor { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 2px 0 6px; }
+.focus-stage { display: flex; flex-direction: column; align-items: center; padding: 8px; border-radius: var(--r-sm); background: var(--canvas); }
+.focus-pad { position: relative; max-width: 100%; max-height: 184px; border-radius: var(--r-sm); background: var(--canvas); touch-action: none; user-select: none; }
+/* The picture and its crop are clipped to its shape. The point sits outside this, so it stays whole at an edge. */
+.focus-clip { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: inherit; }
+/* The picture's edge, drawn over it so a dark or pale photo never melts into the panel. */
+.focus-clip::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--border-control); pointer-events: none; }
+.focus-pad img { display: block; width: 100%; height: 100%; max-height: 184px; object-fit: fill; pointer-events: none; }
+.focus-pad:not(.is-cropped) .focus-clip::after { box-shadow: inset 0 0 0 1px var(--border-strong); }
+/* With nothing to choose, the picture is a smaller reference, not a control. */
+.focus-editor.is-idle .focus-pad, .focus-editor.is-idle .focus-pad img { max-height: 112px; }
 .focus-pad.is-cropped { cursor: crosshair; }
-.focus-window { position: absolute; box-shadow: 0 0 0 999px rgb(10 14 20 / 0.55), inset 0 0 0 1.5px #fff; pointer-events: none; }
-.focus-mark { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid #fff; background: var(--accent); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.4); pointer-events: none; }
-.focus-pad.is-dragging .focus-mark { transform: scale(1.15); }
+.focus-pad.is-dragging { cursor: grabbing; }
+/* These sit on the author's photo, so they use a light and dark pair that holds on any picture, in either theme. */
+.focus-window { position: absolute; box-shadow: inset 0 0 0 1.5px #fff, 0 0 0 1px color-mix(in srgb, var(--ink) 70%, transparent), 0 0 0 999px color-mix(in srgb, var(--ink) 62%, transparent); pointer-events: none; }
+.focus-mark { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; border: 2px solid #fff; background: var(--select); box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink) 82%, transparent), 0 1px 3px rgb(0 0 0 / 0.4); pointer-events: none; }
+.focus-pad.is-dragging .focus-mark { transform: scale(1.25); }
 .focus-caption { margin: 0; font-size: 12px; line-height: 1.35; color: var(--text-3); }
-.focus-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
-.focus-field { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); }
-.focus-field .input { width: 54px; }
-.focus-center { margin-left: auto; }
+.focus-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.focus-saved { flex-basis: 100%; font-size: 12px; color: var(--text-3); }
+.focus-editor.is-idle .focus-fields { margin-top: 4px; row-gap: 4px; }
+.focus-field { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); }
+.focus-field .input { width: 46px; padding: 0 6px; }
+.focus-center { margin-left: auto; padding: 0 7px; }
 .style-input.is-set::placeholder { color: var(--text-2); }
 .editor.defining .style-row .reset-dot:hover { background: var(--plum-soft); }
 .style-more { display: flex; align-items: flex-start; gap: 6px; min-height: 28px; margin: -6px -6px; padding: 6px 6px; text-align: left; border: 0; border-radius: var(--r-sm); background: none; color: var(--accent-text); font-size: 12px; font-weight: 600; align-self: flex-start; }
@@ -1882,11 +1894,53 @@ button.asset-use:hover svg.go { color: var(--text); }
 .find-diff ins { color: var(--green); text-decoration: none; font-weight: 500; }
 .find-foot-note { font-size: 12px; text-align: left; }
 /* Table property editor: columns as name fields with their buttons, rows as disclosures (see TableEditor.tsx). */
-.table-editor { gap: 10px; }
-.table-editor-part { display: flex; flex-direction: column; gap: 4px; }
-.table-editor-heading { font-size: 11px; font-weight: 600; color: var(--text-2); }
-.table-editor-col { display: flex; align-items: center; gap: 4px; }
-.table-editor-col > input { flex: 1; min-width: 0; }
+.table-editor { gap: 12px; }
+.table-editor > .field-label { font-weight: 600; color: var(--text); }
+.table-editor-part { display: flex; flex-direction: column; gap: 6px; }
+.table-editor-heading { display: flex; align-items: center; gap: 6px; min-height: 26px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+.table-editor-heading .insp-add { margin-left: auto; }
+.table-editor .btn[aria-disabled='true'] { cursor: not-allowed; }
+.table-editor .btn[aria-disabled='true']:not(:focus-visible) { opacity: 0.5; }
+.table-editor-cue { font-weight: 400; color: var(--text-3); }
+.table-editor-col { display: flex; align-items: flex-start; gap: 6px; }
+.table-full { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.table-full-text { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; user-select: text; }
+.table-tools { display: inline-flex; align-items: center; flex: none; gap: 6px; height: 30px; }
+.table-move { display: inline-flex; align-items: center; }
+/* The table: a header over its values. It scrolls in its own frame, keeping the disclosure and header in view. */
+.table-grid-scroll { max-height: min(480px, 60vh); overflow: auto; scrollbar-width: thin; scroll-padding: 28px 0 0 28px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); }
+.table-grid-scroll:focus-visible { outline-offset: -2px; }
+.table-grid { min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.table-grid :focus-visible { outline-offset: -2px; }
+.table-grid th, .table-grid td { padding: 0; text-align: left; font-weight: 400; }
+.table-grid thead th { position: sticky; top: 0; z-index: 2; min-width: 72px; max-width: 136px; height: 26px; padding: 3px 8px; background: var(--panel-2); font-weight: 600; color: var(--text-2); }
+.table-grid tbody td, .table-grid tbody th { border-top: 1px solid var(--border); background: var(--raised); }
+.table-grid-row > td:not(.table-grid-actions) { min-width: 72px; max-width: 136px; height: 30px; padding: 4px 8px; color: var(--text); cursor: text; }
+.table-grid.is-single :is(thead th, .table-grid-row > td):not(.table-grid-toggle, .table-grid-actions) { width: 100%; max-width: 0; }
+.table-grid.is-single .ellipsis { max-width: none; }
+.table-grid .ellipsis { display: block; max-width: 120px; }
+/* A long header or row name keeps two lines, so similar entries can still be told apart. */
+.table-grid thead .ellipsis, .table-grid-row > td:nth-child(2) .ellipsis { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.3; white-space: normal; overflow-wrap: break-word; }
+.table-grid-blank { color: var(--text-3); }
+.table-grid .table-grid-toggle { position: sticky; left: 0; z-index: 1; width: 26px; min-width: 26px; max-width: 26px; padding: 0; }
+.table-grid thead .table-grid-toggle { z-index: 3; min-width: 26px; max-width: 26px; padding: 0; }
+.table-grid thead .table-grid-actions { min-width: 26px; padding: 0; }
+.table-grid th.list-editor-head { display: table-cell; height: 30px; }
+.table-grid .list-editor-head button.title { width: 26px; height: 29px; padding: 0; justify-content: center; color: var(--text-2); }
+.table-grid .list-editor-head button.title svg { flex: none; }
+.table-grid-row:hover > :is(td, th) { background: color-mix(in srgb, var(--text) 4%, var(--raised)); }
+.table-grid-row.is-open > :is(td, th) { background: color-mix(in srgb, var(--accent) 9%, var(--raised)); }
+/* Remove has a narrow rail of its own, so it never covers a value; it shows when the row is hovered or holds focus. */
+.table-grid .table-grid-actions { width: 26px; min-width: 26px; max-width: 26px; padding: 0; }
+.table-grid-row > .table-grid-actions .icon-btn { display: flex; margin: 0 1px; opacity: 0; }
+.table-grid-row:hover > .table-grid-actions .icon-btn, .table-grid-row > .table-grid-actions .icon-btn:focus { opacity: 1; }
+@media (hover: none) { .table-grid-row > .table-grid-actions .icon-btn { opacity: 1; } }
+.table-row-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--border); }
+.table-row-move { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); }
+/* An open row's fields stay in view however far the table is scrolled sideways. */
+.table-grid .table-grid-span { max-width: 0; }
+.table-grid .table-grid-form { position: sticky; left: 0; width: var(--table-view, 100%); border-top: 0; padding: 10px; }
+.table-grid-empty { position: sticky; left: 0; width: var(--table-view, 100%); margin: 0; padding: 10px 8px; font-size: 12px; line-height: 1.4; color: var(--text-3); }
 .sketch-table-row { display: flex; gap: 6%; padding-bottom: 2px; border-bottom: 1px solid color-mix(in srgb, var(--text-3) 30%, var(--panel-2)); }
 
 /* Shown instead of the editor when no theme pack could be loaded. */
