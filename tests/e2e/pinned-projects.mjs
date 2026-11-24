@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { answerChoosers, createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { answerChoosers, choosersShown, createProject, desktopCursor, eventually, launch, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('pinned-projects');
 const clients = join(WORK, 'clients');
@@ -21,6 +21,7 @@ const recentCards = () => win.getByRole('list', { name: 'Recent projects' }).loc
 /** The folders of a group's cards, in the order shown. */
 const folders = async (cards) => (await cards.evaluateAll((els) => els.map((e) => e.title))).map((t) => t.split('\n')[1]);
 const filterInput = () => win.locator('.recent-filter input');
+const filterStatus = () => win.locator('.welcome-main p.sr-only[role="status"]');
 
 async function closeProject() {
   const closed = await win.evaluate(() => window.builder.projects.close());
@@ -65,7 +66,7 @@ const site = (folder) => {
 const newer = Array.from({ length: 18 }, (_, i) => [`client-${18 - i}`, `Client ${18 - i}`]);
 newer.splice(4, 0, ['harbour/mill-road', 'Mill Road']);
 newer.splice(9, 0, ['delivered/mill-road', 'Mill Road']);
-const seeded = newer.map(([folder, name], i) => ({ dir: site(folder), name, openedAt: new Date(Date.now() - i * 1000).toISOString(), projectId: folder }));
+const seeded = newer.map(([folder, name], i) => ({ dir: site(folder), name, openedAt: new Date(Date.now() - i * 100).toISOString(), projectId: folder }));
 const [millHarbour, millDelivered] = [seeded[4].dir, seeded[9].dir];
 const gone = join(realpathSync(WORK), 'archive', 'old-brochure-site');
 const minutesAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
@@ -78,22 +79,28 @@ assert.deepEqual(
 file.recents = [...seeded, ...file.recents, { dir: gone, name: 'Old brochure site', openedAt: minutesAgo(60 * 24 * 90), projectId: 'brochure', pinned: true }];
 writeFileSync(settingsFile, JSON.stringify(file, null, 2));
 await launchAgain();
-assert.deepEqual(await folders(pinnedCards()), [longstanding, gone], 'both pinned projects are listed above the rest');
-assert.equal(await recentCards().count(), 20);
+assert.deepEqual(await folders(pinnedCards()), [longstanding, gone], 'both pinned projects are listed');
+assert.deepEqual(await folders(recentCards()), seeded.map((r) => r.dir), 'the twenty newer ones follow, newest first');
+assert.deepEqual(await folders(win.locator('.recent-card')), [longstanding, gone, ...seeded.map((r) => r.dir)], 'the pinned ones are shown first');
 const brochure = win.getByRole('list', { name: 'Pinned projects' }).locator('.recent-item', { hasText: 'Old brochure site' });
 assert.match(await brochure.innerText(), /Folder not found/);
 assert.match(await brochure.innerText(), /Find folder…/);
 assert.equal(await brochure.getByRole('button', { name: 'Pin Old brochure site' }).getAttribute('aria-pressed'), 'true');
 
 step('the two Mill Roads are told apart by their own folders');
-const mills = recentCards().filter({ hasText: 'Mill Road' });
-assert.deepEqual((await folders(mills)).sort(), [millDelivered, millHarbour].sort());
-const shownPaths = await win.getByRole('list', { name: 'Recent projects' }).locator('.recent-item', { hasText: 'Mill Road' }).locator('.where bdi').allInnerTexts();
-assert.equal(shownPaths.length, 2);
-assert.notEqual(shownPaths[0], shownPaths[1], 'each card shows a different folder');
-assert.match(shownPaths.join('\n'), /harbour/);
-assert.match(shownPaths.join('\n'), /delivered/);
-assert.equal(await win.getByRole('button', { name: /^Pin Mill Road \(.+\)$/ }).count(), 2, 'each Mill Road’s Pin names its folder');
+/** What a listed project's card shows of its folder, and what its Pin button is called. */
+const cardFacts = (dir) =>
+  win.evaluate((dir) => {
+    const item = [...document.querySelectorAll('.recent-item')].find((li) => li.querySelector('.recent-card')?.title.endsWith(`\n${dir}`));
+    return { shown: item?.querySelector('.where bdi')?.textContent, pin: item?.querySelector('.pin')?.getAttribute('aria-label') };
+  }, dir);
+const [harbourCard, deliveredCard] = [await cardFacts(millHarbour), await cardFacts(millDelivered)];
+assert.match(harbourCard.shown, /harbour/, 'the Harbour card shows its own folder');
+assert.doesNotMatch(harbourCard.shown, /delivered/);
+assert.match(deliveredCard.shown, /delivered/, 'the delivered card shows its own folder');
+assert.doesNotMatch(deliveredCard.shown, /harbour/);
+assert.equal(harbourCard.pin, `Pin Mill Road (${millHarbour})`, 'each Mill Road’s Pin names its own folder');
+assert.equal(deliveredCard.pin, `Pin Mill Road (${millDelivered})`);
 
 step('one more client is created: the oldest unpinned project rotates off, the pinned ones stay');
 const beforeRotation = await folders(recentCards());
@@ -106,9 +113,16 @@ assert.equal(await win.locator('.recent-card').count(), 22, 'twenty-two projects
 
 step('Longstanding client is reopened through Open project…: it takes no other client’s place');
 const beforeReopen = await folders(recentCards());
-await answerChoosers(app, [{ dialog: 'open', paths: [process.platform === 'darwin' ? longstanding : join(longstanding, 'siteorigin.project.json')] }]);
+const since = await desktopCursor(app);
+const [answer] = await answerChoosers(app, [{ dialog: 'open', paths: [process.platform === 'darwin' ? longstanding : join(longstanding, 'siteorigin.project.json')] }]);
 await win.locator('.welcome-action', { hasText: 'Open project…' }).click();
 await win.waitForSelector('.editor');
+const pickers = await choosersShown(app, since);
+assert.deepEqual(
+  pickers.map((p) => [p.answer, p.outcome]),
+  [[answer, 'chosen']],
+  'the native picker chose it'
+);
 assert.equal(await win.evaluate(() => window.builder.project.snapshot().then((s) => s?.dir ?? null)), longstanding);
 await closeProject();
 await eventually(async () => assert.deepEqual(await folders(pinnedCards()), [longstanding, gone]));
@@ -118,6 +132,7 @@ assert.equal(await win.locator('.recent-item.latest .recent-card').getAttribute(
 step('the filter finds projects by name or folder in both groups');
 await filterInput().fill('longstanding');
 await eventually(async () => assert.deepEqual(await folders(win.locator('.recent-card')), [longstanding]));
+await eventually(async () => assert.equal(await filterStatus().innerText(), '1 project matches'));
 await filterInput().fill('mill road');
 await eventually(async () => assert.deepEqual((await folders(win.locator('.recent-card'))).sort(), [millDelivered, millHarbour].sort()));
 await filterInput().fill('harbour');
@@ -125,8 +140,12 @@ await eventually(async () => assert.deepEqual(await folders(win.locator('.recent
 await filterInput().fill('archive');
 await eventually(async () => assert.deepEqual(await folders(pinnedCards()), [gone]));
 assert.equal(await win.getByRole('list', { name: 'Recent projects' }).count(), 0, 'no unpinned project matches');
+await filterInput().fill('client');
+await eventually(async () => assert.ok((await folders(pinnedCards())).includes(longstanding), 'a pinned client matches'));
+assert.ok((await folders(recentCards())).includes(client21), 'and so do the other clients');
 await filterInput().press('Escape');
 await eventually(async () => assert.equal(await win.locator('.recent-card').count(), 22));
+await eventually(async () => assert.equal(await filterStatus().innerText(), 'Showing all 22 projects'));
 
 step('unpinned, Longstanding client goes back among the rest, newest first');
 await win.getByRole('button', { name: 'Pin Longstanding client' }).click();
@@ -143,6 +162,15 @@ assert.deepEqual(
   saved.filter((r) => r.pinned).map((r) => r.dir),
   [gone]
 );
+
+step('with the last pin gone, the other cards stay where they are, and so does focus');
+const kept = await recentCards().first().elementHandle();
+await win.getByRole('button', { name: 'Pin Old brochure site' }).click();
+await eventually(async () => assert.equal(await win.getByRole('list', { name: 'Pinned projects' }).count(), 0));
+assert.equal(await kept.evaluate((e) => e.isConnected), true, 'the other cards are not drawn anew');
+assert.equal(await win.locator('.recent-group-title').count(), 0, 'one list needs no titles');
+assert.equal(await recentCards().count(), 22);
+await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Pin Old brochure site'));
 
 allErrors.push(...errors);
 await app.close();

@@ -320,7 +320,10 @@ function registerIpc() {
   handle('dialogs:defaultProjectsFolder', () => defaultProjectsFolder());
   handle('projects:recents', () => recents());
   handle('projects:removeRecent', (dir: string) => removeRecent(dir));
-  handle('projects:pinRecent', (dir: string, pinned: boolean) => pinRecent(dir, pinned === true));
+  handle('projects:pinRecent', (dir: unknown, pinned: unknown) => {
+    if (typeof dir !== 'string' || typeof pinned !== 'boolean') throw new Error('A pin needs a project folder and whether to pin it.');
+    return pinRecent(dir, pinned);
+  });
   handle('projects:create', (opts) => controller.create(opts));
   handle('projects:cancelCreate', () => controller.cancelCreate());
   handle('projects:websiteTools', () => controller.websiteTools());

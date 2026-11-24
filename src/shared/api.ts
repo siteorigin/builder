@@ -732,8 +732,8 @@ export interface BuilderApi {
   projects: {
     recents(): Promise<RecentProject[]>;
     removeRecent(dir: string): Promise<void>;
-    /** Pin a listed project so it stays on the list and above the rest, or unpin it (#259). */
-    pinRecent(dir: string, pinned: boolean): Promise<void>;
+    /** Pin a listed project so it stays on the list and above the rest, or unpin it (#259); false if it is not listed. */
+    pinRecent(dir: string, pinned: boolean): Promise<boolean>;
     create(opts: CreateProjectOptions): Promise<{ ok: boolean; message?: string }>;
     cancelCreate(): Promise<void>;
     /** Whether creating a project downloads website tools, checked the way setup checks it. */

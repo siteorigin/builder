@@ -562,9 +562,10 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
 .recent-item .remove { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; color: var(--text-3); }
 .recent-item .remove:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .recent-item .remove svg { width: 14px; height: 14px; }
-/* Pin sits under Remove, so the card keeps its width for the name and folder (#259). Pinned, it is filled in the
+/* Pin sits under Remove, far enough apart that one's focus ring never covers the other, so the card keeps its width
+   for the name and folder (#259). Pinned, it is filled in the
    accent, which tells the pinned group's cards apart at a glance. */
-.recent-item .pin { position: absolute; top: 36px; right: 6px; width: 28px; height: 28px; color: var(--text-3); }
+.recent-item .pin { position: absolute; top: 40px; right: 6px; width: 28px; height: 28px; color: var(--text-3); }
 .recent-item .pin:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .recent-item .pin svg { width: 14px; height: 14px; }
 .recent-item .pin[aria-pressed='true'] { color: var(--accent-text); }
@@ -590,8 +591,8 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
 .recent-item.latest .recent-meta strong { font-size: 22px; line-height: 1.25; letter-spacing: -0.02em; }
 .recent-item.latest .recent-meta .where { font-size: 13px; }
 .recent-item.latest .recent-meta :is(.when, .recent-status) { margin-top: 0; padding-top: 1px; }
-.recent-item.latest .remove { top: calc(50% - 30px); }
-.recent-item.latest .pin { top: calc(50% + 2px); }
+.recent-item.latest .remove { top: calc(50% - 32px); }
+.recent-item.latest .pin { top: calc(50% + 4px); }
 .recent-go { display: inline-flex; align-items: center; gap: 5px; flex: none; align-self: center; margin-left: 12px; padding: 6px 10px 6px 12px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 13px; font-weight: 600; transition: background 120ms; }
 .recent-go svg { width: 14px; height: 14px; transition: transform 160ms; }
 .recent-card:hover:not(:disabled) .recent-go { background: color-mix(in srgb, var(--accent) 18%, transparent); }

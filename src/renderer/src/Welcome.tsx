@@ -127,15 +127,18 @@ export function Welcome() {
   const focusAfterRemove = useRef<string | null>(null);
   // The card whose Pin was just pressed: it moves to the other group, so its button is found again there.
   const focusAfterPin = useRef<string | null>(null);
-  // Only the newest reading of the list is shown, whatever order the replies come back in.
+  // Readings of the list are numbered: one that comes back after a newer one was shown is dropped.
   const reads = useRef(0);
+  const shownRead = useRef(0);
   const modal = useStore((s) => s.modal);
   const openingRecent = recents?.find((r) => r.dir === opening);
   const openingNote = openingRecent ? `${openingRecent.missing ? 'Finding' : 'Opening'} ${openingRecent.name}…` : opening ? 'Opening a project…' : '';
   const refresh = () => {
     const read = ++reads.current;
     void api.projects.recents().then((list) => {
-      if (read === reads.current) setRecents(list);
+      if (read < shownRead.current) return;
+      shownRead.current = read;
+      setRecents(list);
     });
   };
   useEffect(() => {
@@ -164,6 +167,8 @@ export function Welcome() {
     const next = focusAfterRemove.current;
     if (next === null || recents === null) return;
     focusAfterRemove.current = null;
+    // Only once the removed card has taken focus with it: never from wherever the author went meanwhile.
+    if (document.activeElement && document.activeElement !== document.body) return;
     // No card left to move to: the first-run button, or the filter when it has hidden the rest.
     (cardOf(next) ?? filterInput.current ?? document.querySelector<HTMLElement>('.empty-state .btn'))?.focus();
   }, [recents]);
@@ -225,16 +230,19 @@ export function Welcome() {
     setCleared(false);
     const rest = shown.filter((x) => x.dir !== r.dir);
     const at = shown.indexOf(r);
+    // The latest of a Remove or a Pin says where focus goes.
+    focusAfterPin.current = null;
     focusAfterRemove.current = (rest[at] ?? rest[at - 1])?.dir ?? '';
     refresh();
     toast(r.missing ? `${r.name} was removed from this list.` : `${r.name} was removed from this list. Its folder is untouched.`);
   };
   const pinProject = async (r: RecentProject) => {
     const pinned = r.pinned !== true;
+    focusAfterRemove.current = null;
     focusAfterPin.current = r.dir;
     try {
-      await api.projects.pinRecent(r.dir, pinned);
-      toast(pinned ? `${r.name} is pinned. It stays on this list however many other projects you open.` : `${r.name} is no longer pinned.`);
+      // A project removed meanwhile is not on the list to pin.
+      if (await api.projects.pinRecent(r.dir, pinned)) toast(pinned ? `${r.name} is pinned. It stays on this list however many other projects you open.` : `${r.name} is no longer pinned.`);
     } catch (e) {
       toast(`Could not ${pinned ? 'pin' : 'unpin'} ${r.name}: ${errorText(e)}`, 'error');
     } finally {
@@ -493,21 +501,20 @@ export function Welcome() {
                     </ul>
                   </section>
                 )}
-                {groups.recent.length > 0 &&
-                  (groups.pinned.length > 0 ? (
-                    <section className="recent-group" aria-labelledby="recent-others">
+                {/* Always in the same place, titled once pinned projects are shown: a first pin or a last unpin never
+                    redraws the other cards, so focus stays wherever the author has it. */}
+                {groups.recent.length > 0 && (
+                  <section className="recent-group" aria-labelledby={groups.pinned.length > 0 ? 'recent-others' : undefined}>
+                    {groups.pinned.length > 0 && (
                       <h3 id="recent-others" className="recent-group-title">
                         Recent
                       </h3>
-                      <ul className="recent-grid" aria-label="Recent projects">
-                        {groups.recent.map(card)}
-                      </ul>
-                    </section>
-                  ) : (
+                    )}
                     <ul className="recent-grid" aria-label="Recent projects">
                       {groups.recent.map(card)}
                     </ul>
-                  ))}
+                  </section>
+                )}
               </>
             )}
             </div>

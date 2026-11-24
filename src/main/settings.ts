@@ -189,12 +189,15 @@ function withPin(r: RecentProject, pinned: boolean): RecentProject {
  */
 export async function addRecent(dir: string, name: string, projectId: string, replaces?: string) {
   const s = await loadSettings();
-  // An older entry may name the same folder through a link.
+  // An older entry may name the same folder through a link: each entry's folder is resolved once, so the entries
+  // dropped are exactly the ones whose pin is looked at.
   const real = canonicalDir(dir);
-  const same = (r: RecentProject) => r.dir === dir || canonicalDir(r.dir) === real;
-  let pinned = s.recents.some((r) => same(r) && r.pinned === true);
-  let rest = s.recents.filter((r) => !same(r));
+  const same = s.recents.filter((r) => r.dir === dir || canonicalDir(r.dir) === real);
+  let rest = s.recents.filter((r) => !same.includes(r));
   const entry: RecentProject = { dir, name, openedAt: new Date().toISOString(), projectId };
+  // The pin stays with its project: another project put in a pinned project's old folder is not pinned for it. An
+  // entry listed before IDs were kept cannot be told apart, so its pin is kept.
+  let pinned = same.some((r) => r.pinned === true && (typeof r.projectId !== 'string' || r.projectId === '' || r.projectId === projectId));
   let old = replaces === undefined ? undefined : rest.find((r) => r.dir === replaces);
   if (old && listedFolderGone(old.dir) && sameProject(old, entry)) {
     pinned ||= old.pinned === true;
@@ -209,14 +212,17 @@ export async function addRecent(dir: string, name: string, projectId: string, re
 /**
  * Pins a listed project folder, or unpins it (#259). A pinned project stays listed however many others are opened
  * after it; unpinned, it takes its place among the rest by when it was last opened again, and goes once newer ones
- * fill the list. A folder not on the list stays off it.
+ * fill the list. A folder not on the list stays off it: the answer says whether it was listed.
  */
-export async function pinRecent(dir: string, pinned: boolean) {
+export async function pinRecent(dir: string, pinned: boolean): Promise<boolean> {
   const s = await loadSettings();
   const at = s.recents.findIndex((r) => r.dir === dir);
-  if (at < 0 || (s.recents[at].pinned === true) === pinned) return;
-  s.recents = s.recents.map((r, i) => (i === at ? withPin(r, pinned) : r));
+  if (at < 0) return false;
+  if ((s.recents[at].pinned === true) !== pinned) s.recents = s.recents.map((r, i) => (i === at ? withPin(r, pinned) : r));
+  // Written even when the list already says so: a pin whose earlier write failed is written again, and an answer
+  // never comes before the pin is on disk.
   await saveSettings();
+  return true;
 }
 
 /**
