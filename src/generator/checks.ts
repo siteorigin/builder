@@ -1179,8 +1179,8 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
         const which = shippedCode(state, def);
         // Other code's headings are not known here: the page's review cannot say it has no title.
         if (!which) uninspected ||= owner.kind === 'page';
-        // The shipped contact form shows its heading as an `<h2>`.
-        if (which !== 'contact.form' || typeof props.heading !== 'string' || !props.heading.trim()) return;
+        // The shipped contact form and data table show their heading as an `<h2>`.
+        if ((which !== 'contact.form' && which !== 'data.table') || typeof props.heading !== 'string' || !props.heading.trim()) return;
         add({ level: 2, text: props.heading.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}) }, scope);
       }
     });

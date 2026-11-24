@@ -90,18 +90,22 @@ describe('heading outline', () => {
     expect(headingWarnings(r)).toEqual([]);
   });
 
-  it('lists subheadings written in rich text, and the contact form’s heading', () => {
+  it('lists subheadings written in rich text, and the contact form’s and data table’s headings', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
     const owner = { kind: 'page' as const, id: about.id };
     let r = applyOperations(s, [{ type: 'node.insert', owner, componentId: 'content.text', props: { heading: 'How we work', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] } }]);
     r = applyOperations(r.state, [{ type: 'node.insert', owner, componentId: 'contact.form', props: { heading: 'Write to us' } }]);
-    const tail = own(r.state, about.id).slice(-3);
+    r = applyOperations(r.state, [{ type: 'node.insert', owner, componentId: 'data.table', props: { heading: 'Opening hours' } }]);
+    const tail = own(r.state, about.id).slice(-4);
     expect(tail.map((h) => [h.level, h.text, !!h.rich, !!h.levelSource])).toEqual([
       [2, 'How we work', false, true],
       [3, 'Listening first', true, false],
-      [2, 'Write to us', false, false]
+      [2, 'Write to us', false, false],
+      [2, 'Opening hours', false, false]
     ]);
+    // Shipped code whose markup is known leaves the review able to judge the page.
+    expect(pageOutline(r.state, about.id).uninspected).toBe(false);
   });
 
   it('marks a page’s own heading as changed by its tag, and an older design’s fixed heading as not changeable', () => {
