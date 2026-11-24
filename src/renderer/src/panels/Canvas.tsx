@@ -199,9 +199,9 @@ export function Canvas() {
       switch (m.type) {
         case 'ready': {
           const path = String(p.path);
-          // A page loaded in full inside the same frame (a visitor's Back across documents) is followed, so the
-          // editor and the frame always agree on the page.
-          const reloaded = readySession.current === session;
+          // A page loaded in full inside the same frame while previewing (a visitor's Back across documents) is
+          // followed, so the editor and the frame agree on the page.
+          const reloaded = readySession.current === session && s.mode === 'preview';
           readySession.current = session;
           setReady(true);
           setState({ frameReady: true });
