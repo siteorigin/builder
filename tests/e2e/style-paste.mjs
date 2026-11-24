@@ -26,12 +26,14 @@ const applied = await win.evaluate(async (ops) => {
 }, [set('base', 'paddingBlock', '72px'), set('phone', 'paddingBlock', '16px'), set('base', 'minHeight', '70vh')]);
 assert.ok(applied.ok, `the hero padding is set: ${JSON.stringify(applied.error)}`);
 
-// The Content with image section in the preview, found by its own heading.
-const studio = frame.locator('section', { has: frame.locator('h2', { hasText: 'Good design starts with listening' }) }).first();
-const padding = () => studio.evaluate((el) => [getComputedStyle(el).paddingTop, getComputedStyle(el).paddingBottom]);
+// A section in the preview, found by its own heading. The preview reloads its styles after each edit.
+const sectionWith = (tag, text) => frame.locator('section', { has: frame.locator(tag, { hasText: text }) }).first();
+const studio = sectionWith('h2', 'Good design starts with listening');
+const paddingOf = (loc) => loc.evaluate((el) => [getComputedStyle(el).paddingTop, getComputedStyle(el).paddingBottom]);
+const padding = () => paddingOf(studio);
 const width = (name) => win.getByRole('button', { name, exact: true }).first().click();
-await studio.scrollIntoViewIfNeeded();
-const original = await padding();
+await eventually(async () => assert.deepEqual(await paddingOf(sectionWith('h1', 'Calm, considered spaces')), ['72px', '72px'], 'the hero shows its padding'), 30000);
+const original = await eventually(padding, 10000);
 assert.notDeepEqual(original, ['72px', '72px'], 'the section starts with its own padding');
 
 step('copy the hero’s style from its actions menu');
@@ -58,6 +60,7 @@ assert.match(await dialog.getByRole('region', { name: 'Not pasted' }).innerText(
 await dialog.getByLabel('Sizes').selectOption('phone');
 await eventually(async () => assert.doesNotMatch(await changes.innerText(), /All sizes:/, 'Phone only leaves All sizes alone'));
 await dialog.getByLabel('Sizes').selectOption('every');
+await win.waitForTimeout(400);
 await win.screenshot({ path: join(OUT, 'style-paste-review.png') });
 await dialog.getByRole('button', { name: 'Paste style', exact: true }).click();
 await dialog.waitFor({ state: 'detached' });
