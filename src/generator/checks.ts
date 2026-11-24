@@ -1561,13 +1561,16 @@ export function siteLinks(state: ProjectState): SiteLink[] {
       out.push({ owner: src.owner, nodeId: reportId, key, ...(src.entryId ? { entryId: src.entryId } : {}), link, label, ...(unnamed ? { unnamed } : {}), inText, ...(pageId ? { pageId } : {}) });
     }
   for (const { entry, collection } of entries) {
-    const links = entryTextLinks(entry.body).filter(({ link }) => leads(link));
+    // Numbered among all the text's links, so a link's key stays when one before it is changed to go nowhere.
+    const links = entryTextLinks(entry.body)
+      .map((l, i) => ({ ...l, key: `body:${i}` }))
+      .filter(({ link }) => leads(link));
     // Text the entry's layout does not show links nowhere on the website.
     if (!links.length || !showsEntryText(live, collection, entry)) continue;
-    links.forEach(({ link, label }, i) => {
+    for (const { link, label, key } of links) {
       const pageId = pageOf(link);
-      out.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', key: `body:${i}`, entryId: entry.id, link, label, inText: true, ...(pageId ? { pageId } : {}) });
-    });
+      out.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', key, entryId: entry.id, link, label, inText: true, ...(pageId ? { pageId } : {}) });
+    }
   }
   return out;
 }

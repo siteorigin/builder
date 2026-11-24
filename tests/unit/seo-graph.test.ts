@@ -129,7 +129,25 @@ describe('buildSeoGraph', () => {
     // Setting a value a node already has is no conflict, nor is the same value with its keys in another order.
     expect(() => graphOf(state, SPRING, [() => ({ extend: [{ id: 'https://example.com/studio/#website', set: { name: 'Riverside Studio' } }] })])).not.toThrow();
     const action = (a: Record<string, string>): GraphContributor => ({ ids }) => ({ extend: [{ id: ids.website, set: { potentialAction: a } }] });
-    expect(() => graphOf(state, SPRING, [action({ '@type': 'SearchAction', target: 'x' }), action({ target: 'x', '@type': 'SearchAction' })])).not.toThrow();
+    const a = action({ '@type': 'SearchAction', target: 'x' });
+    const b = action({ target: 'x', '@type': 'SearchAction' });
+    expect(graphScriptText(graphOf(state, SPRING, [a, b])!)).toBe(graphScriptText(graphOf(state, SPRING, [b, a])!));
+  });
+
+  it('links entities described in place to the node that holds them', () => {
+    const { state } = seoSite();
+    const shop: GraphContributor = ({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': ids.site('shop'), '@type': 'Store', name: 'The studio shop' } } }] });
+    const worker: GraphContributor = ({ ids }) => ({ nodes: [{ '@type': 'Person', '@id': ids.site('ana'), worksFor: { '@id': ids.site('shop') } }] });
+    const g = graphOf(state, SPRING, [shop, worker])!;
+    expect(node(g, 'https://example.com/studio/#ana')).toMatchObject({ worksFor: { '@id': 'https://example.com/studio/#shop' } });
+    // An address elsewhere that two nodes both name does not link them to each other.
+    const elsewhere: GraphContributor = ({ ids }) => ({
+      nodes: [
+        { '@type': 'Person', '@id': ids.site('ana'), worksFor: { '@id': ids.organization }, knows: { '@id': 'https://people.example/ben' } },
+        { '@type': 'Person', '@id': ids.site('cat'), knows: { '@id': 'https://people.example/ben' } }
+      ] as GraphNode[]
+    });
+    expect(() => graphOf(state, SPRING, [elsewhere])).toThrow(/#cat is linked to nothing else/);
   });
 
   it('writes the same bytes whichever contributor sets new properties on a node first', () => {
@@ -166,8 +184,14 @@ describe('buildSeoGraph', () => {
         ]
       }))
     ).toThrow(/linked to nothing else/);
-    // References are absolute addresses.
+    // References are absolute addresses, written without spaces.
     expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { author: { '@id': '#missing' } } }] }))).toThrow(/not an absolute address/);
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { author: { '@id': ` ${ids.site('person')}` } } }] }))).toThrow(/not an absolute address/);
+    // An entity is described once, in place or as a node.
+    expect(
+      refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': ids.site('shop'), '@type': 'Store', name: 'Shop' }, mentions: { '@id': ids.site('shop'), '@type': 'Store', name: 'Other shop' } } }] }))
+    ).toThrow(/describes too: describe it once/);
+    expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { about: { '@id': ids.organization, '@type': 'Organization', name: 'Other' } } }] }))).toThrow(/refer to it instead/);
     // A reference to an entity somewhere else on the web is not the graph's to have, and one described in place is there.
     expect(refused(({ ids }) => ({ extend: [{ id: ids.organization, set: { parentOrganization: { '@id': 'https://group.example/#org' } } }] }))).not.toThrow();
     expect(refused(({ ids }) => ({ extend: [{ id: ids.webpage, set: { author: { '@id': ids.page('author'), '@type': 'Person', name: 'Ana' } } }] }))).not.toThrow();

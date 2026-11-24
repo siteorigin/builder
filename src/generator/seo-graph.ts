@@ -74,6 +74,8 @@ const canonical = (v: JsonValue): string =>
 const same = (a: JsonValue, b: JsonValue) => canonical(a) === canonical(b);
 const byJson = (a: JsonValue, b: JsonValue) => (canonical(a) < canonical(b) ? -1 : canonical(a) > canonical(b) ? 1 : 0);
 const copyOf = <T extends JsonValue>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+/** A copy with object keys in order, so the same value from any contributor is written the same way. */
+const ordered = <T extends JsonValue>(v: T): T => JSON.parse(canonical(v)) as T;
 /** A property only when it has a value. */
 const opt = (key: string, value: JsonValue | undefined): JsonObject => (value === undefined || value === '' ? {} : { [key]: value });
 
@@ -174,6 +176,7 @@ function mentions(value: JsonValue, out: { refs: string[]; inline: string[] } = 
 }
 
 const isAbsolute = (id: string) => {
+  if (/\s/.test(id)) return false;
   try {
     const url = new URL(id);
     return url.protocol === 'https:' || url.protocol === 'http:';
@@ -238,12 +241,12 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
       sets.set(node, pending);
       const had = pending.has(k) ? pending.get(k)! : node[k];
       if (had !== undefined && !same(had, v)) throw new Error(`Graph contributor ${from + 1} sets ${k} of ${id}, which already has another value.`);
-      pending.set(k, v);
+      pending.set(k, ordered(v));
     }
     for (const [k, v] of Object.entries(add ?? {})) {
       const pending = adds.get(node) ?? new Map<string, JsonValue[]>();
       adds.set(node, pending);
-      pending.set(k, [...(pending.get(k) ?? []), ...(Array.isArray(v) ? v : [v])]);
+      pending.set(k, [...(pending.get(k) ?? []), ...(Array.isArray(v) ? v : [v]).map(ordered)]);
     }
   }
   const inOrder = <V>(m: Map<string, V>) => [...m].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
@@ -258,23 +261,31 @@ export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subjec
     }
   const graph = [...core, ...added.sort((a, b) => (a['@id'] < b['@id'] ? -1 : a['@id'] > b['@id'] ? 1 : 0))];
   // References are absolute addresses, and one to an ID of this graph names a node it has (or one described in place).
+  // An entity is described once: in place in one spot, or as a node of the graph that others refer to.
   const said = graph.map((node) => ({ id: node['@id'], ...mentions(Object.fromEntries(Object.entries(node).filter(([k]) => k !== '@id'))) }));
-  const described = new Set([...nodes.keys(), ...said.flatMap((m) => m.inline)]);
+  const inline = new Map<string, string>();
+  for (const { id, inline: described } of said)
+    for (const x of described) {
+      if (!isAbsolute(x)) throw new Error(`${id} describes ${x}, which is not an absolute address.`);
+      if (nodes.has(x)) throw new Error(`${id} describes ${x} in place, which the graph already has: refer to it instead.`);
+      if (inline.has(x)) throw new Error(`${id} describes ${x}, which ${inline.get(x)} describes too: describe it once and refer to it.`);
+      inline.set(x, id);
+    }
   for (const { id, refs } of said)
     for (const r of refs) {
       if (!isAbsolute(r)) throw new Error(`${id} refers to ${r}, which is not an absolute address.`);
-      if (own(r) && !described.has(r)) throw new Error(`${id} refers to ${r}, which the graph does not have.`);
+      if (own(r) && !nodes.has(r) && !inline.has(r)) throw new Error(`${id} refers to ${r}, which the graph does not have.`);
     }
-  // Every node is linked, one way or the other, to the graph's own entities.
-  const links = new Map<string, Set<string>>([...nodes.keys()].map((id) => [id, new Set<string>()]));
-  for (const { id, refs } of said)
-    for (const r of refs)
-      if (links.has(r)) {
-        links.get(id)!.add(r);
-        links.get(r)!.add(id);
-      }
+  // Every node is linked, one way or the other, to the graph's own entities: through references, and through the
+  // entities nodes describe in place, which are linked to the node that holds them.
+  const links = new Map<string, Set<string>>();
+  const link = (a: string, b: string) => {
+    for (const [x, y] of [[a, b], [b, a]]) (links.get(x) ?? links.set(x, new Set()).get(x)!).add(y);
+  };
+  // Only the graph's own entities link nodes: two nodes naming the same address elsewhere are not linked by it.
+  for (const { id, refs, inline: described } of said) for (const x of [...refs, ...described]) if (nodes.has(x) || inline.has(x)) link(id, x);
   const reached = new Set(core.map((n) => n['@id']));
-  for (const queue = [...reached]; queue.length; ) for (const next of links.get(queue.pop()!)!) if (!reached.has(next) && reached.add(next)) queue.push(next);
+  for (const queue = [...reached]; queue.length; ) for (const next of links.get(queue.pop()!) ?? []) if (!reached.has(next) && reached.add(next)) queue.push(next);
   for (const node of added) if (!reached.has(node['@id'])) throw new Error(`${node['@id']} is linked to nothing else in the graph: refer to it, or have it refer to one of the graph's entities.`);
   return { '@context': SCHEMA_CONTEXT, '@graph': graph };
 }

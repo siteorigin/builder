@@ -33,10 +33,30 @@ export interface SeoAuditRule {
 const SEVERITY = { error: 0, warning: 1, info: 2 } as const;
 
 /**
+ * The project without the records too damaged to read (a page with no address, an entry that is not one), which
+ * Project health reports: one of them never stops the audit of the rest. The project itself when it has none.
+ */
+function readable(state: ProjectState): ProjectState {
+  const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object';
+  const pages = Object.entries(state.pages ?? {});
+  const keptPages = pages.filter(([, p]) => isRecord(p) && typeof p.route === 'string');
+  const collections = Object.entries(state.collections ?? {});
+  const keptCollections = collections.filter(([, c]) => isRecord(c) && isRecord(c.settings) && isRecord(c.entries));
+  const damagedEntries = keptCollections.some(([, c]) => Object.values(c.entries).some((e) => !isRecord(e)));
+  if (keptPages.length === pages.length && keptCollections.length === collections.length && !damagedEntries && state.collections) return state;
+  return {
+    ...state,
+    pages: Object.fromEntries(keptPages),
+    collections: Object.fromEntries(keptCollections.map(([id, c]) => [id, { ...c, entries: Object.fromEntries(Object.entries(c.entries).filter(([, e]) => isRecord(e))) }]))
+  };
+}
+
+/**
  * Every finding of the baseline rules and of `rules` on `state`: by pillar in their order, then the most serious
  * first, then in the order the rules found them (the site's order). A finding two rules both make is listed once.
  */
-export function runSeoAudit(state: ProjectState, rules: readonly SeoAuditRule[] = []): SeoFinding[] {
+export function runSeoAudit(project: ProjectState, rules: readonly SeoAuditRule[] = []): SeoFinding[] {
+  const state = readable(project);
   const all = [...BASELINE_SEO_RULES, ...rules];
   const ids = new Set<string>();
   for (const rule of all) {

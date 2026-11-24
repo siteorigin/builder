@@ -15,6 +15,7 @@ import { archivePages } from '@shared/archives';
 import { checkPublicUrl } from '@shared/public-url';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
 import { showsEntryText, type SiteLink } from '@generator/checks';
+import { publishedState } from '@generator/index';
 import { bodyImageProblems } from './collections';
 import type { SeoAuditRule } from './seo-audit';
 
@@ -293,12 +294,13 @@ const genericLinkText: SeoAuditRule = {
   }
 };
 
-/** The published entries whose page shows their text, each with its collection and a name for messages. */
+/** The published entries whose page shows their text, as the website shows it, each with its collection and a name for messages. */
 function shownEntries(state: ProjectState, documents: readonly EffectiveSeo[]) {
+  const live = publishedState(state);
   return documents.flatMap((d) => {
     const e = entryOf(state, d);
     // Damaged text (a block that is not one) is Project health's to report.
-    return e && Array.isArray(e.entry.body) && e.entry.body.every(isRichBlock) && showsEntryText(state, e.collection, e.entry) ? [{ ...e, what: `${e.collection.settings.name}: “${e.entry.title}”` }] : [];
+    return e && Array.isArray(e.entry.body) && e.entry.body.every(isRichBlock) && showsEntryText(live, live.collections[e.collection.settings.id] ?? e.collection, e.entry) ? [{ ...e, what: `${e.collection.settings.name}: “${e.entry.title}”` }] : [];
   });
 }
 

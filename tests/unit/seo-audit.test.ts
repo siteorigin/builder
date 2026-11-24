@@ -129,6 +129,9 @@ describe('baseline rules', () => {
     const { state, home, services } = seoSite();
     const none = run(state, { type: 'site.update', description: '' }, { type: 'page.update', pageId: services, description: '' });
     expect(only(none, 'SEO_DESCRIPTION_MISSING')).toEqual([expect.objectContaining({ owner: { kind: 'page', id: services }, severity: 'warning', destination: { kind: 'pageSeo', pageId: services, field: 'description' } })]);
+    // Told apart from case and spacing.
+    const cased = run(state, { type: 'page.update', pageId: services, description: state.pages[home].seo.description!.toUpperCase().replace(/ /g, '  ') });
+    expect(only(cased, 'SEO_DESCRIPTION_DUPLICATE').map((f) => f.owner?.id)).toEqual([home, services]);
     // Two pages left to the site's description share it.
     const inherited = run(state, { type: 'page.update', pageId: home, description: '' }, { type: 'page.update', pageId: services, description: '' });
     expect(only(inherited, 'SEO_DESCRIPTION_DUPLICATE').map((f) => f.owner?.id)).toEqual([home, services]);
@@ -186,6 +189,7 @@ describe('baseline rules', () => {
     expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true, body: linkTo({ type: 'page', target: 'pg_kilns' }) }))).toContain('SEO_PAGE_UNLINKED');
     // So does a typed address of the page on the site's public URL, or of an old address kept for it.
     expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/' }) }))).toEqual([]);
+    expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/index.html' }) }))).toEqual([]);
     const moved = run(s, { type: 'page.update', pageId: 'pg_kilns', route: '/kilns/' });
     expect(moved.site.redirects).toContainEqual({ from: '/kiln-hire/', pageId: 'pg_kilns' });
     expect(codes(run(moved, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/' }) }))).toEqual([]);
@@ -339,6 +343,9 @@ describe('the audit runner', () => {
     (s.collections.posts.entries.en_spring as { featuredImage: unknown }).featuredImage = 'img_bowls';
     (s.assets.assets.img_bowls as { file: unknown }).file = null;
     s.site.favicon = null;
+    // A page with no address and an entry that is not one, as a hand edit might leave them.
+    s.pages.pg_broken = { ...structuredClone(s.pages[s.site.homePageId]), id: 'pg_broken', route: null as never };
+    (s.collections.posts.entries as Record<string, unknown>).en_null = null;
     // The rest of the site is judged all the same.
     expect(codes(s)).toContain('SEO_FAVICON_MISSING');
   });
