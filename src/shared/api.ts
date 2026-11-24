@@ -3,6 +3,7 @@ import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
 import type { ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
+import type { ComponentThumb } from './component-thumbs';
 import type { ThemePack } from '@catalogue/pack';
 
 export type Appearance = 'system' | 'light' | 'dark';
@@ -640,6 +641,12 @@ export interface BuilderApi {
      */
     prepareComponentPreview(spec: unknown): Promise<PreparedComponentPreview>;
     releaseComponentPreview(key: string): Promise<void>;
+    /**
+     * The thumbnail of a project component in the opening `workspaceKey`, for Insert: from the editor's cache, else
+     * photographed from its isolated preview (which can take a few seconds). `have` is the key of the thumbnail shown
+     * now: while it is still current, the answer leaves out the picture.
+     */
+    componentThumb(definitionId: string, workspaceKey: string, have?: string): Promise<ComponentThumb>;
     repairDependencies(): Promise<void>;
     readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;
     generatedSource(kind: 'component' | 'page', id: string): Promise<string>;

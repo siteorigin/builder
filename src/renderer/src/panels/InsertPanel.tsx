@@ -11,6 +11,7 @@ import { ownerLabel, treeFor } from '../lib/model';
 import { gridKeys, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
 import { usePackPreview, usePreviewExtent } from '../components/PackPreview';
+import { ComponentThumb } from '../components/ComponentThumb';
 import { axesOf } from '@shared/variants';
 
 export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
@@ -292,7 +293,6 @@ const SPARSE = 0.05;
 const STARTS_EMPTY = new Set(['media.gallery', 'media.video']);
 
 function ItemIcon({ it }: { it: Item }) {
-  if (it.kind === 'component') return <span className="ico">{it.code ? <Code /> : <LucideIcon name="component" />}</span>;
   return (
     <span className="ico">
       <LucideIcon name={it.icon} />
@@ -859,8 +859,11 @@ export function InsertPanel() {
       {justAdded(it) ? <Check /> : <Plus />}
     </span>
   );
+  // A project component is pictured by its thumbnail, drawn while the panel is open.
   const iconFor = (it: Item) =>
-    justAdded(it) ? (
+    it.kind === 'component' ? (
+      <ComponentThumb definitionId={it.spec.definitionId!} code={it.code} active={open} done={justAdded(it)} />
+    ) : justAdded(it) ? (
       <span className="ico done">
         <Check />
       </span>

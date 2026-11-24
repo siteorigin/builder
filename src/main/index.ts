@@ -25,6 +25,7 @@ import { checkSvelteSource, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
 import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
+import { createThumbCapturer } from './thumb-capture';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 
@@ -36,6 +37,10 @@ let win: BrowserWindow | null = null;
 let appearance: Appearance = 'system';
 const windowBackground = () => editorBackground(editorScheme(appearance, nativeTheme.shouldUseDarkColors));
 const controller = new Controller(() => win);
+/** Photographs component previews for Insert's thumbnails, in a hidden window of its own, while the editor is open. */
+const thumbCapturer = createThumbCapturer();
+controller.thumbCapture = (server, path) =>
+  win && !win.isDestroyed() ? thumbCapturer.capture(server, path) : Promise.resolve({ ok: false as const, message: 'The editor is closed.', transient: true });
 
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
 app.commandLine.appendSwitch('use-mock-keychain');
@@ -330,6 +335,7 @@ function registerIpc() {
   handle('project:retryPreview', () => controller.startRuntime());
   handle('project:prepareComponentPreview', (spec: unknown) => controller.prepareComponentPreview(spec));
   handle('project:releaseComponentPreview', (key: unknown) => controller.releaseComponentPreview(key));
+  handle('project:componentThumb', (definitionId: unknown, opening: unknown, have?: unknown) => controller.componentThumb(definitionId, opening, have));
   handle('project:repairDependencies', () => controller.repairDependencies());
   handle('project:readSource', (id: string) => controller.readSource(id));
   handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
@@ -352,6 +358,7 @@ function registerIpc() {
     handle('test:exportStatic', (dest: string, format?: unknown) => controller.buildStaticTo(dest, format === 'zip' ? 'zip' : 'folder'));
     handle('test:exportSource', (dest: string, format?: unknown) => controller.exportSourceTo(dest, format === 'zip' ? 'zip' : 'folder'));
     handle('test:previewComponent', (steps: unknown) => previewComponents(Array.isArray(steps) ? (steps as ComponentPreviewStep[]) : []));
+    handle('test:thumbCaptures', () => controller.thumbs.captures);
   }
   handle('ai:providers', () => providerStatuses());
   handle('ai:setKey', async (p: ProviderId, key: string | null) => {
@@ -594,6 +601,9 @@ async function createWindow() {
   });
   self.on('closed', () => {
     if (win === self) win = null;
+    // The thumbnails' hidden window goes with the editor: it must never keep the app running, or stand in for the
+    // editor when macOS asks whether a window is left to show.
+    thumbCapturer.dispose();
     menuCommands.closed(self);
     leaveGate.editorGone();
     controller.cancelOpen();

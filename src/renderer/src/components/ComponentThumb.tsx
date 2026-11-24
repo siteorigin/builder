@@ -1,0 +1,104 @@
+import { useEffect, useState } from 'react';
+import { Check, Code } from 'lucide-react';
+import type { ComponentThumb as Thumb } from '@shared/component-thumbs';
+import { api, useStore } from '../store';
+
+/**
+ * Thumbnails of the project's own components in Insert, photographed by main from each one's isolated preview and
+ * kept in the project's editor cache. Each is asked for while its tile is shown in the open panel, and again after
+ * a change to the project (the component, what it places, the site's brand): main answers at once when nothing that
+ * shows changed. A tile keeps its last picture while a new one is drawn, and shows a sketch until there is one, or
+ * when the component cannot be pictured (code that throws).
+ */
+const shown = new Map<string, { key: string; url: string }>();
+const failed = new Set<string>();
+/** The opening the pictures above are of: another one starts afresh. */
+let shownOpening: string | null = null;
+
+/** How long a change rests before its thumbnails are asked for, so typing or dragging a colour asks once. */
+const SETTLE_MS = 500;
+
+function thumbState(opening: string | undefined, definitionId: string) {
+  if (opening && opening !== shownOpening) {
+    shownOpening = opening;
+    shown.clear();
+    failed.clear();
+  }
+  const id = `${opening ?? ''}\n${definitionId}`;
+  return { id, picture: shown.get(id) ?? null, failed: failed.has(id) };
+}
+
+/** A project component's thumbnail (a data URL), whether it cannot be pictured, asked for while `active`. */
+export function useComponentThumb(definitionId: string, active: boolean): { url: string | null; failed: boolean } {
+  const opening = useStore((s) => s.snapshot?.workspaceKey);
+  const revision = useStore((s) => s.snapshot?.revision);
+  const ready = useStore((s) => s.runtime.state === 'ready');
+  const [, redraw] = useState(0);
+  const { id, picture, failed: broken } = thumbState(opening, definitionId);
+  useEffect(() => {
+    if (!active || !ready || !opening) return;
+    let live = true;
+    const timer = setTimeout(
+      () => {
+        const have = shown.get(id);
+        api.project.componentThumb(definitionId, opening, have?.key).then(
+          (r: Thumb) => {
+            if (!live || shownOpening !== opening) return;
+            if (r.state === 'ready') {
+              const url = r.url ?? (have?.key === r.key ? have.url : undefined);
+              if (!url) return;
+              shown.set(id, { key: r.key, url });
+              failed.delete(id);
+            } else if (r.state === 'failed') {
+              // The sketch, rather than a picture of an earlier version that no longer shows what it does.
+              shown.delete(id);
+              failed.add(id);
+            } else return;
+            redraw((n) => n + 1);
+          },
+          () => undefined
+        );
+      },
+      // A tile with no picture yet asks at once.
+      picture ? SETTLE_MS : 0
+    );
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [active, ready, opening, revision, definitionId, id]);
+  return { url: picture?.url ?? null, failed: broken };
+}
+
+/**
+ * A project component's tile picture in Insert: its thumbnail, or a sketch of a card while that is drawn or when
+ * the component cannot be pictured (a code component also shows its mark). `done` marks a component just inserted.
+ */
+export function ComponentThumb({ definitionId, code, active, done }: { definitionId: string; code?: boolean; active: boolean; done?: boolean }) {
+  const { url, failed } = useComponentThumb(definitionId, active);
+  const [broken, setBroken] = useState<string | null>(null);
+  const shot = url && url !== broken ? url : null;
+  return (
+    <span className={`insert-thumb component-thumb${shot ? ' shot' : ''}${failed ? ' failed' : ''}${done ? ' done' : ''}`} aria-hidden="true" data-thumb={shot ? 'ready' : failed ? 'failed' : 'pending'}>
+      {shot ? (
+        <img className="insert-shot" src={shot} alt="" draggable={false} onError={() => setBroken(shot)} />
+      ) : (
+        <span className="sketch">
+          <i className="hi" style={{ width: '55%', height: 4 }} />
+          <i style={{ width: '85%', height: 3 }} />
+          <i style={{ width: '70%', height: 3 }} />
+        </span>
+      )}
+      {code && !shot && (
+        <span className="component-thumb-mark">
+          <Code />
+        </span>
+      )}
+      {done && (
+        <span className="component-thumb-mark done">
+          <Check />
+        </span>
+      )}
+    </span>
+  );
+}

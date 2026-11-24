@@ -1884,6 +1884,17 @@ style.textContent =
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);
 const previewAtStart = previewState();
+// An isolated component preview opened on its own, with no editor frame around it: the editor photographs it for
+// the thumbnails in Insert (src/main/thumb-capture.ts). It shows as visitors see it, and offers one call that waits
+// for its fonts and images, then measures it.
+if (parentWin === window && previewAtStart) {
+  mode = 'preview';
+  document.documentElement.toggleAttribute('data-so-editing', false);
+  window.__siteoriginThumb = async () => {
+    await settled(Date.now() + 4000);
+    return previewState();
+  };
+}
 send('ready', { path: location.pathname, title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
 reportHistory();
 reportTextFocus();
