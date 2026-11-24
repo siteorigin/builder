@@ -54,14 +54,21 @@ export function checkLocalBaseURL(raw: string, allowRemote = false): LocalURLChe
   return { ok: true, url: `${u.protocol}//${u.host}${path}`, remote };
 }
 
+/** Which cloud provider issued a key, by its prefix, or by the marker every OpenAI secret key carries after it. */
+function cloudKeyProvider(token: string): 'OpenAI' | 'Anthropic' | null {
+  if (/^sk-ant-\S/.test(token)) return 'Anthropic';
+  if (/^sk-(proj|svcacct|admin|None)-\S/.test(token) || /^sk-\S*T3BlbkFJ/.test(token)) return 'OpenAI';
+  return null;
+}
+
 /**
  * Why a key cannot be used for a local server, or null when it can. A recognizable OpenAI or Anthropic key is
- * refused: it would be sent to the local server as typed, and that key belongs to a cloud account. Legacy OpenAI
- * keys are long and purely alphanumeric after `sk-`, so short or hyphenated keys a local server was started with
- * (`sk-no-key-required`) still work.
+ * refused: it would be sent to the local server as typed, and that key belongs to a cloud account. Each word of
+ * what was pasted is checked, so `Bearer sk-…` or a quoted key is caught too, while keys a local server was
+ * started with (`sk-no-key-required`, or `sk-` and random hex) still work.
  */
 export function localKeyProblem(key: string | null | undefined): string | null {
-  const k = String(key ?? '').trim();
-  const provider = /^sk-ant-\S/.test(k) ? 'Anthropic' : /^sk-(proj|svcacct|admin)-\S/.test(k) || /^sk-[A-Za-z0-9]{32,}$/.test(k) ? 'OpenAI' : null;
+  const tokens = String(key ?? '').split(/[\s"'`=:,]+/);
+  const provider = tokens.map(cloudKeyProvider).find(Boolean);
   return provider ? `This looks like an ${provider} API key, which is never sent to a local server. Enter the key your local server was started with, or leave the field empty.` : null;
 }

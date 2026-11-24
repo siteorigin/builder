@@ -8,10 +8,13 @@ import { createProject, eventually, launch, scratch, step } from './harness.mjs'
 import { MockOpenAIServer, envelopeReply } from '../unit/mock-openai-server.ts';
 import { LOCAL_PRESETS } from '../../src/shared/local.ts';
 
-/** The first preset whose port is free, with the mock server listening on it. */
+/**
+ * The last preset whose port is free, with the mock server listening on it. Last first, so the preset that is
+ * chosen is not the default address a broken preset button would leave in place.
+ */
 async function serveOnPreset() {
   const taken = [];
-  for (const preset of LOCAL_PRESETS) {
+  for (const preset of [...LOCAL_PRESETS].reverse()) {
     const server = new MockOpenAIServer();
     try {
       return { preset, server: await server.start(Number(new URL(preset.baseURL).port)) };
@@ -23,8 +26,10 @@ async function serveOnPreset() {
   throw new Error(`Every local preset port is in use (${taken.join(', ')}), so none can be served for this test.`);
 }
 
-const { preset, server } = await serveOnPreset();
 const { WORK, cleanup } = scratch('local');
+const { preset, server } = await serveOnPreset();
+console.log(`local: serving ${preset.label} at ${server.baseURL}`);
+assert.equal(server.baseURL, preset.baseURL);
 // The second model is the one chosen, so a model picker that silently keeps the server's first model fails.
 server.models = { object: 'list', data: [{ id: 'first-model', object: 'model' }, { id: 'second-model', object: 'model' }] };
 const gets = () => server.requests.filter((r) => r.method === 'GET' && r.url === '/v1/models');
@@ -68,8 +73,11 @@ try {
   await eventually(async () => assert.equal((await settings()).ai.local.baseURL, preset.baseURL));
 
   step('the server models are discovered and the second is chosen');
-  await dialog.getByRole('button', { name: 'Refresh' }).click();
   const modelSelect = dialog.locator('#settings-local-model');
+  await eventually(async () => assert.equal(await dialog.getByRole('button', { name: 'Refresh' }).isEnabled(), true));
+  const beforeRefresh = gets().length;
+  await dialog.getByRole('button', { name: 'Refresh' }).click();
+  await eventually(async () => assert.ok(gets().length > beforeRefresh, 'Refresh asks the server for its models'));
   await eventually(async () => assert.deepEqual(await modelSelect.locator('option').allInnerTexts(), ["Use the server's model", 'first-model', 'second-model']));
   await modelSelect.selectOption('second-model');
   await eventually(async () => assert.equal((await settings()).ai.models.local, 'second-model'));
@@ -85,12 +93,14 @@ try {
   step('a cloud key pasted into the Local key field is refused, and never sent');
   const keyField = dialog.locator('#settings-api-key');
   const cloudKey = 'sk-ant-api03-NotARealKey_0123456789';
+  const beforeKey = server.requests.length;
   await keyField.fill(cloudKey);
   await dialog.locator('.field-error', { hasText: 'This looks like an Anthropic API key' }).waitFor();
   assert.equal(await dialog.getByRole('button', { name: 'Save', exact: true }).isEnabled(), false, 'the key cannot be saved');
   await dialog.getByRole('button', { name: 'Test this key' }).click();
   await win.locator('.toast.error', { hasText: 'This looks like an Anthropic API key' }).waitFor({ timeout: 15000 });
-  assert.ok(!JSON.stringify(server.requests.map((r) => r.headers)).includes(cloudKey), 'the server never saw the key');
+  await keyField.press('Enter');
+  assert.equal(server.requests.length, beforeKey, 'nothing was sent to the server, with or without the key');
   assert.equal((await win.evaluate(() => window.builder.ai.providers())).find((p) => p.id === 'local').source, null, 'no key was saved');
   await keyField.fill('');
   await dialog.locator('button.btn', { hasText: /^Close$/ }).click();

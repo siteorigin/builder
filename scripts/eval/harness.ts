@@ -6,11 +6,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AiEvent, ChatContext, ChatMessage } from '@shared/api';
+import type { AiEvent, ChatContext, ChatMessage, ProviderId } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
-import { Orchestrator } from '@agent/orchestrator';
+import { LIMITS, Orchestrator } from '@agent/orchestrator';
 import { estimateRequestTokens, estimateTokens } from '@agent/budget';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
@@ -210,6 +210,8 @@ function errorCode(content: string): string | null {
 export interface RunOptions {
   adapterName: string;
   model: string;
+  /** The provider the orchestrator is told it runs, which sets its time limit. Scripted runs count as OpenAI. */
+  provider?: ProviderId;
   /** Builds the adapter for one case. The fake adapter uses the case's script. */
   adapter(c: EvalCase, state: () => ProjectState): AgentModelAdapter;
   /** A run that takes longer than this is stopped and graded as it stands. */
@@ -234,7 +236,7 @@ export async function runCase(c: EvalCase, opts: RunOptions): Promise<{ result: 
     let busy = false;
     const orch: Orchestrator = new Orchestrator({
       session: () => session,
-      adapter: async () => ({ adapter: recorder, model: opts.model, provider: 'openai' }),
+      adapter: async () => ({ adapter: recorder, model: opts.model, provider: opts.provider ?? 'openai' }),
       emit: (e: AiEvent) => {
         if (e.kind !== 'message' || !e.message) return;
         if (e.message.result) last = e.message;
@@ -259,7 +261,8 @@ export async function runCase(c: EvalCase, opts: RunOptions): Promise<{ result: 
     const started = Date.now();
     const sent = await orch.send(c.prompt, ctx);
     if (!sent.ok) throw new Error(sent.message ?? 'The run did not start.');
-    const timeout = setTimeout(() => orch.stop(), opts.timeoutMs ?? 10 * 60_000);
+    // By default the run's own time limit ends it, with a minute to check and keep its work before this steps in.
+    const timeout = setTimeout(() => orch.stop(), opts.timeoutMs ?? (opts.provider === 'local' ? LIMITS.localActiveMs : LIMITS.activeMs) + 60_000);
     while (orch.busy || busy) await new Promise((r) => setTimeout(r, 5));
     clearTimeout(timeout);
     const latencyMs = Date.now() - started;

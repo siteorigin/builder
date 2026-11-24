@@ -979,6 +979,12 @@ export class Orchestrator {
         // reply in progress, so a server that keeps streaming cannot outlast it; Stop still means Stop.
         let done: Extract<ModelEvent, { type: 'done' }> | null = null;
         let failed: Extract<ModelEvent, { type: 'error' }> | null = null;
+        /** Measured after the turn is prepared, and again once it ends, in case a busy loop held the timer back. */
+        const remaining = () => limitMs - (activeMs + Date.now() - lastResume);
+        if (remaining() <= 0) {
+          await stopAtLimit(timeLimit, 'time limit');
+          return;
+        }
         let expired = false;
         const turn = new AbortController();
         const forwardStop = () => turn.abort();
@@ -986,7 +992,7 @@ export class Orchestrator {
         const deadline = setTimeout(() => {
           expired = true;
           turn.abort();
-        }, limitMs - activeMs);
+        }, remaining());
         try {
           for (let attempt = 0; ; attempt++) {
             let turnText = '';
@@ -1023,7 +1029,7 @@ export class Orchestrator {
           clearTimeout(deadline);
           signal.removeEventListener('abort', forwardStop);
         }
-        if (expired) {
+        if (expired || remaining() <= 0) {
           // Valid work so far is kept, as at any other limit.
           msg.text = finalText;
           await stopAtLimit(timeLimit, 'time limit');

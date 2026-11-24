@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AiEvent, ChatContext } from '@shared/api';
+import type { AiEvent, ChatContext, ProviderId } from '@shared/api';
 import type { ElementRef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { LIMITS, Orchestrator } from '@agent/orchestrator';
@@ -27,7 +27,7 @@ afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
-async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOptions = {}, codeEnabled = true) {
+async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOptions = {}, codeEnabled = true, provider: ProviderId = 'local') {
   const dir = mkdtempSync(join(tmpdir(), 'so-local-'));
   dirs.push(dir);
   const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
@@ -36,7 +36,7 @@ async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOp
   let busy = false;
   const orch = new Orchestrator({
     session: () => session,
-    adapter: async () => ({ adapter, model: 'test-model', provider: 'local' }),
+    adapter: async () => ({ adapter, model: 'test-model', provider }),
     emit: (e) => events.push(e),
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [] }),
@@ -172,9 +172,9 @@ describe('orchestrator with constrained JSON', () => {
     const limit = LIMITS.localActiveMs;
     LIMITS.localActiveMs = 700;
     try {
-      const { session, run, header } = await setup();
+      // A silent server would trip the idle timeout long before the limit; this one keeps sending real content.
+      const { session, run, header } = await setup({}, { firstTokenTimeoutMs: 300, idleTimeoutMs: 300 });
       const before = headerName(session, header);
-      // Real content keeps arriving well inside the idle timeout, so only the run's own limit can end it.
       server.script(envelopeReply('update_site_brand', rename('Harbor Coffee'), 'Renaming the site'), { frames: [sseChunk({ role: 'assistant' })], endless: { frame: sseChunk({ content: ' and more' }), everyMs: 20 } });
       const { runId, result } = await run('Rename the site, then keep going');
       expect(result).toMatchObject({ status: 'completed', canUndo: true, incomplete: true, error: 'time limit' });
@@ -191,16 +191,20 @@ describe('orchestrator with constrained JSON', () => {
 
   it('gives a local model its own, longer time limit than a cloud one', async () => {
     const cloud = LIMITS.activeMs;
-    LIMITS.activeMs = 50;
+    LIMITS.activeMs = 150;
     try {
-      const { run } = await setup();
       // Slower than the cloud limit allows, as a local model reading a long prompt is.
-      server.script({ ...envelopeReply('finish', { message: 'Nothing to change.' }), delayMs: 300 });
-      const { result } = await run('Hello');
-      expect(result).toMatchObject({ status: 'no-changes', summary: 'Nothing to change.' });
+      const slow = { ...envelopeReply('finish', { message: 'Nothing to change.' }), delayMs: 400 };
+      const local = await setup();
+      server.script(slow);
+      expect((await local.run('Hello')).result).toMatchObject({ status: 'no-changes', summary: 'Nothing to change.' });
+      const asCloud = await setup({}, {}, true, 'openai');
+      server.script(slow);
+      expect((await asCloud.run('Hello')).result).toMatchObject({ status: 'failed', error: 'time limit' });
     } finally {
       LIMITS.activeMs = cloud;
     }
+    expect(LIMITS).toMatchObject({ activeMs: 10 * 60_000, localActiveMs: 30 * 60_000 });
   });
 
   it('fails clearly, with nothing changed, when no server is running', async () => {
@@ -237,7 +241,10 @@ describe('orchestrator with native tool calls', () => {
     expect(sent).toHaveLength(3);
     for (const messages of sent) renderStrictTemplate(messages);
     expect(sent[2].map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant', 'user']);
-    expect(sent[2].at(-1).content).toMatch(/^Your last response reached the output limit/);
+    // The cut-off reply is never replayed: a short bridge stands between the result and the request for smaller steps.
+    expect(sent[2][4]).toEqual({ role: 'assistant', content: 'I have read the results.' });
+    expect(JSON.stringify(sent[2])).not.toContain('Now the pages');
+    expect(sent[2].at(-1).content).toMatch(/^Your last response reached the output limit.*smaller steps/s);
   });
 
   it('recovers from malformed fragmented arguments', async () => {

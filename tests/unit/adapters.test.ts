@@ -442,7 +442,11 @@ describe('cloud adapters and the environment', () => {
       expect(r.headers.get('openai-project')).toBeNull();
       expect(r.headers.get('authorization')).toBe('Bearer sk-test');
     }
-    for (const r of anthropic.seen) expect(`${r.headers.get('authorization')} ${r.headers.get('x-api-key')}`).toContain('sk-ant-test');
+    // This SDK version sends the key as a bearer token; the token from the environment never replaces it.
+    for (const r of anthropic.seen) {
+      expect(r.headers.get('authorization')).toBe('Bearer sk-ant-test');
+      expect(r.headers.get('x-api-key')).toBeNull();
+    }
     expect(JSON.stringify(anthropic.seen.map((r) => [...r.headers]))).not.toContain('token-from-env');
   });
 });

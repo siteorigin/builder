@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LIMITS } from '@agent/orchestrator';
 import { EVAL_CASES, SUITE_VERSION } from '../../scripts/eval/cases';
 import { estimateCostUsd, REPORT_SCHEMA_VERSION, runCase, runSuite, ScriptedAdapter, summarize, tracesToJsonl, type CaseResult, type EvalCase, type RunOptions } from '../../scripts/eval/harness';
 
@@ -26,6 +27,18 @@ describe('agent benchmark', () => {
     expect(report.summary.compileClean).toBe(EVAL_CASES.length);
     expect(report.summary.validateClean).toBe(EVAL_CASES.length);
   }, 120000);
+
+  it('runs a local model under the local time limit, as the editor does', async () => {
+    const cloud = LIMITS.activeMs;
+    LIMITS.activeMs = 0;
+    try {
+      const c = byId('copy-edit-hero-heading');
+      expect((await runCase(c, scripted)).result.status).toBe('failed');
+      expect((await runCase(c, { ...scripted, provider: 'local' })).result).toMatchObject({ status: 'completed', pass: true });
+    } finally {
+      LIMITS.activeMs = cloud;
+    }
+  }, 60000);
 
   it('fails a model that does nothing, on every case that asks for a change', async () => {
     for (const c of EVAL_CASES) {

@@ -21,6 +21,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import type { ProviderId } from '@shared/api';
 import type { AgentModelAdapter } from '@agent/types';
 import { AnthropicAdapter } from '@agent/anthropic';
 import { OpenAIAdapter } from '@agent/openai';
@@ -32,17 +33,17 @@ const ASSUMED_PRICES = { inputPerMillion: 5, outputPerMillion: 25 };
 
 const scripted: RunOptions = { adapterName: 'scripted-fake', model: 'scripted', adapter: (c, state) => new ScriptedAdapter(c.script(state)) };
 
-function liveAdapter(provider: string, model: string, baseURL?: string): () => AgentModelAdapter {
-  const opts = baseURL ? { baseURL } : {};
+/** A cloud provider's key is only ever sent to that provider's own API, so a cloud run takes no --base-url. */
+function liveAdapter(provider: string, model: string): () => AgentModelAdapter {
   if (provider === 'openai') {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new Error('Set OPENAI_API_KEY to run against OpenAI.');
-    return () => new OpenAIAdapter(key, model, opts);
+    return () => new OpenAIAdapter(key, model);
   }
   if (provider === 'anthropic') {
     const key = process.env.ANTHROPIC_API_KEY;
     if (!key) throw new Error('Set ANTHROPIC_API_KEY to run against Anthropic.');
-    return () => new AnthropicAdapter(key, model, opts);
+    return () => new AnthropicAdapter(key, model);
   }
   throw new Error(`Unknown provider "${provider}". Use openai, anthropic or local.`);
 }
@@ -88,10 +89,10 @@ async function main(): Promise<number> {
   let capabilities = new ScriptedAdapter([]).capabilities();
   if (values.live) {
     if (!values.provider || (values.provider !== 'local' && !values.model)) throw new Error('--live needs --provider and --model.');
-    if (values.provider !== 'local' && (values['tool-mode'] !== undefined || values['allow-remote'])) throw new Error('--tool-mode and --allow-remote apply only to --provider local.');
+    if (values.provider !== 'local' && (values['tool-mode'] !== undefined || values['allow-remote'] || values['base-url'] !== undefined)) throw new Error('--base-url, --tool-mode and --allow-remote apply only to --provider local.');
     const local = values.provider === 'local' ? await resolveLocalRun({ baseURL: values['base-url'], model: values.model, toolMode: values['tool-mode'], allowRemote: values['allow-remote'] }) : null;
     const model = local?.model ?? values.model!;
-    const make = local?.make ?? liveAdapter(values.provider, model, values['base-url']);
+    const make = local?.make ?? liveAdapter(values.provider, model);
     // A model on this computer costs nothing and sends nothing anywhere, so there is nothing to confirm.
     if (!local || local.remote) {
       const prices = { inputPerMillion: Number(values['input-price'] ?? ASSUMED_PRICES.inputPerMillion), outputPerMillion: Number(values['output-price'] ?? ASSUMED_PRICES.outputPerMillion) };
@@ -106,7 +107,7 @@ async function main(): Promise<number> {
         return 2;
       }
     }
-    options = { adapterName: values.provider, model, adapter: make };
+    options = { adapterName: values.provider, model, adapter: make, provider: values.provider as ProviderId };
     capabilities = make().capabilities();
   }
 

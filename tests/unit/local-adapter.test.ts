@@ -281,6 +281,8 @@ describe('native tool calls', () => {
       const messages = posts()[0].body.messages;
       const rendered = renderStrictTemplate(messages);
       expect(messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'tool', 'assistant', 'user']);
+      expect(messages[2].tool_calls).toEqual(unbridged[2].tool_calls);
+      expect(messages[5]).toEqual({ role: 'assistant', content: 'I have read the results.' });
       expect(messages.slice(3, 5)).toEqual([
         { role: 'tool', tool_call_id: 'aaaaaaaa1', name: 'read_page', content: '{"page":"one"}' },
         { role: 'tool', tool_call_id: 'aaaaaaaa2', name: 'read_page', content: '{"page":"two"}' }
@@ -299,13 +301,41 @@ describe('native tool calls', () => {
       ];
       await run(native(), { items });
       await run(adapter(), { items });
+      expect(posts()).toHaveLength(2);
       for (const post of posts()) {
         const messages = post.body.messages;
         expect(() => renderStrictTemplate(messages)).not.toThrow();
         expect(messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+        expect(messages[1]).toEqual({ role: 'user', content: 'Earlier in this conversation:' });
         expect(messages[2].content).toBe('Added a Pricing page.\n\nRenamed the site.');
         expect(messages[3].content).toBe('Now add a Contact page');
       }
+    });
+
+    it('puts a user turn between two replies that only tool calls separate', async () => {
+      server.script(textReply('Done.'));
+      await run(native(), {
+        items: [
+          { kind: 'user', text: 'Read the page' },
+          { kind: 'assistant', text: 'Let me look first.', toolCalls: [] },
+          { kind: 'assistant', text: '', toolCalls: [calls[0]] },
+          { kind: 'tool_result', callId: calls[0].id, name: 'read_page', content: '{"page":"one"}' },
+          { kind: 'assistant', text: 'It has one section.', toolCalls: [] },
+          { kind: 'user', text: 'Add another' }
+        ]
+      });
+      const messages = posts()[0].body.messages;
+      expect(() => renderStrictTemplate(messages)).not.toThrow();
+      expect(messages.map((m: { role: string; content: string }) => [m.role, m.content])).toEqual([
+        ['system', 'You edit websites.'],
+        ['user', 'Read the page'],
+        ['assistant', 'Let me look first.'],
+        ['assistant', ''],
+        ['tool', '{"page":"one"}'],
+        ['user', 'Go on.'],
+        ['assistant', 'It has one section.'],
+        ['user', 'Add another']
+      ]);
     });
   });
 
@@ -494,21 +524,36 @@ describe('where a request may go', () => {
     ['sk-proj-Abc123_def-456', 'OpenAI'],
     ['sk-svcacct-Abc123', 'OpenAI'],
     ['sk-admin-Abc123', 'OpenAI'],
-    [`sk-${'T3BlbkFJ'.repeat(6)}`, 'OpenAI'],
-    ['  sk-ant-api03-Abc123_def-456  ', 'Anthropic']
+    ['sk-None-Abc123def456', 'OpenAI'],
+    [`sk-${'a1B2c3D4e5'.repeat(2)}T3BlbkFJ${'f6G7h8I9j0'.repeat(2)}`, 'OpenAI'],
+    ['Bearer sk-proj-Abc123_def-456', 'OpenAI'],
+    ['OPENAI_API_KEY=sk-proj-Abc123', 'OpenAI'],
+    ['  "sk-ant-api03-Abc123_def-456"  ', 'Anthropic']
   ])('recognizes the cloud key %s', (key, provider) => {
     expect(localKeyProblem(key)).toContain(`an ${provider} API key`);
   });
 
-  it.each(['', '   ', 'local-secret', 'sk-no-key-required', 'sk-local-dev', 'sk-1234567890abcdefghijkl', 'lm-studio'])('accepts the local key "%s"', (key) => {
-    expect(localKeyProblem(key)).toBeNull();
-  });
+  it.each(['', '   ', 'local-secret', 'ollama', 'lm-studio', 'sk-no-key-required', 'sk-local-dev', 'sk-1234567890abcdefghijkl', `sk-${'0123456789abcdef'.repeat(2)}`, `sk-${'x9'.repeat(30)}`])(
+    'accepts the local key "%s"',
+    (key) => {
+      expect(localKeyProblem(key)).toBeNull();
+    }
+  );
 
-  it('never sends a cloud key to a local server, even one on another machine', async () => {
-    const endpoint = { baseURL: server.baseURL, model: 'test-model', apiKey: 'sk-ant-api03-secret', allowRemote: true };
-    expect(errorOf(await run(new LocalAdapter(endpoint), { tools: [] }))).toMatchObject({ code: 'invalid_request', message: expect.stringMatching(/Anthropic API key/) });
-    expect(await listLocalModels(endpoint)).toMatchObject({ ok: false, message: expect.stringMatching(/Anthropic API key/) });
-    expect(await testLocal(endpoint)).toMatchObject({ ok: false, message: expect.stringMatching(/Anthropic API key/) });
+  it.each([
+    ['on this computer', () => server.baseURL],
+    ['on another machine', () => 'http://192.0.2.10:8080/v1']
+  ])('never sends a cloud key to a local server %s', async (_where, baseURL) => {
+    let calls = 0;
+    const fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      calls++;
+      return globalThis.fetch(input, init);
+    }) as typeof globalThis.fetch;
+    const endpoint = { baseURL: baseURL(), model: 'test-model', apiKey: 'sk-ant-api03-secret', allowRemote: true };
+    expect(errorOf(await run(new LocalAdapter(endpoint, { fetch }), { tools: [] }))).toMatchObject({ code: 'invalid_request', message: expect.stringMatching(/Anthropic API key/) });
+    expect(await listLocalModels(endpoint, { fetch })).toMatchObject({ ok: false, message: expect.stringMatching(/Anthropic API key/) });
+    expect(await testLocal(endpoint, { fetch })).toMatchObject({ ok: false, message: expect.stringMatching(/Anthropic API key/) });
+    expect(calls).toBe(0);
     expect(server.requests).toEqual([]);
   });
 
@@ -687,6 +732,8 @@ describe('constrained JSON', () => {
     expect(JSON.parse(messages[2].content).action.args).toEqual({ value: { $json: '[1]' } });
     expect(messages[3].content).toContain('Result of set_value:\n{"ok":true}');
     expect(messages[3].content).toContain('Validation found new errors.');
+    expect(messages[3].content.indexOf('Result of set_value')).toBeLessThan(messages[3].content.indexOf('Validation found new errors.'));
+    expect(JSON.parse(messages[2].content)).toEqual({ brief_status: done.text, action: { tool: 'set_value', args: { value: { $json: '[1]' } } } });
   });
 
   it('replays an earlier request’s answer as a finish envelope, never as prose (#195)', async () => {
@@ -843,5 +890,17 @@ describe('constrained JSON', () => {
 
   it('writes readable signatures', () => {
     expect(signature(toStrictSchema({ type: 'object', properties: { a: { type: 'string' }, b: { type: 'array', items: { enum: ['x', 'y'] } }, c: {} }, required: ['a'] }))).toBe('{a: string, b?: ("x"|"y")[], c?: json}');
+  });
+});
+
+describe('the mock server', () => {
+  it('listens on a port it is given, and refuses one that is taken', async () => {
+    const port = Number(new URL(server.baseURL).port);
+    const second = new MockOpenAIServer();
+    await expect(second.start(port)).rejects.toMatchObject({ code: 'EADDRINUSE' });
+    await server.stop();
+    await second.start(port);
+    expect(second.baseURL).toBe(`http://127.0.0.1:${port}/v1`);
+    server = second;
   });
 });

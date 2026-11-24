@@ -34,5 +34,6 @@ describe('the local server key', () => {
     if (process.platform !== 'win32') expect(statSync(file()).mode & 0o777).toBe(0o600);
     await setKey('local', null);
     expect(await getKey('local')).toBeNull();
+    expect((await getKey('openai'))?.key).toBe('sk-proj-Abc123_def-456');
   });
 });
