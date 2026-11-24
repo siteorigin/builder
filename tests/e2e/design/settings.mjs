@@ -103,7 +103,10 @@ async function shot(state, check, themes = BOTH, { full = false, keepFocus = fal
     await write(state);
     // The last screen of a dialog that scrolls, since its lower settings are otherwise never seen.
     if (!full && !keepFocus) {
-      const scroller = win.locator('.modal').last().locator('.settings-panel:not([hidden]), .modal-body').first();
+      // Settings scrolls its open section; a dialog on top of it (or any other) scrolls its body.
+      const dialog = win.locator('.modal').last();
+      const panel = dialog.locator('.settings-panel:not([hidden])');
+      const scroller = (await panel.count()) ? panel.first() : dialog.locator('.modal-body');
       const scrolls = await scroller.evaluate((el) => {
         if (el.scrollHeight <= el.clientHeight + 1) return false;
         el.scrollTop = el.scrollHeight;
