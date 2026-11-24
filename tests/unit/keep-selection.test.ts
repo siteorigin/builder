@@ -174,6 +174,15 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     expect(await scrollY()).toBe(y);
   });
 
+  it('still keeps it after a key pressed in the page (a shortcut to the command menu, then a width from it)', async () => {
+    await send('track', { selected: sel('gallery'), hovered: null });
+    await placeAt('gallery', 250);
+    await inFrame(`win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'k', metaKey: true }));`);
+    await settle();
+    await resize(PHONE);
+    expect(await topInView('gallery')).toBe(true);
+  });
+
   it('follows the selection through a drag across many widths', async () => {
     await send('track', { selected: sel('gallery'), hovered: null });
     await placeAt('gallery', 200);

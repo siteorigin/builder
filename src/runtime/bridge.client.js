@@ -88,6 +88,8 @@ function scheduleRects() {
     if (revealDirty) reconcileReveal();
     keepInView();
     sendRects();
+    // Checked again every frame while a change of width settles, whatever moves the page meanwhile.
+    if (keepHold) scheduleRects();
   });
 }
 function sendRects() {
@@ -178,9 +180,14 @@ function stopKeeping() {
   keepHold = null;
   keepSample = null;
 }
-// The author's own scrolling (or a click, a key) just after a change of width is never undone. What shows is measured
-// again as it scrolls.
-for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => (keepHold = null), { capture: true, passive: true });
+// The author's own scrolling (or a click, a key) is never undone, and what shows is measured afresh after it, before
+// any change of width can use what showed before.
+for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+  window.addEventListener(type, () => {
+    stopKeeping();
+    if (selected) scheduleRects();
+  }, { capture: true, passive: true });
+}
 
 // ---------------------------------------------------------------------------
 // The list item open in the editor's inspector, revealed while it is edited
