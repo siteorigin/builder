@@ -20,7 +20,7 @@ import { CHOICE_GROUP_CLASS, STATE_OFF_CLASS, defFile, generateProject, nodeClas
 import { notFoundSectionRoutes, publicationPlan, renderedContent } from '@generator/checks';
 import { UTIL_JS } from '@generator/runtime-files';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
-import { P, eq, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
+import { P, eq, ne, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
 import { MODEL_BINDING, OPERATION_SCHEMAS, validateOperation } from '@shared/ops';
 import { MIGRATIONS, migrateProject } from '@shared/migrations';
@@ -1180,6 +1180,10 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     expect(publicationPlan(plan).draftLinks).toEqual([]);
     place(plan, def, { tabs: { label1: 'One tab', label2: 'Two tab', label3: 'Three tab', label4: 'Four tab' } });
     expect(publicationPlan(plan).draftLinks.map((l) => l.label)).toEqual(['Coming soon']);
+    // Hidden unless the state is the third tab says the same.
+    const other = apply(fresh(), [{ type: 'page.create', pageId: 'pg_draft001', title: 'Soon', route: '/soon/' }, { type: 'page.update', pageId: 'pg_draft001', draft: true }]);
+    place(other, optionalTabsDef(other, { extra: (b) => [b.link('soon', { type: 'page', target: 'pg_draft001' }, 'Coming soon', 'link', { unless: ne(uiState('show'), 't3') })] }));
+    expect(publicationPlan(other).draftLinks).toEqual([]);
   });
 
   it('keeps to pressed buttons where an optional tab does not have the shape: a starting tab, another condition, a panel not wrapped alone', async () => {

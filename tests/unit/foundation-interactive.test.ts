@@ -253,8 +253,8 @@ describe('Pricing with billing switch', () => {
     const named = await renderHome(inserted(BILLING, { switchLabel: 'Période de facturation' }).state);
     expect(attrOf(tagsWith(named, 'role', 'group')[0], 'aria-label')).toBe('Période de facturation');
     // A button whose label is cleared is still named, by its period.
-    const blank = await renderHome(inserted(BILLING, { monthlyLabel: ' ' }).state);
-    expect(textAfter(blank, tagsWith(blank, 'aria-pressed')[0])).toBe('Monthly');
+    const blank = await renderHome(inserted(BILLING, { monthlyLabel: ' ', annualLabel: '' }).state);
+    expect(tagsWith(blank, 'aria-pressed').map((b) => textAfter(blank, b))).toEqual(['Monthly', 'Annual']);
   });
 
   it('never shows a price a plan does not have', async () => {
@@ -298,6 +298,8 @@ describe('a copy of the showcase', () => {
     // An empty choice needs a name to be offered by.
     const unnamed = { ...schema, fields: { ...(schema as { fields: Record<string, unknown> }).fields, icon: { type: 'enum', label: 'Tab icon', options: ['', 'compass'] } } };
     expect(() => applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tab1', schema: unnamed }])).toThrow(/an empty one \(""\) needs a label/);
+    const unlabelled = { ...unnamed, fields: { ...unnamed.fields, icon: { type: 'enum', label: 'Tab icon', options: [{ value: '' }, 'compass'] } } };
+    expect(() => applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tab1', schema: unlabelled }])).toThrow(/an empty one \(""\) needs a label/);
   });
 });
 
@@ -310,7 +312,8 @@ describe('print', () => {
     expect(print).toContain('.so-tablist:not(#so-print) { display: none !important; }');
     // Only the billing switch of Foundation's pricing, in any copy of it: other groups of buttons print.
     expect(css).not.toContain(CHOICE_GROUP_CLASS);
-    expect(print).toContain(`.${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
+    expect(print).toContain(`section:has([class*='__annual-price-row']) .${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
+    expect(print.match(new RegExp(`\\.${CHOICE_GROUP_CLASS}\\b`, 'g'))).toHaveLength(1);
     expect(print).toContain("[role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before");
   });
 });

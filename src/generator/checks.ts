@@ -271,7 +271,9 @@ function holds(c: Condition, scope: Scope, state: ProjectState): boolean {
 function lets(c: Condition, negate: boolean, scope: Scope, state: ProjectState): boolean {
   const ref = conditionRef(c);
   if (scope.everyState && isStateRef(ref)) {
-    const gate = !negate && isComparison(c) && 'eq' in c ? scope.gates?.get(ref.$state)?.find((g) => g.value === c.eq)?.gate : undefined;
+    // Shown only while the state is one option: `when` it equals it, or `unless` it differs from it.
+    const only = isComparison(c) ? (!negate && 'eq' in c ? c.eq : negate && 'ne' in c ? c.ne : undefined) : undefined;
+    const gate = only === undefined ? undefined : scope.gates?.get(ref.$state)?.find((g) => g.value === only)?.gate;
     return !gate || holds(gate, scope, state);
   }
   return holds(c, scope, state) !== negate;
