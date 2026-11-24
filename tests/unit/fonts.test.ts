@@ -126,7 +126,8 @@ describe('imported fonts', () => {
     // Choices outside the three, and stacks that aren't plain font names, are refused with nothing changed.
     expect(validateOperation({ type: 'asset.remove', assetId: 'f1', fontUses: 'drop' }).ok).toBe(false);
     const before = s.revision;
-    expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: { replaceWith: 'Georgia; color: red' } }] }, { label: 'Remove' })).error?.message).toMatch(/Font stacks may contain/);
+    for (const replaceWith of ['Georgia; color: red', ", 'Brand Sans', Georgia", 'Georgia,, serif'])
+      expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: { replaceWith } }] }, { label: 'Remove' })).error?.message).toMatch(/Font stacks may contain/);
     expect(s.revision).toBe(before);
     expect(s.state.assets.assets.f1).toBeDefined();
     // A replacement that names the family itself, or a font the site does not have, is refused.

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
 import { watch, type FSWatcher } from 'node:fs';
-import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
+import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -1537,7 +1537,8 @@ export class Controller {
       const [root, path] = await Promise.all([fs.realpath(s.dir), fs.realpath(join(s.dir, a.file))]);
       const rel = relative(root, path);
       if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
-      const fh = await fs.open(path, 'r');
+      // Opened without waiting, so a pipe at the path can never hold the read up; it is no file and is refused.
+      const fh = await fs.open(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
       try {
         const st = await fh.stat();
         if (!st.isFile() || st.size > MAX_FONT_FILE) return null;

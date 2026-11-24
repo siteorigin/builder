@@ -23,6 +23,8 @@ function faceLabel(a: AssetRecord): string {
 }
 /** The file's own name in the project, which keeps the name it was imported with ("lora-cyrillic-…woff2"). */
 export const fontFileName = (a: AssetRecord) => a.file.split('/').pop() ?? a.file;
+/** The name of the file it was imported from, when that was kept (assets.json can be edited by hand), else its own. */
+const importedName = (a: AssetRecord) => (typeof a.originalName === 'string' && a.originalName.trim()) || fontFileName(a);
 /** The alphabets a file covers, as read from it; null while it loads or when that can't be read. */
 function coverageText(f: EditorFontFile | null): string | null {
   if (f?.status !== 'ready' || !f.coverage) return null;
@@ -97,7 +99,7 @@ function FontRow({ a, used, onRename, onUpdate, onRemove }: { a: AssetRecord; us
   const covers = coverageText(useEditorFontFile(a.id));
   const variable = !!a.font?.weight.includes(' ');
   // Each file is named whole, since files of one family can share every other detail.
-  const named = `${a.name}, ${a.originalName?.trim() || file}`;
+  const named = `${a.name}, ${importedName(a)}`;
   return (
     <li className="font-face" aria-label={named} data-font-file={file}>
       <div className="font-face-head">
@@ -106,7 +108,7 @@ function FontRow({ a, used, onRename, onUpdate, onRemove }: { a: AssetRecord; us
           {[faceLabel(a), covers, formatBytes(a.bytes), used ? 'Family in use' : 'Not used'].filter(Boolean).join(' · ')}
         </span>
         <span className="font-face-file" title={a.file}>
-          {a.originalName?.trim() || file}
+          {importedName(a)}
         </span>
       </div>
       <FontSample a={a} />
@@ -173,7 +175,7 @@ function keepEffects(a: AssetRecord, others: AssetRecord[], coverageOf: (id: str
   const same = others.filter((o) => o.font!.style === a.font!.style);
   // The files that would draw this file's text: its own style's, or failing that, every one left.
   const drawers = same.length ? same : others;
-  const named = drawers.map((o) => o.originalName?.trim() || fontFileName(o)).join(', ');
+  const named = drawers.map(importedName).join(', ');
   const out: string[] = [];
   if (!same.length)
     out.push(

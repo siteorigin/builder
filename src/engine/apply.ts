@@ -603,7 +603,7 @@ function removeUsedFontFace(state: ProjectState, assetId: string, removing: Asse
   }
   if (choice === 'fallback') return dropFontFamily(state, family, null, fontTokens);
   const stack = choice!.replaceWith;
-  if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(stack) || !isSafeCssValue(stack)) fail('Font stacks may contain names, quotes, commas and hyphens only.');
+  if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(stack) || !isSafeCssValue(stack) || stack.split(',').some((part) => !part.trim())) fail('Font stacks may contain names, quotes, commas and hyphens only.');
   const font = resolveFontStack(state, stack);
   if ('error' in font) fail(font.error);
   if (stackLeadsWith(font.stack, family)) fail(`Choose a font other than ${family} to put in its place.`);

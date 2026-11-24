@@ -533,6 +533,9 @@ export async function fontCoverage(buf: Buffer): Promise<FontCoverage | null> {
   }
 }
 
+/** The Unicode subtables of a character map that are read. */
+const MAX_SUBTABLES = 4;
+
 /**
  * Whether a font's character map (`cmap`) gives a code point a glyph, from its Unicode subtables in format 4 (the
  * Basic Multilingual Plane) or 12 (every plane). Null when it has neither, or they are malformed.
@@ -548,6 +551,8 @@ export function cmapLookup(cmap: Buffer): ((codePoint: number) => boolean) | nul
       const at = cmap.readUInt32BE(8 + k * 8);
       // Unicode (0), or Windows Unicode BMP (3, 1) and full repertoire (3, 10); several records may share a subtable.
       if (!(platform === 0 || (platform === 3 && (encoding === 1 || encoding === 10))) || seen.has(at)) continue;
+      // Real fonts have a few; each one read is asked about every character a sample looks for.
+      if (seen.size === MAX_SUBTABLES) break;
       seen.add(at);
       const format = cmap.readUInt16BE(at);
       if (format === 4) lookups.push(format4(cmap, at));
