@@ -1,9 +1,7 @@
 /**
- * The web fonts every theme pack shipped with the app carries: variable fonts from the Fontsource packages (all under
- * the SIL Open Font License), whose faces and files are copied into a pack when it is built. Each pack sets its own
- * defaults from this list, and all of them carry every font in it, so a font a site chose under one built-in theme
- * (a heading set in Lora, an eyebrow left in JetBrains Mono) is still there after switching to another. A site only
- * ever gets the files of the fonts it uses.
+ * The web fonts the theme packs shipped with the app carry: variable fonts from the Fontsource packages (all under the
+ * SIL Open Font License), whose faces and files are copied into a pack when it is built. Each pack takes the fonts it
+ * offers from this list and sets its own defaults among them; a site only ever gets the files of the fonts it uses.
  */
 import type { PackFontSource } from './pack';
 
@@ -21,9 +19,12 @@ export const BUILTIN_FONTS: PackFontSource[] = [
   { family: 'JetBrains Mono Variable', name: 'JetBrains Mono', category: 'monospace', stack: "'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace", ...fontsource('jetbrains-mono') }
 ];
 
-/** The stack of one of these fonts, by its name, for a pack's font tokens. */
-export function builtinFontStack(name: string): string {
+/** One of these fonts, by its name. */
+export function builtinFont(name: string): PackFontSource {
   const font = BUILTIN_FONTS.find((f) => f.name === name);
   if (!font) throw new Error(`${name} is not one of the built-in fonts.`);
-  return font.stack;
+  return font;
 }
+
+/** The stack of one of these fonts, by its name, for a pack's font tokens. */
+export const builtinFontStack = (name: string): string => builtinFont(name).stack;

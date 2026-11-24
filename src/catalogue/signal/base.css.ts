@@ -12,9 +12,9 @@ const FEATURED = `.${FEATURES}__grid.${FEATURES}--layout-default > li.${FEATURES
  * Signal's own rules, after the shared base. Buttons are set a little bolder and the filled ones rise on hover; the
  * arrow on a text button travels further; eyebrows in the code sections (form, search, table, video) are the same
  * mono pills as everywhere else; and the Services grid is a bento: its first card spans two columns and two rows on
- * desktop and the full row on tablet. Movement only plays where a pointer hovers and the visitor has not asked for
- * less motion; layout rules apply on screen only, so a printed page keeps the plain grid. Rules that only add
- * something have no specificity, so any style the site sets wins.
+ * desktop (with its words at the foot of the tall tile) and the full row on tablet. Movement only plays where a
+ * pointer hovers and the visitor has not asked for less motion; layout rules apply on screen only, so a printed page
+ * keeps the plain grid. Rules that only add something have no specificity, so any style the site sets wins.
  */
 const SIGNAL_RULES = `
 /* Signal: buttons, eyebrows and the bento Services grid */
@@ -41,6 +41,8 @@ const SIGNAL_RULES = `
 }
 @media screen and (min-width: 1024px) {
   :where(${FEATURED}) { grid-column: 1 / -2; grid-row: span 2; }
+  /* The tall tile keeps its icon at the top and sets its words at the bottom. */
+  :where(${FEATURED} > .${FEATURES}__card-title) { margin-block-start: auto; }
 }
 `;
 

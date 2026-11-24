@@ -139,8 +139,9 @@ describe('the Signal pack', () => {
 });
 
 describe("Signal's fonts", () => {
-  it('are the built-in fonts every shipped pack carries, each from local woff2 files with its licence', () => {
-    for (const pack of shipped()) expect(pack.fonts.map((f) => f.family), pack.id).toEqual(BUILTIN_FONTS.map((f) => f.family));
+  it("are every one of Foundation's and Signal's own two, each from local woff2 files with its licence", () => {
+    expect(findTheme('signal')!.fonts.map((f) => f.family)).toEqual([...findTheme('foundation')!.fonts.map((f) => f.family), 'Sora Variable', 'JetBrains Mono Variable']);
+    expect(BUILTIN_FONTS.map((f) => f.family)).toEqual(findTheme('signal')!.fonts.map((f) => f.family));
     const { pack, files } = buildPack(SIGNAL_PACK);
     for (const f of pack.fonts) {
       expect(f.license).toBe('OFL-1.1');
@@ -211,16 +212,19 @@ describe('switching a multi-page site to Signal and back', () => {
     expect(back).toEqual(start);
   });
 
-  it('keeps a font the site chose under either theme', () => {
-    // A heading font chosen on Foundation, and the eyebrow's text style edited on Signal (which saves its mono family).
+  it('keeps any font a Foundation site chose, and names a Signal font the site chose before going back', () => {
+    // Every Foundation font comes with Signal: a heading set in Playfair Display stays in it.
     const playfair = BUILTIN_FONTS.find((f) => f.name === 'Playfair Display')!.stack;
     const onFoundation = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'token.set', tokenId: 'font.display', value: playfair }]).state;
     const toSignal = applyOperations(onFoundation, [{ type: 'theme.apply', themeId: 'signal' }]).state;
     expect(packFileCopies(toSignal).some((c) => c.file.includes('playfair'))).toBe(true);
+    // An eyebrow style edited on Signal saves its mono family, which Foundation does not ship: the switch says so and
+    // changes nothing, and goes ahead once the style is back to Signal's own.
     const eyebrow = findTheme('signal')!.tokens.find((t) => t.id === 'text.eyebrow')!.value as Record<string, unknown>;
     const edited = applyOperations(toSignal, [{ type: 'token.set', tokenId: 'text.eyebrow', value: { ...eyebrow, size: '0.8rem' } }]).state;
-    const toFoundation = applyOperations(edited, [{ type: 'theme.apply', themeId: 'foundation' }]).state;
-    expect(packFileCopies(toFoundation).some((c) => c.file.includes('jetbrains-mono'))).toBe(true);
+    expect(() => applyOperations(edited, [{ type: 'theme.apply', themeId: 'foundation' }])).toThrow(/JetBrains Mono: your site uses this font, which Foundation does not include/);
+    const reset = applyOperations(edited, [{ type: 'token.set', tokenId: 'text.eyebrow', value: null }]).state;
+    expect(applyOperations(reset, [{ type: 'theme.apply', themeId: 'foundation' }]).state.site.themeId).toBe('foundation');
   });
 
   it('switches an open project, saves it, and opens it again on Signal', async () => {
