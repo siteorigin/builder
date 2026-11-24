@@ -18,6 +18,7 @@ import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
 import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
+import { ARRIVAL_MS, arrivalShown, markArrival, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
@@ -157,6 +158,14 @@ export function Canvas() {
   /** The selected element's padding, border and margin as the page last reported them, for its spacing handles. */
   const [spacing, setSpacing] = useState<FrameSpacing | null>(null);
   const spacingSeen = useRef('null');
+  /** The selection just inserted, outlined with the arrival cue for a moment (see lib/arrival); `n` counts insertions. */
+  const [arrival, setArrival] = useState<{ key: string; n: number } | null>(null);
+  const arrivals = useRef(0);
+  useEffect(() => {
+    if (!arrival) return;
+    const t = setTimeout(() => setArrival(null), ARRIVAL_MS);
+    return () => clearTimeout(t);
+  }, [arrival]);
   /** The element chain under the pointer in the page, so hover can be re-resolved when the selection changes. */
   const hoverChain = useRef<BridgeDesc[] | null>(null);
   /** While editing a component everywhere: the placement the last pick went through, and the one under the
@@ -522,8 +531,14 @@ export function Canvas() {
         }
         case 'rects': {
           const hovered = rectList(p.hovered);
+          const selected = rectList(p.selected);
           // The pointer is on the name of what it was over: that element keeps its outline while it rests there.
-          setState({ rects: { selected: rectList(p.selected), hovered: !hovered.length && overTag.current ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
+          setState({ rects: { selected, hovered: !hovered.length && overTag.current ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
+          // An element just inserted now shows in view (mounted, and scrolled to): its outline arrives with a brief
+          // highlight. Only for a report measured for it, on its own page, while editing.
+          const shownPage = st && s.pageId ? st.pages[s.pageId] : null;
+          const own = s.mode === 'edit' && shownPage && samePath(shownPage.route, frameAt.current) ? descFor(s.selection) : null;
+          if (takeArrival(s.selection, arrivalShown(descOrNull(p.selectedDesc), own, selected[0], p.viewport)) && s.selection) setArrival({ key: refKey(s.selection), n: ++arrivals.current });
           // Kept only when it changes: the page reports every frame while it scrolls.
           const sp = spacingOf(p.spacing);
           const seen = JSON.stringify(sp);
@@ -1213,8 +1228,12 @@ export function Canvas() {
       if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
       const id = r.results?.at(-1)?.nodeId as string | undefined;
       const now = getState();
-      // Selected while the author is still on the page it went on.
-      if (id && now.pageId === owner.id && now.mode === 'edit' && !now.definitionMode) setState({ selection: { owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
+      // Selected while the author is still on the page it went on, with the arrival cue once the page shows it.
+      if (id && now.pageId === owner.id && now.mode === 'edit' && !now.definitionMode) {
+        const ref: ElementRef = { owner, instancePath: [], nodeId: id };
+        markArrival(ref);
+        setState({ selection: ref, rightTab: 'inspect' });
+      }
       toast(`Added ${drag.name}${w ? ` ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : ''}.`, 'info', undoAction(r));
     };
     const requests: string[] = [];
@@ -1542,6 +1561,8 @@ export function Canvas() {
   const selLabel = selection && state ? chromeLabel(state, selection) : '';
   const hovering = hover && !sameRef(hover, selection) && !reorder && !dragging && !menu.isOpen;
   const firstSel = selBoxes[0];
+  // Only on the inserted element's own outline, and not once it is being moved or its text typed.
+  const arriving = !!arrival && !!selection && arrival.key === refKey(selection) && !reorder && !editing;
   // Text being edited always has its chip parked above the page, never over the words.
   const placement = firstSel && selection ? chipPlacement(firstSel, !isPart && !editing, frameH * z) : null;
   // Spacing handles sit on the selected box itself (not its outline's breathing room), while editing and not while
@@ -1820,7 +1841,12 @@ export function Canvas() {
                   <div key={`r${i}`} className="ov-box ov-revealed" style={b} />
                 ))}
                 {selBoxes.map((b, i) => (
-                  <div key={`s${i}`} className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && reorder ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}`} style={b} />
+                  // The arrival cue's box is a new one, so the next insertion's cue starts from its beginning.
+                  <div
+                    key={i === 0 && arriving ? `s0-${arrival.n}` : `s${i}`}
+                    className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && reorder ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}${i === 0 && arriving ? ' arriving' : ''}`}
+                    style={b}
+                  />
                 ))}
                 {spaceShown && (
                   <SpacingHandles

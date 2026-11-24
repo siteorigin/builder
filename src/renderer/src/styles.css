@@ -1110,6 +1110,16 @@ iframe { color-scheme: light dark; }
 /* Text being edited on the page: the selection gains a second, outer ring (white, its colour, ink), so "typing
    here" reads apart from "selected" on any page, without covering the words. */
 .ov-selected.editing { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 3px var(--select), inset 0 0 0 4px #fff, 0 0 0 1px #fff, 0 0 0 3px var(--select), 0 0 0 4px #101828; }
+/* An element just inserted (issue #509): its outline arrives with a wash and a thicker ring that settle into the
+   ordinary one, so the insertion is seen to land wherever it went on the page. Without motion, the same, held still. */
+.ov-selected.arriving { animation: ov-arrive 1.2s ease-out 1; }
+@keyframes ov-arrive {
+  0%, 30% { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 6px var(--select), inset 0 0 0 7px #fff; background: color-mix(in srgb, var(--select) 16%, transparent); }
+  100% { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 3px var(--select), inset 0 0 0 4px #fff; background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ov-selected.arriving { animation: none; box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 6px var(--select), inset 0 0 0 7px #fff; background: color-mix(in srgb, var(--select) 12%, transparent); }
+}
 /* What a drag is moving stays marked in place: dashed, on a faint tint of the selection colour. */
 .ov-selected.moving { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 8%, transparent); }
 /* Spacing handles: a short bar on the inner edge of each padding band (selection colour) and on the outer edge of

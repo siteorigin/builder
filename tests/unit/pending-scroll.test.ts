@@ -120,7 +120,9 @@ describe.skipIf(!browserInstalled)('scrolling to a new selection the page shows 
     await mount('added');
     expect(await scrollY()).toBeGreaterThan(1400);
     expect(await inView('added')).toBe(true);
-    // The outline the editor draws is where the section now shows, in the frame's view.
+    // The outline the editor draws is where the section now shows, in the frame's view, reported as the new section's.
+    const last = await page.evaluate<unknown>(`window.replies.filter((m) => m.type === 'rects').at(-1).payload.selectedDesc`);
+    expect(last).toEqual(sel('added'));
     const o = await outline();
     expect(o).not.toBeNull();
     expect(o!.y).toBeGreaterThanOrEqual(0);
@@ -147,7 +149,15 @@ describe.skipIf(!browserInstalled)('scrolling to a new selection the page shows 
     expect(await scrollY()).toBe(300);
   });
 
-  it('leaves the page where it is after a click or a key in it meanwhile', async () => {
+  it('keeps waiting through a key that scrolls nothing (Shift, as a shortcut begins)', async () => {
+    await send('scrollTo', { desc: sel('late') });
+    await inFrame(`doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));`);
+    await settle();
+    await mount('late');
+    expect(await inView('late')).toBe(true);
+  });
+
+  it('leaves the page where it is after a click or a scrolling key in it meanwhile', async () => {
     for (const input of [`new win.PointerEvent('pointerdown', { bubbles: true })`, `new win.KeyboardEvent('keydown', { key: 'PageDown', bubbles: true })`]) {
       await inFrame(`win.unmount();`);
       await send('scrollTo', { desc: sel('late') });

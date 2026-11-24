@@ -12,6 +12,7 @@ import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAct
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
+import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
 import { elementWhere, insertOps, insertRole, insideComponent, nodeBefore, nodeLabel, placeFor, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
@@ -362,7 +363,11 @@ export async function insert(spec: InsertSpec, label: string) {
   if (!at) return;
   const r = await applyOps(insertOps(at, spec, role), `Insert ${label}`);
   const id = r?.at(-1)?.nodeId as string | undefined;
-  if (id) setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
+  if (!id) return;
+  // Selected, and outlined with the arrival cue once the page shows it (scrolled to as it mounts).
+  const ref: ElementRef = { owner: at.owner, instancePath: [], nodeId: id };
+  markArrival(ref);
+  setState({ selection: ref, rightTab: 'inspect' });
 }
 
 /** Where Place on page puts a library image (`key` tells two placements apart), or why it can't be placed now. */
@@ -461,8 +466,11 @@ export async function placeAsset(assetId: string, shown: string): Promise<boolea
       const now = getState();
       // Selected only while the author is still where it was placed and has not selected something else; its
       // inspector opens only if the author has not moved the dock meanwhile (to the AI, say).
-      if (now.snapshot?.workspaceKey === r.workspaceKey && now.pageId === owner.id && now.mode === 'edit' && !now.definitionMode && now.selection === start.selection)
-        setState({ selection: { owner, instancePath: [], nodeId }, ...(now.rightTab === start.rightTab && now.dockOpen === start.dockOpen ? { rightTab: 'inspect' as const, dockOpen: true } : {}) });
+      if (now.snapshot?.workspaceKey === r.workspaceKey && now.pageId === owner.id && now.mode === 'edit' && !now.definitionMode && now.selection === start.selection) {
+        const ref: ElementRef = { owner, instancePath: [], nodeId };
+        markArrival(ref);
+        setState({ selection: ref, ...(now.rightTab === start.rightTab && now.dockOpen === start.dockOpen ? { rightTab: 'inspect' as const, dockOpen: true } : {}) });
+      }
       toast(`Placed “${name}” ${p.where.lead} ${p.where.target}${p.where.node ? ` on ${p.page}` : ''}.`, 'info', undoAction(r));
       return true;
     }
@@ -616,6 +624,7 @@ export function setMode(mode: 'edit' | 'preview') {
     // What is selected is what Edit returns to: also one made while previewing (in Layers, a change shown from the
     // chat), which choosing Preview again lets go of on the page, as entering it does.
     const back = s.selection && s.pageId && s.snapshot ? { pageId: s.pageId, ref: s.selection, revision: s.snapshot.revision, definitionId: editing } : s.mode === 'preview' ? s.previewReturn : null;
+    endArrival();
     setState({ mode, selection: null, previewReturn: back });
     return;
   }

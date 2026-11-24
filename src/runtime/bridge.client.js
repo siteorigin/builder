@@ -134,7 +134,7 @@ function sendRects() {
   const first = selBoxes.findIndex(Boolean);
   const box = mode === 'edit' && first >= 0 ? spacingOf(selEls[first]) : null;
   const spacing = box && { ...box, ctx: selected.ctx, node: selected.node, items: selected.items || '' };
-  send('rects', { selected: sel, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+  send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, viewport: { width: innerWidth, height: innerHeight, scrollY } });
 }
 
 // ---------------------------------------------------------------------------
@@ -445,8 +445,11 @@ function retryScroll() {
   if (performance.now() > p.until || mode !== 'edit') pendingScroll = null;
   else if (scrollToDesc(p.desc, p.show)) pendingScroll = null;
 }
-// The author's own scrolling, a click or a key in the page: the page stays where the author has it.
-for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => (pendingScroll = null), { capture: true, passive: true });
+/** The keys that scroll the page. A modifier alone (Shift as a shortcut begins) moves nothing. */
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+// The author's own scrolling, or a click in the page: the page stays where the author has it.
+for (const type of ['wheel', 'touchstart', 'pointerdown']) window.addEventListener(type, () => (pendingScroll = null), { capture: true, passive: true });
+window.addEventListener('keydown', (e) => SCROLL_KEYS.has(e.key) && (pendingScroll = null), { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
 // The list item open in the editor's inspector, revealed while it is edited
