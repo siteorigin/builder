@@ -4,7 +4,7 @@
  * long copy or empty fields without touching its starting content or any placement.
  */
 import type { ComponentDefinition, ListItem, ListProp, ObjectProp, PropSchema, ScalarPropSchema } from '@shared/types';
-import { isListBlock, toRichText, type RichBlock, type RichSpan, type RichText } from '@shared/richtext';
+import { isImageBlock, isListBlock, spanRuns, toRichText, type RichBlock, type RichSpan, type RichText } from '@shared/richtext';
 import { MAX_RICH_BLOCKS, MAX_RICH_CHARS } from '@engine/values';
 import { namesFormFields } from '@catalogue/foundation/form';
 
@@ -36,14 +36,15 @@ function longerSpans(spans: RichSpan[]): RichSpan[] {
 }
 
 /** The characters rich text holds, counted as the normalizer counts them against its limit. */
-const richChars = (blocks: RichText) => blocks.reduce((n, b) => n + (isListBlock(b) ? b.items.flat() : b.spans).reduce((m, sp) => m + sp.text.length, 0), 0);
+const richChars = (blocks: RichText) => blocks.reduce((n, b) => n + (isImageBlock(b) ? b.alt.length + (b.caption?.length ?? 0) : spanRuns(b).flat().reduce((m, sp) => m + sp.text.length, 0)), 0);
 
 /** Rich text made longer, or undefined (its starting value kept) when the longer form would pass rich text's limits. */
 function longerRich(value: unknown): RichText | undefined {
   // Stored as the canonical blocks, or as a hand-edited document may still hold it (plain strings).
   const blocks = toRichText(value);
   if (!blocks.length) return [{ type: 'p', spans: [{ text: FILLER }] }];
-  const out = blocks.map((b): RichBlock => ('spans' in b ? { ...b, spans: longerSpans(b.spans) } : { ...b, items: b.items.map(longerSpans) }));
+  // A picture (only an article's text has them) keeps its caption as it is.
+  const out = blocks.map((b): RichBlock => (isImageBlock(b) ? b : isListBlock(b) ? { ...b, items: b.items.map(longerSpans) } : { ...b, spans: longerSpans(b.spans) }));
   // One more paragraph after the last text block, so a design sized for one paragraph shows how it grows.
   const longer: RichText = [...out, { type: 'p', spans: [{ text: FILLER }] }];
   return longer.length > MAX_RICH_BLOCKS || richChars(longer) > MAX_RICH_CHARS ? undefined : longer;
