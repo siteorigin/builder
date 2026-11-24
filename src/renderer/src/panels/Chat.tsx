@@ -298,7 +298,8 @@ export function Chat() {
   };
 
   /** Open History at an earlier turn's step, with what it changed and what came after it (issue 164). */
-  const reviewTurn = (entryId: string) => setState({ modal: { kind: 'history', entryId, review: true } });
+  // Only in the opening it was asked in: a review left open across a reopen never acts on another opening.
+  const reviewTurn = (entryId: string) => setState({ modal: { kind: 'history', entryId, review: true, opening: getState().snapshot?.workspaceKey } });
 
   /** Undo a turn, then say so: the card shows it as undone once project history reports it. */
   const undoTurn = async (runId: string) => {

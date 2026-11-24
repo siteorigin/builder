@@ -1475,7 +1475,7 @@ export class Controller {
   }
 
   /** Take an AI turn back on its own as reviewed (see ProjectSession.revertAiEntry), in the opening `key` only. */
-  revertAiTurn(entryId: string, expected: { revision: number }, key: string): Promise<ApplyResult> {
+  revertAiTurn(entryId: string, expected: { revision: number; history: string }, key: string): Promise<ApplyResult> {
     if (!this.session || !key || this.workspaceKey !== key)
       return Promise.resolve({ ok: false, revision: this.session?.revision ?? 0, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.', recoverable: false } });
     // The AI owns the project from the moment it starts, before its run takes the session's write lock.

@@ -141,11 +141,15 @@ export interface AiTurnReview {
   label: string;
   /** The revision this was worked out at: a revert passes it back, and a project changed since is refused. */
   revision: number;
+  /** History as it stood then, passed back the same way: steps recorded or let go since change what this says. */
+  history: string;
   /** The turn's step is applied in History. */
   applied: boolean;
   /** The later step that already took the turn back on its own, while it is applied. */
   revertedBy?: { entryId: string; label: string };
   changes: StepChange[];
+  /** History no longer holds the versions the turn's step names, so what it changed can't be shown. */
+  detailsLost?: boolean;
   /** The applied changes made after it, oldest first. */
   later: TurnLaterChange[];
   /** Undone changes after History's position, which any new change (a revert too) leaves no longer redoable. */
@@ -837,7 +841,7 @@ export interface BuilderApi {
     /** What an AI turn's History step changed and what came after it (issue 164). It never writes. */
     reviewAiTurn(entryId: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; review?: AiTurnReview }>;
     /** Take an AI turn back on its own, keeping every later change, as reviewed at `expected.revision` (issue 164). */
-    revertAiTurn(entryId: string, expected: { revision: number }, workspaceKey: string): Promise<ApplyResult>;
+    revertAiTurn(entryId: string, expected: { revision: number; history: string }, workspaceKey: string): Promise<ApplyResult>;
     redo(): Promise<ApplyResult>;
     /**
      * Step History of the opening `workspaceKey` to an entry chosen in it, in one change: `undo` undoes that entry and

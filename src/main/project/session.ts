@@ -4,7 +4,7 @@ import { promises as fs, constants as fsConstants, existsSync, type BigIntStats,
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import type { ComponentDefinition, PageDoc, ProjectState } from '@shared/types';
+import type { ComponentDefinition, PageDoc, ProjectState, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
 import type { AiTurnReview, FileText, RestoreVersionResult, SavedCopy, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
@@ -15,6 +15,9 @@ import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
+import { pageLinkUses } from '@engine/page-links';
+import { codeNeeds } from '@engine/definitions';
+import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
@@ -27,7 +30,7 @@ import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, componentSources } from '../codecheck';
-import { ownUrlLinks, siteAddresses, stepChanges, type DocVersions } from './turn-review';
+import { asRoute, COMPONENT_DOC, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
@@ -3228,12 +3231,14 @@ export class ProjectSession extends EventEmitter {
    * after it stays. Refused, changing nothing, when a later change depends on the turn, the result would break
    * something, or the project has changed since the review.
    */
-  revertAiEntry(entryId: string, expected: { revision?: number } = {}): Promise<ApplyResult> {
+  revertAiEntry(entryId: string, expected: { revision?: number; history?: string } = {}): Promise<ApplyResult> {
     return this.serialize(async () => {
       if (this.activeRun) return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'Stop the AI before undoing.', recoverable: true } };
       const blocked = await this.writeBlocked();
       if (blocked) return blocked;
-      if (expected.revision !== undefined && expected.revision !== this.revision)
+      // Reviewed at this revision and History as it was then: an AI step recorded since, or one let go, changes what
+      // the review said would be kept or no longer redoable, even at the same revision.
+      if ((expected.revision !== undefined && expected.revision !== this.revision) || (expected.history !== undefined && expected.history !== historyKey(this.history)))
         return { ok: false, revision: this.revision, error: { code: 'STALE_REVISION', message: 'The project changed. Review the turn again.', recoverable: true } };
       const r = await this.aiTurnReview(entryId);
       if ('error' in r) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: r.error, recoverable: false } };
@@ -3253,20 +3258,24 @@ export class ProjectSession extends EventEmitter {
     });
   }
 
-  /** A step's documents, each version parsed (authored code stays text); null when History no longer holds one. */
+  /**
+   * A step's documents, each version parsed (authored code stays text, and a document that is not JSON is its text);
+   * null when History no longer holds one. Absent is only ever a version the step recorded as none.
+   */
   private async stepVersions(entry: HistoryEntry): Promise<DocVersions[] | null> {
-    const read = async (hash: string | null) => {
+    const read = async (path: string, hash: string | null) => {
       if (hash === null) return null;
       const text = await this.getBlob(hash);
+      if (!path.endsWith('.json')) return text;
       try {
-        return JSON.parse(text) as unknown;
+        return (JSON.parse(text) as unknown) ?? text;
       } catch {
         return text;
       }
     };
     try {
       const out: DocVersions[] = [];
-      for (const [path, d] of Object.entries(entry.docs)) out.push({ path, before: await read(d.before), after: await read(d.after) });
+      for (const [path, d] of Object.entries(entry.docs)) out.push({ path, before: await read(path, d.before), after: await read(path, d.after) });
       return out;
     } catch {
       return null;
@@ -3286,11 +3295,12 @@ export class ProjectSession extends EventEmitter {
 
   /**
    * The review of AI step `entryId`, and the project with it taken back on its own when that can be done: each of the
-   * step's documents as the step found it, every other document as it is now. That is refused when a later applied
-   * step changed one of the turn's documents (taking the turn back would take that change with it, or leave it on
-   * something the turn made), or when the result would break something: a check the project fails that it passes
-   * now (a link to a page the turn added, say), or a link written as this site's own web address to a page that would
-   * no longer be there.
+   * step's documents as the step found it, every other document as it is now. A later applied step depends on the
+   * turn when it changed one of the turn's documents (taking the turn back would take that change with it, or leave it
+   * on something the turn made), added a link to a page the turn made (by the page, or typed as the site's own web
+   * address), or changed a placement of a component whose design the turn changed. With none depending, the result is
+   * still refused when it would break something: a check the project fails that it passes now, a link left to a page
+   * that would be gone or no longer published, or code that needs a component the turn added.
    */
   private async aiTurnReview(entryId: string): Promise<{ error: string } | { review: AiTurnReview; next?: ProjectState; entry: HistoryEntry & { runId: string } }> {
     const h = this.history;
@@ -3302,30 +3312,50 @@ export class ProjectSession extends EventEmitter {
     const versions = await this.stepVersions(entry);
     const applied = at < h.cursor;
     const reverter = h.entries.slice(0, h.cursor).find((e) => e.revertsRunId === entry.runId);
+    // What the turn made that taking it back takes away, and what it changed that later work may build on.
+    const made = new Map<string, string>();
+    const addresses = new Set<string>();
+    const designs = new Set<string>();
+    let siteBefore: unknown = null;
+    for (const v of versions ?? []) {
+      const page = v.path.match(PAGE_DOC)?.[1];
+      const [b, a] = [v.before as Partial<PageDoc> | null, v.after as Partial<PageDoc> | null];
+      if (page && a && typeof a === 'object' && !b) made.set(page, typeof a.title === 'string' ? a.title : 'a page');
+      if (page && a && typeof a === 'object' && typeof a.route === 'string' && (!b || b.route !== a.route)) addresses.add(asRoute(a.route).toLowerCase());
+      const design = v.path.match(COMPONENT_DOC)?.[1] ?? Object.values(this.state.components).find((d) => d.sourcePath === v.path)?.id;
+      if (design && v.before !== null && v.after !== null) designs.add(design);
+      if (v.path === `${DOC_DIR}/site.json`) siteBefore = v.before;
+    }
+    // A link typed as the site's own address names it by the public URL the site has now, or had before the turn.
+    const bases = siteBases(this.state.site, siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : null);
     const later: TurnLaterChange[] = [];
     for (const e of h.entries.slice(at + 1, h.cursor)) {
-      const paths = Object.keys(e.docs).filter((p) => Object.hasOwn(entry.docs, p));
-      const made = paths.find((p) => entry.docs[p].before === null && entry.docs[p].after !== null);
-      const shared = made ?? paths[0];
       const own = await this.stepVersions(e);
-      later.push({
-        entryId: e.id,
-        label: e.label,
-        source: e.source,
-        time: e.time,
-        changes: own ? stepChanges(own, this.state) : [],
-        relation: shared ? 'depends' : 'separate',
-        ...(shared ? { reason: made ? `It changes ${this.docName(made)}, which this turn added.` : `It changes ${this.docName(shared)}, which this turn changed too.` } : {})
-      });
+      const paths = Object.keys(e.docs).filter((p) => Object.hasOwn(entry.docs, p));
+      const shared = paths.find((p) => entry.docs[p].before === null && entry.docs[p].after !== null) ?? paths[0];
+      let reason: string | undefined;
+      if (shared) reason = entry.docs[shared].before === null ? `It changes ${this.docName(shared)}, which this turn added.` : `It changes ${this.docName(shared)}, which this turn changed too.`;
+      // Only what this change itself added counts: a link it kept, or a placement it left alone, is not its doing.
+      for (const v of own ?? []) {
+        if (reason) break;
+        if (linksInto(v.after, new Set(made.keys()), addresses, bases) > linksInto(v.before, new Set(made.keys()), addresses, bases)) reason = `It adds a link to ${made.size === 1 ? `“${[...made.values()][0]}”` : 'a page'}, which this turn added.`;
+        else if (placementsOf(v.before, designs) !== placementsOf(v.after, designs)) {
+          const names = [...designs].map((id) => this.state.components[id]?.name).filter(Boolean);
+          reason = `It changes where ${names.length === 1 ? `“${names[0]}”` : 'a component'} is used, after this turn changed its design.`;
+        }
+      }
+      later.push({ entryId: e.id, label: e.label, source: e.source, time: e.time, changes: own ? stepChanges(own, this.state) : [], relation: reason ? 'depends' : 'separate', ...(reason ? { reason } : {}) });
     }
     const review: AiTurnReview = {
       entryId: entry.id,
       runId: entry.runId,
       label: entry.label,
       revision: this.revision,
+      history: historyKey(h),
       applied,
       ...(reverter ? { revertedBy: { entryId: reverter.id, label: reverter.label } } : {}),
       changes: versions ? stepChanges(versions, this.state) : [],
+      ...(versions ? {} : { detailsLost: true }),
       later,
       redoable: h.entries.length - h.cursor,
       revert: { ok: true }
@@ -3355,19 +3385,32 @@ export class ProjectSession extends EventEmitter {
     const next = docsToState(docs, this.state);
     const pin = themePinProblem(next);
     if (pin) return refuse(pin);
-    // Anything the project would newly fail, warnings aside: a broken link from a later change is as much a reason
-    // as a page left out of the page order. Attributed to the later change that touched where it is, when one did.
-    const blame = (path: string | undefined, why: string) => {
-      for (const l of later) if (path && Object.hasOwn(h.entries.find((e) => e.id === l.entryId)!.docs, path)) Object.assign(l, { relation: 'depends', reason: why });
-    };
+    const problem = (why: string) => refuse(`Undoing it on its own would leave a problem: ${why}`);
+    // Anything the project would newly fail, warnings aside: a broken link is as much a reason as a page left out of
+    // the page order.
     const broken = introducedDiagnostics(validateState(this.state), validateState(next), { byNode: true }).filter((d) => d.severity === 'error');
-    for (const d of broken) blame(d.owner?.kind === 'page' ? `${DOC_DIR}/pages/${d.owner.id}.json` : d.owner?.kind === 'shell' ? `${DOC_DIR}/site.json` : d.owner?.kind === 'component' ? componentDocPath(d.owner.id) : undefined, d.message);
-    if (broken.length) return refuse(`Undoing it on its own would leave a problem: ${broken[0].message}`);
+    if (broken.length) return problem(broken[0].message);
+    // Links to a page that would be gone, counted rather than told apart by message, so one already broken nearby
+    // never hides another.
+    for (const id of Object.keys(this.state.pages)) {
+      if (next.pages[id]) continue;
+      const use = pageLinkUses(next, id)[0];
+      if (use) return problem(`${use.where}: “${use.label}” links to ${this.state.pages[id].title}, which would no longer be there.`);
+    }
     const gone = siteAddresses(this.state);
     for (const a of siteAddresses(next)) gone.delete(a);
-    const urls = ownUrlLinks(next, gone);
-    for (const u of urls) blame(u.path, `${u.where} links to ${u.url}, which this turn added.`);
-    if (urls.length) return refuse(`${urls[0].where} links to ${urls[0].url}, which would no longer be there.`);
+    const url = ownUrlLinks(next, new Set([...gone].map((a) => a.toLowerCase())), siteBases(this.state.site, next.site))[0];
+    if (url) return problem(`${url.where} links to ${url.url}, which would no longer be there.`);
+    // A published page left linking to one the turn published, now a draft again, would stop the website export.
+    const stranded = new Set(publicationPlan(this.state).draftLinks.map((l) => JSON.stringify(l)));
+    const draft = publicationPlan(next).draftLinks.find((l) => !stranded.has(JSON.stringify(l)));
+    if (draft) return problem(`a published page would link to a draft${draft.label ? ` (“${draft.label}”)` : ''}, which stops the website export.`);
+    // Code that needs a component the turn added, which nothing above reads.
+    for (const id of Object.keys(this.state.components)) {
+      if (next.components[id]) continue;
+      const needs = Object.values(next.components).find((d) => codeNeeds(this.state, d, id));
+      if (needs) return problem(`“${needs.name}” needs “${this.state.components[id].name}”, which this turn added.`);
+    }
     return { review, next, entry };
   }
 
@@ -3898,6 +3941,11 @@ function usableHistory(file: HistoryFile | null): HistoryFile {
     noteDropped(h, file.entries.slice(file.cursor), 'undone');
   }
   return h;
+}
+
+/** History as it stands, as a review is worked out at: its steps and where it is among them. */
+function historyKey(h: HistoryFile): string {
+  return `${h.cursor}:${h.entries.map((e) => e.id).join(',')}`;
 }
 
 /** A format version before this one: the first format had none. */

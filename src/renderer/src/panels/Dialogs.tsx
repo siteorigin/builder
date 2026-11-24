@@ -1430,9 +1430,26 @@ function TurnReview({
   locked: boolean;
   focusRef: (el: HTMLElement | null) => void;
   onStep: (index: number) => void;
-  onRevert: (revision: number, done: string) => void;
+  onRevert: (reviewed: { revision: number; history: string }, done: string) => void;
 }) {
   const headId = useId();
+  const revertNote = useId();
+  const stepNote = useId();
+  const headRef = useRef<HTMLElement | null>(null);
+  const head = useCallback(
+    (el: HTMLElement | null) => {
+      headRef.current = el;
+      focusRef(el);
+    },
+    [focusRef]
+  );
+  // An action taken goes with what it changed (the turn is undone): focus comes back to the review, never the page.
+  const acted = useRef(false);
+  useEffect(() => {
+    if (!acted.current || (document.activeElement && document.activeElement !== document.body)) return;
+    acted.current = false;
+    headRef.current?.focus();
+  });
   const entries = snap.history.entries;
   // Worked out again whenever the project or History moves: what was shown before is never acted on.
   const key = `${snap.workspaceKey}|${entryId}|${snap.revision}|${entries.map((e) => `${e.id}:${e.applied ? 1 : 0}`).join(',')}`;
@@ -1450,13 +1467,20 @@ function TurnReview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   const review = got?.review;
-  const current = got?.key === key;
+  // Answered for the project as shown: a review queued behind a change that has not reached the editor yet waits.
+  const current = got?.key === key && (!review || review.revision === snap.revision);
   const plan = review ? reviewPlan(review, entries) : null;
   const off = locked || !current;
   const name = review ? turnName(review.label) : '';
   return (
-    <section className="turn-review" aria-labelledby={headId} aria-busy={!current || undefined}>
-      <h3 id={headId} ref={focusRef} tabIndex={-1} data-autofocus>
+    <section
+      className="turn-review"
+      aria-labelledby={headId}
+      aria-busy={!current || undefined}
+      // A key held down from the card that opened History repeats here too: only a fresh press acts.
+      onKeyDown={(e) => e.repeat && (e.key === 'Enter' || e.key === ' ') && e.preventDefault()}
+    >
+      <h3 id={headId} ref={head} tabIndex={-1} data-autofocus>
         <Sparkles aria-hidden="true" /> {review ? `AI turn: ${name}` : 'AI turn'}
       </h3>
       {!got ? (
@@ -1476,7 +1500,7 @@ function TurnReview({
               ))}
             </ul>
           ) : (
-            <p className="muted">History no longer holds what it changed.</p>
+            <p className="muted">{review.detailsLost ? 'History no longer holds what it changed.' : 'Nothing it changed can be described here.'}</p>
           )}
           {review.later.length > 0 && (
             <>
@@ -1506,10 +1530,10 @@ function TurnReview({
             <div className="turn-review-actions">
               {plan.revert.ok ? (
                 <div className="turn-review-action">
-                  <button className="btn btn-sm btn-primary" disabled={off} onClick={() => onRevert(review.revision, `Undid “${name}” on its own.`)}>
+                  <button className="btn btn-sm btn-primary" disabled={off} aria-describedby={revertNote} onClick={() => ((acted.current = true), onRevert({ revision: review.revision, history: review.history }, `Undid “${name}” on its own.`))}>
                     <Undo2 /> Undo this turn only
                   </button>
-                  <p>
+                  <p id={revertNote}>
                     {plan.revert.text}
                     {plan.revert.lost ? ` ${plan.revert.lost}` : ''}
                   </p>
@@ -1519,10 +1543,10 @@ function TurnReview({
               )}
               {plan.step && (
                 <div className="turn-review-action">
-                  <button className="btn btn-sm" disabled={off} aria-label={plan.step.name} onClick={() => onStep(plan.step!.index)}>
+                  <button className="btn btn-sm" disabled={off} aria-label={plan.step.name} aria-describedby={stepNote} onClick={() => ((acted.current = true), onStep(plan.step!.index))}>
                     {plan.step.direction === 'undo' ? <Undo2 /> : <Redo2 />} {plan.step.text}
                   </button>
-                  <p>{plan.step.note}</p>
+                  <p id={stepNote}>{plan.step.note}</p>
                   {plan.step.count > 1 && (
                     <ol aria-label={plan.step.direction === 'undo' ? 'Undone, in this order' : 'Redone, in this order'}>
                       {plan.step.takes.map((t, i) => (
@@ -1552,7 +1576,7 @@ function ChangesModal() {
   const focusId = useStore((s) => (s.modal?.kind === 'history' ? s.modal.entryId : undefined));
   // Opened from an AI turn's card to review it (issue 164): its review leads, and focus starts on it, never on a row
   // that would step History at a key press.
-  const reviewing = useStore((s) => (s.modal?.kind === 'history' && s.modal.review ? s.modal.entryId : undefined));
+  const reviewing = useStore((s) => (s.modal?.kind === 'history' && s.modal.review && s.modal.opening === s.snapshot?.workspaceKey ? s.modal.entryId : undefined));
   const all = snap?.history.entries ?? [];
   const cursor = appliedCount(all);
   // Newest first, each with its place in History, which is oldest first.
@@ -1649,7 +1673,7 @@ function ChangesModal() {
           locked={locked}
           focusRef={start}
           onStep={go}
-          onRevert={(revision, done) => act((at) => revertAiTurn(reviewing, revision, at), done)}
+          onRevert={(reviewed, done) => act((at) => revertAiTurn(reviewing, reviewed, at), done)}
         />
       )}
       <p className="muted" style={{ marginTop: 0 }}>

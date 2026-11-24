@@ -4,8 +4,9 @@
  * changed there by the name the Inspector gives it, with the value it had and the value it was given.
  */
 import type { StepChange } from '@shared/api';
-import type { GraphNode, NodeTree, ProjectState } from '@shared/types';
+import type { GraphNode, NodeTree, ProjectState, SiteDoc } from '@shared/types';
 import { displayName } from '@engine/tree';
+import { publicUrl } from '@shared/public-url';
 import { CUSTOM_SOURCE_RE, DOC_DIR, MANIFEST_FILE, collectionDocPath, collectionPathOf, componentDocPath, entryDocPath } from './documents';
 
 /** A document's two versions: absent (null) when the step added or deleted it. Each is the parsed document. */
@@ -18,8 +19,8 @@ export interface DocVersions {
 /** Changes listed for one document before the rest are summed up in one line. */
 const MAX_PER_DOC = 12;
 
-const PAGE_DOC = new RegExp(`^${DOC_DIR}/pages/([^/]+)\\.json$`);
-const COMPONENT_DOC = new RegExp(`^${DOC_DIR}/components/([^/]+)/component\\.json$`);
+export const PAGE_DOC = new RegExp(`^${DOC_DIR}/pages/([^/]+)\\.json$`);
+export const COMPONENT_DOC = new RegExp(`^${DOC_DIR}/components/([^/]+)/component\\.json$`);
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -37,12 +38,12 @@ function shown(v: unknown): string | undefined {
 
 /** A property's change from `a` to `b`, with its values when each is one; null when it did not change. */
 function valueChange(owner: string, property: string, a: unknown, b: unknown): StepChange | null {
-  if (same(a, b)) return null;
-  const [before, after] = [shown(a), shown(b)];
   const none = (v: unknown) => v === undefined || v === null || v === '';
+  if (same(a, b) || (none(a) && none(b))) return null;
+  const [before, after] = [shown(a), shown(b)];
   // A value with no single form (a list, an image) is said to have changed, never shown as a different one.
-  if ((!none(a) && before === undefined) || (!none(b) && after === undefined)) return { owner, property, change: 'changed' };
-  if (before === after) return null;
+  // So is one whose two values only differ past what is shown of them.
+  if ((!none(a) && before === undefined) || (!none(b) && after === undefined) || before === after) return { owner, property, change: 'changed' };
   return { owner, property, change: before === undefined ? 'added' : after === undefined ? 'removed' : 'changed', ...(before !== undefined ? { before } : {}), ...(after !== undefined ? { after } : {}) };
 }
 
@@ -97,13 +98,16 @@ function treeChanges(owner: string, a: NodeTree | undefined, b: NodeTree | undef
           const item = (schema?.type === 'list' && schema.itemLabel) || label;
           const goneNames = ps.filter((i) => !qk.has(JSON.stringify(i))).map(itemName);
           const comeNames = qs.filter((i) => !pk.has(JSON.stringify(i))).map(itemName);
+          const [gone, come] = [new Set(goneNames), new Set(comeNames)];
           // An item edited in place keeps its name: it is one item changed, not one removed and one added.
-          const added = comeNames.filter((n): n is string => !!n && !goneNames.includes(n));
-          const dropped = goneNames.filter((n): n is string => !!n && !comeNames.includes(n));
+          const added = comeNames.filter((n): n is string => !!n && !gone.has(n));
+          const dropped = goneNames.filter((n): n is string => !!n && !come.has(n));
           for (const n of added) out.push({ owner, property: item, change: 'added', after: n });
           for (const n of dropped) out.push({ owner, property: item, change: 'removed', before: n });
           const edited = Math.max(comeNames.length - added.length, goneNames.length - dropped.length);
           if (edited) out.push({ owner, property: label, change: 'changed', detail: `${plural(edited, 'item')} changed` });
+          // The same items in another order.
+          else if (!added.length && !dropped.length) out.push({ owner, property: label, change: 'changed', detail: 'Order changed' });
           continue;
         }
         out.push(valueChange(owner, label, p, q) ?? { owner, property: label, change: 'changed' });
@@ -111,6 +115,8 @@ function treeChanges(owner: string, a: NodeTree | undefined, b: NodeTree | undef
     }
     if (!said) other++;
   }
+  // Sections moved on the page, the same ones still there.
+  if (!added && !removed && !same(a?.rootIds, b?.rootIds)) out.push({ owner, property: 'Sections', change: 'changed', detail: 'Order changed' });
   const counts = [added && `${plural(added, 'element')} added`, removed && `${plural(removed, 'element')} removed`, other && `${plural(other, 'element')} changed`].filter(Boolean);
   if (counts.length) out.push({ owner, property: 'Content', change: 'changed', detail: counts.join(', ') });
   return out;
@@ -124,7 +130,8 @@ const PAGE_FIELDS: Array<[string, (p: Obj) => unknown]> = [
   ['Description', (p) => (isObj(p.seo) ? p.seo.description : undefined)],
   ['Shows the header', (p) => p.showHeader],
   ['Shows the footer', (p) => p.showFooter],
-  ['Draft', (p) => p.draft],
+  // Unset is published.
+  ['Draft', (p) => p.draft === true],
   ['Language', (p) => p.language]
 ];
 
@@ -200,11 +207,29 @@ export function docChanges({ path, before, after }: DocVersions, state: ProjectS
   return existence(path, 'File');
 }
 
-/** What a History step changed across its documents, each document's list capped and the rest summed up. */
+/** What a document holds, by name, when nothing more can be said of how it changed. */
+function docOwner({ path, before, after }: DocVersions): string {
+  const doc = isObj(after) ? after : isObj(before) ? before : null;
+  if (PAGE_DOC.test(path)) return words(doc?.title) ?? 'A page';
+  if (path === `${DOC_DIR}/site.json`) return 'Site settings';
+  return words(doc?.name) ?? words(doc?.title) ?? path;
+}
+
+/**
+ * What a History step changed across its documents, each document's list capped and the rest summed up. A document
+ * whose change has no words here (its versions are not in the form the editor writes, or differ only in ways no row
+ * names) is still listed, as changed.
+ */
 export function stepChanges(docs: DocVersions[], state: ProjectState): StepChange[] {
   const out: StepChange[] = [];
   for (const d of docs) {
-    const list = docChanges(d, state);
+    let list: StepChange[];
+    try {
+      list = docChanges(d, state);
+    } catch {
+      list = [];
+    }
+    if (!list.length) list = [{ owner: docOwner(d), property: 'Details', change: d.before === null ? 'added' : d.after === null ? 'removed' : 'changed' }];
     out.push(...list.slice(0, MAX_PER_DOC));
     if (list.length > MAX_PER_DOC) out.push({ owner: list[0].owner, property: 'Other changes', change: 'changed', detail: `${list.length - MAX_PER_DOC} more` });
   }
@@ -212,7 +237,7 @@ export function stepChanges(docs: DocVersions[], state: ProjectState): StepChang
 }
 
 /** An address the site answers, written the one way routes are: with a slash at each end. */
-const asRoute = (path: string) => `/${path.replace(/^\/+|\/+$/g, '')}/`.replace(/^\/\/$/, '/');
+export const asRoute = (path: string) => `/${path.replace(/^\/+|\/+$/g, '')}/`.replace(/^\/\/$/, '/');
 
 /** Every address the site answers: its pages' routes and the old addresses kept for them. */
 export function siteAddresses(state: ProjectState): Set<string> {
@@ -222,34 +247,97 @@ export function siteAddresses(state: ProjectState): Set<string> {
   return out;
 }
 
-/**
- * Links written as a full web address of this site's own (https://books.example/staff-picks/) to one of `addresses`,
- * wherever the site holds them: by where they are, and the document that holds them. Such a link names no page, so
- * nothing else notices when its page goes. None without a website address to tell this site's links apart.
- */
-export function ownUrlLinks(state: ProjectState, addresses: ReadonlySet<string>): Array<{ where: string; path: string; url: string }> {
-  if (!addresses.size || typeof state.site.baseUrl !== 'string') return [];
-  let base: URL;
-  try {
-    base = new URL(state.site.baseUrl);
-  } catch {
-    return [];
-  }
-  const prefix = base.pathname.replace(/\/+$/, '');
-  const points = (target: string) => {
+/** The site's public URLs that a typed link can name one of its own addresses by: each site settings' given. */
+export function siteBases(...sites: Array<Pick<SiteDoc, 'baseUrl'> | null | undefined>): URL[] {
+  const out = new Map<string, URL>();
+  for (const site of sites) {
+    const base = site ? publicUrl(site) : undefined;
+    if (!base) continue;
     try {
-      const u = new URL(target);
-      if (u.host.toLowerCase() !== base.host.toLowerCase() || !(u.pathname === prefix || u.pathname.startsWith(`${prefix}/`))) return false;
-      return addresses.has(asRoute(u.pathname.slice(prefix.length)));
+      const u = new URL(base);
+      out.set(u.href, u);
     } catch {
-      return false;
+      // Not a URL: it names no address.
     }
+  }
+  return [...out.values()];
+}
+
+/**
+ * The site address a typed web address opens, when it is on one of the site's own public URLs `bases`: as a route,
+ * the way a static host serves it ("/winter/index.html" is "/winter/"). Null for any other address.
+ */
+export function ownAddress(target: string, bases: readonly URL[]): string | null {
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    return null;
+  }
+  for (const base of bases) {
+    if (url.origin !== base.origin) continue;
+    const prefix = base.pathname.replace(/\/+$/, '');
+    if (prefix && url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) continue;
+    let path = url.pathname.slice(prefix.length) || '/';
+    try {
+      path = decodeURI(path);
+    } catch {
+      // Kept as typed: a malformed escape names no page.
+    }
+    return asRoute(path.replace(/\/index\.html$/i, '/')).toLowerCase();
+  }
+  return null;
+}
+
+/**
+ * How many links a document holds into what a turn made: links to one of the pages `pageIds`, and links typed as the
+ * site's own web address of one of `addresses` (lowercased routes). Counted per version, so a change that adds one
+ * is told from one that only kept it.
+ */
+export function linksInto(doc: unknown, pageIds: ReadonlySet<string>, addresses: ReadonlySet<string>, bases: readonly URL[]): number {
+  let n = 0;
+  const walk = (x: unknown) => {
+    if (Array.isArray(x)) return x.forEach(walk);
+    if (!isObj(x)) return;
+    if (x.type === 'page' && typeof x.target === 'string' && pageIds.has(x.target)) n++;
+    else if (x.type === 'url' && typeof x.target === 'string' && addresses.size) {
+      const a = ownAddress(x.target, bases);
+      if (a && addresses.has(a)) n++;
+    }
+    for (const y of Object.values(x)) walk(y);
   };
+  walk(doc);
+  return n;
+}
+
+/** Every placement of one of the components `defIds` in a document, by node ID, as text to compare two versions by. */
+export function placementsOf(doc: unknown, defIds: ReadonlySet<string>): string {
+  const found: Array<[string, string]> = [];
+  const walk = (x: unknown) => {
+    if (Array.isArray(x)) return x.forEach(walk);
+    if (!isObj(x)) return;
+    if (x.kind === 'instance' && typeof x.definitionId === 'string' && defIds.has(x.definitionId)) found.push([String(x.id), JSON.stringify(x)]);
+    for (const y of Object.values(x)) walk(y);
+  };
+  if (defIds.size) walk(doc);
+  return JSON.stringify(found.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
+/**
+ * Links typed as the site's own web address (https://books.example/staff-picks/) to one of `addresses` (lowercased
+ * routes), wherever the site holds them: by where they are, and the document that holds them. Such a link names no
+ * page, so nothing else notices when its page goes.
+ */
+export function ownUrlLinks(state: ProjectState, addresses: ReadonlySet<string>, bases: readonly URL[]): Array<{ where: string; path: string; url: string }> {
+  if (!addresses.size || !bases.length) return [];
   const out: Array<{ where: string; path: string; url: string }> = [];
   const walk = (x: unknown, where: string, path: string) => {
     if (Array.isArray(x)) return x.forEach((y) => walk(y, where, path));
     if (!isObj(x)) return;
-    if (x.type === 'url' && typeof x.target === 'string' && points(x.target)) out.push({ where, path, url: x.target });
+    if (x.type === 'url' && typeof x.target === 'string') {
+      const a = ownAddress(x.target, bases);
+      if (a && addresses.has(a)) out.push({ where, path, url: x.target });
+    }
     for (const y of Object.values(x)) walk(y, where, path);
   };
   const site = `${DOC_DIR}/site.json`;

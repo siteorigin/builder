@@ -40,7 +40,9 @@ export function reviewPlan(review: AiTurnReview, entries: readonly Entry[]): Tur
         ...(review.redoable ? { lost: `${changes(review.redoable)} you undid can no longer be redone.` } : {})
       }
     : { ok: false, reason: review.revert.reason };
-  if (index < 0) return { revert, step: null };
+  // Already taken back on its own: a step back through it would undo later work and leave the turn as it is. Undoing
+  // the step that took it back is what brings it back.
+  if (index < 0 || review.revertedBy) return { revert, step: null };
   const step = historyStep(entries, index);
   const cursor = appliedCount(entries);
   // Newest first, the order they are taken back in; oldest first when they are put back.
