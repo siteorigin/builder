@@ -1033,6 +1033,8 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
 
 /** The class a panel kept in the page takes while its component's state hides it (see stateWidgets). */
 export const STATE_OFF_CLASS = 'so-state-off';
+/** The class of a group of a choice's buttons (see stateWidgets), which print leaves out as it does a row of tabs. */
+export const CHOICE_GROUP_CLASS = 'so-choice-group';
 /** The class an item of a list takes while its category filter hides it (see FilterGen). */
 export const FILTER_OFF_CLASS = 'so-filter-off';
 
@@ -1111,8 +1113,12 @@ export function generateComponentsCss(state: ProjectState): string {
   const parts: string[] = ['/* Component definition styles. Generated from siteorigin/components. */'];
   // A tab's panel while another tab is chosen, or a closed disclosure's content, stays in the page hidden on screen
   // only, so printing shows it with its own layout. An id no element has (#so-print) outweighs a placement's styles.
+  // A group of a choice's buttons (a billing period's) only works on screen; printed, what it chose shows without it.
   if (sortedDefs(state).some((def) => def.kind === 'managed' && stateLocals(def).size))
-    parts.push(`/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`);
+    parts.push(
+      `/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`,
+      `/* A group of buttons choosing what a component shows, left out of print. */\n@media print {\n\t.${CHOICE_GROUP_CLASS}:not(#so-print) { display: none !important; }\n}`
+    );
   if (sortedDefs(state).some(hasOverlays)) parts.push(OVERLAY_CSS);
   // Items a list's category filter hides stay in the page, hidden on screen only, so printing shows them all; the
   // row of category buttons is left out of print.
@@ -1421,9 +1427,18 @@ function stateActionHandler(ctx: EmitCtx, nodeId: string, action: StateAction | 
         break;
       }
       useImport(ctx, '{ stepState }', `${RUNTIME_DIR}/util.js`);
-      change = `${s.local} = stepState(${js(s.values)}, ${s.local}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true})`;
+      change = `${s.local} = stepState(${js(s.values)}, ${stateRead(ctx, action.state)}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true})`;
   }
   return opens ? `(event) => {\n${pad(ctx)}\t${opens.opener} = event.currentTarget;\n${pad(ctx)}\t${change};\n${pad(ctx)}}` : `() => (${change})`;
+}
+
+/**
+ * The expression a design reads a state's value through: its \`$state\` local, or for a choice a tab list with optional
+ * tabs chooses, the option it shows (the starting one while the tab chosen is not there).
+ */
+function stateRead(ctx: EmitCtx, name: string): string {
+  const local = ctx.states!.get(name)!.local;
+  return ctx.widgets?.gates.has(name) ? `${local}_shown` : local;
 }
 
 /**
@@ -1485,6 +1500,24 @@ interface StateWidgets {
   buttons: Map<string, StateButton>;
   /** Dialogs and drawers, by node ID. */
   overlays: Map<string, OverlayGen>;
+  /** Groups of a choice's buttons that say whether they are pressed, by node ID: the state they set. */
+  groups: Map<string, string>;
+  /**
+   * The optional tabs of each tab list, by the state it chooses: the option each one sets and the property condition it
+   * shows on. A placement whose chosen tab is not there shows the state's starting option instead.
+   */
+  gates: Map<string, Array<{ value: string; gate: Condition }>>;
+}
+
+/**
+ * A condition that reads a property and nothing else (an optional tab's), as a key the same condition written again
+ * shares; null for any other.
+ */
+function gateKey(c: Condition | undefined): string | null {
+  const ref = c === undefined ? undefined : conditionRef(c);
+  if (!isBinding(ref) || !('$prop' in ref) || typeof ref.$prop !== 'string') return null;
+  const test = isComparison(c) ? ('eq' in c ? ['eq', c.eq] : ['ne', c.ne]) : ['has'];
+  return JSON.stringify([ref.$prop, ref.field ?? null, ...test]);
 }
 
 /**
@@ -1493,7 +1526,11 @@ interface StateWidgets {
  * - A tab list: a plain \`div\` whose children are exactly one "set" button for each option of a choice, with a plain
  *   \`div\` for each option elsewhere that shows only while that option is chosen (its one condition). The panels stay in
  *   the page, hidden on screen while another tab is chosen, so every tab's \`aria-controls\` finds its panel and printing
- *   shows them all.
+ *   shows them all. A tab other than the starting option's may be optional: shown only on a condition that reads a
+ *   property (a label being filled in), with its panel the only child of an element shown on the same condition, so a
+ *   placement has the tab and its panel together or neither.
+ * - A group: a plain \`div\` whose children are all "set" buttons of one choice, two or more, which do not make a tab
+ *   list. Its buttons say whether they are pressed, and the group is named as a tab list is.
  * - A disclosure: a button that toggles a yes/no state, and the elements that show only while it is on (or, failing
  *   those, only while it is off). They stay in the page the same way, and the button says whether they are expanded.
  * - A dialog or drawer: a plain \`div\` shown by a yes/no state that works as one (see overlayProblem). It stays in the
@@ -1508,7 +1545,7 @@ interface StateWidgets {
  * where one ID could not name it. Such content keeps its condition, so it is simply shown and hidden.
  */
 function stateWidgets(ctx: EmitCtx): StateWidgets {
-  const out: StateWidgets = { panels: new Map(), lists: new Map(), buttons: new Map(), overlays: new Map() };
+  const out: StateWidgets = { panels: new Map(), lists: new Map(), buttons: new Map(), overlays: new Map(), groups: new Map(), gates: new Map() };
   const def = ctx.def;
   const tree = def?.tree;
   if (!def || !tree || !ctx.states?.size) return out;
@@ -1518,11 +1555,18 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
   // be missing while its tab or button is there, leaving a reference to nothing.
   const once = new Set<string>();
   const parent = new Map<string, string>();
+  // The only child of an element rendered once but shown only on a condition: rendered once while that condition
+  // holds, as an optional tab's panel is (by the element holding it).
+  const gatedChild = new Map<string, string>();
   const reach = (id: string) => {
     const n = tree.nodes[id];
     if (!n || once.has(id)) return;
     once.add(id);
-    if (n.kind !== 'element' || (!roots.has(id) && (n.when || n.unless)) || rendersAsCard(ctx, n) || isCarouselTrack(n)) return;
+    if (n.kind !== 'element' || rendersAsCard(ctx, n) || isCarouselTrack(n)) return;
+    if (!roots.has(id) && (n.when || n.unless)) {
+      if (n.children.length === 1) gatedChild.set(n.children[0], id);
+      return;
+    }
     for (const c of n.children) {
       if (!parent.has(c)) parent.set(c, id);
       reach(c);
@@ -1591,6 +1635,16 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
     for (let at = within.get(id), seen = 0; at && seen < 1000; at = within.get(at), seen++) if (at === host) return true;
     return false;
   };
+  /** An optional tab's panel: a plain \`div\` without an anchor, the only child of an element shown on the tab's own condition. */
+  const optionalPanel = (n: GraphNode, gate: Condition): boolean => {
+    const holder = tree.nodes[gatedChild.get(n.id) ?? ''];
+    if (holder?.kind !== 'element' || holder.unless || gateKey(holder.when) !== gateKey(gate)) return false;
+    return n.kind === 'element' && !n.anchor && !n.collapseEmpty && !rendersAsCard(ctx, n) && !isCarouselTrack(n) && isBareTag(ctx, n, 'div');
+  };
+  const setValue = (id: string) => {
+    const a = (tree.nodes[id] as LinkNode | undefined)?.stateAction;
+    return a?.op === 'set' && typeof a.value === 'string' ? a.value : undefined;
+  };
   for (const [name, s] of [...ctx.states].sort(([a], [b]) => a.localeCompare(b))) {
     const buttons = nodes.filter((n) => stateButton(n) && n.stateAction.state === name) as Array<GraphNode & { kind: 'link'; stateAction: StateAction }>;
     if (s.schema.type === 'item') {
@@ -1635,27 +1689,45 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
       continue;
     }
     if (s.schema.type === 'enum') {
-      // One list whose children are exactly one unconditional "set" button per option, all rendered once.
-      const setters = buttons.filter((b) => b.stateAction.op === 'set' && once.has(b.id) && !b.when && !b.unless && !b.anchor);
+      // One list whose children are exactly one "set" button per option, all rendered once: always, or (an optional
+      // tab, any but the starting option's) only on a condition that reads a property.
+      const initial = s.schema.initial;
+      const setters = buttons.filter((b) => b.stateAction.op === 'set' && once.has(b.id) && !b.unless && !b.anchor && (!b.when || (gateKey(b.when) !== null && b.stateAction.value !== initial)));
       const lists = [...new Set(setters.map((b) => parent.get(b.id)).filter((p): p is string => !!p))].filter((id) => {
         const list = tree.nodes[id];
         if (!panelHost(list, 'div') || list.kind !== 'element' || list.when || list.unless || list.children.length !== s.values.length) return false;
-        const values = list.children.map((c) => setters.find((b) => b.id === c)?.stateAction).map((a) => (a?.op === 'set' ? a.value : undefined));
+        const values = list.children.map((c) => (setters.some((b) => b.id === c) ? setValue(c) : undefined));
         return s.values.every((v) => values.includes(v));
       });
       const list = lists.length === 1 ? (tree.nodes[lists[0]] as GraphNode & { kind: 'element' }) : null;
-      const panels = list ? s.values.map((v) => guarded.filter(({ n, g }) => g.state === name && g.shows === v && panelHost(n, 'div')).map(({ n }) => n.id)) : [];
+      const tabOf = (v: string) => tree.nodes[list!.children.find((c) => setValue(c) === v)!];
+      const panels = list
+        ? s.values.map((v) => {
+            const gate = tabOf(v).when;
+            return guarded.filter(({ n, g }) => g.state === name && g.shows === v && (gate ? optionalPanel(n, gate) : panelHost(n, 'div'))).map(({ n }) => n.id);
+          })
+        : [];
       const ids = new Set(panels.flat());
       if (list && panels.every((p) => p.length === 1) && !insidePanel(list.id, ids)) {
         out.lists.set(list.id, name);
+        const gates: Array<{ value: string; gate: Condition }> = [];
         for (const c of list.children) {
-          const value = (tree.nodes[c] as LinkNode).stateAction!.op === 'set' ? ((tree.nodes[c] as LinkNode).stateAction as { value: string }).value : '';
+          const value = setValue(c)!;
           const panel = panels[s.values.indexOf(value)][0];
           out.buttons.set(c, { role: 'tab', state: name, value, panel });
           out.panels.set(panel, { state: name, shows: value, tab: c });
+          const gate = tree.nodes[c].when;
+          if (gate) gates.push({ value, gate });
         }
+        if (gates.length) out.gates.set(name, gates);
       }
       for (const b of buttons) if (b.stateAction.op === 'set' && !out.buttons.has(b.id)) out.buttons.set(b.id, { role: 'pressed', state: name, value: (b.stateAction as { value: string }).value });
+      // A plain div holding only this choice's "set" buttons, each always shown, that make no tab list: a group.
+      for (const id of new Set(setters.map((b) => parent.get(b.id)).filter((p): p is string => !!p))) {
+        const group = tree.nodes[id];
+        if (out.lists.has(id) || !panelHost(group, 'div') || group.kind !== 'element' || group.when || group.unless || group.children.length < 2) continue;
+        if (group.children.every((c) => setters.some((b) => b.id === c && !b.when))) out.groups.set(id, name);
+      }
       continue;
     }
     const toggles = buttons.filter((b) => b.stateAction.op === 'toggle');
@@ -1707,7 +1779,7 @@ function widgetId(ctx: EmitCtx, nodeId: string, role: 'tab' | 'panel' | 'dialog'
 function stateIs(ctx: EmitCtx, state: string, value: boolean | string): string {
   const s = ctx.states!.get(state)!;
   if (s.item) return value === false ? `!(${itemActiveExpr(ctx, s)})` : itemActiveExpr(ctx, s);
-  const local = s.local;
+  const local = stateRead(ctx, state);
   return value === true ? local : value === false ? `!${local}` : `${local} === ${js(value)}`;
 }
 
@@ -1760,13 +1832,16 @@ function stateElementAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' | '
   const own = node.kind === 'element' ? node.ariaLabel : undefined;
   const ownBlank = own === undefined || (!isBinding(own) && !String(own).trim());
   const list = ctx.widgets?.lists.get(node.id);
-  if (list) {
-    const fallback = js(ctx.states!.get(list)!.schema.label);
-    if (ownBlank) return ` role="tablist" aria-label={${fallback}}`;
-    if (!isBinding(own)) return ` role="tablist" aria-label=${attrJs(String(own).trim())}`;
+  const group = list === undefined ? ctx.widgets?.groups.get(node.id) : undefined;
+  const named = list ?? group;
+  if (named !== undefined) {
+    const role = list !== undefined ? 'tablist' : 'group';
+    const fallback = js(ctx.states!.get(named)!.schema.label);
+    if (ownBlank) return ` role="${role}" aria-label={${fallback}}`;
+    if (!isBinding(own)) return ` role="${role}" aria-label=${attrJs(String(own).trim())}`;
     useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
     const value = bindExpr(ctx, own);
-    return ` role="tablist" aria-label={has(${value}) ? ${value} : ${fallback}}`;
+    return ` role="${role}" aria-label={has(${value}) ? ${value} : ${fallback}}`;
   }
   const panel = ctx.widgets?.panels.get(node.id);
   if (!panel) return '';
@@ -1781,8 +1856,23 @@ function stateElementAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' | '
     labelledBy = ` aria-labelledby={has(${bindExpr(ctx, own)}) ? undefined : ${by}}`;
   }
   // Printed, every panel shows at once, under its tab's label (the tab list itself is left out).
-  const tab = ctx.tree.nodes[panel.tab] as LinkNode;
-  return `${id} role="tabpanel"${labelledBy} tabindex="0" data-tab-label={${bindExpr(ctx, tab.label)}}`;
+  return `${id} role="tabpanel"${labelledBy} tabindex="0" data-tab-label={${tabLabel(ctx, panel.tab)}}`;
+}
+
+/**
+ * What a tab says: its label, or while that is blank, the label of the option it chooses, so no tab (and no printed
+ * panel) goes unnamed.
+ */
+function tabLabel(ctx: EmitCtx, tabId: string): string {
+  const tab = ctx.tree.nodes[tabId] as LinkNode;
+  const role = ctx.widgets?.buttons.get(tabId);
+  const s = role?.role === 'tab' ? ctx.states?.get(role.state) : undefined;
+  const option = s?.schema.type === 'enum' ? s.schema.options.find((o) => o.value === role!.value)?.label : undefined;
+  if (option === undefined) return bindExpr(ctx, tab.label);
+  if (!isBinding(tab.label)) return js(String(tab.label ?? '').trim() ? tab.label : option);
+  useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+  const value = bindExpr(ctx, tab.label);
+  return `has(${value}) ? ${value} : ${js(option)}`;
 }
 
 /**
@@ -1924,7 +2014,7 @@ function bindExpr(ctx: EmitCtx, v: unknown, schema?: PropSchema): string {
     const s = ctx.states?.get(v.$state);
     // An item state reads, in a repeat of its list, as whether this item is the active one.
     if (s?.item) return itemActiveExpr(ctx, s);
-    return s?.local ?? js(stateInitial(ctx.def ?? undefined, v.$state) ?? null);
+    return s ? stateRead(ctx, v.$state) : js(stateInitial(ctx.def ?? undefined, v.$state) ?? null);
   }
   if (isBinding(v)) {
     if ('$prop' in v) {
@@ -2632,9 +2722,11 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
       const list = !!ctx.widgets?.lists.has(node.id);
-      const label = list ? '' : elementLabelAttrs(ctx, node);
+      const group = !list && !!ctx.widgets?.groups.has(node.id);
+      // A tab list or a group of a choice's buttons is named by stateElementAttrs.
+      const label = list || group ? '' : elementLabelAttrs(ctx, node);
       const choices = tagChoices(ctx, node);
-      const attrs = `class=${classExpr(ctx, node, list ? [js('so-tablist')] : [])}${anchorAttr(ctx, node)}${label}${stateElementAttrs(ctx, node)}${ids}${emptyFrameAttr(ctx, node)}`;
+      const attrs = `class=${classExpr(ctx, node, list ? [js('so-tablist')] : group ? [js(CHOICE_GROUP_CLASS)] : [])}${anchorAttr(ctx, node)}${label}${stateElementAttrs(ctx, node)}${ids}${emptyFrameAttr(ctx, node)}`;
       let markup: string;
       if (card && !acting) {
         // One link around the whole card; the runtime helper renders the container's own tag without a destination.
@@ -2706,7 +2798,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     case 'link': {
       useImport(ctx, 'SoLink', `${RUNTIME_DIR}/Link.svelte`);
       const link = isBinding(node.link) ? bindExpr(ctx, node.link) : js(resolveLink(node.link as LinkValue, ctx.rctx));
-      const label = bindExpr(ctx, node.label);
+      const label = ctx.widgets?.buttons.get(node.id)?.role === 'tab' ? `(${tabLabel(ctx, node.id)})` : bindExpr(ctx, node.label);
       const appearance = bindExpr(ctx, node.appearance);
       const name = nameAttr(ctx, 'aria-label', node.ariaLabel);
       // A button that changes UI state is a real button wherever it has nowhere to go (see the Link helper).
@@ -3428,14 +3520,19 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   propDecls.push(`\t\tclass: className = ''`);
   const overlays = overlayScript(ctx);
   const uid = ctx.usesUid ? `\tconst uid = $props.id();\n` : '';
-  // Each placement holds its own UI state, starting where the design says.
+  // Each placement holds its own UI state, starting where the design says. A tab list with optional tabs shows its
+  // starting option while the tab chosen is not there (a change to the placement's properties took it away).
   // An item state holds the item a visitor chose (none at first), and works out the active item from it and the list:
   // the chosen one while the list has it, else the one at the position the design starts at.
-  const states = [...ctx.states!.values()]
-    .map((s) => {
-      if (!s.item) return `\tlet ${s.local} = $state(${js(s.schema.initial)});\n`;
-      useImport(ctx, '{ activeItem }', `${RUNTIME_DIR}/util.js`);
-      return `\tlet ${s.local} = $state(null);\n\tconst ${s.item} = $derived(activeItem(${itemListExpr(ctx, s)}, ${s.local}, ${js(s.schema.initial)}));\n`;
+  const states = [...ctx.states!]
+    .map(([name, s]) => {
+      if (s.item) {
+        useImport(ctx, '{ activeItem }', `${RUNTIME_DIR}/util.js`);
+        return `\tlet ${s.local} = $state(null);\n\tconst ${s.item} = $derived(activeItem(${itemListExpr(ctx, s)}, ${s.local}, ${js(s.schema.initial)}));\n`;
+      }
+      const gone = ctx.widgets?.gates.get(name)?.map(({ value, gate }) => `(${s.local} === ${js(value)} && !(${conditionExpr(ctx, gate, false)}))`);
+      const shown = gone?.length ? `\tconst ${s.local}_shown = $derived(${gone.join(' || ')} ? ${js(s.schema.initial)} : ${s.local});\n` : '';
+      return `\tlet ${s.local} = $state(${js(s.schema.initial)});\n${shown}`;
     })
     .join('');
   // A design's own pictures: a converted copy's <style> block holds every rule already.
