@@ -115,10 +115,10 @@ export function planRouteMove(state: MoveSite, pageId: string, to: string, valid
     const before = was.get(next.toLowerCase());
     if (before && before.id !== p.id) return { error: `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, the address ${quoteTitle(before)} has now, so links to ${quoteTitle(before)} would open ${quoteTitle(p)}.` };
     if (p.id !== pageId) {
-      const old = kept.find((r): r is { from: string; pageId: string } => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === next.toLowerCase());
+      const old = kept.find((r): r is { from: string; pageId?: unknown; entryId?: unknown } => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === next.toLowerCase());
       if (old && old.pageId !== p.id) {
-        const owner = state.pages[old.pageId];
-        return { error: `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, an old address kept working for ${owner ? quoteTitle(owner) : 'another page'}.` };
+        const owner = typeof old.pageId === 'string' && Object.hasOwn(state.pages, old.pageId) ? state.pages[old.pageId] : undefined;
+        return { error: `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, an old address kept working for ${owner ? quoteTitle(owner) : typeof old.entryId === 'string' ? 'a collection entry' : 'another page'}.` };
       }
     }
     if (next !== p.route) moves.push({ pageId: p.id, from: p.route, to: next });

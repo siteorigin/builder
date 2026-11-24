@@ -10,13 +10,13 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
-import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState } from '@generator/index';
+import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, pageLanguageWarning, publicUrlWarning, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
+import { builtPhotosMessage, pageLanguageWarning, publicUrlWarning, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -2097,6 +2097,12 @@ export class Controller {
       const language = pageLanguageWarning(live, p, html);
       if (language) warnings.push(language);
     }
+    // Every published collection entry is a page of its own.
+    for (const { route } of siteEntries(live)) {
+      const file = join(out, route, 'index.html');
+      if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings };
+      if (/data-so-(ctx|node)|siteorigin-bridge/.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings };
+    }
     // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
     for (const { from } of liveRedirects(live)) {
       const file = join(out, from, 'index.html');
@@ -2105,13 +2111,9 @@ export class Controller {
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
-    const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
-    const withheld = [
-      ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, page: p })),
-      ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, page: r.page }))
-    ];
-    for (const { route, page } of withheld)
-      if (existsSync(join(out, route, 'index.html'))) return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${page.title}. Remove the file that puts it there, then export again.`, warnings };
+    for (const { route, draft } of withheldRoutes(state, live))
+      if (existsSync(join(out, route, 'index.html')) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
+        return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${draft}. Remove the file that puts it there, then export again.`, warnings };
     // The not-found page, which hosts show at any address the site does not have.
     const notFound = await readNotFoundPage(out);
     const notFoundStop = notFoundPageProblem(notFound);

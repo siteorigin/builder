@@ -37,7 +37,7 @@ import { newId } from '@shared/ids';
 import { checkPublicUrl } from '@shared/public-url';
 import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { collectionRouteOwner } from '@shared/collections';
-import { collectionCreate, collectionRemove, collectionUpdate, entryCreate, entryRemove, entryReorder, entryUpdate } from './collections';
+import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate } from './collections';
 import { isListBlock, toRichText } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { teaserFields } from '@shared/page-teasers';
@@ -130,6 +130,12 @@ export interface ApplyContext {
   addressesAtStart?: ReadonlySet<string>;
   /** A component package the editor read and checked, which a `component.import` in the batch names (see component-package.ts). */
   componentImport?: ComponentImport;
+  /**
+   * The addresses visitors reached each collection entry at when the batch began, lowercased, with that entry's ID
+   * (see entryAddressesInUse): an entry keeps an old address working only when it was one of these.
+   * applyOperations fills it.
+   */
+  entryAddressesAtStart?: ReadonlyMap<string, string>;
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -352,13 +358,13 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'collection.create':
       return collectionCreate(state, op);
     case 'collection.update':
-      return collectionUpdate(state, op);
+      return collectionUpdate(state, op, ctx.entryAddressesAtStart);
     case 'collection.remove':
       return collectionRemove(state, op);
     case 'entry.create':
       return entryCreate(state, op);
     case 'entry.update':
-      return entryUpdate(state, op);
+      return entryUpdate(state, op, ctx.entryAddressesAtStart);
     case 'entry.reorder':
       return entryReorder(state, op);
     case 'entry.remove':
@@ -660,12 +666,12 @@ function redirectIndex(state: ProjectState, route: string): number {
 
 /**
  * Whether a route chosen automatically for `forPageId` (or a new page) would collide: with another page, or with
- * an old address kept working for another page. A page may take back an old address of its own.
+ * an old address kept working for another page or for an entry. A page may take back an old address of its own.
  */
 function routeReserved(state: ProjectState, route: string, forPageId?: string): boolean {
   if (routeTaken(state, route, forPageId) || collectionRouteOwner(state, route)) return true;
   const i = redirectIndex(state, route);
-  return i >= 0 && state.site.redirects![i].pageId !== forPageId;
+  return i >= 0 && !(forPageId !== undefined && state.site.redirects![i].pageId === forPageId);
 }
 
 /**
@@ -3055,7 +3061,7 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
 export function walkOperations(state: ProjectState, ops: EditOperation[], check: (state: ProjectState, op: EditOperation) => string | null, ctx: ApplyContext = {}): string | null {
   let draft: ProjectState | null = null;
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state) };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: ctx.entryAddressesAtStart ?? entryAddressesInUse(state) };
   for (const [i, op] of ops.entries()) {
     const reason = check(draft ?? state, op);
     if (reason) return reason;
@@ -3083,7 +3089,7 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
   const draft = clone(state);
   const results: OpResult[] = [];
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state) };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: ctx.entryAddressesAtStart ?? entryAddressesInUse(state) };
   for (const [i, op] of ops.entries()) {
     // Any edit but a removal may move an asset's uses: the next removal counts them again.
     if (op.type !== 'asset.remove') assetUses.counts = undefined;

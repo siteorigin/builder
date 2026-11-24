@@ -3,7 +3,7 @@
  * every address held once across pages, old page addresses, collections and entries; links to entries kept or
  * pointed elsewhere when an entry goes; pictures and links in entries pointing at things that exist.
  */
-import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionTaxonomy, EntryDoc, LinkValue, ProjectState, RichText } from '@shared/types';
+import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionTaxonomy, EntryDoc, LinkValue, ProjectState, RichText, SiteRedirect } from '@shared/types';
 import { COLLECTION_FIELD_TYPES, SCHEMA_VERSION } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, findEntry, isCollectionId, isEntryId, isTermId, routeOwners, type RouteOwner } from '@shared/collections';
@@ -36,10 +36,15 @@ function getEntry(collection: Collection, id: string): EntryDoc {
   return own(collection.entries, id) ?? fail(`The ${collection.settings.name} collection has no entry "${id.slice(0, 60)}".`);
 }
 
-/** Whether `owner` is one of the claims `except` names: a collection's own, or one entry's. */
+/**
+ * Whether `owner` is one of the claims `except` names: a collection's own, or one entry's, its old addresses kept
+ * working included (an entry can take those back; another entry's it cannot).
+ */
 type Except = { collectionId?: string; entryIds?: ReadonlySet<string> };
 const excepted = (o: RouteOwner, except: Except) =>
-  (o.kind === 'collection' && o.collectionId === except.collectionId) || (o.kind === 'entry' && (o.collectionId === except.collectionId || !!except.entryIds?.has(o.entryId)));
+  (o.kind === 'collection' && o.collectionId === except.collectionId) ||
+  (o.kind === 'entry' && (o.collectionId === except.collectionId || !!except.entryIds?.has(o.entryId))) ||
+  (o.kind === 'redirect' && o.entryId !== undefined && !!except.entryIds?.has(o.entryId));
 
 /**
  * What holds each address of the site, built once for an operation that checks many (moving a collection, numbering
@@ -93,6 +98,50 @@ function autoSlug(state: ProjectState, collection: Collection, title: string, en
 function refuseTaken(state: ProjectState, route: string, except: Except, what: string) {
   const holder = routeHolder(state, route, except);
   if (holder) fail(`${route} is already the address of ${holder.label}. Choose another ${what}.`);
+}
+
+// ---------------------------------------------------------------------------
+// Old addresses
+// ---------------------------------------------------------------------------
+
+const keptAddresses = (state: ProjectState): SiteRedirect[] => (Array.isArray(state.site.redirects) ? state.site.redirects : []);
+
+function setKeptAddresses(state: ProjectState, list: SiteRedirect[]) {
+  if (list.length) state.site.redirects = list;
+  else delete state.site.redirects;
+}
+
+/**
+ * The addresses visitors reached each entry at, lowercased, with that entry's ID: every published entry's own, and
+ * the old addresses kept working for an entry. Taken when a batch begins: an address an entry only passed through
+ * during the batch, or had while it was a draft, is one no visitor has, so nothing is kept at it.
+ */
+export function entryAddressesInUse(state: ProjectState): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const c of Object.values(state.collections ?? {}))
+    for (const e of Object.values(c?.entries ?? {})) if (e?.draft === false && typeof e.slug === 'string' && typeof c.settings?.route === 'string') out.set(entryRoute(c, e).toLowerCase(), e.id);
+  for (const r of keptAddresses(state)) if (typeof r?.from === 'string' && typeof r.entryId === 'string') out.set(r.from.toLowerCase(), r.entryId);
+  return out;
+}
+
+/** An entry answers at `route` again: an old address of its own kept there stops sending visitors on. */
+function claimOwnAddress(state: ProjectState, route: string, entryId: string) {
+  const key = route.toLowerCase();
+  const list = keptAddresses(state);
+  const rest = list.filter((r) => !(r?.entryId === entryId && typeof r.from === 'string' && r.from.toLowerCase() === key));
+  if (rest.length !== list.length) setKeptAddresses(state, rest);
+}
+
+/**
+ * Keeps `from`, an address a published entry has just left, working for old links and bookmarks: it sends visitors
+ * on to wherever the entry is, now and after later moves. Only an address visitors reached that entry at when the
+ * batch began (`atStart`), one an address can be, and one nothing else holds now.
+ */
+function keepEntryAddress(state: ProjectState, entryId: string, from: string, atStart: ReadonlyMap<string, string> | undefined, holder = routeIndex(state)) {
+  if (from === '/' || validateRoute(from)) return;
+  if (atStart && atStart.get(from.toLowerCase()) !== entryId) return;
+  if (holder(from)) return;
+  setKeptAddresses(state, [...keptAddresses(state), { from, entryId }]);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,21 +245,27 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   return { collectionId: op.collectionId, route };
 }
 
-export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>): OpResult {
+export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, string>): OpResult {
   const c = getCollection(state, op.collectionId);
   if (op.name !== undefined) c.settings.name = op.name.trim() || c.settings.name;
-  if (op.route !== undefined) {
+  if (op.route !== undefined && op.route !== c.settings.route) {
     const route = prefixRoute(op.route);
-    // The collection and every entry move together: each new address must be free of everything else.
+    // The collection and every entry move together: each new address must be free of everything else, apart from
+    // an old address of the entry's own, which it takes back.
     const except = { collectionId: c.settings.id };
     const held = routeIndex(state);
     const taken = held(route, except);
     if (taken) fail(`${route} is already the address of ${taken.label}. Choose another address for the collection.`);
     for (const e of Object.values(c.entries)) {
-      const holder = held(`${route}${e.slug}/`, except);
+      const holder = held(`${route}${e.slug}/`, { ...except, entryIds: new Set([e.id]) });
       if (holder) fail(`Moving the collection to ${route} would give “${e.title}” the address ${route}${e.slug}/, which is ${holder.label}'s. Change that entry's slug first, or choose another address.`);
     }
+    const left = Object.values(c.entries).map((e) => ({ e, from: entryRoute(c, e) }));
     c.settings.route = route;
+    for (const { e } of left) claimOwnAddress(state, entryRoute(c, e), e.id);
+    // Each published entry's address keeps working, sending visitors on to the entry's new one.
+    const holder = routeIndex(state);
+    for (const { e, from } of left) if (e.draft === false) keepEntryAddress(state, e.id, from, atStart, holder);
   }
   if (op.taxonomies !== undefined || op.fields !== undefined) {
     const taxonomies = op.taxonomies !== undefined ? normalizeTaxonomies(op.taxonomies) : c.settings.taxonomies;
@@ -232,6 +287,10 @@ export function collectionRemove(state: ProjectState, op: Op<'collection.remove'
     throw new EngineError('VALIDATION_FAILED', `${n} link${n === 1 ? '' : 's'} outside the ${c.settings.name} collection point to its entries (in ${[...new Set(outside.map((u) => u.where))].slice(0, 3).join(', ')}). Point them elsewhere first.`, { references: n });
   }
   delete state.collections[c.settings.id];
+  // Their old addresses go with them: nothing is left there to send visitors on to.
+  const kept = keptAddresses(state);
+  const rest = kept.filter((r) => !(typeof r?.entryId === 'string' && members.has(r.entryId)));
+  if (rest.length !== kept.length) setKeptAddresses(state, rest);
   return { collectionId: c.settings.id, removedEntries: members.size };
 }
 
@@ -246,9 +305,14 @@ function date(v: string, what: string): string {
   return v;
 }
 
-/** Applies the details an operation gives to an entry; anything it leaves out stays as it is. */
-function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, op: EntryFields) {
+/**
+ * Applies the details an operation gives to an entry; anything it leaves out stays as it is. A published entry given
+ * a new slug keeps its old address working (see keepEntryAddress): published before this change, since a draft's
+ * address is one no visitor has.
+ */
+function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, op: EntryFields, atStart?: ReadonlyMap<string, string>) {
   const label = `“${op.title ?? entry.title}”`;
+  const wasPublished = entry.draft === false;
   if (op.title !== undefined) entry.title = op.title.trim() || fail('An entry needs a title.');
   if (op.publishedAt !== undefined) entry.publishedAt = date(op.publishedAt, 'The publication date');
   if (op.updatedAt === null) delete entry.updatedAt;
@@ -292,8 +356,13 @@ function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, o
   // The new address first, so the text can link to it.
   if (op.slug !== undefined) {
     const slug = explicitSlug(op.slug);
-    if (slug !== entry.slug) refuseTaken(state, `${c.settings.route}${slug}/`, { entryIds: new Set([entry.id]) }, 'slug');
-    entry.slug = slug;
+    if (slug !== entry.slug) {
+      const from = entryRoute(c, entry);
+      refuseTaken(state, `${c.settings.route}${slug}/`, { entryIds: new Set([entry.id]) }, 'slug');
+      entry.slug = slug;
+      claimOwnAddress(state, entryRoute(c, entry), entry.id);
+      if (wasPublished) keepEntryAddress(state, entry.id, from, atStart);
+    }
   }
   if (op.body !== undefined) entry.body = normalizeRichText(op.body ?? [], state, `${label} text`, undefined, { entries: true });
 }
@@ -315,10 +384,10 @@ export function entryCreate(state: ProjectState, op: Op<'entry.create'>): OpResu
   return { collectionId: c.settings.id, entryId: id, slug: entry.slug, route: entryRoute(c, entry) };
 }
 
-export function entryUpdate(state: ProjectState, op: Op<'entry.update'>): OpResult {
+export function entryUpdate(state: ProjectState, op: Op<'entry.update'>, atStart?: ReadonlyMap<string, string>): OpResult {
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
-  applyEntryFields(state, c, entry, op);
+  applyEntryFields(state, c, entry, op, atStart);
   return { collectionId: c.settings.id, entryId: entry.id, slug: entry.slug, route: entryRoute(c, entry) };
 }
 
@@ -353,6 +422,13 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>): OpResu
   }
   delete c.entries[entry.id];
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder = c.settings.entryOrder.filter((id) => id !== entry.id);
+  // Its old addresses send visitors to the replacement the links now go to, or go with it when there is none.
+  const kept = keptAddresses(state);
+  if (kept.some((r) => r?.entryId === entry.id))
+    setKeptAddresses(
+      state,
+      kept.flatMap((r): SiteRedirect[] => (r?.entryId !== entry.id ? [r] : op.replacementEntryId !== undefined ? [{ from: r.from, entryId: op.replacementEntryId }] : op.replacementPageId !== undefined ? [{ from: r.from, pageId: op.replacementPageId }] : []))
+    );
   return { collectionId: c.settings.id, entryId: entry.id, referencesRepointed: uses.length };
 }
 

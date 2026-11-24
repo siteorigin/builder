@@ -13,8 +13,8 @@ import { STARTER_ASSETS } from '@catalogue/starters';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { describeDraftLink, netlifyFormClashes, publicationPlan, unlinkedButtons } from '@generator/checks';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages } from '@generator/index';
+import { describeDraftLink, draftTarget, netlifyFormClashes, publicationPlan, unlinkedButtons } from '@generator/checks';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
@@ -564,11 +564,14 @@ export function draftLinksStop(state: ProjectState): { message: string; warnings
   const { draftLinks } = publicationPlan(state);
   if (!draftLinks.length) return null;
   const warnings = draftLinks.map((l) => describeDraftLink(state, l));
-  const drafts = [...new Set(draftLinks.map((l) => state.pages[l.pageId]?.title ?? 'a draft page'))];
+  const drafts = [...new Set(draftLinks.map((l) => draftTarget(state, l)?.title ?? 'a draft page'))];
+  // A draft collection entry is named as one; pages as they always were.
+  const entries = draftLinks.some((l) => l.entryId !== undefined);
+  const one = entries && draftLinks.every((l) => l.entryId !== undefined) ? 'the entry' : 'the page';
   const message =
     draftLinks.length === 1
-      ? `A published page links to ${drafts[0]}, which is a draft and is left out of the website. Change the link or publish the page, then export again.`
-      : `${draftLinks.length} links on published pages go to ${drafts.length === 1 ? `${drafts[0]}, a draft` : 'drafts'} the website leaves out. Change the links or publish ${drafts.length === 1 ? 'the page' : 'those pages'}, then export again.`;
+      ? `A published page links to ${drafts[0]}, which is a draft and is left out of the website. Change the link or publish ${one}, then export again.`
+      : `${draftLinks.length} links on published pages go to ${drafts.length === 1 ? `${drafts[0]}, a draft` : 'drafts'} the website leaves out. Change the links or publish ${drafts.length === 1 ? one : entries ? 'those drafts' : 'those pages'}, then export again.`;
   return { message, warnings };
 }
 
@@ -591,15 +594,25 @@ export function publishedChanged(state: ProjectState, shown: string[] | undefine
 export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ file: string; route: string; draft: string }> {
   const live = publishedState(state);
   if (live === state) return [];
-  const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
-  const withheld = [
-    ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
-    ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.page.title }))
-  ];
   const out: Array<{ file: string; route: string; draft: string }> = [];
-  for (const { route, draft } of withheld)
+  for (const { route, draft } of withheldRoutes(state, live))
     for (const file of [`static${route}index.html`, `static${route.replace(/\/$/, '')}.html`]) if (existsSync(join(dir, file))) out.push({ file, route, draft });
   return out;
+}
+
+/**
+ * The addresses the website keeps back, each with the draft it would show: every draft page's and draft entry's own,
+ * and each old address that leads to one. `live` is the published state of `state`.
+ */
+export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string }> {
+  if (live === state) return [];
+  const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
+  const shown = new Set(siteEntries(live).map((e) => e.route.toLowerCase()));
+  return [
+    ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
+    ...siteEntries(state).filter((e) => !shown.has(e.route.toLowerCase())).map((e) => ({ route: e.route, draft: e.entry.title })),
+    ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.title }))
+  ];
 }
 
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */

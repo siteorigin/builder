@@ -335,7 +335,7 @@ export function ExportModal() {
   // What the website export publishes, worked out the way the export itself does.
   const plan = useMemo(() => (state ? publicationPlan(state) : null), [state]);
   const draftLinks = plan?.draftLinks ?? [];
-  const draftTargets = new Set(draftLinks.map((l) => l.pageId)).size;
+  const draftTargets = new Set(draftLinks.map((l) => l.pageId ?? `entry:${l.entryId}`)).size;
   // The starter's sample contact details the website would publish: reviewed, apart from those kept on purpose.
   const keptValues = useStore((s) => s.keptSamples);
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);

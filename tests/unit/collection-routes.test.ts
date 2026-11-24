@@ -4,12 +4,15 @@
  * to one post makes that post's page again and nothing else.
  */
 import { describe, expect, it } from 'vitest';
-import type { ProjectState } from '@shared/types';
+import type { InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { entryFile, generateProject, generateSitemap, publishedState, resolveLink } from '@generator/index';
+import { validateState } from '@engine/validate';
+import { entryFile, generateLayout, generateProject, generateSitemap, liveRedirects, publishedState, resolveLink } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
+import { publicationPlan } from '@generator/checks';
+import { draftLinksStop, withheldRoutes } from '../../src/main/export';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -93,5 +96,171 @@ describe('collection entries on the website', () => {
     // A new date changes the post's page and the sitemap that dates it, nothing else.
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', updatedAt: '2026-03-20' });
     expect(check().sort()).toEqual(['entry:posts:en_spring', 'sitemap.xml']);
+  });
+});
+
+const rename = (entryId: string, slug: string): EditOperation => ({ type: 'entry.update', collectionId: 'posts', entryId, slug });
+const kept = (s: ProjectState) => s.site.redirects ?? [];
+
+describe('old addresses of entries', () => {
+  it('keeps a published entry’s old address working, following it through later renames', () => {
+    let s = run(blog(), rename('en_winter', 'glazing-evenings'));
+    expect(kept(s)).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
+    expect(validateState(s).filter((d) => /REDIRECT|ROUTE/.test(d.code))).toEqual([]);
+    let files = generateProject(s);
+    const old = files.get('src/routes/blog/winter-workshop/+page.svelte')!;
+    expect(old).toContain('resolve("/blog/glazing-evenings/")');
+    expect(old).toContain('<link rel="canonical" href={"https://example.com/blog/glazing-evenings/"} />');
+    expect(liveRedirects(s).map((r) => [r.from, r.to])).toEqual([['/blog/winter-workshop/', '/blog/glazing-evenings/']]);
+    // The old address shows no header or footer while it sends visitors on.
+    expect(generateLayout(s, {})).toContain('"/blog/winter-workshop"');
+    // Renamed again, both old addresses go straight to the newest.
+    s = run(s, rename('en_winter', 'glaze'));
+    expect(kept(s)).toEqual([
+      { from: '/blog/winter-workshop/', entryId: 'en_winter' },
+      { from: '/blog/glazing-evenings/', entryId: 'en_winter' }
+    ]);
+    files = generateProject(s);
+    for (const from of ['winter-workshop', 'glazing-evenings']) expect(files.get(`src/routes/blog/${from}/+page.svelte`)).toContain('resolve("/blog/glaze/")');
+    // Taking an old address back makes it the entry's own again.
+    s = run(s, rename('en_winter', 'winter-workshop'));
+    expect(kept(s)).toEqual([
+      { from: '/blog/glazing-evenings/', entryId: 'en_winter' },
+      { from: '/blog/glaze/', entryId: 'en_winter' }
+    ]);
+    expect(generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')).toContain('<h1 class="so-entry__title">');
+  });
+
+  it('keeps nothing for a draft, for one published in the same change, or for a slug it only passed through', () => {
+    // A draft's address is one no visitor has.
+    expect(kept(run(blog(), rename('en_secret', 'plans')))).toEqual([]);
+    expect(kept(run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false, slug: 'plans' }))).toEqual([]);
+    expect(kept(run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false }, rename('en_secret', 'plans')))).toEqual([]);
+    // A rename through a spare slug keeps the address visitors knew, not the spare one.
+    expect(kept(run(blog(), rename('en_winter', 'spare'), rename('en_winter', 'final')))).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
+  });
+
+  it('keeps an entry’s old address from every other entry, and lets a page take it over', () => {
+    const s = run(blog(), rename('en_winter', 'glazing-evenings'));
+    expect(() => run(s, rename('en_spring', 'winter-workshop'))).toThrow(/old address of “Winter workshop”/);
+    expect(() => run(s, { type: 'entry.create', collectionId: 'posts', title: 'Other', slug: 'winter-workshop' })).toThrow(/old address/);
+    // A new entry with the same title is numbered around it.
+    const again = applyOperations(s, [{ type: 'entry.create', collectionId: 'posts', title: 'Winter workshop' }]);
+    expect(again.results[0].route).toBe('/blog/winter-workshop-2/');
+    // A page given the address takes it over, as it does a page's old address.
+    const page = run(s, { type: 'page.create', pageId: 'pg_winterws', title: 'Workshop', route: '/blog/winter-workshop/' });
+    expect(kept(page)).toEqual([]);
+    expect(page.pages.pg_winterws.route).toBe('/blog/winter-workshop/');
+  });
+
+  it('keeps every published entry’s address when the collection moves, and settles old addresses when entries go', () => {
+    let s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    expect(kept(s)).toEqual([
+      { from: '/blog/winter-workshop/', entryId: 'en_winter' },
+      { from: '/blog/spring-open-studio/', entryId: 'en_spring' }
+    ]);
+    expect(generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')).toContain('resolve("/journal/winter-workshop/")');
+    // Moving back takes each address back.
+    expect(kept(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' }))).toEqual([
+      { from: '/journal/winter-workshop/', entryId: 'en_winter' },
+      { from: '/journal/spring-open-studio/', entryId: 'en_spring' }
+    ]);
+    // An entry removed for another sends its old addresses there; without one they go with it.
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!.id;
+    expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' }))).toEqual([
+      { from: '/blog/winter-workshop/', entryId: 'en_spring' },
+      { from: '/blog/spring-open-studio/', entryId: 'en_spring' }
+    ]);
+    expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementPageId: about }))).toContainEqual({ from: '/blog/winter-workshop/', pageId: about });
+    const unlinked = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] });
+    expect(kept(run(unlinked, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' }))).toEqual([{ from: '/blog/spring-open-studio/', entryId: 'en_spring' }]);
+    s = run(s, { type: 'page.update', pageId: about, route: '/about-us/' });
+    expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_winter' }, { type: 'collection.remove', collectionId: 'posts' }))).toEqual([{ from: '/about/', pageId: about }]);
+  });
+
+  it('reports an old address that names no entry, or both a page and an entry', () => {
+    const s = blog();
+    const home = s.site.homePageId;
+    const codes = (redirects: unknown) => {
+      const t = structuredClone(s);
+      t.site.redirects = redirects as never;
+      return validateState(t).filter((d) => d.code.startsWith('REDIRECT')).map((d) => d.code);
+    };
+    expect(codes([{ from: '/old/', entryId: 'en_winter' }])).toEqual([]);
+    expect(codes([{ from: '/old/', entryId: 'en_gone' }])).toEqual(['REDIRECT_TARGET']);
+    expect(codes([{ from: '/old/', entryId: 'en_winter', pageId: home }])).toEqual(['REDIRECT_INVALID']);
+    expect(codes([{ from: '/old/' }])).toEqual(['REDIRECT_INVALID']);
+  });
+});
+
+describe('draft entries and the website export', () => {
+  it('withholds a draft entry’s address and the old addresses that lead to it', () => {
+    let s = run(blog(), rename('en_winter', 'glazing-evenings'), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: true });
+    const live = publishedState(s);
+    expect(live.site.redirects).toBeUndefined();
+    expect(liveRedirects(live)).toEqual([]);
+    expect(withheldRoutes(s, live)).toEqual([
+      { route: '/blog/secret-plans/', draft: 'Secret plans' },
+      { route: '/blog/glazing-evenings/', draft: 'Winter workshop' },
+      { route: '/blog/winter-workshop/', draft: 'Winter workshop' }
+    ]);
+    expect([...generateProject(live).keys()].filter((f) => f.startsWith('src/routes/blog/'))).toEqual(['src/routes/blog/spring-open-studio/+page.svelte']);
+    // Published again, its old address works again.
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: false });
+    expect(publishedState(s).site.redirects).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
+  });
+
+  it('stops the website export over a typed address of a draft entry, naming it', () => {
+    const s = run(blog(), rename('en_secret', 'plans'));
+    const home = s.site.homePageId;
+    s.pages[home].nodes.n_typed001 = { id: 'n_typed001', kind: 'link', label: 'Our plans', appearance: 'primary', link: { type: 'url', target: 'https://example.com/blog/plans/#soon' } } as never;
+    s.pages[home].rootIds.push('n_typed001');
+    expect(publicationPlan(s).draftLinks).toEqual([{ owner: { kind: 'page', id: home }, nodeId: 'n_typed001', label: 'Our plans', inText: false, entryId: 'en_secret', anchor: 'soon' }]);
+    const stop = draftLinksStop(s)!;
+    expect(stop.message).toBe('A published page links to Secret plans, which is a draft and is left out of the website. Change the link or publish the entry, then export again.');
+    expect(stop.warnings).toEqual(['Home: “Our plans” goes to Secret plans (/blog/plans/#soon)']);
+    // A published entry's address is no draft.
+    (s.pages[home].nodes.n_typed001 as { link: { target: string } }).link.target = 'https://example.com/blog/winter-workshop/';
+    expect(publicationPlan(s).draftLinks).toEqual([]);
+  });
+
+  it('reports a header link to a section of the page it is on, which an entry’s page does not have', () => {
+    let s = blog();
+    const header = s.site.shell.header;
+    const nav = Object.values(header.nodes).find((n) => n.kind === 'instance') as InstanceNode;
+    const linkProp = Object.entries(s.components[nav.definitionId].properties).find(([, p]) => p.type === 'link')?.[0];
+    expect(linkProp).toBeDefined();
+    s = run(s, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: nav.id, prop: linkProp!, value: { type: 'anchor', target: 'main' } });
+    // The layout's own sections are on every entry's page.
+    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+    const home = s.pages[s.site.homePageId];
+    const anchored = Object.values(home.nodes).find((n) => n.kind === 'instance')!;
+    s = run(s, { type: 'node.setContent', owner: { kind: 'page', id: home.id }, nodeId: anchored.id, field: 'anchor', value: 'visit' });
+    s = run(s, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: nav.id, prop: linkProp!, value: { type: 'anchor', target: 'visit' } });
+    const found = validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map((d) => d.message);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatch(/goes to #visit, but .*3 collection entries have no section with that ID/);
+    expect(found[0]).toMatch(/Entries have none of a page’s sections/);
+  });
+});
+
+describe('a renamed entry in a cached run', () => {
+  it('makes its page, its old address, the pages linking to it, the layout and the sitemap again, and nothing else', () => {
+    let s = blog();
+    const cache = new GenerationCache();
+    const made = () => {
+      const out: string[] = [];
+      for (const opts of [{}, { instrument: true }]) {
+        expect([...generateProject(s, opts, cache)]).toEqual([...generateProject(s, opts)]);
+        out.push(...cache.made);
+      }
+      return [...new Set(out)].sort();
+    };
+    made();
+    s = run(s, rename('en_winter', 'glazing-evenings'));
+    expect(made()).toEqual(['entry:posts:en_spring', 'entry:posts:en_winter', 'layout#clean', 'layout#dev', 'redirect:posts:en_winter:/blog/winter-workshop/', 'sitemap.xml']);
+    // A change to its text afterwards reaches its own page alone, not its old address.
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['New words.'] });
+    expect(made()).toEqual(['entry:posts:en_winter']);
   });
 });

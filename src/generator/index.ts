@@ -29,6 +29,7 @@ import type {
   ResponsiveScope,
   StyleState,
   ResponsiveStyles,
+  SiteRedirect,
   SlotDef,
   TextStyleValue,
   StateAction,
@@ -2734,8 +2735,9 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   // The header's and footer's empty slots share one `so_editing`.
   hctx.usesEditing ||= fctx.usesEditing;
   const editing = editingState(hctx);
-  // An old address only sends visitors on: it shows no header or footer while it does.
-  const redirects = liveRedirects(state).map((r) => routeId(r.from));
+  // An old address only sends visitors on: it shows no header or footer while it does. Worked out once per state in a
+  // cached run, so the layout follows the list of old addresses, not every entry's details that decide it.
+  const redirects = derived(state, 'redirectRouteIds', (s) => liveRedirects(s).map((r) => routeId(r.from)));
   const without = (part: ShellPart) => {
     const hidden = state.site.pageOrder
       .filter((id) => Object.hasOwn(state.pages, id) && !showsPart(state.pages[id], part))
@@ -2953,18 +2955,30 @@ export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ lang
   return members.length < 2 || languages.size < members.length ? [] : members;
 }
 
+/** An old address kept working, with where it sends visitors: a page, or a collection entry the site has a page for. */
+export type LiveRedirect = { from: string; to: string; title: string } & ({ page: PageDoc; entry?: undefined } | { entry: SiteEntry; page?: undefined });
+
 /**
- * Old addresses kept working, each with the page it sends visitors to, in the order they were kept. One that a
- * page uses now, that is not a valid route, or whose page is gone is left out: a page always wins its route.
+ * Old addresses kept working, each with the page or entry it sends visitors to, in the order they were kept. One
+ * that a page or an entry uses now, that is not a valid route, or whose page or entry is gone (or has no page on the
+ * site) is left out: a page or entry always wins its route.
  */
-export function liveRedirects(state: ProjectState): Array<{ from: string; page: PageDoc }> {
-  const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
-  const out: Array<{ from: string; page: PageDoc }> = [];
-  for (const r of Array.isArray(state.site.redirects) ? state.site.redirects : []) {
-    const page = r && typeof r.pageId === 'string' && Object.hasOwn(state.pages, r.pageId) ? state.pages[r.pageId] : undefined;
-    if (!page || typeof r.from !== 'string' || r.from === '/' || validateRoute(r.from) || used.has(r.from.toLowerCase())) continue;
+export function liveRedirects(state: ProjectState): LiveRedirect[] {
+  const list: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
+  if (!list.length) return [];
+  const entries = siteEntries(state);
+  const byId = new Map(entries.map((e) => [e.entry.id, e]));
+  const used = new Set([...Object.values(state.pages).map((p) => p.route.toLowerCase()), ...entries.map((e) => e.route.toLowerCase())]);
+  const out: LiveRedirect[] = [];
+  for (const item of list) {
+    const r = (item && typeof item === 'object' ? item : {}) as { from?: unknown; pageId?: unknown; entryId?: unknown };
+    if (typeof r.from !== 'string' || r.from === '/' || validateRoute(r.from) || used.has(r.from.toLowerCase())) continue;
+    const page = typeof r.pageId === 'string' && Object.hasOwn(state.pages, r.pageId) ? state.pages[r.pageId] : undefined;
+    const entry = !page && typeof r.entryId === 'string' ? byId.get(r.entryId) : undefined;
+    if (page) out.push({ from: r.from, to: page.route, title: page.title, page });
+    else if (entry) out.push({ from: r.from, to: entry.route, title: entry.entry.title, entry });
+    else continue;
     used.add(r.from.toLowerCase());
-    out.push({ from: r.from, page });
   }
   return out;
 }
@@ -3145,9 +3159,9 @@ export function publishedState(state: ProjectState): ProjectState {
   const entriesOf = (c: Collection | undefined) => (c?.entries && typeof c.entries === 'object' ? c.entries : {});
   const draftEntries = Object.values(state.collections ?? {}).some((c) => Object.values(entriesOf(c)).some(unpublished));
   if (!drafts.size && !draftEntries) return state;
-  const redirects = liveRedirects(state)
-    .filter((r) => !drafts.has(r.page.id))
-    .map((r) => ({ from: r.from, pageId: r.page.id }));
+  const redirects = liveRedirects(state).flatMap((r): SiteRedirect[] =>
+    r.page ? (drafts.has(r.page.id) ? [] : [{ from: r.from, pageId: r.page.id }]) : unpublished(r.entry.entry) ? [] : [{ from: r.from, entryId: r.entry.entry.id }]
+  );
   const site = { ...state.site, pageOrder: state.site.pageOrder.filter((id) => !drafts.has(id)) };
   if (redirects.length) site.redirects = redirects;
   else delete site.redirects;
@@ -3200,7 +3214,7 @@ export function redirectFile(from: string): string {
  * at once and keeps the query and the section the old link asked for; without them, a meta refresh goes to the
  * page. Either way it works from the prerendered HTML alone, on any static host.
  */
-export function generateRedirect(state: ProjectState, from: string, page: PageDoc): string {
+export function generateRedirect(state: ProjectState, from: string, page: Pick<PageDoc, 'route'>): string {
   const base = publicUrl(state.site);
   const canonical = base ? `\n\t<link rel="canonical" href={${js(base + page.route)}} />` : '';
   return (
@@ -3546,7 +3560,15 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
     const cid = collection.settings.id;
     files.set(entryFile(route), file(`entry:${cid}:${entry.id}`, (s) => generateEntry(s, cid, entry.id)));
   }
-  for (const { from, page } of liveRedirects(state)) files.set(redirectFile(from), file(`redirect:${page.id}:${from}`, (s) => generateRedirect(s, from, s.pages[page.id])));
+  for (const { from, page, entry } of liveRedirects(state)) {
+    if (page) files.set(redirectFile(from), file(`redirect:${page.id}:${from}`, (s) => generateRedirect(s, from, s.pages[page.id])));
+    else {
+      const cid = entry.collection.settings.id;
+      const eid = entry.entry.id;
+      // The entry's address is read from the tracked state, so a later rename of the entry makes this file again.
+      files.set(redirectFile(from), file(`redirect:${cid}:${eid}:${from}`, (s) => generateRedirect(s, from, { route: entryRoute(s.collections[cid], s.collections[cid].entries[eid]) })));
+    }
+  }
   // The not-found page and the hook that makes it work at any address both read the whole site's sections; the hook
   // also gives each page in another language than the site's its own <html lang>.
   files.set(`${NOT_FOUND_DIR}/+page.svelte`, file('not-found', generateNotFound));
