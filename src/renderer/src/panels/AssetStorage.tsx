@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { HardDrive } from 'lucide-react';
+import { HardDrive, Scissors, Trash2 } from 'lucide-react';
 import type { StorageInfo } from '@shared/api';
 import { api, getState, toast, useStore } from '../store';
 import { Modal, Spinner } from '../components/ui';
@@ -44,22 +44,34 @@ export function useProjectStorage(): { info: StorageInfo | null; refresh: () => 
 
 const files = (n: number) => plural(n, 'file', 'files');
 
-/** The footer of the Assets panel: what the project's media take, and what removed files kept for Undo take. */
+/**
+ * The footer of the Assets panel, under every tab: what the files in Assets take (each image with its smaller
+ * copies), what removed files kept for Undo take, and saved versions.
+ */
 export function StorageSummary({ info, onFree }: { info: StorageInfo; onFree: () => void }) {
   if (!info.media.files && !info.kept.files && !info.versions.count) return null;
   return (
     <section className="asset-storage" aria-labelledby="asset-storage-title" data-testid="asset-storage">
-      <h4 id="asset-storage-title">Storage</h4>
+      <div className="asset-storage-head">
+        <h4 id="asset-storage-title">
+          <HardDrive aria-hidden="true" /> Storage
+        </h4>
+        {info.reclaim && (
+          <button className="btn btn-sm" onClick={onFree} title="See what removed files and Undo history take, and delete them">
+            Free up space…
+          </button>
+        )}
+      </div>
       <dl>
         <div>
-          <dt>In use</dt>
+          <dt title="Every image, font and document in Assets, with the smaller copies made of each image">In Assets</dt>
           <dd>
             {files(info.media.files)} · {formatBytes(info.media.bytes)}
           </dd>
         </div>
         {info.kept.files > 0 && (
           <div>
-            <dt>Kept for Undo</dt>
+            <dt title="Removed images, fonts and documents stay in the project folder while Undo can still bring them back">Kept for Undo</dt>
             <dd>
               {files(info.kept.files)} · {formatBytes(info.kept.bytes)}
             </dd>
@@ -74,17 +86,13 @@ export function StorageSummary({ info, onFree }: { info: StorageInfo; onFree: ()
           </div>
         )}
       </dl>
-      {info.kept.files > 0 && <p>Removed images, fonts and documents stay in the project folder while Undo can still bring them back.</p>}
-      {info.reclaim && (
-        <button className="btn btn-sm" onClick={onFree}>
-          <HardDrive /> Free up space…
-        </button>
-      )}
+      <p className="asset-storage-note">Files include each image’s smaller copies.</p>
     </section>
   );
 }
 
-function Trimmed({ side }: { side: TrimmedSide }) {
+/** The steps that go, newest first. `rest` are the ones the summary counts ("and 4 earlier steps"), listed on request. */
+function Trimmed({ side, rest }: { side: TrimmedSide; rest: string[] }) {
   return (
     <>
       <p>{side.lead}</p>
@@ -92,7 +100,22 @@ function Trimmed({ side }: { side: TrimmedSide }) {
         {side.steps.map((s, i) => (
           <li key={i}>{s}</li>
         ))}
-        {side.more && <li className="more">{side.more}</li>}
+        {side.more && (
+          <li className="more">
+            {rest.length ? (
+              <details>
+                <summary>{side.more}</summary>
+                <ul>
+                  {rest.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : (
+              side.more
+            )}
+          </li>
+        )}
       </ul>
       <p className="muted">{side.after}</p>
     </>
@@ -150,7 +173,7 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
             Cancel
           </button>
           <button className="btn btn-danger-fill" onClick={() => void free()} disabled={busy || !plan || changed || !!info.blocked}>
-            {busy && <Spinner decorative />} {plan ? `Free ${formatBytes(total)}` : 'Free up space'}
+            {busy ? <Spinner decorative /> : <Trash2 aria-hidden="true" />} {plan ? `Free ${formatBytes(total)}` : 'Free up space'}
           </button>
         </>
       }
@@ -160,23 +183,42 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
           <caption className="sr-only">What the project takes on disk</caption>
           <tbody>
             <tr>
-              <th scope="row">Images and fonts in use</th>
+              <th scope="row">
+                In Assets <span className="storage-stays">stays</span>
+              </th>
               <td>{files(shown.media.files)}</td>
               <td>{formatBytes(shown.media.bytes)}</td>
             </tr>
-            <tr>
-              <th scope="row">Removed, kept for Undo</th>
-              <td>{files(shown.kept.files)}</td>
-              <td>{formatBytes(shown.kept.bytes)}</td>
+            {/* A row the plan changes shows exactly what goes, out of what there is. */}
+            <tr className={plan?.files.files ? 'storage-goes' : undefined}>
+              <th scope="row">
+                Removed, kept for Undo
+                {plan?.files.files ? (
+                  <span className="storage-goes-tag">
+                    <Trash2 aria-hidden="true" /> deleted
+                  </span>
+                ) : null}
+              </th>
+              <td>{plan?.files.files && plan.files.files !== shown.kept.files ? `${plan.files.files} of ${files(shown.kept.files)}` : files(shown.kept.files)}</td>
+              <td>{plan?.files.files && plan.files.bytes !== shown.kept.bytes ? `${formatBytes(plan.files.bytes)} of ${formatBytes(shown.kept.bytes)}` : formatBytes(shown.kept.bytes)}</td>
             </tr>
-            <tr>
-              <th scope="row">Undo history</th>
-              <td>{plural(shown.history.steps, 'step', 'steps')}</td>
-              <td>{formatBytes(shown.history.bytes)}</td>
+            <tr className={plan?.historyBytes ? 'storage-goes' : undefined}>
+              <th scope="row">
+                Undo history
+                {plan?.historyBytes ? (
+                  <span className="storage-goes-tag">
+                    <Scissors aria-hidden="true" /> trimmed
+                  </span>
+                ) : null}
+              </th>
+              <td>{plan?.historyBytes && plan.undo.length + plan.redo.length !== shown.history.steps ? `${plan.undo.length + plan.redo.length} of ${plural(shown.history.steps, 'step', 'steps')}` : plural(shown.history.steps, 'step', 'steps')}</td>
+              <td>{plan?.historyBytes && plan.historyBytes !== shown.history.bytes ? `${formatBytes(plan.historyBytes)} of ${formatBytes(shown.history.bytes)}` : formatBytes(shown.history.bytes)}</td>
             </tr>
             {shown.versions.count > 0 && (
               <tr>
-                <th scope="row">Saved versions</th>
+                <th scope="row">
+                  Saved versions <span className="storage-stays">stays</span>
+                </th>
                 <td>{plural(shown.versions.count, 'version', 'versions')}</td>
                 <td>{formatBytes(shown.versions.bytes)}</td>
               </tr>
@@ -186,11 +228,11 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
         {plan && trim ? (
           <>
             <p>
-              Deletes {plural(plan.files.files, 'removed file', 'removed files')} ({formatBytes(plan.files.bytes)}) that nothing in the project names
-              {plan.historyBytes ? `, and ${formatBytes(plan.historyBytes)} of saved history` : ''}. Your site doesn’t change: every page, image, font and document in use stays as it is.
+              Deletes {plural(plan.files.files, 'file', 'files')} already removed from Assets ({formatBytes(plan.files.bytes)}; each image counts with its smaller copies)
+              {plan.historyBytes ? `, and ${formatBytes(plan.historyBytes)} of Undo history` : ''}. Your site doesn’t change: every page, and every image, font and document still in Assets, stays as it is.
             </p>
-            {trim.undo && <Trimmed side={trim.undo} />}
-            {trim.redo && <Trimmed side={trim.redo} />}
+            {trim.undo && <Trimmed side={trim.undo} rest={[...plan.undo].reverse().slice(trim.undo.steps.length)} />}
+            {trim.redo && <Trimmed side={trim.redo} rest={plan.redo.slice(trim.redo.steps.length)} />}
             <p>
               <b>This can’t be undone.</b> To keep every step, close this and leave the files where they are.
             </p>

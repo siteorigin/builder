@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, ImageDown, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, Grid3x3, ImageDown, ImageIcon, ImageOff, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Type, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
 import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, attachToChat, commitOps, getState, inspectorFocusRequest, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
-import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
+import { Field, DraftInput, Segmented, Spinner, Tabs } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { inSeries, sortAssets } from '@shared/asset-order';
-import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
+import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { Picture, Thumb } from '../components/AssetPicture';
 import { goToShellPart, imagePlacement, openSiteStyles, placeAsset, selectPage } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
@@ -29,15 +29,20 @@ function formatType(mime: string): string {
 }
 
 const nameOf = (a: AssetRecord) => a.name.trim() || 'Untitled image';
-/** Two lines of a tile hold about 30 characters. A longer name keeps its first and last words, since versions
- *  and sizes live at the end, cut at word boundaries where there are any. */
-function shortName(name: string): string {
-  if (name.length <= 30) return name;
-  let head = name.slice(0, 14);
-  if (head.lastIndexOf(' ') > 6) head = head.slice(0, head.lastIndexOf(' '));
-  const space = name.lastIndexOf(' ', name.length - 6);
-  const tail = space > head.length && name.length - space - 1 <= 13 ? name.slice(space + 1) : name.slice(-11);
-  return `${head.trimEnd()} … ${tail.trimStart()}`;
+
+/** The library's three kinds, each shown on its own: a long image grid never buries fonts or documents. */
+type Section = 'images' | 'fonts' | 'documents';
+/** Smaller thumbnails, for scanning a long library by eye. Kept while the app runs, whichever project is open. */
+let compactPref = false;
+
+/**
+ * What is wrong with an image's files: every file gone (nothing can show it), only the original gone (its
+ * smaller copies still show, but the site is built from the original), or some smaller copies gone.
+ */
+function damage(a: AssetRecord, gone: MissingAssetFiles | undefined): 'all' | 'original' | 'copies' | null {
+  if (!gone) return null;
+  if (!gone.original) return 'copies';
+  return (a.variants?.length ?? 0) <= gone.variants.length ? 'all' : 'original';
 }
 
 const WEIGHTS: Array<[string, string]> = [
@@ -62,12 +67,16 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
       `Rename font family to ${family}`
     );
   const remove = async (a: AssetRecord) => {
+    const next = fonts[fonts.indexOf(a) + 1] ?? fonts[fonts.indexOf(a) - 1];
     const r = await commitOps([{ type: 'asset.remove', assetId: a.id }], `Remove ${a.name}`);
-    if (r) toast(`Removed ${a.name}.`, 'info', undoAction(r));
+    if (r) {
+      toast(`Removed ${a.name}.`, 'info', undoAction(r));
+      // Focus moves to the next font's Remove (when it can be used), else to Add fonts, never to the page.
+      requestAnimationFrame(() => ((next && document.querySelector<HTMLElement>(`[data-font="${next.id}"] .font-remove:not(:disabled)`)) || document.querySelector<HTMLElement>('.asset-add'))?.focus());
+    }
   };
   return (
-    <section className="font-list" aria-labelledby="font-list-title">
-      <h4 id="font-list-title">Fonts</h4>
+    <section className="font-list" aria-label="Fonts">
       <p className="font-list-note">
         Imported fonts are part of your site. Choose one for headings or body text in{' '}
         <button className="link-btn" onClick={() => openSiteStyles()}>
@@ -82,7 +91,7 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
           // Another file of the same family keeps the styles using it working, so this one can go.
           const locked = !!used && fonts.filter((x) => sameFontFamily(x, a)).length === 1;
           return (
-            <li key={a.id} className="font-face">
+            <li key={a.id} className="font-face" data-font={a.id}>
               <div className="font-face-head">
                 <b title={a.name}>{a.font?.family ?? a.name}</b>
                 <span className="font-face-meta">
@@ -90,6 +99,9 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
                 </span>
               </div>
               <div className="font-face-edit">
+                <span className="font-face-label" aria-hidden="true">
+                  Family name, shared by its files
+                </span>
                 <DraftInput
                   className="input sm"
                   value={a.font?.family ?? ''}
@@ -112,7 +124,7 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
                   <option value="normal">Upright</option>
                   <option value="italic">Italic</option>
                 </select>
-                <button className="btn btn-sm btn-ghost" disabled={locked} title={locked ? 'In use by your site styles. Choose another font there first.' : `Remove ${a.name}`} aria-label={`Remove ${a.name}`} onClick={() => void remove(a)}>
+                <button className="btn btn-sm btn-ghost font-remove" disabled={locked} title={locked ? 'In use by your site styles. Choose another font there first.' : `Remove ${a.name}`} aria-label={`Remove ${a.name}`} onClick={() => void remove(a)}>
                   <Trash2 />
                 </button>
               </div>
@@ -129,7 +141,7 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
  * done with it. A new version of the file goes in with Replace file, and every link follows; links can also move to
  * another document. A document stays while anything links to it, so no link is ever left going nowhere.
  */
-function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed, onAdd, adding }: { state: ProjectState; docs: AssetRecord[]; usage: Record<string, number>; missingOf: Map<string, MissingAssetFiles>; reveal: string | null; onRevealed: () => void; onAdd: () => void; adding: boolean }) {
+function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { state: ProjectState; docs: AssetRecord[]; usage: Record<string, number>; missingOf: Map<string, MissingAssetFiles>; reveal: string | null; onRevealed: () => void }) {
   const labels = documentLabels(docs);
   const [open, setOpen] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -159,6 +171,7 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed, onAdd
   };
   const moveLinks = async (a: AssetRecord, to: string) => {
     const target = state.assets.assets[to];
+    if (missingOf.get(to)?.original) return toast(`${target ? documentName(target) : 'That document'} has a missing file, so links can’t move to it.`, 'error');
     const n = usage[a.id] ?? 0;
     const r = await commitOps([{ type: 'asset.replace', assetId: a.id, withAssetId: to }], `Move links from ${documentName(a)}`);
     if (r) {
@@ -167,26 +180,26 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed, onAdd
     }
   };
   const remove = async (a: AssetRecord) => {
+    const next = docs[docs.indexOf(a) + 1] ?? docs[docs.indexOf(a) - 1];
     const r = await commitOps([{ type: 'asset.remove', assetId: a.id }], `Remove ${documentName(a)}`);
-    if (r) toast(`Removed ${documentName(a)}.`, 'info', undoAction(r));
+    if (r) {
+      toast(`Removed ${documentName(a)}.`, 'info', undoAction(r));
+      // Focus moves to the next document, else to Add documents, never to the page.
+      requestAnimationFrame(() => ((next && toggles.current.get(next.id)) || document.querySelector<HTMLElement>('.asset-add'))?.focus());
+    }
   };
   return (
-    <section className="doc-list" aria-labelledby="doc-list-title">
-      <div className="doc-list-head">
-        <h4 id="doc-list-title">Documents</h4>
-        <button className="btn btn-sm" onClick={onAdd} disabled={adding} title="Choose PDFs or other files for visitors to download">
-          <FilePlus /> Add documents
-        </button>
-      </div>
+    <section className="doc-list" aria-label="Documents">
       {docs.length === 0 ? (
-        <p className="doc-list-note">Add a PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP file, then link a button to it: choose Document as the link’s destination. Visitors download it from your site, so it needs no other hosting.</p>
+        <p className="doc-list-note">Files visitors download from your site: a PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP file. Add one, then link a button to it by choosing Document as the link’s destination. It needs no other hosting.</p>
       ) : (
         <ul>
           {docs.map((a) => {
             const used = usage[a.id] ?? 0;
             const gone = missingOf.get(a.id)?.original;
             const expanded = open === a.id;
-            const others = docs.filter((d) => d.id !== a.id);
+            // Links never move to a document whose own file is missing: they would go nowhere too.
+            const others = docs.filter((d) => d.id !== a.id && !missingOf.get(d.id)?.original);
             return (
               <li key={a.id} className={`doc-item${expanded ? ' open' : ''}`} data-document={a.id}>
                 <button
@@ -202,9 +215,8 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed, onAdd
                   <FileDown aria-hidden="true" />
                   <span className="doc-title">
                     <b>{labels.get(a.id)}</b>
-                    <span className="doc-meta">
-                      {documentDetails(a)} · {gone ? 'File missing' : used ? `Linked ${plural(used, 'time', 'times')}` : 'Not linked'}
-                    </span>
+                    <span className="doc-meta">{documentDetails(a)}</span>
+                    <span className={`doc-state${gone ? ' gone' : ''}`}>{gone ? 'File missing' : used ? `Linked ${plural(used, 'time', 'times')}` : 'Not linked'}</span>
                   </span>
                   {gone && <TriangleAlert className="doc-warn" aria-label="File missing" />}
                 </button>
@@ -245,7 +257,7 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed, onAdd
                           </button>
                         </span>
                       )}
-                      <button className="btn btn-sm btn-ghost" disabled={used > 0} onClick={() => void remove(a)} title={used ? `Linked ${plural(used, 'time', 'times')}. Replace its file, move its links to another document, or change those links first.` : `Remove ${documentName(a)}`}>
+                      <button className="btn btn-sm btn-danger" disabled={used > 0} onClick={() => void remove(a)} title={used ? `Linked ${plural(used, 'time', 'times')}. Replace its file, move its links to another document, or change those links first.` : `Remove ${documentName(a)}`}>
                         <Trash2 /> Remove
                       </button>
                     </div>
@@ -316,6 +328,17 @@ function showUse(u: ImageUseRow): (() => void) | undefined {
   return pageId ? () => selectPage(pageId) : undefined;
 }
 
+/**
+ * For a use with no page to open (a component's design or its starting image): where it is changed. Edit everywhere…
+ * on a placement opens the design; a component placed nowhere is changed only with Replace everywhere.
+ */
+function changeHint(state: ProjectState, u: ImageUseRow): string | undefined {
+  const definitionId = u.definitionId;
+  if (u.at || !definitionId) return undefined;
+  const placed = allTrees(state).some((t) => t.owner.kind !== 'component' && Object.values(t.tree.nodes).some((n) => n.kind === 'instance' && n.definitionId === definitionId));
+  return placed ? 'Change it with Edit everywhere… on a placement' : 'Not placed on any page: change it with Replace everywhere';
+}
+
 /** Every place a document is linked from, by the same rules as the engine's usage count. */
 function placesOf(state: ProjectState, assetId: string): Place[] {
   const document = state.assets.assets[assetId]?.kind === 'document';
@@ -353,7 +376,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
 
 const PLACE_ICON = { page: FileText, shell: PanelTop, component: Component, site: Globe };
 
-/** Arrow keys, Home and End move between tiles by row and column; Tab still walks them in order. */
+/** Arrow keys, Home and End move between tiles by row and column. The grid is one Tab stop: the tile last focused. */
 function gridKeys(e: React.KeyboardEvent<HTMLElement>) {
   const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-asset]')];
   const i = tiles.indexOf(document.activeElement as HTMLElement);
@@ -392,7 +415,7 @@ function useRecordsLocation(a: AssetRecord | null): boolean {
  * shown or its file changes. Null while unknown, or when no copy can be made from it.
  */
 type WebPlan = { format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number };
-function useWebCopyPlan(a: AssetRecord | null, opening: string, originalMissing: boolean): WebPlan | null {
+function useWebCopyPlan(a: AssetRecord | null, opening: string, originalMissing: boolean): WebPlan | null | undefined {
   const [answer, setAnswer] = useState<{ key: string; plan: WebPlan | null } | null>(null);
   const eligible = a?.kind === 'image' && a.bytes > LARGE && (a.mime === 'image/jpeg' || a.mime === 'image/png');
   const id = eligible ? a.id : null;
@@ -409,7 +432,9 @@ function useWebCopyPlan(a: AssetRecord | null, opening: string, originalMissing:
       live = false;
     };
   }, [id, key]);
-  return key && answer?.key === key ? answer.plan : null;
+  // Undefined while the answer is on its way, so the details never flash the advice for when no copy can be made.
+  if (!key) return null;
+  return answer?.key === key ? answer.plan : undefined;
 }
 
 /** `narrow`: the sidebar is drawn under 240px wide, so the header drops the image count. */
@@ -433,8 +458,29 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const replacingNow = useRef(false);
   const [q, setQ] = useState('');
   const [pickQ, setPickQ] = useState('');
-  const [filter, setFilter] = useState<'all' | 'unused'>('all');
+  const [filter, setFilter] = useState<'all' | 'unused' | 'missing'>('all');
   const [importing, setImporting] = useState(false);
+  // Files are being written: only once the author has confirmed what comes in, never while they review it.
+  const [adding, setAdding] = useState(false);
+  const [section, setSection] = useState<Section>('images');
+  const [compact, setCompactState] = useState(compactPref);
+  const setCompact = (v: boolean) => {
+    compactPref = v;
+    setCompactState(v);
+  };
+  // The grid's one Tab stop: the tile focused last, while it is still shown.
+  const [activeTile, setActiveTile] = useState<string | null>(null);
+  // Where the grid was scrolled when an image's details opened, so Back returns to the same view.
+  const browseScroll = useRef(0);
+  // The images view's scroll container, in browsing and in Replace everywhere alike.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // The tile to keep in view when the thumbnails change size.
+  const densityAnchor = useRef<string | null>(null);
+  useEffect(() => {
+    const id = densityAnchor.current;
+    densityAnchor.current = null;
+    if (id) bodyRef.current?.querySelector<HTMLElement>(`[data-asset="${id}"]`)?.scrollIntoView({ block: 'start' });
+  }, [compact]);
   const [nameError, setNameError] = useState<string | null>(null);
   const [allPlaces, setAllPlaces] = useState(false);
   // Replacing in some places: the uses ticked (by key) and the image picked for them. Null: every place, as picked.
@@ -459,6 +505,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   // series chosen to browse never hides the image wanted in its place.
   const browseSeries = useAssetSeries(assets, opening);
   const pickSeries = useAssetSeries(assets, opening);
+  // A new search, sort, series or filter shows its results from the first one, never from partway down, and Tab
+  // enters them at the first result too.
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+    setActiveTile(null);
+  }, [q, pickQ, filter, browseSeries.key, pickSeries.key, assetSort]);
   /** Names more than one image has, compared as the AI chat compares them. */
   const sharedNames = useMemo(() => {
     const seen = new Set<string>();
@@ -515,9 +567,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       setReplacing(false);
       if (kind === 'document') {
         setSelected(null);
+        setSection('documents');
         setShownDocument(assetId);
         return;
       }
+      setSection('images');
       setSelected(assetId);
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
@@ -540,8 +594,13 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const matches = (a: AssetRecord) => (!series.key || inSeries(a, series.key)) && (!needle || `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle));
   const found = assets.filter((a) => matches(a) && !(replacing && a.id === sel?.id));
   const foundUnused = found.filter((a) => !usage[a.id]);
-  const mode = unused.length && !replacing ? filter : 'all';
-  const shown = mode === 'unused' ? foundUnused : found;
+  // Images with files missing from the project folder, so they can be found without scrolling the whole library.
+  const damaged = assets.filter((a) => missingOf.has(a.id));
+  const foundDamaged = found.filter((a) => missingOf.has(a.id));
+  const mode = replacing ? 'all' : filter === 'unused' && unused.length ? 'unused' : filter === 'missing' && damaged.length ? 'missing' : 'all';
+  const shown = mode === 'unused' ? foundUnused : mode === 'missing' ? foundDamaged : found;
+  const missingDocs = documents.filter((d) => missingOf.get(d.id)?.original).length;
+  const removable = shown.filter((a) => !usage[a.id]);
 
   /** Focus moves to the tile (when it is still shown), else search, else the empty state's Add images. */
   const focusTile = (id?: string | null) =>
@@ -549,11 +608,37 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       const el = (id && document.querySelector<HTMLElement>(`[data-asset="${id}"]`)) || searchRef.current || document.querySelector<HTMLElement>('.asset-drop');
       el?.focus();
     });
+  const gridBody = () => bodyRef.current;
+  /** Open an image's details, remembering where the grid was. */
+  const openDetails = (id: string) => {
+    browseScroll.current = gridBody()?.scrollTop ?? 0;
+    setSelected(id);
+    // The details start at the picture, whatever depth of the grid they were opened from.
+    requestAnimationFrame(() => {
+      if (bodyRef.current) bodyRef.current.scrollTop = 0;
+    });
+  };
+  /** Back to the grid as it was left: the same scroll position, focus on the same tile. */
   const back = () => {
     const id = selected;
     setSelected(null);
     setReplacing(false);
-    focusTile(id);
+    requestAnimationFrame(() => {
+      const body = gridBody();
+      if (body) body.scrollTop = browseScroll.current;
+      const el = (id && document.querySelector<HTMLElement>(`[data-asset="${id}"]`)) || searchRef.current || document.querySelector<HTMLElement>('.asset-drop');
+      el?.focus({ preventScroll: !!body });
+      if (body && el?.matches('[data-asset]')) el.scrollIntoView({ block: 'nearest' });
+    });
+  };
+  /** Change the thumbnail size and keep the picture in view: the focused tile, else the first one showing. */
+  const toggleCompact = () => {
+    const body = gridBody();
+    const focused = document.activeElement?.closest<HTMLElement>('[data-asset]');
+    const top = body?.getBoundingClientRect().top ?? 0;
+    const first = focused ?? [...(body?.querySelectorAll<HTMLElement>('[data-asset]') ?? [])].find((t) => t.getBoundingClientRect().bottom > top + 8);
+    densityAnchor.current = body && body.scrollTop > 0 ? (first?.dataset.asset ?? null) : null;
+    setCompact(!compact);
   };
   const openReplace = () => {
     replaceSession.current++;
@@ -561,6 +646,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     pickSeries.choose('');
     setChoosing(null);
     setReplacing(true);
+    // The picker starts at what is being replaced, however far down the details were scrolled.
+    requestAnimationFrame(() => {
+      if (bodyRef.current) bodyRef.current.scrollTop = 0;
+    });
   };
   const closeReplace = () => {
     replaceSession.current++;
@@ -573,12 +662,13 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
    * Import through the app's picker (no paths) or dropped files, and say exactly what arrived. HEIC photos, large
    * photos and files that can't be added are shown in the import review first (see reviewImport).
    */
-  const importFiles = async (paths?: string[], only?: 'image' | 'document') => {
+  const importFiles = async (paths?: string[], only?: 'image' | 'font' | 'document') => {
     const before = new Set(Object.keys(getState().snapshot?.state.assets.assets ?? {}));
     setImporting(true);
     try {
       const plan = await reviewImport(paths, only).catch((e: Error) => (toast(`The files couldn’t be added: ${e.message}`, 'error'), null));
       if (!plan) return { ids: [], added: [], failed: false, reviewed: false, chosen: 0 };
+      setAdding(true);
       const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, only, plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The files couldn’t be added: ${e.message}` }));
       // What arrived is told by kind once the new records reach this window (they come in one snapshot).
       if (r.assetIds.length) await assetArrived(r.assetIds[r.assetIds.length - 1], plan.choices.opening);
@@ -601,6 +691,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       return { ids: r.assetIds, added, failed: !!r.message, reviewed: plan.reviewed, chosen: plan.chosen };
     } finally {
       setImporting(false);
+      setAdding(false);
     }
   };
   /**
@@ -630,6 +721,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const still = run === importRun.current && replaceSession.current === session && selectedNow.current === shownBefore && getState().snapshot?.workspaceKey === opening;
     const image = reviewed && still ? ids.find((id) => getState().snapshot?.state.assets.assets[id]?.kind === 'image') : undefined;
     if (image) {
+      // A photo dropped on the Fonts or Documents tab still opens among the images, so Back goes there.
+      setSection('images');
       setSelected(image);
       requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
     } else if (added.length && wasEmpty && still) requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-add')?.focus());
@@ -674,6 +767,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     if (importing) return;
     await importFiles(undefined, 'document');
   };
+  const addFonts = async () => {
+    if (importing) return;
+    await importFiles(undefined, 'font');
+  };
 
   /**
    * Show another image in every place this one is used, or only in the places chosen (`only`) as the project was at
@@ -682,6 +779,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const replaceWith = async (withId: string, only?: { uses: ImageUseRow[]; revision: number }) => {
     // A second choice while the first is on its way replaces nothing more.
     if (!sel || withId === sel.id || replacingNow.current || only?.uses.length === 0) return;
+    // Checked again on the way in: a picture whose file has gone would carry the problem into every place.
+    if (getState().snapshot?.missingAssets.some((m) => m.assetId === withId)) return toast('That image has missing files, so it can’t replace another image. Repair it in its details first.', 'error');
     const n = only?.uses.length ?? (places.length || usage[sel.id] || 0);
     const target = getState().snapshot?.state.assets.assets[withId];
     const uses = only?.uses.flatMap((u) => (u.target ? [u.target] : []));
@@ -780,27 +879,48 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     }
   };
 
-  /** `picked`: the tile chosen so far, when picking one is not yet acting on it (replacing in some places). */
-  const grid = (onPick: (a: AssetRecord) => void, label: string, picked?: string | null) => (
-    <div className="asset-grid" role="group" aria-label={label} onKeyDown={gridKeys}>
+  const roving = shown.some((a) => a.id === activeTile) ? activeTile : (shown[0]?.id ?? null);
+  /**
+   * `blocked` gives the reason a tile can't be picked here, or null. `picked`: the tile chosen so far, when picking
+   * one is not yet acting on it (replacing in some places).
+   */
+  const grid = (onPick: (a: AssetRecord) => void, label: string, { blocked, picked }: { blocked?: (a: AssetRecord) => string | null; picked?: string | null } = {}) => (
+    <div className={`asset-grid${compact ? ' compact' : ''}`} role="group" aria-label={label} aria-describedby="asset-grid-keys" onKeyDown={gridKeys}>
+      <span className="sr-only" id="asset-grid-keys">
+        Arrow keys move between images.
+      </span>
       {shown.map((a) => {
+        const reason = blocked?.(a) ?? null;
         // Two imports can share a name ("hero"): the asset ID tells them apart, as the AI chat names them.
         const gone = missingOf.get(a.id);
+        const hurt = damage(a, gone);
         const big = a.bytes > LARGE && !gone;
         const shared = typeof a.name === 'string' && sharedNames.has(nameOf(a).toLowerCase());
         const name = shared ? `${nameOf(a)} (${a.id})` : nameOf(a);
-        const missingLabel = gone ? (gone.original ? 'file missing' : 'smaller copies missing') : '';
+        const copies = gone?.variants.length ?? 0;
+        const chip = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'No original' : copies === 1 ? 'Copy missing' : 'Copies missing';
+        const missingLabel = hurt === 'all' ? 'file missing' : hurt === 'original' ? 'original file missing, smaller copies still show' : copies === 1 ? 'a smaller copy missing' : 'smaller copies missing';
         return (
           <button
             key={a.id}
             data-asset={a.id}
-            className={`asset-tile${picked === a.id ? ' picked' : ''}`}
-            onClick={() => onPick(a)}
+            className={`asset-tile${reason ? ' blocked' : ''}${picked === a.id ? ' picked' : ''}`}
+            tabIndex={a.id === roving ? 0 : -1}
+            onFocus={() => setActiveTile(a.id)}
+            onClick={() => !reason && onPick(a)}
             aria-pressed={picked === undefined ? undefined : picked === a.id}
-            aria-label={gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}
-            title={gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}
+            aria-disabled={reason ? true : undefined}
+            aria-label={`${gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}${reason ? `. ${reason}` : ''}`}
+            title={`${gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}${reason ? `\n${reason}` : ''}`}
           >
-            <Thumb key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={a} devUrl={devUrl} />
+            {hurt === 'all' ? (
+              // Nothing is left to show: a picture still on screen would only be the browser's memory of it.
+              <span className="asset-thumb asset-thumb-gone">
+                <ImageOff aria-hidden="true" />
+              </span>
+            ) : (
+              <Thumb key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={a} devUrl={devUrl} />
+            )}
             {picked === a.id && (
               <span className="asset-picked" aria-hidden="true">
                 <Check />
@@ -809,17 +929,19 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             {gone && (
               <span className="asset-size asset-gone" aria-hidden="true">
                 <TriangleAlert />
-                {gone.original ? 'Missing' : 'Copies missing'}
+                {/* Smaller tiles say only "Missing"; the details are in the tooltip and the spoken name. */}
+                <span>{compact ? 'Missing' : chip}</span>
               </span>
             )}
             {big && (
               <span className="asset-size" aria-hidden="true">
-                <Info />
-                {formatBytes(a.bytes)}
+                {!compact && <Info />}
+                <span>{formatBytes(a.bytes)}</span>
               </span>
             )}
-            <span className="asset-name">{shortName(nameOf(a))}</span>
-            {shared && <span className="asset-tile-id">{a.id}</span>}
+            {/* Smaller thumbnails are for scanning by eye: the name is in the tile's tooltip and its spoken name. */}
+            {!compact && <span className="asset-name">{shortName(nameOf(a))}</span>}
+            {shared && !compact && <span className="asset-tile-id">{a.id}</span>}
           </button>
         );
       })}
@@ -828,7 +950,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const noMatches = (
     <div className="asset-nomatch">
       <p>
-        {needle && mode === 'unused' && found.length ? (
+        {needle && mode === 'missing' && found.length ? (
+          <>No images with missing files match “{query.trim()}”.</>
+        ) : series.key && mode === 'missing' ? (
+          <>No images in {series.label} have missing files.</>
+        ) : needle && mode === 'unused' && found.length ? (
           <>No unused images match “{query.trim()}”.</>
         ) : needle ? (
           <>No images {series.key ? `in ${series.label} ` : ''}match “{query.trim()}”.</>
@@ -842,8 +968,14 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           'Every image is in use.'
         )}
       </p>
-      {mode === 'unused' && found.length > 0 && (needle || series.key) && (
-        <button className="btn btn-sm" onClick={() => setFilter('all')}>
+      {mode !== 'all' && found.length > 0 && (needle || series.key) && (
+        <button
+          className="btn btn-sm"
+          onClick={() => {
+            setFilter('all');
+            searchRef.current?.focus();
+          }}
+        >
           Show all {found.length}
         </button>
       )}
@@ -855,7 +987,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             searchRef.current?.focus();
           }}
         >
-          Show all series
+          Clear series
         </button>
       )}
       {needle && (
@@ -871,28 +1003,54 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       )}
     </div>
   );
+  const filtering = !!(needle || series.key);
   const browseTools = (
     <div className="asset-tools">
-      <div className="search">
-        <Search />
-        <input ref={searchRef} className="input" type="search" placeholder="Search images" value={query} onChange={(e) => (replacing ? setPickQ : setQ)(e.target.value)} aria-label="Search images by name or description" />
+      <div className="asset-search-row">
+        <div className="search">
+          <Search />
+          <input ref={searchRef} className="input" type="search" placeholder="Search images" value={query} onChange={(e) => (replacing ? setPickQ : setQ)(e.target.value)} aria-label="Search images by name or description" />
+        </div>
+        <button className="icon-btn asset-density" aria-pressed={compact} aria-label="Smaller thumbnails" title={compact ? 'Show larger thumbnails' : 'Show smaller thumbnails, more to a row'} onClick={toggleCompact}>
+          <Grid3x3 />
+        </button>
       </div>
       <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />
-      {!replacing && unused.length > 0 && (
+      {!replacing && (unused.length > 0 || damaged.length > 0) && (
         <Segmented
           full
-          label="Show"
+          label="Filter images"
           value={mode}
           onChange={setFilter}
           options={[
-            { value: 'all', label: <>All <span className="asset-count">{found.length}</span></> },
-            { value: 'unused', label: <>Unused <span className="asset-count">{foundUnused.length}</span></> }
+            { value: 'all' as const, label: <>All <span className="asset-count">{found.length}</span></> },
+            ...(unused.length ? [{ value: 'unused' as const, label: <>Unused <span className="asset-count">{foundUnused.length}</span></> }] : []),
+            ...(damaged.length ? [{ value: 'missing' as const, label: <>Missing <span className="asset-count">{foundDamaged.length}</span></> }] : [])
           ]}
         />
       )}
-      <span className="sr-only" role="status">
-        {needle || series.key ? `${plural(shown.length, 'image matches', 'images match')}` : ''}
-      </span>
+      {!replacing && mode === 'unused' && removable.length > 0 && (
+        <div className="asset-cleanup">
+          <p>
+            {needle
+              ? `${plural(removable.length, 'unused image matches', 'unused images match')} your search${series.key ? ` in ${series.label}` : ''}.`
+              : series.key
+                ? `${plural(removable.length, 'image', 'images')} in ${series.label} ${removable.length === 1 ? 'isn’t' : 'aren’t'} used anywhere.`
+                : `${plural(removable.length, 'image isn’t', 'images aren’t')} used anywhere.`}{' '}
+            You can undo this.
+          </p>
+          <button className="btn btn-sm btn-danger" onClick={() => void removeMany(removable)}>
+            <Trash2 /> {removable.length === 1 ? 'Remove it' : needle || series.key ? `Remove these ${removable.length}` : `Remove all ${removable.length}`}
+          </button>
+        </div>
+      )}
+      <p className={filtering && shown.length ? 'asset-result' : 'sr-only'} role="status">
+        {filtering
+          ? `${shown.length} of ${mode === 'unused' ? plural(unused.length, 'unused image', 'unused images') : mode === 'missing' ? plural(damaged.length, 'image with missing files', 'images with missing files') : plural(assets.length - (replacing ? 1 : 0), 'image', 'images')}${series.key ? ` · ${series.label}` : ''}`
+          : mode === 'missing'
+            ? `${plural(shown.length, 'image has', 'images have')} missing files`
+            : ''}
+      </p>
     </div>
   );
 
@@ -923,7 +1081,14 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-choose-open')?.focus());
     };
     const tick = (key: string, on: boolean) => setChoosing((c) => c && { ...c, chosen: on ? [...c.chosen.filter((k) => k !== key), key] : c.chosen.filter((k) => k !== key) });
-    body = <div className="asset-replace">{shown.length ? grid(onPick, choosing ? `Image to show in the places ticked` : `Images to use instead of ${nameOf(sel)}`, choosing ? (pick?.id ?? null) : undefined) : noMatches}</div>;
+    const only = places.length === 1 ? places[0] : null;
+    // A swap applies at once, and a place chosen gets the picture as it is, so a damaged one can't be picked: its files
+    // are repaired first, in its details.
+    const unusable = (a: AssetRecord) => {
+      const hurt = damage(a, missingOf.get(a.id));
+      return hurt === 'copies' ? 'Some of its smaller copies are missing. Make them again in its details first.' : hurt ? 'Its file is missing, so it can’t be used here. Locate it first.' : null;
+    };
+    // Only Cancel and the search stay put; what is being replaced scrolls away with the images.
     tools = (
       <div className="asset-replace-top">
         <div className="asset-detail-top">
@@ -931,11 +1096,35 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             <ArrowLeft /> Cancel
           </button>
         </div>
+        {browseTools}
+      </div>
+    );
+    body = (
+      <div className="asset-replace">
         <div className="asset-replace-head">
-          <Thumb a={sel} devUrl={devUrl} />
+          {damage(sel, missingOf.get(sel.id)) === 'all' ? (
+            <span className="asset-thumb asset-thumb-gone">
+              <ImageOff aria-hidden="true" />
+            </span>
+          ) : (
+            <Thumb a={sel} devUrl={devUrl} />
+          )}
           <div>
             <h4 title={nameOf(sel)}>Replace {nameOf(sel)}</h4>
-            <p>{choosing ? 'Tick the places to change, then pick the image to show there.' : n === 1 ? 'Pick the image to show in its place.' : `Pick the image to show in all ${n} places.`} You can undo this.</p>
+            <p>
+              {choosing ? (
+                'Tick the places to change, then pick the image to show there.'
+              ) : only ? (
+                <>
+                  Pick the image to show in <b>{only.where}{only.what ? ` · ${only.what}` : ''}</b> instead.
+                </>
+              ) : n === 1 ? (
+                'Pick the image to show in its place instead.'
+              ) : (
+                `Pick the image to show in all ${n} places instead.`
+              )}{' '}
+              {choosing ? 'You can undo it.' : 'It changes as soon as you pick, and you can undo it.'}
+            </p>
             {!choosing && n > 1 && choosable > 0 && (
               <button className="link-btn asset-choose-open" onClick={startChoosing}>
                 Choose places…
@@ -992,14 +1181,15 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           <button
             className="btn btn-sm"
             disabled={importing}
-            title="Choose one file to use straight away, or several to pick from here"
             onClick={async () => {
               const session = replaceSession.current;
               const r = await importFiles(undefined, 'image');
               if (replaceSession.current !== session) return;
               // Applied only while the picker is still open for this image, and only for the one file chosen, come in
-              // cleanly. Choosing places, it is picked for them, to replace there once the author says so.
-              if (r.chosen === 1 && r.ids.length === 1 && !r.failed) {
+              // cleanly. Choosing places, it is picked for them, to replace there once the author says so. Otherwise a
+              // photo the import review showed (converted or made web-sized) waits here to be picked: that review's button
+              // said Add, not Replace.
+              if (r.chosen === 1 && r.ids.length === 1 && !r.failed && (choosing || !r.reviewed)) {
                 if (choosing) {
                   // A file the library already had as this very image is no replacement for it.
                   if (r.ids[0] !== sel.id) setChoosing((c) => c && { ...c, pick: r.ids[0] });
@@ -1015,9 +1205,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           >
             <ImagePlus /> Import a replacement…
           </button>
-          <p>Choose one file to use it straight away, or several to pick from here.</p>
+          <p>One file is used straight away. Several, or a photo that needs a check first, wait here for you to pick.</p>
         </div>
-        {browseTools}
+        {shown.length ? grid(onPick, choosing ? 'Image to show in the places ticked' : `Images to use instead of ${nameOf(sel)}`, { blocked: unusable, picked: choosing ? (pick?.id ?? null) : undefined }) : noMatches}
       </div>
     );
   } else if (sel) {
@@ -1026,8 +1216,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const sameName = typeof sel.name === 'string' && sharedNames.has(nameOf(sel).toLowerCase());
     const shownPlaces = allPlaces ? places : places.slice(0, 4);
     const gone = missingOf.get(sel.id);
+    const hurt = damage(sel, gone);
     const copies = gone?.variants.length ?? 0;
     const placement = imagePlacement();
+    const sameSize = !!webPlan && webPlan.width === sel.width && webPlan.height === sel.height;
+    const onePlace = (places.length || used) === 1;
     const place = async () => {
       if (placingNow.current || !placement.at) return;
       placingNow.current = true;
@@ -1042,12 +1235,18 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     body = (
       <div className="asset-detail" id="asset-detail">
         <div className="asset-detail-top">
+          {/* Back goes to the grid as it was left, so it names what that grid shows. */}
           <button className="btn btn-sm btn-ghost asset-back" autoFocus onClick={back}>
-            <ArrowLeft /> All images
+            <ArrowLeft /> {mode === 'missing' ? 'Missing images' : mode === 'unused' ? 'Unused images' : filtering ? 'Back to results' : 'All images'}
           </button>
         </div>
         <div className="asset-preview">
-          {devUrl ? (
+          {hurt === 'all' ? (
+            <span className="asset-preview-off">
+              <ImageOff aria-hidden="true" />
+              No file left to show.
+            </span>
+          ) : devUrl ? (
             <Picture key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={sel} devUrl={devUrl} maxHeight={176} />
           ) : (
             <span className="asset-preview-off">
@@ -1115,9 +1314,13 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           <div className="asset-note asset-missing" role="note">
             <TriangleAlert aria-hidden="true" />
             <div>
-              {gone.original ? (
+              {hurt === 'all' ? (
                 <span>
-                  <b>File missing.</b> This picture is no longer in the project folder, so {used ? 'the places below show nothing' : 'it can’t be shown'}. {used ? 'Every use and its alt text are kept: locate' : 'Locate'} the file to bring it back{used ? ', or show another image instead' : ''}.
+                  <b>File missing.</b> This picture{sel.variants?.length ? ' and its smaller copies are' : ' is'} no longer in the project folder, so {!used ? 'it can’t be shown' : onePlace ? 'the place below shows nothing' : 'the places below show nothing'}. {!used ? '' : onePlace ? 'Its use and alt text are kept. ' : 'Every use and its alt text are kept. '}Locate the file to bring it back{used ? ', or replace it everywhere' : ''}.
+                </span>
+              ) : hurt === 'original' ? (
+                <span>
+                  <b>Original missing.</b> {used ? `${onePlace ? 'The place below still shows' : 'The places below still show'} its smaller copies, but you can’t export the site while it uses this image.` : 'Its smaller copies are still here, but the original is the file the website is built from.'} Locate the file to bring it back{used ? ', or replace it everywhere' : ''}.
                 </span>
               ) : (
                 <span>
@@ -1127,39 +1330,44 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               <div className="asset-missing-actions">
                 {gone.original ? (
                   <>
-                    <button className="btn btn-sm" disabled={fixing} onClick={() => void fixFiles(() => api.project.locateAsset(sel.id))}>
+                    <button className="btn btn-sm btn-primary" disabled={fixing} onClick={() => void fixFiles(() => api.project.locateAsset(sel.id))}>
                       <FileSearch /> Locate file…
                     </button>
                     {used > 0 && (
                       <button className="btn btn-sm asset-replace-open" onClick={openReplace}>
-                        <Replace /> Use another image…
+                        <Replace /> Replace everywhere…
                       </button>
                     )}
                   </>
                 ) : (
-                  <button className="btn btn-sm" disabled={fixing} onClick={() => void fixFiles(() => api.project.regenerateAssetCopies(sel.id))}>
-                    <RefreshCw /> Make copies again
+                  <button className="btn btn-sm btn-primary" disabled={fixing} onClick={() => void fixFiles(() => api.project.regenerateAssetCopies(sel.id))}>
+                    <RefreshCw /> {copies === 1 ? 'Make the copy again' : 'Make copies again'}
                   </button>
                 )}
               </div>
             </div>
           </div>
         )}
-        {sel.bytes > LARGE && (
+        {/* Advice about the original's size means nothing while the original is gone. */}
+        {sel.bytes > LARGE && !gone?.original && (
           <div className="asset-note" role="note" data-testid="asset-large-note">
             <Info aria-hidden="true" />
             <div>
               <span>
                 <b>Large file.</b>{' '}
                 {sel.variants?.length ? `Pages load smaller copies, but the ${formatBytes(sel.bytes)} original is still part of the site.` : `At ${formatBytes(sel.bytes)} it will slow pages down.`}{' '}
-                {webPlan
-                  ? `A web-sized copy (${webPlan.format} · ${webPlan.width} × ${webPlan.height}) keeps it light. The original stays in Assets.`
-                  : 'A copy under 1.5 MB keeps it light: export one and use it with Replace everywhere.'}
+                {webPlan === undefined
+                  ? ''
+                  : webPlan
+                    ? `${sameSize ? `A ${webPlan.format} copy at the same ${webPlan.width} × ${webPlan.height} is usually far lighter.` : `A web-sized copy (${webPlan.format} · ${webPlan.width} × ${webPlan.height}) keeps it light.`} ${used ? `It shows in ${onePlace ? 'its place' : 'its places'} instead, and the original stays in Assets.` : 'It’s added to Assets beside the original, which you can then remove.'}`
+                    : used
+                      ? 'A copy under 1.5 MB keeps it light: save one, add it, and use it with Replace everywhere.'
+                      : 'A copy under 1.5 MB keeps it light: save one, add it, then remove this one.'}
               </span>
               {webPlan && (
                 <div className="asset-note-actions">
                   <button className="btn btn-sm" data-testid="asset-web-copy" disabled={copying} onClick={() => void makeWebCopy()}>
-                    {copying ? <Spinner /> : <ImagePlus />} {used ? `Use a web-sized copy in ${plural(places.length || used, 'place', 'places')}` : 'Make a web-sized copy'}
+                    {copying ? <Spinner /> : <ImagePlus />} {used ? `Use a ${sameSize ? `lighter ${webPlan.format}` : 'web-sized'} copy in ${plural(places.length || used, 'place', 'places')}` : sameSize ? `Make a lighter ${webPlan.format} copy` : 'Make a web-sized copy'}
                   </button>
                 </div>
               )}
@@ -1175,12 +1383,15 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           </p>
         )}
         <div className="asset-place">
-          <button className="btn btn-sm btn-primary" disabled={!placement.at || !!gone?.original} aria-describedby="asset-place-where" onClick={() => void place()}>
+          {/* Placed only once its files are whole, as Replace everywhere and the gallery picker require. */}
+          <button className={`btn btn-sm${gone ? '' : ' btn-primary'}`} disabled={!placement.at || !!gone} aria-describedby="asset-place-where" onClick={() => void place()}>
             <ImageDown /> {placing ? 'Placing…' : 'Place on page'}
           </button>
           <p className="asset-why" id="asset-place-where" data-testid="asset-place-where">
             {gone?.original ? (
-              'Locate the file to place this image.'
+              'Locate the file to place this image or use it in AI chat.'
+            ) : gone ? (
+              `Make the missing ${copies === 1 ? 'copy' : 'copies'} again to place this image.`
             ) : placement.at ? (
               <>
                 Goes {placement.where.lead} <b>{placement.where.target}</b>
@@ -1198,6 +1409,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               {shownPlaces.map((p) => {
                 const Icon = PLACE_ICON[p.icon];
                 const go = showUse(p);
+                const hint = go ? undefined : changeHint(snap.state, p);
                 const inner = (
                   <>
                     <Icon aria-hidden="true" />
@@ -1213,8 +1425,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                         {inner}
                       </button>
                     ) : (
+                      // A component's design or its starting image has no page to open: say where it is changed.
                       <span className="asset-use static" title={`${p.what} · ${p.where}`}>
                         {inner}
+                        {hint && <span className="asset-use-hint">{hint}</span>}
                       </span>
                     )}
                   </li>
@@ -1229,15 +1443,14 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             </button>
           )}
           <div className="asset-actions">
-            {/* Only the image's ID and name go to the AI; the picture stays on this computer. */}
-            <button className="btn btn-sm asset-to-chat" title="Attach this image to your next AI message" onClick={() => attachToChat(snap.workspaceKey, sel.id)}>
-              <Sparkles /> Use in AI chat
-            </button>
             {used ? (
               <>
-                <button className="btn btn-sm asset-replace-open" onClick={openReplace}>
-                  <Replace /> Replace everywhere…
-                </button>
+                {/* A missing original offers Replace everywhere in its note, beside Locate file. */}
+                {!gone?.original && (
+                  <button className="btn btn-sm asset-replace-open" onClick={openReplace}>
+                    <Replace /> Replace everywhere…
+                  </button>
+                )}
                 <p className="asset-why">To remove this image, replace it or take it out of {places.length === 1 ? 'the place' : 'the places'} above first.</p>
               </>
             ) : (
@@ -1245,6 +1458,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 <Trash2 /> Remove image
               </button>
             )}
+            {/* Only the image's ID and name go to the AI; the picture stays on this computer. */}
+            <button className="btn btn-sm btn-ghost asset-to-chat" disabled={!!gone?.original} aria-describedby={gone?.original ? 'asset-place-where' : undefined} title={gone?.original ? 'Locate the file to use this image in AI chat' : 'Attach this image to your next AI message'} onClick={() => attachToChat(snap.workspaceKey, sel.id)}>
+              <Sparkles /> Use in AI chat
+            </button>
           </div>
         </section>
         <div className="asset-fields">
@@ -1281,69 +1498,113 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           </span>
           <b>Add images</b>
           <span>Drop files here, or click to choose</span>
-          <small>JPEG, PNG, WebP, GIF, AVIF or SVG, WOFF2 or WOFF fonts, and documents such as PDFs</small>
+          <small>JPEG, PNG, WebP, GIF, AVIF, SVG or HEIC</small>
         </button>
-        <p>Images you add are copied into this project, so the site keeps working wherever it goes.</p>
+        <p>Images you add are copied into this project, so the site keeps working wherever it goes. Fonts and documents have their own tabs above.</p>
       </div>
     );
   } else {
-    const removable = shown.filter((a) => !usage[a.id]);
     tools = browseTools;
     body = (
       <>
-        {mode === 'unused' && removable.length > 0 && (
-          <div className="asset-cleanup">
-            <p>
-              {needle
-                ? `${plural(removable.length, 'unused image matches', 'unused images match')} your search${series.key ? ` in ${series.label}` : ''}.`
-                : series.key
-                  ? `${plural(removable.length, 'image', 'images')} in ${series.label} ${removable.length === 1 ? 'isn’t' : 'aren’t'} used anywhere.`
-                  : `${plural(removable.length, 'image isn’t', 'images aren’t')} used anywhere.`}
-            </p>
-            <button className="btn btn-sm btn-danger" onClick={() => void removeMany(removable)}>
-              <Trash2 /> {removable.length === 1 ? 'Remove it' : needle || series.key ? `Remove these ${removable.length}` : `Remove all ${removable.length}`}
-            </button>
-          </div>
-        )}
-        {shown.length ? grid((a) => setSelected(a.id), 'Images') : noMatches}
-        {!needle && !series.key && mode === 'all' && <p className="asset-drop-hint">You can also drop image files anywhere on this panel.</p>}
+        {shown.length ? grid((a) => openDetails(a.id), 'Images') : noMatches}
+        {!filtering && mode === 'all' && <p className="asset-drop-hint">You can also drop files anywhere on this panel.</p>}
       </>
     );
   }
+
+  const browsing = !sel && !replacing;
+  const imagesView = (
+    <>
+      {tools}
+      <div ref={bodyRef} className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>
+        {body}
+      </div>
+    </>
+  );
+  const add = section === 'fonts' ? { label: 'Add fonts', icon: <Type />, run: () => void addFonts(), title: 'Choose WOFF2 or WOFF font files' } : section === 'documents' ? { label: 'Add documents', icon: <FilePlus />, run: () => void addDocuments(), title: 'Choose PDFs or other files for visitors to download' } : { label: 'Add images', icon: <ImagePlus />, run: () => void addImages(), title: 'Choose images to add, or drop files anywhere on this panel' };
+  // An empty kind needs no count: its tab says so when opened, and the row stays inside a narrow sidebar.
+  const tabCount = (n: number) => !narrow && n > 0 && <span className="asset-count">{n}</span>;
 
   return (
     <>
       <div className="panel-head">
         <h3>Assets</h3>
-        {assets.length > 0 && !narrow && !replacing && <span className="context">{plural(assets.length, 'image', 'images')}</span>}
-        {assets.length > 0 && !replacing && (
-          <button className="btn btn-sm asset-add" onClick={() => void addImages()} disabled={importing} title="Choose images to add, or drop files anywhere on this panel">
-            <ImagePlus /> Add images
+        {browsing && (section !== 'images' || assets.length > 0) && (
+          <button className="btn btn-sm asset-add" onClick={add.run} disabled={importing} title={add.title}>
+            {add.icon} {add.label}
           </button>
         )}
       </div>
       <div className="asset-host" {...dropProps} onKeyDown={sel ? onEscape(replacing ? closeReplace : back) : undefined}>
-        {importing && (
+        {adding && (
           <p className="asset-importing" role="status">
             <Spinner decorative /> Adding files…
           </p>
         )}
-        {tools}
-        <div className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>
-          {body}
-          {!sel && !replacing && fonts.length > 0 && <FontList fonts={fonts} usage={usage} />}
-          {!sel && !replacing && <DocumentList state={snap.state} docs={documents} usage={usage} missingOf={missingOf} reveal={shownDocument} onRevealed={revealed} onAdd={() => void addDocuments()} adding={importing} />}
-          {!sel && !replacing && storage.info && <StorageSummary
-              info={storage.info}
-              onFree={() => {
-                // The dialog shows the figures as they are when it opens.
-                storage.refresh();
-                setFreeing(true);
-              }}
-            />}
-        </div>
+        {browsing ? (
+          <Tabs<Section>
+            value={section}
+            onChange={setSection}
+            label="Kinds of asset"
+            idBase="asset-section"
+            className="dock-tabs asset-sections"
+            panelClassName="asset-section"
+            options={[
+              {
+                value: 'images',
+                label: <>Images {tabCount(assets.length)}</>,
+                // Images with missing files are flagged on their tab too, seen from Fonts or Documents.
+                icon: damaged.length ? <TriangleAlert className="asset-tab-warn" role="img" aria-label={`${plural(damaged.length, 'image has', 'images have')} missing files:`} /> : undefined,
+                panel: () => imagesView
+              },
+              {
+                value: 'fonts',
+                label: <>Fonts {tabCount(fonts.length)}</>,
+                panel: () => (
+                  <div className="panel-body">
+                    {fonts.length > 0 ? (
+                      <FontList fonts={fonts} usage={usage} />
+                    ) : (
+                      <p className="asset-section-note">
+                        No fonts yet. Add WOFF2 or WOFF files, then choose them for headings or body text in{' '}
+                        <button className="link-btn" onClick={() => openSiteStyles()}>
+                          Site styles
+                        </button>
+                        .
+                      </p>
+                    )}
+                  </div>
+                )
+              },
+              {
+                value: 'documents',
+                label: <>Documents {tabCount(documents.length)}</>,
+                // A document whose file has gone is flagged on its tab, so it is found without opening the tab.
+                icon: missingDocs ? <TriangleAlert className="asset-tab-warn" role="img" aria-label={`${plural(missingDocs, 'document has', 'documents have')} a missing file:`} /> : undefined,
+                panel: () => (
+                  <div className="panel-body">
+                    <DocumentList state={snap.state} docs={documents} usage={usage} missingOf={missingOf} reveal={shownDocument} onRevealed={revealed} />
+                  </div>
+                )
+              }
+            ]}
+          />
+        ) : (
+          imagesView
+        )}
+        {browsing && storage.info && (
+          <StorageSummary
+            info={storage.info}
+            onFree={() => {
+              // The dialog shows the figures as they are when it opens.
+              storage.refresh();
+              setFreeing(true);
+            }}
+          />
+        )}
         {freeing && storage.info && <FreeSpaceDialog info={storage.info} onClose={() => setFreeing(false)} refresh={storage.refresh} />}
-        {over && assets.length > 0 && (
+        {over && (assets.length > 0 || section !== 'images' || !!sel) && (
           <div className="asset-drop-overlay" aria-hidden="true">
             <div>
               <Upload />

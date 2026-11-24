@@ -1062,23 +1062,58 @@ iframe { color-scheme: light dark; }
  * never as a tag on every tile; large files carry a neutral size chip, never amber (amber means site-wide).
  * Files can be dropped anywhere on the panel; the whole panel lights up while they are dragged over it. */
 .asset-host { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.panel-head .asset-add { flex: none; }
-/* Search and the filter stay put above the scrolling grid (as in Insert), aligned with it past the gutter. */
-.asset-tools { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 2px 10px 6px; overflow: hidden; scrollbar-gutter: stable; }
+.panel-head .asset-add { flex: none; margin-left: auto; }
+/* Images, Fonts and Documents, each its own view: a long grid never buries the other two. */
+.asset-sections.dock-tabs { height: 38px; gap: 0; padding: 0 4px; }
+.asset-sections .dock-tab { gap: 3px; padding: 0 5px; height: 28px; }
+.asset-sections .dock-tab[aria-selected='true']::after { bottom: -5px; }
+.asset-sections .dock-tab .asset-count { font-size: 11px; }
+.asset-sections .dock-tab svg.asset-tab-warn { width: 13px; height: 13px; color: var(--red); }
+.asset-host .panel-body { scroll-padding-block: 14px; }
+.asset-sections .dock-tab[aria-selected='true'] .asset-count { color: var(--text-2); }
+.asset-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.asset-section[hidden] { display: none; }
+.asset-section-note { margin: 12px 14px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+/* Search and the filter stay put above the scrolling grid (as in Insert), aligned with it past the gutter, with a
+   divider so rows scrolled under them read as cut off rather than as stray captions. */
+.asset-tools { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); overflow: hidden; scrollbar-gutter: stable; }
+.asset-replace-top .asset-tools { padding-top: 0; }
 .asset-tools .search { margin: 0; }
+.asset-search-row { display: flex; align-items: center; gap: 4px; }
+.asset-search-row .search { flex: 1; min-width: 0; }
+.asset-density { flex: none; width: 30px; height: 30px; }
+/* On: the accent fill with a full accent ring, so the state reads at 3:1 and not only as a faint tint. */
+.asset-density[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent); }
+/* A tile that can't be picked here (its file is missing): dimmed, and its tooltip and spoken name say why. */
+.asset-tile.blocked { cursor: not-allowed; }
+.asset-tile.blocked .asset-thumb { opacity: 0.45; }
+.asset-result { margin: 0; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 /* Sort and numbered series side by side, one under the other when the panel is narrow. */
 .asset-order { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .asset-order .select { flex: 1 1 108px; min-width: 0; }
+.asset-series { flex: 1 1 108px; min-width: 0; display: flex; align-items: center; gap: 2px; }
+.asset-series .select { flex: 1 1 auto; }
+/* A chosen series is a filter in force: the selection's accent edge and fill, and a clear button beside it. */
+.asset-series.active { flex-basis: 100%; }
+.asset-series.active .select { border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent-text); font-weight: 500; }
+/* Two or three filters share the row: All, Unused and, when files are missing, Missing. */
+.asset-tools .segmented.full button { flex: 1 1 0; min-width: 0; padding: 0 6px; gap: 4px; white-space: nowrap; }
+.asset-series-clear { flex: none; width: 24px; height: 24px; }
 .asset-count { color: var(--text-2); font-weight: 500; font-variant-numeric: tabular-nums; }
 /* 6px above the first row leaves room for a tile's whole focus ring inside the scrolling body. */
-.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 12px 8px; padding: 6px 10px 16px; }
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 12px 8px; padding: 10px 10px 16px; }
+/* Smaller thumbnails: three to a row at the default width, pictures only (names are in each tile's tooltip). */
+.asset-grid.compact { grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
 .asset-tile { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; border-radius: var(--r-sm); background: none; text-align: left; color: var(--text-2); }
 .asset-tile:focus-visible { outline-offset: 3px; }
 .asset-thumb { position: relative; display: grid; place-items: center; aspect-ratio: 1; flex: none; border-radius: var(--r-sm); overflow: hidden; background: var(--panel-2); }
 .asset-thumb::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--border); pointer-events: none; }
 .asset-thumb img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
-.asset-thumb.contain img { object-fit: contain; padding: 12%; }
+.asset-thumb.contain img { object-fit: contain; padding: 8%; }
 .asset-noimg { width: 20px; height: 20px; color: var(--text-3); }
+/* Every file of the picture is gone: an empty frame, never the browser's memory of it. */
+.asset-thumb-gone { background: var(--panel-2); }
+.asset-thumb-gone svg { width: 22px; height: 22px; color: var(--text-3); }
 /* Behind a loaded picture that may be transparent: a mid-light checker in light, a mid grey in dark, so dark
    and white artwork both stay visible. It sits on the picture's own box, so opaque photos hide it. */
 .asset-thumb img.alpha, .asset-preview img.alpha { background-color: #e6e9ee; background-image: conic-gradient(#d3d8df 25%, transparent 0 50%, #d3d8df 0 75%, transparent 0); background-size: 12px 12px; background-clip: content-box; background-origin: content-box; }
@@ -1088,40 +1123,46 @@ iframe { color-scheme: light dark; }
 .asset-tile:hover .asset-thumb::after { box-shadow: inset 0 0 0 1px var(--border-control); }
 .asset-tile:hover .asset-name { color: var(--text); }
 .asset-name { font-size: 12px; line-height: 1.3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-.asset-size { position: absolute; top: 5px; right: 5px; display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 6px 0 4px; border-radius: var(--r-xs); background: rgb(20 28 48 / 0.78); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16); color: #fff; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
-.asset-size svg { width: 11px; height: 11px; }
+/* A chip on a picture: opaque enough that its words never depend on the photo behind them, one line that never
+   outgrows the tile (the full words are in the tile's name and tooltip). */
+.asset-size { position: absolute; top: 5px; right: 5px; display: inline-flex; align-items: center; gap: 3px; max-width: calc(100% - 10px); height: 18px; padding: 0 6px 0 4px; border-radius: var(--r-sm); background: rgb(20 28 48 / 0.86); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16); color: #fff; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
+.asset-size > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.asset-grid.compact .asset-size { top: 4px; right: 4px; max-width: calc(100% - 8px); height: 16px; padding: 0 5px; font-size: 10px; }
+.asset-grid.compact .asset-size svg { width: 10px; height: 10px; }
+.asset-size svg { flex: none; width: 11px; height: 11px; }
 .asset-drop-hint { margin: -4px 14px 18px; font-size: 12px; color: var(--text-3); }
-.font-list { margin: 4px 10px 16px; padding-top: 12px; border-top: 1px solid var(--border); }
-.font-list h4 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
+.font-list { margin: 10px 10px 16px; }
 .font-list-note { margin: 0 0 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.font-face-label { grid-column: 1 / -1; font-size: 11px; color: var(--text-2); }
 .font-list ul { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .font-face { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--r-sm); background: var(--panel-2); }
 .font-face-head { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .font-face-head b { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .font-face-meta { font-size: 11px; color: var(--text-2); }
 .font-face-edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 4px; align-items: center; }
-.font-face-edit > :first-child { grid-column: 1 / -1; }
-.doc-list { margin: 4px 10px 16px; padding-top: 12px; border-top: 1px solid var(--border); }
-.doc-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-.doc-list h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.font-face-edit > :nth-child(2) { grid-column: 1 / -1; margin-bottom: 2px; }
+.doc-list { margin: 10px 10px 16px; }
 .doc-list-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.doc-list > .doc-list-note { margin: 2px 4px; }
 .doc-list > ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .doc-item { border-radius: var(--r-sm); background: var(--panel-2); }
 .doc-toggle { display: flex; align-items: flex-start; gap: 6px; width: 100%; padding: 8px; border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .doc-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .doc-toggle svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--text-2); }
-.doc-toggle .doc-warn { color: var(--amber); }
+.doc-toggle .doc-warn { color: var(--red); }
 .doc-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
 .doc-title b { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .doc-meta { font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; }
-.doc-body { display: flex; flex-direction: column; gap: 8px; padding: 0 8px 10px 28px; }
-.doc-missing { margin: 0; font-size: 12px; line-height: 1.45; color: var(--amber); }
+.doc-state { font-size: 11px; font-weight: 500; color: var(--text-2); }
+.doc-state.gone { color: var(--red); }
+.doc-body { display: flex; flex-direction: column; gap: 8px; padding: 0 8px 10px 8px; }
+.doc-missing { margin: 0; font-size: 12px; line-height: 1.45; color: var(--red); }
 .doc-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .doc-actions .select { max-width: 100%; }
 .doc-move { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; max-width: 100%; }
 .doc-places { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
 .doc-places svg { width: 12px; height: 12px; vertical-align: -1px; }
-.asset-host > .panel-body.asset-body-empty { scrollbar-gutter: auto; }
+.asset-host .panel-body.asset-body-empty { scrollbar-gutter: auto; }
 .asset-empty { display: flex; flex-direction: column; gap: 12px; padding: 6px 10px 16px; }
 .asset-empty > p { margin: 0 4px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
 .asset-drop { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 24px 14px 20px; border-radius: var(--r-md); border: 1.5px dashed var(--border-control); background: var(--panel); color: var(--text-2); font-size: 12px; text-align: center; }
@@ -1136,19 +1177,20 @@ iframe { color-scheme: light dark; }
 .asset-drop-overlay svg { width: 22px; height: 22px; margin-bottom: 6px; color: var(--accent-text); }
 .asset-drop-overlay b { color: var(--text); font-size: 13px; font-weight: 600; }
 .asset-importing { display: flex; align-items: center; gap: 8px; margin: 0 10px 10px; padding: 7px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text-2); }
-.asset-cleanup { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 0 10px 12px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); }
+.asset-cleanup { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); }
 .asset-cleanup p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
 .asset-nomatch { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 6px 14px; }
 .asset-nomatch p { margin: 0; font-size: 12px; color: var(--text-2); }
 /* What the project's media take, and what removed files kept for Undo take (issue #253). */
-.asset-storage { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 4px 10px 16px; padding-top: 12px; border-top: 1px solid var(--border); }
-.asset-storage h4 { margin: 0; font-size: 13px; font-weight: 600; }
-.asset-storage dl { display: flex; flex-direction: column; gap: 2px; width: 100%; margin: 0; }
+/* Pinned under every tab, so what the project takes is always one glance away. */
+.asset-storage { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 8px 14px 10px; border-top: 1px solid var(--border); background: var(--panel); }
+.asset-storage-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }
+.asset-storage h4 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+.asset-storage h4 svg { width: 13px; height: 13px; color: var(--text-3); }
+.asset-storage dl { display: flex; flex-direction: column; gap: 1px; width: 100%; margin: 0; }
 .asset-storage dl > div { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
 .asset-storage dt { color: var(--text-2); }
 .asset-storage dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
-.asset-storage p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
-.asset-storage .btn svg { width: 13px; height: 13px; }
 .storage-dialog { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
 .storage-dialog p { margin: 0; line-height: 1.5; }
 .storage-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -1158,6 +1200,15 @@ iframe { color-scheme: light dark; }
 .storage-steps { margin: -4px 0 0; padding-left: 18px; }
 .storage-steps li { margin: 2px 0; overflow-wrap: anywhere; }
 .storage-steps li.more { list-style: none; margin-left: -18px; color: var(--text-2); }
+.storage-steps li.more summary { cursor: pointer; color: var(--accent-text); }
+.storage-steps li.more ul { margin: 2px 0 0; padding-left: 18px; color: var(--text); }
+/* What stays and what goes: the rows that will be deleted read in full text, the kept row says so. */
+.storage-stays, .storage-goes-tag { display: inline-flex; align-items: center; gap: 3px; vertical-align: 1px; margin-left: 6px; padding: 1px 6px; border-radius: var(--r-sm); background: var(--panel-2); color: var(--text-2); font-size: 11px; font-weight: 500; }
+.storage-goes-tag { background: var(--red-soft); color: var(--red); }
+.storage-goes-tag svg { width: 10px; height: 10px; }
+.asset-storage-note { margin: 0; font-size: 11px; color: var(--text-2); }
+.storage-table tr:not(.storage-goes) td { color: var(--text-2); }
+.storage-table tr.storage-goes th, .storage-table tr.storage-goes td { color: var(--text); font-weight: 600; }
 .storage-dialog .scope-note:not(.danger) { align-items: center; background: var(--panel-2); }
 
 /* ---------- Inspector ---------- */
@@ -3175,16 +3226,21 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 /* The back button is the first thing focused; its ring is drawn inside so the scrolling body never clips it. */
 .asset-back:focus-visible { outline-offset: -2px; }
 /* The frame takes the picture's own shape up to 176px tall: a wide logo gets a short frame, a portrait a tall one. */
-.asset-preview { position: relative; display: flex; align-items: center; justify-content: center; min-height: 96px; border-radius: var(--r-sm); background: var(--panel-2); overflow: hidden; }
+.asset-preview { position: relative; display: flex; align-items: center; justify-content: center; border-radius: var(--r-sm); background: var(--panel-2); overflow: hidden; }
 .asset-preview::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--border); pointer-events: none; }
 .asset-preview img { display: block; max-width: 100%; max-height: 176px; width: auto; height: auto; }
-.asset-preview-off { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 20px; text-align: center; font-size: 12px; color: var(--text-3); }
+/* A preview whose file will not load keeps the frame of one that is off, not a 20px strip. */
+.asset-preview > .asset-noimg { margin: 38px 0; }
+.asset-preview-off { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 96px; padding: 0 20px; text-align: center; font-size: 12px; color: var(--text-3); }
 .asset-preview-off svg { width: 20px; height: 20px; }
 .asset-ident { padding-top: 12px; }
 .asset-ident h4 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; user-select: text; }
 .asset-meta { margin: 2px 0 0; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.asset-note { display: flex; gap: 8px; margin: 10px 0 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.45; color: var(--text-2); }
-.asset-note svg { flex: none; width: 14px; height: 14px; margin-top: 2px; }
+/* A note's icon sits beside its words; its buttons take the note's full width under them. */
+.asset-note { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; margin: 10px 0 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.asset-note > div { display: contents; }
+.asset-note > svg { width: 14px; height: 14px; margin-top: 2px; }
+.asset-note .asset-note-actions, .asset-note .asset-missing-actions { grid-column: 1 / -1; }
 .asset-note b { color: var(--text); font-weight: 600; }
 .asset-note.asset-missing { background: var(--red-soft); }
 .asset-note.asset-missing > svg { color: var(--red); }
@@ -3195,6 +3251,10 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .asset-alt-review ul { display: flex; flex-direction: column; margin: 6px -6px 0; padding: 0; list-style: none; }
 .asset-alt-review .asset-alt-text { display: block; padding: 0 6px 4px 25px; overflow-wrap: anywhere; color: var(--text-2); }
 .import-review-lead { margin: 0 0 10px; }
+.import-review-group + .import-review-group, .import-review-rest + .import-review-group, .import-review-all + .import-review-group { margin-top: 14px; }
+.import-review-group h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+/* A file left out is not a card to act on: no fill, a dashed outline. */
+.import-review-row.refuse { background: transparent; border-style: dashed; border-color: var(--border-control); }
 .import-review { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .import-review-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
 .import-review-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 13px; }
@@ -3203,11 +3263,16 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .import-review-what { display: flex; align-items: flex-start; gap: 6px; margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .import-review-what svg { flex: none; width: 13px; height: 13px; margin-top: 2px; }
 .import-review-what input { flex: none; margin: 2px 0 0; }
+/* The one choice in a row reads as a choice, not as its quieter explanation. */
+label.import-review-what { color: var(--text); cursor: pointer; }
+.import-review-all { margin: 4px 0 0; font-size: 12px; color: var(--text-2); }
+.import-review-all summary { cursor: pointer; color: var(--accent-text); font-weight: 500; }
+.import-review-all ul { margin: 4px 0 0; padding-left: 18px; columns: 2; overflow-wrap: anywhere; }
 .import-review-refused { color: var(--text); }
 .import-review-refused svg { color: var(--red); }
 .import-review-rest { margin: 10px 0 0; font-size: 12px; }
 .asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.asset-size.asset-gone { background: rgb(150 32 28 / 0.88); }
+.asset-size.asset-gone { background: rgb(150 32 28); }
 .asset-uses { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .asset-uses h5 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .asset-uses ul { display: flex; flex-direction: column; margin: 0 -6px; padding: 0; list-style: none; }
@@ -3217,6 +3282,8 @@ button.asset-use:hover { background: var(--hover); color: var(--text); }
 .asset-use .where { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text); }
 .asset-use .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asset-use .times { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.asset-use.static { flex-wrap: wrap; }
+.asset-use-hint { flex-basis: 100%; padding-left: 19px; font-size: 11px; color: var(--text-2); }
 .asset-use svg.go { margin-left: auto; color: var(--text-3); }
 button.asset-use:hover svg.go { color: var(--text); }
 .asset-fields { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--border); }
@@ -3231,6 +3298,9 @@ button.asset-use:hover svg.go { color: var(--text); }
 .asset-replace-head .asset-thumb { width: 48px; }
 .asset-replace-head h4 { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .asset-replace-head p { margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.asset-replace-head b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.asset-actions .asset-to-chat { margin: 4px 0 0 -8px; }
+.asset-replace { padding-top: 10px; }
 .asset-replace-add { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 0 10px 10px; }
 .asset-replace-add p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-3); }
 .asset-uses .asset-more { margin: 2px 0 0; }
@@ -3645,8 +3715,41 @@ button.asset-use:hover svg.go { color: var(--text); }
 /* As in the icon grid: the chosen picture is a tinted tile, keyboard focus a ring inside it. */
 .insp-pick-tile.current { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent); }
 .insp-pick-tile:focus-visible { outline-offset: -2px; }
-.insp-pick-many .insp-pick-tile { position: relative; }
-.insp-pick-many .insp-pick-tile[aria-disabled='true'] { opacity: 0.5; cursor: not-allowed; }
+.insp-pick-many .insp-pick-tile { position: relative; padding: 4px 4px 5px; }
+/* Two lines of name that keep the ending, so "team offsite … 1100" and "… 700" stay apart. */
+.insp-pick-many .insp-pick-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; line-height: 1.3; }
+.insp-pick-order-num { flex: none; min-width: 16px; font-size: 11px; font-weight: 600; color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
+/* Add and Cancel stay in view while the author scrolls through the choice, set off from what scrolls under them. */
+.insp-pick-many > .insp-pick-tools:last-child { position: sticky; bottom: 0; z-index: 1; padding: 8px 0 2px; border-top: 1px solid var(--border); background: var(--panel); }
+.insp-pick-many { scroll-margin-top: 124px; }
+.insp-pick-many > .field { padding-top: 8px; border-top: 1px solid var(--border); }
+.insp-pick-many .insp-pick-tile.missing img { opacity: 0.45; }
+/* Logos and transparent pictures shown whole sit on the same neutral checker as in Assets. */
+.insp-pick-many .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain { object-fit: contain; background-color: #e6e9ee; background-image: conic-gradient(#d3d8df 25%, transparent 0 50%, #d3d8df 0 75%, transparent 0); background-size: 10px 10px; }
+.insp-pick-order-thumb img.contain { padding: 2px; background-clip: content-box; background-origin: content-box; }
+:where(:root[data-appearance='dark']) {
+  .insp-pick-many .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain { background-color: #9aa2b0; background-image: conic-gradient(#8a93a2 25%, transparent 0 50%, #8a93a2 0 75%, transparent 0); }
+}
+/* Room inside the scrolling grid for a focused tile's whole ring. */
+.insp-pick-many .insp-pick-grid { padding: 4px; }
+.insp-pick-order li.missing { color: var(--text-2); }
+.insp-pick-order-thumb svg.insp-pick-order-warn { color: var(--red); }
+.insp-pick-gone { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; gap: 3px; height: 16px; padding: 0 5px 0 3px; border-radius: var(--r-sm); background: rgb(150 32 28); color: #fff; font-size: 10px; font-weight: 600; }
+/* A chosen tile keeps its order number in the corner: its warning sits under it. */
+.insp-pick-many .insp-pick-tile.current.missing .insp-pick-gone { top: 28px; left: 7px; right: auto; }
+.insp-pick-gone { max-width: calc(100% - 14px); white-space: nowrap; pointer-events: none; }
+.insp-pick-gone svg { flex: none; width: 10px; height: 10px; }
+.insp-pick-gone > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The picker's chips follow the house chip shape. */
+.insp-pick-many .insp-pick-num, .insp-pick-many .insp-count { border-radius: var(--r-sm); }
+.insp-pick-order-miss { flex: none; padding: 0 5px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--red); font-size: 11px; font-weight: 600; }
+.insp-pick-order-name { display: flex; min-width: 0; gap: 4px; }
+.insp-pick-order-end { flex: none; }
+.insp-pick-nomatch { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.insp-pick-result { margin: -2px 0 0; }
+/* A tile that can't be chosen dims its picture only: its name and any warning keep full contrast. */
+.insp-pick-many .insp-pick-tile[aria-disabled='true'] { cursor: not-allowed; color: var(--text-3); }
+.insp-pick-many .insp-pick-tile[aria-disabled='true'] img { opacity: 0.45; }
 .insp-pick-num { position: absolute; top: 6px; left: 6px; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: 9px; background: var(--accent-fill); color: var(--on-accent); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--panel); }
 .insp-pick-order { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .insp-pick-order li { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 2px 0 4px; border-radius: var(--r-sm); font-size: 12px; color: var(--text); }
