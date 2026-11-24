@@ -2,13 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { LocalAdapter, listLocalModels, testLocal, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
+import { contextOverflow, discoverLocalContext, LocalAdapter, listLocalModels, openLocalAdapter, testLocal, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { envelopeSchema, parseEnvelope, partialStatus, signature } from '@agent/constrained';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { DEFAULT_LOCAL_PROFILE, localModelProfile, modelInfo } from '@agent/models';
 import { toolDefinitions } from '@agent/tools';
 import { fixComponentSource } from '@agent/fixer';
-import { checkLocalBaseURL, LOCAL_PRESETS, localKeyProblem } from '@shared/local';
+import { checkLocalBaseURL, LOCAL_CONTEXT_MAX, LOCAL_CONTEXT_MIN, LOCAL_PRESETS, localContextWindow, localKeyProblem, parseContextSize } from '@shared/local';
 import type { CanonicalModelRequest, ModelEvent, ToolDefinition } from '@agent/types';
 import { closedPort, DONE, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
@@ -923,6 +923,19 @@ describe('constrained JSON', () => {
     expect(posts()[0].body.response_format).toBeUndefined();
   });
 
+  it('does not send a component a known window cannot hold twice, and fits the reply otherwise', async () => {
+    const source = `<script>\n  export let heading = "Hi";\n</script>\n\n<h2>{heading}</h2>\n<p>${'words '.repeat(1500)}</p>\n`;
+    const check = async (src: string) => (src.includes('export let') ? [{ severity: 'error', message: 'Use $props' }] : []);
+    const small = await fixComponentSource(adapter({ contextWindow: 4096 }, { context: { server: 'ollama', windowTokens: 4096 } }), 'test-model', source, check, new AbortController().signal);
+    expect(small).toMatchObject({ ok: false, message: expect.stringMatching(/too long to fix with the model's 4,096-token context.*OLLAMA_CONTEXT_LENGTH/) });
+    expect(posts()).toHaveLength(0);
+    server.script(textReply(`Fixed.\n\`\`\`svelte\n${source.replace('export let heading = "Hi";', 'let { heading = "Hi" } = $props();')}\`\`\``));
+    const roomy = await fixComponentSource(adapter({ contextWindow: 8192 }), 'test-model', source, check, new AbortController().signal);
+    expect(roomy.ok).toBe(true);
+    expect(posts()[0].body.max_tokens).toBeLessThan(DEFAULT_LOCAL_PROFILE.maxOutput);
+    expect(posts()[0].body.max_tokens).toBeGreaterThan(Math.ceil(source.length / 4));
+  });
+
   it('does not accept a fix from a reply that was cut off', async () => {
     const draft = '<script>\n  let { heading = "Hi" } = $props();\n</script>\n\n<h2>{heading}</h2>\n';
     server.script(textReply(`Fixed.\n\`\`\`svelte\n${draft}\`\`\`\nAlso`, { finish: 'length' }));
@@ -952,5 +965,239 @@ describe('the mock server', () => {
     await second.start(port);
     expect(second.baseURL).toBe(`http://127.0.0.1:${port}/v1`);
     server = second;
+  });
+});
+
+describe('the loaded context window', () => {
+  const llama = (prompt: number, ctx: number) => JSON.stringify({ error: { code: 400, message: `request (${prompt} tokens) exceeds the available context size (${ctx} tokens), try increasing it`, type: 'exceed_context_size_error', n_prompt_tokens: prompt, n_ctx: ctx } });
+  const vllm = (window: number, messages: number, completion: number) =>
+    JSON.stringify({ object: 'error', message: `This model's maximum context length is ${window} tokens. However, you requested ${messages + completion} tokens (${messages} in the messages, ${completion} in the completion). Please reduce the length of the messages or completion.`, type: 'BadRequestError', param: null, code: 400 });
+
+  it("reads the numbers in each server's context error", () => {
+    expect(contextOverflow(llama(8200, 4096))).toEqual({ windowTokens: 4096, promptTokens: 8200, server: 'llama.cpp' });
+    expect(contextOverflow(JSON.stringify({ error: { message: 'request (5000 tokens) exceeds the available context size (4096 tokens), try increasing it' } }))).toEqual({ windowTokens: 4096, promptTokens: 5000, server: 'llama.cpp' });
+    expect(contextOverflow(vllm(8192, 6000, 4000))).toEqual({ windowTokens: 8192, promptTokens: 6000, server: 'vllm' });
+    expect(contextOverflow(JSON.stringify({ error: 'Maximum context size is 4096, but 7302 tokens were provided' }))).toEqual({ windowTokens: 4096, promptTokens: 7302, server: 'lm-studio' });
+    // "The first N tokens" are only what the server tried to keep, not the whole prompt.
+    const kept = contextOverflow(JSON.stringify({ error: 'Trying to keep the first 7302 tokens when context the overflows. However, the model is loaded with context length of only 4096 tokens, which is not enough.' }));
+    expect(kept).toEqual({ windowTokens: 4096, server: 'lm-studio' });
+    expect(contextOverflow(JSON.stringify({ error: { message: 'the request exceeds the available context size' } }))).toEqual({ server: 'llama.cpp' });
+  });
+
+  it("reads llama.cpp's loaded size from /props, not its training size", async () => {
+    server.models = { data: [{ id: 'test-model', meta: { n_ctx_train: 131072 } }] };
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 4096 }, total_slots: 1 } };
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' })).toEqual({ windowTokens: 4096, server: 'llama.cpp' });
+  });
+
+  it('ignores /props when the server lists several models', async () => {
+    server.models = { data: [{ id: 'test-model' }, { id: 'other' }] };
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 4096 } } };
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' })).toEqual({});
+  });
+
+  it("reads llama.cpp's per-model metadata and vLLM's max_model_len", async () => {
+    server.models = { data: [{ id: 'test-model', meta: { n_ctx: 16384, n_ctx_train: 131072 } }, { id: 'other', meta: { n_ctx: 2048 } }] };
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' })).toEqual({ windowTokens: 16384, server: 'llama.cpp' });
+    server.models = { data: [{ id: 'test-model', max_model_len: 8192 }] };
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' })).toEqual({ windowTokens: 8192, server: 'vllm' });
+  });
+
+  it("reads LM Studio's loaded size, not the model's maximum", async () => {
+    server.routes['/api/v0/models/org%2Fmodel'] = { body: { id: 'org/model', state: 'loaded', max_context_length: 262144, loaded_context_length: 8192 } };
+    server.models = { data: [{ id: 'org/model' }] };
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'org/model' })).toEqual({ windowTokens: 8192, server: 'lm-studio' });
+  });
+
+  it("reads Ollama's running model, and only that model", async () => {
+    server.routes['/api/ps'] = { body: { models: [{ name: 'other:latest', model: 'other:latest', context_length: 65536 }, { name: 'test-model', model: 'test-model', context_length: 4096 }] } };
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' })).toEqual({ windowTokens: 4096, server: 'ollama' });
+    server.routes['/api/ps'] = { body: { models: [{ name: 'other:latest', context_length: 65536 }] } };
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' })).toEqual({});
+  });
+
+  it('gives up on a slow report within its deadline, and sends the key only to the saved server', async () => {
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 4096 } }, delayMs: 2000 };
+    const started = Date.now();
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model', apiKey: 'local-secret' }, { timeoutMs: 100 })).toEqual({});
+    expect(Date.now() - started).toBeLessThan(1000);
+    const gets = server.requests.filter((r) => r.method === 'GET');
+    expect(gets.map((r) => r.url).sort()).toEqual(['/api/ps', '/api/v0/models/test-model', '/props', '/v1/models']);
+    expect(gets.every((r) => r.headers.authorization === 'Bearer local-secret')).toBe(true);
+  });
+
+  it('asks a remote server nothing unless it is allowed', async () => {
+    let calls = 0;
+    const fetch = (async () => {
+      calls++;
+      return new Response('{}');
+    }) as typeof globalThis.fetch;
+    expect(await discoverLocalContext({ baseURL: 'http://example.com/v1', model: 'm' }, { fetch })).toEqual({});
+    expect(calls).toBe(0);
+  });
+
+  it('uses the smaller of the size in Settings and the size the server reports', () => {
+    expect(adapter({ contextWindow: 32768 }, { context: { windowTokens: 4096 } }).capabilities()).toMatchObject({ contextWindowTokens: 4096, contextWindowKnown: true });
+    expect(adapter({ contextWindow: 8192 }, { context: { windowTokens: 32768 } }).capabilities()).toMatchObject({ contextWindowTokens: 8192, contextWindowKnown: true });
+    expect(adapter({ contextWindow: 12288 }).capabilities()).toMatchObject({ contextWindowTokens: 12288, contextWindowKnown: true });
+    // A guess is not knowledge: the profile's size is only an assumption.
+    expect(adapter().capabilities()).toMatchObject({ contextWindowTokens: DEFAULT_LOCAL_PROFILE.contextWindow, contextWindowKnown: false });
+    expect(adapter({ contextWindow: 'lots' as unknown as number }).capabilities()).toMatchObject({ contextWindowKnown: false });
+  });
+
+  it('only accepts a whole number of tokens in a usable range from Settings', () => {
+    expect(localContextWindow(4096)).toBe(4096);
+    expect(localContextWindow(LOCAL_CONTEXT_MIN)).toBe(LOCAL_CONTEXT_MIN);
+    expect(localContextWindow(LOCAL_CONTEXT_MAX)).toBe(LOCAL_CONTEXT_MAX);
+    for (const bad of [null, undefined, '4096', 4096.5, LOCAL_CONTEXT_MIN - 1, LOCAL_CONTEXT_MAX + 1, -1, Number.NaN]) expect(localContextWindow(bad)).toBeNull();
+  });
+
+  it('reads a typed size strictly', () => {
+    expect(parseContextSize('')).toEqual({ ok: true, value: null });
+    expect(parseContextSize('  ')).toEqual({ ok: true, value: null });
+    expect(parseContextSize(' 8192 ')).toEqual({ ok: true, value: 8192 });
+    expect(parseContextSize('32,768')).toEqual({ ok: true, value: 32768 });
+    for (const bad of ['4096,5', ',', '8 192', '1,0000', '8192.0', '-8192', '512', 'auto']) expect(parseContextSize(bad)).toEqual({ ok: false });
+  });
+
+  it("opens a run's adapter with the server's only model and its loaded size", async () => {
+    server.models = { data: [{ id: 'only-model' }] };
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 4096 } } };
+    const opened = await openLocalAdapter({ baseURL: server.baseURL, model: '' });
+    if ('error' in opened) throw new Error(opened.error);
+    expect(opened.model).toBe('only-model');
+    expect(opened.adapter.capabilities()).toMatchObject({ contextWindowTokens: 4096, contextWindowKnown: true });
+    const capped = await openLocalAdapter({ baseURL: server.baseURL, model: 'only-model', contextWindow: 2048 });
+    expect('adapter' in capped && capped.adapter.capabilities().contextWindowTokens).toBe(2048);
+  });
+
+  it('asks the server nothing more once the run is stopped', async () => {
+    const stopped = new AbortController();
+    stopped.abort();
+    const opened = await openLocalAdapter({ baseURL: server.baseURL, model: 'test-model' }, { signal: stopped.signal });
+    expect('adapter' in opened && opened.adapter.capabilities().contextWindowKnown).toBe(false);
+    expect(server.requests).toHaveLength(0);
+    // A Stop during discovery ends the probes then, not at the deadline.
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 4096 } }, delayMs: 3000 };
+    const ctl = new AbortController();
+    const started = Date.now();
+    setTimeout(() => ctl.abort(), 50);
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' }, { signal: ctl.signal, timeoutMs: 2000 })).toEqual({});
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('keeps a retried reply within the size in Settings', async () => {
+    server.script({ status: 400, body: vllm(10000, 7500, 4000) }, textReply('Fits.'));
+    await run(native({}, { contextWindow: 9000 }), { tools: [] });
+    expect(posts().map((p) => p.body.max_tokens)).toEqual([4000, 1500]);
+  });
+
+  it('retries once with a reply that fits when the server counts the reply against the window', async () => {
+    server.script({ status: 400, body: vllm(8192, 6000, 4000) }, textReply('Fits now.'));
+    const a = native();
+    const events = await run(a, { tools: [] });
+    expect(doneOf(events)).toMatchObject({ stopReason: 'end', text: 'Fits now.' });
+    expect(posts().map((p) => p.body.max_tokens)).toEqual([4000, 2192]);
+    expect(posts()[1].body.messages).toEqual(posts()[0].body.messages);
+    // What the server said stays with the adapter for the rest of the run.
+    expect(a.capabilities().contextWindowTokens).toBe(8192);
+  });
+
+  it('does not retry when a smaller reply cannot help', async () => {
+    server.script({ status: 400, body: llama(8200, 4096) });
+    const a = adapter();
+    const error = errorOf(await run(a));
+    expect(error).toMatchObject({ code: 'invalid_request', message: expect.stringMatching(/context window/), context: { windowTokens: 4096, promptTokens: 8200 } });
+    expect(error.message).not.toMatch(/new conversation/i);
+    expect(posts()).toHaveLength(1);
+    expect(a.capabilities()).toMatchObject({ contextWindowTokens: 4096, contextWindowKnown: true });
+    expect(a.contextHelp(32768)).toMatch(/--ctx-size 32768/);
+  });
+
+  it('retries a smaller reply only once', async () => {
+    server.script({ status: 400, body: vllm(8192, 6000, 4000) }, { status: 400, body: vllm(8192, 6100, 2192) });
+    expect(errorOf(await run(native(), { tools: [] }))).toMatchObject({ code: 'invalid_request', context: { windowTokens: 8192, promptTokens: 6100 } });
+    expect(posts()).toHaveLength(2);
+  });
+
+  it('reports a context error sent inside the stream with its numbers', async () => {
+    server.script({ frames: [`error: ${llama(5000, 4096).slice('{"error":'.length, -1)}\n\n`] });
+    expect(errorOf(await run(native(), { tools: [] }))).toMatchObject({ code: 'invalid_request', context: { windowTokens: 4096, promptTokens: 5000 } });
+  });
+
+  it("explains each server's setting, or the one in Settings when that is what binds", () => {
+    expect(adapter({}, { context: { server: 'ollama', windowTokens: 4096 } }).contextHelp(32768)).toMatch(/OLLAMA_CONTEXT_LENGTH=32768/);
+    expect(adapter({}, { context: { server: 'lm-studio', windowTokens: 4096 } }).contextHelp(32768)).toMatch(/Context Length/);
+    expect(adapter({}, { context: { server: 'vllm', windowTokens: 4096 } }).contextHelp(32768)).toMatch(/--max-model-len 32768/);
+    expect(adapter().contextHelp(32768)).toMatch(/Advanced server options/);
+    const capped = adapter({ contextWindow: 4096 }, { context: { server: 'llama.cpp', windowTokens: 65536 } }).contextHelp(32768);
+    expect(capped).toMatch(/already has the model loaded with 65,536 tokens/);
+    expect(capped).toMatch(/context size set in Settings, 4,096 tokens/);
+    expect(capped).not.toMatch(/--ctx-size/);
+    // Both hold the model back: reloading the server alone would leave the size in Settings in force.
+    const both = adapter({ contextWindow: 4096 }, { context: { server: 'llama.cpp', windowTokens: 4096 } }).contextHelp(32768);
+    expect(both).toMatch(/--ctx-size 32768/);
+    expect(both).toMatch(/context size set in Settings, 4,096 tokens/);
+    // Clearing the size in Settings would only fall back to a guess when the server does not report one.
+    const unreported = adapter({ contextWindow: 4096 }).contextHelp(32768);
+    expect(unreported).toMatch(/raise it under Advanced server options to the size the model is loaded with/);
+    expect(unreported).not.toMatch(/clear it/);
+    const roomy = adapter({ contextWindow: 65536 }, { context: { server: 'llama.cpp', windowTokens: 4096 } }).contextHelp(32768);
+    expect(roomy).toMatch(/--ctx-size 32768/);
+    expect(roomy).not.toMatch(/Settings/);
+  });
+
+  it('retries a smaller reply for a context error sent in the stream before any of the reply', async () => {
+    const streamed = (message: string) => `error: ${JSON.stringify({ code: 400, message })}\n\n`;
+    const tooLong = JSON.parse(vllm(8192, 6000, 4000)).message as string;
+    server.script({ frames: [streamed(tooLong)] }, textReply('Fits now.'));
+    expect(doneOf(await run(native(), { tools: [] }))).toMatchObject({ text: 'Fits now.' });
+    expect(posts().map((p) => p.body.max_tokens)).toEqual([4000, 2192]);
+    // Once part of the reply has arrived, asking again would show it twice.
+    server.script({ frames: [sseChunk({ content: 'Partial' }), streamed(tooLong)] });
+    expect(errorOf(await run(native(), { tools: [] }))).toMatchObject({ code: 'invalid_request', context: { windowTokens: 8192, promptTokens: 6000 } });
+    expect(posts()).toHaveLength(3);
+  });
+
+  it('keeps a smaller reply within the size set in Settings', async () => {
+    server.script({ status: 400, body: vllm(10000, 7500, 3000) });
+    const a = native({}, { contextWindow: 8192 });
+    // 8,192 in Settings leaves 692 tokens beside the 7,500-token prompt: too little to be worth a retry.
+    expect(errorOf(await run(a, { tools: [], maxOutputTokens: 3000 }))).toMatchObject({ code: 'invalid_request', context: { windowTokens: 10000, promptTokens: 7500 } });
+    expect(posts()).toHaveLength(1);
+    expect(a.capabilities().contextWindowTokens).toBe(8192);
+  });
+
+  it('does not retry a smaller reply once the turn has asked for a correction', async () => {
+    server.script(textReply('not json at all'), { status: 400, body: vllm(8192, 6000, 4000) });
+    const error = errorOf(await run(adapter()));
+    // The count includes the correction, so it is not passed on as the size of the caller's request.
+    expect(error).toMatchObject({ code: 'invalid_request', context: { windowTokens: 8192, retried: true } });
+    expect(error.context?.promptTokens).toBeUndefined();
+    expect(posts()).toHaveLength(2);
+  });
+
+  it("takes llama.cpp's /props only for the model chosen", async () => {
+    server.models = { data: [{ id: 'other' }] };
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 4096 } } };
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' })).toEqual({});
+    server.models = 'not json';
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' })).toEqual({});
+  });
+
+  it('never throws or outlives its deadline', async () => {
+    const hanging = (() => new Promise<Response>(() => undefined)) as typeof globalThis.fetch;
+    const started = Date.now();
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model' }, { fetch: hanging, timeoutMs: 50 })).toEqual({});
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'bad\uD800id' }, { timeoutMs: 200 })).toEqual({});
+  });
+
+  it('names the loaded size when a connection is tested', async () => {
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 4096 } } };
+    expect(await testLocal({ baseURL: server.baseURL, model: 'test-model' })).toMatchObject({ ok: true, message: expect.stringMatching(/4,096-token context\. The assistant works best with 32,768 tokens or more/) });
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 65536 } } };
+    expect((await testLocal({ baseURL: server.baseURL, model: 'test-model' })).message).toBe('Connected. test-model is available, loaded with a 65,536-token context.');
+    expect(posts()).toHaveLength(0);
   });
 });

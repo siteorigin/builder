@@ -7,6 +7,8 @@ export interface ModelCapabilities {
   parallelToolCalls: boolean;
   contextWindowTokens: number;
   maxOutputTokens: number;
+  /** The window was reported by the server or set by the author, rather than assumed from the model's profile. */
+  contextWindowKnown?: boolean;
 }
 
 export interface ToolDefinition {
@@ -37,17 +39,27 @@ export interface CanonicalModelRequest {
 
 export type StopReason = 'end' | 'tool_use' | 'max_tokens' | 'refusal' | 'other';
 
+/** What a context error says about the loaded window and the request, in tokens, when it says anything. */
+export interface ContextOverflow {
+  windowTokens?: number;
+  promptTokens?: number;
+  /** The refused request carried the adapter's own correction, so it is not the request the caller sent. */
+  retried?: boolean;
+}
+
 export type ModelErrorCode = 'auth' | 'rate_limit' | 'overloaded' | 'network' | 'invalid_request' | 'cancelled' | 'unknown';
 
 export type ModelEvent =
   | { type: 'text'; delta: string }
   | { type: 'tool_call'; call: ToolCall }
   | { type: 'done'; stopReason: StopReason; text: string; toolCalls: ToolCall[]; providerData?: unknown; usage?: { inputTokens: number; outputTokens: number } }
-  | { type: 'error'; code: ModelErrorCode; message: string; retryAfterMs?: number };
+  | { type: 'error'; code: ModelErrorCode; message: string; retryAfterMs?: number; context?: ContextOverflow };
 
 export interface AgentModelAdapter {
   capabilities(): ModelCapabilities;
   streamTurn(request: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent>;
+  /** How the author gives the model a context of at least `tokens` tokens, when the adapter knows its server. */
+  contextHelp?(tokens: number): string;
 }
 
 /** Options shared by the provider adapters. Tests inject `fetch` to replay recorded wire traffic. */

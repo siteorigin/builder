@@ -114,6 +114,8 @@ export class MockOpenAIServer {
   /** Requests whose client went away before the reply finished. */
   disconnects = 0;
   models: unknown = { object: 'list', data: [{ id: 'test-model', object: 'model' }] };
+  /** Other GET routes, such as a server's own `/props`, by path. Any GET not listed here answers 404. */
+  routes: Record<string, { status?: number; body: unknown; delayMs?: number }> = {};
   private replies: Array<MockReply | MockResponder> = [];
   private open = new Set<ServerResponse>();
   private server: Server;
@@ -166,6 +168,14 @@ export class MockOpenAIServer {
     if (req.method === 'GET' && req.url === '/v1/models') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(this.models));
+      return;
+    }
+    if (req.method === 'GET') {
+      const route = this.routes[req.url ?? ''];
+      if (route?.delayMs) await new Promise((resolve) => setTimeout(resolve, route.delayMs));
+      if (res.destroyed) return;
+      res.writeHead(route ? (route.status ?? 200) : 404, { 'content-type': 'application/json' });
+      res.end(route ? (typeof route.body === 'string' ? route.body : JSON.stringify(route.body)) : JSON.stringify({ error: { message: 'Not found' } }));
       return;
     }
     const next = this.replies.shift();

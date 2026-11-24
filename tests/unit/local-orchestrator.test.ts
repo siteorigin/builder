@@ -8,12 +8,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, ProviderId } from '@shared/api';
 import type { ElementRef } from '@shared/types';
-import { createStarterState } from '@catalogue/starters';
+import { createStarterState, type StarterId } from '@catalogue/starters';
 import { LIMITS, Orchestrator } from '@agent/orchestrator';
-import { LocalAdapter, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
+import { LocalAdapter, openLocalAdapter, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { DEFAULT_LOCAL_PROFILE, type LocalModelProfile } from '@agent/models';
 import { findForbiddenShapes } from '@agent/strict-schema';
 import { FOCUSED_WINDOW_TOKENS } from '@agent/tools';
+import { contextVerdict, estimateRequestTokens } from '@agent/budget';
+import type { CanonicalItem, ToolDefinition } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { closedPort, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
@@ -27,16 +29,21 @@ afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
-async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOptions = {}, codeEnabled = true, provider: ProviderId = 'local') {
+async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOptions = {}, codeEnabled = true, provider: ProviderId = 'local', starter: StarterId = 'business', discover = false) {
   const dir = mkdtempSync(join(tmpdir(), 'so-local-'));
   dirs.push(dir);
-  const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
+  const session = await ProjectSession.create(dir, createStarterState(starter, 'Test', false));
   const adapter = new LocalAdapter({ baseURL: server.baseURL, model: 'test-model', ...endpoint }, opts);
   const events: AiEvent[] = [];
   let busy = false;
   const orch = new Orchestrator({
     session: () => session,
-    adapter: async () => ({ adapter, model: 'test-model', provider }),
+    // `discover`: the app's own factory, which reads the server's model and loaded size before the run.
+    adapter: async (signal) => {
+      if (!discover) return { adapter, model: 'test-model', provider };
+      const opened = await openLocalAdapter({ baseURL: server.baseURL, model: '', ...endpoint }, { signal });
+      return 'error' in opened ? opened : { ...opened, provider: 'local' };
+    },
     emit: (e) => events.push(e),
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [] }),
@@ -44,8 +51,8 @@ async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOp
     codeEnabled: async () => codeEnabled
   });
   const header = session.state.site.shell.header.rootIds[0];
-  const run = async (text: string, selection: ElementRef | null = null, selectionLabel: string | null = null) => {
-    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel, viewport: 1280 };
+  const run = async (text: string, selection: ElementRef | null = null, selectionLabel: string | null = null, mode?: ChatContext['mode']) => {
+    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel, viewport: 1280, ...(mode ? { mode } : {}) };
     const r = await orch.send(text, ctx);
     expect(r.ok).toBe(true);
     await expect.poll(() => orch.busy || busy, { timeout: 5000, interval: 5 }).toBe(false);
@@ -292,5 +299,231 @@ describe('tool selection follows the capability profile', () => {
     server.script(envelopeReply('finish', { message: 'Nothing to do.' }));
     await run('Hello');
     expect(JSON.stringify(sent().response_format)).not.toContain('"apply_operations"');
+  });
+});
+
+describe('the loaded context window', () => {
+  const llamaOverflow = (prompt: number, ctx: number) => ({
+    status: 400,
+    body: JSON.stringify({ error: { code: 400, message: `request (${prompt} tokens) exceeds the available context size (${ctx} tokens), try increasing it`, type: 'exceed_context_size_error', n_prompt_tokens: prompt, n_ctx: ctx } })
+  });
+  const chatPosts = () => server.requests.filter((r) => r.method === 'POST');
+  /** The app's own estimate of a native request as it went out. */
+  const estimateOf = (body: Record<string, any>) => {
+    const tools: ToolDefinition[] = (body.tools ?? []).map((t: { function: ToolDefinition }) => t.function);
+    const items = body.messages.slice(1).map((m: { content: string }) => ({ kind: 'user' as const, text: m.content }));
+    return estimateRequestTokens(body.messages[0].content, tools, items);
+  };
+
+  it('explains a first request the server cannot hold as a setup problem, not a long conversation', async () => {
+    const { session, run } = await setup();
+    server.script(llamaOverflow(8200, 4096));
+    const { result } = await run('Hi');
+    expect(result?.status).toBe('failed');
+    expect(result?.summary).not.toMatch(/start a new conversation/i);
+    expect(result?.summary).toMatch(/4,096-token context/);
+    // The server's own count: 8,200 tokens of prompt and a short reply, rounded up to the next 1,024.
+    expect(result?.summary).toMatch(/at least 10,240 tokens(?! \(an estimate\))/);
+    // The error's shape identifies llama.cpp, so the advice names its setting.
+    expect(result?.summary).toMatch(/--ctx-size 32768/);
+    expect(chatPosts()).toHaveLength(1);
+    expect(session.revision).toBe(0);
+  });
+
+  it("reads the server's loaded size in the app's own factory, and refuses before sending", async () => {
+    server.routes['/api/ps'] = { body: { models: [{ name: 'test-model', model: 'test-model', context_length: 4096 }] } };
+    const { run } = await setup({}, {}, true, 'local', 'blank', true);
+    const { result } = await run('Hi');
+    expect(result?.status).toBe('failed');
+    expect(result?.summary).toMatch(/4,096-token context/);
+    expect(result?.summary).toMatch(/OLLAMA_CONTEXT_LENGTH/);
+    expect(chatPosts()).toHaveLength(0);
+  });
+
+  it('refuses a blank-site "Hi" before sending it when the known window cannot hold it', async () => {
+    const { session, run } = await setup({}, { context: { windowTokens: 4096, server: 'ollama' } }, true, 'local', 'blank');
+    const { result } = await run('Hi');
+    expect(result?.status).toBe('failed');
+    expect(result?.summary).toMatch(/4,096-token context/);
+    const minimum = Number(/at least ([\d,]+) tokens \(an estimate\)/.exec(result?.summary ?? '')?.[1].replace(/,/g, ''));
+    expect(minimum).toBeGreaterThan(4096);
+    expect(minimum % 1024).toBe(0);
+    expect(result?.summary).toMatch(/OLLAMA_CONTEXT_LENGTH/);
+    expect(result?.summary).not.toMatch(/start a new conversation/i);
+    // Ollama would have cut the prompt down without a word, so nothing is sent.
+    expect(chatPosts()).toHaveLength(0);
+    expect(session.revision).toBe(0);
+  });
+
+  it('fits the reply into a small configured window', async () => {
+    const window = 12_288;
+    const { run } = await setup({ contextWindow: window, toolMode: 'native' });
+    server.script(textReply('Hello.'));
+    const { result } = await run('Hi');
+    expect(result?.status).toBe('no-changes');
+    const body = chatPosts()[0].body;
+    expect(body.max_tokens).toBeLessThan(DEFAULT_LOCAL_PROFILE.maxOutput);
+    expect(body.max_tokens).toBeGreaterThanOrEqual(1024);
+    expect(estimateOf(body) + body.max_tokens).toBeLessThanOrEqual(window);
+  });
+
+  it('keeps the full reply budget in a normal larger window', async () => {
+    // The profile guesses less, so the full reply depends on the size set in Settings.
+    const { run } = await setup({ contextWindow: 32_768, toolMode: 'native' }, { profile: { ...DEFAULT_LOCAL_PROFILE, contextWindow: 8192 } });
+    server.script(textReply('Hello.'));
+    await run('Hi');
+    expect(chatPosts()[0].body.max_tokens).toBe(DEFAULT_LOCAL_PROFILE.maxOutput);
+  });
+
+  it('uses a larger window the server reports, capped by the size set in Settings', async () => {
+    const reported = await setup({ toolMode: 'native' }, { context: { windowTokens: 65_536, server: 'lm-studio' }, profile: { ...DEFAULT_LOCAL_PROFILE, contextWindow: 8192 } });
+    server.script(textReply('Hello.'));
+    await reported.run('Hi');
+    expect(chatPosts()[0].body.max_tokens).toBe(DEFAULT_LOCAL_PROFILE.maxOutput);
+    server.requests.length = 0;
+    const { run } = await setup({ contextWindow: 12_288, toolMode: 'native' }, { context: { windowTokens: 65_536, server: 'lm-studio' } });
+    server.script(textReply('Hello.'));
+    await run('Hi');
+    expect(chatPosts()[0].body.max_tokens).toBeLessThan(DEFAULT_LOCAL_PROFILE.maxOutput);
+  });
+
+  it('advises a new conversation when the earlier messages are what no longer fit', async () => {
+    const { run } = await setup({ contextWindow: 24_576, toolMode: 'native' });
+    server.script(textReply('x'.repeat(80_000)));
+    await run('Hi');
+    const { result } = await run('Hi again');
+    expect(result?.status).toBe('failed');
+    expect(result?.summary).toMatch(/Start a new conversation/);
+    expect(result?.summary).toMatch(/24,576-token context/);
+    expect(chatPosts()).toHaveLength(1);
+  });
+
+  it('tells a long conversation from a setup problem by the server count too', async () => {
+    const { run } = await setup({ toolMode: 'native' });
+    server.script(textReply('x'.repeat(80_000)));
+    await run('Hi');
+    server.script(llamaOverflow(30_000, 16_384));
+    const { result } = await run('Hi again');
+    expect(result?.status).toBe('failed');
+    expect(result?.summary).toMatch(/Start a new conversation/);
+    expect(result?.summary).toMatch(/16,384-token context/);
+  });
+
+  it('keeps the valid work when the context fills up after a change', async () => {
+    const { session, run, header } = await setup();
+    server.script(envelopeReply('update_site_brand', rename('Kept')), llamaOverflow(9000, 8192));
+    const { result } = await run('Rename the site');
+    expect(result).toMatchObject({ status: 'completed', incomplete: true, canUndo: true });
+    expect(headerName(session, header)).toBe('Kept');
+  });
+
+  it('offers only the small tools when the general ones would not fit a known window', async () => {
+    // Measure both requests for this project, then replay a conversation that leaves room for one but not the other.
+    const measure = async (window: number) => {
+      const { run } = await setup({ contextWindow: window, toolMode: 'native' });
+      server.script(textReply('ok'));
+      await run('Hi');
+      const body = chatPosts().at(-1)!.body;
+      return { estimate: estimateOf(body), names: (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name) };
+    };
+    const general = await measure(FOCUSED_WINDOW_TOKENS);
+    const focused = await measure(FOCUSED_WINDOW_TOKENS - 1);
+    expect(general.names).toContain('apply_operations');
+    expect(focused.names).not.toContain('apply_operations');
+    expect(general.estimate - focused.estimate).toBeGreaterThan(2000);
+    const history = FOCUSED_WINDOW_TOKENS - 1024 - Math.round((general.estimate + focused.estimate) / 2);
+
+    const before = chatPosts().length;
+    const { run } = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });
+    server.script(textReply('x'.repeat(history * 4)), textReply('Done.'));
+    await run('Hi');
+    const { result } = await run('Hi');
+    expect(result?.status).toBe('no-changes');
+    const sent = chatPosts().slice(before);
+    expect(sent).toHaveLength(2);
+    expect((sent[1].body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name)).not.toContain('apply_operations');
+    // Three full runs and a long replayed history: slower than most under a loaded machine.
+  }, 20_000);
+
+  it('tries the small tools once when the server refuses the first request a known window was thought to hold', async () => {
+    const { run } = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });
+    server.script(llamaOverflow(FOCUSED_WINDOW_TOKENS + 500, FOCUSED_WINDOW_TOKENS), textReply('Done.'));
+    const { result } = await run('Hi');
+    expect(result?.status).toBe('no-changes');
+    const names = (i: number) => (chatPosts()[i].body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
+    expect(chatPosts()).toHaveLength(2);
+    expect(names(0)).toContain('apply_operations');
+    expect(names(1)).not.toContain('apply_operations');
+  });
+
+  it('never sends a question again unchanged, since it has no smaller tools', async () => {
+    const { run } = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'prompt is too long' } }) });
+    const { result } = await run('What is on this page?', null, null, 'ask');
+    expect(result?.status).toBe('failed');
+    expect(chatPosts()).toHaveLength(1);
+  });
+
+  it('keeps the tools a run started with when the server reports a smaller window part way through', async () => {
+    const { run } = await setup({ toolMode: 'native' }, { context: { windowTokens: 200_000 } }, true, 'local', 'blank');
+    const vllm = JSON.stringify({ code: 400, message: "This model's maximum context length is 48000 tokens. However, you requested 50192 tokens (42000 in the messages, 8192 in the completion)." });
+    server.script({ frames: [`error: ${vllm}\n\n`] }, toolCallReply('read_project', {}), textReply('Done.'));
+    const { result } = await run('What do I have?');
+    expect(result?.status).toBe('no-changes');
+    const names = (i: number) => (chatPosts()[i].body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
+    expect(chatPosts().map((p) => p.body.max_tokens)).toEqual([8192, 6000, expect.any(Number)]);
+    // 48,000 is below the size where the small set takes over, but the run already offered apply_operations.
+    expect(names(0)).toContain('apply_operations');
+    expect(names(2)).toContain('apply_operations');
+  });
+
+  it('does not ask a server again when there are no smaller tools to offer', async () => {
+    const { run } = await setup({ toolMode: 'native' }, { profile: { ...DEFAULT_LOCAL_PROFILE, toolCalling: 'native', contextWindow: 4096 } });
+    server.script(llamaOverflow(9000, 4096));
+    const { result } = await run('Hi');
+    expect(result?.status).toBe('failed');
+    expect(chatPosts()).toHaveLength(1);
+  });
+});
+
+describe('why a request does not fit', () => {
+  const user = (chars: number): CanonicalItem => ({ kind: 'user', text: 'u'.repeat(chars) });
+  const said = (chars: number): CanonicalItem => ({ kind: 'assistant', text: 'a'.repeat(chars), toolCalls: [] });
+  const result = (chars: number): CanonicalItem => ({ kind: 'tool_result', callId: 'c', name: 'read_page', content: 'r'.repeat(chars) });
+  const base = { system: 's'.repeat(4000), tools: [] as ToolDefinition[], maxOutputTokens: 8192 };
+
+  it('takes the minimum from the server count of the prompt, not from the window it refused', () => {
+    const current = user(20_000);
+    // A reply that did not fit beside a 6,000-token prompt says nothing about the prompt itself.
+    const v = contextVerdict({ ...base, items: [current], current, windowTokens: 8192, reported: { windowTokens: 8192, promptTokens: 7000 }, rejected: true });
+    // 7,000 counted plus a 1,024-token reply, not the 6,000 the app estimates nor the window it refused.
+    expect(v.minimumTokens).toBe(8192);
+    expect(v.estimated).toBe(false);
+  });
+
+  it('does not tell a model it never heard about to start a new conversation', () => {
+    const current = user(400);
+    const v = contextVerdict({ ...base, items: [user(8), said(400), current], current, reported: {}, rejected: true });
+    expect(v.kind).toBe('unclear');
+    // Refused with nothing before it, the message alone is too much, whatever the size.
+    expect(contextVerdict({ ...base, items: [current], current, reported: {}, rejected: true }).kind).toBe('setup');
+  });
+
+  it("blames the run's own reads, not a short history, when they are what fill the window", () => {
+    const current = user(4000);
+    const v = contextVerdict({ ...base, items: [user(400), said(400), current, said(40), result(24_000)], current, windowTokens: 8192, rejected: false });
+    expect(v.kind).toBe('run');
+    const long = contextVerdict({ ...base, items: [user(400), said(30_000), current], current, windowTokens: 8192, rejected: false });
+    expect(long.kind).toBe('conversation');
+  });
+
+  it('marks a minimum projected from a count that included earlier messages as an estimate', () => {
+    const current = user(16_000);
+    // 1,000 + 10,000 + 4,000 estimated, as the server counted: this message alone still needs over 6,000.
+    const v = contextVerdict({ ...base, items: [said(40_000), current], current, windowTokens: 4096, reported: { windowTokens: 4096, promptTokens: 30_000 }, rejected: true });
+    expect(v.kind).toBe('setup');
+    expect(v.estimated).toBe(true);
+    // The server counted twice the estimate, so this message's 5,000 estimated tokens are taken as 10,000.
+    expect(v.minimumTokens).toBe(11_264);
   });
 });

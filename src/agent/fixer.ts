@@ -4,7 +4,8 @@
  * caller re-checks the result before anything is saved. Kept deliberately simple so a small local model
  * can take this role later.
  */
-import type { AgentModelAdapter } from './types';
+import type { AgentModelAdapter, CanonicalItem } from './types';
+import { estimateRequestTokens, estimateTokens } from './budget';
 
 export interface FixResult {
   ok: boolean;
@@ -43,10 +44,21 @@ export async function fixComponentSource(
     let text = '';
     let failed: string | null = null;
     let cancelled = false;
-    for await (const ev of adapter.streamTurn(
-      { model, system: SYSTEM, tools: [], maxOutputTokens: Math.min(adapter.capabilities().maxOutputTokens, 16000), items: [{ kind: 'user', text: `Problems found:\n${list}\n\nComponent:\n\`\`\`svelte\n${current}\n\`\`\`` }] },
-      signal
-    )) {
+    const items: CanonicalItem[] = [{ kind: 'user', text: `Problems found:\n${list}\n\nComponent:\n\`\`\`svelte\n${current}\n\`\`\`` }];
+    const caps = adapter.capabilities();
+    let maxOutputTokens = Math.min(caps.maxOutputTokens, 16000);
+    // A model with a known window must hold the component twice: as sent, and as the corrected copy it writes back.
+    // A server that cuts an over-long prompt short would otherwise fix only part of the component.
+    if (caps.contextWindowKnown) {
+      const prompt = estimateRequestTokens(SYSTEM, [], items);
+      const needed = prompt + estimateTokens(current) + 256;
+      if (needed > caps.contextWindowTokens) {
+        const size = Math.ceil(needed / 1024) * 1024;
+        return { ok: false, message: `This component is too long to fix with the model's ${caps.contextWindowTokens.toLocaleString('en-US')}-token context: it needs about ${size.toLocaleString('en-US')} tokens for the component, its problems and the corrected copy. ${adapter.contextHelp?.(size) ?? ''}`.trim(), attempts: attempt - 1 };
+      }
+      maxOutputTokens = Math.min(maxOutputTokens, caps.contextWindowTokens - prompt);
+    }
+    for await (const ev of adapter.streamTurn({ model, system: SYSTEM, tools: [], maxOutputTokens, items }, signal)) {
       if (ev.type === 'done') {
         text = ev.text;
         // A cut-off reply can still contain a closed code block, but it is not a finished fix.

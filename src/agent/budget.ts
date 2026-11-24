@@ -6,7 +6,7 @@
  * Nothing changes until the context is half full, and a collapsed result stays collapsed, so the start of
  * the conversation stays stable for prompt caches on providers and local runtimes.
  */
-import type { CanonicalItem, ModelCapabilities, ToolDefinition } from './types';
+import type { CanonicalItem, ContextOverflow, ModelCapabilities, ToolDefinition } from './types';
 
 /** Above this share of the usable window, reads that a newer read of the same thing replaced are collapsed. */
 export const SOFT_LIMIT = 0.5;
@@ -15,7 +15,8 @@ export const HARD_LIMIT = 0.8;
 /** The latest turns are what the model is working from, and are never collapsed. */
 const PROTECTED_TURNS = 2;
 const TOMBSTONE = '[Superseded ';
-const MIN_OUTPUT_TOKENS = 1024;
+/** The smallest reply worth asking for: a request that leaves less room than this cannot be answered usefully. */
+export const MIN_OUTPUT_TOKENS = 1024;
 
 export const estimateTokens = (text: string) => Math.ceil(text.length / 4);
 
@@ -241,4 +242,57 @@ export function applyContextBudget(
   // The compaction target leaves generous room; the hard limit is whether a useful answer still fits at all.
   const room = window - estimate;
   return { estimate, available, tombstoned, overflow: room < Math.min(MIN_OUTPUT_TOKENS, maxOutputTokens), maxOutputTokens: Math.max(1, Math.min(maxOutputTokens, room)) };
+}
+
+/** Room for a request's reads and edits as well as its first reply: the window the local default profile assumes. */
+export const WORKING_WINDOW_TOKENS = 32_768;
+
+export interface ContextVerdict {
+  /**
+   * setup: even a new conversation holding only this message cannot fit, so the model needs a larger context.
+   * conversation: the earlier messages are what no longer fit, so a new conversation helps.
+   * run: this request's own reads and results filled the window.
+   * unclear: the window is unknown and the request held earlier messages, so either could be the cause.
+   */
+  kind: 'setup' | 'conversation' | 'run' | 'unclear';
+  /** A request with only this message and room for a short reply, rounded up to the next 1,024 tokens. */
+  minimumTokens: number;
+  /** A size to load the model with, so a request has room to work as well as to answer. */
+  recommendedTokens: number;
+  /** The minimum comes from the app's estimate, not from the server's count of exactly that request. */
+  estimated: boolean;
+}
+
+/**
+ * Why a request does not fit the model's window, and what would make it fit. `current` is this request's own
+ * message: everything before it in `items` was replayed from the conversation, and everything after it is this run's
+ * own work. The server's count of the whole request, when its error gave one, scales the estimate of each part; how
+ * the count splits between them is still an estimate.
+ */
+export function contextVerdict(o: { system: string; tools: ToolDefinition[]; items: CanonicalItem[]; current: CanonicalItem; windowTokens?: number; maxOutputTokens: number; reported?: ContextOverflow; rejected: boolean }): ContextVerdict {
+  const at = Math.max(0, o.items.indexOf(o.current));
+  const whole = estimateRequestTokens(o.system, o.tools, o.items);
+  const counted = o.reported?.promptTokens;
+  const scale = counted && whole > 0 ? counted / whole : 1;
+  const reply = Math.min(MIN_OUTPUT_TOKENS, o.maxOutputTokens);
+  const size = (items: CanonicalItem[]) => Math.ceil(estimateRequestTokens(o.system, o.tools, items) * scale) + reply;
+  const history = at > 0;
+  // The request that was measured or refused held nothing but this message.
+  const onlyThisMessage = !history && o.items.length === 1;
+  let fresh = size([o.current]);
+  const thisRun = size(o.items.slice(at));
+  const window = o.windowTokens;
+  // Refused with no count from the server, a request holding only this message still proves it does not fit.
+  if (o.rejected && onlyThisMessage && !counted && window) fresh = Math.max(fresh, window + reply);
+  const kind: ContextVerdict['kind'] = !window
+    ? o.rejected && onlyThisMessage
+      ? 'setup'
+      : 'unclear'
+    : fresh > window
+      ? 'setup'
+      : thisRun > window || !history
+        ? 'run'
+        : 'conversation';
+  const minimumTokens = Math.ceil(fresh / 1024) * 1024;
+  return { kind, minimumTokens, recommendedTokens: Math.max(WORKING_WINDOW_TOKENS, 2 ** Math.ceil(Math.log2(minimumTokens))), estimated: !(counted && onlyThisMessage) };
 }

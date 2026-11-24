@@ -6,7 +6,7 @@ import { atomicWrite } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
 import type { LocalEndpoint } from '@agent/local';
-import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS, localKeyProblem } from '@shared/local';
+import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS, localContextWindow, localKeyProblem } from '@shared/local';
 
 interface SettingsFile {
   settings: AppSettings;
@@ -45,6 +45,8 @@ export async function loadSettings(): Promise<SettingsFile> {
       recents: raw.recents ?? [],
       trusted: raw.trusted ?? {}
     };
+    // A hand-edited file can hold any value; one that is not a usable size means automatic.
+    cache.settings.ai.local.contextWindow = localContextWindow(cache.settings.ai.local.contextWindow);
   } catch (e) {
     unread = (e as NodeJS.ErrnoException).code !== 'ENOENT';
     cache = structuredClone(DEFAULTS);
@@ -65,7 +67,15 @@ export function saveSettings(): Promise<void> {
 
 export async function updateSettings(patch: SettingsPatch): Promise<AppSettings> {
   const s = await loadSettings();
+  // Null clears the context size back to automatic; any other value that is not a usable size is refused, so a
+  // bad value never erases the one in use.
+  const local = patch.ai?.local;
+  if (local && 'contextWindow' in local && local.contextWindow !== null && localContextWindow(local.contextWindow) === null) {
+    const { contextWindow: _refused, ...rest } = local;
+    patch = { ...patch, ai: { ...patch.ai, local: rest } };
+  }
   s.settings = { ...s.settings, ...patch, ai: { ...s.settings.ai, ...(patch.ai ?? {}), models: { ...s.settings.ai.models, ...(patch.ai?.models ?? {}) }, local: { ...s.settings.ai.local, ...(patch.ai?.local ?? {}) } } };
+  s.settings.ai.local.contextWindow = localContextWindow(s.settings.ai.local.contextWindow);
   await saveSettings();
   return s.settings;
 }

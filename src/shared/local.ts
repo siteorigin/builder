@@ -8,6 +8,8 @@ export interface LocalProviderSettings {
   allowRemote: boolean;
   /** `auto` follows the model's capability profile. */
   toolMode: LocalToolMode;
+  /** The context size the model is loaded with, in tokens. Null reads it from the server when the server reports it. */
+  contextWindow: number | null;
 }
 
 /** Plain connection presets. llama.cpp is the primary runtime; nothing else in the app branches on these. */
@@ -18,7 +20,25 @@ export const LOCAL_PRESETS = [
   { id: 'mlx', label: 'MLX', baseURL: 'http://127.0.0.1:8000/v1' }
 ] as const;
 
-export const DEFAULT_LOCAL_SETTINGS: LocalProviderSettings = { baseURL: LOCAL_PRESETS[0].baseURL, allowRemote: false, toolMode: 'auto' };
+export const DEFAULT_LOCAL_SETTINGS: LocalProviderSettings = { baseURL: LOCAL_PRESETS[0].baseURL, allowRemote: false, toolMode: 'auto', contextWindow: null };
+
+/** The range a typed context size may take. Below the minimum no request the assistant makes can fit. */
+export const LOCAL_CONTEXT_MIN = 1024;
+export const LOCAL_CONTEXT_MAX = 10_000_000;
+
+/** A usable context size from Settings or a server, or null. A hand-edited settings file can hold anything. */
+export function localContextWindow(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= LOCAL_CONTEXT_MIN && value <= LOCAL_CONTEXT_MAX ? value : null;
+}
+
+/** A typed context size: empty is automatic, and digits may be grouped by commas in threes ("32,768"). */
+export function parseContextSize(text: string): { ok: true; value: number | null } | { ok: false } {
+  const t = text.trim();
+  if (!t) return { ok: true, value: null };
+  if (!/^(\d+|\d{1,3}(,\d{3})+)$/.test(t)) return { ok: false };
+  const value = localContextWindow(Number(t.replace(/,/g, '')));
+  return value === null ? { ok: false } : { ok: true, value };
+}
 
 /**
  * Loopback addresses as normalized by `URL`, which already rewrites forms such as 2130706433 to 127.0.0.1. Only
