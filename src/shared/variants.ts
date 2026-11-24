@@ -64,6 +64,11 @@ export function selectedVariantStyles(def: Pick<ComponentDefinition, 'variantAxe
  * wins at every size). A placement's own changes come on top of this.
  */
 export function designStyles(def: Pick<ComponentDefinition, 'variantAxes' | 'tree'>, nodeId: string, chosen: InstanceNode['variants']): ResponsiveStyles {
+  return cascadeStyles(designLayers(def, nodeId, chosen));
+}
+
+/** The style layers `designStyles` cascades, weakest first, for callers that add stronger layers on top. */
+export function designLayers(def: Pick<ComponentDefinition, 'variantAxes' | 'tree'>, nodeId: string, chosen: InstanceNode['variants']): StyleLayer[] {
   const own = def.tree?.nodes[nodeId]?.styles;
   const selected = selectedVariants(def, chosen);
   const axes = axesOf(def);
@@ -77,7 +82,7 @@ export function designStyles(def: Pick<ComponentDefinition, 'variantAxes' | 'tre
     const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).map((o) => o.styles?.[nodeId]));
     layers.push({ styles, strength: 2, wideColumns: true, unhides: [own, ...earlier] });
   });
-  return cascadeStyles(layers);
+  return layers;
 }
 
 function describe(def: ComponentDefinition): string {

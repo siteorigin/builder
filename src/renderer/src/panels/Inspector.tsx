@@ -1,4 +1,4 @@
-import { axesOf, designStyles, selectedVariants, selectedVariantStyles } from '@shared/variants';
+import { axesOf, designLayers, designStyles, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
@@ -172,11 +172,9 @@ function focusImage(state: ProjectState, devUrl: string | null, value: unknown, 
  * stylesheet writes them, so each size carries the whole cascade.
  */
 function sharedPartStyles(def: ComponentDefinition, nodeId: string, inst: InstanceNode, partId: string): ResponsiveStyles {
-  const design = designStyles(def, nodeId, inst.variants);
-  return cascadeStyles([
-    { styles: design, strength: 1 },
-    { styles: inst.overrides?.[partId], strength: 2, wideColumns: true, unhides: [design] }
-  ]);
+  const design = designLayers(def, nodeId, inst.variants);
+  // The shared rule shows again what the node's own styles or its selected options hide, as the stylesheet writes it.
+  return cascadeStyles([...design, { styles: inst.overrides?.[partId], strength: 3, wideColumns: true, unhides: design.map((l) => l.styles) }]);
 }
 
 /** The selection one level up: the component a part belongs to (what Escape selects). */
