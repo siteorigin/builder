@@ -1,7 +1,7 @@
 import type { ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep, PreparedComponentPreview } from '@shared/component-preview';
 import { api, getState } from '../store';
 import { acceptMessage, newSessionId, postToFrame, type BridgeMessage } from './bridge';
-import { failedImages, missingImages, missingSections, staleImages } from './inspect-check';
+import { attributeFindings, failedImages, missingImages, missingSections, staleImages } from './inspect-check';
 
 /** How long the preview server gets to pick up files the AI just wrote before a fresh page load. */
 const SETTLE_MS = 400;
@@ -31,6 +31,8 @@ export async function runInspection(req: { requestId: string; pageId: string; wi
     // The section and image address lists are only for these checks; they are not evidence for the AI.
     delete (report as { sections?: unknown }).sections;
     delete (report as { images?: { sources?: unknown } }).images?.sources;
+    // Each finding names the element to change as operations address it, against the project measured.
+    attributeFindings(state(), report);
   }
   api.inspectResult(req.requestId, report);
 }
@@ -61,7 +63,7 @@ async function measure(req: { requestId: string; pageId: string; width: number }
         clearTimeout(timer);
         timer = setTimeout(() => done({ error: 'Timed out measuring the page.' }), 8000);
         postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId });
-      } else if (m.type === 'inspectResult') done((m.payload as { report: unknown }).report);
+      } else if (m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === req.requestId) done((m.payload as { report: unknown }).report);
     };
     let timer = setTimeout(() => done({ error: 'Timed out loading the page.' }), 12000);
     window.addEventListener('message', onMsg);

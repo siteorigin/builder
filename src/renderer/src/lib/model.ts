@@ -5,6 +5,8 @@ import { articleRows, feedLimit } from '@shared/articles';
 import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
 import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
+import type { InspectionDesc, InspectionRef } from '@shared/inspection';
+import { placementItems, repeatedPartList } from '@shared/item-styles';
 import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
 import { isDraftPage } from '@generator/index';
 import { layerLabel } from './layers';
@@ -159,6 +161,48 @@ export function createComponentTarget(snap: { state: ProjectState; readOnly?: un
     if (!Object.entries(node.slots ?? {}).some(([slot, ids]) => Object.hasOwn(declared, slot) && ids.length > 0)) return null;
   }
   return { owner: ref.owner, instancePath: [], nodeId: node.id };
+}
+
+/**
+ * The element a layout inspection's finding is about, as operations address it: a node of the owner's own tree
+ * and, inside a component placement, the declared part (the element's own, or the nearest one around it) and the
+ * one list item that part is shown for. Null when the address names nothing in the project (a stale load, or markup
+ * that is not the editor's): a finding never names an element that is not there.
+ */
+export function inspectionRef(state: ProjectState, d: InspectionDesc): InspectionRef | null {
+  const p = parseCtx(d.ctx);
+  if (!p || typeof d.node !== 'string') return null;
+  const items = d.items ? d.items.split(',').map(decodeItemId) : [];
+  let ref: ElementRef = { owner: p.owner, instancePath: p.path, nodeId: d.node };
+  if (!resolveRef(state, ref).node) return null;
+  // A definition's root stands for its placement, through any chain of roots.
+  ref = boundaryOf(state, ref);
+  const ownerTree = treeFor(state, ref.owner);
+  if (!ref.instancePath.length) {
+    const node = ownerTree && own(ownerTree.nodes, ref.nodeId);
+    // Markup inside a code component is the placement's as a whole.
+    return { owner: ref.owner, nodeId: ref.nodeId, ...(d.inside && node?.kind === 'instance' ? { match: 'placement' as const } : {}) };
+  }
+  const placementId = ref.instancePath[0];
+  const placement = ownerTree && own(ownerTree.nodes, placementId);
+  const def = placement?.kind === 'instance' ? own(state.components, placement.definitionId) : undefined;
+  if (!def?.tree || placement?.kind !== 'instance') return null;
+  // The node of the placement's definition the element is in: itself, or the component placed there that renders it.
+  const inner = ref.instancePath.length === 1 ? ref.nodeId : ref.instancePath[1];
+  let partId = partIdFor(def, inner);
+  const nearest = ref.instancePath.length > 1 || !!d.inside || !partId;
+  for (let at = findParent(def.tree, inner); !partId && at?.parentId; at = findParent(def.tree, at.parentId)) partId = partIdFor(def, at.parentId);
+  if (!partId) return { owner: ref.owner, nodeId: placementId, match: 'placement' };
+  // The list item the part is shown for: one of the items the element was rendered in that the part's own list has
+  // now. A part outside every list, or inside several, has no single item.
+  const out: InspectionRef = { owner: ref.owner, nodeId: placementId, partId, ...(nearest ? { match: 'nearest-part' as const } : {}) };
+  const list = ref.owner.kind === 'component' ? undefined : repeatedPartList(def, partId);
+  if (list) {
+    const listed = new Set(placementItems(def, placement, list).map((i) => i.id));
+    const hits = [...new Set(items.filter((i) => listed.has(i)))];
+    if (hits.length === 1) out.itemId = hits[0];
+  }
+  return out;
 }
 
 /** Is this reference a useful selection target (a primitive, a declared part or bound content)? */
