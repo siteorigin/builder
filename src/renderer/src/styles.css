@@ -3551,9 +3551,10 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .pages-peek { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); pointer-events: none; }
 .pages-peek-title { font-weight: 500; overflow-wrap: anywhere; }
 .pages-peek-route { font-size: 11.5px; line-height: 15px; color: var(--text-2); overflow-wrap: anywhere; }
-/* A narrow sidebar gives the titles the room: a tighter indent and the header menu as its icon (its name stays in the
+/* The header (title, Edit menu, Add page) needs about 270px with the label, so the icon form starts at 280.
+   A narrow sidebar gives the titles the room: a tighter indent and the header menu as its icon (its name stays in the
    label and tooltip). The … keeps its reserved slot, so a title never changes length as the pointer reaches it. */
-@container pages (max-width: 232px) {
+@container pages (max-width: 280px) {
   .pages-panel .pages-list { --pages-pad: 6px; --pages-indent: 11px; padding-inline: 4px; }
   .pages-head-label { display: none; }
   .pages-head-menu.btn { width: 26px; padding: 0; justify-content: center; }
