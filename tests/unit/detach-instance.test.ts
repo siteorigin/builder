@@ -492,6 +492,44 @@ describe('component.detachInstance (#373)', () => {
     expect(grouping(await renderHome(copied))).toEqual([0, 0, 0, 1, 1, 1, 2, 2, 2]);
   });
 
+  it('decides a field of an object property the placement leaves out by the object default, conditions included', () => {
+    const { s } = project();
+    const def = s.components[DEF];
+    def.properties.box = { type: 'object', label: 'Box', fields: { label: { type: 'string', label: 'Label', default: '' } }, default: { label: 'Boxed' } } as never;
+    (def.tree!.nodes.root as GraphNode & { kind: 'element' }).children = ['guarded', 'extra'];
+    def.tree!.nodes.guarded = { id: 'guarded', kind: 'text', tag: 'p', text: 'Has a label', when: { $prop: 'box', field: 'label' } } as unknown as GraphNode;
+    (home(s).nodes.n_target as InstanceNode).props.box = {};
+    const r = detach(s);
+    expect(descendants(r.state, r.results[0].nodeId as string).some((n) => n.kind === 'text' && n.text === 'Has a label')).toBe(true);
+  });
+
+  it('chooses the options of components deeper in a placed component as their own values do', () => {
+    const { s } = project();
+    const base = showcase();
+    // C: sized by an option; only its default (small) sets a size.
+    s.components['proj.c-cc1cc'] = { ...base, id: 'proj.c-cc1cc', name: 'C', properties: { label: { type: 'string', label: 'Label', default: 'C' } }, parts: { root: { nodeId: 'c', label: 'C' } }, slots: undefined, variantAxes: { size: { label: 'Size', default: 'small', options: { small: { label: 'Small', styles: { c: { base: { fontSize: '12px' } } } }, large: { label: 'Large' } } } }, tree: { rootIds: ['c'], nodes: { c: { id: 'c', kind: 'text', tag: 'span', text: { $prop: 'label' } } as GraphNode } } } as ComponentDefinition;
+    // B: places C at its root, large by its own property.
+    s.components['proj.b-bb1bb'] = { ...base, id: 'proj.b-bb1bb', name: 'B', properties: { sz: { type: 'enum', label: 'Size', default: 'large', options: [{ value: 'small', label: 'Small' }, { value: 'large', label: 'Large' }] } }, parts: { root: { nodeId: 'b', label: 'B' } }, slots: undefined, variantAxes: undefined, tree: { rootIds: ['b'], nodes: { b: { id: 'b', kind: 'instance', definitionId: 'proj.c-cc1cc', props: {}, variants: { size: { $prop: 'sz' } } } as unknown as GraphNode } } } as ComponentDefinition;
+    const def = s.components[DEF];
+    (def.tree!.nodes.root as GraphNode & { kind: 'element' }).children = ['pill', 'extra'];
+    def.tree!.nodes.pill = { id: 'pill', kind: 'instance', definitionId: 'proj.b-bb1bb', props: {}, styles: { base: { fontSize: '14px' } } } as unknown as GraphNode;
+    const r = detach(s);
+    const pill = descendants(r.state, r.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
+    // Large sets no size, so the design's own 14px was what showed.
+    expect(pill.overrides?.root).toEqual({ base: { fontSize: '14px' } });
+  });
+
+  it('keeps a code component’s shown marker when a design shows its root again', () => {
+    const { s } = project();
+    s.components['proj.code-dd1dd'] = { ...showcase(), id: 'proj.code-dd1dd', name: 'Code', kind: 'code', properties: {}, parts: { root: { nodeId: 'root', label: 'Root' } }, slots: undefined, variantAxes: undefined, tree: undefined, source: '<div class={className}></div>' } as unknown as ComponentDefinition;
+    const def = s.components[DEF];
+    (def.tree!.nodes.root as GraphNode & { kind: 'element' }).children = ['coded', 'extra'];
+    def.tree!.nodes.coded = { id: 'coded', kind: 'instance', definitionId: 'proj.code-dd1dd', props: {}, overrides: { root: { base: { hidden: false } } } } as unknown as GraphNode;
+    const r = detach(s);
+    const coded = descendants(r.state, r.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
+    expect(coded.overrides?.root?.base?.hidden).toBe(false);
+  });
+
   it('is offered to the AI for the placement it may change', async () => {
     const { checkAuthority } = await import('../../src/agent/scope');
     const { s } = project();
@@ -540,7 +578,28 @@ describe('flattenStyles', () => {
     expect(flattenStyles(gaps)).toEqual({ phone: { gap: '8px', rowGap: '4px' }, tablet: { gap: '20px', rowGap: '4px' }, desktop: { gap: '8px', rowGap: '4px' } });
   });
 
+  it('writes what stays beneath again only where nothing of its own beats it', () => {
+    // The component's own option hides its root; the design's weaker layout and the placement's custom display show it.
+    const layers: StyleLayer[] = [
+      { styles: { base: { hidden: true } }, strength: 2 },
+      { styles: { base: { layout: 'row' } }, strength: 1 },
+      { styles: { base: { customCss: 'display: block' } }, strength: 4, wideColumns: true }
+    ];
+    expect(flattenStyles(layers, { beneath: 1, wideColumns: true })).toEqual({ base: { layout: 'row', customCss: 'display: block' } });
+  });
+
+  it('writes the display a show wrote, even over a hide of an option not chosen', () => {
+    const own = { base: { customCss: 'display: grid' } };
+    const layers: StyleLayer[] = [
+      { styles: own, strength: 1 },
+      { styles: { base: { hidden: false } }, strength: 2, wideColumns: true, unhides: [own, { base: { hidden: true } }] }
+    ];
+    const flat = flattenStyles(layers, { shownDisplay: () => 'revert' });
+    expect(flat.base?.customCss).toMatch(/display: revert$/);
+  });
+
   it('writes the most common value for all sizes and the others as exceptions', () => {
+    expect(flattenStyles([{ styles: { phone: { opacity: 0.4 }, tablet: { opacity: 0.4 }, desktop: { opacity: 1 } }, strength: 1 }])).toEqual({ base: { opacity: 0.4 }, desktop: { opacity: 1 } });
     expect(flattenStyles([{ styles: { phone: { opacity: 0.5 }, tablet: { opacity: 1 }, desktop: { opacity: 1 } }, strength: 1 }])).toEqual({ base: { opacity: 1 }, phone: { opacity: 0.5 } });
     expect(flattenStyles([{ styles: { phone: { opacity: 0.2 }, tablet: { opacity: 0.5 }, desktop: { opacity: 0.8 } }, strength: 1 }])).toEqual({ base: { opacity: 0.8 }, phone: { opacity: 0.2 }, tablet: { opacity: 0.5 } });
   });
@@ -556,6 +615,23 @@ describe('flattenStyles', () => {
       { styles: { base: { paddingInlineStart: '4px' } }, strength: 3, wideColumns: true }
     ];
     expect(flattenStyles(padding)).toEqual({ base: { paddingInlineStart: '4px', customCss: 'padding: 20px; padding-inline-start: 4px' } });
+    // Several stronger properties are written again in rule order: the shorthand before its longhand.
+    const both: StyleLayer[] = [
+      { styles: { base: { customCss: 'padding: 20px' } }, strength: 1 },
+      { styles: { base: { paddingInlineStart: '4px', paddingInline: '12px' } }, strength: 3, wideColumns: true }
+    ];
+    expect(flattenStyles(both).base?.customCss).toBe('padding: 20px; padding-inline: 12px; padding-inline-start: 4px');
+    // A shorthand that leaves a property alone does not take it away; one not named after its longhands still covers them.
+    const blend: StyleLayer[] = [
+      { styles: { base: { customCss: 'background-blend-mode: multiply; place-items: center' } }, strength: 1 },
+      { styles: { base: { background: '#0000ff', align: 'start' } }, strength: 3, wideColumns: true }
+    ];
+    expect(flattenStyles(blend).base?.customCss).toMatch(/^background-blend-mode: multiply; place-items: center; align-items: /);
+  });
+
+  it('lets a layer’s custom CSS win its own tablet-and-up values, as its rule writes it again there', () => {
+    const flat = flattenStyles([{ styles: { base: { layout: 'grid', columns: 3, customCss: 'grid-template-columns: 2fr 1fr' } }, strength: 2, wideColumns: true }]);
+    for (const sz of ['tablet', 'desktop'] as const) expect(perSize(flat)[sz].customCss, sz).toBe('grid-template-columns: 2fr 1fr');
   });
 
   it('writes no display for a show that undid no hide', () => {

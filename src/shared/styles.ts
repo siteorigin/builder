@@ -1249,11 +1249,23 @@ function cssNames(prop: string, value: StyleValue): string[] {
   return decls.map((d) => d.slice(0, d.indexOf(':')).trim().toLowerCase()).filter((p) => p && !p.startsWith('--'));
 }
 
+/** Shorthands whose longhands are not named after them. */
+const SHORTHAND_SETS: Record<string, string[]> = {
+  gap: ['row-gap', 'column-gap'],
+  'place-items': ['align-items', 'justify-items'],
+  'place-content': ['align-content', 'justify-content'],
+  'place-self': ['align-self', 'justify-self'],
+  'flex-flow': ['flex-direction', 'flex-wrap'],
+  columns: ['column-count', 'column-width']
+};
+
 /** Whether CSS shorthand `short` also sets `long` (`padding` sets `padding-inline-start`; `gap` sets `row-gap`). */
 function covers(short: string, long: string): boolean {
-  if (short === 'gap') return long === 'row-gap' || long === 'column-gap';
-  // `border` resets each side's width, style and colour, never the corners or an image.
+  if (Object.hasOwn(SHORTHAND_SETS, short)) return SHORTHAND_SETS[short].includes(long);
+  if (short === 'border-radius') return /^border-[a-z-]+-radius$/.test(long);
+  // `border` resets each side's width, style and colour, never the corners or an image; `background` never its blend mode.
   if (short === 'border' && /radius|image/.test(long)) return false;
+  if (short === 'background' && long === 'background-blend-mode') return false;
   return long.startsWith(`${short}-`);
 }
 
@@ -1284,7 +1296,8 @@ export interface FlattenOptions {
  * a stronger property sets.
  */
 export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): ResponsiveStyles {
-  const { decls, beats, winners } = cascadeOf(layers, { inertShows: false });
+  // A `hidden: false` that undoes nothing writes nothing, unless a code component reads it (as a marker).
+  const { decls, beats, winners } = cascadeOf(layers, { inertShows: !!opts.keepShown });
   const beneath = opts.beneath ?? 0;
   const own = (d: CascadeDecl) => d.index >= beneath;
   const names = (d: CascadeDecl) => cssNames(d.prop, d.value);
@@ -1300,7 +1313,12 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
     const named = [...best.values()];
     // Custom CSS from every layer applies, the stronger written later. A declaration a stronger property also sets
     // goes; one that sets more than a stronger property (a shorthand) stays, with that property's own after it.
-    const custom = decls.filter((d) => d.prop === 'customCss' && applies(d.bucket) && typeof d.value === 'string').sort((a, b) => (a === b ? 0 : beats(a, b) ? 1 : -1));
+    // A layer that keeps a value off phones writes its custom CSS again in that tablet-and-up rule, after it.
+    const wideAgain = (d: CascadeDecl): CascadeDecl => (size !== 'phone' && d.bucket === 'base' && decls.some((x) => x.index === d.index && x.bucket === 'wide') ? { ...d, bucket: 'wide' } : d);
+    const custom = decls
+      .filter((d) => d.prop === 'customCss' && applies(d.bucket) && typeof d.value === 'string')
+      .map(wideAgain)
+      .sort((a, b) => (a === b ? 0 : beats(a, b) ? 1 : -1));
     const written: string[] = [];
     for (const c of custom) {
       if (!own(c)) continue;
@@ -1308,7 +1326,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
       for (const decl of parseCustomCss(String(c.value)).decls) {
         const p = decl.slice(0, decl.indexOf(':'));
         if (stronger.some((n) => names(n).some((q) => q === p || covers(q, p)))) continue;
-        const under = stronger.filter((n) => names(n).some((q) => covers(p, q)));
+        // Written again in the order one rule writes them, so a shorthand among them comes before its own longhands.
+        const under = stronger.filter((n) => names(n).some((q) => covers(p, q))).sort((a, b) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop));
         const again = under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !parseCustomCss(d).error);
         // What the stronger property writes cannot go in custom CSS: it keeps its value, and the shorthand goes.
         if (again.length < under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--')).length) continue;
@@ -1316,9 +1335,15 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
       }
     }
     // Beneath stays in force, and the result is written over it: where a weaker property of the result would now beat
-    // a stronger one beneath on a CSS property they share, the one beneath is written too, after it in the rule.
+    // a stronger one beneath on a CSS property they share, the one beneath is written too, after it in the rule, unless
+    // something of the result's own beats it there (custom CSS included).
     const ownWins = named.filter(own);
-    for (const q of named.filter((d) => !own(d))) if (ownWins.some((p) => p !== q && overlap(names(p), names(q)) && beats(q, p))) best.set(q.prop, { ...q, index: beneath });
+    const ownCustom = custom.filter(own);
+    for (const q of named.filter((d) => !own(d))) {
+      if (!ownWins.some((p) => p !== q && overlap(names(p), names(q)) && beats(q, p))) continue;
+      if ([...ownWins, ...ownCustom].some((r) => overlap(names(r), names(q)) && beats(r, q))) continue;
+      best.set(q.prop, { ...q, index: beneath });
+    }
     const hide = best.get('hidden');
     if (hide?.value === false && !opts.keepShown) {
       // Shown again over a hide that stays beneath: the result undoes it too. With none beneath, there is nothing to
@@ -1326,8 +1351,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
       const under = decls.some((d) => !own(d) && d.prop === 'hidden' && d.value === true && applies(d.bucket));
       if (!under) {
         best.delete('hidden');
-        const hid = decls.some((d) => d.prop === 'hidden' && d.value === true && applies(d.bucket));
-        const display = hid && !best.has('layout') ? (opts.shownDisplay?.(size) ?? null) : null;
+        // Every show left undoes a hide (an option's, chosen or not), so the stylesheet wrote a display for it.
+        const display = !best.has('layout') ? (opts.shownDisplay?.(size) ?? null) : null;
         if (display) written.push(`display: ${display}`);
       }
     }

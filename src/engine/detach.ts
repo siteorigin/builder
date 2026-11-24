@@ -245,29 +245,35 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
    * the change each design makes to the component at its root (three classes). Ties between designs go by their order
    * in the stylesheet. Undefined when a code component renders it: its own styles are not known here.
    */
-  const rootChain = (first: InstanceNode, variants: InstanceNode['variants']): StyleLayer[] | undefined => {
+  const rootChain = (first: InstanceNode): { layers: StyleLayer[]; code: boolean } => {
     const levels: StyleLayer[][] = [];
     let node: GraphNode | undefined = first;
-    let chosen = variants;
+    // The values in scope where each component is placed: options bound to them are chosen by them.
+    let scope: Scope = { props: {} };
+    let code = false;
     const seen = new Set<string>();
     while (node?.kind === 'instance') {
-      const d: ComponentDefinition | undefined = own(state.components, node.definitionId);
+      const placed: InstanceNode = node;
+      const d: ComponentDefinition | undefined = own(state.components, placed.definitionId);
       if (!d || seen.has(d.id)) break;
       seen.add(d.id);
-      if (d.kind !== 'managed' || !d.tree) return undefined;
+      if (d.kind !== 'managed' || !d.tree) {
+        code = true;
+        break;
+      }
+      const chosen = Object.fromEntries(Object.entries(placed.variants ?? {}).map(([axis, v]) => [axis, isBinding(v) ? String(evaluate(v, scope) ?? '') : v]));
       const r: string = d.tree.rootIds[0];
       const next: GraphNode | undefined = own(d.tree.nodes, r);
       const level: StyleLayer[] = designLayers(d, r, chosen).map((l) => ({ ...l, strength: l.strength + tie(d.id) }));
       levels.push(level);
       if (next?.kind === 'instance' && next.overrides?.root) level.push({ styles: next.overrides.root, strength: 3 + tie(d.id), wideColumns: true, unhides: [] });
-      // A design's option bound to its own property counts as its default here, as the stylesheet's static rules do.
-      chosen = next?.kind === 'instance' ? next.variants : undefined;
+      scope = { props: effectiveProps(state, d, placed, scope, op.owner.id) };
       node = next;
     }
     // The deepest design first: its layers are what each design above it shows again.
-    const out = levels.reverse().flat();
-    for (const l of out) if (l.strength >= 3) l.unhides = out.filter((x) => x.strength < 3).map((x) => x.styles);
-    return out;
+    const layers = levels.reverse().flat();
+    for (const l of layers) if (l.strength >= 3) l.unhides = layers.filter((x) => x.strength < 3).map((x) => x.styles);
+    return { layers, code };
   };
 
   /** A component placed in the design: still a placement, given the values, options and styles it renders with. */
@@ -296,8 +302,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     if (src.slots) n.slots = Object.fromEntries(Object.keys(src.slots).map((slot) => [slot, slotChildren(src, slot).flatMap((c) => emit(c, at))]));
     // What the design and the placement give its root lands on its own placement now, where it beats its design: only
     // what beat that design before goes there, so an option of its own that won still wins.
-    const chain = rootChain(n, n.variants);
-    const beneath = chain ?? [];
+    const chain = rootChain(n);
+    const beneath = chain.layers;
     // The design's own change to it is three classes: it beats every option, loses to the placement's four, and shows
     // again what the placed component's design hides.
     const nested: StyleLayer[] = src.overrides?.root ? [{ styles: src.overrides.root, strength: 3 + tie(def.id), wideColumns: true, unhides: beneath.map((l) => l.styles) }] : [];
@@ -307,7 +313,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       beneath: beneath.length,
       wideColumns: true,
       // A code component shows a root it hides again only through the marker a `hidden: false` gives it.
-      keepShown: !chain,
+      keepShown: chain.code,
       shownDisplay: () => (innerRoot && inner ? naturalDisplay(inner.tree!.nodes[innerRoot]) : null)
     });
     const overrides = { ...(src.overrides ?? {}) };
@@ -361,6 +367,11 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   };
 
   const props = effectiveProps(state, def, inst, { props: {} }, op.owner.id);
+  // An object shows its default for a field the placement stores none for, in what it renders and what it decides.
+  for (const [name, schema] of Object.entries(def.properties)) {
+    const v = props[name];
+    if (schema.type === 'object' && v && typeof v === 'object' && !Array.isArray(v)) props[name] = { ...schema.default, ...(v as Record<string, unknown>) };
+  }
   const roots = emit(rootId, { scope: { props }, items: {}, repeats: [] });
   if (!roots.length) fail(`“${label}” shows nothing with its current settings, so there is nothing to detach. Delete it instead, or change its settings first.`);
   for (const slot of Object.keys(inst.slots ?? {})) {
@@ -382,4 +393,3 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   }
   return { nodeId: top.id, label };
 }
-
