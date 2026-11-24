@@ -4,6 +4,7 @@ import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
 import { api, setState, useStore, confirmDialog } from '../store';
 import { Field, Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { LocalModelSettings, type LocalServerStatus } from './LocalModelSettings';
+import { localKeyProblem } from '@shared/local';
 
 /** A connection test's outcome, shown only while what it tested is still what is on screen. */
 type TestResult = { signature: string; provider: ProviderId; edits: number; ok: boolean; message: string; draft: boolean };
@@ -186,6 +187,8 @@ export function SettingsModal() {
   const keyUrl = provider === 'anthropic' ? 'https://console.anthropic.com/settings/keys' : 'https://platform.openai.com/api-keys';
   const unsavedKey = !!keys[provider].trim();
   const enteringKey = !keySaved || !!replacing[provider] || unsavedKey;
+  // A cloud provider's key typed for a local server is refused here and again by the main process, which never stores it.
+  const keyProblem = isLocal && enteringKey ? localKeyProblem(keys.local) : null;
   const label = status?.label ?? provider;
   // The model a test would use: a typed ID counts, though chat keeps the saved one until it is committed.
   const testedModel = custom && !isLocal ? modelDraft.trim() : model;
@@ -236,6 +239,7 @@ export function SettingsModal() {
     if (result && !result.ok) return problem('Connection failed', result.draft ? `${result.message} This key is not saved yet.` : result.message);
     if (result?.ok && result.draft) return passed('This key works', 'Press Save key to use it in chat.');
     if (result?.ok) return passed('Connection test passed', server ? result.message.replace(/^Connected\.\s*/, '') : `${modelLabelFor(testedModel)} responded.`);
+    if (keyProblem) return problem('This key cannot be used here', keyProblem);
     if (unsavedKey) return neutral('Key not saved yet', keySaved ? `Chat keeps using ${currentKey} until you save this one.` : 'Press Save key or Enter to use it in chat.', <KeyRound />);
     // A local server's own state says more than its key does, so only hosted providers report the save here.
     if (notice?.kind === 'saved' && !server) return neutral(`${label} key saved`, `${modelLabel}. Test the connection to make sure it works.`, <KeyRound />);
@@ -308,6 +312,7 @@ export function SettingsModal() {
     <Field
       controlId={enteringKey ? 'settings-api-key' : undefined}
       label={isLocal ? 'API key (optional)' : `${status.label} API key`}
+      error={keyProblem}
       hint={
         isLocal
           ? 'Only needed if your server asks for one.'
@@ -322,6 +327,7 @@ export function SettingsModal() {
             <input
               id="settings-api-key"
               aria-describedby="settings-api-key-note settings-connection"
+              aria-invalid={keyProblem ? true : undefined}
               className="input grow mono"
               type="password"
               autoComplete="off"
@@ -332,7 +338,7 @@ export function SettingsModal() {
                 setKeyEdits((n) => n + 1);
                 setKeyNotice(null);
               }}
-              onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && void saveKey()}
+              onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && !keyProblem && void saveKey()}
             />
             {replacing[provider] && (
               <button
@@ -346,7 +352,7 @@ export function SettingsModal() {
                 Cancel
               </button>
             )}
-            <button className={`btn${unsavedKey && !draftFailed ? ' btn-primary' : ''}`} disabled={!unsavedKey} aria-disabled={keyBusy || undefined} onClick={() => void saveKey()}>
+            <button className={`btn${unsavedKey && !draftFailed && !keyProblem ? ' btn-primary' : ''}`} disabled={!unsavedKey || !!keyProblem} aria-disabled={keyBusy || undefined} onClick={() => void saveKey()}>
               {keyBusy ? 'Saving key…' : 'Save key'}
             </button>
           </div>

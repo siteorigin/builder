@@ -1,10 +1,21 @@
 import OpenAI from 'openai';
 import type { AdapterOptions, AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, StopReason, ToolCall } from './types';
-import { classifyHttpError, classifyProviderCode, errorCodes } from './types';
+import { classifyHttpError, classifyProviderCode, errorCodes, withoutEnv } from './types';
 import { modelInfo } from './models';
 
 /** Smallest output budget the Responses API accepts; used by the connection ping. */
 const PING_TOKENS = 16;
+/** The API's own address, always passed: the SDK would otherwise send the key wherever `OPENAI_BASE_URL` points. */
+export const OPENAI_API_URL = 'https://api.openai.com/v1';
+
+/**
+ * A client configured only by the app, never by the environment: the SDK reads `OPENAI_BASE_URL`, `OPENAI_ORG_ID`
+ * and `OPENAI_PROJECT_ID` for anything not given, and adds `OPENAI_CUSTOM_HEADERS` (a gateway's credentials, say,
+ * that would now go to OpenAI) to every request.
+ */
+function client(apiKey: string, timeout: number, opts: AdapterOptions): OpenAI {
+  return withoutEnv(['OPENAI_CUSTOM_HEADERS'], () => new OpenAI({ apiKey, baseURL: opts.baseURL ?? OPENAI_API_URL, organization: null, project: null, adminAPIKey: null, webhookSecret: null, maxRetries: 0, timeout, ...(opts.fetch ? { fetch: opts.fetch } : {}) }));
+}
 
 /**
  * OpenAI Responses API adapter. Stateless (store: false); reasoning items are carried forward encrypted.
@@ -20,7 +31,7 @@ export class OpenAIAdapter implements AgentModelAdapter {
   private outputCap: number | null = null;
 
   constructor(apiKey: string, private model: string, opts: AdapterOptions = {}) {
-    this.client = new OpenAI({ apiKey, maxRetries: 0, timeout: 120_000, ...(opts.fetch ? { fetch: opts.fetch } : {}), ...(opts.baseURL ? { baseURL: opts.baseURL } : {}) });
+    this.client = client(apiKey, 120_000, opts);
   }
 
   capabilities(): ModelCapabilities {
@@ -162,7 +173,7 @@ export class OpenAIAdapter implements AgentModelAdapter {
  * so a refused lookup falls back to the smallest possible request, which is what the assistant needs.
  */
 export async function testOpenAI(apiKey: string, model: string, opts: AdapterOptions = {}): Promise<{ ok: boolean; message: string }> {
-  const c = new OpenAI({ apiKey, maxRetries: 0, timeout: 30_000, ...(opts.fetch ? { fetch: opts.fetch } : {}), ...(opts.baseURL ? { baseURL: opts.baseURL } : {}) });
+  const c = client(apiKey, 30_000, opts);
   try {
     await c.models.retrieve(model);
     return { ok: true, message: `Connected. ${model} is available.` };

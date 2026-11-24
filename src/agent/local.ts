@@ -1,5 +1,6 @@
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { newId } from '@shared/ids';
-import { checkLocalBaseURL, type LocalToolMode, type LocalURLCheck } from '@shared/local';
+import { checkLocalBaseURL, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall } from './types';
 import { redact } from './types';
 import { envelopeInstructions, envelopeSchema, FINISH_ACTION, parseEnvelope, partialStatus, stripThinking } from './constrained';
@@ -35,6 +36,40 @@ export interface LocalAdapterOptions {
   firstTokenTimeoutMs?: number;
   idleTimeoutMs?: number;
   profile?: LocalModelProfile;
+  /** Every address a name resolves to. Tests stand in for the system resolver. */
+  lookup?: (host: string) => Promise<Array<{ address: string }>>;
+}
+
+const LOOKUP_TIMEOUT_MS = 2_000;
+const LOOPBACK_ADDRESS = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i;
+
+/**
+ * `localhost` is only a name, and the hosts file or resolver can point it anywhere. Before anything is sent, every
+ * address it resolves to must be this computer. The name stays in the request, so proxy exclusions and certificates
+ * written for it still apply.
+ */
+async function localhostProblem(url: string, lookup: LocalAdapterOptions['lookup'] = (host) => dnsLookup(host, { all: true }), signal?: AbortSignal): Promise<string | null> {
+  if (new URL(url).hostname !== 'localhost') return null;
+  const instead = 'so nothing was sent. Use http://127.0.0.1 in the server address instead.';
+  // A resolver that stalls must not hold a request past its own timeouts, or past Stop.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort = () => undefined as void;
+  const gaveUp = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('timeout')), LOOKUP_TIMEOUT_MS);
+    onAbort = () => reject(new Error('aborted'));
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    const elsewhere = (await Promise.race([lookup('localhost'), gaveUp])).find((a) => !LOOPBACK_ADDRESS.test(a.address));
+    return elsewhere ? `localhost on this computer points to ${elsewhere.address}, which is not this computer, ${instead}` : null;
+  } catch {
+    return `localhost could not be looked up on this computer, ${instead}`;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    gaveUp.catch(() => undefined);
+  }
 }
 
 type LocalError = { code: ModelErrorCode; message: string; retryAfterMs?: number };
@@ -260,13 +295,35 @@ class ThinkFilter {
   }
 }
 
-/** Strict templates reject two user messages in a row. */
-function mergeUsers(messages: ChatMessage[]): ChatMessage[] {
+/** Bridges for strict chat templates, said in the voice of the role that has to fill the gap. */
+const TOOL_RESULTS_READ = 'I have read the results.';
+const EARLIER_TURNS = 'Earlier in this conversation:';
+const GO_ON = 'Go on.';
+
+/**
+ * Strict chat templates (Mistral's, for one) set tool calls and their results aside, then require the messages
+ * left to alternate user, assistant, user, starting with the user, or refuse the whole request. User messages that
+ * meet are merged; two replies in a row, a note that follows tool results, or a transcript that opens with a reply
+ * gets a short bridge from the missing role. Tool calls and results are never changed or moved.
+ */
+function alternate(messages: ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
+  let counted: 'user' | 'assistant' | null = null;
   for (const m of messages) {
+    if (m.role === 'system' || m.role === 'tool' || (m.role === 'assistant' && m.tool_calls)) {
+      out.push({ ...m });
+      continue;
+    }
+    // User messages that meet are merged. Replies are not: each may be a JSON envelope, which must stay whole.
     const last = out[out.length - 1];
-    if (m.role === 'user' && last?.role === 'user') last.content += `\n\n${m.content}`;
-    else out.push({ ...m });
+    if (m.role === 'user' && counted === 'user' && last?.role === 'user') {
+      last.content += `\n\n${m.content}`;
+      continue;
+    }
+    if (m.role === counted) out.push(m.role === 'user' ? { role: 'assistant', content: TOOL_RESULTS_READ } : { role: 'user', content: GO_ON });
+    else if (counted === null && m.role === 'assistant') out.push({ role: 'user', content: EARLIER_TURNS });
+    out.push({ ...m });
+    counted = m.role;
   }
   return out;
 }
@@ -333,13 +390,13 @@ export class LocalAdapter implements AgentModelAdapter {
       } else if (constrained) out.push({ role: 'user', content: `${it.isError ? 'Error from' : 'Result of'} ${it.name}:\n${it.content}` });
       else out.push({ role: 'tool', tool_call_id: it.callId, name: it.name, content: it.content });
     }
-    return mergeUsers(out);
+    return out;
   }
 
   private body(req: CanonicalModelRequest, constrained: boolean, corrections: ChatMessage[]): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: req.model,
-      messages: mergeUsers([{ role: 'system', content: constrained ? req.system + envelopeInstructions(req.tools) : req.system }, ...this.messages(req.items, constrained), ...corrections]),
+      messages: alternate([{ role: 'system', content: constrained ? req.system + envelopeInstructions(req.tools) : req.system }, ...this.messages(req.items, constrained), ...corrections]),
       max_tokens: Math.min(req.maxOutputTokens, this.profile.maxOutput),
       temperature: this.profile.temperature,
       stream: true
@@ -373,6 +430,16 @@ export class LocalAdapter implements AgentModelAdapter {
   async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
     if (!this.url.ok) {
       yield { type: 'error', code: 'invalid_request', message: this.url.message };
+      return;
+    }
+    // A key saved before cloud keys were refused is still never sent.
+    const keyProblem = localKeyProblem(this.endpoint.apiKey) ?? (await localhostProblem(this.url.url, this.opts.lookup, signal));
+    if (signal.aborted) {
+      yield { type: 'error', ...CANCELLED };
+      return;
+    }
+    if (keyProblem) {
+      yield { type: 'error', code: 'invalid_request', message: keyProblem };
       return;
     }
     // The code fixer sends no tools and expects a plain text answer.
@@ -562,9 +629,11 @@ export class LocalAdapter implements AgentModelAdapter {
 }
 
 /** Models the server reports through `GET {baseURL}/models`. */
-export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
+export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
   const url = checkLocalBaseURL(endpoint.baseURL, endpoint.allowRemote);
   if (!url.ok) return { ok: false, models: [], message: url.message };
+  const keyProblem = localKeyProblem(endpoint.apiKey) ?? (await localhostProblem(url.url, opts.lookup));
+  if (keyProblem) return { ok: false, models: [], message: keyProblem };
   try {
     const res = await (opts.fetch ?? globalThis.fetch)(`${url.url}/models`, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS) });
     if (!res.ok) return { ok: false, models: [], message: httpError(res.status, await res.text().catch(() => ''), 'that model', undefined, endpoint.apiKey).message };
@@ -578,7 +647,7 @@ export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 
 }
 
 /** Check that the server answers and offers the model. Nothing is generated, so this is quick. */
-export async function testLocal(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; message: string }> {
+export async function testLocal(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; message: string }> {
   const r = await listLocalModels(endpoint, opts);
   if (!r.ok) return { ok: false, message: r.message ?? 'Could not reach the local server.' };
   if (!r.models.length) return { ok: false, message: 'Connected, but the server has no models loaded.' };

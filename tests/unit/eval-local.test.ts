@@ -147,5 +147,12 @@ describe('eval:agent --provider local', () => {
     const localFlag = await cli(['--live', '--provider', 'openai', '--model', 'm', '--allow-remote']);
     expect(localFlag.code).toBe(2);
     expect(localFlag.stderr).toMatch(/only to --provider local/);
+    // A cloud key is never pointed at another server, here the local mock.
+    for (const provider of ['openai', 'anthropic']) {
+      const redirected = await cli(['--live', '--provider', provider, '--model', 'm', '--base-url', server.baseURL, '--yes', '--cases', 'copy-edit-hero-heading', '--out', join(dir, `${provider}.json`)]);
+      expect(redirected.code).toBe(2);
+      expect(redirected.stderr).toMatch(/--base-url.*only to --provider local/);
+    }
+    expect(server.requests).toEqual([]);
   }, 60000);
 });

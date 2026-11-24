@@ -20,6 +20,8 @@ export interface MockReply {
   keepOpen?: boolean;
   /** Wait this long before answering, as a model that takes a while to start would. */
   delayMs?: number;
+  /** After the last frame, keep sending this frame every `everyMs` until the client goes away: a reply that never ends. */
+  endless?: { frame: unknown; everyMs: number };
 }
 
 export interface MockRequest {
@@ -74,6 +76,39 @@ export { chunk as sseChunk };
 /** A reply worked out from the request it answers, for a step that needs something an earlier step returned. */
 export type MockResponder = (req: MockRequest) => MockReply;
 
+type WireMessage = { role: string; content?: unknown; tool_calls?: unknown; tool_call_id?: string };
+
+/**
+ * Renders a chat request the way a strict template does (Mistral Small 3.2's rule, written out rather than run as
+ * Jinja): after an optional system message, tool results and assistant messages that carry tool calls are set
+ * aside, and the messages left must alternate user, assistant, user... A tool result must follow its call. Anything
+ * else raises, as the template does, so a request that renders here is one the server can format.
+ */
+export function renderStrictTemplate(messages: WireMessage[]): string {
+  const rest = messages[0]?.role === 'system' ? messages.slice(1) : messages;
+  rest
+    .filter((m) => m.role !== 'tool' && m.tool_calls === undefined)
+    .forEach((m, i) => {
+      if ((m.role === 'user') !== (i % 2 === 0)) throw new Error('After the optional system message, conversation roles must alternate user/assistant/user/assistant/...');
+    });
+  let open = new Set<string>();
+  return rest
+    .map((m) => {
+      if (m.role === 'tool') {
+        if (!open.delete(String(m.tool_call_id))) throw new Error(`A tool result for ${m.tool_call_id} does not follow its call.`);
+        return `[TOOL_RESULTS]${String(m.content)}[/TOOL_RESULTS]`;
+      }
+      if (open.size) throw new Error('A tool call was left without its result.');
+      if (m.role === 'user') return `[INST]${String(m.content)}[/INST]`;
+      if (m.role !== 'assistant') throw new Error(`Only user, assistant and tool roles are supported, not ${m.role}.`);
+      if (m.tool_calls === undefined) return `${String(m.content)}</s>`;
+      const calls = m.tool_calls as Array<{ id: string }>;
+      open = new Set(calls.map((c) => c.id));
+      return `[TOOL_CALLS]${JSON.stringify(calls)}</s>`;
+    })
+    .join('');
+}
+
 export class MockOpenAIServer {
   readonly requests: MockRequest[] = [];
   /** Requests whose client went away before the reply finished. */
@@ -92,8 +127,21 @@ export class MockOpenAIServer {
     return `http://127.0.0.1:${this.port}/v1`;
   }
 
-  async start() {
-    await new Promise<void>((resolve) => this.server.listen(0, '127.0.0.1', resolve));
+  /** Listen on 127.0.0.1: any free port, or the one given, rejecting (with EADDRINUSE) when it is taken. */
+  async start(port = 0) {
+    await new Promise<void>((resolve, reject) => {
+      const failed = (e: Error) => {
+        this.server.off('listening', listening);
+        reject(e);
+      };
+      const listening = () => {
+        this.server.off('error', failed);
+        resolve();
+      };
+      this.server.once('error', failed);
+      this.server.once('listening', listening);
+      this.server.listen(port, '127.0.0.1');
+    });
     this.port = (this.server.address() as AddressInfo).port;
     return this;
   }
@@ -134,7 +182,9 @@ export class MockOpenAIServer {
     }
     this.open.add(res);
     let finished = false;
+    let endless: ReturnType<typeof setInterval> | undefined;
     res.on('close', () => {
+      clearInterval(endless);
       this.open.delete(res);
       if (!finished) this.disconnects++;
     });
@@ -152,6 +202,11 @@ export class MockOpenAIServer {
       res.write(typeof f === 'string' ? f : `data: ${JSON.stringify(f)}\n\n`);
       await new Promise((r) => setImmediate(r));
       if (res.destroyed) return;
+    }
+    if (reply.endless) {
+      const { frame, everyMs } = reply.endless;
+      endless = setInterval(() => res.write(typeof frame === 'string' ? frame : `data: ${JSON.stringify(frame)}\n\n`), everyMs);
+      return;
     }
     if (reply.stallAfter !== undefined || reply.keepOpen) return;
     finished = true;

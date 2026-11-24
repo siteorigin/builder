@@ -8,9 +8,9 @@ import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { DEFAULT_LOCAL_PROFILE, localModelProfile, modelInfo } from '@agent/models';
 import { toolDefinitions } from '@agent/tools';
 import { fixComponentSource } from '@agent/fixer';
-import { checkLocalBaseURL, LOCAL_PRESETS } from '@shared/local';
+import { checkLocalBaseURL, LOCAL_PRESETS, localKeyProblem } from '@shared/local';
 import type { CanonicalModelRequest, ModelEvent, ToolDefinition } from '@agent/types';
-import { closedPort, DONE, envelopeReply, MockOpenAIServer, sseChunk, textReply, toolCallReply } from './mock-openai-server';
+import { closedPort, DONE, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
 const TOOLS: ToolDefinition[] = [
   { name: 'read_page', description: 'Read a page', parameters: { type: 'object', properties: { pageId: { type: 'string' } }, required: ['pageId'] } },
@@ -249,6 +249,102 @@ describe('native tool calls', () => {
     expect(doneOf(await run(native())).toolCalls.map((c) => c.arguments)).toEqual(['{"pageId":"one"}', '{"pageId":"two"}']);
   });
 
+  describe('strict chat templates', () => {
+    const NOTE = 'Your last response reached the output limit before it finished, so nothing in it was applied.';
+    const calls = [
+      { id: 'aaaaaaaa1', name: 'read_page', arguments: '{"pageId":"one"}' },
+      { id: 'aaaaaaaa2', name: 'read_page', arguments: '{"pageId":"two"}' }
+    ];
+
+    it('renders a note that follows tool results, keeping every call and result in place', async () => {
+      // As sent before: the note right after the results breaks the alternation such a template checks.
+      const unbridged = [
+        { role: 'system', content: 'You edit websites.' },
+        { role: 'user', content: 'Read both pages' },
+        { role: 'assistant', content: '', tool_calls: calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments } })) },
+        { role: 'tool', tool_call_id: 'aaaaaaaa1', content: '{"page":"one"}' },
+        { role: 'tool', tool_call_id: 'aaaaaaaa2', content: '{"page":"two"}' },
+        { role: 'user', content: NOTE }
+      ];
+      expect(() => renderStrictTemplate(unbridged)).toThrow(/must alternate/);
+
+      server.script(textReply('Both pages read.'));
+      await run(native(), {
+        items: [
+          { kind: 'user', text: 'Read both pages' },
+          { kind: 'assistant', text: '', toolCalls: calls },
+          { kind: 'tool_result', callId: 'aaaaaaaa1', name: 'read_page', content: '{"page":"one"}' },
+          { kind: 'tool_result', callId: 'aaaaaaaa2', name: 'read_page', content: '{"page":"two"}' },
+          { kind: 'user', text: NOTE }
+        ]
+      });
+      const messages = posts()[0].body.messages;
+      const rendered = renderStrictTemplate(messages);
+      expect(messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'tool', 'assistant', 'user']);
+      expect(messages[2].tool_calls).toEqual(unbridged[2].tool_calls);
+      expect(messages[5]).toEqual({ role: 'assistant', content: 'I have read the results.' });
+      expect(messages.slice(3, 5)).toEqual([
+        { role: 'tool', tool_call_id: 'aaaaaaaa1', name: 'read_page', content: '{"page":"one"}' },
+        { role: 'tool', tool_call_id: 'aaaaaaaa2', name: 'read_page', content: '{"page":"two"}' }
+      ]);
+      expect(messages.at(-1)).toEqual({ role: 'user', content: NOTE });
+      expect(rendered.split(NOTE)).toHaveLength(2);
+      expect(rendered.indexOf(NOTE)).toBeGreaterThan(rendered.indexOf('{"page":"two"}'));
+    });
+
+    it('renders a replayed transcript that opens with a reply or has two replies in a row', async () => {
+      server.script(textReply('Done.'), envelopeReply('finish', { message: 'Done.' }));
+      const items: CanonicalModelRequest['items'] = [
+        { kind: 'assistant', text: 'Added a Pricing page.', toolCalls: [] },
+        { kind: 'assistant', text: 'Renamed the site.', toolCalls: [] },
+        { kind: 'user', text: 'Now add a Contact page' }
+      ];
+      await run(native(), { items });
+      await run(adapter(), { items });
+      expect(posts()).toHaveLength(2);
+      const [nativeSent, constrainedSent] = posts().map((p) => p.body.messages as Array<{ role: string; content: string }>);
+      for (const messages of [nativeSent, constrainedSent]) {
+        expect(() => renderStrictTemplate(messages)).not.toThrow();
+        expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'user']);
+        expect(messages[1]).toEqual({ role: 'user', content: 'Earlier in this conversation:' });
+        expect(messages[3]).toEqual({ role: 'user', content: 'Go on.' });
+        expect(messages[5].content).toBe('Now add a Contact page');
+      }
+      expect([nativeSent[2].content, nativeSent[4].content]).toEqual(['Added a Pricing page.', 'Renamed the site.']);
+      // Each earlier answer stays one whole envelope, never two run together.
+      expect([JSON.parse(constrainedSent[2].content).action, JSON.parse(constrainedSent[4].content).action]).toEqual([
+        { tool: 'finish', args: { message: 'Added a Pricing page.' } },
+        { tool: 'finish', args: { message: 'Renamed the site.' } }
+      ]);
+    });
+
+    it('puts a user turn between two replies that only tool calls separate', async () => {
+      server.script(textReply('Done.'));
+      await run(native(), {
+        items: [
+          { kind: 'user', text: 'Read the page' },
+          { kind: 'assistant', text: 'Let me look first.', toolCalls: [] },
+          { kind: 'assistant', text: '', toolCalls: [calls[0]] },
+          { kind: 'tool_result', callId: calls[0].id, name: 'read_page', content: '{"page":"one"}' },
+          { kind: 'assistant', text: 'It has one section.', toolCalls: [] },
+          { kind: 'user', text: 'Add another' }
+        ]
+      });
+      const messages = posts()[0].body.messages;
+      expect(() => renderStrictTemplate(messages)).not.toThrow();
+      expect(messages.map((m: { role: string; content: string }) => [m.role, m.content])).toEqual([
+        ['system', 'You edit websites.'],
+        ['user', 'Read the page'],
+        ['assistant', 'Let me look first.'],
+        ['assistant', ''],
+        ['tool', '{"page":"one"}'],
+        ['user', 'Go on.'],
+        ['assistant', 'It has one section.'],
+        ['user', 'Add another']
+      ]);
+    });
+  });
+
   it('uses call IDs that strict chat templates accept', async () => {
     server.script(toolCallReply('read_page', { pageId: 'a' }));
     expect(doneOf(await run(native())).toolCalls[0].id).toMatch(/^[a-zA-Z0-9]{9}$/);
@@ -412,6 +508,103 @@ describe('where a request may go', () => {
 
   it.each(['not a url', 'ftp://127.0.0.1/v1', 'file:///etc/passwd', 'http://user:pass@127.0.0.1/v1', 'http://127.0.0.1/v1?x=1', 'http://127.0.0.1/v1#a'])('rejects %s', (url) => {
     expect(checkLocalBaseURL(url, true).ok).toBe(false);
+  });
+
+  describe('localhost', () => {
+    const port = () => new URL(server.baseURL).port;
+    const endpoint = () => ({ baseURL: `http://localhost:${port()}/v1`, model: 'test-model', apiKey: 'local-secret', toolMode: 'native' as const });
+    /** A fetch that counts its calls and stands in for the server, since `localhost` itself is never resolved here. */
+    function counting() {
+      const targets: string[] = [];
+      const fetch = ((input: string | URL | Request, init?: RequestInit) => {
+        targets.push(String(input));
+        return globalThis.fetch(String(input).replace('//localhost:', '//127.0.0.1:'), init);
+      }) as typeof globalThis.fetch;
+      return { fetch, targets };
+    }
+
+    it('keeps the name in the address, so proxy exclusions and certificates for it still apply', () => {
+      expect(checkLocalBaseURL(`http://LOCALHOST:${port()}/v1/`)).toEqual({ ok: true, url: `http://localhost:${port()}/v1`, remote: false });
+    });
+
+    it('sends to localhost once every address it resolves to is this computer', async () => {
+      const { fetch, targets } = counting();
+      const lookup = async () => [{ address: '127.0.0.1' }, { address: '::1' }, { address: '::ffff:127.0.0.1' }];
+      server.script(textReply('ok'));
+      expect((await listLocalModels(endpoint(), { fetch, lookup })).ok).toBe(true);
+      expect(doneOf(await run(new LocalAdapter(endpoint(), { fetch, lookup }), { tools: [] })).text).toBe('ok');
+      expect(targets).toEqual([`http://localhost:${port()}/v1/models`, `http://localhost:${port()}/v1/chat/completions`]);
+    });
+
+    it('neither waits on a stalled lookup nor outlasts Stop', async () => {
+      const { fetch, targets } = counting();
+      const stalled = () => new Promise<Array<{ address: string }>>(() => undefined);
+      const started = Date.now();
+      expect(await listLocalModels(endpoint(), { fetch, lookup: stalled })).toMatchObject({ ok: false, message: expect.stringMatching(/could not be looked up/) });
+      expect(Date.now() - started).toBeLessThan(4000);
+      const stop = new AbortController();
+      const turn = run(new LocalAdapter(endpoint(), { fetch, lookup: stalled }), { tools: [] }, stop.signal);
+      stop.abort();
+      expect(errorOf(await turn)).toMatchObject({ code: 'cancelled' });
+      expect(targets).toEqual([]);
+    });
+
+    it.each([
+      ['points somewhere else', async () => [{ address: '127.0.0.1' }, { address: '203.0.113.7' }], /points to 203\.0\.113\.7/],
+      ['cannot be looked up', async (): Promise<Array<{ address: string }>> => Promise.reject(new Error('ENOTFOUND')), /could not be looked up/]
+    ])('sends nothing when localhost %s', async (_label, lookup, message) => {
+      const { fetch, targets } = counting();
+      expect(errorOf(await run(new LocalAdapter(endpoint(), { fetch, lookup }), { tools: [] }))).toMatchObject({ code: 'invalid_request', message: expect.stringMatching(message) });
+      expect(await listLocalModels(endpoint(), { fetch, lookup })).toMatchObject({ ok: false, message: expect.stringMatching(message) });
+      expect(await testLocal(endpoint(), { fetch, lookup })).toMatchObject({ ok: false, message: expect.stringMatching(message) });
+      expect(targets).toEqual([]);
+      expect(server.requests).toEqual([]);
+    });
+  });
+
+  /** Fake keys at the length real ones have. */
+  const fake = (prefix: string) => `${prefix}${'Ab3_dE6-gH9'.repeat(5)}`;
+
+  it.each([
+    [fake('sk-proj-'), 'OpenAI'],
+    [fake('sk-svcacct-'), 'OpenAI'],
+    [fake('sk-admin-'), 'OpenAI'],
+    [fake('sk-None-'), 'OpenAI'],
+    [`sk-${'a1B2c3D4e5'.repeat(2)}T3BlbkFJ${'f6G7h8I9j0'.repeat(2)}`, 'OpenAI'],
+    [`Bearer ${fake('sk-proj-')}`, 'OpenAI'],
+    [`OPENAI_API_KEY=${fake('sk-proj-')}`, 'OpenAI'],
+    [`(${fake('sk-proj-')})`, 'OpenAI'],
+    [`  "${fake('sk-ant-api03-')}"  `, 'Anthropic'],
+    // The shortest each prefix counts at.
+    [`sk-ant-${'a'.repeat(33)}`, 'Anthropic'],
+    [`sk-proj-${'a'.repeat(30)}`, 'OpenAI']
+  ])('recognizes the cloud key %s', (key, provider) => {
+    expect(localKeyProblem(key)).toContain(`an ${provider} API key`);
+  });
+
+  it.each(['', '   ', 'local-secret', 'ollama', 'lm-studio', 'sk-no-key-required', 'sk-local-dev', 'sk-proj-local', 'lab:sk-proj-local', 'sk-ant-mine', `sk-ant-${'a'.repeat(32)}`, `sk-proj-${'a'.repeat(29)}`, 'sk-1234567890abcdefghijkl', `sk-${'0123456789abcdef'.repeat(2)}`, `sk-${'x9'.repeat(30)}`])(
+    'accepts the local key "%s"',
+    (key) => {
+      expect(localKeyProblem(key)).toBeNull();
+    }
+  );
+
+  it.each([
+    ['on this computer', () => server.baseURL, fake('sk-ant-api03-'), 'Anthropic'],
+    ['on another machine', () => 'http://192.0.2.10:8080/v1', fake('sk-proj-'), 'OpenAI']
+  ])('never sends a cloud key to a local server %s', async (_where, baseURL, apiKey, provider) => {
+    let calls = 0;
+    const fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      calls++;
+      return globalThis.fetch(input, init);
+    }) as typeof globalThis.fetch;
+    const endpoint = { baseURL: baseURL(), model: 'test-model', apiKey, allowRemote: true };
+    const refused = expect.stringContaining(`an ${provider} API key`);
+    expect(errorOf(await run(new LocalAdapter(endpoint, { fetch }), { tools: [] }))).toMatchObject({ code: 'invalid_request', message: refused });
+    expect(await listLocalModels(endpoint, { fetch })).toMatchObject({ ok: false, message: refused });
+    expect(await testLocal(endpoint, { fetch })).toMatchObject({ ok: false, message: refused });
+    expect(calls).toBe(0);
+    expect(server.requests).toEqual([]);
   });
 
   it('counts only a real true as permission', () => {
@@ -585,9 +778,12 @@ describe('constrained JSON', () => {
     });
     const messages = posts()[1].body.messages;
     expect(messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(() => renderStrictTemplate(messages)).not.toThrow();
     expect(JSON.parse(messages[2].content).action.args).toEqual({ value: { $json: '[1]' } });
     expect(messages[3].content).toContain('Result of set_value:\n{"ok":true}');
     expect(messages[3].content).toContain('Validation found new errors.');
+    expect(messages[3].content.indexOf('Result of set_value')).toBeLessThan(messages[3].content.indexOf('Validation found new errors.'));
+    expect(JSON.parse(messages[2].content)).toEqual({ brief_status: done.text, action: { tool: 'set_value', args: { value: { $json: '[1]' } } } });
   });
 
   it('replays an earlier request’s answer as a finish envelope, never as prose (#195)', async () => {
@@ -744,5 +940,17 @@ describe('constrained JSON', () => {
 
   it('writes readable signatures', () => {
     expect(signature(toStrictSchema({ type: 'object', properties: { a: { type: 'string' }, b: { type: 'array', items: { enum: ['x', 'y'] } }, c: {} }, required: ['a'] }))).toBe('{a: string, b?: ("x"|"y")[], c?: json}');
+  });
+});
+
+describe('the mock server', () => {
+  it('listens on a port it is given, and refuses one that is taken', async () => {
+    const port = Number(new URL(server.baseURL).port);
+    const second = new MockOpenAIServer();
+    await expect(second.start(port)).rejects.toMatchObject({ code: 'EADDRINUSE' });
+    await server.stop();
+    await second.start(port);
+    expect(second.baseURL).toBe(`http://127.0.0.1:${port}/v1`);
+    server = second;
   });
 });

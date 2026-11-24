@@ -6,16 +6,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AiEvent, ChatContext } from '@shared/api';
+import type { AiEvent, ChatContext, ProviderId } from '@shared/api';
 import type { ElementRef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { Orchestrator } from '@agent/orchestrator';
+import { LIMITS, Orchestrator } from '@agent/orchestrator';
 import { LocalAdapter, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { DEFAULT_LOCAL_PROFILE, type LocalModelProfile } from '@agent/models';
 import { findForbiddenShapes } from '@agent/strict-schema';
 import { FOCUSED_WINDOW_TOKENS } from '@agent/tools';
 import { ProjectSession } from '../../src/main/project/session';
-import { closedPort, envelopeReply, MockOpenAIServer, sseChunk, textReply, toolCallReply } from './mock-openai-server';
+import { closedPort, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
 let server: MockOpenAIServer;
 const dirs: string[] = [];
@@ -27,7 +27,7 @@ afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
-async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOptions = {}, codeEnabled = true) {
+async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOptions = {}, codeEnabled = true, provider: ProviderId = 'local') {
   const dir = mkdtempSync(join(tmpdir(), 'so-local-'));
   dirs.push(dir);
   const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
@@ -36,7 +36,7 @@ async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOp
   let busy = false;
   const orch = new Orchestrator({
     session: () => session,
-    adapter: async () => ({ adapter, model: 'test-model', provider: 'local' }),
+    adapter: async () => ({ adapter, model: 'test-model', provider }),
     emit: (e) => events.push(e),
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [] }),
@@ -168,6 +168,45 @@ describe('orchestrator with constrained JSON', () => {
     expect(headerName(session, header)).toBe(before);
   });
 
+  it('ends a reply that streams without end at the time limit, keeping the valid work so far', async () => {
+    const limit = LIMITS.localActiveMs;
+    LIMITS.localActiveMs = 700;
+    try {
+      // A silent server would trip the idle timeout long before the limit; this one keeps sending real content.
+      const { session, run, header } = await setup({}, { firstTokenTimeoutMs: 300, idleTimeoutMs: 300 });
+      const before = headerName(session, header);
+      server.script(envelopeReply('update_site_brand', rename('Harbor Coffee'), 'Renaming the site'), { frames: [sseChunk({ role: 'assistant' })], endless: { frame: sseChunk({ content: ' and more' }), everyMs: 20 } });
+      const { runId, result } = await run('Rename the site, then keep going');
+      expect(result).toMatchObject({ status: 'completed', canUndo: true, incomplete: true, error: 'time limit' });
+      expect(result?.summary).toMatch(/time limit/);
+      expect(headerName(session, header)).toBe('Harbor Coffee');
+      await expect.poll(() => server.disconnects).toBe(1);
+      expect(server.requests.filter((r) => r.method === 'POST')).toHaveLength(2);
+      expect((await session.undoGroup(runId)).ok).toBe(true);
+      expect(headerName(session, header)).toBe(before);
+    } finally {
+      LIMITS.localActiveMs = limit;
+    }
+  });
+
+  it('gives a local model its own, longer time limit than a cloud one', async () => {
+    const cloud = LIMITS.activeMs;
+    LIMITS.activeMs = 150;
+    try {
+      // Slower than the cloud limit allows, as a local model reading a long prompt is.
+      const slow = { ...envelopeReply('finish', { message: 'Nothing to change.' }), delayMs: 400 };
+      const local = await setup();
+      server.script(slow);
+      expect((await local.run('Hello')).result).toMatchObject({ status: 'no-changes', summary: 'Nothing to change.' });
+      const asCloud = await setup({}, {}, true, 'openai');
+      server.script(slow);
+      expect((await asCloud.run('Hello')).result).toMatchObject({ status: 'failed', error: 'time limit' });
+    } finally {
+      LIMITS.activeMs = cloud;
+    }
+    expect(LIMITS).toMatchObject({ activeMs: 10 * 60_000, localActiveMs: 30 * 60_000 });
+  });
+
   it('fails clearly, with nothing changed, when no server is running', async () => {
     const port = await closedPort();
     const { session, run, header } = await setup({ baseURL: `http://127.0.0.1:${port}/v1` });
@@ -190,6 +229,22 @@ describe('orchestrator with native tool calls', () => {
     expect(result?.status).toBe('completed');
     expect(headerName(session, header)).toBe('Second');
     expect(session.revision).toBe(2);
+  });
+
+  it('asks a strict chat template for smaller steps after a cut-off reply that followed a tool result', async () => {
+    const { session, run, header } = await setup({ toolMode: 'native' });
+    server.script(toolCallReply('update_site_brand', rename('Harbor Coffee')), textReply('Now the pages', { finish: 'length' }), textReply('Renamed the site.'));
+    const { result } = await run('Rename the site to Harbor Coffee');
+    expect(result).toMatchObject({ status: 'completed', summary: 'Renamed the site.' });
+    expect(headerName(session, header)).toBe('Harbor Coffee');
+    const sent = server.requests.filter((r) => r.method === 'POST').map((r) => r.body.messages);
+    expect(sent).toHaveLength(3);
+    for (const messages of sent) renderStrictTemplate(messages);
+    expect(sent[2].map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant', 'user']);
+    // The cut-off reply is never replayed: a short bridge stands between the result and the request for smaller steps.
+    expect(sent[2][4]).toEqual({ role: 'assistant', content: 'I have read the results.' });
+    expect(JSON.stringify(sent[2])).not.toContain('Now the pages');
+    expect(sent[2].at(-1).content).toMatch(/^Your last response reached the output limit.*smaller steps/s);
   });
 
   it('recovers from malformed fragmented arguments', async () => {
