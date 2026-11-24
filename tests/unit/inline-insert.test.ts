@@ -194,9 +194,13 @@ describe('an Add button goes only where the slot it fills is plain', () => {
     def.tree!.nodes.rows = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: ['extraSlot'] };
     (def.tree!.nodes[root] as ElementNode).children.push('rows');
     expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
-    // Shown once outside the list as well, it is plain again.
-    def.tree!.nodes.extraBox = { id: 'extraBox', kind: 'element', tag: 'div', children: ['extraSlot'] };
+    // Shown once outside the list as well, it still shows many times.
+    def.tree!.nodes.extraOnce = { id: 'extraOnce', kind: 'slot', slot: 'extra' };
+    def.tree!.nodes.extraBox = { id: 'extraBox', kind: 'element', tag: 'div', children: ['extraOnce'] };
     (def.tree!.nodes[root] as ElementNode).children.push('extraBox');
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+    // Taken out of the list, it shows once.
+    def.tree!.nodes.rows = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: [] };
     expect(addPoints(p.state, p.owner, ref(p.owner, p.card)).map((x) => [x.side, x.slot])).toEqual([['inside', 'extra']]);
   });
 
@@ -219,6 +223,62 @@ describe('an Add button goes only where the slot it fills is plain', () => {
     def.tree!.nodes.bodySlot2 = { id: 'bodySlot2', kind: 'slot', slot: 'body' };
     (def.tree!.nodes[root] as ElementNode).children.push('bodySlot2');
     expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+    (def.tree!.nodes[root] as ElementNode).children.pop();
+    // Handed to a component that shows that slot in a list, it shows many times.
+    const listing = structuredClone(p.state.components[sectionDef]);
+    listing.id = 'listing';
+    const [lRoot] = listing.tree!.rootIds;
+    const contentSlot = Object.values(listing.tree!.nodes).find((n) => n.kind === 'slot' && n.slot === 'content')!;
+    listing.tree!.nodes.lRows = { id: 'lRows', kind: 'repeat', list: { $prop: 'rows' }, children: [contentSlot.id] };
+    for (const n of Object.values(listing.tree!.nodes)) if (n.kind === 'element') n.children = n.children.filter((c) => c !== contentSlot.id);
+    (listing.tree!.nodes[lRoot] as ElementNode).children.push('lRows');
+    p.state.components.listing = listing;
+    def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: 'listing', props: {}, slots: { content: ['bodySlot'] } };
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+    // Handed to a code component, how often it shows is up to its code.
+    p.state.components.coded = { ...structuredClone(p.state.components[sectionDef]), id: 'coded', kind: 'code', tree: undefined, source: '<section>{@render content?.()}</section>' };
+    def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: 'coded', props: {}, slots: { content: ['bodySlot'] } };
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+  });
+
+  it('a code component placed on the page gets none inside: its code decides how often a slot shows', () => {
+    const p = page();
+    const sectionDef = (home(p.state).nodes[p.section] as InstanceNode).definitionId;
+    p.state.components[sectionDef] = { ...p.state.components[sectionDef], kind: 'code', tree: undefined, source: '<section>{@render content?.()}</section>' };
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.section)).map((x) => x.side)).toEqual(['before', 'after']);
+  });
+
+  it('works out a design that places another twice, which places another twice, without going round each again', () => {
+    const p = page();
+    const sectionDef = (home(p.state).nodes[p.section] as InstanceNode).definitionId;
+    // Forty levels, each placing the next twice and handing it its one slot once: what goes in the outermost shows
+    // through each level once, and asking takes no time (each level asked about once, not 2^40 times).
+    let below = sectionDef;
+    for (let i = 0; i < 40; i++) {
+      const id = `level${i}`;
+      p.state.components[id] = {
+        ...structuredClone(p.state.components[p.cardDef]),
+        id,
+        insertAs: 'element',
+        slots: { body: { label: 'Body' } },
+        tree: {
+          rootIds: ['r'],
+          nodes: {
+            r: { id: 'r', kind: 'element', tag: 'div', children: ['a', 'b'] },
+            a: { id: 'a', kind: 'instance', definitionId: below, props: {}, slots: { [i ? 'body' : 'content']: ['s'] } },
+            // Filled too, with something of its own, so each level asks about the one below twice.
+            b: { id: 'b', kind: 'instance', definitionId: below, props: {}, slots: { [i ? 'body' : 'content']: ['u'] } },
+            s: { id: 's', kind: 'slot', slot: 'body' },
+            u: { id: 'u', kind: 'element', tag: 'div', children: [] }
+          }
+        }
+      };
+      below = id;
+    }
+    (home(p.state).nodes[p.card] as InstanceNode).definitionId = below;
+    const started = performance.now();
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card)).map((x) => [x.side, x.slot])).toEqual([['inside', 'body']]);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   it('a repeated item’s copy gets none: the place would be every item’s', () => {

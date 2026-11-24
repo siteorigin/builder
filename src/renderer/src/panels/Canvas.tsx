@@ -1707,7 +1707,12 @@ export function Canvas() {
   function closeAdd(back: boolean) {
     const trigger = adding?.trigger;
     setAdding(null);
-    if (back) requestAnimationFrame(() => (trigger?.isConnected ? trigger : canvasRef.current)?.focus({ preventScroll: true }));
+    if (!back) return;
+    // Only focus the list left behind: anything that took focus meanwhile keeps it.
+    requestAnimationFrame(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) (trigger?.isConnected ? trigger : canvasRef.current)?.focus({ preventScroll: true });
+    });
   }
   /**
    * Add what was chosen at the list's place, as one change (see insertHere), on the project the list was made for: a

@@ -3,7 +3,7 @@
  * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
 import { allTrees, childLists, findParent } from '@engine/tree';
 import { ownerLabel, refLabel, treeFor } from './model';
@@ -88,48 +88,70 @@ export function heldSlots(state: ProjectState, ref: ElementRef | null): string[]
   if (ref?.instancePath.length !== 1) return [];
   const inst = own(treeFor(state, ref.owner)?.nodes, ref.instancePath[0]);
   const def = inst?.kind === 'instance' ? own(state.components, inst.definitionId) : undefined;
-  if (!def?.tree || ref.nodeId === def.tree.rootIds[0]) return [];
-  const shown = slotOutlets(def, [ref.nodeId]);
-  return Object.keys(def.slots ?? {}).filter((name) => shown.has(name));
-}
-
-/**
- * The slots a component's design shows exactly once, so what is put in one shows once: through its own elements, or
- * handed to a component placed in it that shows that slot once itself; not inside a repeat (shown once per item, or
- * never), nor shown from two places. In the order it declares them. A code component renders its own, so every slot it
- * declares counts.
- */
-export function shownOnceSlots(state: ProjectState, definitionId: string, through: ReadonlySet<string> = new Set()): string[] {
-  const def = own(state.components, definitionId);
-  if (!def || through.has(def.id)) return [];
-  if (def.kind !== 'managed' || !def.tree) return Object.keys(def.slots ?? {});
-  const path = new Set(through).add(def.id);
-  const shown = slotOutlets(def, def.tree.rootIds, (inner) => new Set(shownOnceSlots(state, inner, path)));
-  return Object.keys(def.slots ?? {}).filter((name) => shown.get(name) === 1);
-}
-
-/**
- * How many times `def`'s design shows each of its slots through the nodes `from`, walking only its elements, and, with
- * `forwards`, what it hands a component placed in it in a slot that component shows once (see shownOnceSlots).
- */
-function slotOutlets(def: ComponentDefinition, from: string[], forwards?: (definitionId: string) => Set<string>): Map<string, number> {
-  const tree = def.tree;
-  const count = new Map<string, number>();
-  if (!tree) return count;
+  const tree = def?.tree;
+  if (!def || !tree || ref.nodeId === tree.rootIds[0]) return [];
+  const held = new Set<string>();
   const seen = new Set<string>();
   const walk = (id: string) => {
     const n = own(tree.nodes, id);
     if (!n || seen.has(id)) return;
     seen.add(id);
-    if (n.kind === 'slot') count.set(n.slot, (count.get(n.slot) ?? 0) + 1);
+    if (n.kind === 'slot') held.add(n.slot);
     else if (n.kind === 'element') n.children.forEach(walk);
-    else if (n.kind === 'instance' && forwards) {
-      const once = forwards(n.definitionId);
-      for (const [slot, ids] of Object.entries(n.slots ?? {})) if (once.has(slot) && Array.isArray(ids)) ids.forEach(walk);
+  };
+  walk(ref.nodeId);
+  return Object.keys(def.slots ?? {}).filter((name) => held.has(name));
+}
+
+/** How often what is put in a slot shows: not at all, once, or MANY (more than once, or a number no one can tell). */
+const MANY = 2;
+
+/**
+ * The slots a component's design shows exactly once, so what is put in one shows once: through its own elements, or
+ * handed to a component placed in it that shows it once itself; not inside a repeat (once per item, or never), nor from
+ * two places. In the order it declares them. A code component renders its slots as its code likes, so none counts.
+ */
+export function shownOnceSlots(state: ProjectState, definitionId: string): string[] {
+  const counts = slotCounts(state, definitionId, new Map(), new Set());
+  return Object.keys(own(state.components, definitionId)?.slots ?? {}).filter((name) => counts.get(name) === 1);
+}
+
+/**
+ * How often `definitionId`'s design shows each of its slots (0, 1 or MANY). Each definition is worked out once per
+ * question (`done`), so a design that places another twice, which places another twice, costs no more than its parts;
+ * one placed inside itself (`path`) shows its slots MANY times.
+ */
+function slotCounts(state: ProjectState, definitionId: string, done: Map<string, Map<string, number>>, path: ReadonlySet<string>): Map<string, number> {
+  const known = done.get(definitionId);
+  if (known) return known;
+  const def = own(state.components, definitionId);
+  const counts = new Map<string, number>();
+  if (!def) return counts;
+  if (def.kind !== 'managed' || !def.tree || path.has(def.id)) {
+    for (const name of Object.keys(def.slots ?? {})) counts.set(name, MANY);
+    return counts;
+  }
+  const tree = def.tree;
+  const within = new Set(path).add(def.id);
+  const seen = new Set<string>();
+  const walk = (id: string, times: number) => {
+    const n = own(tree.nodes, id);
+    if (!n || !times || seen.has(id)) return;
+    seen.add(id);
+    if (n.kind === 'slot') counts.set(n.slot, Math.min(MANY, (counts.get(n.slot) ?? 0) + times));
+    else if (n.kind === 'element') n.children.forEach((c) => walk(c, times));
+    else if (n.kind === 'repeat') n.children.forEach((c) => walk(c, MANY));
+    else if (n.kind === 'instance') {
+      // What the design hands a component placed in it shows as often as that component shows the slot it fills.
+      const fills = Object.entries(n.slots ?? {}).filter(([, ids]) => Array.isArray(ids) && ids.length);
+      if (!fills.length) return;
+      const inner = slotCounts(state, n.definitionId, done, within);
+      for (const [slot, ids] of fills) ids.forEach((c) => walk(c, Math.min(MANY, times * (inner.get(slot) ?? 0))));
     }
   };
-  from.forEach(walk);
-  return count;
+  tree.rootIds.forEach((id) => walk(id, 1));
+  done.set(def.id, counts);
+  return counts;
 }
 
 /**
