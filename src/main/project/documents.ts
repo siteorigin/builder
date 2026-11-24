@@ -1,6 +1,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AssetsDoc, ComponentDefinition, PageDoc, ProjectManifest, ProjectState, SiteDoc, ThemeLock, TokensDoc } from '@shared/types';
+import type { AssetsDoc, Collection, CollectionDoc, ComponentDefinition, EntryDoc, PageDoc, ProjectManifest, ProjectState, SiteDoc, ThemeLock, TokensDoc } from '@shared/types';
+import { isCollectionId, isEntryId } from '@shared/collections';
 import { SCHEMA_VERSION } from '@shared/types';
 import { migrateProject, newestDocumentVersion, type MigrationResult } from '@shared/migrations';
 import { readIfExists, safeJoin, toJson } from './fsutil';
@@ -17,8 +18,52 @@ export function isCanonicalPath(p: string): boolean {
     /^siteorigin\/(site|tokens|assets|theme-lock)\.json$/.test(p) ||
     /^siteorigin\/pages\/[A-Za-z0-9_-]+\.json$/.test(p) ||
     /^siteorigin\/components\/[A-Za-z0-9][A-Za-z0-9._-]*\/component\.json$/.test(p) ||
+    collectionPathOf(p) !== null ||
     CUSTOM_SOURCE_RE.test(p)
   );
+}
+
+export function collectionDocPath(collectionId: string): string {
+  return `${DOC_DIR}/collections/${collectionId}/collection.json`;
+}
+
+export function entryDocPath(collectionId: string, entryId: string): string {
+  return `${DOC_DIR}/collections/${collectionId}/entries/${entryId}.json`;
+}
+
+/**
+ * The collection (and, for an entry's file, the entry) a document path holds, or null for any other path. Only
+ * well-formed IDs match, so a path from a journal or a saved version can never reach outside its folder.
+ */
+export function collectionPathOf(p: string): { collectionId: string; entryId?: string } | null {
+  const m = /^siteorigin\/collections\/([^/]+)\/(?:collection\.json|entries\/([^/]+)\.json)$/.exec(p);
+  if (!m || !isCollectionId(m[1])) return null;
+  if (m[2] === undefined) return { collectionId: m[1] };
+  return isEntryId(m[2]) ? { collectionId: m[1], entryId: m[2] } : null;
+}
+
+/**
+ * Collections from their documents, by path. Settings come first and entries after, whatever order the paths are
+ * in, so an entry always finds its collection. An entry whose collection has no settings document is returned in
+ * `orphans` instead.
+ */
+export function collectionsFromDocs(docs: Iterable<[string, unknown]>): { collections: Record<string, Collection>; orphans: string[] } {
+  const settings: Array<[string, CollectionDoc]> = [];
+  const entries: Array<[string, string, EntryDoc]> = [];
+  for (const [path, doc] of docs) {
+    const at = collectionPathOf(path);
+    if (!at) continue;
+    if (at.entryId === undefined) settings.push([at.collectionId, doc as CollectionDoc]);
+    else entries.push([path, at.collectionId, doc as EntryDoc]);
+  }
+  const collections: Record<string, Collection> = {};
+  for (const [id, doc] of settings.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) collections[id] = { settings: doc, entries: {} };
+  const orphans: string[] = [];
+  for (const [path, cid, entry] of entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (!Object.hasOwn(collections, cid)) orphans.push(path);
+    else collections[cid].entries[entry.id] = entry;
+  }
+  return { collections, orphans };
 }
 export function isSafeId(id: unknown): id is string {
   return typeof id === 'string' && SAFE_ID_RE.test(id) && !id.includes('..');
@@ -45,6 +90,11 @@ export function stateToDocs(state: ProjectState): Map<string, string> {
     // Authored code is canonical too, so it is journaled and part of undo history.
     if (def.sourcePath && def.source !== undefined) docs.set(def.sourcePath, def.source);
   }
+  for (const id of Object.keys(state.collections ?? {}).sort()) {
+    const c = state.collections[id];
+    docs.set(collectionDocPath(id), toJson(c.settings));
+    for (const eid of Object.keys(c.entries).sort()) docs.set(entryDocPath(id, eid), toJson(c.entries[eid]));
+  }
   return docs;
 }
 
@@ -70,6 +120,11 @@ export async function newestStoredVersion(dir: string): Promise<number> {
   const names = async (rel: string) => (existsSync(join(dir, rel)) ? (await fs.readdir(join(dir, rel)).catch(() => [])).sort() : []);
   for (const f of await names(`${DOC_DIR}/pages`)) if (f.endsWith('.json')) paths.push(`${DOC_DIR}/pages/${f}`);
   for (const d of await names(`${DOC_DIR}/components`)) if (!d.startsWith('.')) paths.push(componentDocPath(d));
+  for (const c of await names(`${DOC_DIR}/collections`)) {
+    if (!isCollectionId(c)) continue;
+    paths.push(collectionDocPath(c));
+    for (const f of await names(`${DOC_DIR}/collections/${c}/entries`)) if (f.endsWith('.json') && isEntryId(f.slice(0, -5))) paths.push(entryDocPath(c, f.slice(0, -5)));
+  }
   let newest = 0;
   for (const rel of paths) {
     try {
@@ -199,5 +254,41 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
     }
     components[def.id] = def;
   }
-  return { manifest, site, tokens, assets, themeLock, pages, components };
+  // Collections: every folder with settings or entries, so an entry whose collection has gone is noticed.
+  const collectionDocs: Array<[string, unknown]> = [];
+  const folders = await list(`${DOC_DIR}/collections`, (p) => collectionPathOf(p)?.collectionId ?? null);
+  for (const c of folders) {
+    if (c.startsWith('.')) continue;
+    const dir = `${DOC_DIR}/collections/${c}`;
+    if (!isCollectionId(c)) throw new ProjectFormatError(`${dir} is not a valid collection folder name (use lowercase letters, numbers and hyphens).`);
+    const entryFiles = await list(`${dir}/entries`, (p) => {
+      const at = collectionPathOf(p);
+      return at?.collectionId === c && at.entryId !== undefined ? `${at.entryId}.json` : null;
+    });
+    // A folder left behind by an interrupted delete holds neither.
+    if (exists(collectionDocPath(c))) {
+      const settings = await load<CollectionDoc>(collectionDocPath(c));
+      if (!settings || typeof settings !== 'object' || settings.id !== c) throw new ProjectFormatError(`${collectionDocPath(c)} has a mismatched id "${(settings as { id?: unknown })?.id}".`);
+      collectionDocs.push([collectionDocPath(c), settings]);
+    }
+    for (const f of entryFiles) {
+      if (f.startsWith('.') || !f.endsWith('.json')) continue;
+      const eid = f.slice(0, -5);
+      const path = `${dir}/entries/${f}`;
+      if (!isEntryId(eid)) throw new ProjectFormatError(`${path} is not named like an entry (en_ followed by letters and numbers).`);
+      if (!exists(path)) continue;
+      const entry = await load<EntryDoc>(path);
+      if (!entry || typeof entry !== 'object' || entry.id !== eid) throw new ProjectFormatError(`${path} has a mismatched id "${(entry as { id?: unknown })?.id}".`);
+      collectionDocs.push([path, entry]);
+    }
+  }
+  const { collections, orphans } = collectionsFromDocs(collectionDocs);
+  if (orphans.length) throw new ProjectFormatError(`${orphans[0]} belongs to a collection that has no collection.json. Restore that file, or move the entry out of the project.`);
+  const seenEntries = new Map<string, string>();
+  for (const c of Object.values(collections))
+    for (const id of Object.keys(c.entries)) {
+      if (seenEntries.has(id)) throw new ProjectFormatError(`The entry ${id} is in both the ${seenEntries.get(id)} and ${c.settings.id} collections. Entry IDs must be unique across the project.`);
+      seenEntries.set(id, c.settings.id);
+    }
+  return { manifest, site, tokens, assets, themeLock, pages, components, collections };
 }

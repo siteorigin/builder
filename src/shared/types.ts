@@ -21,10 +21,13 @@ export type StyleValue = string | number | boolean | { token: string };
 export type StyleProps = Record<string, StyleValue>;
 export type ResponsiveStyles = Partial<Record<ResponsiveScope, StyleProps>>;
 
-export type LinkType = 'none' | 'page' | 'url' | 'email' | 'tel' | 'anchor' | 'document';
+export type LinkType = 'none' | 'page' | 'url' | 'email' | 'tel' | 'anchor' | 'document' | 'entry';
 export interface LinkValue {
   type: LinkType;
-  /** Page ID, URL, email address, telephone number, anchor ID or a document's asset ID, depending on `type`. */
+  /**
+   * Page ID, URL, email address, telephone number, anchor ID, a document's asset ID or a collection entry's ID,
+   * depending on `type`. Entry IDs are unique across the project, so an entry link names no collection.
+   */
   target: string;
   /** Optional in-page anchor for page links. */
   anchor?: string;
@@ -676,6 +679,79 @@ export interface ThemeLock {
   components: Record<string, { componentId: string; version: string; hash: string }>;
 }
 
+// ---------------------------------------------------------------------------
+// Collections
+// ---------------------------------------------------------------------------
+
+/** The kinds of custom field a collection's entries can fill in: one plain value, or a picture. */
+export type CollectionFieldSchema = StringProp | NumberProp | BooleanProp | EnumProp | ImageProp;
+export const COLLECTION_FIELD_TYPES = ['string', 'number', 'boolean', 'enum', 'image'] as const;
+export type CollectionFieldValue = string | number | boolean | ImageValue;
+
+/** One way of grouping a collection's entries, such as categories or tags. */
+export interface CollectionTaxonomy {
+  label: string;
+  /** Terms by stable ID, in the order they are offered. Renaming a term keeps every entry's assignment. */
+  terms: Record<string, { label: string }>;
+}
+
+/**
+ * A collection's settings: `siteorigin/collections/<id>/collection.json`. Its entries are files of their own beside
+ * it, under `entries/`, so editing one post rewrites one file.
+ */
+export interface CollectionDoc {
+  schemaVersion: number;
+  /** Stable lowercase slug such as "posts" or "case-studies"; also the collection's folder name. */
+  id: string;
+  name: string;
+  /**
+   * The address prefix every entry's address starts with, such as "/blog/". The collection owns this exact address
+   * and each entry owns its prefix plus slug; no page or old page address may use either.
+   */
+  route: string;
+  /** Groupings by stable ID ("categories", "tags"). */
+  taxonomies: Record<string, CollectionTaxonomy>;
+  /** Custom fields every entry can fill in, by stable name. An entry without a value of its own shows the default. */
+  fields: Record<string, CollectionFieldSchema>;
+  /**
+   * An editorial order chosen for the entries, listing each exactly once. Absent, entries go newest first by
+   * `publishedAt` (then by ID), as dated articles do.
+   */
+  entryOrder?: string[];
+}
+
+/** One entry of a collection: `siteorigin/collections/<collectionId>/entries/<id>.json`. */
+export interface EntryDoc {
+  schemaVersion: number;
+  /** Stable `en_…` ID, unique across the whole project, so links to it name no collection. */
+  id: string;
+  /** The last segment of its address: one lowercase segment, unique among the site's addresses. */
+  slug: string;
+  title: string;
+  /** Publication date, a calendar day written YYYY-MM-DD. It may be in the past (a backdated piece). */
+  publishedAt: string;
+  /** When it was last revised, as the author states it (YYYY-MM-DD). */
+  updatedAt?: string;
+  /** A draft stays in the project and keeps its address, but is left out of the website. */
+  draft: boolean;
+  /** Who wrote it, shown as written. */
+  author?: string;
+  excerpt?: string;
+  /** A library image's asset ID. */
+  featuredImage?: string;
+  /** Assigned term IDs, by taxonomy ID. */
+  terms: Record<string, string[]>;
+  /** Custom field values by field name. A field left out shows its default. */
+  values: Record<string, CollectionFieldValue>;
+  body: RichText;
+}
+
+/** A collection in memory: its settings and its entries, each stored in a file of its own. */
+export interface Collection {
+  settings: CollectionDoc;
+  entries: Record<string, EntryDoc>;
+}
+
 /** The full in-memory project state. */
 export interface ProjectState {
   manifest: ProjectManifest;
@@ -685,6 +761,8 @@ export interface ProjectState {
   tokens: TokensDoc;
   assets: AssetsDoc;
   themeLock: ThemeLock;
+  /** Collections by ID. Empty for a project without any (and for every project stored before collections). */
+  collections: Record<string, Collection>;
 }
 
 // ---------------------------------------------------------------------------

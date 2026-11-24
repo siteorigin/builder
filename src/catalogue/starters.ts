@@ -72,7 +72,8 @@ function emptyState(name: string, themeId = 'foundation'): ProjectState {
     components: {},
     tokens: { schemaVersion: SCHEMA_VERSION, overrides: {}, custom: [] },
     assets: { schemaVersion: SCHEMA_VERSION, assets: {} },
-    themeLock: { schemaVersion: SCHEMA_VERSION, theme: themeLockEntry(theme), components: {} }
+    themeLock: { schemaVersion: SCHEMA_VERSION, theme: themeLockEntry(theme), components: {} },
+    collections: {}
   };
 }
 

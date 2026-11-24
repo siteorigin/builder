@@ -1,4 +1,6 @@
 import { isArticleDate, pageArticle } from '@shared/articles';
+import { findEntry } from '@shared/collections';
+import { collectionDiagnostics } from './collections';
 import type { GraphNode, ImageValue, NodeTree, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { STYLE_PROP_MAP } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
@@ -133,6 +135,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     if (routes.has(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${routes.get(key)} and the old address ${from} share ${from}.` });
     routes.set(key, `The old address ${from}`);
   }
+  // Collections and their entries hold addresses of their own, in the same namespace.
+  out.push(...collectionDiagnostics(state, routes));
   for (const id of Object.keys(state.pages)) if (!state.site.pageOrder.includes(id)) out.push({ severity: 'error', code: 'PAGE_ORPHAN', message: `Page ${state.pages[id].title} is not in the page order.` });
   if (new Set(state.site.pageOrder).size !== state.site.pageOrder.length) out.push({ severity: 'error', code: 'PAGE_MISSING', message: 'The page order lists a page twice.' });
   for (const p of Object.values(state.pages)) {
@@ -278,6 +282,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       const o = v as Record<string, unknown>;
       if (o.type === 'page' && typeof o.target === 'string' && !state.pages[o.target])
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a page that no longer exists.`, owner, nodeId });
+      if (o.type === 'entry' && typeof o.target === 'string' && !findEntry(state, o.target))
+        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a collection entry that no longer exists.`, owner, nodeId });
       const asset = typeof o.assetId === 'string' && Object.hasOwn(state.assets.assets, o.assetId) ? state.assets.assets[o.assetId] : undefined;
       if (typeof o.assetId === 'string' && !asset) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: an image references a missing asset.`, owner, nodeId });
       else if (asset && asset.kind !== 'image' && shown)

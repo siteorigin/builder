@@ -70,6 +70,34 @@ const ARTICLE_FIELDS = {
   excerpt: z.string().max(320).optional().describe('Articles only: a short summary shown in News lists and under the article\'s title. Empty removes it.')
 };
 
+/** A collection's settings, as collection.create and collection.update take them (see shared/collections.ts). */
+const COLLECTION_SETTINGS = {
+  name: z.string().min(1).max(80).optional(),
+  route: z.string().max(200).optional().describe('Address prefix every entry\'s address starts with, such as "/blog/". At most three levels deep. The collection owns this address too.'),
+  taxonomies: z
+    .record(z.string(), z.object({ label: z.string().min(1).max(60), terms: z.record(z.string(), z.object({ label: z.string().min(1).max(80) })).optional() }))
+    .optional()
+    .describe('Every grouping, by stable ID ("categories", "tags"), each with its terms by stable ID. Replaces the whole set: a grouping or term left out is removed from every entry.'),
+  fields: z
+    .record(z.string(), z.record(z.string(), z.unknown()))
+    .optional()
+    .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options) or image. Replaces the whole set: a field left out is removed from every entry.')
+};
+
+/** An entry's details, as entry.create and entry.update take them. */
+const ENTRY_FIELDS = {
+  slug: z.string().max(80).optional().describe('The last part of its address: lowercase letters, numbers and hyphens. Defaults to a slug of the title, numbered when taken.'),
+  publishedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Publication date, YYYY-MM-DD; a past date backdates it. Defaults to today.'),
+  updatedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe('When it was last revised, YYYY-MM-DD. null removes it.'),
+  draft: z.boolean().optional().describe('true keeps it out of the website while it stays in the project; false publishes it. New entries are drafts.'),
+  author: z.string().max(80).nullable().optional(),
+  excerpt: z.string().max(320).nullable().optional(),
+  featuredImage: z.string().nullable().optional().describe('A library image\'s asset ID; null removes it.'),
+  terms: z.record(z.string(), z.array(z.string()).max(50)).optional().describe('Term IDs by taxonomy ID. Each taxonomy given replaces that taxonomy\'s terms; others stay.'),
+  values: z.record(z.string(), z.unknown()).optional().describe('Custom field values by field name. Each field given is set; null goes back to the field\'s default; others stay.'),
+  body: z.unknown().optional().describe(`The entry's text. ${RICH_TEXT_VALUE} Links may also go to another entry: [label](entry:en_…) or its address.`)
+};
+
 export const OPERATION_SCHEMAS = {
   'page.create': z.object({
     type: z.literal('page.create'),
@@ -388,6 +416,36 @@ export const OPERATION_SCHEMAS = {
   'theme.refresh': z
     .object({ type: z.literal('theme.refresh'), definitionIds: z.array(z.string()).optional().describe('Only these definitions. Defaults to every one that can be updated.') })
     .describe('Update installed theme components to the current theme version. Forked, project and hand-edited components are never changed.'),
+
+  'collection.create': z
+    .object({
+      type: z.literal('collection.create'),
+      collectionId: z.string().max(60).describe('Stable lowercase ID and folder name, such as "posts" or "case-studies". "posts" is the ready-made blog: Posts at /blog/, with categories and tags.'),
+      ...COLLECTION_SETTINGS
+    })
+    .describe('Add a collection of entries kept apart from the pages, such as blog posts or projects.'),
+  'collection.update': z.object({ type: z.literal('collection.update'), collectionId: z.string(), ...COLLECTION_SETTINGS }),
+  'collection.remove': z.object({ type: z.literal('collection.remove'), collectionId: z.string() }).describe('Delete a collection and every entry in it. Refused while anything outside it links to one of its entries.'),
+  'entry.create': z.object({
+    type: z.literal('entry.create'),
+    collectionId: z.string(),
+    entryId: z.string().regex(/^en_[a-z0-9]{4,32}$/).optional().describe('Internal: lets one batch create an entry and link to it.'),
+    title: z.string().min(1).max(200),
+    ...ENTRY_FIELDS
+  }),
+  'entry.update': z.object({ type: z.literal('entry.update'), collectionId: z.string(), entryId: z.string(), title: z.string().min(1).max(200).optional(), ...ENTRY_FIELDS }),
+  'entry.reorder': z.object({
+    type: z.literal('entry.reorder'),
+    collectionId: z.string(),
+    entryIds: z.array(z.string()).nullable().describe('Every entry of the collection exactly once, in the order chosen; null goes back to newest first.')
+  }),
+  'entry.remove': z.object({
+    type: z.literal('entry.remove'),
+    collectionId: z.string(),
+    entryId: z.string(),
+    replacementEntryId: z.string().optional().describe('Links to the removed entry are pointed to this entry. One of the replacements is required while anything links to it.'),
+    replacementPageId: z.string().optional().describe('Links to the removed entry are pointed to this page instead.')
+  }),
 
   'asset.add': z.object({
     type: z.literal('asset.add'),

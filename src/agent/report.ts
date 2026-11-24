@@ -113,6 +113,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
   };
   const tokenLabel = (id: string) => [...declaredTokens(after), ...declaredTokens(before)].find((t) => t.id === id)?.label ?? id;
   const assetName = (id: string | null | undefined) => (id ? (after.assets.assets[id]?.name ?? before.assets.assets[id]?.name ?? 'an image') : 'an image');
+  const collectionName = (id: string) => after.collections[id]?.settings.name ?? before.collections[id]?.settings.name ?? id;
+  const entryTitle = (cid: string, id: string) => after.collections[cid]?.entries[id]?.title ?? before.collections[cid]?.entries[id]?.title ?? id;
   const plain = (op: EditOperation, label: string, link: Draft['link'] = {}) => add(op, `plain:${label}:${JSON.stringify(link)}`, () => label, link);
   const items = (n: number) => (n === 1 ? 'an item' : `${n} items`);
 
@@ -367,6 +369,20 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       }
       case 'asset.relink':
         return plain(op, `Gave ${quoted(assetName(op.assetId))} a new image file`);
+      case 'collection.create':
+        return plain(op, `Added the ${quoted(after.collections[op.collectionId]?.settings.name ?? op.collectionId)} collection`);
+      case 'collection.update':
+        return plain(op, `Changed the settings of the ${quoted(collectionName(op.collectionId))} collection`);
+      case 'collection.remove':
+        return plain(op, `Deleted the ${quoted(before.collections[op.collectionId]?.settings.name ?? op.collectionId)} collection and its entries`);
+      case 'entry.create':
+        return plain(op, `Added the entry ${quoted(op.title)} to ${quoted(collectionName(op.collectionId))}`);
+      case 'entry.update':
+        return plain(op, `Changed the entry ${quoted(entryTitle(op.collectionId, op.entryId))}`);
+      case 'entry.reorder':
+        return plain(op, `Reordered the entries of ${quoted(collectionName(op.collectionId))}`);
+      case 'entry.remove':
+        return plain(op, `Deleted the entry ${quoted(before.collections[op.collectionId]?.entries[op.entryId]?.title ?? op.entryId)}`);
       default: {
         // Every operation type has a sentence; a new one fails the type check here until it gets one.
         const unknown: never = op;

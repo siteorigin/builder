@@ -379,6 +379,12 @@ export const MIGRATIONS: Migration[] = [
         for (const s of rich) s.codeForm = 'blocks';
       }
     }
+  },
+  {
+    id: 'collections',
+    description:
+      'Projects can hold collections of entries under siteorigin/collections/. Nothing in the documents changes; the new version only keeps an older editor, which would neither read nor guard them, from opening the project for editing.',
+    migrate() {}
   }
 ];
 
@@ -450,7 +456,8 @@ export function matchesLock(hash: string | undefined, def: ComponentDefinition):
 
 /** Every document of a project, which each carry their own `schemaVersion`. */
 function documents(project: ProjectState): Array<{ schemaVersion: number }> {
-  return [project.manifest, project.site, project.tokens, project.assets, project.themeLock, ...Object.values(project.pages), ...Object.values(project.components)];
+  const collections = Object.values(project.collections ?? {}).flatMap((c) => [c.settings, ...Object.values(c.entries)]);
+  return [project.manifest, project.site, project.tokens, project.assets, project.themeLock, ...Object.values(project.pages), ...Object.values(project.components), ...collections];
 }
 
 /** A missing or malformed version counts as the first format: migrations leave current documents unchanged. */

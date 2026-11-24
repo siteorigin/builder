@@ -1,5 +1,6 @@
 import type { ChoiceOption, ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
-import { cleanBlocks, isListBlock, isRichBlock, linkFromTarget, mergeLists, parseRichText } from '@shared/richtext';
+import { cleanBlocks, ENTRY_LINK_PREFIX, isListBlock, isRichBlock, linkFromTarget, mergeLists, parseRichText } from '@shared/richtext';
+import { collectionRoutes, findEntry } from '@shared/collections';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -8,7 +9,15 @@ import { declaredTokens } from './tokens';
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
-export function normalizeLink(v: unknown, state: ProjectState, label: string): LinkValue {
+/**
+ * Where a link is stored decides what it may go to. Links to collection entries are kept only in entries' own text
+ * (`entries`) until entries are pages of the website: anywhere else nothing could show them yet.
+ */
+export interface LinkScope {
+  entries?: boolean;
+}
+
+export function normalizeLink(v: unknown, state: ProjectState, label: string, scope: LinkScope = {}): LinkValue {
   if (v === null || v === undefined || v === '') return { type: 'none', target: '' };
   if (typeof v === 'string') {
     // Accept shorthand strings from simpler callers.
@@ -47,6 +56,12 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string): L
       if (own(state.assets.assets, target)?.kind !== 'document') fail(`${label}: document "${target.slice(0, 60)}" is not in the library.`);
       // A download goes nowhere else: it has no section and opens no tab of its own.
       return { type, target };
+    case 'entry': {
+      if (!scope.entries) fail(`${label}: links to collection entries can only be made in an entry's text for now.`);
+      if (!findEntry(state, target)) fail(`${label}: entry "${target.slice(0, 60)}" does not exist.`);
+      // An entry has no sections to jump to yet.
+      return l.newTab ? { type, target, newTab: true } : { type, target };
+    }
     default:
       fail(`${label}: unknown link type "${type}".`);
   }
@@ -86,10 +101,18 @@ const MAX_RICH_BLOCKS = 500;
  * [label](/route/), and "- ", "1. ", "- [x] ", "### ", "#### " and "> " line markers), an array of such strings, or
  * structured blocks. Every link is validated, and a link to a page stores the page's ID.
  */
-export function normalizeRichText(v: unknown, state: ProjectState, label: string, plainAs?: RichListType): RichText {
-  const link = (target: string, newTab: boolean) => {
+export function normalizeRichText(v: unknown, state: ProjectState, label: string, plainAs?: RichListType, scope: LinkScope = {}): RichText {
+  const link = (target: string, newTab: boolean): LinkValue | null => {
+    if (scope.entries) {
+      const t = target.trim();
+      // An entry by its ID, or by its address while nothing else has it.
+      const route = `/${t.replace(/^\/+|\/+$/g, '')}/`;
+      const owner = collectionRoutes(state).find((o) => o.kind === 'entry' && o.route === route);
+      const id = t.startsWith(ENTRY_LINK_PREFIX) ? t.slice(ENTRY_LINK_PREFIX.length) : owner?.kind === 'entry' ? owner.entryId : undefined;
+      if (id !== undefined) return normalizeLink({ type: 'entry', target: id, newTab }, state, label, scope);
+    }
     const out = linkFromTarget(target, state.pages, newTab);
-    if (!out && target.startsWith('/')) fail(`${label}: no page has the route "${target.slice(0, 60)}".`);
+    if (!out && target.startsWith('/')) fail(`${label}: no page${scope.entries ? ' or entry' : ''} has the route "${target.slice(0, 60)}".`);
     return out;
   };
   const fromText = (s: string) => parseRichText(s, { markdown: true, link, plainAs });
@@ -101,7 +124,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     if (s.strong) out.strong = true;
     if (s.em) out.em = true;
     if (s.link) {
-      const l = normalizeLink(s.link, state, label);
+      const l = normalizeLink(s.link, state, label, scope);
       // Text is edited on the page, where a link is only its address: a download could not survive that edit.
       if (l.type === 'document') fail(`${label}: a link in text cannot go to a document yet. Use a button for the download.`);
       if (l.type !== 'none') out.link = l;
