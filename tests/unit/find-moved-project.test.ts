@@ -4,7 +4,7 @@
  * restart reads. A cancel, another project of the same name, or an opening that is not listed keeps the entry.
  */
 import { EventEmitter } from 'node:events';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -253,7 +253,7 @@ describe('the recent entry a found project replaces', () => {
     expect(await mine()).toEqual([moved, odd, empty]);
   });
 
-  it('keeps the entry of a folder that cannot be looked into, which is not known to be gone', async () => {
+  it('keeps the entry of a folder that cannot be looked into, which is not known to be gone', async (ctx) => {
     const root = temp('locked');
     const s = await settings.loadSettings();
     const parent = join(root, 'clients');
@@ -264,6 +264,14 @@ describe('the recent entry a found project replaces', () => {
     const copy = join(root, 'copy', 'mill-road');
     chmodSync(parent, 0o000);
     try {
+      // Only where the folder really cannot be looked into (not for an administrator, nor on Windows).
+      let blocked = false;
+      try {
+        statSync(join(original, 'siteorigin.project.json'));
+      } catch (e) {
+        blocked = (e as NodeJS.ErrnoException).code === 'EACCES' || (e as NodeJS.ErrnoException).code === 'EPERM';
+      }
+      if (!blocked) return ctx.skip();
       await settings.addRecent(copy, 'Mill Road', 'pmill', original);
     } finally {
       chmodSync(parent, 0o755);
@@ -273,6 +281,17 @@ describe('the recent entry a found project replaces', () => {
     rmSync(original, { recursive: true });
     await settings.addRecent(join(root, 'found', 'mill-road'), 'Mill Road', 'pmill', original);
     expect(s.recents.map((r) => r.dir)).toEqual([join(root, 'found', 'mill-road'), copy]);
+  });
+
+  it('takes a folder whose place is now a file to be gone', async () => {
+    const root = temp('file');
+    const s = await settings.loadSettings();
+    // The old folder's parent is a file now: the manifest's path cannot exist.
+    writeFileSync(join(root, 'clients'), 'a file');
+    const gone = join(root, 'clients', 'mill-road');
+    s.recents = [at(gone, 'Mill Road', 'pmill')];
+    await settings.addRecent(join(root, 'found', 'mill-road'), 'Mill Road', 'pmill', gone);
+    expect(s.recents.map((r) => r.dir)).toEqual([join(root, 'found', 'mill-road')]);
   });
 
   it('is never pushed off a full list by another project opened for it', async () => {

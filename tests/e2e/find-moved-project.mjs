@@ -153,7 +153,8 @@ allErrors.push(...errors);
 await app.close();
 const archive = join(WORK, 'archive');
 mkdirSync(archive);
-const archived = join(realpathSync(archive), 'mill-road');
+// Under another folder name this time: the project is known by its own ID, not its folder's name.
+const archived = join(realpathSync(archive), 'mill-road-final');
 renameSync(moved, archived);
 ({ app, win, errors } = await launch(WORK));
 await win.waitForSelector('.welcome');
