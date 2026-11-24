@@ -214,8 +214,7 @@ export function StyleControls({
   target,
   designSizesWin,
   image,
-  wideColumns,
-  only
+  wideColumns
 }: {
   styles: ResponsiveStyles | undefined;
   inherited: ResponsiveStyles | undefined;
@@ -244,11 +243,6 @@ export function StyleControls({
    * sizes off phones, where the design's own layout still applies.
    */
   wideColumns?: boolean;
-  /**
-   * Shows the `allowed` controls alone: a focused view of some of an element's styles (a Section's Column layout),
-   * whose other styles are seen and reset where all of them are.
-   */
-  only?: boolean;
 }) {
   const scope = useStore((s) => s.styleScope);
   const viewport = useStore((s) => s.viewport);
@@ -279,7 +273,7 @@ export function StyleControls({
     if (root.current?.contains(document.activeElement)) pendingFocus.current = selectors;
   };
   // A value set outside the offered controls (by the AI, say) still gets a row, so it can be seen and reset.
-  const setOutside = allowed?.length && !only ? [...new Set(restingRules(styles).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !allowed.includes(id)) : [];
+  const setOutside = allowed?.length ? [...new Set(restingRules(styles).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !allowed.includes(id)) : [];
   const props = allowed?.length ? [...allowed, ...setOutside].map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS;
   const groups = new Map<StylePropDef['group'], StylePropDef[]>();
   for (const p of props) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);

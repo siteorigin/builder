@@ -7,6 +7,7 @@
 // Each capture is verified on screen after it settles; a state that did not render throws instead of
 // writing a plausible-looking wrong image. Files are named `insert-{state}--{theme}.png`. Panel states are
 // cropped to the rail, the panel and a strip of canvas; `full` states are the whole window.
+import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -176,6 +177,7 @@ await panel.locator('.search input').first().focus();
 await win.keyboard.press('ArrowDown');
 await win.keyboard.press('ArrowRight');
 await pause(400);
+assert.match((await win.evaluate(() => document.activeElement?.textContent)) ?? '', /3 columns/, 'the arrow keys move through the column layouts');
 await shot('focus', '.insert-grid', ['light']);
 
 // ---- Search ----

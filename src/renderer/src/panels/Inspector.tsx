@@ -368,10 +368,6 @@ function countStyles(styles: ResponsiveStyles | undefined): number {
 }
 const changes = (n: number) => `${n} change${n === 1 ? '' : 's'}`;
 
-/** The values of some properties only, across sizes and states. */
-function pickStyles(styles: ResponsiveStyles | undefined, props: string[]): ResponsiveStyles {
-  return Object.fromEntries(Object.entries(styles ?? {}).map(([k, sc]) => [k, Object.fromEntries(Object.entries(sc ?? {}).filter(([p]) => props.includes(p)))])) as ResponsiveStyles;
-}
 
 /** The nearest repeat enclosing a node in a definition tree, if any. */
 const enclosingRepeat = enclosingRepeatProp;
@@ -804,6 +800,33 @@ function SelectionActions({ title, selection, items, group, ask = true }: { titl
   );
 }
 
+/**
+ * A Section's columns, arranged where the Section is selected rather than through Parts: its Container's Arrange,
+ * Columns, Column sizes and gaps (see columnLayoutPart). Any other change made to the Container shows here too, so
+ * nothing that outranks a column change (a Custom CSS rule, say) is out of sight while the columns are set. Nothing for
+ * a component that is no Section.
+ */
+function ColumnLayout({ owner, def, node, variants, tokens, onSet }: { owner: OwnerRef; def: ComponentDefinition; node: InstanceNode; variants: Parameters<typeof designStyles>[2]; tokens: Tokens; onSet: (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number) => unknown }) {
+  const columns = columnLayoutPart(def);
+  const part = columns ? def.parts[columns.partId] : undefined;
+  if (!columns || !part) return null;
+  const set = countStyles(node.overrides?.[columns.partId]);
+  return (
+    <Section title="Column layout" id="columns" level={LEVEL} scope={[part.label, set ? changes(set) : ''].filter(Boolean).join(' · ')}>
+      <StyleControls
+        styles={node.overrides?.[columns.partId]}
+        inherited={designStyles(def, part.nodeId, variants)}
+        wideColumns
+        allowed={columns.controls}
+        tokens={tokens}
+        onSet={onSet(columns.partId)}
+        onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: columns.partId, scope: sc }], `Reset ${part.label.toLowerCase()}`)}
+        target={`the ${part.label.toLowerCase()}`}
+      />
+    </Section>
+  );
+}
+
 function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: Tokens; selection: ElementRef }) {
   // Layers selected together with this one (the menu's Duplicate and Delete act on them all): followed so the menu
   // is rebuilt when they change, and planned with it, so what the menu says is what it does.
@@ -854,11 +877,6 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       ? focusImage(state, devUrl, shownImage(state, { owner, instancePath: [node.id], nodeId: rootNodeId }, rootNode.image), [selectedVariantStyles(def, node.variants, rootNodeId), [rootNode.styles]], 'This picture can’t be shown here.')
       : undefined;
   const overrides = countStyles(node.overrides?.[styledPart]);
-  // The part that lays out what is placed in the section (a Section's Container): its columns are arranged here,
-  // without a trip through Parts.
-  const columns = columnLayoutPart(def);
-  const columnPart = columns ? def.parts[columns.partId] : undefined;
-  const columnChanges = columns ? countStyles(pickStyles(node.overrides?.[columns.partId], columns.controls)) : 0;
   const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
   const makeUnique = () => setState({ modal: { kind: 'make-unique', owner, nodeId: node.id, definitionId: def.id } });
@@ -1023,20 +1041,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           />
         </FieldHome>
       </Section>
-      {columns && columnPart && (
-        <Section title="Column layout" id="columns" level={LEVEL} scope={[columnPart.label, columnChanges ? changes(columnChanges) : ''].filter(Boolean).join(' · ')}>
-          <StyleControls
-            styles={node.overrides?.[columns.partId]}
-            inherited={designStyles(def, columnPart.nodeId, node.variants)}
-            wideColumns
-            allowed={columns.controls}
-            only
-            tokens={tokens}
-            onSet={onStyle(columns.partId)}
-            target={`the ${columnPart.label.toLowerCase()}`}
-          />
-        </Section>
-      )}
+      <ColumnLayout owner={owner} def={def} node={node} variants={node.variants} tokens={tokens} onSet={onStyle} />
       {axes.length > 0 && (
         <Section title="Design" id="design" level={LEVEL}>
           {axes.map(([axisId, axis]) => (
@@ -2192,6 +2197,18 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         >
           {node.kind === 'repeat' ? <StaggerSwitch owner={owner} node={node} /> : <EntranceField owner={owner} node={node} design={node.kind === 'instance' ? designAppear(state, placedDef) : undefined} />}
         </Section>
+      )}
+      {node.kind === 'instance' && placedDef?.kind === 'managed' && (
+        <ColumnLayout
+          owner={owner}
+          def={placedDef}
+          node={node}
+          variants={startingVariants(node.variants, def)}
+          tokens={tokens}
+          onSet={(partId) => (property, value, expectedRevision) =>
+            commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], `Edit ${def.name} definition`, styleKey(property, `${def.id}:${node.id}:${partId}:${scope}:${property}`), expectedRevision)
+          }
+        />
       )}
       <Section title="Style" id="def-style" level={LEVEL} scope={[look ? `${lookAxis!.label}: ${lookOption!.label}` : '', repeated ? `Every ${itemWord ?? 'item'}` : '', placements].filter(Boolean).join(' · ')}>
         <StyleTargetField def={def} target={look} disabledReason={lookable ? undefined : 'A look styles the elements inside this, not this itself.'} />

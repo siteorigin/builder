@@ -4,7 +4,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
-import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor, type InsertAt } from '../../src/renderer/src/lib/insert-at';
+import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor, type InsertAt } from '../../src/renderer/src/lib/insert-at';
 
 /**
  * Where Insert puts a project component (#52): a card made inside a grid goes beside the selected card in that grid,
@@ -397,7 +397,7 @@ describe('a column layout comes with its empty columns, in one change (#514)', (
     return { grid, columns: grid.children.map((id) => page.nodes[id] as ElementNode) };
   };
 
-  for (const n of [2, 3])
+  for (const n of [2, 3, 4])
     it(`${n} columns: a Grid holding ${n} empty Stacks, named for their places, side by side on desktop`, () => {
       const p = exhibitors();
       const at = insertAt(p.state, p.owner, 'element', ref(p.owner, p.intro))!;
@@ -413,6 +413,8 @@ describe('a column layout comes with its empty columns, in one change (#514)', (
       expect(columns.map((c) => c.name)).toEqual(Array.from({ length: n }, (_, i) => `Column ${i + 1}`));
       for (const c of columns) expect(c).toMatchObject({ kind: 'element', children: [], styles: { base: { layout: 'stack' } } });
       expect(validateState(state).filter((d) => d.severity === 'error')).toEqual([]);
+      // The first column is what Insert selects, so the next element fills it rather than adding a fourth cell.
+      expect(insertSelection(ops, 'n_columns')).toBe(grid.children[0]);
     });
 
   it('on a page with nowhere to put it, comes in a new Section; each insert names its own Grid', () => {
@@ -437,6 +439,9 @@ describe('a column layout comes with its empty columns, in one change (#514)', (
     const p = exhibitors();
     const at: InsertAt = { owner: p.owner, parentId: p.grid };
     for (const columns of [1, 2.5, 9]) expect(insertOps(at, { primitive: 'grid', columns }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.grid, slot: undefined, index: undefined, primitive: 'grid' }]);
+    // Anything else inserted is itself what is selected, a new section around it or not.
+    expect(insertSelection(insertOps(at, { primitive: 'grid' }, 'element', 'n_plain'), 'n_plain')).toBe('n_plain');
+    expect(insertSelection(insertOps({ owner: p.owner, parentId: null }, { primitive: 'heading' }, 'element', 'n_title'), 'n_title')).toBe('n_title');
     expect(insertOps(at, { primitive: 'stack', columns: 2 }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.grid, slot: undefined, index: undefined, primitive: 'stack' }]);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { ElementNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, captureClipboard } from '@engine/apply';
 import { EngineError, codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
@@ -560,24 +560,40 @@ describe('a Section’s columns, arranged from the placement (#514)', () => {
     expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] });
   });
 
-  it('offers what an older installed Section has, and nothing for a design without one part holding its slot', () => {
-    const { s, def: installed } = withSection();
+  it('offers what an older installed Section has, and the same on a copy made unique', () => {
+    const { s, def: installed, id } = withSection();
     const def = structuredClone(installed);
     def.parts.container.styleControls = ['maxWidth', 'gap', 'layout', 'columns', 'align', 'justify', 'textAlign'];
     expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gap', 'align', 'justify'] });
     // Its layout locked: nothing to arrange.
     def.parts.container.styleControls = ['maxWidth', 'gap'];
     expect(columnLayoutPart(def)).toBeNull();
-    // A section of the theme with no slot (a split hero), and a design whose root holds the slot itself.
+    // Make unique gives the copy a project component ID; the copy is still a Section, through its provenance.
+    const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: id, name: 'Wide band' }]);
+    const copy = r.state.components[r.results[0].definitionId as string];
+    expect(copy.componentId).not.toBe('layout.section');
+    expect(columnLayoutPart(copy)).toEqual(columnLayoutPart(installed));
+  });
+
+  it('offers nothing for a design whose slot is not a Section’s content', () => {
+    const { s, def: installed } = withSection();
+    // A section of the theme with no slot (a split hero).
     const hero = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'hero.split' }]).state.components['foundation.hero.split'];
     expect(columnLayoutPart(hero)).toBeNull();
-    const rooted = structuredClone(installed);
-    delete (rooted.parts as Record<string, unknown>).container;
-    expect(columnLayoutPart(rooted)).toBeNull();
-    // Two parts each holding a slot: which one is meant can't be told, so neither is offered.
-    const two = structuredClone(installed);
-    two.parts.other = { nodeId: 'inner', label: 'Other', styleControls: ['layout'] };
-    expect(columnLayoutPart(two)).toBeNull();
+    // Another design with a part holding a slot (a footnote holding a pricing table's notes): its columns are not that.
+    const other = { ...structuredClone(installed), componentId: 'project.pricing', provenance: { createdBy: 'ai' as const } };
+    expect(columnLayoutPart(other)).toBeNull();
+    // A Section whose Container no longer holds the Content slot (moved to the root while editing the copy).
+    const moved = structuredClone(installed);
+    const inner = moved.tree!.nodes[moved.parts.container.nodeId] as ElementNode;
+    const slotId = inner.children.find((c) => moved.tree!.nodes[c].kind === 'slot')!;
+    inner.children = inner.children.filter((c) => c !== slotId);
+    (moved.tree!.nodes[moved.tree!.rootIds[0]] as ElementNode).children.push(slotId);
+    expect(columnLayoutPart(moved)).toBeNull();
+    // No Container part at all.
+    const bare = structuredClone(installed);
+    delete (bare.parts as Record<string, unknown>).container;
+    expect(columnLayoutPart(bare)).toBeNull();
   });
 
   it('splits one Section into asymmetric columns with separate gaps, leaving the other Section and the design alone', () => {

@@ -187,6 +187,15 @@ export function insertOps(at: InsertAt, spec: InsertSpec, role: InsertRole, node
   return [{ type: 'node.insert', ...named, owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...what }, ...fill];
 }
 
+/**
+ * What an insert selects once it has landed: the node it inserted (named `nodeId` in `ops`), or a column layout's
+ * first column, so the next element inserted fills that column rather than adding a cell beside the columns.
+ */
+export function insertSelection(ops: EditOperation[], nodeId: string): string {
+  const first = ops.find((op) => op.type === 'node.insert' && op.parentId === nodeId);
+  return (first?.type === 'node.insert' && first.newNodeId) || nodeId;
+}
+
 /** How many empty columns a column layout starts with: two to four, or none for a count that is not one. */
 function starterColumns(n: number): number {
   return Number.isInteger(n) && n >= 2 && n <= 4 ? n : 0;

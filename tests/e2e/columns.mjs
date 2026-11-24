@@ -1,8 +1,9 @@
 // Column layouts (#514). Insert offers 2 and 3 columns near its top: one click adds a Grid holding that many empty
-// columns, each framed on the canvas, as one change with the Grid selected. A plain click on a column selects it and
-// Insert then fills it, one change per insert, each its own Undo; one more Undo takes the layout away with the Section
-// made for it. A Section placement arranges its own columns from the Inspector without Parts: Column layout turns its
-// Container into a narrow-and-wide grid with separate row and column gaps, on that Section alone.
+// columns, each framed on the canvas, as one change with the first column selected, so the next element fills it. A
+// plain click on another column selects it and Insert fills that, one change per insert, each its own Undo; one more
+// Undo takes the layout away with the Section made for it. A Section placement arranges its own columns from the
+// Inspector without Parts: Column layout turns its Container into a narrow-and-wide grid with separate row and column
+// gaps, on that Section alone.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -60,7 +61,7 @@ try {
   assert.deepEqual(columnTiles, ['2 columns', '3 columns', 'Row', 'Grid']);
   await panel.locator('.insert-group[data-group="columns"]').screenshot({ path: join(OUT, 'column-layouts.png') });
 
-  step('2 columns: one change adds a Grid with two empty, framed columns side by side, and selects the Grid');
+  step('2 columns: one change adds a Grid with two empty, framed columns side by side, the first selected to fill');
   const before = await applied();
   const rootsBefore = (await page()).rootIds.length;
   await tile('2 columns').click();
@@ -74,28 +75,30 @@ try {
     return { gridId: grid.id, columns: grid.children, sectionId: section.id };
   }, 30000);
   assert.equal(await applied(), before + 1, 'one change');
-  await eventually(async () => assert.equal(await selected(), 'Columns actions', 'the Grid is selected, not a column'), 15000);
+  await eventually(async () => assert.equal(await selected(), 'Column 1 actions', 'the first column is selected, ready to fill'), 15000);
   const [left, right] = columns;
   await eventually(async () => {
     const [l, r] = [await boxOf(left), await boxOf(right)];
     assert.deepEqual([l.framed, r.framed], ['Stack', 'Stack'], 'each empty column is framed');
     assert.ok(l.height >= 72 && r.height >= 72, `each is tall enough to pick: ${JSON.stringify([l, r])}`);
     assert.ok(Math.abs(l.y - r.y) < 2 && l.x + l.width <= r.x, `side by side: ${JSON.stringify([l, r])}`);
+    // Two tracks on desktop, not the three a plain Grid starts with.
+    assert.equal(await at(gridId).evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length), 2);
   }, 30000);
   await win.screenshot({ path: join(OUT, 'two-columns.png') });
 
-  step('a plain click on each column selects it, and Insert fills it: one change, and one Undo, each');
-  const fill = async (column, label, kind) => {
-    await clickMiddle(at(column));
+  step('Insert fills the selected first column; a plain click on the second selects it, and Insert fills that: one change, and one Undo, each');
+  const fill = async (column, label, tag, click) => {
+    if (click) await clickMiddle(at(column));
     const name = (await page()).nodes[column].name;
-    await eventually(async () => assert.equal(await selected(), `${name} actions`, `the click selects ${name}`), 10000);
+    await eventually(async () => assert.equal(await selected(), `${name} actions`, `${name} is selected`), 10000);
     const n = await applied();
     await tile(label).click();
     const child = await eventually(async () => {
       const p = await page();
       assert.equal(p.nodes[column].children.length, 1, `${label} lands in ${name}`);
       const c = p.nodes[p.nodes[column].children[0]];
-      assert.equal(c.kind, kind);
+      assert.deepEqual([c.kind, c.tag], ['text', tag]);
       return c.id;
     }, 30000);
     assert.equal(await applied(), n + 1, 'one change');
@@ -103,8 +106,9 @@ try {
     return child;
   };
   await openInsert();
-  await fill(left, 'Heading', 'text');
-  await fill(right, 'Paragraph', 'text');
+  await fill(left, 'Heading', 'h2', false);
+  await fill(right, 'Paragraph', 'p', true);
+  assert.deepEqual((await page()).nodes[gridId].children, columns, 'the Grid still holds just its two columns');
   await eventually(async () => assert.deepEqual([(await boxOf(left)).framed, (await boxOf(right)).framed], [null, null], 'filled columns lose their frames'), 30000);
   await win.screenshot({ path: join(OUT, 'two-columns-filled.png') });
 

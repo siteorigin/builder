@@ -13,7 +13,7 @@ import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
-import { insertOps, insertRole, whereFor, type InsertAt } from '../lib/insert-at';
+import { insertOps, insertRole, insertSelection, whereFor, type InsertAt } from '../lib/insert-at';
 import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, measuredLists, measureIds, savingProblems, type DropList, type Measured } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
@@ -1476,11 +1476,13 @@ export function Canvas() {
     const drop = async (at: InsertAt) => {
       if (getState().snapshot?.workspaceKey !== opening) return;
       const w = whereFor(st, at, role);
-      // Named here, so what is selected is the thing dropped, not the last node the change made (a column of a new Grid).
+      // Named here, so what is selected is the thing dropped (or a new Grid's first column), not the last node the
+      // change made.
       const named = newId('n');
-      const r = await commitOps(insertOps(at, drag.spec, role, named), `Insert ${drag.name}`, undefined, revision);
+      const ops = insertOps(at, drag.spec, role, named);
+      const r = await commitOps(ops, `Insert ${drag.name}`, undefined, revision);
       if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-      const id = r.results?.some((x) => x?.nodeId === named) ? named : undefined;
+      const id = r.results?.some((x) => x?.nodeId === named) ? insertSelection(ops, named) : undefined;
       const now = getState();
       // Selected while the author is still on the page (or layout) it went on, with the arrival cue once the page shows it.
       const here = owner.kind === 'template' ? now.templateMode?.collectionId === owner.id : now.pageId === owner.id && !now.templateMode;
