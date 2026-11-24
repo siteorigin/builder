@@ -16,9 +16,10 @@ import { flattenStates, flattenStyles, type StyleLayer } from '@shared/styles';
 import { designLayers, selectedVariants } from '@shared/variants';
 import { liveItemStyles } from '@shared/item-styles';
 import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/index';
-import { effectiveProps, evaluate, rendersIn, type Scope } from '@generator/checks';
+import { effectiveProps, evaluate, filterShowsAt, rendersIn, type Scope } from '@generator/checks';
 import { anchorCapable, anchorsInUse, fail, findParent, getNode, getTree, settledRoot } from './tree';
 import { slotLandingProblem } from './slots';
+import { repeatFilterProblem } from './schema';
 import { clone } from './install';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -67,6 +68,11 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   if (Object.values(def.properties).some((p) => p.type === 'list' && p.feed === 'entries'))
     fail(`“${label}” lists posts that come and go with their collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
   if (Object.keys(def.state ?? {}).length) fail(`“${label}” has UI state its buttons change, which elements on a page would not keep. Remove its UI state first.`);
+  // Nor can they filter themselves: a list whose category buttons show here would lose them.
+  const placedScope: Scope = { props: withObjectFields(def, effectiveProps(state, def, inst, { props: {} }, op.owner.id)) };
+  const filtering = Object.values(def.tree.nodes).find((n) => n?.kind === 'repeat' && n.filter !== undefined && !repeatFilterProblem(def, n) && filterShowsAt(state, def, n, placedScope));
+  if (filtering?.kind === 'repeat')
+    fail(`“${label}” filters its items by category here, which elements on a page would not keep. ${filtering.filter!.when ? 'Turn its filter off' : 'Give its items one category between them, or none,'} first.`);
   const design = def.tree;
   if (!settledRoot(design)) fail(`“${label}” has no single element at the top of its design, so it cannot be detached. Fix its design first.`);
   const parent = findParent(tree, op.nodeId) ?? fail('This placement is not on the page.');

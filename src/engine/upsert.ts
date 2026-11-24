@@ -23,7 +23,7 @@ import { clone } from './install';
 import { normalizeImage, normalizeLink, normalizeRichText } from './values';
 import { tagKindProblem } from './semantic-tags';
 import { slotDeclProblem } from './slots';
-import { acceptedTypes, bindingProblem, bindingSites, boundSchema, enclosingList, isProtoKey, normalizeProperties, stateRefProblem, stateUsers, type BindingSite } from './schema';
+import { acceptedTypes, bindingProblem, bindingSites, boundSchema, enclosingList, isProtoKey, normalizeProperties, repeatFilterProblem, stateRefProblem, stateUsers, type BindingSite } from './schema';
 import { dropPartOverrides, removeSlot, removeVariant, replaceProperties, setSlot } from './definitions';
 import { shownSlots } from './theme-updates';
 
@@ -60,6 +60,11 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   const variantAxes = designAxes(op, tree, was);
   const candidate: ComponentDefinition = { ...(was ?? newDefinition(state, op, name)), properties, parts, tree, slots, variantAxes };
   checkBindings(state, candidate, bindingSites(candidate));
+  // A filter that would not work is refused here, where load validation would only report it.
+  for (const n of Object.values(tree.nodes)) {
+    const problem = repeatFilterProblem(candidate, n);
+    if (problem) fail(`"${n.id}" ${problem}`);
+  }
 
   const id = was?.id ?? candidate.id;
   const before = was ? clone(was) : undefined;
@@ -360,7 +365,14 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
     case 'divider':
       return { ...base, kind: 'divider' } as GraphNode;
     case 'repeat':
-      return { ...base, kind: 'repeat', list: { $prop: s.list }, children: [...(s.children ?? [])], ...(s.appearStagger ? { appearStagger: true } : {}) } as GraphNode;
+      return {
+        ...base,
+        kind: 'repeat',
+        list: { $prop: s.list },
+        children: [...(s.children ?? [])],
+        ...(s.appearStagger ? { appearStagger: true } : {}),
+        ...(s.filter ? { filter: { field: s.filter.field, ...(s.filter.when !== undefined ? { when: { $prop: s.filter.when } } : {}) } } : {})
+      } as GraphNode;
     case 'slot':
       return { ...base, kind: 'slot', slot: s.slot } as GraphNode;
   }

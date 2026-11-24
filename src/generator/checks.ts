@@ -232,6 +232,41 @@ export function rendersIn(state: ProjectState, tree: NodeTree, scope: Scope, n: 
   return nodeRenders(state, { tree, scope, n: 0, defs: new Set() }, n, new Set());
 }
 
+/**
+ * Whether a list's category filter (RepeatNode.filter) shows its pills in one placement (`scope`, its values as
+ * effectiveProps gives them), as the generated component decides: its switch on, or none, the list rendering, and the
+ * items that render naming two categories or more, told apart as the site's filterKey tells them (a choice by its exact
+ * value, text by its trimmed, lower-case words).
+ */
+export function filterShowsAt(state: ProjectState, def: ComponentDefinition, repeat: GraphNode, scope: Scope): boolean {
+  const tree = def.tree;
+  const f: unknown = repeat.kind === 'repeat' ? repeat.filter : undefined;
+  if (!tree || repeat.kind !== 'repeat' || !f || typeof f !== 'object' || typeof (f as { field?: unknown }).field !== 'string') return false;
+  const { field, when } = f as { field: string; when?: unknown };
+  if (when !== undefined) {
+    // As the site reads a yes/no property: a value that is not true or false shows its default.
+    const on = evaluate(when, scope);
+    const prop = isBinding(when) && '$prop' in when && Object.hasOwn(def.properties, when.$prop) ? def.properties[when.$prop] : undefined;
+    if ((typeof on === 'boolean' ? on : prop?.type === 'boolean' ? prop.default : on) !== true) return false;
+  }
+  if (!rendersIn(state, tree, scope, repeat)) return false;
+  const list = repeat.list && typeof repeat.list === 'object' && Object.hasOwn(def.properties, repeat.list.$prop) ? def.properties[repeat.list.$prop] : undefined;
+  if (list?.type !== 'list') return false;
+  const schema = Object.hasOwn(list.fields, field) ? list.fields[field] : undefined;
+  const options = schema?.type === 'enum' && Array.isArray(schema.options) ? schema.options.map((o) => o?.value) : undefined;
+  const rows = evaluate(repeat.list, scope);
+  const keys = new Set<string>();
+  for (const item of Array.isArray(rows) ? rows : []) {
+    if (!item || typeof item !== 'object') continue;
+    const inner: Scope = { ...scope, item: item as Record<string, unknown>, fields: list.fields };
+    if (!repeat.children.some((c) => Object.hasOwn(tree.nodes, c) && rendersIn(state, tree, inner, tree.nodes[c]))) continue;
+    const v = (item as Record<string, unknown>)[field];
+    const key = typeof v !== 'string' ? '' : options ? (options.includes(v) ? v : '') : v.trim().toLowerCase();
+    if (key) keys.add(key);
+  }
+  return keys.size > 1;
+}
+
 /** A collapsing element renders while any child does; with no children it stays. */
 function childRenders(state: ProjectState, frame: Frame, n: GraphNode & { kind: 'element' }, seen: Set<string>): boolean {
   if (seen.has(n.id)) return true;

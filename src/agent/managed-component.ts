@@ -116,6 +116,11 @@ const NODE = z.discriminatedUnion('kind', [
       list: z.string().describe('The list property shown once per item; nodes inside show item fields with {"$item": field}.'),
       children: CHILDREN,
       appearStagger: z.boolean().optional(),
+      filter: z
+        .object({ field: z.string(), when: z.string().optional() })
+        .strict()
+        .optional()
+        .describe('Category pills above the items: field, a text or choice item field; when, the yes/no property turning them on.'),
       ...CONDITIONS
     })
     .strict(),

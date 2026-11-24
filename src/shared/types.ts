@@ -470,6 +470,19 @@ export interface RepeatNode extends NodeBase {
    * the item's own entrance (`appear` on a direct child) is staggered; it does nothing without one.
    */
   appearStagger?: boolean;
+  /**
+   * Category filter pills for the items (a portfolio's Residential and Commercial): visitors pick a category, or All,
+   * and only the items whose `field` (a text or choice field of the list's items) holds it show. Every item stays in
+   * the page and in print. The pills show above the repeat's container, which holds the repeat alone, while `when` (a
+   * yes/no property) is on, or always without it, and only when the items name two categories or more.
+   */
+  filter?: RepeatFilter;
+}
+export interface RepeatFilter {
+  /** The item field holding each item's category: text (pills in the order items first use them) or a choice. */
+  field: string;
+  /** The yes/no property that turns the pills on; without it they always show. */
+  when?: { $prop: string };
 }
 export interface SlotNode extends NodeBase {
   kind: 'slot';

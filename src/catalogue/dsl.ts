@@ -27,6 +27,7 @@ import type {
   ResponsiveStyles,
   ScalarPropSchema,
   SlotDef,
+  RepeatFilter,
   StateAction,
   StateRef,
   StyleProps,
@@ -136,8 +137,9 @@ export class TreeBuilder {
   divider(id: string, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'divider' }, opts);
   }
-  repeat(id: string, list: string, children: string[], opts: NodeOpts = {}): string {
-    return this.add({ id, kind: 'repeat', list: { $prop: list }, children }, opts);
+  /** Items of a list property; `filter` adds category pills for them (RepeatNode.filter). */
+  repeat(id: string, list: string, children: string[], opts: NodeOpts & { filter?: RepeatFilter } = {}): string {
+    return this.add({ id, kind: 'repeat', list: { $prop: list }, children, ...(opts.filter ? { filter: opts.filter } : {}) }, opts);
   }
   slot(id: string, slot: string, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'slot', slot }, opts);

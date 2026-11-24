@@ -79,6 +79,9 @@ function matches(selector: string, el: El): boolean {
 function computed(rules: Rule[], el: El, width: number, property: string): string | undefined {
   let best: { key: [number, number, number]; value: string } | undefined;
   for (const r of rules) {
+    // Rules for print, and the screen-only ones hiding what a category filter or UI state hides, set nothing on the parts
+    // compared here, which never carry those classes.
+    if (r.media && /\bprint\b/.test(r.media)) continue;
     if (!mediaMatches(r.media, width) || !r.selector.includes('so-') || !matches(r.selector, el)) continue;
     const specificity = compounds(r.selector).flat().length;
     r.decls.forEach(([p, value], i) => {

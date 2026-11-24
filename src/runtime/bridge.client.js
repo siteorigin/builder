@@ -518,6 +518,11 @@ let revealDeclined = new Set();
 let revealTyped = false;
 /** The page changed: the item is brought up to date once, before the next frame is drawn. */
 let revealDirty = false;
+/**
+ * Category filters asked to show every item again for the item revealed, since it was found hidden by one: counted, so
+ * a filter that keeps hiding it (nothing in the page takes the request) is asked a few times, not every frame.
+ */
+let revealUnfiltered = 0;
 /** Elements showing typed text in place of their own text node: el -> { ours, theirs, released } */
 const drafts = new Map();
 /** Typed text no longer wanted goes once the page shows the saved text, or after this long at most (a refused save). */
@@ -547,6 +552,7 @@ function setReveal(target) {
     revealScroll = !!reveal;
     revealSide = null;
     revealDeclined = new Set();
+    revealUnfiltered = 0;
   } else if (reveal && reveal.text && !(before && before.text && before.text.value === reveal.text.value)) revealTyped = true;
   reconcileReveal();
   scheduleRects();
@@ -608,7 +614,31 @@ function reconcileReveal() {
     revealOpened.add(d);
   }
   showDrafts(textEls, reveal && reveal.text ? reveal.text.value : null, reveal ? ofNodes(els, reveal.restore) : []);
+  unfilter(roots);
   placeReveal(roots);
+}
+/**
+ * An item a list's category filter hides (a visitor's choice made in Preview) is shown again: the filter of its own
+ * list, the row of pills just above the element holding the item, is asked to show every item, as its All button
+ * would. The page re-renders after this, so the item is looked for again before the next frame is drawn.
+ */
+function unfilter(roots) {
+  const bars = new Set();
+  for (const el of roots) {
+    if (!el.classList.contains('so-filter-off')) continue;
+    const bar = el.parentElement && el.parentElement.previousElementSibling;
+    if (bar && bar.hasAttribute('data-so-filter')) bars.add(bar);
+  }
+  // Nothing hidden: the next time a filter hides the item it is asked afresh.
+  if (!bars.size) {
+    revealUnfiltered = 0;
+    return;
+  }
+  if (revealUnfiltered >= 3) return;
+  revealUnfiltered++;
+  for (const bar of bars) bar.dispatchEvent(new CustomEvent('sofilterreset'));
+  revealDirty = true;
+  scheduleRects();
 }
 /**
  * Where the item is: scrolled to while that is still to be done, and brought back into its sideways list when that

@@ -42,7 +42,7 @@ const ADDED_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 
 /** Property types whose default is one plain value, which set_default takes: an image's is its assetId. */
 const PLAIN_DEFAULTS = new Set<PropSchema['type']>(['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'icon', 'image']);
 /** Bindings a small model makes: content and conditions. A nested placement's properties and variants, and a repeat's list, stay with the general tools. */
-const UNOFFERED_BINDINGS = new Set(['prop', 'variant', 'list', 'action']);
+const UNOFFERED_BINDINGS = new Set(['prop', 'variant', 'list', 'action', 'filter']);
 /** Above this many, node IDs are checked when a call arrives instead of listed in the grammar. */
 const MAX_LISTED_NODES = 80;
 /** What a small model adds to a design: elements and layout. Repeats and slots need a list or slot of their own first. */

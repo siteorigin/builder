@@ -343,7 +343,14 @@ export const pageList = managed({
     items: P.list(
       'Pages',
       'Page',
-      { pageLink: P.link('Page'), title: P.str('Title', ''), description: P.text('Description', ''), image: P.image('Image') },
+      {
+        pageLink: P.link('Page'),
+        title: P.str('Title', ''),
+        description: P.text('Description', ''),
+        image: P.image('Image'),
+        // A card's category: once the cards name two or more, buttons above them show one category at a time.
+        group: P.str('Category', '')
+      },
       [],
       { titleField: 'title', min: 0, max: 24, pageTeaser: { link: 'pageLink', title: 'title', description: 'description', image: 'image' } }
     )
@@ -379,7 +386,7 @@ export const pageList = managed({
               b.text('card-text', 'p', { $item: 'description' }, { name: 'Description', when: { $item: 'description' }, styles: mutedStyles })
             ])
           ])
-        ])
+        ], { filter: { field: 'group' } })
       ])
     ])
 });

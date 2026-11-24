@@ -129,6 +129,14 @@ export function partReach(def: ComponentDefinition, regionNodeId: string): PartR
     uses.set(site.binding.$item, (uses.get(site.binding.$item) ?? true) && inside && !insideAnotherRepeat(site.node.id));
     fields.set(list, uses);
   }
+  // A list's category filter reads its field for the row of pills above the list: no part inside the list holds that.
+  for (const n of Object.values(tree?.nodes ?? {})) {
+    if (n?.kind !== 'repeat' || !n.filter || typeof n.filter.field !== 'string' || !isBinding(n.list) || !('$prop' in n.list)) continue;
+    const host = findParent(tree!, n.id)?.parentId;
+    const uses = fields.get(n.list.$prop) ?? new Map<string, boolean>();
+    uses.set(n.filter.field, (uses.get(n.filter.field) ?? true) && !!host && nodes.has(host));
+    fields.set(n.list.$prop, uses);
+  }
   const itemFields = new Map<string, Set<string>>();
   for (const [list, uses] of fields) {
     // An item of a list also passed on or shown elsewhere (another component given the same list) changes there too.

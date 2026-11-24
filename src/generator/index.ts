@@ -26,6 +26,7 @@ import type {
   PageDoc,
   ProjectState,
   PropSchema,
+  RepeatNode,
   ResponsiveScope,
   StyleState,
   ResponsiveStyles,
@@ -84,7 +85,7 @@ import { entryNeighbours, materializeTemplate } from './entry-template';
 import { archiveFile, generateArchive, siteArchives } from './archive';
 import { archivePages } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
-import { declaredState, stateActionProblem } from '@engine/schema';
+import { declaredState, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
@@ -147,7 +148,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText']);
 /**
  * Svelte's runes, by the name a local would hide them under: a property local named `state` would make `$state(...)`
  * read it as a store, so properties never take these names as locals either.
@@ -173,7 +174,7 @@ export function propLocals(def: ComponentDefinition): Map<string, string> {
   const taken = new Set<string>();
   for (const name of Object.keys(def.properties).sort()) {
     let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
-    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|variant_|so_children_|so_state_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|variant_|so_children_|so_state_|so_filter_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
     let unique = local;
     for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
     taken.add(unique);
@@ -839,6 +840,23 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
 
 /** The class a panel kept in the page takes while its component's state hides it (see stateWidgets). */
 export const STATE_OFF_CLASS = 'so-state-off';
+/** The class an item of a list takes while its category filter hides it (see FilterGen). */
+export const FILTER_OFF_CLASS = 'so-filter-off';
+
+/**
+ * The screen-only hiding and print rules of category filters (see FilterGen), as generated CSS: the items a filter
+ * hides, its buttons, which print leaves out, and its status, read out but not shown, whatever the theme's own CSS has.
+ * `global` for a component's own <style> block, where an item a helper renders (a card's link) is outside its scope.
+ */
+function filterCss(global = false): string {
+  const g = (sel: string) => (global ? `:global(${sel})` : sel);
+  return [
+    `/* Items a list's category filter hides on screen, its buttons, which print leaves out, and its status, read out only. */`,
+    `@media not print {\n\t${g(`.${FILTER_OFF_CLASS}:not(#so-print)`)} { display: none !important; }\n}`,
+    `@media print {\n\t${g('.so-filter:not(#so-print)')} { display: none !important; }\n}`,
+    `${g('.so-filter__status')} { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }`
+  ].join('\n');
+}
 
 export function generateComponentsCss(state: ProjectState): string {
   const parts: string[] = ['/* Component definition styles. Generated from siteorigin/components. */'];
@@ -846,6 +864,9 @@ export function generateComponentsCss(state: ProjectState): string {
   // only, so printing shows it with its own layout. An id no element has (#so-print) outweighs a placement's styles.
   if (sortedDefs(state).some((def) => def.kind === 'managed' && stateLocals(def).size))
     parts.push(`/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`);
+  // Items a list's category filter hides stay in the page, hidden on screen only, so printing shows them all; the
+  // row of category buttons is left out of print.
+  if (sortedDefs(state).some((def) => def.kind === 'managed' && repeatFilters(def).length)) parts.push(filterCss());
   for (const def of sortedDefs(state)) {
     if (def.kind !== 'managed' || !def.tree) continue;
     const css = emitRules(definitionRules(state, def));
@@ -1074,6 +1095,8 @@ interface EmitCtx {
   states?: Map<string, UiStateLocal>;
   /** The tab lists, disclosures and choice buttons the design's state makes (see stateWidgets). */
   widgets?: StateWidgets;
+  /** The design's working category filters (see repeatFilters). */
+  filters?: FilterGen[];
 }
 
 /** One UI state variable of the definition being emitted: the local holding it and its well-formed declaration. */
@@ -1359,6 +1382,122 @@ function stateElementAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' | '
 }
 
 /**
+ * A list's category filter (RepeatNode.filter) as a generated component runs it. Each placement holds the category
+ * chosen (`local`, null for All) and works out from its list the items that render, the categories they name, whether
+ * the pills show, the category in effect and how many items show, in locals named after it.
+ */
+interface FilterGen {
+  /** The repeat. */
+  repeat: RepeatNode;
+  /** The element holding the repeat alone, which the pills go just above. */
+  host: string;
+  local: string;
+  field: string;
+  /** A choice field's options, as the generated helpers take them; undefined for a text field. */
+  options?: Array<{ value: string; label: string }>;
+}
+
+/**
+ * The design's working category filters, in the order of their repeats' IDs. A filter validation reports
+ * (repeatFilterProblem) is left out, so its items render as a plain list, every one showing.
+ */
+function repeatFilters(def: ComponentDefinition): FilterGen[] {
+  // Any design with a tree: a copy being converted to code is generated from its design before it is stored.
+  const tree = def.tree;
+  if (!tree) return [];
+  const out: FilterGen[] = [];
+  const parents = parentMap(tree);
+  for (const id of Object.keys(tree.nodes).sort()) {
+    const n = tree.nodes[id];
+    if (n?.kind !== 'repeat' || n.filter === undefined || repeatFilterProblem(def, n)) continue;
+    const list = def.properties[n.list.$prop] as ListProp;
+    const field = list.fields[n.filter.field];
+    out.push({ repeat: n, host: parents.get(n.id)!, local: `so_filter_${out.length}`, field: n.filter.field, options: field.type === 'enum' ? field.options.map((o) => ({ value: o.value, label: o.label })) : undefined });
+  }
+  return out;
+}
+
+/** The helpers' arguments after an item's category: a choice field's options, or none for text. */
+const filterOptionsArg = (f: FilterGen) => (f.options ? `, ${js(f.options)}` : '');
+
+/**
+ * The script of a design's category filters: per filter, the category chosen (null, All, at first) and what follows
+ * from it. Only items that render count: a page list's card whose page has gone names no category and is not counted.
+ * The pills show while the filter is on, the repeat renders and its items name two categories or more; otherwise
+ * every item shows. A category chosen that no item names any more shows every item, until it is named again.
+ */
+function filterScript(ctx: EmitCtx): string {
+  if (!ctx.filters?.length) return '';
+  useImport(ctx, '{ filterCategories }', `${RUNTIME_DIR}/util.js`);
+  useImport(ctx, '{ filterKey }', `${RUNTIME_DIR}/util.js`);
+  const lines: string[] = [];
+  for (const f of ctx.filters) {
+    const r = f.repeat;
+    const shown = renderCondition(ctx, r, new Set());
+    // The items' own conditions, read for each item as the list renders it.
+    const listSchema = bindingSchema(ctx, r.list);
+    ctx.items.push('item');
+    ctx.repeats = [...(ctx.repeats ?? []), r.id];
+    ctx.lists = [...(ctx.lists ?? []), ...(listSchema ? [listSchema] : [])];
+    const conds = r.children.map((c) => (ctx.tree.nodes[c] ? renderCondition(ctx, ctx.tree.nodes[c], new Set()) : 'false'));
+    ctx.items.pop();
+    ctx.repeats = ctx.repeats.slice(0, -1);
+    if (listSchema) ctx.lists = ctx.lists.slice(0, -1);
+    const renders = conds.some((c) => c === null) ? null : conds.join(' || ');
+    const rows = `(${bindExpr(ctx, r.list)} ?? [])${renders ? `.filter((item) => ${renders})` : ''}`;
+    const on = [r.filter!.when ? conditionExpr(ctx, r.filter!.when, false) : null, `${f.local}_options.length > 1`].filter(Boolean).join(' && ');
+    const key = `filterKey(${itemField('item', f.field)}${filterOptionsArg(f)})`;
+    lines.push(
+      `\tlet ${f.local} = $state(null);`,
+      `\tconst ${f.local}_rows = $derived(${shown ? `${shown} ? ${rows} : []` : rows});`,
+      `\tconst ${f.local}_options = $derived(filterCategories(${f.local}_rows, ${js(f.field)}${filterOptionsArg(f)}));`,
+      `\tconst ${f.local}_on = $derived(${on});`,
+      `\tconst ${f.local}_active = $derived(${f.local}_on && ${f.local}_options.some((o) => o.key === ${f.local}) ? ${f.local} : null);`,
+      `\tconst ${f.local}_count = $derived(${f.local}_active === null ? ${f.local}_rows.length : ${f.local}_rows.filter((item) => ${key} === ${f.local}_active).length);`
+    );
+  }
+  useImport(ctx, '{ visitorText as so_visitorText }', `${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`);
+  // The pills work once the page's script runs: before that (and without it) every item shows and they are disabled.
+  lines.push(`\tconst so_text = so_visitorText();`, `\tlet so_filter_ready = $state(false);`, `\t$effect(() => {`, `\t\tso_filter_ready = true;`, `\t});`);
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * The row of category pills a filter shows just above the element holding its repeat: All, then each category its
+ * items name, as buttons that say whether they are pressed, and a status saying how many items show, which screen
+ * readers announce when it changes. Printed, the row is left out (see generateComponentsCss). In the editor the row
+ * also takes the bridge's request to show every item again, so an item the filter hides can be revealed.
+ */
+function filterBar(ctx: EmitCtx, f: FilterGen, hidden: string | null): string {
+  const p = pad(ctx);
+  useImport(ctx, '{ fill as so_fill }', `${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`);
+  const cls = hidden ? `{['so-filter', ${hidden}]}` : '"so-filter"';
+  const editor = ctx.instrument ? ` data-so-filter onsofilterreset={() => (${f.local} = null)}` : '';
+  const pill = (pressed: string, set: string, label: string) =>
+    `<button type="button" class="so-filter__pill" aria-pressed={${pressed}} disabled={!so_filter_ready} onclick={() => (${f.local} = ${set})}>{${label}}</button>`;
+  const option = `${f.local}_option`;
+  return [
+    `${p}{#if ${f.local}_on}`,
+    `${p}\t<div class=${cls} role="group" aria-label={so_text().filterLabel}${editor}>`,
+    `${p}\t\t${pill(`${f.local}_active === null`, 'null', 'so_text().filterAll')}`,
+    `${p}\t\t{#each ${f.local}_options as ${option} (${option}.key)}`,
+    `${p}\t\t\t${pill(`${f.local}_active === ${option}.key`, `${option}.key`, `${option}.label`)}`,
+    `${p}\t\t{/each}`,
+    `${p}\t\t<p class="so-filter__status so-visually-hidden" role="status">{so_fill(${f.local}_count === 1 ? so_text().filterOne : so_text().filterMany, { count: ${f.local}_count })}</p>`,
+    `${p}\t</div>`,
+    `${p}{/if}`
+  ].join('\n');
+}
+
+/** The class an item of a filtered list takes while the category chosen is not its own (see FilterGen). */
+function filterItemClass(ctx: EmitCtx, node: GraphNode): string | null {
+  const f = ctx.items.length === 1 ? ctx.filters?.find((x) => x.repeat.children.includes(node.id) && ctx.repeats?.at(-1) === x.repeat.id) : undefined;
+  if (!f) return null;
+  const item = ctx.items[0];
+  return `${f.local}_active !== null && filterKey(${itemField(item, f.field)}${filterOptionsArg(f)}) !== ${f.local}_active && ${js(FILTER_OFF_CLASS)}`;
+}
+
+/**
  * The condition under which an element shows on screen while it stays in the page: a panel's own condition, or for a
  * collapsing element, its children showing when only kept panels would keep it there. Null when nothing hides it.
  */
@@ -1458,6 +1597,9 @@ function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string 
     // Kept in the page while its state hides it: hidden on screen, shown in print (see stateWidgets).
     const shown = screenShown(ctx, node);
     if (shown) parts.push(`!(${shown}) && ${js(STATE_OFF_CLASS)}`);
+    // An item whose category is not the one chosen, likewise (see FilterGen).
+    const filtered = filterItemClass(ctx, node);
+    if (filtered) parts.push(filtered);
     return `{[${parts.join(', ')}]}`;
   }
   const parts = [js(pageNodeClass(node.id)), ...detached, ...extra];
@@ -1522,6 +1664,12 @@ function emitNode(ctx: EmitCtx, id: string): string {
   if (!node) return '';
   const p = pad(ctx);
   let out = emitNodeInner(ctx, node);
+  // A list's category pills go just above the element holding it, shown and hidden with it.
+  const filter = ctx.filters?.find((f) => f.host === node.id);
+  if (filter) {
+    const shown = screenShown(ctx, node);
+    out = `${filterBar(ctx, filter, shown ? `!(${shown}) && ${js(STATE_OFF_CLASS)}` : null)}\n${out}`;
+  }
   // A collapsing element stays while any child is in the page: a hidden panel inside keeps it, hidden too (screenShown).
   const children = node.kind === 'element' && node.collapseEmpty && ctx.def ? childrenCondition(ctx, node, new Set(), true) : null;
   if (children) {
@@ -2678,7 +2826,9 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     states: stateLocals(def)
   };
   ctx.widgets = stateWidgets(ctx);
+  ctx.filters = repeatFilters(def);
   const markup = emitNodes(ctx, tree.rootIds);
+  const filters = filterScript(ctx);
   const propDecls = Object.entries(def.properties)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, schema]) => {
@@ -2712,7 +2862,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   const states = [...ctx.states!.values()].map((s) => `\tlet ${s.local} = $state(${js(s.schema.initial)});\n`).join('');
   return (
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
-    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}${editingState(ctx)}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
+    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}${filters}${editingState(ctx)}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
   );
 }
 
@@ -2724,7 +2874,8 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
  */
 export function generateStandaloneComponent(state: ProjectState, def: ComponentDefinition, appear?: AppearPreset | 'none'): string {
   const body = generateManagedComponent(state, def, { instrument: false }, { appear });
-  const css = emitRules(definitionRules(state, def, true));
+  // A category filter's hiding and print rules come along, as the site's own stylesheet has them only for designs.
+  const css = [emitRules(definitionRules(state, def, true)), repeatFilters(def).length ? filterCss(true) : ''].filter(Boolean).join('\n');
   return css ? `${body}\n<style>\n${indentBlock(css)}\n</style>\n` : body;
 }
 

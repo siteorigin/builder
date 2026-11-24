@@ -57,6 +57,10 @@ export const VISITOR_TEXT_KEYS = [
   'carouselNext',
   'carouselOne',
   'carouselMany',
+  'filterLabel',
+  'filterAll',
+  'filterOne',
+  'filterMany',
   'videoPlay',
   'videoFrom',
   'videoLoads',
@@ -142,6 +146,15 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
     ]
   },
   {
+    label: 'Category filters',
+    fields: [
+      { key: 'filterLabel', label: 'Filters', hint: 'The name screen readers give a list’s row of category buttons.' },
+      { key: 'filterAll', label: 'All', hint: 'The button that shows every item again.' },
+      { key: 'filterOne', label: 'One item showing', hint: 'Announced when a category leaves one item showing.' },
+      { key: 'filterMany', label: 'Several items showing', hint: 'Announced when a category leaves several items showing.', fills: ['count'] }
+    ]
+  },
+  {
     label: 'Video, tables and moved pages',
     fields: [
       { key: 'videoPlay', label: 'Play video', hint: 'The video’s play button.' },
@@ -203,6 +216,10 @@ const EN: VisitorText = {
   carouselNext: 'Next',
   carouselOne: 'Slide {index} of {count}',
   carouselMany: 'Slides {first}–{last} of {count}',
+  filterLabel: 'Filter by category',
+  filterAll: 'All',
+  filterOne: '1 item showing',
+  filterMany: '{count} items showing',
   videoPlay: 'Play video',
   videoFrom: 'Video from {host}',
   videoLoads: 'Loads the player from {host}',
@@ -255,6 +272,10 @@ const AR: VisitorText = {
   carouselNext: 'التالي',
   carouselOne: 'الشريحة {index} من {count}',
   carouselMany: 'الشرائح {first}–{last} من {count}',
+  filterLabel: 'التصفية حسب التصنيف',
+  filterAll: 'الكل',
+  filterOne: 'يظهر عنصر واحد',
+  filterMany: 'عدد العناصر الظاهرة: {count}',
   videoPlay: 'تشغيل الفيديو',
   videoFrom: 'فيديو من {host}',
   videoLoads: 'يُحمَّل المشغّل من {host}',
@@ -307,6 +328,10 @@ const HE: VisitorText = {
   carouselNext: 'הבא',
   carouselOne: 'שקופית {index} מתוך {count}',
   carouselMany: 'שקופיות {first}–{last} מתוך {count}',
+  filterLabel: 'סינון לפי קטגוריה',
+  filterAll: 'הכול',
+  filterOne: 'מוצג פריט אחד',
+  filterMany: 'פריטים מוצגים: {count}',
   videoPlay: 'הפעלת הסרטון',
   videoFrom: 'סרטון מ-{host}',
   videoLoads: 'הנגן נטען מ-{host}',

@@ -15,7 +15,7 @@ import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { nestingChecker } from './semantic-tags';
-import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
+import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
@@ -195,6 +195,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       if (!n || visited.has(id)) return;
       visited.add(id);
       for (const slot of bindingSlots(n)) {
+        // The property turning a category filter on is checked with the rest of the filter, below.
+        if (slot.field === 'filter') continue;
         const condition = slot.field === 'when' || slot.field === 'unless';
         if (condition && slot.value !== undefined && !conditionShapeValid(slot.value)) {
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: ${nodeLabel(n)} has a ${slot.field} condition that is neither a property, a list item field, UI state, nor a comparison of one with a value.`, owner, nodeId: id });
@@ -235,6 +237,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         const problem = n.kind !== 'link' ? 'changes UI state, which only a button can.' : stateActionProblem(def, action);
         if (problem) out.push({ severity: 'error', code: 'STATE_ACTION_INVALID', message: `${def.name}: ${nodeLabel(n)} ${problem}`, owner, nodeId: id, site: `${id}|stateAction` });
       }
+      // A filter that does not work leaves the items as a plain list, every one showing. Reported, never blocking: a
+      // design keeps its filter while it is off, and an edit to it (a card made a component of its own) still saves.
+      const filter = Object.hasOwn(n, 'filter') && n.kind !== 'repeat' ? 'has a category filter, which only a repeat can.' : repeatFilterProblem(def, n);
+      if (filter) out.push({ severity: 'warning', code: 'FILTER_INVALID', message: `${def.name}: ${nodeLabel(n)} ${filter} Its items all show, without category buttons.`, owner, nodeId: id, site: `${id}|filter` });
       for (const cl of childLists(n)) cl.ids.forEach((c) => check(c, inRepeat || n.kind === 'repeat'));
     };
     tree.rootIds.forEach((r) => check(r, false));

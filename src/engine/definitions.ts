@@ -258,6 +258,8 @@ function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): string |
 
 function removeProp(state: ProjectState, def: ComponentDefinition, name: string, bindingsChecked = false) {
   const sites = bindingsChecked ? [] : bindingSites(def).filter((s) => '$prop' in s.binding && s.binding.$prop === name);
+  const filtering = sites.find((s) => s.field === 'filter');
+  if (filtering) fail(`"${name}" turns on the category filter of ${describeNode(filtering.node)}. Change the design without that filter first.`);
   if (sites.length) fail(`"${name}" is still shown by ${sites.map((s) => describeNode(s.node)).join(', ')}. Unbind or remove those elements first.`);
   delete def.properties[name];
   for (const { node } of instancesOf(state, def.id)) {
@@ -676,6 +678,8 @@ const FIELD_KINDS: Record<BindField, GraphNode['kind'][] | null> = {
   tag: ['element', 'text'],
   action: ['element'],
   list: ['repeat'],
+  // Set with the rest of the filter (component.upsert); node.setBinding cannot name it.
+  filter: ['repeat'],
   prop: ['instance'],
   variant: ['instance'],
   when: null,

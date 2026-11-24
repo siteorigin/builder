@@ -421,6 +421,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'A collection entry\'s text can hold section headings ({ type: "h2" }) and library pictures with a caption ({ type: "image", assetId, alt, caption? }) between its paragraphs. Nothing in the documents changes; the new version only keeps an older editor, which would take such text for damaged and drop its headings and pictures, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'repeat-filters',
+    description:
+      'A repeat in a managed component can filter its items by category (filter: { field, when? }), with a row of category buttons above them. Nothing in the documents changes; the new version only keeps an older editor, which would show every item without the buttons and drop the filter from designs it rebuilds, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

@@ -151,6 +151,7 @@ describe('loading a theme pack release', () => {
       c.state = { open: { type: 'boolean', label: 'Open', initial: false } };
       c.tree!.nodes[c.tree!.rootIds[0]].when = { ref: { $state: 'open' }, eq: true, ne: false } as never;
     }), /neither UI state nor a comparison of it with one value/],
+    ['a category filter on an element that is not a repeat', (d) => edit(d, (m) => ((m.components[2].tree!.nodes[m.components[2].tree!.rootIds[0]] as unknown as { filter: unknown }).filter = { field: 'title' })), /has a category filter, which only a repeat can/],
     ['more UI state than a component may have', (d) => edit(d, (m) => (m.components[2].state = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`flag${i}`, { type: 'boolean', label: 'Flag', initial: false }])))), /more than 20 UI state variables/],
     ['a button that toggles a choice', (d) => edit(d, (m) => {
       const c = m.components[2];
