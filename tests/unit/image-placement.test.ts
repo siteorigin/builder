@@ -9,6 +9,7 @@ import { createStarterState } from '@catalogue/starters';
 import { assetUsages } from '@engine/apply';
 import { ProjectSession } from '../../src/main/project/session';
 import { resetPendingForTests, savesInFlight, settle, trackApply } from '../../src/renderer/src/lib/pending';
+import { BASICS, basicSpec } from '../../src/renderer/src/lib/insert-search';
 
 /**
  * Choose image → Import on one section, then the author moves on before the import finishes (issue #262). The
@@ -40,7 +41,7 @@ type Checked = { kind: string; where?: string; what?: string; message?: string }
 interface StoreModule {
   commitIfUnchanged(base: ProjectSnapshot, commit: () => unknown, opts?: { checkOnly?: boolean }): Promise<Checked>;
   applyOps(operations: EditOperation[], label: string, coalesceKey?: string): Promise<unknown>;
-  applyWith(edit: undefined, operations: EditOperation[], label: string, coalesceKey?: string): Promise<unknown>;
+  applyWith(edit: { operations: EditOperation[]; separate?: boolean } | undefined, operations: EditOperation[], label: string, coalesceKey?: string): Promise<unknown>;
   getState(): StoreState;
   setState(patch: Partial<StoreState>): void;
 }
@@ -54,7 +55,7 @@ type Placement = { at: { owner: OwnerRef; parentId: string | null; slot?: string
 interface ActionsModule {
   imagePlacement(): Placement;
   placeAsset(assetId: string, shown: string): Promise<boolean>;
-  insert(spec: { primitive?: string; componentId?: string }, label: string): Promise<void>;
+  insert(spec: { primitive?: string; componentId?: string; text?: string }, label: string): Promise<void>;
 }
 
 interface ReviewModule {
@@ -696,6 +697,43 @@ describe('placing a library image from Assets (issue #13)', () => {
     expect(page().nodes[heading]).toMatchObject({ kind: 'text', tag: 'h2' });
     expect(store.getState().selection).toEqual({ owner, instancePath: [], nodeId: heading });
     expect(store.getState().rightTab).toBe('inspect');
+  });
+
+  it('inserts a bulleted or a numbered list as one change, with real list items (Insert panel)', async () => {
+    const { owner, page, entries } = await library();
+    for (const name of ['Bulleted list', 'Numbered list']) {
+      const history = entries();
+      await actions.insert(basicSpec(BASICS.find((b) => b.name === name)!), name);
+      expect(entries()).toBe(history + 1);
+      const { nodeId } = store.getState().selection as { nodeId: string };
+      const node = page().nodes[nodeId];
+      expect(node).toMatchObject({ kind: 'text', rich: true });
+      const kind = name === 'Bulleted list' ? 'ul' : 'ol';
+      const words = kind === 'ul' ? ['First item', 'Second item', 'Third item'] : ['First step', 'Second step', 'Third step'];
+      expect(node.kind === 'text' && node.text).toEqual([{ type: kind, items: words.map((text) => [{ text }]) }]);
+      expect(store.getState().selection).toMatchObject({ owner });
+    }
+  });
+
+  it('keeps a formatting command its own Undo step, even right after typing in the same field', async () => {
+    const { owner, entries } = await library();
+    await actions.insert(basicSpec(BASICS.find((b) => b.name === 'Bulleted list')!), 'Bulleted list');
+    const { nodeId } = store.getState().selection as { nodeId: string };
+    const set = (value: string) => [{ type: 'node.setContent' as const, owner, nodeId, field: 'text' as const, value }];
+    const history = entries();
+    // Typing in one field joins its last edit; a command made in the same field a moment later does not.
+    await store.applyWith(undefined, set('- One\n- Two'), 'Edit text', `${nodeId}:text`);
+    await store.applyWith(undefined, set('- One\n- Two words'), 'Edit text', `${nodeId}:text`);
+    expect(entries()).toBe(history + 1);
+    await store.applyWith({ operations: [], separate: true }, set('- Two words\n- One'), 'Edit text', `${nodeId}:text`);
+    await store.applyWith({ operations: [], separate: true }, set('1. Two words\n2. One'), 'Edit text', `${nodeId}:text`);
+    expect(entries()).toBe(history + 3);
+    // Typing again after a command starts a step of its own too.
+    await store.applyWith(undefined, set('1. Two words\n2. One more'), 'Edit text', `${nodeId}:text`);
+    expect(entries()).toBe(history + 4);
+    await session!.undo();
+    await session!.undo();
+    expect(session!.state.pages[owner.id].nodes[nodeId]).toMatchObject({ text: [{ type: 'ul', items: [[{ text: 'Two words' }], [{ text: 'One' }]] }] });
   });
 
   it('does not wait on a long import elsewhere before placing', async () => {

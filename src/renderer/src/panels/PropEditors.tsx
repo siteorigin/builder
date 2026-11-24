@@ -22,6 +22,7 @@ import { AssetImage } from '../components/AssetImage';
 import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
 import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
+import { RichTextField } from '../components/RichTextField';
 import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
@@ -883,12 +884,14 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
       return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} placeholder={placeholder} />;
     case 'richtext':
       return (
-        <DraftInput
-          {...wired}
-          multiline
-          rows={4}
+        <RichTextField
+          id={id}
+          describedBy={describedBy}
+          invalid={invalid}
           value={richTextToMarkdown(toRichText(value, schema.plainAs), state.pages, schema.plainAs)}
           onCommit={onChange}
+          pages={state.pages}
+          plainAs={schema.plainAs}
           ariaLabel={name}
           placeholder={'One paragraph per line; end a line with \\ to break it inside the paragraph. Use **bold**, *italic*, [a link](/about/), "- " for lists and "### " for headings.'}
         />

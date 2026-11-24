@@ -156,11 +156,30 @@ export function storedEdit(node: GraphNode | undefined, current: unknown, next: 
   if (!next.length || !next.every((b) => b.type === kind && isListBlock(b))) return next;
   const items = next.flatMap((b) => (b as RichListBlock).items);
   const before = shown.flatMap((b) => (isListBlock(b) ? b.items.map((spans) => ({ spans, item: true })) : [{ spans: b.spans, item: false }]));
-  const matched = alignItems(before.map((b) => JSON.stringify(b.spans)), items.map((spans) => JSON.stringify(spans)));
+  const keys = before.map((b) => JSON.stringify(b.spans));
+  const itemKeys = items.map((spans) => JSON.stringify(spans));
+  const matched = alignItems(keys, itemKeys);
+  // An item moved past others (Move item up or down) is still the item it was: what the run in order left
+  // unmatched is matched by its words before anything falls back to the kind of the item in its place.
+  const used = new Set(matched.filter((m) => m >= 0));
+  const byWords = (sp: RichSpan[]) => sp.map((x) => x.text).join('');
+  // First by their spans, then by their words alone (an item moved and then linked or made bold keeps its words).
+  for (const same of [(i: number, j: number) => keys[i] === itemKeys[j], (i: number, j: number) => byWords(before[i].spans) === byWords(items[j])])
+    matched.forEach((m, j) => {
+      if (m >= 0) return;
+      const k = keys.findIndex((_, i) => !used.has(i) && same(i, j));
+      if (k < 0) return;
+      matched[j] = k;
+      used.add(k);
+    });
+  // While the edit keeps the number of items, a changed one is the item it replaced: the items still unmatched on
+  // each side are paired in order (one moved and then changed is still the item that moved).
+  const spare = before.flatMap((b, i) => (used.has(i) ? [] : [b.item]));
+  let nextSpare = 0;
   const out: RichBlock[] = [];
   items.forEach((spans, i) => {
     const found = matched[i];
-    const item = found >= 0 ? before[found].item : before.length === items.length && before[i].item;
+    const item = found >= 0 ? before[found].item : before.length === items.length && !!spare[nextSpare++];
     const last = out[out.length - 1];
     if (!item) out.push({ type: 'p', spans });
     else if (last && last.type === kind && isListBlock(last)) last.items.push(spans);

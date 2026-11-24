@@ -8,7 +8,8 @@ import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
-import { elementWhere, insert, insertionPoint, nodeBefore, nodeLabel, selectPage, type Primitive, type Where } from '../lib/actions';
+import { elementWhere, insert, insertionPoint, nodeBefore, nodeLabel, selectPage, type InsertSpec, type Where } from '../lib/actions';
+import { BASICS, basicHay, basicSpec, searchItems } from '../lib/insert-search';
 import { ownerLabel, treeFor } from '../lib/model';
 import { gridKeys, openMenus, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
@@ -179,18 +180,6 @@ export function SectionSketch({ id }: { id: string }) {
 }
 
 
-const BASICS: Array<{ id: Primitive; name: string; icon: string; tags: string }> = [
-  { id: 'heading', name: 'Heading', icon: 'heading-1', tags: 'title text h1 h2' },
-  { id: 'paragraph', name: 'Paragraph', icon: 'pilcrow', tags: 'text copy body' },
-  { id: 'button', name: 'Button', icon: 'rectangle-horizontal', tags: 'link action cta' },
-  { id: 'image', name: 'Image', icon: 'image', tags: 'photo picture' },
-  { id: 'stack', name: 'Stack', icon: 'rows-3', tags: 'vertical container group' },
-  { id: 'row', name: 'Row', icon: 'columns-3', tags: 'horizontal container group' },
-  { id: 'grid', name: 'Grid', icon: 'layout-grid', tags: 'columns container' },
-  { id: 'container', name: 'Container', icon: 'square-dashed', tags: 'box group' },
-  { id: 'icon', name: 'Icon', icon: 'star', tags: 'symbol' },
-  { id: 'divider', name: 'Divider', icon: 'separator-horizontal', tags: 'line rule separator' }
-];
 
 type Kind = 'section' | 'element' | 'component';
 interface Item {
@@ -200,7 +189,7 @@ interface Item {
   description: string;
   hay: string;
   group: string;
-  spec: { componentId?: string; definitionId?: string; primitive?: Primitive; variants?: Record<string, string> };
+  spec: InsertSpec;
   /** A section's thumbnail, drawn when its theme pack was built. */
   preview?: { pack: string; file: string };
   /** A section shown in one of its variants: the option's name ("Dark"), and its axis ("Tone"). */
@@ -1071,7 +1060,7 @@ export function InsertPanel() {
     const shipped: Item = { ...base, hay: `${base.hay} theme default ${named.join(' ')}`.toLowerCase().trim(), ...(named.length ? { defaults: named.join(' · ') } : {}) };
     return [shipped, ...options];
   });
-  const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: `${b.name} ${b.tags} element`.toLowerCase(), group: 'Basic elements', spec: { primitive: b.id }, icon: b.icon }));
+  const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon }));
   // Code components show only in Developer mode, as its setting promises. The library reads by name, and a separate
   // copy (Make unique) sits under the component it was copied from, so a family stays together.
   const defs = Object.values(st.components).filter((d) => d.owner === 'project' && d.category !== 'shell' && (dev || d.kind !== 'code'));
@@ -1136,25 +1125,11 @@ export function InsertPanel() {
 
   const byKey = new Map([...mine, ...sections, ...elements].map((it) => [it.key, it]));
 
-  // Search: every word must match; exact names first, then names that start with the query, then names
-  // that contain every word, then description and tag matches. Ties keep the panel's own order.
   const query = q.toLowerCase().trim();
-  const words = query.split(/\s+/).filter(Boolean);
   // A section in Variants is ranked by the name it shows ("Centered hero Dark"), and by its own name, so typing the
   // section's name still finds it first.
-  const shown = (it: Item) => ((it.kind === 'section' && showVariants) || it.variant ? `${it.name} ${optionLabel(it)}` : it.name).toLowerCase();
-  const rank = (it: Item) => {
-    const n = it.name.toLowerCase();
-    const full = shown(it);
-    return n === query || full === query ? 0 : n.startsWith(query) || full.startsWith(query) ? 1 : words.every((w) => full.includes(w)) ? 2 : 3;
-  };
-  const results = query
-    ? [...mine, ...sections, ...elements]
-        .filter((it) => words.every((w) => it.hay.includes(w)))
-        .map((it, i) => ({ it, r: rank(it), i }))
-        .sort((a, b) => a.r - b.r || a.i - b.i)
-        .map((x) => x.it)
-    : [];
+  const shown = (it: Item) => ((it.kind === 'section' && showVariants) || it.variant ? `${it.name} ${optionLabel(it)}` : it.name);
+  const results = searchItems([...mine, ...sections, ...elements], query, shown);
   const current = results[Math.min(active, results.length - 1)];
 
   const sectionTo = sectionWhere(st);

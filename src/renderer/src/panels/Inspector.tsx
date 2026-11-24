@@ -42,6 +42,7 @@ import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { articleRows, feedLimit, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { cascadeStyles, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
+import { RichTextField } from '../components/RichTextField';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
@@ -1563,9 +1564,15 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
               </Field>
             )}
             <div data-field="text" style={{ display: 'contents' }}>
-              <Field label="Text" hint="Or double-click the text on the page to edit it there.">
-                <DraftInput multiline rows={2} value={Array.isArray(node.text) ? richTextToMarkdown(toRichText(node.text), state.pages) : isBinding(node.text) ? '' : String(node.text)} onCommit={(v) => content('text', v)} />
-              </Field>
+              {node.rich && !isBinding(node.text) ? (
+                <Field label="Text" hint="Or double-click the text on the page to edit it there." controlId={`${node.id}-text`}>
+                  <RichTextField id={`${node.id}-text`} describedBy={`${node.id}-text-note`} value={richTextToMarkdown(toRichText(node.text), state.pages)} onCommit={(v, edit) => content('text', v, edit)} pages={state.pages} />
+                </Field>
+              ) : (
+                <Field label="Text" hint="Or double-click the text on the page to edit it there.">
+                  <DraftInput multiline rows={2} value={Array.isArray(node.text) ? richTextToMarkdown(toRichText(node.text), state.pages) : isBinding(node.text) ? '' : String(node.text)} onCommit={(v) => content('text', v)} />
+                </Field>
+              )}
             </div>
           </>
         )}
@@ -1744,9 +1751,15 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
           case 'text':
             return (
               <div key={f.field} data-field="text" style={{ display: 'contents' }}>
-                <Field label="Text" hint={hint}>
-                  <DraftInput multiline rows={2} value={Array.isArray(f.value) ? richTextToMarkdown(toRichText(f.value), state.pages) : String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} />
-                </Field>
+                {node.kind === 'text' && node.rich ? (
+                  <Field label="Text" hint={hint} controlId={`${def.id}-${node.id}-text`}>
+                    <RichTextField id={`${def.id}-${node.id}-text`} describedBy={hint ? `${def.id}-${node.id}-text-note` : undefined} value={richTextToMarkdown(toRichText(f.value), state.pages)} onCommit={(v, edit) => void applyWith(edit, [designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} pages={state.pages} />
+                  </Field>
+                ) : (
+                  <Field label="Text" hint={hint}>
+                    <DraftInput multiline rows={2} value={Array.isArray(f.value) ? richTextToMarkdown(toRichText(f.value), state.pages) : String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} />
+                  </Field>
+                )}
               </div>
             );
           case 'label':

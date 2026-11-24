@@ -885,6 +885,114 @@ await eventually(async () => {
 await win.screenshot({ path: join(OUT, '16-table-phone.png') });
 await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
 
+step('lists and links from buttons alone, in Insert, the Inspector and on the canvas (issue #43)');
+await win.getByRole('button', { name: 'Insert', exact: true }).click();
+const results = win.getByRole('listbox', { name: 'Results' }).getByRole('option');
+for (const [q, first] of [['bulleted list', /^Bulleted list/], ['numbered list', /^Numbered list/]]) {
+  await search.fill(q);
+  await eventually(async () => assert.match(await results.first().innerText(), first, `"${q}" finds it first`));
+}
+await search.fill('list');
+await eventually(async () => {
+  const found = await results.allInnerTexts();
+  assert.ok(found.some((t) => t.startsWith('Bulleted list')) && found.some((t) => t.startsWith('Numbered list')), `"list" finds both kinds of list: ${found.join(' | ')}`);
+});
+// A numbered list from Insert, then a bulleted one, which the rest of this step works on.
+await search.fill('numbered list');
+await eventually(async () => assert.match(await results.first().innerText(), /^Numbered list/));
+await search.press('Enter');
+await win.locator('#dock-panel-inspect .rich-field textarea').waitFor();
+await search.fill('bulleted list');
+await eventually(async () => assert.match(await results.first().innerText(), /^Bulleted list/));
+await search.press('Enter');
+const insp = win.locator('#dock-panel-inspect');
+const listField = insp.locator('.rich-field textarea');
+await listField.waitFor();
+const tools = insp.getByRole('toolbar', { name: 'Text formatting' });
+const listText = () =>
+  win.evaluate(async () => {
+    const s = await window.builder.project.snapshot();
+    const about = Object.values(s.state.pages).find((p) => p.title === 'About');
+    const node = Object.values(about.nodes).find((n) => n.kind === 'text' && n.rich && JSON.stringify(n.text).includes('Second item'));
+    return node ? node.text : null;
+  });
+const words = (blocks) => blocks.flatMap((b) => (b.items ?? [b.spans]).map((it) => it.map((s) => s.text).join('')));
+await eventually(async () => assert.deepEqual(await listText(), [{ type: 'ul', items: [[{ text: 'First item' }], [{ text: 'Second item' }], [{ text: 'Third item' }]] }], 'a real bulleted list is inserted'));
+/** Put the field's caret (or selection) on `word`, as the author would, so the buttons follow it. */
+const selectInField = async (word, whole) => {
+  await listField.focus();
+  await listField.evaluate((el, [w, all]) => {
+    const i = el.value.indexOf(w);
+    el.setSelectionRange(all ? i : i + 1, all ? i + w.length : i + 1);
+    el.dispatchEvent(new Event('select'));
+  }, [word, whole]);
+  assert.equal(await listField.evaluate((el) => el.value.slice(el.selectionStart, el.selectionEnd)), whole ? word : '', `the field selects ${whole ? word : 'a caret in it'}`);
+};
+// Move an item with the pointer: one Undo step, which Redo puts back.
+await selectInField('Second item', false);
+await tools.getByRole('button', { name: 'Move item up' }).click();
+await eventually(async () => assert.deepEqual(words(await listText()), ['Second item', 'First item', 'Third item'], 'the item moves up'));
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(async () => assert.deepEqual(words(await listText()), ['First item', 'Second item', 'Third item'], 'one Undo puts it back'));
+await win.locator('[aria-label^="Redo"]').first().click();
+await eventually(async () => assert.deepEqual(words(await listText()), ['Second item', 'First item', 'Third item'], 'Redo moves it again'));
+// Link selected words through the link field: no Markdown typed.
+await eventually(async () => assert.match(await listField.inputValue(), /^- Second item\n- First item\n- Third item$/));
+await selectInField('Third item', true);
+await tools.getByRole('button', { name: 'Link', exact: true }).click();
+await insp.getByRole('textbox', { name: 'Link destination' }).fill('/about/');
+await insp.getByRole('textbox', { name: 'Link destination' }).press('Enter');
+await eventually(async () => {
+  const blocks = await listText();
+  const about = await win.evaluate(async () => Object.values((await window.builder.project.snapshot()).state.pages).find((p) => p.title === 'About').id);
+  assert.deepEqual(blocks[0].items[2], [{ text: 'Third item', link: { type: 'page', target: about } }], 'the words link to the About page by its ID');
+});
+// From the keyboard: Tab reaches the buttons, the arrow keys move along them, and Enter makes the list numbered.
+await selectInField('First item', false);
+await win.keyboard.press('Tab');
+await win.keyboard.press('Home');
+await win.keyboard.press('ArrowRight');
+await win.keyboard.press('ArrowRight');
+await eventually(async () => assert.equal(await activeLabel(), 'Numbered list', 'the arrow keys move along the toolbar'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal((await listText())[0].type, 'ol', 'the list is numbered'));
+assert.equal(await activeLabel(), 'Numbered list', 'focus stays on the button');
+// On the canvas, from the keyboard alone: the selection's More actions start the edit, Tab reaches the toolbar,
+// and its commands run on the text's selection. The whole edit is then one change.
+const listOnPage = frame.locator('.so-rich', { hasText: 'Second item' }).first();
+await eventually(async () => assert.equal(await listOnPage.locator('ol > li').count(), 3, 'the page shows a numbered list'));
+await win.screenshot({ path: join(OUT, '17-list.png') });
+await win.locator('.ov-chip [aria-haspopup="menu"]').focus();
+await win.keyboard.press('Enter');
+await win.getByRole('menuitem', { name: 'Edit text', exact: true }).press('Enter');
+await eventually(async () => assert.equal(await listOnPage.getAttribute('contenteditable'), 'true', 'the list is being edited'));
+await listOnPage.evaluate((el) => {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.nodeValue === 'Second item') return getSelection().collapse(n, 2);
+});
+const pageTools = frame.getByRole('toolbar', { name: 'Text formatting' });
+await pageTools.waitFor();
+const focusedTool = () => frame.locator('html').evaluate(() => document.activeElement?.shadowRoot?.activeElement?.getAttribute('aria-label') ?? null);
+await win.keyboard.press('Tab');
+await win.keyboard.press('End');
+await eventually(async () => assert.equal(await focusedTool(), 'Move item down', 'End reaches the last button'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.deepEqual(await listOnPage.locator('li').allInnerTexts(), ['First item', 'Second item', 'Third item'], 'the item moves down on the page'));
+// Back to a bulleted list, still from the keyboard: the whole list changes kind.
+await win.keyboard.press('Tab');
+await win.keyboard.press('Home');
+await win.keyboard.press('ArrowRight');
+await eventually(async () => assert.equal(await focusedTool(), 'Bulleted list'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal(await listOnPage.locator('ul > li').count(), 3, 'the list is bulleted again'));
+const applied = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).length);
+const historyBefore = await applied();
+await win.keyboard.press(`${MOD}+Enter`);
+await eventually(async () => assert.deepEqual(words(await listText()), ['First item', 'Second item', 'Third item'], 'the move is saved'));
+assert.equal((await listText())[0].type, 'ul', 'the list is saved bulleted');
+assert.equal(await applied(), historyBefore + 1, 'the canvas edit is one Undo step');
+await eventually(async () => assert.equal(await pageTools.count(), 0, 'the toolbar goes when the edit ends'));
+
 step('export static');
 const t0 = Date.now();
 const exportDir = join(WORK, 'export-static');
@@ -898,6 +1006,9 @@ assert.deepEqual([...about.matchAll(/<th scope="col"[^>]*>([^<]*)<\/th>/g)].map(
 assert.match(about, /<caption id="([^"]+)"[^>]*>Weekly workshops<\/caption>/, 'the exported table has its caption');
 assert.match(about, /role="region" tabindex="0" aria-labelledby="[^"]+"/, 'the exported table scrolls in a named, focusable region');
 assert.match(about.replace(/<!--[\s\S]*?-->/g, ''), /<td[^>]*>Friday<\/td><td[^>]*>17:00<\/td><td[^>]*>Raku<\/td>/, 'the fourth workshop is exported with each cell under its column');
+const aboutMarkup = about.replace(/<!--[\s\S]*?-->/g, '');
+assert.match(aboutMarkup, /<ul[^>]*><li>First item<\/li><li>Second item<\/li><li><a[^>]*href="(\.\.)?\/about\/"[^>]*>Third item<\/a><\/li><\/ul>/, 'the bulleted list is exported as a real list, with its link');
+assert.match(aboutMarkup, /<ol[^>]*><li>First step<\/li><li>Second step<\/li><li>Third step<\/li><\/ol>/, 'the numbered list is exported as a real numbered list');
 assert.ok(readFileSync(join(exportDir, 'index.html'), 'utf8').includes('Rooms that work beautifully'), 'the exported home page has the edited heading');
 assert.ok(!readdirSync(exportDir).includes('.siteorigin'), 'no editor state in the export');
 

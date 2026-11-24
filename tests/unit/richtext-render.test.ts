@@ -279,6 +279,26 @@ describe('editing text that a place lists', () => {
     expect(edit([check('A'), p('A')], 'A', 'A')).toEqual([check('A'), p('A')]);
   });
 
+  it('keeps each item what it was when items are moved past each other', () => {
+    // A check item with a bold page link, moved above the paragraph before it, and then below the one after.
+    const task = [{ text: 'Task', strong: true, link: { type: 'page' as const, target: 'pg_a' } }];
+    const stored: RichText = [p('Intro'), { type: 'check', items: [task] }, p('Outro')];
+    const pages = { pg_a: { id: 'pg_a', route: '/a/' } };
+    const moved = (...order: string[]) => [{ tag: 'ul', check: true, children: order.map((w) => ({ tag: 'li', children: [w === 'Task' ? { tag: 'a', href: '/a/', children: [{ tag: 'strong', children: ['Task'] }] } : w] })) }];
+    expect(storedEdit(listed, stored, blocksFromDom(moved('Task', 'Intro', 'Outro'), pages).blocks)).toEqual([{ type: 'check', items: [task] }, p('Intro'), p('Outro')]);
+    expect(storedEdit(listed, stored, blocksFromDom(moved('Intro', 'Outro', 'Task'), pages).blocks)).toEqual([p('Intro'), p('Outro'), { type: 'check', items: [task] }]);
+    expect(edit([check('A'), p('B'), p('C')], 'C', 'B', 'A')).toEqual([p('C'), p('B'), check('A')]);
+    // Moved and then changed (its words linked), it is still the check item that moved, not the paragraph in its place.
+    const linked = [{ tag: 'ul', check: true, children: [{ tag: 'li', children: [{ tag: 'a', href: '/a/', children: ['Task'] }] }, { tag: 'li', children: ['Intro'] }] }];
+    expect(storedEdit(listed, [p('Intro'), check('Task')], blocksFromDom(linked, pages).blocks)).toEqual([{ type: 'check', items: [[{ text: 'Task', link: { type: 'page', target: 'pg_a' } }]] }, p('Intro')]);
+    // Two items moved past each other and both linked keep their kinds: their words still tell them apart.
+    const both = [{ tag: 'ul', check: true, children: [{ tag: 'li', children: [{ tag: 'a', href: '/a/', children: ['Task'] }] }, { tag: 'li', children: [{ tag: 'a', href: '/a/', children: ['Intro'] }] }] }];
+    const link = { type: 'page' as const, target: 'pg_a' };
+    expect(storedEdit(listed, [p('Intro'), check('Task')], blocksFromDom(both, pages).blocks)).toEqual([{ type: 'check', items: [[{ text: 'Task', link }]] }, { type: 'p', spans: [{ text: 'Intro', link }] }]);
+    // The same words twice, of different kinds, are each matched once.
+    expect(edit([check('A'), p('A'), p('B')], 'B', 'A', 'A')).toEqual([p('B'), check('A'), p('A')]);
+  });
+
   it('keeps a stored list a list', () => {
     expect(edit([check('One')], 'One more')).toEqual([check('One more')]);
     expect(edit([check('One')], 'One')).toEqual([check('One')]);
