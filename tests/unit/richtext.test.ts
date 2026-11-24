@@ -182,6 +182,7 @@ describe('rich text input', () => {
     expect(norm('A' + '\\'.repeat(5) + '\nB')).toEqual([p('A' + '\\'.repeat(2) + '\nB')]);
     // A marker is followed by any space but a line break.
     expect(norm('1.\u00a0Buy')).toEqual([{ type: 'ol', items: [[{ text: 'Buy' }]] }]);
+    expect(norm('###\u00a0Title\n-\u00a0Item')).toEqual([{ type: 'h3', spans: [{ text: 'Title' }] }, { type: 'ul', items: [[{ text: 'Item' }]] }]);
     // A string never goes on into the next one, and old strings are read for their marks only.
     expect(norm(['A\\', 'B'])).toEqual([p('A\n'), p('B')]);
     expect(toRichText(['A\\', 'B'])).toEqual([p('A\\'), p('B')]);
@@ -190,7 +191,7 @@ describe('rich text input', () => {
   it('keeps line breaks in structured blocks, without the spaces around them', () => {
     expect(norm([{ type: 'p', spans: [{ text: 'a \r\n b' }, { text: ' bold \n', strong: true }, { text: 'c' }] }])).toEqual([p('a\nb ', { text: 'bold', strong: true }, '\nc')]);
     // A carriage return alone is spacing, as it always was.
-    expect(norm([{ type: 'p', spans: [{ text: 'a\rb' }] }])).toEqual([p('a b')]);
+    expect(norm([{ type: 'p', spans: [{ text: 'a\rb' }] }, { type: 'p', spans: [{ text: 'c\rd', strong: true }] }])).toEqual([p('a b'), p({ text: 'c d', strong: true })]);
     expect(toRichText(['A\rB'])).toEqual([p('A B')]);
     expect(norm([{ type: 'p', spans: [{ text: '\nlead and trail\n\n' }] }])).toEqual([p('\nlead and trail\n\n')]);
     // A block of breaks alone has nothing to show.
@@ -208,6 +209,7 @@ describe('rich text input', () => {
       { type: 'h3', spans: [{ text: 'Two\nlines' }] },
       { type: 'h3', spans: [{ text: '\nAfter a break' }] },
       { type: 'p', spans: [{ text: 'A\n\u00a0spaced on purpose' }] },
+      { type: 'blockquote', spans: [{ text: 'Quote ending in a break\n' }] },
       { type: 'ul', items: [[{ text: 'Item\n### not a heading' }], [{ text: 'Last\n' }]] }
     ]);
     const text = richTextToMarkdown(value, s.pages);
@@ -720,12 +722,13 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
         { type: 'p', spans: [{ text: 'Harbour Lane Studio\n12 Quay Street\nPort Town' }] },
         { type: 'p', spans: [{ text: 'A ' }, { text: 'bold\nbreak', strong: true, link: { type: 'url', target: 'https://example.com/' } }, { text: '\nB\n\n' }] },
         { type: 'p', spans: [{ text: 'a\nb', strong: true, em: true }, { text: '\nOne break at the end\n' }] },
-        { type: 'ul', items: [[{ text: '\nOne' }], [{ text: 'Two' }]] }
+        { type: 'ul', items: [[{ text: '\nOne' }], [{ text: 'Two\n' }]] }
       ],
       s,
       'Body'
     );
     const out = html(value).replace(/<!--[\s\S]*?-->/g, '');
+    expect(out).toContain('<li>Two<br/><br/></li>');
     expect(out).toContain('<p>Harbour Lane Studio<br/>12 Quay Street<br/>Port Town</p>');
     expect(out).toContain('<strong>bold<br/>break</strong>');
     expect(out).toContain('<strong><em>a<br/>b</em></strong>');

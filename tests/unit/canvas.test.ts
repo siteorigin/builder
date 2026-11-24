@@ -39,6 +39,7 @@ describe('rich text from the canvas', () => {
     expect(blocks([el('p', el('br'), 'B')])).toEqual([p('\nB')]);
     expect(blocks([el('ul', el('li', 'Item', el('br'), el('br')))])).toEqual([{ type: 'ul', items: [[{ text: 'Item\n' }]] }]);
     expect(blocks([el('h3', 'A', el('br'), el('br'))])).toEqual([{ type: 'h3', spans: [{ text: 'A\n' }] }]);
+    expect(blocks([el('blockquote', 'A', el('br'), el('br'))])).toEqual([{ type: 'blockquote', spans: [{ text: 'A\n' }] }]);
     // A non-breaking space after the break shows a line: the break before it is the writer's.
     expect(blocks([el('p', 'A', el('br'), '\u00a0')])).toEqual([p('A\n')]);
     // Breaks go outside marks, as spaces do, and the spaces beside a break go.
@@ -49,7 +50,7 @@ describe('rich text from the canvas', () => {
 
   it('reads a line feed in the text itself as a space, as the page shows it', () => {
     // Pasted or source markup is wrapped with line feeds that a page collapses; only <br> breaks a line.
-    expect(blocks(['\n', el('p', 'One\n  Two\r\nThree\rFour'), '\n'])).toEqual([p('One Two Three Four')]);
+    expect(blocks(['\n', el('p', 'One\n  Two\r\nThree\rFour\fFive'), '\n'])).toEqual([p('One Two Three Four Five')]);
   });
 
   it('moves spaces outside marks, merges neighbours and collapses whitespace', () => {

@@ -197,6 +197,13 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       expect((await selected()).text.replace(/\s+/g, ' ').trim()).toBe(PARAGRAPHS.join(' ').replace(/<\/?strong>/g, ''));
     });
 
+    it('leaves a heading’s whole text to Select All too', async () => {
+      await editAt('h', 'Lane', 1);
+      expect((await selected()).text).toBe('Lane');
+      await page.keyboard.press('ControlOrMeta+A');
+      expect((await selected()).text).toBe(HEADING);
+    });
+
     it('starts nothing for a double-click the author has since moved on from, and still starts the newer one', async () => {
       const first = await doubleClick('r', 'word');
       const second = await doubleClick('h', 'Studio');

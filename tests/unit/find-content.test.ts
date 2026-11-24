@@ -304,6 +304,7 @@ describe('what replacing keeps safe', () => {
     const { s, page } = withParagraph([{ type: 'p', spans: [{ text: 'Harbour Lane\n12 Quay Street' }] }]);
     const found = findContent(s, 'Lane 12').filter((m) => m.field.nodeId === 'n_rich_para');
     expect(found.map((m) => m.match)).toEqual(['Lane ↵ 12']);
+    expect(findContent(s, 'Lane').filter((m) => m.field.nodeId === 'n_rich_para').map((m) => m.after)).toEqual([' ↵ 12 Quay Street']);
     const { after, plan } = apply(s, found, 'Lane 12');
     expect((after.pages[page.id].nodes.n_rich_para as { text: RichText }).text).toEqual([{ type: 'p', spans: [{ text: 'Harbour Lane 12 Quay Street' }] }]);
     expect(plan.changes.map((c) => [c.before, c.after])).toEqual([['Harbour Lane ↵ 12 Quay Street', 'Harbour Lane 12 Quay Street']]);
