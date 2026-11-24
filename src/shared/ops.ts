@@ -647,7 +647,8 @@ export const OPERATION_SCHEMAS = {
     collectionId: z.string(),
     entryId: z.string().regex(/^en_[a-z0-9]{4,32}$/).optional().describe('Internal: lets one batch create an entry and link to it.'),
     title: z.string().min(1).max(200),
-    ...ENTRY_FIELDS
+    ...ENTRY_FIELDS,
+    redirectFrom: z.string().max(1100).optional().describe('An address the post had on an earlier site, such as "/2019/03/winter-workshop/", kept working by sending visitors to the new entry. Nothing else may use it.')
   }),
   'entry.update': z.object({ type: z.literal('entry.update'), collectionId: z.string(), entryId: z.string(), title: z.string().min(1).max(200).optional(), ...ENTRY_FIELDS }),
   'entry.reorder': z.object({
