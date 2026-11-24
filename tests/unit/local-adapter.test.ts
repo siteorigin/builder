@@ -302,14 +302,17 @@ describe('native tool calls', () => {
       await run(native(), { items });
       await run(adapter(), { items });
       expect(posts()).toHaveLength(2);
-      for (const post of posts()) {
-        const messages = post.body.messages;
+      const [nativeSent, constrainedSent] = posts().map((p) => p.body.messages as Array<{ role: string; content: string }>);
+      for (const messages of [nativeSent, constrainedSent]) {
         expect(() => renderStrictTemplate(messages)).not.toThrow();
-        expect(messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+        expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'user']);
         expect(messages[1]).toEqual({ role: 'user', content: 'Earlier in this conversation:' });
-        expect(messages[2].content).toBe('Added a Pricing page.\n\nRenamed the site.');
-        expect(messages[3].content).toBe('Now add a Contact page');
+        expect(messages[3]).toEqual({ role: 'user', content: 'Go on.' });
+        expect(messages[5].content).toBe('Now add a Contact page');
       }
+      expect([nativeSent[2].content, nativeSent[4].content]).toEqual(['Added a Pricing page.', 'Renamed the site.']);
+      // Each earlier answer stays one whole envelope, never two run together.
+      expect([JSON.parse(constrainedSent[2].content).action.args.message, JSON.parse(constrainedSent[4].content).action.args.message]).toEqual(['Added a Pricing page.', 'Renamed the site.']);
     });
 
     it('puts a user turn between two replies that only tool calls separate', async () => {

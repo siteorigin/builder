@@ -267,9 +267,9 @@ const GO_ON = 'Go on.';
 
 /**
  * Strict chat templates (Mistral's, for one) set tool calls and their results aside, then require the messages
- * left to alternate user, assistant, user, starting with the user, or refuse the whole request. Messages that
- * meet are merged; a note that follows tool results, or a transcript that opens with a reply, gets a short bridge
- * from the missing role. Tool calls and results are never changed or moved.
+ * left to alternate user, assistant, user, starting with the user, or refuse the whole request. User messages that
+ * meet are merged; two replies in a row, a note that follows tool results, or a transcript that opens with a reply
+ * gets a short bridge from the missing role. Tool calls and results are never changed or moved.
  */
 function alternate(messages: ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
@@ -279,8 +279,9 @@ function alternate(messages: ChatMessage[]): ChatMessage[] {
       out.push({ ...m });
       continue;
     }
+    // User messages that meet are merged. Replies are not: each may be a JSON envelope, which must stay whole.
     const last = out[out.length - 1];
-    if (m.role === counted && last?.role === m.role && !last.tool_calls) {
+    if (m.role === 'user' && counted === 'user' && last?.role === 'user') {
       last.content += `\n\n${m.content}`;
       continue;
     }
