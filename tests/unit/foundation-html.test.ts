@@ -228,6 +228,18 @@ describe('optional headings', () => {
       expect(out).not.toMatch(new RegExp(`<${tag}\\b`));
     }
   });
+
+  it.each(sections)('%s renders the heading level its placement chooses, with the same look', (componentId, tag) => {
+    const text = `Heading of ${componentId}`;
+    const classOf = (markup: string, level: string) => markup.match(new RegExp(`<${level}\\b[^>]*class="([^"]*)"`))?.[1];
+    const usual = html(componentId, { heading: text });
+    const other = tag === 'h1' ? 'h2' : 'h4';
+    const chosen = html(componentId, { heading: text, headingLevel: other });
+    expect(tags(chosen, other)).toEqual([text]);
+    expect(chosen).not.toMatch(new RegExp(`<${tag}\\b`));
+    expect(classOf(chosen, other)).toBe(classOf(usual, tag));
+    expect(classOf(chosen, other)?.split(/\s+/)).toContain(nodeClass(componentId, 'heading'));
+  });
 });
 
 describe('empty wrappers', () => {

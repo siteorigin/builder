@@ -730,9 +730,14 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   // Content bound to this part
   const bindings: Array<{ prop?: string; item?: string; kind: string }> = [];
   const pushB = (v: unknown, kind: string) => {
-    if (isBinding(v)) bindings.push('$prop' in v ? { prop: v.$prop, kind } : { item: v.$item, kind });
+    if (!isBinding(v)) return;
+    const b = '$prop' in v ? { prop: v.$prop, kind } : { item: v.$item, kind };
+    if (!bindings.some((x) => x.prop === b.prop && x.item === b.item)) bindings.push(b);
   };
   if (node.kind === 'text') pushB(node.text, 'text');
+  // A heading's level, when its placement chooses it, sits beside its words: it changes the outline, never the look.
+  // A level shared by every item is left to the section when the words are each item's own, so neither says "this one only" wrongly.
+  if (node.kind === 'text' && !(isBinding(node.text) && '$item' in node.text && isBinding(node.tag) && '$prop' in node.tag)) pushB(node.tag, 'tag');
   if (node.kind === 'image') pushB(node.image, 'image');
   if (node.kind === 'link') (pushB(node.label, 'label'), pushB(node.link, 'link'));
   if (node.kind === 'icon') pushB(node.icon, 'icon');
@@ -921,7 +926,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
             {!node.rich && !isBinding(node.tag) && (
               <Field label="Type">
                 <select className="select" value={node.tag} onChange={(e) => content('tag', e.target.value)}>
-                  {['h1', 'h2', 'h3', 'h4', 'p'].map((tg) => (
+                  {['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'].map((tg) => (
                     <option key={tg} value={tg}>
                       {tg === 'p' ? 'Paragraph' : `Heading ${tg.slice(1)}`}
                     </option>

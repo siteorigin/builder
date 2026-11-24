@@ -384,6 +384,20 @@ export function openAsset(assetId: string) {
   showAsset(getState().snapshot?.workspaceKey ?? '', assetId);
 }
 
+/**
+ * Show a page's headings in the Layers panel, leaving component editing and closing the dialog that asked for them
+ * (Project health), with focus on the outline.
+ */
+export function openOutline(pageId?: string | null) {
+  const s = getState();
+  const target = pageId ?? s.definitionMode?.returnPageId ?? s.pageId;
+  if (!target) return;
+  if (s.pageId !== target || s.definitionMode) selectPage(target);
+  setState({ modal: null, leftTab: 'layers', layersView: 'outline' });
+  // The first heading's row, or the outline itself when the page has none.
+  requestAnimationFrame(() => requestAnimationFrame(() => (document.querySelector<HTMLElement>('.outline-view .outline-row') ?? document.querySelector<HTMLElement>('.outline-view'))?.focus()));
+}
+
 export function openSiteStyles() {
   const dm = getState().definitionMode;
   setState(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null, rightTab: 'styles', dockOpen: true } : { rightTab: 'styles', dockOpen: true });

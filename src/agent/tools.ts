@@ -331,7 +331,11 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'read_component': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_component']>;
-      const def = a.definitionId ? state.components[a.definitionId] : a.componentId ? catalogueComponent(state.site.themeId, a.componentId) : undefined;
+      // A theme component already in the project is described as installed: a newer theme's properties (a heading
+      // level, say) are not there until Project health updates it, and placing it uses the installed one.
+      const themed = a.componentId ? catalogueComponent(state.site.themeId, a.componentId) : undefined;
+      const installed = themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : undefined;
+      const def = a.definitionId ? state.components[a.definitionId] : (installed ?? themed);
       if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Component not found. Use search_components.' } };
       const examples = examplesFor(state, def.componentId).map(exampleSection);
       return { ok: true, content: { ...componentDetail(def), ...(examples.length ? { workedExamples: examples } : {}) } };

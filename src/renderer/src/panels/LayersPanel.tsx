@@ -10,6 +10,7 @@ import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { askAiAbout, deleteSelection, duplicateSelection, moveSelection } from '../lib/actions';
 import { everySizeEdits, eyeAction, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type VisibilityEdit } from '../lib/layers';
+import { OutlinePanel } from './OutlinePanel';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -103,6 +104,7 @@ export function LayersPanel() {
   const pageId = useStore((s) => s.pageId);
   const definitionMode = useStore((s) => s.definitionMode);
   const visible = useStore((s) => s.leftTab === 'layers');
+  const view = useStore((s) => s.layersView);
   const menu = useMenu();
   const treeRef = useRef<HTMLDivElement>(null);
   const typed = useRef({ text: '', at: 0 });
@@ -119,7 +121,8 @@ export function LayersPanel() {
       tree.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
     }, 60);
     return () => clearTimeout(t);
-  }, [selection, visible]);
+    // Returning from the headings outline shows the selected row again: it may have changed while the tree was hidden.
+  }, [selection, visible, view]);
   // Rows mount and unmount inside branches that open on their own (revealing a canvas selection), which does
   // not re-render the panel: keep exactly one tabbable row whenever the rows change.
   useEffect(() => {
@@ -307,15 +310,31 @@ export function LayersPanel() {
     if (hit !== rows[at]) (hit.focus(), hit.click());
   };
 
+  // A page's headings can be shown instead of its layers; a component being edited everywhere has no page outline.
+  const outline = view === 'outline' && !defOwner;
   return (
     <>
       <div className="panel-head">
-        <h3>Layers</h3>
-        <span className="context ellipsis" title={defOwner ? `Layers of the ${st.components[defOwner.id]?.name} component` : `Layers on ${page.title}`}>
+        <h3>{outline ? 'Page outline' : 'Layers'}</h3>
+        <span className="context ellipsis" title={defOwner ? `Layers of the ${st.components[defOwner.id]?.name} component` : `${outline ? 'Headings' : 'Layers'} on ${page.title}`}>
           {defOwner ? st.components[defOwner.id]?.name : page.title}
         </span>
       </div>
-      <div className="panel-body layers-tree" role="tree" aria-label="Layers" ref={treeRef} onKeyDown={onTreeKey}>
+      {!defOwner && (
+        <div className="layers-views">
+          <div className="segmented full" role="group" aria-label="Show">
+            <button aria-pressed={!outline} onClick={() => setState({ layersView: 'layers' })}>
+              Layers
+            </button>
+            <button aria-pressed={outline} title="The headings this page shows, in the order screen readers list them" onClick={() => setState({ layersView: 'outline' })}>
+              Headings
+            </button>
+          </div>
+        </div>
+      )}
+      {outline && visible && <OutlinePanel pageId={pageId} />}
+      {/* The tree stays mounted while the outline shows, so its single tab stop is kept for when it returns. */}
+      <div className="panel-body layers-tree" role="tree" aria-label="Layers" ref={treeRef} onKeyDown={onTreeKey} hidden={outline}>
         {defOwner && defTree ? (
           <>
             <SectionLabel id="layers-sec-component" icon={<Component />} label="Component layers" />

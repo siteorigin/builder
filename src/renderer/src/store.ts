@@ -101,6 +101,8 @@ interface State {
   zoom: number | 'fit';
   mode: 'edit' | 'preview';
   leftTab: LeftTab | null;
+  /** What the Layers panel shows for a page: its layers, or the outline of the headings it renders. */
+  layersView: 'layers' | 'outline';
   rightTab: RightTab;
   /** The preview page itself has loaded and connected (not just the website tools). */
   frameReady: boolean;
@@ -158,6 +160,7 @@ export const useStore = create<State>((set) => ({
   zoom: 'fit',
   mode: 'edit',
   leftTab: 'pages',
+  layersView: 'layers',
   rightTab: 'inspect',
   frameReady: false,
   drafting: 0,
