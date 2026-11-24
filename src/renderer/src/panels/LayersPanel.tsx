@@ -355,7 +355,8 @@ export function LayersPanel() {
         const id = row.dataset.node;
         const tree = owner ? treeFor(st, owner) : undefined;
         const next = tree && id ? besideOf(tree, id, dir) : null;
-        if (owner && next && pickRow('range', layerRef(owner, next))) requestAnimationFrame(() => rowFor(next)?.focus());
+        // The row beside is already shown (a sibling of the focused one): focus moves to it at once.
+        if (owner && next && pickRow('range', layerRef(owner, next))) rowFor(next)?.focus();
         return;
       }
       if (!e.shiftKey && (e.metaKey || e.ctrlKey)) {

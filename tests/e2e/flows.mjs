@@ -177,6 +177,65 @@ await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.ok((await sectionsOn('Home')).includes('Services grid'), 'a second undo restores the original'));
 await pageRow('Home').click();
 
+step('select two sections by keyboard alone and move them to another page as one change (#167)');
+const pageJson = (title) =>
+  win.evaluate(async (t) => {
+    const s = await window.builder.project.snapshot();
+    return JSON.stringify(Object.values(s.state.pages).find((x) => x.title === t));
+  }, title);
+const focusedName = () => win.evaluate(() => document.activeElement?.closest('[role="treeitem"]')?.getAttribute('data-name') ?? null);
+const selectedNames = () => win.locator('[role="tree"] [role="treeitem"][aria-selected="true"]').evaluateAll((rows) => rows.map((r) => r.dataset.name));
+/** Arrow down a menu until the focused item starts with `name`. The menu moves focus a moment after each key
+ *  (later still in a window that is never shown), so each key waits for it. */
+const focusedText = () => win.evaluate(() => document.activeElement?.textContent ?? '');
+const menuTo = async (name) => {
+  // The menu takes focus once it has opened; a key sent before then would go to the tree.
+  await eventually(async () => assert.ok(await win.evaluate(() => !!document.activeElement?.closest('[role="menu"] [role^="menuitem"]')), 'an item of the menu has focus'));
+  const seen = [];
+  for (let i = 0; i < 12; i++) {
+    const text = await focusedText();
+    if (text.startsWith(name)) return;
+    seen.push(text);
+    await win.keyboard.press('ArrowDown');
+    await eventually(async () => assert.notEqual(await focusedText(), text, 'ArrowDown moves to the next item'));
+  }
+  assert.fail(`the menu reaches ${name} (focus went through ${JSON.stringify(seen)})`);
+};
+const [homeBefore, aboutBefore] = [await pageJson('Home'), await pageJson('About')];
+await win.locator('.rail [aria-label="Layers"]').click();
+// Keyboard alone from here, with the pointer resting away from where the menus open (a menu focuses the item under it).
+await win.mouse.move(2, 2);
+// Into the tree at its one tab stop, type-ahead to Gallery, then Shift+↓ takes Testimonials too.
+await win.locator('[role="tree"] [role="treeitem"][tabindex="0"]').focus();
+await win.keyboard.type('Gallery');
+await eventually(async () => assert.equal(await focusedName(), 'Gallery', 'type-ahead reaches Gallery'));
+await win.keyboard.press('Shift+ArrowDown');
+await eventually(async () => assert.deepEqual(await selectedNames(), ['Gallery', 'Testimonials'], 'Shift+↓ selects Gallery and Testimonials together'));
+assert.equal(await focusedName(), 'Testimonials', 'focus moves on to Testimonials');
+assert.equal(await win.locator('[role="tree"] [role="treeitem"][tabindex="0"]').count(), 1, 'the tree keeps one tab stop');
+await win.locator('.layers-picked', { hasText: '2 sections selected' }).waitFor();
+await win.locator('.status-bar .crumbs-count', { hasText: '2 sections selected' }).waitFor();
+await win.screenshot({ path: join(OUT, '16-two-selected.png') });
+// Their menu (Shift+F10), Move to page…, About.
+await win.keyboard.press('Shift+F10');
+await win.locator('[role="menu"]', { hasText: '2 sections selected' }).waitFor();
+await menuTo('Move to page');
+await win.keyboard.press('Enter');
+await win.locator('[role="menu"]', { hasText: 'Move 2 sections to the end of' }).waitFor();
+await menuTo('About');
+await win.keyboard.press('Enter');
+await eventually(async () => assert.deepEqual((await sectionsOn('About')).slice(-2), ['Gallery', 'Testimonials'], 'both land at the end of About, in order'));
+const homeNow = await sectionsOn('Home');
+assert.ok(!homeNow.includes('Gallery') && !homeNow.includes('Testimonials'), 'and leave Home');
+await win.locator('.toast', { hasText: 'Moved Gallery and Testimonials to the end of About.' }).waitFor();
+await eventually(async () => assert.deepEqual(await selectedNames(), ['Gallery', 'Testimonials'], 'About opens with both selected'));
+await eventually(async () => assert.equal(await focusedName(), 'Testimonials', 'keyboard focus follows them there'));
+// One Undo puts both pages back as they were.
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.deepEqual([await pageJson('Home'), await pageJson('About')], [homeBefore, aboutBefore], 'one Undo puts both pages back'));
+await win.locator('.rail [aria-label="Pages"]').click();
+await pageRow('Home').click();
+
 step('place a library image already used in the Gallery from Assets (#13)');
 const readingAlt = 'A reading corner with an armchair and shelves of books';
 const placedReading = () =>
@@ -248,6 +307,7 @@ await win.mouse.up();
 await eventually(async () => assert.deepEqual(await order(), ['Logo strip', 'Split hero', 'Services grid'], 'the canvas drag moves the hero below the logo strip'));
 await win.locator('.list-item', { hasText: 'Split hero' }).dragTo(win.locator('.list-item', { hasText: 'Logo strip' }), { targetPosition: { x: 40, y: 4 } });
 await eventually(async () => assert.deepEqual(await order(), ['Split hero', 'Logo strip', 'Services grid'], 'the Layers drag moves the hero back to the top'));
+
 
 step('edit a component everywhere: canvas, layers and inspector agree');
 await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
