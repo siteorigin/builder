@@ -132,8 +132,11 @@ export function usesSiteSearch(state: ProjectState): boolean {
   return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source));
 }
 
-/** Code that reads `q` from the page's address (not from a form it submits): `new URLSearchParams(location.search)`, or a URL's `searchParams`. */
-const READS_ADDRESS_QUERY = /(?:new\s+URLSearchParams\(\s*(?:window\.|document\.)?location\.search\s*\)|\.url\.searchParams|\blocation\.searchParams)\s*\.get\(\s*['"`]q['"`]\s*\)/;
+/**
+ * Code that reads `q` from its page's address, not from a form it submits: `new URLSearchParams(location.search)`,
+ * `new URL(location.href).searchParams` or SvelteKit's `page.url.searchParams`.
+ */
+const READS_ADDRESS_QUERY = /(?:new\s+URLSearchParams\(\s*(?:window\.|document\.)?location\.search\s*\)|new\s+URL\(\s*(?:window\.|document\.)?location(?:\.href)?\s*\)\.searchParams|\bpage\.url\.searchParams)\s*\.get\(\s*['"`]q['"`]\s*\)/;
 
 /**
  * Whether a component runs a search of the site from its page's address (`?q=` in the URL), as the theme's Site search

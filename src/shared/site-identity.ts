@@ -63,7 +63,7 @@ export function checkTwitterHandle(input: string): Checked<string> {
 export function checkEmail(input: string): Checked<string> {
   const text = input.trim();
   if (!text) return ok('');
-  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:/\\?#]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
+  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:\\]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
   return ok(text);
 }
 
@@ -211,11 +211,12 @@ export function patchIdentity(current: unknown, patch: IdentityPatch | null, isI
     if (isEmpty(c.value)) delete next[key];
     else next[key] = c.value;
   }
-  if (next.kind !== 'LocalBusiness')
-    for (const key of BUSINESS_FIELDS) {
-      if (Object.hasOwn(patch, key) && !isEmpty(patch[key])) return no('Opening hours, a price range and a map position are said of a local business: choose Local business as who publishes the site first.');
-      delete next[key];
-    }
+  if (next.kind !== 'LocalBusiness') {
+    const given = BUSINESS_FIELDS.filter((key) => Object.hasOwn(patch, key) && patch[key] !== undefined && !isEmpty(next[key]));
+    if (given.length) return no('Opening hours, a price range and a map position are said of a local business: choose Local business as who publishes the site first.');
+    // Choosing another kind clears them; an edit of another field leaves whatever is stored alone.
+    if (Object.hasOwn(patch, 'kind') && patch.kind !== undefined) for (const key of BUSINESS_FIELDS) delete next[key];
+  }
   return ok(Object.keys(next).length ? (next as SiteIdentity) : undefined);
 }
 

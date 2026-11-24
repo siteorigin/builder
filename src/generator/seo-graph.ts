@@ -151,10 +151,13 @@ function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, r
   return out;
 }
 
-/** A library file the website serves: one under static/ and nowhere above it. What a damaged record names otherwise is not. */
+/**
+ * A library file the website serves: one under static/ and nowhere above it, its name plain enough to be its own
+ * address (no escapes, query or fragment). What a damaged record names otherwise is not.
+ */
 const servedFile = (file: string) => {
   const parts = file.split('/');
-  return parts[0] === 'static' && parts.length > 1 && parts.slice(1).every((p) => p && p !== '.' && p !== '..' && !/[\\\0]/.test(p));
+  return parts[0] === 'static' && parts.length > 1 && parts.slice(1).every((p) => p && p !== '.' && p !== '..' && !/[\\\0%?#\s]/.test(p));
 };
 
 /** Whether an asset ID names a picture in the library, with a file the website serves to link to. */

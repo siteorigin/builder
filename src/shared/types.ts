@@ -840,7 +840,7 @@ export type EntityKind = 'Organization' | 'LocalBusiness' | 'Person';
 
 /**
  * The site's publisher. Every field is optional; one left out says nothing. Contact details are said of any kind;
- * opening hours, price range and map position only of a local business, and are kept while another kind is chosen.
+ * opening hours, price range and map position only of a local business, and choosing another kind clears them.
  */
 export interface SiteIdentity {
   /** Absent: not chosen yet, and the site is described as an organization. */

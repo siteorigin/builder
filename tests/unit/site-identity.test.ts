@@ -17,7 +17,7 @@ import { GenerationCache } from '@generator/cache';
 import { createSeoResolver } from '@generator/seo-metadata';
 import { buildSeoGraph, type GraphContributor, type GraphNode, type SeoGraph } from '@generator/seo-graph';
 import { documentGraph, searchPageUrl } from '@generator/structured-data';
-import { checkCoordinates, checkOpeningHours, checkProfileUrl, checkTwitterHandle, coordinatesText, sitePublisher } from '@shared/site-identity';
+import { checkCoordinates, checkEmail, checkOpeningHours, checkProfileUrl, checkTwitterHandle, coordinatesText, sitePublisher } from '@shared/site-identity';
 import { checkHeld, fieldKey, readField, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
 import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
 import { ProjectSession } from '../../src/main/project/session';
@@ -128,6 +128,13 @@ describe('the site identity site.update saves', () => {
     // Given with the kind in one patch, a local business's details are kept; for another kind, refused.
     expect(run(s, { type: 'site.update', identity: { kind: 'LocalBusiness', priceRange: '$' } }).site.identity).toMatchObject({ kind: 'LocalBusiness', priceRange: '$' });
     expect(refusal(s, { type: 'site.update', identity: { openingHours: ['Mo 09:00-17:00'] } })).toMatch(/said of a local business/);
+    // Unsetting the kind clears them too; a list that says nothing is no detail to refuse.
+    const business = run(state, { type: 'site.update', identity: { kind: 'LocalBusiness', telephone: '+27 21 555 0134', openingHours: ['Mo 09:00-17:00'] } });
+    expect(run(business, { type: 'site.update', identity: { kind: null, openingHours: [' '] } }).site.identity).toEqual({ telephone: '+27 21 555 0134' });
+    // An edit of another field leaves alone what a hand edit stored, which the website doesn't say of this kind.
+    const handEdited = copy(state);
+    handEdited.site.identity = { kind: 'Organization', openingHours: ['Mo 09:00-17:00'] };
+    expect(run(handEdited, { type: 'site.update', identity: { name: 'Riverside Pottery' } }).site.identity).toEqual({ kind: 'Organization', openingHours: ['Mo 09:00-17:00'], name: 'Riverside Pottery' });
     // Clearing it all leaves nothing behind.
     s = run(s, { type: 'site.update', identity: null });
     expect(s.site).not.toHaveProperty('identity');
@@ -180,6 +187,7 @@ describe('the site identity site.update saves', () => {
     expect(checkProfileUrl('HTTPS://WWW.Wikidata.org/wiki/Q42')).toEqual({ ok: true, value: 'https://www.wikidata.org/wiki/Q42' });
     expect(checkProfileUrl('localhost:3000/me').ok).toBe(false);
     expect(checkTwitterHandle('riverstudio_za')).toEqual({ ok: true, value: '@riverstudio_za' });
+    expect(checkEmail('sales/eu@example.com')).toEqual({ ok: true, value: 'sales/eu@example.com' });
     expect(checkTwitterHandle('riverside_studio_1').ok).toBe(false);
     expect(checkOpeningHours('mo,we-fr')).toEqual({ ok: true, value: 'Mo,We-Fr' });
     expect(checkOpeningHours('Su 24:00-24:00')).toEqual({ ok: true, value: 'Su 24:00-24:00' });
@@ -219,7 +227,7 @@ describe('the site identity site.update saves', () => {
     const profiles: EditOperation = { type: 'site.update', identity: { sameAs: ['https://github.com/riverside'] } };
     expect(fieldKey([name])).toBe(fieldKey([{ type: 'site.update', identity: { name: 'Another' } }]));
     expect(fieldKey([name])).not.toBe(fieldKey([profiles]));
-    expect(readField(s, name)).toEqual({ found: true, value: { identity: 'Riverside Studio Ltd', publisher: { kind: 'LocalBusiness' } } });
+    expect(readField(s, name)).toEqual({ found: true, value: { identity: 'Riverside Studio Ltd', publisher: 'LocalBusiness' } });
     expect(readField(run(s, profiles), name)).toEqual(readField(s, name));
     expect(typedText(name)).toBe('Riverside Pottery');
     const read = readField(s, profiles)!;
@@ -235,6 +243,9 @@ describe('the site identity site.update saves', () => {
     expect(checkHeld(run(s, profiles), [name], base).kind).toBe('apply');
     expect(checkHeld(run(s, { type: 'site.update', identity: null }), [name], base).kind).toBe('changed');
     expect(checkHeld(run(s, { type: 'site.update', identity: { kind: 'Person' } }), [name], base).kind).toBe('changed');
+    // With no identity yet, the AI saving a profile gives the name no one else to belong to.
+    const bare = readFields(state, [name])!.map((r) => (r.found ? r.value : undefined));
+    expect(checkHeld(run(state, profiles), [name], bare).kind).toBe('apply');
   });
 });
 
@@ -332,7 +343,7 @@ describe('the publisher in the connected graph', () => {
     (damaged.site as { identity: unknown }).identity = { kind: 'Organization', sameAs: 'https://github.com/riverside' };
     expect(homeGraph(damaged)['@graph'][0].sameAs).toBe('https://github.com/riverside');
     // A logo whose record names a file the website doesn't serve is left out, never linked.
-    for (const file of ['/Users/ana/Pictures/logo.png', 'static/../siteorigin/site.json', 'siteorigin/brief.md', 'static/']) {
+    for (const file of ['/Users/ana/Pictures/logo.png', 'static/../siteorigin/site.json', 'static/%2e%2e/mark.png', 'static/assets/logo#mark.png', 'static/a\\b.png', 'siteorigin/brief.md', 'static/']) {
       const s = run(state, { type: 'site.update', identity: { kind: 'Organization', logo: 'img_logo' } });
       s.assets.assets.img_logo.file = file;
       expect(homeGraph(s)['@graph'][0], file).not.toHaveProperty('logo');
@@ -486,6 +497,13 @@ describe('structured data in the exported website', () => {
     def.source = def.source!.replace(/new URLSearchParams\(location\.search\)\.get\('q'\)/, "new FormData(form).get('q')");
     expect(def.source).not.toContain('location.search');
     expect(website(formOnly)).not.toHaveProperty('potentialAction');
+    // A copy reading its address another way still runs a search sent in a link.
+    for (const read of ['new URL(location.href).searchParams.get("q")', 'page.url.searchParams.get(`q`)']) {
+      const other = copy(searched);
+      const own = Object.values(other.components).find((d) => d.componentId === 'site.search')!;
+      own.source = own.source!.replace(/new URLSearchParams\(location\.search\)\.get\('q'\)/, read);
+      expect(website(other).potentialAction, read).toEqual(action);
+    }
     // In the shared header, the first page showing it runs it.
     const header = run(state, { type: 'node.insert', owner: { kind: 'shell', id: 'header' }, parentId: null, index: 0, componentId: 'site.search' });
     expect((website(header, 'pg_services').potentialAction as typeof action).target.urlTemplate).toBe(`${ROOT}?q={search_term_string}`);

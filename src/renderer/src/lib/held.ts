@@ -85,10 +85,10 @@ function identityRead(state: ProjectState, patch: Record<string, unknown> | null
   return keys.length === 1 ? own(keys[0]) : Object.fromEntries(keys.map((k) => [k, own(k)]));
 }
 
-/** Whether the site has an identity, and of which kind. */
-function publisherRead(state: ProjectState): { kind: unknown } | null {
+/** The kind of publisher the site has chosen; null when none is chosen (or the identity is cleared). */
+function publisherRead(state: ProjectState): unknown {
   const stored: unknown = state.site.identity;
-  return stored && typeof stored === 'object' && !Array.isArray(stored) ? { kind: (stored as Record<string, unknown>).kind ?? null } : null;
+  return stored && typeof stored === 'object' && !Array.isArray(stored) ? ((stored as Record<string, unknown>).kind ?? null) : null;
 }
 
 function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {

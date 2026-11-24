@@ -51,7 +51,7 @@ assert.equal(site().baseUrl, undefined, 'a new site has no public URL');
 
 step('the favicon and social image are chosen from the visual picker, with a thumbnail at their own shape');
 const picker = (name) => details().locator('.insp-image').filter({ has: win.locator('.insp-group-title', { hasText: new RegExp(`^${name}$`) }) });
-assert.equal(await details().locator('select.select').count(), 1, 'the only select left in Site details is the text direction');
+assert.equal(await details().locator('select.select:not(#site-identity-kind)').count(), 1, 'besides who publishes the site, the only select left in Site details is the text direction');
 /** A small solid-colour PNG, so each import is a different picture. */
 const makePng = (file, [r, g, b], w = 8, h = 8) => {
   const chunk = (type, data) => {

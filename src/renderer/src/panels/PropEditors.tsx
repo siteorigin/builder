@@ -495,7 +495,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
   // A picture-only field (a sharing image, a site image) shows only what the library has as an image: a saved ID that
   // names a document or font, or is no record at all, is the same as an image that is gone.
   const named = v.assetId && Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : null;
-  const asset = picture || plain ? (named?.kind === 'image' ? named : null) : v.assetId ? state.assets.assets[v.assetId] : null;
+  const asset = picture || plain ? (named?.kind === 'image' && typeof named.file === 'string' && named.file ? named : null) : v.assetId ? state.assets.assets[v.assetId] : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   // The value as it is now, for work that finishes later (an import).
   const latest = useRef(v);
