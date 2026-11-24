@@ -73,7 +73,7 @@ step('release: one edit saves the spacing style for all sizes, and the page keep
 await win.mouse.up();
 const saved = await landed(before, (s) => assert.deepEqual(heroNode(s).overrides?.root?.base?.paddingBlock, { token: 'space.lg' }));
 assert.equal(applied(saved).length, applied(before).length + 1, 'one history entry');
-assert.equal(saved.history.undoLabel, 'Set vertical padding');
+assert.equal(saved.history.undoLabel, 'Set vertical padding for Split hero on Home');
 assert.equal(saved.revision, before.revision + 1, 'one revision');
 assert.deepEqual(heroNode(saved).overrides.root, { ...original.root, base: { ...original.root?.base, paddingBlock: { token: 'space.lg' } } }, 'only the padding changed');
 // The preview rule goes once the site's own stylesheet shows the same padding.
