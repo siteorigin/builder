@@ -1,10 +1,11 @@
-import type { ComponentDefinition, GraphNode, ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef, TokenGroup } from '@shared/types';
+import type { ComponentDefinition, GraphNode, ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef, TokenGroup, TokenValue } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { STYLE_PROP_MAP, followToken } from '@shared/styles';
 import { parseColor } from '@shared/color';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { variantOptions } from '@shared/variants';
 import { childLists } from './tree';
+import { boundSchema } from './schema';
 import type { Diagnostic } from './validate';
 
 /**
@@ -18,18 +19,29 @@ export const REUSABILITY_CODES = new Set(['COMPONENT_UNBOUND_CONTENT', 'COMPONEN
 export const isReusabilityWarning = (d: Diagnostic) => REUSABILITY_CODES.has(d.code);
 
 const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
-/** The fields a placement's content comes from. */
+/** Site text styles that make whatever wears them a heading, whatever its tag (a card's title link, say). */
+const HEADING_TEXT_STYLE = /^text\.(display|h[1-6])$/;
+/** What a placement's content comes from; icons decorate it. */
 const CONTENT_KINDS = new Set(['text', 'image', 'link', 'icon']);
-/** Styles that give a container a visible box of its own: what makes it a card rather than a layout wrapper. */
-const BOX_PROPS = ['background', 'border', 'shadow', 'radius', 'paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd'];
-const PADDING_PROPS = new Set(BOX_PROPS.filter((p) => p.startsWith('padding')));
+const SUBSTANTIVE_KINDS = new Set(['text', 'image', 'link']);
+/** Styles that draw a box of its own around an element: what makes a container a card, or a text a chip. */
+const SURFACE_PROPS = ['background', 'border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'shadow', 'radius'];
+const PADDING_PROPS = new Set(['paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd']);
+const BOX_PROPS = [...SURFACE_PROPS, ...PADDING_PROPS];
 /** Values that set a style back to nothing. */
 const RESET_VALUES = new Set(['', '0', '0px', '0rem', 'none', 'transparent', 'inherit', 'initial', 'unset']);
-/** An image no bigger than this across or down is a detail (an avatar, a logo), not the picture a card is about. */
+/** Button looks that draw their own box, so their padding is the button's shape. */
+const PLAIN_LINKS = new Set(['text', 'link', 'plain']);
+/** An image capped at this or less across or down at every width is a detail (an avatar, a logo), not a card's picture. */
 const ACCESSORY_IMAGE_PX = 64;
+/** Style controls that change how a picture is cropped or cornered, which a frame must offer to stand in for it. */
+const CROP_CONTROLS = ['aspectRatio', 'radius', 'objectFit', 'objectPosition', 'width', 'height', 'maxWidth', 'maxHeight'];
+/** Below this a spacing length is a hairline adjustment that no spacing style stands for, unless one matches it exactly. */
+const MIN_SPACE_PX = 4;
 /** A literal color: hex, rgb() or hsl(). Keywords, variables, mixes and gradients are left alone. */
 const LITERAL_COLOR_RE = /^(#[0-9a-f]{3,8}|(rgba?|hsla?)\(.*\))$/i;
 const SCOPE_WORDS: Record<ResponsiveScope, string> = { base: '', phone: ' on phones', tablet: ' on tablets', desktop: ' on desktops' };
+const KIND_WORDS: Partial<Record<GraphNode['kind'], string>> = { element: 'a container', text: 'a text layer', link: 'a button', image: 'an image', icon: 'an icon', divider: 'a divider', repeat: 'a list', instance: 'a nested component' };
 
 /**
  * A short fixed label is part of a design (an eyebrow, "Read more", "/ month"), not sample content: plain text of a
@@ -42,7 +54,7 @@ export function isMicroLabel(text: string, heading = false): boolean {
 }
 
 /** The author says the content is meant to be the same everywhere by naming its layer "Shared …". */
-const sharedIntent = (n: GraphNode) => /\bshared\b/i.test(n.name ?? '');
+const sharedIntent = (n: GraphNode) => typeof n.name === 'string' && /^\s*shared\b/i.test(n.name);
 
 /** A length in px, reading rem as 16px; null for anything else (a keyword, a percentage, a calculation). */
 function lengthPx(v: unknown): number | null {
@@ -52,47 +64,83 @@ function lengthPx(v: unknown): number | null {
   return Number(m[1]) * (m[2] === 'rem' ? 16 : 1);
 }
 
-const isReset = (v: StyleValue | undefined) => v === undefined || v === false || v === 0 || (typeof v === 'string' && RESET_VALUES.has(v.trim().toLowerCase()));
+const sameLength = (a: string, b: unknown) => typeof b === 'string' && (a.trim().toLowerCase() === b.trim().toLowerCase() || (lengthPx(a) !== null && lengthPx(a) === lengthPx(b)));
+
+/** Whether a style value draws something: a literal other than a reset, or a site style. A binding is not a style. */
+const sets = (v: unknown) =>
+  typeof v === 'string' ? !RESET_VALUES.has(v.trim().toLowerCase()) : typeof v === 'number' ? v !== 0 : !!v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string';
 
 const quoted = (text: string) => `“${text.length > 50 ? `${text.slice(0, 47).trimEnd()}…` : text}”`;
+const layer = (n: GraphNode, fallback: string) => (typeof n.name === 'string' && n.name ? `“${n.name}”` : fallback);
+const scopesOf = (rs: unknown) => (rs && typeof rs === 'object' && !Array.isArray(rs) ? (Object.entries(rs) as Array<[string, unknown]>) : []).filter((e): e is [string, Record<string, unknown>] => !!e[1] && typeof e[1] === 'object' && !Array.isArray(e[1]));
 
-const layer = (n: GraphNode, fallback: string) => (n.name ? `“${n.name}”` : fallback);
-const KIND_WORDS: Partial<Record<GraphNode['kind'], string>> = { element: 'a container', text: 'a text', link: 'a button', image: 'an image', icon: 'an icon', divider: 'a divider', repeat: 'a list', instance: 'a nested component' };
+/** Site styles as they resolve, worked out once for every definition one validation checks. */
+const resolvedCache = new WeakMap<readonly TokenDef[], Array<{ t: TokenDef; value: TokenValue | undefined }>>();
+function resolveTokens(tokens: readonly TokenDef[]) {
+  let r = resolvedCache.get(tokens);
+  if (!r) {
+    r = tokens.map((t) => ({ t, value: followToken(tokens as TokenDef[], t.id) }));
+    resolvedCache.set(tokens, r);
+  }
+  return r;
+}
 
 export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens: readonly TokenDef[]): Diagnostic[] {
   const out: Diagnostic[] = [];
   const tree = def.tree;
-  if (def.kind !== 'managed' || !tree) return out;
+  if (def.kind !== 'managed' || !tree || !tree.nodes || typeof tree.nodes !== 'object') return out;
   const owner = { kind: 'component', id: def.id };
   const nodes = tree.nodes;
-  const node = (id: string) => (Object.hasOwn(nodes, id) ? nodes[id] : undefined);
-  const parts = new Set(Object.values(def.parts ?? {}).map((p) => p?.nodeId));
+  const node = (id: unknown) => (typeof id === 'string' && Object.hasOwn(nodes, id) && nodes[id] && typeof nodes[id] === 'object' ? nodes[id] : undefined);
+  const partList = Object.values(def.parts ?? {}).filter((p) => !!p && typeof p === 'object');
+  const parts = new Set(partList.map((p) => p.nodeId));
   const push = (code: string, n: GraphNode, site: unknown[], message: string) => out.push({ severity: 'warning', code, message: `${def.name}: ${message}`, owner, nodeId: n.id, site: JSON.stringify([n.id, ...site]) });
 
-  // Site styles as they resolve, so a literal can be matched to the one with the same value.
-  const resolved = tokens.map((t) => ({ t, value: followToken(tokens as TokenDef[], t.id) }));
+  const resolved = resolveTokens(tokens);
   const ofGroups = (groups: readonly TokenGroup[]) => resolved.filter(({ t }) => groups.includes(t.group));
-  const minSpace = Math.min(...ofGroups(['space']).map(({ value }) => lengthPx(value)).filter((x): x is number => x !== null && x > 0));
+  /** A node's own styles and those its variants give it, scope by scope. */
+  const variantStyles = new Map<string, ResponsiveStyles[]>();
+  for (const { option } of variantOptions(def))
+    for (const [nid, rs] of Object.entries(option?.styles ?? {})) variantStyles.set(nid, [...(variantStyles.get(nid) ?? []), rs]);
+  const allScopes = (n: GraphNode) => [n.styles, ...(variantStyles.get(n.id) ?? [])].flatMap(scopesOf).map(([, props]) => props);
+  const draws = (n: GraphNode, props: readonly string[]) => allScopes(n).some((scope) => props.some((p) => sets(scope[p])));
 
-  /** What content nodes a subtree shows, and whether any of it is a part. */
-  const contentCount = new Map<string, number>();
-  const countContent = (id: string, seen = new Set<string>()): number => {
-    const n = node(id);
-    if (!n || seen.has(id)) return 0;
-    seen.add(id);
-    if (contentCount.has(id)) return contentCount.get(id)!;
-    const own = CONTENT_KINDS.has(n.kind) ? 1 : 0;
-    const total = own + childLists(n).reduce((sum, cl) => sum + cl.ids.reduce((s, c) => s + countContent(c, seen), 0), 0);
-    contentCount.set(id, total);
-    return total;
+  /** What a subtree shows. */
+  const counts = (kinds: Set<string>) => {
+    const memo = new Map<string, number>();
+    const count = (id: string, seen = new Set<string>()): number => {
+      const n = node(id);
+      if (!n || seen.has(id)) return 0;
+      seen.add(id);
+      if (memo.has(id)) return memo.get(id)!;
+      const total = (kinds.has(n.kind) ? 1 : 0) + childLists(n).reduce((sum, cl) => sum + cl.ids.reduce((s, c) => s + count(c, seen), 0), 0);
+      memo.set(id, total);
+      return total;
+    };
+    return count;
   };
+  const countContent = counts(CONTENT_KINDS);
+  const countSubstance = counts(SUBSTANTIVE_KINDS);
+  const exposedMemo = new Map<string, boolean>();
   const exposesPart = (id: string, seen = new Set<string>()): boolean => {
     const n = node(id);
     if (!n || seen.has(id)) return false;
     seen.add(id);
-    return parts.has(id) || childLists(n).some((cl) => cl.ids.some((c) => exposesPart(c, seen)));
+    if (exposedMemo.has(id)) return exposedMemo.get(id)!;
+    const r = parts.has(id) || childLists(n).some((cl) => cl.ids.some((c) => exposesPart(c, seen)));
+    exposedMemo.set(id, r);
+    return r;
   };
-  const hasBox = (n: GraphNode) => Object.values(n.styles ?? {}).some((scope) => BOX_PROPS.some((p) => !isReset(scope?.[p])));
+
+  /** Whether a text or button is a heading: by its tag, the tags its bound tag can be, or a heading's text style. */
+  const isHeading = (n: GraphNode) => {
+    if (allScopes(n).some((scope) => HEADING_TEXT_STYLE.test(String((scope.textStyle as { token?: unknown } | undefined)?.token ?? '')))) return true;
+    if (n.kind !== 'text') return false;
+    if (!isBinding(n.tag)) return HEADING_TAGS.has(n.tag);
+    const schema = boundSchema(def, n.id, n.tag);
+    const options = schema && 'options' in schema && Array.isArray(schema.options) ? schema.options : null;
+    return !options || options.some((o) => HEADING_TAGS.has(String(o?.value)));
+  };
 
   // 1. Content a placement should choose, written into the design.
   const content = (n: GraphNode, inRepeat: boolean) => {
@@ -100,30 +148,42 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
     const every = inRepeat ? 'every item of every placement' : 'every placement';
     const where = (kind: string) => (inRepeat ? `a ${kind} field of the list item` : `a ${kind} property`);
     const optOut = 'or name the layer “Shared …” if it is meant to be the same everywhere.';
+    const goesNowhere = (l: unknown) => !l || typeof l !== 'object' || (l as { type?: unknown }).type === 'none' || !String((l as { target?: unknown }).target ?? '').trim();
     if (n.kind === 'text' && !isBinding(n.text)) {
       const text = (typeof n.text === 'string' && !n.rich ? n.text : richTextToPlain(toRichText(n.text))).trim();
-      const heading = isBinding(n.tag) || HEADING_TAGS.has(n.tag);
+      const heading = isHeading(n);
       if (text && (n.rich || !isMicroLabel(text, heading)))
-        push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'text'], `the ${heading ? 'heading' : 'text'} ${quoted(text)} is written into the design, so ${every} shows the same words. Bind its text to ${where('text')}, with these words as the default, ${optOut}`);
+        push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'text'], `the ${heading ? 'heading' : 'text'} ${quoted(text)} is written into the design, so ${every} shows the same words. Bind its text to ${where(n.rich ? 'rich text' : 'text')}, with these words as the default, ${optOut}`);
     }
     if (n.kind === 'image' && !isBinding(n.image))
-      push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'image'], `the image ${layer(n, '')}`.trimEnd() + ` is chosen in the design, so ${every} shows the same picture. Bind it to ${where('image')}, ${optOut}`);
+      push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'image'], `${`the image ${layer(n, '')}`.trimEnd()} is chosen in the design, so ${every} shows the same picture. Bind it to ${where('image')}, ${optOut}`);
     if (n.kind === 'link') {
       const label = isBinding(n.label) ? '' : String(n.label ?? '').trim();
-      const button = label ? `the ${quoted(label)} button` : `the button ${layer(n, '')}`.trimEnd();
-      if (label && !isMicroLabel(label))
-        push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'label'], `the button label ${quoted(label)} is written into the design, so ${every} shows it. Bind the label to ${where('text')}, ${optOut}`);
+      const heading = isHeading(n);
+      const button = label ? `the ${quoted(label)} ${heading ? 'link' : 'button'}` : `${`the button ${layer(n, '')}`.trimEnd()}`;
+      if (label && !isMicroLabel(label, heading))
+        push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'label'], `the ${heading ? 'link text' : 'button label'} ${quoted(label)} is written into the design, so ${every} shows it. Bind it to ${where('text')}, ${optOut}`);
       if (!isBinding(n.link))
-        push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'link'], `where ${button} goes is set in the design, so ${every} links to the same place. Bind its link to ${where('link')}, ${optOut}`);
+        push(
+          'COMPONENT_UNBOUND_CONTENT',
+          n,
+          ['content', 'link'],
+          goesNowhere(n.link)
+            ? `${button} has no destination in the design, and placements cannot give it one. Bind its link to ${where('link')}, ${optOut}`
+            : `where ${button} goes is set in the design, so ${every} links to the same place. Bind its link to ${where('link')}, ${optOut}`
+        );
     }
-    if (n.kind === 'element' && n.link !== undefined && !isBinding(n.link) && n.link?.type !== 'none' && !(n.action !== undefined && !isBinding(n.action) && n.action !== 'link'))
+    // A container's link is used unless a fixed action other than following it says otherwise.
+    if (n.kind === 'element' && !isBinding(n.link) && !goesNowhere(n.link) && (n.action === undefined || isBinding(n.action) || n.action === 'link'))
       push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'link'], `where ${layer(n, 'a linked container')} goes is set in the design, so ${every} links to the same place. Bind its link to ${where('link')}, ${optOut}`);
   };
 
   // 2. Colors and spacing written as values where a site style of the right kind exists.
-  const styles = (n: GraphNode, rs: ResponsiveStyles | undefined, layerKey: string, variantWords: string) => {
-    for (const [scope, props] of Object.entries(rs ?? {}) as Array<[ResponsiveScope, Record<string, StyleValue> | undefined]>) {
-      for (const [prop, v] of Object.entries(props ?? {})) {
+  /** A text or button that draws its own box (a badge, a pill, a button): its padding is its shape, not the layout's. */
+  const isChip = (n: GraphNode) => n.kind !== 'element' && (draws(n, SURFACE_PROPS) || (n.kind === 'link' && (isBinding(n.appearance) || !PLAIN_LINKS.has(String(n.appearance)))));
+  const styles = (n: GraphNode, rs: unknown, layerKey: string, variantWords: string) => {
+    for (const [scope, props] of scopesOf(rs)) {
+      for (const [prop, v] of Object.entries(props)) {
         const style = Object.hasOwn(STYLE_PROP_MAP, prop) ? STYLE_PROP_MAP[prop] : undefined;
         if (!style || typeof v !== 'string') continue;
         const groups: readonly TokenGroup[] = style.tokenGroup === undefined ? [] : Array.isArray(style.tokenGroup) ? style.tokenGroup : [style.tokenGroup];
@@ -138,17 +198,17 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
             const c = typeof tv === 'string' ? parseColor(tv) : null;
             return !!c && c.r === rgba.r && c.g === rgba.g && c.b === rgba.b && Math.abs(c.a - rgba.a) < 1 / 255;
           });
-        } else if (style.kind === 'length' && groups.includes('space') && prop !== 'maxWidth') {
-          // A text's or button's own padding is the shape of its chip (a badge, a pill), not the layout's rhythm.
-          if (PADDING_PROPS.has(prop) && n.kind !== 'element') continue;
+        } else if (style.kind === 'length' && (groups.includes('space') || groups.includes('container')) && !RESET_VALUES.has(value.toLowerCase())) {
+          if (PADDING_PROPS.has(prop) && isChip(n)) continue;
+          matches = ofGroups(groups).filter(({ value: tv }) => sameLength(value, tv));
+          // A length a site style has exactly is always worth linking. Any other is judged as spacing: a size such as a
+          // maximum width, a negative pull or a hairline gap is often meant as it is.
           const px = lengthPx(value);
-          // Nothing smaller than the smallest spacing style has a site style to stand for it (a hairline offset).
-          if (px === null || px <= 0 || !ofGroups(groups).length || (Number.isFinite(minSpace) && px < minSpace)) continue;
+          if (!matches.length && (prop === 'maxWidth' || !groups.includes('space') || px === null || px < MIN_SPACE_PX || !ofGroups(['space']).length)) continue;
           kind = 'spacing';
-          matches = ofGroups(groups).filter(({ value: tv }) => lengthPx(tv) === px);
         }
         if (!kind) continue;
-        const what = `${style.label.toLowerCase()}${SCOPE_WORDS[scope] ?? ''}${variantWords}`;
+        const what = `${style.label.toLowerCase()}${SCOPE_WORDS[scope as ResponsiveScope] ?? ` at ${scope}`}${variantWords}`;
         const suggestion = matches.length === 1 ? `the site style “${matches[0].t.label}” (${matches[0].t.id})` : kind === 'color' ? 'one of the site colors' : 'one of the spacing styles';
         const follows = kind === 'color' ? 'so it follows Site styles' : 'so it follows the site’s spacing';
         push('COMPONENT_LITERAL_STYLE', n, ['style', layerKey, scope, prop], `${layer(n, KIND_WORDS[n.kind] ?? 'an element')} uses ${value} for its ${what}. Link it to ${suggestion}, ${follows}.`);
@@ -157,27 +217,39 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
   };
 
   // 3. The cards and pictures a list repeats, which a placement can only restyle when they are parts.
+  const isCard = (n: GraphNode) => draws(n, BOX_PROPS) || (n.kind === 'element' && n.tag === 'article') || (typeof n.name === 'string' && /\b(card|panel|tile)\b/i.test(n.name));
   const repeatedCards = (repeat: GraphNode) => {
     for (const cl of childLists(repeat))
       for (const itemId of cl.ids) {
         let card = node(itemId);
+        const seen = new Set<string>();
         // Wrappers that only hold the card (a list item around it) lead to it.
-        while (card?.kind === 'element' && !parts.has(card.id) && !hasBox(card) && card.children.length === 1 && node(card.children[0])?.kind === 'element') card = node(card.children[0]);
+        while (card?.kind === 'element' && !seen.has(card.id) && !parts.has(card.id) && !draws(card, BOX_PROPS) && Array.isArray(card.children) && card.children.length === 1 && node(card.children[0])?.kind === 'element') {
+          seen.add(card.id);
+          card = node(card.children[0]);
+        }
         if (!card || card.kind !== 'element' || parts.has(card.id)) continue;
-        if (hasBox(card) || (countContent(itemId) >= 2 && !exposesPart(itemId)))
+        if (isCard(card) || (countSubstance(itemId) >= 2 && !exposesPart(itemId)))
           push('COMPONENT_PART_MISSING', card, ['part', 'card'], `${layer(card, 'the container')} is repeated for each list item, but it is not one of the component’s parts, so placements cannot restyle it. Add it to the parts.`);
       }
   };
-  const isAccessory = (n: GraphNode) =>
-    ['width', 'height', 'maxWidth', 'maxHeight'].some((p) => {
-      const px = lengthPx(n.styles?.base?.[p]);
-      return px !== null && px > 0 && px <= ACCESSORY_IMAGE_PX;
-    });
+  /** Capped at or below the accessory size on one axis at every width. */
+  const isAccessory = (n: GraphNode) => {
+    const scopes = scopesOf(n.styles);
+    const axis = (props: string[]) => {
+      const sizes = (scope: Record<string, unknown>) => props.map((p) => lengthPx(scope[p])).filter((x): x is number => x !== null && x > 0);
+      const base = scopes.find(([s]) => s === 'base')?.[1];
+      const capped = base ? sizes(base) : [];
+      return capped.length > 0 && Math.min(...capped) <= ACCESSORY_IMAGE_PX && scopes.every(([s, scope]) => s === 'base' || sizes(scope).every((x) => x <= ACCESSORY_IMAGE_PX));
+    };
+    return axis(['width', 'maxWidth']) || axis(['height', 'maxHeight']);
+  };
+  const cropFrame = (id: string) => partList.some((p) => p.nodeId === id && (!Array.isArray(p.styleControls) || p.styleControls.some((c) => CROP_CONTROLS.includes(c))));
   const repeatedImage = (n: GraphNode, frames: string[]) => {
     if (parts.has(n.id) || isAccessory(n)) return;
-    // A frame that holds only this picture (and owns its crop) can be the part instead.
-    if (frames.some((f) => parts.has(f) && countContent(f) === 1)) return;
-    push('COMPONENT_PART_MISSING', n, ['part', 'media'], `the image ${layer(n, '')}`.trimEnd() + ` is repeated for each list item, but it is not one of the component’s parts, so placements cannot change its crop or corners. Add it to the parts.`);
+    // A frame that holds only this picture can be the part instead, when it offers the controls that crop it.
+    if (frames.some((f) => countContent(f) === 1 && cropFrame(f))) return;
+    push('COMPONENT_PART_MISSING', n, ['part', 'media'], `${`the image ${layer(n, '')}`.trimEnd()} is repeated for each list item, but it is not one of the component’s parts, so placements cannot change its crop or corners. Add it to the parts.`);
   };
 
   const visited = new Set<string>();
@@ -191,14 +263,16 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
     if (n.kind === 'repeat') repeatedCards(n);
     if (n.kind === 'image' && frames) repeatedImage(n, frames);
     const inner = n.kind === 'repeat' ? [] : frames && n.kind === 'element' ? [...frames, n.id] : frames;
-    for (const cl of childLists(n)) cl.ids.forEach((c) => walk(c, inner));
+    for (const cl of childLists(n)) if (Array.isArray(cl.ids)) cl.ids.forEach((c) => walk(c, inner));
   };
-  tree.rootIds.forEach((r) => walk(r, null));
+  (Array.isArray(tree.rootIds) ? tree.rootIds : []).forEach((r) => walk(r, null));
   for (const { axis, id, option } of variantOptions(def)) {
-    const axisLabel = def.variantAxes?.[axis]?.label ?? axis;
-    for (const [nid, rs] of Object.entries(option.styles ?? {})) {
+    const a = def.variantAxes?.[axis]?.label;
+    const axisLabel = typeof a === 'string' && a ? a : axis;
+    const optionLabel = typeof option?.label === 'string' && option.label ? option.label : id;
+    for (const [nid, rs] of Object.entries(option?.styles ?? {})) {
       const n = node(nid);
-      if (n && visited.has(nid)) styles(n, rs, `variant:${axis}:${id}`, ` in the “${option.label || id}” ${axisLabel.toLowerCase()} variant`);
+      if (n && visited.has(nid)) styles(n, rs, `variant:${axis}:${id}`, ` in the “${optionLabel}” ${axisLabel.toLowerCase()} variant`);
     }
   }
   return out;

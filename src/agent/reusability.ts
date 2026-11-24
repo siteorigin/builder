@@ -22,23 +22,34 @@ export function componentWarnings(diags: readonly Diagnostic[], limit = REUSABIL
   };
 }
 
+/** JSON with object keys in order, so two values that differ only in key order compare equal. */
+const sortedJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+
 /** The project components whose definition differs between two states, including ones added since the first. */
 export function changedComponents(before: ProjectState, after: ProjectState): Set<string> {
   const out = new Set<string>();
   for (const [id, def] of Object.entries(after.components)) {
     if (def.owner !== 'project' || def.kind !== 'managed') continue;
     const was = Object.hasOwn(before.components, id) ? before.components[id] : undefined;
-    if (was !== def && JSON.stringify(was) !== JSON.stringify(def)) out.add(id);
+    if (was !== def && sortedJson(was) !== sortedJson(def)) out.add(id);
   }
   return out;
 }
 
 /**
  * The reusability warnings `after` brings in on the components it changed: a change to one component, or to the site
- * styles, never reports another component the run left alone.
+ * styles, never reports another component the run left alone. `changed` may be given lazily.
  */
-export function introducedReusability(before: readonly Diagnostic[], after: readonly Diagnostic[], changed: ReadonlySet<string>): Diagnostic[] {
-  return introducedDiagnostics(before.filter(isReusabilityWarning), after.filter(isReusabilityWarning)).filter((d) => d.owner?.kind === 'component' && changed.has(d.owner.id));
+export function introducedReusability(before: readonly Diagnostic[], after: readonly Diagnostic[], changed: ReadonlySet<string> | (() => ReadonlySet<string>)): Diagnostic[] {
+  const found = after.filter(isReusabilityWarning);
+  // Most projects have none: nothing to compare, and no definitions to read.
+  if (!found.length) return [];
+  const fresh = introducedDiagnostics(before.filter(isReusabilityWarning), found);
+  if (!fresh.length) return [];
+  // Worked out only now, since it reads every project component.
+  const ids = typeof changed === 'function' ? changed() : changed;
+  return fresh.filter((d) => d.owner?.kind === 'component' && ids.has(d.owner.id));
 }
 
 /** Sent once when a run finishes with components that every placement would show the same way. */

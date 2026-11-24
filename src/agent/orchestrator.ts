@@ -723,7 +723,7 @@ export class Orchestrator {
       return { fresh, known };
     };
     /** Reusability warnings the run brought in on the components it made or changed. */
-    const freshReusability = (diags: Diagnostic[]) => introducedReusability(startDiagnostics, diags, changedComponents(startState, session.state));
+    const freshReusability = (diags: Diagnostic[]) => introducedReusability(startDiagnostics, diags, () => changedComponents(startState, session.state));
 
     const codeEnabled = (await this.deps.codeEnabled?.()) ?? true;
     const selected = selectionTarget(userMsg.context?.selection);
@@ -985,6 +985,8 @@ export class Orchestrator {
         await finish(status, summary, { error, usage });
         return;
       }
+      // A run that had finished before it was sent back only for advice ends as it finished, whatever went wrong since.
+      if (status === 'failed' && (await keepFinished())) return;
       let r: Awaited<ReturnType<typeof session.abortRun>>;
       try {
         r = await session.abortRun();
@@ -1026,6 +1028,8 @@ export class Orchestrator {
         await finish('failed', `Stopped after ${what} before answering.`, { error, usage });
         return;
       }
+      // Reached only because the run was sent back for advice: it ends as it had finished.
+      if (await keepFinished()) return;
       if (!session.runChanged()) {
         await revertAndFinish('failed', `Stopped after ${what} without making any changes.`, error);
         return;
@@ -1103,6 +1107,40 @@ export class Orchestrator {
       onlyFocused = false;
       return false;
     };
+
+    /** A run whose changes passed every check: kept as one undoable step, with what it still lacks named. */
+    type Finished = { diags: Diagnostic[]; links: Awaited<ReturnType<typeof connectLinks>>; stubs: ReturnType<typeof findStubPages>; rejected: string[]; absent: MissingPage[] };
+    const completeChecked = async ({ diags, links, stubs, rejected, absent }: Finished) => {
+      const unfinished = [
+        ...stubs.map((s) => `${s.title} still has ${s.sections ? 'only an opening section' : 'no sections'}.`),
+        ...links.missing.map((r) => `Links to ${r} do not go anywhere yet.`),
+        ...rejected.map((r) => `The page ${r} was not built.`),
+        ...absent.map(notCreated)
+      ];
+      const checks: ChatCheck[] = [...buildChecks(diags), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
+      const changes = describeOps(executedOps, startState, session.state, opResults);
+      const label = (finalText.split(/(?<=[.!?])\s/)[0] || userMsg.text).slice(0, 80);
+      // An unfinished request is never labelled with the model's claim that it is done.
+      const committed = await session.completeRun(unfinished.length ? `AI (partial): ${requestText.slice(0, 60)}` : `AI: ${label}`);
+      msg.text = finalText;
+      // The model's own summary may call the request done; what is missing is the project's to say.
+      const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it.` : finalText || 'Done.';
+      await finish('completed', summary, { changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
+    };
+    /** A finish that passed every check, held while the model is sent back to make its components reusable. */
+    let reuseFallback: { revision: number; text: string; finished: Finished } | null = null;
+    /** Ends the run as it had finished, when nothing has changed since it was sent back for advice. */
+    const keepFinished = async () => {
+      const held = reuseFallback;
+      if (!held || signal.aborted || session.revision !== held.revision) return false;
+      reuseFallback = null;
+      finalText = held.text;
+      await completeChecked(held.finished);
+      return true;
+    };
+    /** Whether this request may make a component's element reusable: change that element and add to its contract. */
+    const canFix = (d: Diagnostic) =>
+      !!d.nodeId && d.owner?.kind === 'component' && canEditContracts(authority) && !checkAuthority(session.state, [{ type: 'node.rename', owner: { kind: 'component', id: d.owner.id }, nodeId: d.nodeId, name: '' }], authority);
 
     try {
       outer: while (true) {
@@ -1318,32 +1356,21 @@ export class Orchestrator {
               continue outer;
             }
             // A component it made or changed would show the same sample in every placement: it is sent back once to bind
-            // its content, link site styles and expose its parts. What it leaves is listed on the result, never refused.
-            const unreusable = freshReusability(diags);
-            if (unreusable.length && !reuseNudged) {
+            // its content, link site styles and expose its parts, where this request may change them. What it leaves is
+            // listed on the result, never refused, and the run as it stands now is kept if nothing more lands.
+            const fixable = freshReusability(diags).filter(canFix);
+            if (fixable.length && !reuseNudged) {
               reuseNudged = true;
+              reuseFallback = { revision: session.revision, text: finalText, finished: { diags, links, stubs, rejected, absent } };
               finalText = '';
               msg.text = '';
               this.setStatus('running');
               addActivity('Checking the components can be reused', 'reusability').status = 'done';
-              items.push({ kind: 'user', text: reusabilityNudge(unreusable) });
+              items.push({ kind: 'user', text: reusabilityNudge(fixable) });
               continue outer;
             }
-            const unfinished = [
-              ...stubs.map((s) => `${s.title} still has ${s.sections ? 'only an opening section' : 'no sections'}.`),
-              ...links.missing.map((r) => `Links to ${r} do not go anywhere yet.`),
-              ...rejected.map((r) => `The page ${r} was not built.`),
-              ...absent.map(notCreated)
-            ];
-            const checks: ChatCheck[] = [...buildChecks(diags), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
-            const changes = describeOps(executedOps, startState, session.state, opResults);
-            const label = (finalText.split(/(?<=[.!?])\s/)[0] || userMsg.text).slice(0, 80);
-            // An unfinished request is never labelled with the model's claim that it is done.
-            const committed = await session.completeRun(unfinished.length ? `AI (partial): ${requestText.slice(0, 60)}` : `AI: ${label}`);
-            msg.text = finalText;
-            // The model's own summary may call the request done; what is missing is the project's to say.
-            const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it.` : finalText || 'Done.';
-            await finish('completed', summary, { changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
+            reuseFallback = null;
+            await completeChecked({ diags, links, stubs, rejected, absent });
           } else {
             await session.completeRun('AI (no changes)');
             msg.text = finalText;

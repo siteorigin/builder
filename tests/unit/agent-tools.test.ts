@@ -2292,20 +2292,32 @@ describe('rich text links read and written whole (#132)', () => {
     expect(text).toContain('<tel:+1 555 0100>');
     expect(normalizeRichText(text, s, 'Text')).toEqual(blocks);
 describe('validate_project and components that are not reusable yet (#363)', () => {
-  it('lists their findings apart, with the component and node, however many other warnings there are', async () => {
+  it('lists their findings apart, capped, with the component and node, however many other warnings come first', async () => {
     const { executeTool } = await import('@agent/tools');
     const s = createStarterState('business', 'Test Studio', false);
+    // Enough other warnings to fill the plain list on their own, reported before any component's.
+    for (let i = 0; i < 25; i++) {
+      const home = s.pages[s.site.homePageId];
+      home.language = 'not a language';
+      s.pages[`pg_x${i}`] = { ...structuredClone(home), id: `pg_x${i}`, route: `/x${i}/`, title: `X${i}` };
+      s.site.pageOrder.push(`pg_x${i}`);
+    }
     const hero = structuredClone(catalogueComponent('foundation', 'hero.centered')!);
     const def = { ...hero, id: 'proj.hero', owner: 'project' as const };
     const root = def.tree!.rootIds[0];
-    def.tree!.nodes.fixed = { id: 'fixed', kind: 'text', tag: 'h2', text: 'Spring offers' };
-    (def.tree!.nodes[root] as { children: string[] }).children.push('fixed');
+    for (let i = 0; i < 10; i++) {
+      def.tree!.nodes[`fixed${i}`] = { id: `fixed${i}`, kind: 'text', tag: 'h2', text: `Spring offers ${i}` };
+      (def.tree!.nodes[root] as { children: string[] }).children.push(`fixed${i}`);
+    }
     s.components[def.id] = def;
-    // Enough other warnings to fill the plain list on their own.
-    for (let i = 0; i < 25; i++) s.assets.assets[`big${i}`] = { id: `big${i}`, kind: 'image', name: `big${i}.jpg`, bytes: 2_000_000 } as never;
-    const host = { state: () => s, revision: () => 1, diagnostics: () => validateState(s), compileAll: async () => [] } as unknown as Parameters<typeof executeTool>[2];
-    const content = (await executeTool('validate_project', '{}', host, 'v1')).content as { warnings: string[]; componentWarnings?: Array<{ code: string; definitionId: string; nodeId?: string }> };
+    const diags = validateState(s);
+    expect(diags.findIndex((d) => d.code === 'COMPONENT_UNBOUND_CONTENT')).toBeGreaterThan(20);
+    const host = { state: () => s, revision: () => 1, diagnostics: () => diags, compileAll: async () => [] } as unknown as Parameters<typeof executeTool>[2];
+    const content = (await executeTool('validate_project', '{}', host, 'v1')).content as { warnings: string[]; componentWarnings?: Array<{ code: string; definitionId: string; nodeId?: string }>; omittedComponentWarnings?: number };
     expect(content.warnings).toHaveLength(20);
-    expect(content.componentWarnings).toEqual([expect.objectContaining({ code: 'COMPONENT_UNBOUND_CONTENT', definitionId: 'proj.hero', nodeId: 'fixed' })]);
+    expect(content.warnings.some((w) => w.includes('Spring offers'))).toBe(false);
+    expect(content.componentWarnings).toHaveLength(8);
+    expect(content.componentWarnings![0]).toEqual(expect.objectContaining({ code: 'COMPONENT_UNBOUND_CONTENT', definitionId: 'proj.hero', nodeId: 'fixed0' }));
+    expect(content.omittedComponentWarnings).toBe(2);
   });
 });
