@@ -55,15 +55,15 @@ const changes = dialog.getByRole('region', { name: 'Changes' });
 await eventually(async () => {
   const text = await changes.innerText();
   assert.match(text, /Vertical padding/);
-  assert.match(text, /All sizes:\s*72px/);
-  assert.match(text, /Phone:\s*16px/);
+  assert.match(text, /All sizes\s*not set\s*becomes\s*72px/);
+  assert.match(text, /Phone\s*not set\s*becomes\s*16px/);
   // Its own desktop padding would win over the pasted All sizes value, so Every size removes it.
-  assert.match(text, /Desktop:\s*96px\s*removed/);
+  assert.match(text, /Desktop\s*96px\s*becomes\s*cleared, uses All sizes/);
 });
 // The hero's minimum height has no control on this kind of section, and the dialog says so.
 assert.match(await dialog.getByRole('region', { name: 'Not pasted' }).innerText(), /Min height[\s\S]*doesn’t offer min height/);
 await dialog.getByLabel('Sizes').selectOption('phone');
-await eventually(async () => assert.doesNotMatch(await changes.innerText(), /All sizes:/, 'Phone only leaves All sizes alone'));
+await eventually(async () => assert.doesNotMatch(await changes.innerText(), /^All sizes$/m, 'Phone only leaves All sizes alone'));
 await dialog.getByLabel('Sizes').selectOption('every');
 await win.waitForTimeout(400);
 await win.screenshot({ path: join(OUT, 'style-paste-review.png') });
@@ -98,8 +98,8 @@ await dialog.waitFor();
 await dialog.getByLabel('Sizes').selectOption('phone');
 await eventually(async () => {
   const text = await changes.innerText();
-  assert.match(text, /Phone:\s*16px/);
-  assert.doesNotMatch(text, /All sizes:|Desktop:/, 'nothing but Phone changes');
+  assert.match(text, /Phone\s*not set\s*becomes\s*16px/);
+  assert.doesNotMatch(text, /^(All sizes|Desktop)$/m, 'nothing but Phone changes');
 });
 await dialog.getByRole('button', { name: 'Paste style', exact: true }).click();
 await dialog.waitFor({ state: 'detached' });

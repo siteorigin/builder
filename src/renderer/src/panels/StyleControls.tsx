@@ -1,13 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
+import { ChevronRight, EyeOff, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
-import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, withColumnSizes, type StylePropDef } from '@shared/styles';
+import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, cssRivals, styleDeclOrder, withColumnSizes, type StylePropDef } from '@shared/styles';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { DraftInput } from '../components/ui';
 import { setState, setViewport, useStore } from '../store';
-import { allSizesReach, readStyleNumber, refinementShown, styleEffective, styleReached, styleUnder } from '../lib/style-source';
+import { allSizesReach, readStyleNumber, refinementShown, styleReached, styleUnder } from '../lib/style-source';
 
 type Size = Exclude<ResponsiveScope, 'base'>;
 const SIZES: Size[] = ['phone', 'tablet', 'desktop'];
@@ -15,8 +15,10 @@ const SCOPE_LABEL: Record<ResponsiveScope, string> = { base: 'All sizes', phone:
 const SIZE_ICON: Record<Size, typeof Monitor> = { phone: Smartphone, tablet: Tablet, desktop: Monitor };
 const SIZE_RANGE: Record<Size, string> = { phone: 'narrower than 768px', tablet: '768 to 1023px wide', desktop: '1024px and wider' };
 /** Where a label in the shared list would repeat its own group heading. */
-const LABELS: Record<string, string> = { layout: 'Arrange' };
+const LABELS: Record<string, string> = { layout: 'Arrange', fontSize: 'Text size' };
 const labelOf = (p: StylePropDef) => LABELS[p.id] ?? p.label;
+/** A property's name as the inspector shows it, for other views of the same styles (Paste style). */
+export const styleLabel = (id: string, fallback: string) => (Object.hasOwn(STYLE_PROP_MAP, id) ? labelOf(STYLE_PROP_MAP[id]) : fallback);
 
 const sizeForWidth = (w: number): Size => (w < 768 ? 'phone' : w < 1024 ? 'tablet' : 'desktop');
 const has = (s: ResponsiveStyles | undefined, scope: ResponsiveScope) => !!s?.[scope] && Object.keys(s[scope]!).length > 0;
@@ -43,17 +45,32 @@ function tokenText(def: StylePropDef, tokens: TokenDef[], id: string): string {
   return t.label;
 }
 
+/** A text style saved the older way, as its bare ID ("text.h2"), read as the Site styles link it is. */
+const linkOf = (def: StylePropDef, v: StyleValue | undefined): StyleValue | undefined =>
+  def.kind === 'textStyle' && typeof v === 'string' && /^text\.[a-z0-9-]+$/.test(v.trim()) ? { token: v.trim() } : v;
+/** Whether a value is a Site styles link, however it was saved. */
+export const isStyleLink = (def: StylePropDef, v: StyleValue | undefined) => isToken(linkOf(def, v));
+/** A unit as the panel writes it after a number: degrees as °, scale as ×. */
+const unitText = (def: StylePropDef) => (def.unit === 'deg' ? '°' : def.id === 'scale' ? '×' : def.unit ? ` ${def.unit}` : '');
+
 /** How a value reads in the panel: a site style by name (with its size when short), an option by its label. */
-export function describeStyleValue(def: StylePropDef, v: StyleValue | undefined, tokens: TokenDef[]): string {
+export function describeStyleValue(def: StylePropDef, raw: StyleValue | undefined, tokens: TokenDef[]): string {
+  const v = linkOf(def, raw);
   if (v === undefined) return '';
   if (isToken(v)) return tokenText(def, tokens, v.token);
   if (def.kind === 'boolean') return def.id === 'hidden' ? (v ? 'Hidden' : 'Visible') : v ? 'Yes' : 'No';
-  return def.options?.find((o) => o.value === String(v))?.label ?? (def.unit ? `${v} ${def.unit}` : String(v));
+  return def.options?.find((o) => o.value === String(v))?.label ?? (typeof v === 'number' ? `${v}${unitText(def)}` : def.unit ? `${v} ${def.unit}` : String(v));
 }
 
 function colorOf(tokens: TokenDef[], id: string): string {
   const v = resolved(tokens, id);
   return typeof v === 'string' ? v : 'transparent';
+}
+
+/** The colour a colour value paints, for a swatch beside its name; undefined for anything that isn't a colour. */
+export function styleSwatch(def: StylePropDef, v: StyleValue | undefined, tokens: TokenDef[]): string | undefined {
+  if (def.kind !== 'color' || v === undefined) return undefined;
+  return isToken(v) ? colorOf(tokens, v.token) : String(v);
 }
 
 /** The scope control: which screen sizes the next change applies to, and which sizes already hold changes. */
@@ -66,6 +83,7 @@ export function ScopePicker({ styles }: { styles?: ResponsiveStyles }) {
   const labelId = useId();
   const noteId = useId();
   const previewId = useId();
+  const nowId = useId();
   const [focusAfter, setFocusAfter] = useState(false);
 
   // Stay in view under the inspector's own sticky header while the Style section scrolls, and keep focused
@@ -109,13 +127,29 @@ export function ScopePicker({ styles }: { styles?: ResponsiveStyles }) {
   const sized = SIZES.filter((s) => has(styles, s));
   // What the canvas is showing, when that is not what is being edited.
   const mismatch = scope === 'base' ? preview !== 'desktop' : scope !== preview;
+  // Editing changes the canvas only at the previewed size: one size being edited away from it hides them.
+  const hidden = scope !== 'base' && scope !== preview;
   const PreviewIcon = SIZE_ICON[preview];
+  const ScopeIcon = SIZE_ICON[scope === 'base' ? preview : scope];
   return (
     <div className="style-scope" ref={ref}>
-      <div className="style-scope-label" id={labelId}>
-        Edit styles for
+      <div className="style-scope-head">
+        <div className="style-scope-label" id={labelId}>
+          Edit styles for
+        </div>
+        <span className="style-scope-now" id={nowId} title={`The canvas is showing the ${preview} size`}>
+          <PreviewIcon aria-hidden="true" />
+          {SCOPE_LABEL[preview]} preview
+        </span>
       </div>
-      <div ref={group} className="style-scope-picker" role="radiogroup" aria-labelledby={labelId} aria-describedby={mismatch ? `${noteId} ${previewId}` : noteId} onKeyDown={onKeyDown}>
+      <div
+        ref={group}
+        className={`style-scope-picker${scope !== 'base' ? ' one-size' : ''}`}
+        role="radiogroup"
+        aria-labelledby={labelId}
+        aria-describedby={[noteId, nowId, mismatch ? previewId : ''].join(' ').trim()}
+        onKeyDown={onKeyDown}
+      >
         {order.map((v) => {
           const marked = v === 'base' ? has(styles, 'base') : sized.includes(v as Size);
           return (
@@ -124,7 +158,7 @@ export function ScopePicker({ styles }: { styles?: ResponsiveStyles }) {
               {marked && (
                 <>
                   <span className="style-scope-dot" aria-hidden="true" />
-                  <span className="sr-only">, has its own changes</span>
+                  <span className="sr-only">{v === 'base' ? ', has changes for all sizes' : ', has its own changes'}</span>
                 </>
               )}
             </button>
@@ -133,7 +167,7 @@ export function ScopePicker({ styles }: { styles?: ResponsiveStyles }) {
       </div>
       <p className="style-scope-note" id={noteId}>
         {scope === 'base' ? (
-          <>Changes apply at every size.{sized.length ? ` Where a row says ${sized.map((z) => `“${SCOPE_LABEL[z]} uses …”`).join(' or ')}, that size keeps its own value.` : ''}</>
+          'Changes apply at every size, except where a size has its own value.'
         ) : (
           <>
             <strong>{SCOPE_LABEL[scope]} only</strong>, {SIZE_RANGE[scope]}. Other sizes keep their values.
@@ -141,21 +175,21 @@ export function ScopePicker({ styles }: { styles?: ResponsiveStyles }) {
         )}
       </p>
       {mismatch && (
-        <p className="style-scope-preview" id={previewId}>
-          <PreviewIcon aria-hidden="true" />
+        <p className={`style-scope-preview${hidden ? ' hides' : ''}`} id={previewId}>
+          {hidden ? <EyeOff aria-hidden="true" /> : <ScopeIcon aria-hidden="true" />}
           <span>
-            {scope === 'base' ? `Previewing ${preview}.` : `Previewing ${preview}, so these changes are not showing.`}{' '}
-            {scope === 'base' ? (
-              <button type="button" className="style-scope-link" onClick={() => choose(preview, true)}>
-                Edit {preview} only
-              </button>
-            ) : (
+            {hidden ? `Changes for ${scope} don’t show in the ${preview} preview.` : `To change ${preview} alone,`}{' '}
+            {hidden ? (
               <button type="button" className="style-scope-link" onClick={() => {
-                  setViewport(VIEWPORT_PRESETS[scope]);
+                  setViewport(VIEWPORT_PRESETS[scope as Size]);
                   setFocusAfter(true);
                 }}
               >
                 Preview {scope}
+              </button>
+            ) : (
+              <button type="button" className="style-scope-link" onClick={() => choose(preview, true)}>
+                Edit {preview} only
               </button>
             )}
           </span>
@@ -211,7 +245,8 @@ export function StyleControls({
   const preview = sizeForWidth(viewport);
   // The selected element's box on the canvas, for a crop no aspect ratio declares (a fixed height, say).
   const selectedBox = useStore((s) => (image ? s.rects.selected[0] : undefined));
-  const [showAll, setShowAll] = useState(false);
+  // The groups opened to show every option they hold.
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
   const moreId = useId();
   const resetHintId = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -239,33 +274,34 @@ export function StyleControls({
   const groups = new Map<StylePropDef['group'], StylePropDef[]>();
   for (const p of props) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);
   const own = styles?.[scope] ?? {};
-  // Layout controls that only mean something for a stack or grid are shown when the layout is one.
-  const effective = (id: string) => styleEffective({ prop: id, scope, styles, inherited, designSizesWin, wideColumns });
-  const layout = effective('layout');
-  const position = effective('position');
   const offered = (id: string) => !allowed?.length || allowed.includes(id);
   // Under All sizes every size counts, so a phone-only preset still offers the duration that would apply to it.
   const reached = (id: string) => styleReached({ prop: id, scope, styles, inherited, designSizesWin, wideColumns });
+  // Layout controls that only mean something for a stack or grid show when the layout is one at a size the edit
+  // reaches, and offsets when the element is positioned there: a stack on phones offers Gap under All sizes.
+  const layouts = reached('layout');
+  const flexLike = layouts.some((l) => l === 'stack' || l === 'row' || l === 'grid');
+  const grid = layouts.includes('grid');
+  const positioned = reached('position').some((v) => v !== 'static');
   // Set at any size: such a row always shows, so "From All sizes" and "Phone uses …" are never hidden.
   const setAnywhere = (id: string) => own[id] !== undefined || Object.values(styles ?? {}).some((sc) => sc?.[id] !== undefined);
   const relevant = (id: string) => {
     if (setAnywhere(id)) return true;
     if (id === 'order') return false;
-    if (id === 'columns' || id === 'gridTemplate') return layout === 'grid';
-    if (id === 'align' || id === 'justify' || id === 'gap' || id === 'wrap' || id === 'rowGap' || id === 'columnGap') return layout === 'stack' || layout === 'row' || layout === 'grid';
+    if (id === 'columns' || id === 'gridTemplate') return grid;
+    if (id === 'align' || id === 'justify' || id === 'gap' || id === 'wrap' || id === 'rowGap' || id === 'columnGap') return flexLike;
     // Offsets do nothing until the element is positioned.
-    if (id === 'inset') return position !== undefined && position !== 'static';
+    if (id === 'inset') return positioned;
     // An origin, duration or easing shows once what it refines is in effect.
     return refinementShown(id, reached, offered) ?? true;
   };
-  // Long lists show the common controls of the first two groups plus anything already set; the rest sit behind
-  // one disclosure.
+  // Long lists show the common controls of the first two groups plus anything already set; each group's other
+  // controls open from its heading.
   const entries = [...groups.entries()];
   const long = entries.reduce((n, [, l]) => n + l.filter((p) => relevant(p.id)).length, 0) > 10;
   const primary = new Set(entries.slice(0, 2).map(([g]) => g));
   const isPrimary = (g: StylePropDef['group'], p: StylePropDef) => !long || (primary.has(g) && !p.advanced);
   const tucked = (g: StylePropDef['group'], p: StylePropDef) => !isPrimary(g, p) && relevant(p.id) && !setAnywhere(p.id);
-  const hiddenCount = entries.reduce((n, [g, l]) => n + l.filter((p) => tucked(g, p)).length, 0);
   const total = Object.values(styles ?? {}).reduce((n, s) => n + Object.keys(s ?? {}).length, 0);
   const here = Object.keys(own).length;
   const sizeName = (s: ResponsiveScope) => SCOPE_LABEL[s].toLowerCase();
@@ -285,16 +321,52 @@ export function StyleControls({
     const written = styles ? withColumnSizes(styles) : styles;
     const exceptions = scope === 'base' ? SIZES.filter((s) => written?.[s]?.[p.id] !== undefined) : [];
     const lines: Array<{ text: string; previewed?: boolean; quiet?: boolean }> = [];
+    // A size's own value, led by what it means for the canvas when that size is the one previewed.
+    // A value never breaks across its own separator ("2XS · 4px").
+    const whole = (v: StyleValue) => describeStyleValue(p, v, tokens).replace(/ · /g, '\u00a0·\u00a0');
+    const uses = (s: Size, v: StyleValue, from = '') => ({ text: `${SCOPE_LABEL[s]}${s === preview ? ' preview' : ''} uses ${whole(v)}${from}`, previewed: s === preview });
+    // Another control writing the same CSS, set at a size: a size's own rule beats All sizes, and within one rule the
+    // later declaration wins (Column sizes over Columns). The winner at a size is named on this row.
+    // Column sizes set for All sizes also override a column count saved for tablet or desktop: that count is never written.
+    const rivalAt = (s: ResponsiveScope) =>
+      cssRivals(p.id).find((r) => styles?.[s]?.[r] !== undefined && (styles?.[s]?.[p.id] === undefined || styleDeclOrder(r) > styleDeclOrder(p.id))) ??
+      (styles?.[s]?.[p.id] !== undefined && written?.[s]?.[p.id] === undefined ? cssRivals(p.id)[0] : undefined);
+    const rivalName = (r: string) => (STYLE_PROP_MAP[r] ? labelOf(STYLE_PROP_MAP[r]) : r);
+    const insteadAt = (s: Size) => {
+      const r = rivalAt(s);
+      return r ? { text: `${SCOPE_LABEL[s]}${s === preview ? ' preview' : ''} uses ${rivalName(r)} instead`, previewed: s === preview } : undefined;
+    };
     if (value === undefined && underFrom) lines.push({ text: underFrom, quiet: underFrom === 'From the design' });
-    for (const s of exceptions) lines.push({ text: `${SCOPE_LABEL[s]} uses ${describeStyleValue(p, styles![s]![p.id], tokens)}`, previewed: s === preview });
+    for (const s of exceptions) lines.push(insteadAt(s) ?? uses(s, styles![s]![p.id]!));
+    // At one size, a value set here that a rival set here outranks.
+    const outranked = scope !== 'base' && value !== undefined ? rivalAt(scope) : undefined;
+    if (outranked) lines.push({ text: `${rivalName(outranked)} wins here`, previewed: scope === preview });
     const designAtPreview = inherited?.[preview]?.[p.id];
     // A value for All sizes that the stylesheet keeps off phones (a grid of several columns): phones show the design.
     const ownReachesPreview = allSizesReach(p.id, value, preview, wideColumns);
     const designOnPhone = inherited?.phone?.[p.id];
-    if (scope === 'base' && value !== undefined && !exceptions.includes('phone') && !allSizesReach(p.id, value, 'phone', wideColumns))
-      lines.push({ text: designOnPhone !== undefined ? `${SCOPE_LABEL.phone} uses ${describeStyleValue(p, designOnPhone, tokens)} from the design` : 'Tablet and desktop only', previewed: preview === 'phone' });
-    else if (scope === 'base' && (!ownReachesPreview || designSizesWin) && !exceptions.includes(preview) && designAtPreview !== undefined && JSON.stringify(designAtPreview) !== JSON.stringify(inherited?.base?.[p.id]))
-      lines.push({ text: `${SCOPE_LABEL[preview]} uses ${describeStyleValue(p, designAtPreview, tokens)} from the design`, previewed: true });
+    const skipsPhone = scope === 'base' && value !== undefined && !exceptions.includes('phone') && !rivalAt('phone') && !allSizesReach(p.id, value, 'phone', wideColumns);
+    if (skipsPhone) lines.push(designOnPhone !== undefined ? uses('phone', designOnPhone, ' from the design') : { text: 'Tablet and desktop only', previewed: preview === 'phone' });
+    if (scope === 'base' && designSizesWin) {
+      // Editing a design: each size it gives its own value keeps that value over any change for All sizes, even one
+      // that happens to match it now, so it is always named, size by size.
+      for (const s of SIZES) {
+        const own = inherited?.[s]?.[p.id];
+        if (!exceptions.includes(s) && !(s === 'phone' && skipsPhone) && own !== undefined) lines.push({ text: `${SCOPE_LABEL[s]}${s === preview ? ' preview' : ''} keeps ${whole(own)} from the design`, previewed: s === preview });
+      }
+    } else if (!skipsPhone && scope === 'base' && !ownReachesPreview && !exceptions.includes(preview) && designAtPreview !== undefined && JSON.stringify(designAtPreview) !== JSON.stringify(inherited?.base?.[p.id]))
+      lines.push(uses(preview, designAtPreview, ' from the design'));
+    // A size where only a rival is set (nothing of this property's own there) is named too.
+    if (scope === 'base')
+      for (const s of SIZES) {
+        const line = exceptions.includes(s) ? undefined : insteadAt(s);
+        if (line) lines.push(line);
+      }
+    // A change for one size: what its reset brings back, when that is known and different.
+    if (scope !== 'base' && value !== undefined && under !== undefined && JSON.stringify(under) !== JSON.stringify(value))
+      lines.push({ text: `${underFrom === 'From All sizes' ? 'All sizes has' : 'The design has'} ${whole(under)}` });
+    // The previewed size leads: it is why the canvas may not match the value above.
+    lines.sort((a, b) => Number(!!b.previewed) - Number(!!a.previewed));
     const sourceId = `${moreId}-${p.id}-src`;
     const resetTo = underText ? ` to ${underText} ${underFrom === 'From All sizes' ? 'from All sizes' : 'from the design'}` : '';
     const resetName = `Reset ${label}${scope === 'base' ? '' : ` on ${sizeName(scope)}`}${resetTo}`;
@@ -311,11 +383,11 @@ export function StyleControls({
               title={resetName}
               aria-label={resetName}
               onClick={() => {
-                focusNext(`[data-prop="${p.id}"] :is(select, input, textarea)`, '.style-more', '[role="radio"][aria-checked="true"]');
+                focusNext(`[data-prop="${p.id}"] :is(select, input, textarea)`, `[data-group="${p.group}"] .style-group-toggle`, '[role="radio"][aria-checked="true"]');
                 onSet(p.id, null);
               }}
             >
-              <RotateCcw />
+              <RotateCcw aria-hidden="true" />
             </button>
           )}
         </div>
@@ -323,13 +395,14 @@ export function StyleControls({
           <Control def={p} label={label} value={value} under={under} underText={underText} underFrom={underFrom} tokens={tokens} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v)} />
         </div>
         {lines.length > 0 && (
-          <div className="style-source" id={sourceId}>
+          <div className={lines.every((l) => l.quiet) ? 'sr-only' : 'style-source'} id={sourceId}>
             {lines.map((l) => (
               // The design is the expected source of anything not changed here, so it is named for screen
               // readers only; everything else is shown.
               <span key={l.text} className={l.quiet ? 'sr-only' : l.previewed ? 'previewed' : undefined}>
+                {/* The same mark as the scope's warning: a change here does not show at the previewed size. */}
+                {l.previewed && <EyeOff aria-hidden="true" />}
                 {l.text}
-                {l.previewed && <span className="style-source-tag"> · in the preview</span>}
               </span>
             ))}
           </div>
@@ -399,48 +472,65 @@ export function StyleControls({
     );
   };
 
-  const group = (g: StylePropDef['group'], list: StylePropDef[]) => (
-    <div key={g} className="style-group" role="group" aria-label={STYLE_GROUP_LABELS[g]}>
-      <div className="style-group-title" aria-hidden="true">
-        {STYLE_GROUP_LABELS[g]}
+  // Each group once, in registry order. A group in a long list shows its common rows and anything set at any size;
+  // the rest open from its own heading, so every group is a direct way in.
+  const groupList = entries
+    .map(([g, list]) => {
+      const rel = list.filter((p) => relevant(p.id));
+      const visible = rel.filter((p) => !tucked(g, p));
+      return { g, rel, visible, hidden: rel.length - visible.length };
+    })
+    .filter((x) => x.rel.length);
+  const toggle = (g: string) =>
+    setOpen((was) => {
+      const next = new Set(was);
+      if (!next.delete(g)) next.add(g);
+      return next;
+    });
+  const group = ({ g, rel, visible, hidden }: (typeof groupList)[number]) => {
+    const expanded = hidden > 0 && open.has(g);
+    const title = STYLE_GROUP_LABELS[g];
+    const bodyId = `${moreId}-${g}`;
+    const more = visible.length ? `${hidden} more` : `${hidden} option${hidden === 1 ? '' : 's'}`;
+    return (
+      <div key={g} className="style-group" role="group" aria-label={title} data-group={g}>
+        {hidden > 0 ? (
+          <button type="button" className="style-group-toggle" aria-expanded={expanded} aria-controls={bodyId} onClick={() => toggle(g)}>
+            <span className="style-group-name">{title}</span>
+            <span className="style-group-count">
+              {expanded ? (visible.length ? 'Fewer' : 'Hide') : more}
+              <ChevronRight aria-hidden="true" />
+            </span>
+          </button>
+        ) : (
+          <div className="style-group-title" aria-hidden="true">
+            {title}
+          </div>
+        )}
+        <div id={bodyId} className="style-group-body">
+          {(expanded ? rel : visible).map(row)}
+        </div>
       </div>
-      {list.map(row)}
-    </div>
-  );
-  const shown = (pick: (g: StylePropDef['group'], p: StylePropDef) => boolean) =>
-    entries.map(([g, list]) => [g, list.filter((p) => relevant(p.id) && pick(g, p))] as const).filter(([, list]) => list.length);
+    );
+  };
 
-  const before = shown((g, p) => isPrimary(g, p) || (!showAll && setAnywhere(p.id)));
-  const after = showAll ? shown((g, p) => !isPrimary(g, p)) : [];
-  const moreGroups = entries.filter(([g, l]) => l.some((p) => tucked(g, p))).map(([g]) => STYLE_GROUP_LABELS[g]);
-  const size = sizeName(scope);
+  const size = SCOPE_LABEL[scope];
   const subject = target ? ` to ${target}` : '';
   // The reset clears the size being edited and nothing else; clearing every size is a separate, named choice.
   const others = total - here;
-  const resetText = scope === 'base' ? (resetLabel && !others ? resetLabel : `Reset ${here === 1 ? 'the' : here} all-sizes change${here === 1 ? '' : 's'}`) : `Reset ${here === 1 ? 'the' : here} ${size} change${here === 1 ? '' : 's'}`;
+  const resetText = scope === 'base' && resetLabel && !others ? resetLabel : `Reset ${here === 1 ? 'the change' : `${here} changes`} for ${size}`;
   const resetHint =
     scope === 'base'
       ? others
         ? `Clears ${here === 1 ? 'the change' : 'the changes'} made for all sizes${subject}. Changes made for one size stay.`
         : `Clears ${here === 1 ? 'the style change' : 'every style change'}${subject || ' made here'}.`
-      : `Clears only ${here === 1 ? `this ${size} change` : `the ${size} changes`}${subject}. All sizes and the other sizes stay as they are.`;
-  const everyText = resetLabel ?? `Reset all ${total} changes at every size`;
+      : `Clears only ${here === 1 ? `this ${sizeName(scope)} change` : `the ${sizeName(scope)} changes`}${subject}. All sizes and the other sizes stay as they are.`;
+  const everyText = resetLabel ?? `Reset ${total === 1 ? '1 change' : `all ${total} changes`} at every size`;
+  const everyHint = `Clears ${others === 1 ? 'the change' : 'the changes'} made for single sizes${subject}.`;
   return (
     <div className="style-controls" ref={root}>
       <ScopePicker styles={styles} />
-      {before.map(([g, list]) => group(g, list))}
-      {long && (showAll || hiddenCount > 0) && (
-        <button type="button" className="style-more" aria-expanded={showAll} aria-controls={moreId} onClick={() => setShowAll(!showAll)}>
-          {showAll ? <ChevronUp /> : <ChevronDown />}
-          <span className="style-more-text">
-            <span>{showAll ? 'Fewer style options' : `More style options (${hiddenCount})`}</span>
-            {!showAll && moreGroups.length > 0 && <span className="style-more-groups">{moreGroups.join(', ')}</span>}
-          </span>
-        </button>
-      )}
-      <div id={moreId} className="style-more-body" hidden={!showAll}>
-        {after.map(([g, list]) => group(g, list))}
-      </div>
+      {groupList.map(group)}
       {onReset && (here > 0 || (scope === 'base' && others > 0)) && (
         <div className="style-footer">
           {here > 0 && (
@@ -450,11 +540,12 @@ export function StyleControls({
                 className="btn btn-sm"
                 aria-describedby={resetHintId}
                 onClick={() => {
-                  focusNext('.style-footer .btn', '[role="radio"][aria-checked="true"]');
+                  // The button goes with its changes. Focus lands on the size, never on the wider reset below.
+                  focusNext('[role="radio"][aria-checked="true"]');
                   onReset(scope);
                 }}
               >
-                <RotateCcw /> {resetText}
+                <RotateCcw aria-hidden="true" /> {resetText}
               </button>
               <span className="style-footer-hint" id={resetHintId}>
                 {resetHint}
@@ -463,16 +554,24 @@ export function StyleControls({
           )}
           {/* Under All sizes, the changes made for single sizes can go too, in one step. */}
           {scope === 'base' && others > 0 && (
-            <button
-              type="button"
-              className={here > 0 ? 'link-btn style-footer-every' : 'btn btn-sm'}
-              onClick={() => {
-                focusNext('[role="radio"][aria-checked="true"]');
-                onReset(undefined);
-              }}
-            >
-              {here > 0 ? everyText : <><RotateCcw /> {everyText}</>}
-            </button>
+            <>
+              <button
+                type="button"
+                className={here > 0 ? 'link-btn style-footer-every' : 'btn btn-sm'}
+                aria-describedby={here > 0 ? undefined : resetHintId}
+                onClick={() => {
+                  focusNext('[role="radio"][aria-checked="true"]');
+                  onReset(undefined);
+                }}
+              >
+                {here > 0 ? everyText : <><RotateCcw aria-hidden="true" /> {everyText}</>}
+              </button>
+              {here === 0 && (
+                <span className="style-footer-hint" id={resetHintId}>
+                  {everyHint}
+                </span>
+              )}
+            </>
           )}
         </div>
       )}
@@ -494,8 +593,8 @@ function Lead({ def, v, tokens }: { def: StylePropDef; v: { token: string }; tok
 function Control({
   def,
   label,
-  value,
-  under,
+  value: saved,
+  under: below,
   underText,
   underFrom,
   tokens,
@@ -519,6 +618,9 @@ function Control({
   const [drafting, setDrafting] = useState(false);
   const picker = useRef<HTMLSelectElement>(null);
   const linkId = useId();
+  const draftId = useId();
+  const value = linkOf(def, saved);
+  const under = linkOf(def, below);
   // A commit, a reset, an undo or another size all end the draft.
   const valueKey = JSON.stringify(value ?? null);
   useEffect(() => setDrafting(false), [scope, valueKey]);
@@ -559,21 +661,33 @@ function Control({
     );
   }
   if (def.kind === 'number') {
-    const range = def.min !== undefined && def.max !== undefined ? ` (${def.min} to ${def.max}${def.unit ? ` ${def.unit}` : ''})` : '';
+    const range = def.min !== undefined && def.max !== undefined ? ` (${def.min} to ${def.max}${unitText(def)})` : '';
+    // A set value keeps its unit beside it, so -2 reads as -2°. The unit is drawn after an invisible copy of the
+    // number in the field's own type, so it sits right after the digits; it steps aside while typing.
+    const unit = set ? unitText(def) : '';
     return (
-      <DraftInput
-        className={`input sm grow style-input${state}`}
-        value={set ? String(value) : ''}
-        placeholder={underText || `Default${range}`}
-        ariaLabel={`${label}${range}`}
-        aria-describedby={describedBy}
-        onCommit={(t) => {
-          const n = readStyleNumber(def, t);
-          if (t.trim() === '') onSet(null);
-          else if (n !== null) onSet(n);
-          else return false;
-        }}
-      />
+      <span className={`style-field${unit ? ' has-unit' : ''}`}>
+        <DraftInput
+          className={`input sm grow style-input${state}`}
+          value={set ? String(value) : ''}
+          placeholder={underText || `Default${range}`}
+          ariaLabel={`${label}${range}`}
+          aria-describedby={describedBy}
+          onCommit={(t) => {
+            // What the field shows ("-2°", "1.05×") reads back as the number it is.
+            const n = readStyleNumber(def, t.trim().replace(/\s*[°×]$/, ''));
+            if (t.trim() === '') onSet(null);
+            else if (n !== null) onSet(n);
+            else return false;
+          }}
+        />
+        {unit && (
+          <span className={`style-unit${state}`} aria-hidden="true">
+            <span className="style-unit-digits">{String(value)}</span>
+            {unit}
+          </span>
+        )}
+      </span>
     );
   }
   if (def.kind === 'css') {
@@ -599,8 +713,15 @@ function Control({
   const leadValue = custom ? undefined : current;
   const lead = isToken(leadValue) ? leadValue : undefined;
   const linkedName = lead ? `${describeStyleValue(def, lead, tokens)}, from Site styles` : undefined;
-  // What a custom value starts from: the value in effect, written out.
-  const currentText = isToken(current) ? (typeof tokenOf(tokens, current.token)?.value === 'string' ? String(tokenOf(tokens, current.token)!.value) : undefined) : current === undefined ? undefined : String(current);
+  // What a custom value starts from: the value in effect, written out, a linked style followed to its end.
+  const currentEnd = isToken(current) ? resolved(tokens, current.token) : current;
+  const currentText = currentEnd === undefined || typeof currentEnd === 'object' ? undefined : String(currentEnd);
+  // While a custom value is drafted over a stored or inherited one, that one still applies until the draft commits.
+  const keeps = set ? describeStyleValue(def, value, tokens) : underText;
+  const cancelDraft = () => {
+    setDrafting(false);
+    requestAnimationFrame(() => picker.current?.focus());
+  };
   // What the colour picker starts from: the colour in effect, a linked style followed to its end.
   const colorText = isToken(current) ? colorOf(tokens, current.token) : current === undefined ? '' : String(current);
   return (
@@ -614,10 +735,16 @@ function Control({
         )}
         <select
           ref={picker}
-          className={`select sm grow style-select${state}`}
+          className={`select sm grow style-select${drafting && !literal ? ' is-drafting' : state}`}
           value={selectValue}
           aria-label={label}
           aria-describedby={[describedBy, lead ? linkId : undefined].filter(Boolean).join(' ') || undefined}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && drafting && !literal) {
+              e.preventDefault();
+              setDrafting(false);
+            }
+          }}
           onChange={(e) => {
             const v = e.target.value;
             setDrafting(false);
@@ -643,7 +770,7 @@ function Control({
             </optgroup>
           )}
           {linked && !tokOpts.some((t) => t.id === value.token) && <option value={`token:${value.token}`}>{describeStyleValue(def, value, tokens)}</option>}
-          {def.kind !== 'textStyle' && <option value="custom">{custom ? 'Custom' : 'Custom value…'}</option>}
+          {def.kind !== 'textStyle' && <option value="custom">{literal ? 'Custom' : 'Custom value…'}</option>}
         </select>
       </span>
       {custom && (
@@ -651,8 +778,7 @@ function Control({
           className="style-custom"
           onKeyDown={(e) => {
             if (e.key !== 'Escape' || literal) return;
-            setDrafting(false);
-            requestAnimationFrame(() => picker.current?.focus());
+            cancelDraft();
           }}
         >
           {def.kind === 'color' && <ColorPick key={scope} className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
@@ -663,7 +789,25 @@ function Control({
             autoFocus={!literal}
             onCommit={(t) => (t.trim() ? onSet(t.trim()) : false)}
             ariaLabel={`${label} value`}
+            aria-describedby={[describedBy, literal ? undefined : draftId].filter(Boolean).join(' ') || undefined}
           />
+          {!literal && (
+            <p className="style-custom-hint">
+              <span id={draftId}>
+                {keeps && (
+                  <span className="style-custom-keeps">
+                    Using {keeps} until a custom {def.kind === 'color' ? 'color' : 'value'} replaces it{scope === 'base' ? '' : ` for ${SCOPE_LABEL[scope]}`}.
+                  </span>
+                )}{' '}
+                {def.kind === 'color' ? 'Pick or type a color' : 'Type a value'}, then press Enter or leave the field. Esc discards it.
+              </span>{' '}
+              {/* For the pointer, pressed without taking focus from the field, so it never commits what was typed. The
+                  keyboard has Esc, and Tab leaves the field, which applies it, as every field here does. */}
+              <button type="button" className="style-scope-link" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={cancelDraft}>
+                Cancel
+              </button>
+            </p>
+          )}
         </div>
       )}
     </>
