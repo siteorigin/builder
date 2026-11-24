@@ -62,7 +62,6 @@ export function copySelection(plan: LayersPlan | null = planLayers()): boolean {
   const at = (id: string | undefined) => Math.max(0, g.ids.indexOf(id ?? ''));
   // A copy left in another opening is never a fallback here.
   if (copied && copied.opening !== snap.workspaceKey) forgetCopy();
-  left = null;
   const entry: Copied = {
     dir: snap.dir,
     opening: snap.workspaceKey,
@@ -76,6 +75,9 @@ export function copySelection(plan: LayersPlan | null = planLayers()): boolean {
       (r) => {
         if (!r.ok || !r.clipboardId) return failed(r.message);
         entry.previous = null;
+        // Taken while it is still the copy: what was left in another project no longer explains anything. (One
+        // already left behind is the explanation itself.)
+        if (copied === entry) left = null;
         if (copied === entry && sameProject()) toast(`Copied ${label}. Paste ${entry.count > 1 ? 'them' : 'it'} on any page with ⌘V.`, 'info');
         return r.clipboardId;
       },

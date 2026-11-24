@@ -279,7 +279,7 @@ describe('paste after switching projects (#240)', () => {
     await pasteIsRefused(s, REOPENED);
   });
 
-  it('never selects what a paste made once the project has closed and opened again before it was saved', async () => {
+  it('never selects what a paste made once the project has closed and opened again before its reply arrived', async () => {
     const s = await create('business', 'Business');
     show(s);
     await copySection(s);
@@ -287,10 +287,13 @@ describe('paste after switching projects (#240)', () => {
     const n = roots(s).length;
     let release!: () => void;
     replyHeld = new Promise<void>((r) => (release = r));
-    expect(clipboard.pasteCopy()).toBe(true);
-    await vi.waitFor(() => expect(roots(s)).toHaveLength(n + 1));
-    show(s);
-    release();
+    try {
+      expect(clipboard.pasteCopy()).toBe(true);
+      await vi.waitFor(() => expect(roots(s)).toHaveLength(n + 1));
+      show(s);
+    } finally {
+      release();
+    }
     await settle();
     expect(getState().selection).toBeNull();
     expect(getState().layerSet).toBeNull();
@@ -351,6 +354,23 @@ describe('paste after switching projects (#240)', () => {
     close();
     show(blank);
     await pasteIsRefused(blank, ELSEWHERE);
+  });
+
+  it('keeps naming the last copy taken after a later one fails in another project', async () => {
+    const a = await create('business', 'Business');
+    const b = await create('business', 'Other business');
+    const c = await create('blank', 'Blank');
+    show(a);
+    await copySection(a);
+    show(b);
+    // A copy in B that fails in front of the author, against a revision B has moved past.
+    setState({ selection: ref(home(b), roots(b)[1]), snapshot: { ...getState().snapshot!, revision: b.revision - 1 } });
+    expect(clipboard.copySelection()).toBe(true);
+    await settle();
+    expect(lastToast()).toMatchObject({ kind: 'error', text: expect.stringMatching(/changed while copying/) });
+    close();
+    show(c);
+    await pasteIsRefused(c, ELSEWHERE);
   });
 
   it('ignores a Copy menu made in a project that has since closed, keeping this project’s own copy', async () => {
