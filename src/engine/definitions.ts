@@ -701,7 +701,8 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
     fail(enclosingList(def, node.id) ? `The list has no field "${b.$item}".` : 'Only elements inside a repeat can show list item fields.');
   }
   const ok = acceptedTypes(node, field, nested);
-  if (ok && !ok.includes(schema.type)) fail(`A ${schema.type} property cannot be used as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}. It needs a ${ok.join(' or ')} property.`);
+  const what = '$state' in b ? 'state' : 'property';
+  if (ok && !ok.includes(schema.type)) fail(`A ${schema.type} ${what} cannot be used as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}. It needs a ${ok.join(' or ')} ${what}.`);
   if (field === 'list' && '$prop' in b && enclosingRepeatProp(def, node.id) === b.$prop) fail('A repeat cannot repeat the list it is already inside.');
   const comparison = op.eq !== undefined ? ({ ref: clone(b), eq: op.eq } as Comparison) : op.ne !== undefined ? ({ ref: clone(b), ne: op.ne } as Comparison) : undefined;
   const site = { node, field, prop: axis ?? op.prop, comparison };

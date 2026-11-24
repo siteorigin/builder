@@ -126,6 +126,15 @@ describe('loading a theme pack release', () => {
     ['a used file that is not listed', (d) => edit(d, (m) => delete m.files[m.fonts[0].faces[0].file]), /is used but not listed/],
     ['a listed file nothing uses', (d) => edit(d, (m) => (m.files['previews/extra.webp'] = m.files['previews/hero.split.webp'])), /previews\/extra\.webp is listed but nothing in the pack uses it/],
     ['a preview for a component the pack does not have', (d) => edit(d, (m) => (m.previews!['ghost.section'] = { default: 'previews/hero.split.webp' })), /preview for ghost\.section, which the pack does not have/],
+    ['UI state with a name that cannot be an identifier', (d) => edit(d, (m) => (m.components[2].state = { 'open-now': { type: 'boolean', label: 'Open', initial: false } })), /"open-now" is not a name UI state can have/],
+    ['a condition that reads UI state the component does not declare', (d) => edit(d, (m) => (m.components[2].tree!.nodes[m.components[2].tree!.rootIds[0]].when = { $state: 'open' })), /reads the UI state "open", which the component does not declare/],
+    ['a button that toggles a choice', (d) => edit(d, (m) => {
+      const c = m.components[2];
+      c.state = { tab: { type: 'enum', label: 'Tab', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }], initial: 'a' } };
+      const link = Object.values(c.tree!.nodes).find((n) => n.kind === 'link');
+      if (!link || link.kind !== 'link') throw new Error('The component has no button to test with.');
+      link.stateAction = { state: 'tab', op: 'toggle' };
+    }), /toggles the choice "tab"/],
     ['a font file changed after it was built', (d) => writeFileSync(join(d, firstFont(d)), Buffer.concat([readFileSync(join(d, firstFont(d))), Buffer.from('x')])), /bytes, but the pack lists/],
     ['a font file with the same size but other bytes', (d) => {
       const f = join(d, firstFont(d));
