@@ -142,12 +142,15 @@ try {
     return win.locator('.result-card').last();
   };
   // With nothing selected, an edit keeps to the open page until the whole site is chosen (#513).
-  const scopeControl = win.getByRole('group', { name: 'What the AI may change' });
-  const thisPage = scopeControl.getByRole('button', { name: /^This page/ });
-  const wholeSite = scopeControl.getByRole('button', { name: /^Whole site/ });
-  assert.equal(await thisPage.getAttribute('aria-pressed'), 'true', 'an edit starts on the open page');
-  await wholeSite.click();
-  await eventually(async () => assert.equal(await wholeSite.getAttribute('aria-pressed'), 'true'));
+  // What the edit may change is one chip under the message; its menu holds the choices.
+  const scopeChip = win.locator('.composer .scope-chip');
+  const chooseScope = async (name) => {
+    await scopeChip.click();
+    await win.getByRole('menuitemradio', { name }).click();
+  };
+  assert.doesNotMatch(await scopeChip.getAttribute('aria-label'), /Whole site/, 'an edit starts on the open page');
+  await chooseScope(/^Whole site/);
+  await eventually(async () => assert.match(await scopeChip.getAttribute('aria-label'), /Whole site/));
   /** What a request told the model about where it was sent from. */
   const sentContext = (body) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec(body.messages.at(-1).content)[1]);
   const tested = posts().length;
@@ -408,8 +411,8 @@ try {
   assert.equal(await message.inputValue(), 'A note for later', 'the draft was kept');
 
   step('with This page chosen, an edit keeps to the open page and starts from its sections');
-  await thisPage.click();
-  await eventually(async () => assert.equal(await thisPage.getAttribute('aria-pressed'), 'true'));
+  await chooseScope(/^This page/);
+  await eventually(async () => assert.doesNotMatch(await scopeChip.getAttribute('aria-label'), /Whole site/));
   second.script(envelopeReply('finish', { message: 'It reads well.' }));
   const pagePosts = second.requests.filter((r) => r.method === 'POST').length;
   assert.match((await (await sendRequest('What would you change on this page?')).getAttribute('class')) ?? '', /\bno-changes\b/);

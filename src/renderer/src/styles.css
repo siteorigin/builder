@@ -323,12 +323,19 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .menu .menu-item[aria-disabled='true'][data-highlighted] { background: var(--hover); }
 .menu-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .cmdk .menu-item.focused { box-shadow: inset 0 0 0 1px var(--accent); }
-.menu-item:is([data-highlighted], :hover, .focused) .hint, .menu .menu-item:is([data-highlighted], :hover) .kbd { color: var(--text-2); }
+.menu-item:is([data-highlighted], :hover, .focused) :is(.hint, .menu-desc), .menu .menu-item:is([data-highlighted], :hover) .kbd { color: var(--text-2); }
 .menu-item:is([data-highlighted], .focused) svg, .menu-item:hover:not(:disabled, [data-disabled], [aria-disabled='true']) svg { color: var(--accent-text); }
 .menu-lead, .menu-trail { display: grid; place-items: center; width: 16px; height: 16px; flex: none; }
 .menu-item .check { display: grid; place-items: center; color: var(--accent-text); }
 .menu-item .check svg { color: inherit; }
 .menu-item .hint { flex: none; font-size: 12px; color: var(--text-3); }
+/* An item that says what it means on a second, quieter line. */
+.menu-item.described { height: auto; min-height: 30px; padding-block: 6px; align-items: flex-start; }
+.menu-item.described :is(.menu-lead, .menu-trail) { margin-top: 1px; }
+.menu-item .menu-text { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; overflow: visible; white-space: normal; }
+.menu-text > :first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-desc { font-size: 12px; line-height: 1.35; color: var(--text-3); overflow-wrap: anywhere; }
+.menu:has(.described) { max-width: min(300px, var(--radix-dropdown-menu-content-available-width, 300px)); }
 .menu .menu-item:is(:disabled, [data-disabled], [aria-disabled='true']), .menu .menu-item:is(:disabled, [data-disabled], [aria-disabled='true']) :is(svg, .kbd, .hint) { color: var(--disabled-ink); }
 .menu-item svg { width: 16px; height: 16px; flex: none; color: var(--text-2); }
 /* Shortcuts read as quiet text, not keycaps: a keycap's border fights the highlight and the focus ring. */
@@ -2483,7 +2490,7 @@ iframe { color-scheme: light dark; }
 .chat-log > .msg-user:not(:first-child):has(+ .msg-ai .settled) { margin-top: 10px; }
 /* The question the AI is waiting on sits right above the composer, which answers it. */
 /* The question and how to answer it stay put; only its options scroll when there are many. */
-.question-card { flex: 0 1 auto; min-height: 72px; margin: 8px 12px 0; max-height: 60%; overflow: auto; scrollbar-width: thin; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--accent); background: var(--raised); box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; }
+.question-card { flex: 0 1 auto; min-height: 72px; margin: 8px 12px 0; max-height: 60%; overflow: auto; scrollbar-width: thin; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--raised); box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; }
 /* Room on every side for a focus ring. It keeps at least one option in view; on a window too short even for that, the
    whole card scrolls instead, so a focused option is never hidden. */
 .question-options { flex: 0 1 auto; min-height: 38px; overflow: auto; display: flex; flex-direction: column; gap: 8px; margin: -4px; padding: 4px; scroll-padding: 8px 0; scrollbar-width: thin; }
@@ -2541,39 +2548,68 @@ iframe { color-scheme: light dark; }
 .answered { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .answered strong { color: var(--text); font-weight: 600; }
 .answered.unanswered > span:last-child { color: var(--text-3); font-style: italic; }
-.composer { flex: none; margin: 8px 12px 12px; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); box-shadow: var(--shadow-sm); transition: border-color 120ms, box-shadow 120ms; }
-.composer:has(textarea:focus) { border-color: var(--accent); box-shadow: var(--ring); }
-.composer textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; padding: 9px 12px 3px; border: 0; background: transparent; resize: none; outline: none; line-height: 1.5; user-select: text; }
-.composer-foot { display: flex; align-items: center; gap: 6px; padding: 4px 6px 6px 8px; }
+/* The composer is one field: a raised box whose first line is the text, then what goes with the message (what it
+   applies to, as one chip, and its images), then one row of quiet controls with Send at the end. Anywhere in the box that is not a control
+   puts the caret in the text, so the whole box takes the text cursor, and focus is the house ring around the box. */
+.composer { flex: none; margin: 8px 12px 12px; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); box-shadow: var(--shadow-sm); cursor: text; transition: border-color 120ms; }
+.composer:hover:not(:has(button:hover, textarea:read-only)) { border-color: var(--text-3); }
+.composer textarea { display: block; width: 100%; min-height: 56px; max-height: 240px; padding: 10px 12px 4px; border: 0; background: transparent; resize: none; outline: none; font-size: 14px; line-height: 1.45; user-select: text; }
+.composer-foot { display: flex; align-items: center; gap: 2px; padding: 2px 6px 6px; cursor: default; }
 /* Answering a question: the reply and its Send on one row, with no empty footer under it. */
 .composer.answering { display: flex; align-items: flex-end; }
-.composer.answering textarea { flex: 1; min-width: 0; padding: 9px 4px 9px 12px; }
+.composer.answering textarea { flex: 1; min-width: 0; min-height: 40px; padding: 9px 4px 9px 12px; }
 .composer.answering .composer-foot { flex: none; padding: 6px; }
-.composer-foot .segmented { flex: none; }
-.composer-model { min-width: 0; color: var(--text-2); font-weight: 500; }
-/* The composer's rows share one left edge (8px) with its footer. What the message applies to wraps on its own; adding
-   images stays at the end of the first row. */
-.chips-bar { display: flex; align-items: flex-start; gap: 5px; padding: 8px 8px 0; }
-.chips { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.chips .chip { height: 28px; }
-/* Beside the scope switch, the page is where the request starts, not a third option: plain words, no pill. */
-.chips:has(.segmented) > .chip:not(.def) { background: none; padding: 0 2px; }
-.composer .image-chips { padding: 8px 8px 0; }
+/* What the message applies to: one chip, its menu holds the other choices. The page it starts from is quieter and
+   gives way first when the panel is narrow. */
+.composer-context { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; max-height: 96px; overflow-y: auto; scrollbar-width: thin; padding: 4px 6px; }
+/* The row scrolls, so the focus ring of what is inside it is drawn 2px in, as in other clipping containers. */
+.composer-context :focus-visible { outline-offset: -2px; }
+/* Images flow with the scope chip, at its height, so one or two sit beside it rather than starting a row; many
+   scroll inside the row (about three lines) instead of pushing the conversation away. */
+.composer-context .image-chips { display: contents; }
+.composer-context .image-chip { min-height: 24px; padding: 0 0 0 3px; gap: 5px; }
+.composer-context .image-chip .asset-thumb { width: 18px; height: 18px; object-fit: cover; }
+.composer .chip.scope-chip { flex: 0 1 auto; min-width: 0; max-width: 100%; height: 24px; gap: 5px; padding: 0 6px; border: 0; font-size: 12px; font-weight: 500; color: var(--text-2); }
+.composer button.scope-chip:is(:hover, [aria-expanded='true']) { color: var(--text); }
+.composer .scope-chip svg { width: 12px; height: 12px; flex: none; }
+.composer .scope-chip > .ellipsis:not(.scope-where) { flex: 0 1 auto; min-width: 3ch; }
+.composer .scope-where { flex: 0 1000 auto; min-width: 5ch; font-weight: 400; color: var(--text-2); }
+.composer .scope-where::before { content: '·'; margin-right: 5px; }
+.composer .scope-chip.def .scope-where { color: inherit; }
+.composer .chip.scope-chip.def { background: var(--plum-soft); color: var(--plum); font-weight: 600; }
+/* The house hues for how far a change reaches: amber for the whole site, green for the shared header and footer. */
+.composer .chip.scope-chip.site, .composer button.scope-chip.site:hover { background: var(--amber-soft); color: var(--amber); }
+.composer .chip.scope-chip.shared, .composer button.scope-chip.shared:hover { background: var(--green-soft); color: var(--green); }
+.composer button.scope-chip.def:hover { background: var(--plum-soft); color: var(--plum); }
+.composer .scope-chip:is(.site, .shared) .scope-where { color: inherit; }
+.composer span.scope-chip { cursor: default; }
+.composer button.scope-chip:hover { background: var(--active); box-shadow: inset 0 0 0 1px var(--border-strong); }
+/* A hued chip keeps its fill on hover and takes a ring in its own colour. */
+.composer button.scope-chip:is(.site, .shared, .def):hover { box-shadow: inset 0 0 0 1px currentColor; }
+/* A question's context is shown, not chosen: plain words, no fill. */
+.composer span.scope-chip:not(.def, .site, .shared) { background: transparent; padding-left: 6px; }
+.composer :is(.scope-chip, .composer-mode) .caret { width: 12px; height: 12px; flex: none; margin-left: -1px; opacity: 0.75; }
+/* Edit or Ask, the model, images and Send: quiet ghost controls, so the text stays the strongest thing in the box. */
+.composer-mode { flex: none; gap: 5px; padding: 0 6px; color: var(--text-2); font-weight: 500; }
+.composer-mode svg { width: 14px; height: 14px; }
+/* Ask is remembered between sessions, so it stays visibly on once the placeholder has gone. */
+.composer-mode.ask, .composer .composer-mode.ask:hover:not(:disabled) { background: var(--active); color: var(--text); }
+.composer .composer-mode.ask:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--border-strong); }
+.composer-model { min-width: 0; padding: 0 6px; color: var(--text-3); font-weight: 400; }
+.composer-model:hover:not(:disabled) { color: var(--text); }
+.composer-model .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model svg { width: 13px; height: 13px; }
+.composer-attach { flex: none; width: 28px; height: 28px; }
 .chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 2px 0 8px; border-radius: var(--r-sm); background: var(--active); font-size: 12px; color: var(--text-2); max-width: 100%; }
 .chip.sel { background: var(--accent-soft); color: var(--accent-text); }
-.chips .segmented { min-width: 0; max-width: 100%; }
-.chips .segmented button { min-width: 0; max-width: 220px; white-space: nowrap; }
-/* Adding images sits at the end of what the message applies to. */
-.chips-attach { flex: none; margin-left: auto; width: 28px; height: 28px; }
-.chips .segmented button:last-child { flex: none; }
-.chips .segmented button svg { width: 12px; height: 12px; flex: none; }
 .chip svg { width: 11px; height: 11px; flex: none; }
 /* A component edited everywhere, in the plum of the editing band. */
 .chip.def { background: var(--plum-soft); color: var(--plum); font-weight: 600; }
 .chip button { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; color: inherit; padding: 0; }
 .chip button:hover { background: var(--hover); }
 .send-btn { flex: none; width: 28px; height: 28px; border-radius: var(--r-sm); border: 0; display: grid; place-items: center; background: var(--accent-fill); color: var(--on-accent); }
-.send-btn:disabled { background: var(--active); color: var(--text-3); }
+.send-btn:hover:not(:disabled) { background: var(--accent-fill-hover); }
+.send-btn:disabled { background: var(--disabled-fill); color: var(--disabled-ink); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .send-btn svg { width: 15px; height: 15px; }
 .chat-empty { margin: auto 0; padding: 16px 8px; display: flex; flex-direction: column; gap: 12px; text-align: center; align-items: center; }
 .chat-empty .spark { width: 40px; height: 40px; border-radius: var(--r-md); display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); }
@@ -3327,7 +3363,7 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 /* Round 5 polish */
 /* Outside the filled exit button, in white, so the ring stands clear of both the fill and the pill. */
 .preview-pill button:focus-visible { outline-offset: 2px; }
-.composer:has(textarea:focus) { outline: 2px solid var(--focus); outline-offset: -1px; }
+.composer:has(textarea:focus) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .toolbar-group { min-width: 0; }
 .insp-jump button { background: transparent; color: var(--accent-text); padding: 0 6px; }
 .insp-jump button:hover { background: var(--accent-soft); }
