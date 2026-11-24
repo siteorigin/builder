@@ -2982,46 +2982,57 @@ export class ProjectSession extends EventEmitter {
     return null;
   }
 
-  /** Move history: restore the documents of an entry, refusing if those documents changed since. */
-  private async travel(entry: HistoryEntry, direction: 'undo' | 'redo'): Promise<ApplyResult> {
+  /**
+   * Move history to `to`, an undo position: restore the documents of every entry between it and the current one, as
+   * one change however many entries that is. Each entry's documents must still be as it left them (once the entries
+   * nearer the present are taken back, or the ones before it redone), or nothing changes. Only where it arrives is
+   * checked as a whole project, since nothing in between is ever saved.
+   */
+  private async travel(to: number): Promise<ApplyResult> {
+    const h = this.history;
+    const direction = to < h.cursor ? 'undo' : 'redo';
+    // In the order they are taken back or put back.
+    const steps = direction === 'undo' ? h.entries.slice(to, h.cursor).reverse() : h.entries.slice(h.cursor, to);
     const expect = direction === 'undo' ? 'after' : 'before';
     const target = direction === 'undo' ? 'before' : 'after';
-    for (const [path, d] of Object.entries(entry.docs)) {
-      const cur = this.docs.get(path);
-      const curHash = cur === undefined ? null : sha(cur);
-      if (curHash !== d[expect])
-        return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}" because ${path} has changed since.`, recoverable: false } };
-    }
-    // Build the target state from documents.
+    const what = steps.length === 1 ? `"${steps[0].label}"` : `${steps.length} changes`;
+    // Build the target state from documents, an entry at a time.
     const docs = new Map(this.docs);
-    for (const [path, d] of Object.entries(entry.docs)) {
-      const h = d[target];
-      if (h === null) docs.delete(path);
-      else docs.set(path, await this.getBlob(h));
+    for (const entry of steps) {
+      for (const [path, d] of Object.entries(entry.docs)) {
+        const cur = docs.get(path);
+        const curHash = cur === undefined ? null : sha(cur);
+        if (curHash !== d[expect])
+          return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}" because ${path} has changed since.`, recoverable: false } };
+      }
+      for (const [path, d] of Object.entries(entry.docs)) {
+        const blob = d[target];
+        if (blob === null) docs.delete(path);
+        else docs.set(path, await this.getBlob(blob));
+      }
     }
     // An entry is kept only with its collection: a restore that would leave one without it (its collection deleted
     // outside the app since) cannot be saved.
     // Nor beside another entry with its ID (one added to another collection outside the app since).
     const restored = collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)]));
     const unsaveable = restored.orphans.length ? `${restored.orphans[0]} would have no collection` : restored.duplicates.length ? `${restored.duplicates[0]} would share its entry ID with another entry` : null;
-    if (unsaveable) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${unsaveable}.`, recoverable: false } };
+    if (unsaveable) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${unsaveable}.`, recoverable: false } };
     const next = docsToState(docs, this.state);
     // History restores only its own documents, and another may have changed outside the app since (a page now on
     // a route this restores, an old address kept there): never save a project that could not be opened again.
     const fatal = (s: ProjectState) => validateState(s, { sectionLinks: false }).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     const already = new Set(fatal(this.state).map((d) => d.message));
     const broken = fatal(next).find((d) => !already.has(d.message));
-    if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${broken.message}`, recoverable: false } };
+    if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${broken.message}`, recoverable: false } };
     const pin = themePinProblem(next);
-    if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${pin}`, recoverable: false } };
+    if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${pin}`, recoverable: false } };
     // That check sees the project as loaded. An edit made outside the app that has not been loaded yet would slip
     // past it, so the restore waits for it.
-    const unloaded = await this.unloadedEdit(new Set(Object.keys(entry.docs)));
-    if (unloaded) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}" yet: ${unloaded} changed outside the app. Try again in a moment.`, recoverable: true } };
-    const cursor = this.history.cursor + (direction === 'undo' ? -1 : 1);
+    const unloaded = await this.unloadedEdit(new Set(steps.flatMap((e) => Object.keys(e.docs))));
+    if (unloaded) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what} yet: ${unloaded} changed outside the app. Try again in a moment.`, recoverable: true } };
     try {
       // The cursor moves in the same journaled change as the documents, so a crash never separates them.
-      await this.persist(next, { label: `${direction === 'undo' ? 'Undo' : 'Redo'} ${entry.label}`, history: false, cursor, source: 'user' });
+      await this.persist(next, { label: `${direction === 'undo' ? 'Undo' : 'Redo'} ${steps.length === 1 ? steps[0].label : what}`, history: false, cursor: to, source: 'user' });
     } catch (e) {
       if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
       throw e;
@@ -3037,7 +3048,7 @@ export class ProjectSession extends EventEmitter {
       if (blocked) return blocked;
       const entry = this.history.entries[this.history.cursor - 1];
       if (!entry) return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: true } };
-      return this.travel(entry, 'undo');
+      return this.travel(this.history.cursor - 1);
     });
   }
 
@@ -3048,7 +3059,28 @@ export class ProjectSession extends EventEmitter {
       if (blocked) return blocked;
       const entry = this.history.entries[this.history.cursor];
       if (!entry) return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to redo.', recoverable: true } };
-      return this.travel(entry, 'redo');
+      return this.travel(this.history.cursor + 1);
+    });
+  }
+
+  /**
+   * Step History to an entry chosen in it, however far back or ahead, in one change: `undo` undoes that entry and
+   * every applied one after it, `redo` redoes every undone entry up to and including it. What is undone can still be
+   * redone until a new change is made. An entry that has gone, or already stands where it was asked to go (History
+   * moved after it was shown), is refused, changing nothing, so this never goes somewhere other than where it names.
+   */
+  stepTo(entryId: string, direction: 'undo' | 'redo'): Promise<ApplyResult> {
+    return this.serialize(async () => {
+      if (this.activeRun) return { ok: false, revision: this.revision, error: { code: 'BUSY', message: `Stop the AI before ${direction === 'undo' ? 'undoing' : 'redoing'}.`, recoverable: true } };
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked;
+      const h = this.history;
+      const at = h.entries.findIndex((e) => e.id === entryId);
+      const entry = h.entries[at];
+      if (!entry) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'That change is no longer in History.', recoverable: false } };
+      if (direction === 'undo' && at >= h.cursor) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `“${entry.label}” was already undone.`, recoverable: false } };
+      if (direction === 'redo' && at < h.cursor) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `“${entry.label}” was already redone.`, recoverable: false } };
+      return this.travel(direction === 'undo' ? at : at + 1);
     });
   }
 
@@ -3061,7 +3093,7 @@ export class ProjectSession extends EventEmitter {
       const latest = this.history.entries[this.history.cursor - 1];
       if (!latest || latest.runId !== runId)
         return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Later changes were made after this AI turn. Undo those first from the history.', recoverable: false } };
-      return this.travel(latest, 'undo');
+      return this.travel(this.history.cursor - 1);
     });
   }
 
@@ -3081,7 +3113,7 @@ export class ProjectSession extends EventEmitter {
       const entry = h.entries[at];
       if (!entry) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'That change is no longer in History.', recoverable: false } };
       if (at >= h.cursor) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `“${entry.label}” was already undone.`, recoverable: false } };
-      if (at === h.cursor - 1) return this.travel(entry, 'undo');
+      if (at === h.cursor - 1) return this.travel(at);
       return this.restoreOnItsOwn(entry, at);
     });
   }

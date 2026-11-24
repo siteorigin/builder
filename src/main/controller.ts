@@ -1467,6 +1467,16 @@ export class Controller {
     return this.session.undoEntry(entryId);
   }
 
+  /**
+   * Step History to the entry chosen in it (see ProjectSession.stepTo). `key` is the opening of the project History
+   * was shown for: a choice left over from a project that has since closed never reaches another one.
+   */
+  stepHistory(entryId: string, direction: 'undo' | 'redo', key: string): Promise<ApplyResult> {
+    if (!this.session || !key || this.workspaceKey !== key)
+      return Promise.resolve({ ok: false, revision: this.session?.revision ?? 0, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.', recoverable: false } });
+    return this.session.stepTo(entryId, direction);
+  }
+
   /** What the open project's media and undo history take on disk, and what freeing up space would do. */
   async storageInfo(key: string): Promise<StorageInfo | null> {
     const s = this.session;

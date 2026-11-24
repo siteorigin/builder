@@ -363,6 +363,11 @@ function registerIpc() {
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } }
   );
   handle('project:redo', () => controller.session?.redo());
+  handle('project:stepHistory', (entryId: unknown, direction: unknown, key: unknown) =>
+    typeof entryId === 'string' && (direction === 'undo' || direction === 'redo') && typeof key === 'string'
+      ? controller.stepHistory(entryId, direction, key)
+      : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to step to.', recoverable: false } }
+  );
   const kindOf = (only: unknown) => (only === 'image' || only === 'font' || only === 'document' ? only : undefined);
   const pathList = (paths: unknown) => (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : undefined);
   handle('project:reviewImport', (paths?: unknown, only?: unknown) => controller.reviewImport(pathList(paths), kindOf(only)));
