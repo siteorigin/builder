@@ -32,6 +32,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, ImageValue, InstanceNo
 import { isBinding } from '@shared/types';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
+import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { partStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
@@ -74,6 +75,9 @@ function formServiceHint(service: FormServiceSetup): ReactNode {
     </>
   );
 }
+
+/** A video field's hint, when it has one. */
+const videoHint = (note: VideoFieldNotes['url'] | VideoFieldNotes['title'] | undefined) => (note && 'hint' in note ? note.hint : undefined);
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): EditOperation {
   switch (op.kind) {
@@ -539,6 +543,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   };
   // Buttons whose link this placement cannot set (it comes from the design or a component inside it).
   const fixedUnlinked = unlinked.filter((b) => !b.link);
+  // A video section says whether its address is a video visitors can play, where it loads from, and when it needs a title.
+  const video = def.componentId === 'media.video' ? videoFieldNotes(node.props) : undefined;
+  const videoNote = (key: string) => (key === 'url' || key === 'title' ? video?.[key as keyof VideoFieldNotes] : undefined);
   return (
     <>
       <Header
@@ -582,7 +589,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 name={key}
                 schema={schema}
                 label={label}
-                hint={service && key === service.prop ? formServiceHint(service) : undefined}
+                hint={service && key === service.prop ? formServiceHint(service) : videoHint(videoNote(key))}
                 value={node.props[key] ?? schema.default}
                 onChange={(v, edit) => set(key, v, edit)}
                 onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
@@ -593,7 +600,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 annotate={notes(key)}
                 hiddenFields={key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden : undefined}
                 linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
-                error={found ? unlinkedNote({ hide: own?.hide }) : undefined}
+                error={found ? unlinkedNote({ hide: own?.hide }) : videoNote(key)?.error}
                 action={hideAction(own)}
                 place={schema.type === 'list' ? { ref: selection, list: key } : undefined}
               />

@@ -1425,6 +1425,9 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .sketch i.quote { width: auto; height: 6px; background: none; overflow: visible; color: color-mix(in srgb, var(--text-2) 80%, var(--panel-2)); font: 700 15px/1 Georgia, 'Times New Roman', serif; }
 .sketch i.quote::before { content: '\201C'; display: block; margin-top: -1px; }
 .sketch i.img { flex: 1; align-self: stretch; min-height: 0; border-radius: var(--r-xs); background: color-mix(in srgb, var(--accent) 24%, var(--panel-2)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 80%, var(--panel-2)); }
+/* A video's frame, with a play mark in the middle. */
+.sketch i.img.play { position: relative; }
+.sketch i.img.play::after { content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-35%, -50%); border-style: solid; border-width: 5px 0 5px 8px; border-color: transparent transparent transparent var(--accent); }
 .sketch i.dot { width: 12px; height: 12px; border-radius: 50%; background: color-mix(in srgb, var(--text-3) 80%, var(--panel-2)); }
 .sketch i.dot.sm { width: 8px; height: 8px; }
 .sketch i.row-line { width: 100%; height: 7px; border-radius: 2px; background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-3) 80%, var(--panel-2)); }

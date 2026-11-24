@@ -1,8 +1,8 @@
 /**
  * Video addresses a page can show. Only a documented set of hosts is supported: YouTube and Vimeo. A video is
  * always played by its host's own player, which a visitor's browser loads from that host only when the visitor
- * asks it to play. Nothing here is part of the exported site: the generator resolves an address to the
- * player's address once, and the site renders that.
+ * presses Play. The editor reads addresses here; the exported site runs its own copy of this reader
+ * (VIDEO_JS in src/generator/video.ts), which tests keep in step with this one.
  */
 
 export type VideoProviderId = 'youtube' | 'vimeo';
@@ -69,12 +69,14 @@ const YOUTUBE_ID_PATHS = new Set(['embed', 'shorts', 'live', 'v', 'e']);
 export function parseStart(raw: string | null | undefined): number | undefined {
   const v = String(raw ?? '').trim().toLowerCase();
   if (!v) return undefined;
-  if (/^\d+$/.test(v)) return Number(v) || undefined;
+  if (/^\d+$/.test(v)) return safeSeconds(Number(v));
   const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(v);
   if (!m || (!m[1] && !m[2] && !m[3])) return undefined;
-  const seconds = Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
-  return seconds || undefined;
+  return safeSeconds(Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0));
 }
+
+/** Whole seconds a player address can carry and read back the same; anything else is no start time. */
+const safeSeconds = (n: number): number | undefined => (Number.isSafeInteger(n) && n > 0 ? n : undefined);
 
 function toUrl(raw: string): URL | null {
   let s = raw.trim();
@@ -109,7 +111,6 @@ function vimeo(u: URL, host: string): VideoSource | null {
   if (host === 'player.vimeo.com') {
     if (parts[0] !== 'video' || parts.length !== 2) return null;
     id = parts[1];
-    hash = u.searchParams.get('h') ?? undefined;
   } else if (parts[0] === 'channels' && parts.length === 3) {
     id = parts[2];
   } else if (parts[0] === 'groups' && parts[2] === 'videos' && parts.length === 4) {
@@ -117,8 +118,10 @@ function vimeo(u: URL, host: string): VideoSource | null {
   } else if (parts.length === 1 || parts.length === 2) {
     // vimeo.com/{id}, or vimeo.com/{id}/{hash} for an unlisted video.
     id = parts[0];
-    hash = parts[1] ?? u.searchParams.get('h') ?? undefined;
+    hash = parts[1];
   }
+  // An unlisted video's hash may also come as ?h= on any of the forms.
+  hash ??= u.searchParams.get('h') ?? undefined;
   if (!id || !VIMEO_ID.test(id)) return null;
   if (hash !== undefined && !VIMEO_HASH.test(hash)) return null;
   const start = parseStart(/^#t=(.+)$/.exec(u.hash)?.[1]);
@@ -167,4 +170,38 @@ export function videoEmbedUrl(source: VideoSource, opts: { autoplay?: boolean } 
 export function videoWatchUrl(source: VideoSource): string {
   if (source.provider === 'youtube') return `https://www.youtube.com/watch?v=${source.id}${source.start ? `&t=${source.start}s` : ''}`;
   return `https://vimeo.com/${source.id}${source.hash ? `/${source.hash}` : ''}${source.start ? `#t=${source.start}s` : ''}`;
+}
+
+/**
+ * Whether a frame address is exactly a player address this builder writes (with or without autoplay), so the
+ * editor's preview may load it inside the previewed page. Any other parameter, path or host is refused.
+ */
+export function isVideoPlayerUrl(raw: unknown): boolean {
+  if (typeof raw !== 'string' || !Object.values(VIDEO_PROVIDERS).some((p) => raw.startsWith(p.playerOrigin + '/'))) return false;
+  const source = parseVideoUrl(raw);
+  return !!source && (videoEmbedUrl(source) === raw || videoEmbedUrl(source, { autoplay: true }) === raw);
+}
+
+/** Where a visitor's browser loads the player from, as a person reads it. */
+const playerHost = (p: VideoProviderId) => new URL(VIDEO_PROVIDERS[p].playerOrigin).host;
+
+/** What the inspector says at a video's fields: an error replaces the field's description, a hint adds to what it says. */
+export interface VideoFieldNotes {
+  url?: { hint?: string; error?: string };
+  title?: { error?: string };
+}
+
+/**
+ * The inspector's word on a video's title and address: whether the address is a video visitors can play, where
+ * their browser loads it from when they press Play, and that a video needs a title for screen readers.
+ */
+export function videoFieldNotes(props: Record<string, unknown>): VideoFieldNotes {
+  const check = checkVideoUrl(props.url);
+  if (check.status === 'empty') return {};
+  if (check.status === 'unsupported') return { url: { error: `${check.message} Visitors see no video until then.` } };
+  const name = VIDEO_PROVIDERS[check.source.provider].name;
+  const notes: VideoFieldNotes = { url: { hint: `A ${name} video. Visitors’ browsers load ${name}’s player from ${playerHost(check.source.provider)} only when they press Play.` } };
+  if (typeof props.title !== 'string' || !props.title.trim())
+    notes.title = { error: `Add a title that says what the video is. Without one, screen readers announce only “Video from ${name}”.` };
+  return notes;
 }
