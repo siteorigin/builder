@@ -1221,6 +1221,8 @@ describe('placing a library image from Assets (issue #13)', () => {
       await vi.waitFor(() => expect(page().rootIds).not.toContain(made.id));
       expect(page().nodes[img.id]).toBeUndefined();
       expect(uses(photo.id)).toBe(0);
+      // The project changes before its news reaches the renderer: the next drag starts once the window has heard of it.
+      await vi.waitFor(() => expect(revision()).toBe(session!.revision));
       // Its Undo is for that change alone: with an edit made since, it takes neither away.
       expect(await actions.dropAssetAt(photo.id, { owner, parentId: null, index: 0 }, revision())).toBe(true);
       expect(session!.state.components[(page().nodes[page().rootIds[0]] as InstanceNode).definitionId].componentId).toBe('layout.section');
