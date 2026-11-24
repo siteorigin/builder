@@ -90,7 +90,12 @@ describe('bridge payload shapes', () => {
     expect(rectList('nope')).toEqual([]);
     const ok = { x: 1, y: 2, width: 3, height: 4 };
     expect(rectList([ok, { ...ok, x: 'a' }, { ...ok, y: null }, { ...ok, width: -1 }, { ...ok, height: Infinity }, null])).toEqual([ok]);
-    expect(measuredRects([{ x: 0, y: 0, width: 1, height: 1 }, null], 2)).toEqual([{ x: 0, y: 0, width: 1, height: 1 }, null]);
+    // Each measured box keeps its CSS order, 0 when it has none or a malformed one.
+    expect(measuredRects([{ x: 0, y: 0, width: 1, height: 1 }, null], 2)).toEqual([{ x: 0, y: 0, width: 1, height: 1, order: 0 }, null]);
+    expect(measuredRects([{ x: 0, y: 0, width: 1, height: 1, order: -2 }, { x: 0, y: 0, width: 1, height: 1, order: '3' }], 2)).toEqual([
+      { x: 0, y: 0, width: 1, height: 1, order: -2 },
+      { x: 0, y: 0, width: 1, height: 1, order: 0 }
+    ]);
     // Holes in a sparse array are missing measurements, never skipped entries.
     expect(measuredRects(new Array(2), 2)).toEqual([null, null]);
     expect(measuredRects([null], 2)).toBeNull();
