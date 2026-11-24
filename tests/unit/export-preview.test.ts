@@ -138,13 +138,13 @@ describe('exported-site previews', () => {
   it('serves web fonts and the favicon with their own content types', async () => {
     const root = site('Proof');
     mkdirSync(join(root, 'assets'));
-    const files = { 'brand.woff2': 'font/woff2', 'brand.woff': 'font/woff', 'favicon.ico': 'image/x-icon' };
-    for (const name of Object.keys(files)) writeFileSync(join(root, 'assets', name), 'bytes');
+    const files = { 'brand.woff2': 'font/woff2', 'brand.woff': 'font/woff', 'favicon.ico': 'image/x-icon', 'Touch.ICO': 'image/x-icon', 'photo.jpeg': 'image/jpeg', 'data.bin': 'application/octet-stream' };
+    for (const name of Object.keys(files)) writeFileSync(join(root, 'assets', name), `bytes of ${name}`);
     const url = await previews().serve(root);
-    for (const [name, type] of Object.entries(files)) expect((await fetch(`${url}assets/${name}`)).headers.get('content-type')).toBe(type);
-    // A file with no known type is still served, as plain bytes.
-    writeFileSync(join(root, 'assets', 'data.bin'), 'bytes');
-    expect((await fetch(`${url}assets/data.bin`)).headers.get('content-type')).toBe('application/octet-stream');
+    for (const [name, type] of Object.entries(files)) {
+      const r = await fetch(`${url}assets/${name}`);
+      expect([name, r.status, r.headers.get('content-type'), await r.text()]).toEqual([name, 200, type, `bytes of ${name}`]);
+    }
   });
 
   it('never serves files outside the exported folder', async () => {

@@ -178,20 +178,43 @@ describe('imported fonts', () => {
 
   it('counts a font as used while a project code component names it, and protects its last file', async () => {
     const { s } = await make();
-    const code = (source: string) => ({ type: 'component.createCode' as const, name: 'Banner', source, properties: {} });
-    await s.apply({ operations: [add(face('f1', '400')), add(face('f2', '700')), add(face('f3', '400', 'normal', 'Inter'))] }, { label: 'Import' });
+    const code = (name: string, source: string) => ({ type: 'component.createCode' as const, name, source, properties: {} });
+    const imported = await s.apply({ operations: [add(face('f1', '400')), add(face('f2', '700')), add(face('f3', '400', 'normal', 'Inter'))] }, { label: 'Import' });
+    expect(imported.ok).toBe(true);
     expect(assetUsages(s.state).f1).toBeUndefined();
-    // However often, and however it is cased or spaced, one component counts once; a word that only starts or ends a longer name does not count.
-    const r = await s.apply({ operations: [code("<h2>Hello</h2>\n<style>\n  h2 { font-family: 'brand   SANS', serif; }\n  p { font: 1rem Brand Sans; }\n  .interface { font-family: var(--font-inter), system-ui, sans-serif; }\n</style>")] }, { label: 'Add code' });
+    // However often, and however it is cased or spaced, one component counts once; a word that only starts or ends a
+    // longer name does not count at all (the font "Inter" is not in "interface" or "--font-inter").
+    const r = await s.apply({ operations: [code('Banner', "<h2>Hello</h2>\n<style>\n  h2 { font-family: 'brand   SANS', serif; }\n  p { font: 1rem BRAND  Sans; }\n  .interface { font-family: var(--font-inter), system-ui, sans-serif; }\n</style>")] }, { label: 'Add code' });
     expect(r.ok).toBe(true);
     expect(assetUsages(s.state)).toMatchObject({ f1: 1, f2: 1 });
     expect(assetUsages(s.state).f3).toBeUndefined();
+    // A theme's own code is not the project's choice; a second component of the project's is a second use.
+    const themeCode = Object.values(s.state.components).find((d) => d.owner === 'theme' && d.kind === 'code')!;
+    s.state.components[themeCode.id] = { ...themeCode, source: `${themeCode.source}\n<style>p { font-family: 'Brand Sans'; }</style>` };
+    expect(assetUsages(s.state)).toMatchObject({ f1: 1, f2: 1 });
+    expect((await s.apply({ operations: [code('Footer', "<p>Hi</p>\n<style>p { font-family: Brand Sans, serif; }</style>")] }, { label: 'Add more code' })).ok).toBe(true);
+    expect(assetUsages(s.state)).toMatchObject({ f1: 2, f2: 2 });
     // One face can go while another provides the family; the last one is protected.
     expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f2' }] }, { label: 'Remove' })).ok).toBe(true);
     const last = await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1' }] }, { label: 'Remove' });
     expect(last.ok).toBe(false);
-    expect(last.error?.message).toMatch(/This font is used 1 time/);
+    expect(last.error?.message).toMatch(/This font is used 2 times/);
     expect(s.state.assets.assets.f1).toBeDefined();
+  });
+
+  it('reads a style the way CSS does: a run of spaces is one, and a bare keyword is no font', async () => {
+    const { s } = await make();
+    await s.apply({ operations: [add(face('f1', '400')), add(face('f2', '400', 'normal', 'Serif'))] }, { label: 'Import' });
+    s.state.tokens.overrides['font.body'] = 'Georgia, Brand   Sans, serif';
+    expect(assetUsages(s.state)).toMatchObject({ f1: 1 });
+    // A keyword is not a use of the font that shares its name, and renaming that font leaves the keyword alone.
+    expect(assetUsages(s.state).f2).toBeUndefined();
+    s.state.tokens.overrides['font.display'] = "Georgia, 'Serif', serif";
+    expect(assetUsages(s.state).f2).toBe(1);
+    renameFontFamily(s.state, 'Serif', 'Roman');
+    expect(s.state.tokens.overrides['font.display']).toBe("Georgia, 'Roman', serif");
+    renameFontFamily(s.state, 'Brand Sans', 'Brand Serif');
+    expect(s.state.tokens.overrides['font.body']).toBe("Georgia, 'Brand Serif', serif");
   });
 
   it('quotes a family CSS would drop, and gives a bare imported name its stack', async () => {
@@ -206,6 +229,8 @@ describe('imported fonts', () => {
     expect(stack('Georgia, 1984 Display, serif')).toEqual({ stack: "Georgia, '1984 Display', serif" });
     expect(stack('Georgia,Brand Sans,serif')).toEqual({ stack: 'Georgia,Brand Sans,serif' });
     expect(stack("'1984 Display', serif")).toEqual({ stack: "'1984 Display', serif" });
+    // A name already quoted is kept as it was written, in either kind of quote, with no fallbacks added.
+    expect(stack('"1984 Display"')).toEqual({ stack: '"1984 Display"' });
     // A keyword stays a keyword, even beside a font of the same name.
     expect(stack('serif')).toEqual({ stack: 'serif' });
     // What is stored is stable: resolving it again changes nothing.
@@ -218,8 +243,8 @@ describe('imported fonts', () => {
     expect(r.ok).toBe(true);
     expect(s.state.tokens.overrides['font.display']).toBe("'1984 Display', system-ui, sans-serif");
     const css = readFileSync(join(dir, 'src/lib/siteorigin/styles/tokens.css'), 'utf8');
-    expect(css).toContain("'1984 Display', system-ui, sans-serif");
-    expect(css).not.toMatch(/font-family:\s*1984/);
+    expect(css).toMatch(/--so-font-display:\s*'1984 Display', system-ui, sans-serif;/);
+    expect(css).not.toMatch(/:\s*1984/);
     expect(assetUsages(s.state).f1).toBe(1);
   });
 

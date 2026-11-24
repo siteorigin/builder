@@ -269,6 +269,13 @@ describe('switching to a pack with other fonts', () => {
     expect(() => applyOperations(chose, [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Lora: your site uses this font/);
   });
 
+  it('reads a project code component for the fonts it names, and not for longer names that contain one', () => {
+    withInstalled('d1', onlyInter());
+    const withSource = (css: string) => applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'component.createCode', name: 'Banner', source: `<p>Hi</p>\n<style>${css}</style>`, properties: {} }]).state;
+    expect(() => applyOperations(withSource("p { font-family: 'Lora  Variable', serif; }"), [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Lora: your site uses this font, which Studio does not include/);
+    expect(applyOperations(withSource('p { font-family: var(--font-lora-variable), Lora_Variable_Alt, Lora VariableExtended; }'), [{ type: 'theme.apply', themeId: 'studio' }]).state.site.themeId).toBe('studio');
+  });
+
   it('is refused for a font chosen in a text style', () => {
     withInstalled('d1', onlyInter());
     const styled = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'token.set', tokenId: 'text.h1', value: { family: 'Space Grotesk' } }]).state;

@@ -47,12 +47,24 @@ export function importedFontStack(family: string): string {
 
 const unquote = (s: string) => s.trim().replace(/^['"]|['"]$/g, '').trim();
 const sameFamily = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** Words that name no family when written bare, so a font of the same name is not what they mean. */
+export const FAMILY_KEYWORDS: ReadonlySet<string> = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong', 'inherit', 'initial', 'unset', 'revert', 'revert-layer', 'default']);
+/** Source text as it is searched for a family name: runs of whitespace as one space, case folded. */
+const searchText = (s: string) => s.replace(/\s+/g, ' ').toLowerCase();
+/** The family a stack entry names, as CSS reads it: a run of spaces in a name is one, and a bare keyword names none. */
+function entryName(part: string): string | undefined {
+  const bare = !/^\s*['"]/.test(part);
+  const name = searchText(unquote(part));
+  return bare && FAMILY_KEYWORDS.has(name) ? undefined : name;
+}
 /** Are these two records faces of one family? */
 export const sameFontFamily = (a: AssetRecord, b: AssetRecord) => isValidFontAsset(a) && isValidFontAsset(b) && sameFamily(a.font!.family, b.font!.family);
 
 /** Does a font stack name this family, anywhere in the stack? (CSS family names ignore case.) */
 export function stackUsesFamily(stack: string, family: string): boolean {
-  return stack.split(',').some((part) => sameFamily(unquote(part), family));
+  const name = searchText(unquote(family));
+  return stack.split(',').some((part) => entryName(part) === name);
 }
 
 /**
@@ -91,9 +103,6 @@ function fontSlots(state: ProjectState, components: unknown = state.components, 
   return slots;
 }
 
-/** Source text as it is searched for a family name: runs of whitespace as one space, case folded. */
-const searchText = (s: string) => s.replace(/\s+/g, ' ').toLowerCase();
-
 /**
  * A test for a family name written anywhere in text that went through `searchText`, but not as the start or end of a
  * longer name (`Sans` is not in `sans-serif`, `Inter` is not in `interface` or `--font-inter`).
@@ -125,10 +134,11 @@ export function siteChoosesFamily(state: ProjectState, family: string, fontToken
 /** Point every use of `from` at `to`, keeping the rest of each stack. */
 export function renameFontFamily(state: ProjectState, from: string, to: string) {
   // A theme's definitions are locked to the pack's own copy (their hash), so a project's font never rewrites them.
+  const name = searchText(unquote(from));
   for (const slot of fontSlots(state, projectDefinitions(state))) {
     const stack = slot.get();
     if (!stackUsesFamily(stack, from)) continue;
-    slot.set(stack.split(',').map((part) => (sameFamily(unquote(part), from) ? `${part.startsWith(' ') ? ' ' : ''}'${to}'` : part)).join(','));
+    slot.set(stack.split(',').map((part) => (entryName(part) === name ? `${part.startsWith(' ') ? ' ' : ''}'${to}'` : part)).join(','));
   }
 }
 

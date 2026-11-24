@@ -5,7 +5,7 @@
  * project's own fonts, or system fonts.
  */
 import type { ProjectState } from '@shared/types';
-import { importedFontStack, projectFontFamilies } from '@shared/fonts';
+import { FAMILY_KEYWORDS, importedFontStack, projectFontFamilies } from '@shared/fonts';
 import { getTheme, listThemes } from './index';
 import type { PackFont } from './pack';
 
@@ -54,8 +54,6 @@ function stackEntries(stack: string): string[] {
   return out.map((e) => e.trim()).filter(Boolean);
 }
 
-/** Words that name no family when written bare, so an imported family of the same name never takes them over. */
-const KEYWORD_FAMILIES = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong', 'inherit', 'initial', 'unset', 'revert', 'revert-layer', 'default']);
 /** A word CSS reads as an identifier, so a bare name made of such words is a valid family. "1984" and "-" are not. */
 const IDENT_WORD_RE = /^[A-Za-z_\u0080-\uFFFF][\w\u0080-\uFFFF-]*$/;
 
@@ -92,7 +90,7 @@ export function resolveFontStack(state: ProjectState, value: string): { stack: s
     }
   }
   // An unquoted entry that names a project font, spelled as the font's own files spell it.
-  const bare = (i: number) => (/^['"]/.test(entries[i]) || KEYWORD_FAMILIES.has(keys[i]) ? undefined : own.get(keys[i]));
+  const bare = (i: number) => (/^['"]/.test(entries[i]) || FAMILY_KEYWORDS.has(keys[i]) ? undefined : own.get(keys[i]));
   if (entries.length === 1 && bare(0)) return { stack: importedFontStack(bare(0)!) };
   const alias = (key: string) => (own.has(key) ? undefined : installed.find((f) => familyKey(f.name) === key && !keys.includes(familyKey(f.family))));
   if (entries.length === 1 && alias(keys[0])) return { stack: alias(keys[0])!.stack };
