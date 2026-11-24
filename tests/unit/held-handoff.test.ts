@@ -615,7 +615,7 @@ describe('the labels a page rename leaves behind (#28)', () => {
     store.setState({ snapshot: snapshot() });
     await rename(about, 'About', 'Our story');
     const held = store.getState().heldEdits.at(-1)!;
-    expect(held).toMatchObject({ phase: 'waiting', label: 'Rename page' });
+    expect(held).toMatchObject({ phase: 'waiting', label: 'Rename page About to Our story' });
     // Not saved yet: nothing to offer.
     expect(store.getState().renameOffer).toBeNull();
     store.discardHeld(held.id);
@@ -641,7 +641,7 @@ describe('the labels a page rename leaves behind (#28)', () => {
     await rename(about, 'About', 'Our story');
     expect(applyCalls).toBe(1);
     const held = store.getState().heldEdits.at(-1)!;
-    expect(held).toMatchObject({ phase: 'waiting', label: 'Rename page' });
+    expect(held).toMatchObject({ phase: 'waiting', label: 'Rename page About to Our story' });
     expect(store.getState().renameOffer).toBeNull();
     store.setState({ snapshot: snapshot() });
     const applying = stopAndApply(held.id);

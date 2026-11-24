@@ -5,7 +5,7 @@ import { api, commitOps, getState, useStore } from '../store';
 import type { BridgeDesc } from '../lib/model';
 import type { FrameSpacing } from '../lib/payload';
 import { trackApply } from '../lib/pending';
-import { subjectWords } from '../lib/edit-label';
+import { forLabel, partName, refTo } from '../lib/edit-label';
 import { chosenReach, reachVersion, subscribeReach } from '../lib/item-reach';
 import {
   SPACING_HANDLES,
@@ -181,8 +181,9 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     if (!d.moved || !v || sameStyleValue(storedSpacing(d.target, d.scope, property), v.value) || getState().snapshot?.workspaceKey !== d.opening) return clear();
     try {
       const st = getState().snapshot?.state;
-      const ref: ElementRef = { owner: d.target.owner, instancePath: [], nodeId: d.target.nodeId, ...(d.target.partId ? { partId: d.target.partId } : {}) };
-      const label = `Set ${d.plan.label.toLowerCase()}${st ? ` for ${subjectWords(st, ref)}` : ''}`;
+      const { owner, nodeId, partId } = d.target;
+      // The part dragged, when it is not the placement itself: "Set vertical padding for Panel in Call to action on Home".
+      const label = st ? forLabel(st, `Set ${d.plan.label.toLowerCase()}`, refTo(owner, nodeId), partName(st, owner, nodeId, partId)) : `Set ${d.plan.label.toLowerCase()}`;
       const r = await commitOps([spacingOp(d.target, d.scope, property, v.value)], label, undefined, d.revision);
       if (r?.ok) post('spacingPreview', { drag: d.id, handoff: r.revision });
       else clear();

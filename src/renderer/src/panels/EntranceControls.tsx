@@ -1,7 +1,14 @@
 import type { AppearPreset, ElementNode, InstanceNode, OwnerRef, RepeatNode } from '@shared/types';
 import { APPEAR_PRESETS, isAppearPreset } from '@shared/types';
-import { applyOps } from '../store';
+import { applyOps, getState } from '../store';
 import { Field, SwitchRow } from '../components/ui';
+import { forLabel, refTo } from '../lib/edit-label';
+
+/** `what` was done to the entrance of `nodeId`, named for History from the project as it is now. */
+function named(what: string, owner: OwnerRef, nodeId: string): string {
+  const st = getState().snapshot?.state;
+  return st ? forLabel(st, what, refTo(owner, nodeId)) : what;
+}
 
 /** Each entrance as the Inspector names it. */
 export const APPEAR_LABELS: Record<AppearPreset, string> = { fade: 'Fade in', lift: 'Lift in', 'scale-subtle': 'Subtle scale' };
@@ -22,7 +29,7 @@ const HINT = 'Plays the first time it scrolls into view. Without JavaScript, in 
  */
 export function EntranceField({ owner, node, design }: { owner: OwnerRef; node: ElementNode | InstanceNode; design?: AppearPreset }) {
   const set = (value: string) =>
-    void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'appear', value: value || null }], value && value !== 'none' ? 'Set entrance' : value ? 'Turn entrance off' : 'Clear entrance');
+    void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'appear', value: value || null }], named(value && value !== 'none' ? 'Set entrance' : value ? 'Turn entrance off' : 'Clear entrance', owner, node.id));
   const placement = node.kind === 'instance';
   const value = node.appear === 'none' || isAppearPreset(node.appear) ? node.appear : '';
   return (
@@ -53,7 +60,7 @@ export function StaggerSwitch({ owner, node }: { owner: OwnerRef; node: RepeatNo
       checked={node.appearStagger === true}
       label="Stagger item entrances"
       hint="Items that come into view together start their entrances one after another. Give the item an entrance for this to show."
-      onChange={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'appearStagger', value: v }], v ? 'Stagger entrances' : 'Stop staggering entrances')}
+      onChange={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'appearStagger', value: v }], named(v ? 'Stagger entrances' : 'Stop staggering entrances', owner, node.id))}
     />
   );
 }

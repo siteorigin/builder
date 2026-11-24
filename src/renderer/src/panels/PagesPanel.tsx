@@ -716,7 +716,7 @@ export function PagesPanel() {
       // Home is the top level itself, and an address four levels down has no room for another.
       ...(isHome || levels(st.pages[id].route) >= MAX_DEPTH ? [] : [{ label: 'Add page inside', icon: <FilePlus />, onSelect: () => ((addFrom.current = id), setQuery(''), openForm(id)) }]),
       { label: 'Duplicate', icon: <Copy />, onSelect: async () => {
-        const r = await applyOps([{ type: 'page.duplicate', pageId: id }], 'Duplicate page');
+        const r = await applyOps([{ type: 'page.duplicate', pageId: id }], `Duplicate page ${st.pages[id].title}`);
         const copy = r?.[0]?.pageId as string | undefined;
         if (!copy) return;
         // The copy is the page now open, shown in its place, with focus on it so F2 renames the copy.
@@ -733,8 +733,8 @@ export function PagesPanel() {
         ? []
         : [
             draft
-              ? { label: 'Publish page', icon: <Globe />, hint: 'Include in website', onSelect: () => void applyOps([{ type: 'page.update', pageId: id, draft: false }], 'Publish page') }
-              : { label: 'Make draft', icon: <FilePen />, hint: 'Leave out of website', onSelect: () => void applyOps([{ type: 'page.update', pageId: id, draft: true }], 'Make page a draft') }
+              ? { label: 'Publish page', icon: <Globe />, hint: 'Include in website', onSelect: () => void applyOps([{ type: 'page.update', pageId: id, draft: false }], `Publish page ${st.pages[id].title}`) }
+              : { label: 'Make draft', icon: <FilePen />, hint: 'Leave out of website', onSelect: () => void applyOps([{ type: 'page.update', pageId: id, draft: true }], `Make page ${st.pages[id].title} a draft`) }
           ]),
       ...(useStore.getState().settings?.developerMode ? [{ label: 'View generated source…', icon: <Code />, onSelect: () => setState({ modal: { kind: 'page-source', pageId: id } }) }] : []),
       // Moves keep to the page's level: a section moves with its pages, a page stays in its section.

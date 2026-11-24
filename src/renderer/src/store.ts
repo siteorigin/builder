@@ -424,11 +424,11 @@ export function projectHistory(action: 'undo' | 'redo') {
 }
 
 /**
- * Step History to an entry chosen in it, however far (api.project.stepHistory), followed like an Undo. It goes only
- * as far as History stood in `snap`: once the project has moved on it is refused, for the author to choose again.
+ * Step History to an entry chosen in it, `count` changes away (api.project.stepHistory), followed like an Undo. It
+ * goes only as far as History stood in `snap`: once History has moved on it is refused, for the author to choose again.
  */
-export function stepHistory(entryId: string, direction: 'undo' | 'redo', snap: ProjectSnapshot): Promise<ApplyResult> {
-  return trackHistory(api.project.stepHistory(entryId, direction, snap.revision, snap.workspaceKey));
+export function stepHistory(entryId: string, direction: 'undo' | 'redo', count: number, snap: ProjectSnapshot): Promise<ApplyResult> {
+  return trackHistory(api.project.stepHistory(entryId, direction, { revision: snap.revision, count }, snap.workspaceKey));
 }
 
 /** Zoom the preview and remember it for this project. */
@@ -907,7 +907,7 @@ export function renamePage(pageId: string, from: string, title: string): Promise
   renaming = original === title ? null : offer;
   let saved: ReturnType<typeof commitOps>;
   try {
-    saved = commitOps(operations, 'Rename page');
+    saved = commitOps(operations, `Rename page ${from} to ${title}`);
   } finally {
     renaming = null;
   }

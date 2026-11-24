@@ -3070,24 +3070,27 @@ export class ProjectSession extends EventEmitter {
    * every applied one after it, `redo` redoes every undone entry up to and including it. What is undone can still be
    * redone until a new change is made. An entry that has gone, or already stands where it was asked to go (History
    * moved after it was shown), is refused, changing nothing, so this never goes somewhere other than where it names;
-   * so is any step once the project has moved on from `expectedRevision`, the revision History was shown at.
+   * so is any step once History is not as it was shown (`expected`): the project has moved on from its revision, or the
+   * step would no longer take `count` changes (an AI turn recorded since, at the revision of its last change).
    */
-  stepTo(entryId: string, direction: 'undo' | 'redo', expectedRevision?: number): Promise<ApplyResult> {
+  stepTo(entryId: string, direction: 'undo' | 'redo', expected: { revision?: number; count?: number } = {}): Promise<ApplyResult> {
     return this.serialize(async () => {
       if (this.activeRun) return { ok: false, revision: this.revision, error: { code: 'BUSY', message: `Stop the AI before ${direction === 'undo' ? 'undoing' : 'redoing'}.`, recoverable: true } };
       const blocked = await this.writeBlocked();
       if (blocked) return blocked;
       // Chosen from History as it stood at `expectedRevision`: a change made since (one folded into the same entry,
       // say) would make the step take back more, or other, than the row said.
-      if (expectedRevision !== undefined && expectedRevision !== this.revision)
-        return { ok: false, revision: this.revision, error: { code: 'STALE_REVISION', message: 'History changed. Choose the change again.', recoverable: true } };
+      const stale = { ok: false, revision: this.revision, error: { code: 'STALE_REVISION', message: 'History changed. Choose the change again.', recoverable: true } } satisfies ApplyResult;
+      if (expected.revision !== undefined && expected.revision !== this.revision) return stale;
       const h = this.history;
       const at = h.entries.findIndex((e) => e.id === entryId);
       const entry = h.entries[at];
       if (!entry) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'That change is no longer in History.', recoverable: false } };
       if (direction === 'undo' && at >= h.cursor) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `“${entry.label}” was already undone.`, recoverable: false } };
       if (direction === 'redo' && at < h.cursor) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `“${entry.label}” was already redone.`, recoverable: false } };
-      return this.travel(direction === 'undo' ? at : at + 1);
+      const to = direction === 'undo' ? at : at + 1;
+      if (expected.count !== undefined && expected.count !== Math.abs(h.cursor - to)) return stale;
+      return this.travel(to);
     });
   }
 

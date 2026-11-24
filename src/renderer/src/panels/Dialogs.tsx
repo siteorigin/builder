@@ -1416,6 +1416,7 @@ export function HistoryModal() {
 function ChangesModal() {
   const snap = useStore((s) => s.snapshot);
   // Opened from a notification whose change could not be undone on its own: show that change, with focus on it.
+  // Otherwise focus starts where History stands now.
   const focusId = useStore((s) => (s.modal?.kind === 'history' ? s.modal.entryId : undefined));
   const all = snap?.history.entries ?? [];
   const cursor = appliedCount(all);
@@ -1431,14 +1432,23 @@ function ChangesModal() {
   const stepping = useRef(false);
   const [waitFor, setWaitFor] = useState<number | null>(null);
   const busy = waitFor !== null && (snap?.revision ?? 0) < waitFor;
+  // While the AI works History is its to change: a step chosen now could take back more than its row says.
+  const locked = busy || !!snap?.aiBusy;
+  const listRef = useRef<HTMLOListElement>(null);
   const focused = useCallback((el: HTMLButtonElement | null) => el?.scrollIntoView({ block: 'nearest' }), []);
+  // The row that had focus went with its change (dropped by a newer one): focus goes on to the list's Tab stop, so
+  // the keys still move through the list rather than out of the dialog.
+  useEffect(() => {
+    if (stop && !all.some((e) => e.id === stop) && (!document.activeElement || document.activeElement === document.body))
+      listRef.current?.querySelector<HTMLElement>('.history-step[tabindex="0"]')?.focus();
+  });
   const go = (i: number) => {
-    if (!snap || stepping.current || busy) return;
+    if (!snap || stepping.current || locked) return;
     const step = historyStep(all, i);
     const key = snap.workspaceKey;
     stepping.current = true;
     setWaitFor(Infinity);
-    stepHistory(all[i].id, step.direction, snap).then(
+    stepHistory(all[i].id, step.direction, step.count, snap).then(
       (r) => {
         if (getState().snapshot?.workspaceKey !== key) return;
         setSaid(r.ok ? { text: step.done, failed: false } : { text: r.error?.message ?? 'That step could not be made.', failed: true });
@@ -1483,7 +1493,7 @@ function ChangesModal() {
         </>
       }
     >
-      <HistoryTabs tab="changes" />
+      <HistoryTabs tab="changes" busy={busy} />
       <p className="muted" style={{ marginTop: 0 }}>
         Your last 100 changes, newest first. Choose one to undo it and every change after it, or to redo every change up to it. Anything undone can be redone until you make a new change. To keep a version of the site for longer, save it in Saved versions.
       </p>
@@ -1493,7 +1503,7 @@ function ChangesModal() {
           <span>No changes yet. Your edits will appear here as you work.</span>
         </div>
       ) : (
-        <ol className="history-list history-steps" aria-label="Changes" onKeyDown={onKeyDown}>
+        <ol ref={listRef} className="history-list history-steps" aria-label="Changes" onKeyDown={onKeyDown}>
           {entries.map(({ e, i }) => {
             const step = historyStep(all, i);
             const current = i === cursor - 1;
@@ -1504,11 +1514,11 @@ function ChangesModal() {
                   ref={e.id === focusId ? focused : undefined}
                   className="history-step"
                   tabIndex={e.id === tabId ? 0 : -1}
-                  data-autofocus={e.id === focusId && !stop ? true : undefined}
+                  data-autofocus={e.id === tabId && !stop ? true : undefined}
                   aria-label={step.name}
                   aria-describedby={meta}
                   aria-current={current ? 'step' : undefined}
-                  aria-disabled={busy || undefined}
+                  aria-disabled={locked || undefined}
                   onFocus={() => setStop(e.id)}
                   onClick={() => go(i)}
                 >
@@ -1523,7 +1533,7 @@ function ChangesModal() {
                   </span>
                   <time>{new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
                   <span id={meta} className="sr-only">
-                    {`${e.source === 'ai' ? 'By AI' : 'By you'} at ${new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${e.applied ? '' : ', undone'}`}
+                    {`${e.source === 'ai' ? 'By AI' : e.source === 'system' ? 'From outside the app' : 'By you'} at ${new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${e.applied ? '' : ', undone'}`}
                   </span>
                 </button>
               </li>

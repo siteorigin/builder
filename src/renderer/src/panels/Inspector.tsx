@@ -56,7 +56,7 @@ import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetu
 import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { listEditLabel } from '../lib/list-editor';
-import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, subjectWords } from '../lib/edit-label';
+import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -883,7 +883,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const here = refTo(owner, node.id);
   const set = (prop: string, value: unknown, edit?: PendingEdit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], fieldLabel(state, def.properties[prop]?.label ?? prop, here), `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number) =>
-    commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], styleLabel(state, property, here, partId === 'root' ? undefined : (def.parts[partId]?.label ?? partId)), styleKey(property, `${node.id}:${partId}:${scope}:${property}`), expectedRevision);
+    commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], styleLabel(state, property, here, partId === 'root' ? undefined : (def.parts[partId]?.label ?? partId), value), styleKey(property, `${node.id}:${partId}:${scope}:${property}`), expectedRevision);
   // A component whose whole design is one image (made from a cropped page image) chooses its focus here.
   const rootNodeId = rootPart?.nodeId ?? def.tree?.rootIds[0];
   const rootNode = rootNodeId ? def.tree?.nodes[rootNodeId] : undefined;
@@ -1032,7 +1032,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   name={key}
                   schema={isHeadingLevel(schema) ? { ...schema, description: HEADING_LEVEL_HINT } : schema}
                   label={label}
-                  hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : (videoHint(videoNote(key)) ?? siteNameHint(state, node, key, () => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: state.site.name }], 'Use the site name')))}
+                  hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : (videoHint(videoNote(key)) ?? siteNameHint(state, node, key, () => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: state.site.name }], `Use the site name in ${subjectWords(state, here)}`)))}
                   value={node.props[key] ?? schema.default}
                   onChange={(v, edit) => set(key, v, edit)}
                   onField={(field, v, edit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], fieldLabel(state, schema.label, here), `${node.id}:${key}:${field}`)}
@@ -1432,7 +1432,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                     schema={schema}
                     value={inst.props[b.prop] ?? schema.default}
                     state={state}
-                    hint={mixedReach ? `Same in every ${itemLabel}.` : everywhere ? undefined : siteNameHint(state, inst, b.prop, () => void applyOps([{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: state.site.name }], 'Use the site name'))}
+                    hint={mixedReach ? `Same in every ${itemLabel}.` : everywhere ? undefined : siteNameHint(state, inst, b.prop, () => void applyOps([{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: state.site.name }], `Use the site name in ${subjectWords(state, refTo(instOwner, instNodeId))}`))}
                     everywhere={!!everywhere}
                     onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], fieldLabel(state, schema.label, refTo(instOwner, instNodeId)), `${keyAt}:${b.prop}`)}
                     onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], fieldLabel(state, schema.label, refTo(instOwner, instNodeId)), `${keyAt}:${b.prop}:${field}`)}
@@ -1555,7 +1555,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 onSet={(property, value, expectedRevision) =>
                   commitOps(
                     [{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, itemId, scope, property, value }],
-                    styleLabel(state, property, refTo(instOwner, instNodeId), thisItem),
+                    styleLabel(state, property, refTo(instOwner, instNodeId), thisItem, value),
                     styleKey(property, JSON.stringify([keyAt, partId, itemId, scope, property])),
                     expectedRevision
                   )
@@ -1598,7 +1598,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 tokens={tokens}
                 image={partImage}
                 onSet={(property, value, expectedRevision) =>
-                  commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], styleLabel(state, property, refTo(instOwner, instNodeId), part.label), styleKey(property, `${keyAt}:${partId}:${scope}:${property}`), expectedRevision)
+                  commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], styleLabel(state, property, refTo(instOwner, instNodeId), part.label, value), styleKey(property, `${keyAt}:${partId}:${scope}:${property}`), expectedRevision)
                 }
                 onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, scope: sc }], forLabel(state, 'Reset overrides', refTo(instOwner, instNodeId), part.label))}
               />
@@ -1744,7 +1744,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           allowed={styleSetFor(node)}
           tokens={tokens}
           image={node.kind === 'image' ? focusImage(state, devUrl, shownImage(state, selection, node.image), [], 'This picture can’t be shown here.') : undefined}
-          onSet={(property, value, expectedRevision) => commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value }], styleLabel(state, property, refTo(owner, node.id)), styleKey(property, `${node.id}:${scope}:${property}`), expectedRevision)}
+          onSet={(property, value, expectedRevision) => commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value), styleKey(property, `${node.id}:${scope}:${property}`), expectedRevision)}
           onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], forLabel(state, 'Reset styles', refTo(owner, node.id)))}
         />
       </Section>
@@ -2234,7 +2234,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           variants={startChoices}
           tokens={tokens}
           onSet={(partId) => (property, value, expectedRevision) =>
-            commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], styleLabel(state, property, refTo(owner, node.id), placedDef?.parts[partId]?.label), styleKey(property, `${def.id}:${node.id}:${partId}:${scope}:${property}`), expectedRevision)
+            commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], styleLabel(state, property, refTo(owner, node.id), placedDef?.parts[partId]?.label, value), styleKey(property, `${def.id}:${node.id}:${partId}:${scope}:${property}`), expectedRevision)
           }
         />
       )}
@@ -2257,7 +2257,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
               onSet={(property, value, expectedRevision) =>
                 commitOps(
                   [{ type: 'node.setStyle', owner, nodeId: node.id, variant: look.variant, axis: look.axis, scope, property, value }],
-                  styleLabel(state, property, refTo(owner, node.id), `the ${lookOption!.label} look`),
+                  `${value === null ? 'Reset' : 'Set'} ${styleWords(property)} for the ${lookOption!.label} look of ${subjectWords(state, refTo(owner, node.id))}`,
                   styleKey(property, `${def.id}:${node.id}:${look.axis}:${look.variant}:${scope}:${property}`),
                   expectedRevision
                 )
@@ -2275,7 +2275,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
             tokens={tokens}
             allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
             onSet={(property, value, expectedRevision) =>
-              commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId: 'root', scope, property, value }], styleLabel(state, property, refTo(owner, node.id)), styleKey(property, `${def.id}:${node.id}:root:${scope}:${property}`), expectedRevision)
+              commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId: 'root', scope, property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value), styleKey(property, `${def.id}:${node.id}:root:${scope}:${property}`), expectedRevision)
             }
             onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root', scope: sc }], forLabel(state, 'Reset overrides', refTo(owner, node.id)))}
             target={`the ${(node.name ?? placedDef?.name ?? 'component').toLowerCase()} itself`}
@@ -2291,7 +2291,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           onSet={(property, value, expectedRevision) => {
             // Resetting a value restores the original design's value, when there is one.
             const restore = value === null ? original?.[scope]?.[property] : undefined;
-            return commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value: restore ?? value }], styleLabel(state, property, refTo(owner, node.id)), styleKey(property, `${def.id}:${node.id}:${scope}:${property}`), expectedRevision);
+            return commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value: restore ?? value }], styleLabel(state, property, refTo(owner, node.id), undefined, restore ?? value), styleKey(property, `${def.id}:${node.id}:${scope}:${property}`), expectedRevision);
           }}
           onReset={
             original
@@ -2303,7 +2303,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
                     if (!at || (only && at.scope !== only)) continue;
                     for (const prop of Object.keys(changed?.[key] ?? {})) ops.push({ type: 'node.setStyle', owner, nodeId: node.id, scope: at.scope, ...(at.state ? { state: at.state } : {}), property: prop, value: (original[key]?.[prop] ?? null) as StyleValue | null });
                   }
-                  if (ops.length) void applyOps(ops, `Restore ${def.name} design`);
+                  if (ops.length) void applyOps(ops, forLabel(state, 'Restore the design’s styles', refTo(owner, node.id)));
                 }
               : (sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], forLabel(state, 'Clear styles', refTo(owner, node.id)))
           }
@@ -2334,7 +2334,7 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
   return (
     <Section title="Language" id="page-language" level={LEVEL} defaultOpen={false} scope={summary}>
       <Field label="Page language" hint={own ? 'A language code, such as fr or en-GB. Clear it to use the site language.' : 'Uses the site language. Enter a code such as fr or en-GB if this page is written in another language.'}>
-        <DraftInput value={own} placeholder={site} onCommit={(v) => void applyOps([{ type: 'page.update', pageId: page.id, language: v.trim() }], 'Change page language')} ariaLabel="Page language" />
+        <DraftInput value={own} placeholder={site} onCommit={(v) => void applyOps([{ type: 'page.update', pageId: page.id, language: v.trim() }], `Change page language (${page.title})`)} ariaLabel="Page language" />
       </Field>
       <Field label="Translations" hint="Browsers and search engines learn which pages are the same page in other languages. For visitors to switch, add a link or button to the other version and choose it under Page.">
         {peers.length > 0 && (
@@ -2494,7 +2494,7 @@ function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
     if (id === HERE) return;
     const to = id ? choices.find((c) => c.id === id)?.to : atTop;
     if (!to || to === page.route) return;
-    void applyOps([{ type: 'page.update', pageId: page.id, route: to }], id ? `Move page into ${state.pages[id].title}` : 'Move page to the top level', undefined, revision);
+    void applyOps([{ type: 'page.update', pageId: page.id, route: to }], id ? `Move page ${page.title} into ${state.pages[id].title}` : `Move page ${page.title} to the top level`, undefined, revision);
   };
   return (
     <Field label="Inside" hint={exact ? 'Moves the page and its address. Its link in the header menu stays where it is.' : `Its address, ${page.route}, has folders of its own. Choosing a page moves it straight inside that page.`}>
@@ -2539,7 +2539,8 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const dev = useStore((s) => !!s.settings?.developerMode);
   const [titleError, setTitleError] = useState<string | null>(null);
   if (!page) return null;
-  const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], label);
+  // History says which page each setting was changed on: "Change browser title (About)".
+  const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], `${label} (${page.title})`);
   const isHome = page.id === state.site.homePageId;
   const draft = isDraftPage(state, page);
   const inside = pagesWithin(state.pages, page.id);

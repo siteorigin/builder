@@ -96,8 +96,10 @@ describe('stepping History to a chosen entry', () => {
     s.on('changed', (e: { label: string }) => labels.push(e.label));
     await s.stepTo(ids[3], 'undo');
     await s.stepTo(ids[0], 'undo');
+    await s.stepTo(ids[0], 'redo');
     await s.stepTo(ids[3], 'redo');
-    expect(labels).toEqual(['Undo Title Contact', 'Undo 3 changes', 'Redo 4 changes']);
+    // One change event for each step, however many entries it takes.
+    expect(labels).toEqual(['Undo Title Contact', 'Undo 3 changes', 'Redo Rename site', 'Redo 3 changes']);
     await s.close();
   });
 
@@ -105,7 +107,8 @@ describe('stepping History to a chosen entry', () => {
     const { s, ids } = await fourChanges();
     await s.stepTo(ids[2], 'undo');
     const before = unchanged(s);
-    // Shown as applied, then undone (by Cmd+Z, say) before the click arrived.
+    // Shown as applied, then undone (by Cmd+Z, say) before the click arrived: the nearest undone one too.
+    expect(await s.stepTo(ids[2], 'undo')).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: '“Title About” was already undone.' } });
     expect(await s.stepTo(ids[3], 'undo')).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: '“Title Contact” was already undone.' } });
     // Shown as undone, then redone.
     expect(await s.stepTo(ids[1], 'redo')).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: '“Title Home” was already redone.' } });
@@ -115,17 +118,37 @@ describe('stepping History to a chosen entry', () => {
   });
 
   it('refuses a step chosen before the project moved on, even one folded into the same entry', async () => {
-    const { s, about, ids } = await fourChanges();
-    const shownAt = s.revision;
-    // Typed into the same field again: the change joins "Title Contact", so the row's count would still read the same.
-    const [, , contact] = s.state.site.pageOrder;
-    const folded = await s.apply({ operations: [{ type: 'page.update', pageId: contact, seoTitle: 'Contact title, longer' }] }, { label: 'Title Contact', coalesceKey: 'contact-title' });
-    expect(folded.ok).toBe(true);
+    const { s, contact } = await fourChanges();
+    const typed = (seoTitle: string) => s.apply({ operations: [{ type: 'page.update', pageId: contact, seoTitle }] }, { label: 'Type Contact title', coalesceKey: 'contact-title' });
+    expect((await typed('Typed')).ok).toBe(true);
+    const shown = { entries: s.historyInfo().entries.map((e) => e.id), revision: s.revision };
+    // Typed into the same field again: the change joins the same entry, so the row still offers one change.
+    expect((await typed('Typed further')).ok).toBe(true);
+    expect(s.historyInfo().entries.map((e) => e.id)).toEqual(shown.entries);
     const before = unchanged(s);
-    expect(await s.stepTo(ids[2], 'undo', shownAt)).toMatchObject({ ok: false, error: { code: 'STALE_REVISION', message: 'History changed. Choose the change again.' } });
+    const id = shown.entries.at(-1)!;
+    expect(await s.stepTo(id, 'undo', { revision: shown.revision, count: 1 })).toMatchObject({ ok: false, error: { code: 'STALE_REVISION', message: 'History changed. Choose the change again.' } });
     expect(unchanged(s)).toEqual(before);
-    expect((await s.stepTo(ids[2], 'undo', s.revision)).ok).toBe(true);
-    expect(s.state.pages[about].seo.title).not.toBe('About title');
+    expect((await s.stepTo(id, 'undo', { revision: s.revision, count: 1 })).ok).toBe(true);
+    expect(s.state.pages[contact].seo.title).toBe('Contact title');
+    await s.close();
+  });
+
+  it('refuses a step that would take back an AI turn recorded since it was shown, at the same revision', async () => {
+    const { s, ids } = await fourChanges();
+    expect(await s.beginRun('run_steps')).toBeNull();
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'By the AI' }] }, { label: 'AI', source: 'ai', runId: 'run_steps', history: false })).ok).toBe(true);
+    // History shown now offers to undo "Title Contact" alone; the AI's turn is not in it yet.
+    const shown = { revision: s.revision, count: 1 };
+    expect(await s.completeRun('AI: rename the site')).toBe(true);
+    expect(s.revision).toBe(shown.revision);
+    const before = unchanged(s);
+    expect(await s.stepTo(ids[3], 'undo', shown)).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
+    expect(unchanged(s)).toEqual(before);
+    expect(s.state.site.name).toBe('By the AI');
+    // Chosen again from History as it is now, it takes both.
+    expect((await s.stepTo(ids[3], 'undo', { revision: s.revision, count: 2 })).ok).toBe(true);
+    expect(s.state.site.name).toBe('Renamed');
     await s.close();
   });
 
@@ -140,7 +163,7 @@ describe('stepping History to a chosen entry', () => {
     const aboutPath = join(dir, `siteorigin/pages/${about}.json`);
     writeFileSync(aboutPath, JSON.stringify({ ...JSON.parse(readFileSync(aboutPath, 'utf8')), seo: { title: 'By hand' } }, null, 2) + '\n');
     const before = unchanged(s);
-    const r = await s.stepTo(second, 'undo', s.revision);
+    const r = await s.stepTo(second, 'undo', { revision: s.revision });
     expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', recoverable: true } });
     expect(r.error?.message).toBe(`Cannot undo 3 changes yet: siteorigin/pages/${about}.json changed outside the app. Try again in a moment.`);
     expect(unchanged(s)).toEqual(before);
@@ -156,26 +179,26 @@ describe('stepping History to a chosen entry', () => {
     await s.apply({ operations: [{ type: 'page.remove', pageId: page }] }, { label: 'Delete page Experiments' });
     expect(Object.hasOwn(s.state.pages, page)).toBe(false);
     // Back to before the page was made: it is not brought back on the way through.
-    expect((await s.stepTo(made.entryId!, 'undo', s.revision)).ok).toBe(true);
+    expect((await s.stepTo(made.entryId!, 'undo', { revision: s.revision })).ok).toBe(true);
     expect(Object.hasOwn(s.state.pages, page)).toBe(false);
     expect(s.state.site.pageOrder).not.toContain(page);
     // Forward to just before it was removed: the page is back, with its title.
     const titled = s.historyInfo().entries.find((e) => e.label === 'Title Experiments')!.id;
-    expect((await s.stepTo(titled, 'redo', s.revision)).ok).toBe(true);
+    expect((await s.stepTo(titled, 'redo', { revision: s.revision })).ok).toBe(true);
     expect(s.state.pages[page].seo.title).toBe('Trying things');
     expect(s.state.site.pageOrder).toContain(page);
     // And all the way back to the start, then forward through all of it.
-    expect((await s.stepTo(ids[0], 'undo', s.revision)).ok).toBe(true);
+    expect((await s.stepTo(ids[0], 'undo', { revision: s.revision })).ok).toBe(true);
     expect(s.state.site.name).toBe('Steps');
     const last = s.historyInfo().entries.at(-1)!.id;
-    expect((await s.stepTo(last, 'redo', s.revision)).ok).toBe(true);
+    expect((await s.stepTo(last, 'redo', { revision: s.revision })).ok).toBe(true);
     expect(Object.hasOwn(s.state.pages, page)).toBe(false);
     expect(s.state.site.name).toBe('Renamed');
     await s.close();
   });
 
   it('refuses the whole jump when an entry on the way no longer matches the project, undoing none of it', async () => {
-    const { dir, s, about, ids } = await fourChanges();
+    const { dir, s, about, contact, ids } = await fourChanges();
     await s.close();
     // About's page edited by hand: "Title About" can no longer be taken back, nor anything before it.
     const aboutPath = join(dir, `siteorigin/pages/${about}.json`);
@@ -185,12 +208,18 @@ describe('stepping History to a chosen entry', () => {
     const r = await again.stepTo(ids[0], 'undo');
     expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
     expect(r.error?.message).toBe(`Cannot undo "Title About" because siteorigin/pages/${about}.json has changed since.`);
-    // "Title Contact", nearer the present, was not undone on its own either.
+    // "Title Contact", nearer the present, was not undone on its own either: not in the app, nor on disk.
     expect(unchanged(again)).toEqual(before);
-    // Back to just after it still works.
-    expect((await again.stepTo(ids[3], 'undo')).ok).toBe(true);
-    expect(again.state.pages[about].seo.title).toBe('By hand');
     await again.close();
+    const reread = await ProjectSession.open(dir, 'test');
+    expect(applied(reread)).toEqual([true, true, true, true]);
+    expect(reread.state.pages[contact].seo.title).toBe('Contact title');
+    await reread.close();
+    const back = await ProjectSession.open(dir, 'test');
+    // Back to just after it still works.
+    expect((await back.stepTo(ids[3], 'undo')).ok).toBe(true);
+    expect(back.state.pages[about].seo.title).toBe('By hand');
+    await back.close();
   });
 });
 
@@ -209,7 +238,13 @@ describe('what choosing a row in History does', () => {
       name: 'Undo “Rename site” and 2 changes after it',
       done: 'Undid 3 changes, back to before “Rename site”.'
     });
-    expect(historyStep(entries, 1).name).toBe('Undo “Duplicate Split hero on Home” and 1 change after it');
+    expect(historyStep(entries, 1)).toEqual({
+      direction: 'undo',
+      count: 2,
+      text: 'Undo 2 changes',
+      name: 'Undo “Duplicate Split hero on Home” and 1 change after it',
+      done: 'Undid 2 changes, back to before “Duplicate Split hero on Home”.'
+    });
   });
 
   it('redoes an undone row with every undone change before it', () => {
@@ -229,6 +264,9 @@ describe('what choosing a row in History does', () => {
     expect(historyStep(none, 4)).toMatchObject({ direction: 'redo', count: 5 });
     const every = entries.map((e) => ({ ...e, applied: true }));
     expect(appliedCount(every)).toBe(5);
-    expect(historyStep(every, 0)).toMatchObject({ direction: 'undo', count: 5 });
+    expect(historyStep(every, 0)).toMatchObject({ direction: 'undo', count: 5, text: 'Undo 5 changes' });
+    expect(appliedCount(every.slice(0, 2))).toBe(2);
+    expect(appliedCount([])).toBe(0);
+    expect(historyStep(none, 2)).toMatchObject({ direction: 'redo', count: 3, name: 'Redo 3 changes, up to “Edit Heading on About”' });
   });
 });

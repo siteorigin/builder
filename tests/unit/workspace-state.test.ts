@@ -257,11 +257,15 @@ describe('workspace state per project', () => {
     const r = await c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
     await c.close();
     expect(await c.open(a)).toEqual({ ok: true });
-    expect(await c.stepHistory(r.entryId!, 'undo', undefined, first)).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.' } });
+    expect(await c.stepHistory(r.entryId!, 'undo', {}, first)).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.' } });
     expect(c.session!.state.site.name).toBe('Renamed');
-    expect((await c.stepHistory(r.entryId!, 'undo', c.session!.revision, opening(c))).ok).toBe(true);
+    // In this opening, but chosen from History as it was before the project moved on, or promising other than it would do.
+    expect(await c.stepHistory(r.entryId!, 'undo', { revision: c.session!.revision - 1, count: 1 }, opening(c))).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
+    expect(await c.stepHistory(r.entryId!, 'undo', { revision: c.session!.revision, count: 2 }, opening(c))).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
+    expect(c.session!.state.site.name).toBe('Renamed');
+    expect((await c.stepHistory(r.entryId!, 'undo', { revision: c.session!.revision, count: 1 }, opening(c))).ok).toBe(true);
     expect(c.session!.state.site.name).toBe('Alpha');
-    expect((await c.stepHistory(r.entryId!, 'redo', c.session!.revision, opening(c))).ok).toBe(true);
+    expect((await c.stepHistory(r.entryId!, 'redo', { revision: c.session!.revision, count: 1 }, opening(c))).ok).toBe(true);
     expect(c.session!.state.site.name).toBe('Renamed');
   });
 

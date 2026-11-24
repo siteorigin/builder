@@ -600,12 +600,14 @@ export function LayersPanel() {
         const edit = (edits: VisibilityEdit[], label: string, menuLabel: string, icon: React.ReactNode) => {
           if (edits.length) out.push({ label: menuLabel, icon, onSelect: () => applyVisibility(ref.owner, node.id, edits, label) });
         };
-        edit(showHereEdits(st, node, size), `Show ${name} on ${size}`, `Show on ${size}`, sizeIcon(size));
-        edit(everySizeEdits(st, node, false), `Show ${name}`, 'Show at every size', <Eye />);
+        // History names the layer and where it is: "Hide Gallery on Home on phone".
+        const who = `${name} ${placeWords(st, ref.owner)}`;
+        edit(showHereEdits(st, node, size), `Show ${who} on ${size}`, `Show on ${size}`, sizeIcon(size));
+        edit(everySizeEdits(st, node, false), `Show ${who}`, 'Show at every size', <Eye />);
         // Already hidden here by a layer above: these add the layer's own setting, and say so.
         const also = vis.hiddenBy ? 'Also hide' : 'Hide';
-        edit(hideHereEdits(st, node, size), `Hide ${name} on ${size}`, `${also} on ${size} only`, sizeIcon(size));
-        edit(everySizeEdits(st, node, true), `Hide ${name}`, `${also} at every size`, <EyeOff />);
+        edit(hideHereEdits(st, node, size), `Hide ${who} on ${size}`, `${also} on ${size} only`, sizeIcon(size));
+        edit(everySizeEdits(st, node, true), `Hide ${who}`, `${also} at every size`, <EyeOff />);
       }
       return out;
     };
@@ -1325,7 +1327,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
               // Otherwise written only while the name is still the one renaming began from (see commitOps).
               const commit = (rename: () => void) => (checked ? commitDraft(from!.snap, rename, value, { check: true }) : commitDraft(from?.snap ?? null, rename, value));
               if (isDefRoot) {
-                if (value) commit(() => void applyOps([{ type: 'component.rename', definitionId: owner.id, name: value }], 'Rename component'));
+                if (value) commit(() => void applyOps([{ type: 'component.rename', definitionId: owner.id, name: value }], `Rename component ${from?.shown ?? editName} to ${value}`));
               } else if (value !== (from?.name ?? n.name ?? '')) commit(() => void applyOps([{ type: 'node.rename', owner, nodeId: id, name: value }], `Rename ${from?.shown ?? editName}${value ? ` to ${value}` : ''} ${placeWords(state, owner)}`));
             }}
             onKeyDown={(e) => {
@@ -1405,7 +1407,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
             aria-pressed={eye.pressed}
             aria-description={eye.pressed ? `${sentence(vis.note)} ${eye.action}.${alsoNote}` : `${eye.action}.`}
             title={eye.pressed ? `${sentence(vis.note)} Click to ${eye.action.toLowerCase()}.${alsoNote}` : eye.action}
-            onClick={(e) => (e.stopPropagation(), applyVisibility(owner, n.id, eye.edits, `${eye.action.replace(/^(Show|Hide)/, `$1 ${name}`)}`))}
+            onClick={(e) => (e.stopPropagation(), applyVisibility(owner, n.id, eye.edits, `${eye.action.replace(/^(Show|Hide)/, `$1 ${name} ${placeWords(state, owner)}`)}`))}
             onDoubleClick={(e) => e.stopPropagation()}
           >
             {eyeTag ? <SizesTag text={sizesTag} sizes={vis.own.hiddenAt} /> : eye.pressed ? <EyeOff /> : <Eye />}

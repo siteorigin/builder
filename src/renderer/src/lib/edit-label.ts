@@ -1,6 +1,6 @@
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { STYLE_PROP_MAP } from '@shared/styles';
-import { ownerLabel, refLabel } from './model';
+import { ownerLabel, refLabel, treeFor } from './model';
 
 /*
  * What History, Undo and Redo call a manual edit (#199): what was done, to which element, and where that element
@@ -18,7 +18,10 @@ export function placeWords(state: ProjectState, owner: OwnerRef): string {
 
 /** An element (or a part of one) and where it is: "Split hero on Home", "Logo in Header". */
 export function subjectWords(state: ProjectState, ref: ElementRef): string {
-  return `${refLabel(state, ref)} ${placeWords(state, ref.owner)}`;
+  const name = refLabel(state, ref);
+  // The shared header's own root is the header itself, not "Header in Header".
+  if (ref.owner.kind === 'shell' && name === ownerLabel(state, ref.owner)) return `the shared ${ref.owner.id === 'footer' ? 'footer' : 'header'}`;
+  return `${name} ${placeWords(state, ref.owner)}`;
 }
 
 /** A change to one element, `detail` going between it and its place: "Move Gallery up on Home", "Rename Heading to Intro on About". */
@@ -31,9 +34,22 @@ export function forLabel(state: ProjectState, what: string, ref: ElementRef, par
   return `${what} for ${part ? `${part} in ` : ''}${subjectWords(state, ref)}`;
 }
 
-/** A style property set on an element, or on `part` of it: "Set vertical padding for Split hero on Home". */
-export function styleLabel(state: ProjectState, property: string, ref: ElementRef, part?: string): string {
-  return forLabel(state, `Set ${(STYLE_PROP_MAP[property]?.label ?? property).toLowerCase()}`, ref, part);
+/** A style property's name as History says it: "vertical padding". */
+export const styleWords = (property: string) => (STYLE_PROP_MAP[property]?.label ?? property).toLowerCase();
+
+/**
+ * A style property set on an element, or on `part` of it: "Set vertical padding for Split hero on Home". `value` is
+ * what it was set to: none takes the element's own setting away ("Reset vertical padding for…").
+ */
+export function styleLabel(state: ProjectState, property: string, ref: ElementRef, part?: string, value?: unknown): string {
+  return forLabel(state, `${value === null ? 'Reset' : 'Set'} ${styleWords(property)}`, ref, part);
+}
+
+/** The name of part `partId` of the placement `nodeId`, unless it is the placement's own root (which goes by the placement's name). */
+export function partName(state: ProjectState, owner: OwnerRef, nodeId: string, partId: string | undefined): string | undefined {
+  if (!partId || partId === 'root') return undefined;
+  const node = treeFor(state, owner)?.nodes[nodeId];
+  return node?.kind === 'instance' ? state.components[node.definitionId]?.parts?.[partId]?.label : undefined;
 }
 
 /** A field of a placement or of an element changed: "Edit Heading in Split hero on About", "Edit link of Button in Footer". */

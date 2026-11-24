@@ -421,17 +421,25 @@ step('a Gallery inserted at the end of a tall page is scrolled to as the page mo
   await win.emulateMedia({ reducedMotion: 'no-preference' });
 }
 
-step('a click on a tile says it was added, names the page in History, and its own Undo takes that insert back (#199)');
+step('a click on a tile names the page in History, and the confirmation’s Undo takes back its own insert of two the same (#199)');
 {
   await openInsert();
   const count = (await home()).rootIds.length;
   await sectionTile('Gallery').click();
   await eventually(async () => assert.equal((await home()).rootIds.length, count + 1, 'Gallery is added'));
-  assert.equal((await newest()).label, 'Insert Gallery on Home', 'History names the page it went on');
+  const first = await newest();
+  assert.equal(first.label, 'Insert Gallery on Home', 'History names the page it went on');
+  const afterFirst = (await home()).rootIds;
+  await sectionTile('Gallery').click();
+  await eventually(async () => assert.equal((await home()).rootIds.length, count + 2, 'a second Gallery is added'));
+  const second = await newest();
+  assert.notEqual(second.id, first.id, 'each insert is its own change, with the same label');
+  assert.equal(second.label, first.label);
   const confirmUndo = panel.locator('.insert-where.added .insert-undo');
   await confirmUndo.waitFor();
   await confirmUndo.click();
-  await eventually(async () => assert.equal((await home()).rootIds.length, count, 'the confirmation’s Undo takes it away'));
+  await eventually(async () => assert.deepEqual((await home()).rootIds, afterFirst, 'the confirmation’s Undo takes away the second, and only it'));
+  assert.equal((await newest()).id, first.id, 'the first insert stays applied');
 }
 
 assert.deepEqual(errors, [], 'no page errors');

@@ -11,7 +11,7 @@ import type { ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState, RichT
 import type { ProjectSnapshot } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { ProjectSession } from '../../src/main/project/session';
-import { contentLabel, editLabel, fieldLabel, forLabel, placeWords, refTo, styleLabel, subjectWords } from '../../src/renderer/src/lib/edit-label';
+import { contentLabel, editLabel, fieldLabel, forLabel, partName, placeWords, refTo, styleLabel, subjectWords } from '../../src/renderer/src/lib/edit-label';
 import { treeFor } from '../../src/renderer/src/lib/model';
 
 let session: ProjectSession;
@@ -91,6 +91,10 @@ describe('the words a History label is made from', () => {
   it('says where an element is: on a page, in the header or footer, in a design or a collection’s layout', () => {
     const st = session.state;
     expect(placeWords(st, home())).toBe('on Home');
+    const about = st.site.pageOrder.find((id) => st.pages[id].title === 'About')!;
+    expect(placeWords(st, { kind: 'page', id: about })).toBe('on About');
+    const untitled = { ...st, pages: { ...st.pages, [about]: { ...st.pages[about], title: '' } } } as ProjectState;
+    expect(placeWords(untitled, { kind: 'page', id: about })).toBe('on a page');
     expect(placeWords(st, { kind: 'shell', id: 'header' })).toBe('in Header');
     expect(placeWords(st, { kind: 'shell', id: 'footer' })).toBe('in Footer');
     const def = Object.values(st.components).find((d) => d.componentId === 'media.gallery')!;
@@ -106,13 +110,33 @@ describe('the words a History label is made from', () => {
     expect(editLabel(st, 'Move', gallery, 'up')).toBe('Move Gallery up on Home');
     expect(styleLabel(st, 'paddingBlock', gallery)).toBe('Set vertical padding for Gallery on Home');
     expect(styleLabel(st, 'color', gallery, 'Title')).toBe('Set text color for Title in Gallery on Home');
+    // The reset dot sets nothing: it takes the element's own value away.
+    expect(styleLabel(st, 'paddingBlock', gallery, undefined, null)).toBe('Reset vertical padding for Gallery on Home');
     expect(forLabel(st, 'Reset styles', gallery)).toBe('Reset styles for Gallery on Home');
     expect(fieldLabel(st, 'Heading', gallery)).toBe('Edit Heading in Gallery on Home');
     expect(contentLabel(st, 'link', gallery)).toBe('Edit link of Gallery on Home');
     expect(contentLabel(st, 'text', gallery)).toBe('Edit Gallery on Home');
+    expect(contentLabel(st, 'label', gallery)).toBe('Edit Gallery on Home');
+    expect(contentLabel(st, 'ariaLabel', gallery)).toBe('Edit accessible name of Gallery on Home');
     // A layer named by the author goes by that name.
     const named = { ...st, pages: { ...st.pages, [homeId()]: { ...st.pages[homeId()], nodes: { ...st.pages[homeId()].nodes, [gallery.nodeId]: { ...st.pages[homeId()].nodes[gallery.nodeId], name: 'Studio photos' } } } } } as ProjectState;
     expect(editLabel(named, 'Duplicate', gallery)).toBe('Duplicate Studio photos on Home');
+  });
+
+  it('names a part of a placement by the part, and the shared header’s own root as the header', () => {
+    const st = session.state;
+    // A placement on Home whose design has a part of its own besides its root.
+    const placed = roots().map((id) => session.state.pages[homeId()].nodes[id] as InstanceNode).find((n) => Object.keys(st.components[n.definitionId]?.parts ?? {}).some((p) => p !== 'root'))!;
+    expect(placed, 'a section on Home has a named part').toBeDefined();
+    const def = st.components[placed.definitionId];
+    const [partId, part] = Object.entries(def.parts).find(([p]) => p !== 'root')!;
+    expect(partName(st, home(), placed.id, partId)).toBe(part.label);
+    expect(partName(st, home(), placed.id, 'root')).toBeUndefined();
+    expect(partName(st, home(), placed.id, undefined)).toBeUndefined();
+    expect(forLabel(st, 'Set vertical padding', refTo(home(), placed.id), partName(st, home(), placed.id, partId))).toBe(`Set vertical padding for ${part.label} in ${def.name} on Home`);
+    const header: OwnerRef = { kind: 'shell', id: 'header' };
+    const named = { ...st, site: { ...st.site, shell: { ...st.site.shell, header: { ...st.site.shell.header, nodes: { ...st.site.shell.header.nodes, [st.site.shell.header.rootIds[0]]: { ...st.site.shell.header.nodes[st.site.shell.header.rootIds[0]], name: 'Header' } } } } } } as ProjectState;
+    expect(subjectWords(named, refTo(header, st.site.shell.header.rootIds[0]))).toBe('the shared header');
   });
 });
 
@@ -135,15 +159,17 @@ describe('manual edits in History', () => {
   it('names the layers selected together, or how many when there are more than two', async () => {
     const [gallery, testimonials] = [sectionOf('media.gallery'), sectionOf('testimonials.grid')];
     setState({ selection: refTo(home(), testimonials), layerSet: { owner: home(), ids: [gallery, testimonials], anchor: gallery } });
+    const order = [...roots()];
     await actions.moveLayers(1);
     expect(newest()).toBe('Move Gallery and Testimonials down on Home');
+    expect(roots().indexOf(gallery)).toBe(order.indexOf(gallery) + 1);
     const three = roots().slice(1, 4);
     setState({ selection: refTo(home(), three[0]), layerSet: { owner: home(), ids: three, anchor: three[0] } });
     await actions.duplicateLayers();
     expect(newest()).toBe('Duplicate 3 sections on Home');
   });
 
-  it('text typed on the canvas names the element and where it is: a page, the header, a design', async () => {
+  it('text typed on the canvas names the element and where it is: a page, the footer, a design', async () => {
     // A heading of the page's own.
     const made = await bridge.project.apply(
       {
@@ -156,24 +182,19 @@ describe('manual edits in History', () => {
     );
     expect(made.ok).toBe(true);
     const heading = refTo(home(), 'n_heading');
-    const name = subjectWords(session.state, heading);
-    expect(name).toMatch(/ on Home$/);
     await actions.commitText(heading, 'Welcome in');
-    expect(newest()).toBe(`Edit ${name}`);
+    expect(newest()).toBe('Edit Heading 2 on Home');
+    expect(JSON.stringify(session.state.pages[homeId()].nodes.n_heading)).toContain('Welcome in');
 
     // Text a placement on the page shows from its content.
     const hero = boundText(session.state, home());
-    const heroName = subjectWords(session.state, hero);
     await actions.commitText(hero, 'Changed on the page');
-    expect(newest()).toBe(`Edit ${heroName}`);
-    expect(heroName).toMatch(/ on Home$/);
+    expect(newest()).toBe('Edit Eyebrow on Home');
 
     // Text in the shared footer.
     const inFooter = boundText(session.state, { kind: 'shell', id: 'footer' });
-    const words = subjectWords(session.state, inFooter);
-    expect(words).toMatch(/ in Footer$/);
     await actions.commitText(inFooter, 'Changed in the footer');
-    expect(newest()).toBe(`Edit ${words}`);
+    expect(newest()).toBe('Edit Site name in Footer');
 
     // A heading in a component made from that section, edited in its design.
     const created = await bridge.project.apply({ operations: [{ type: 'component.createFromNode', owner: home(), nodeId: 'n_holder', name: 'Welcome band' }] }, { label: 'Create component Welcome band' });
@@ -182,7 +203,6 @@ describe('manual edits in History', () => {
     const inDesign = Object.values(def.tree!.nodes).find((n) => n.kind === 'text')!;
     const ref = refTo({ kind: 'component', id: def.id }, inDesign.id);
     await actions.commitText(ref, 'Welcome, everyone');
-    expect(newest()).toBe(`Edit ${subjectWords(session.state, ref)}`);
-    expect(newest()).toMatch(/ in the Welcome band design$/);
+    expect(newest()).toBe('Edit Heading 2 in the Welcome band design');
   });
 });
