@@ -19,6 +19,13 @@ const item = (ctx: string, id: string, question: string, answer: string, open = 
   `<p data-so-ctx="${ctx}" data-so-node="answer" data-so-items="${id}">${answer}</p></details>` +
   `<hr data-so-ctx="${ctx}" data-so-node="item-divider" data-so-items="${id}">`;
 
+/** car: a carousel's list, which scrolls sideways and shows two of its five slides at a time. */
+const CAROUSEL =
+  `<style>.track{display:flex;gap:20px;margin:0;padding:0;list-style:none;overflow-x:auto;scroll-snap-type:x mandatory}.track>li{flex:none;width:250px;height:120px;scroll-snap-align:start}</style>` +
+  `<section data-so-ctx="page:p" data-so-node="car"><ul class="track" data-so-ctx="page:p|car" data-so-node="track">` +
+  [1, 2, 3, 4, 5].map((i) => `<li data-so-ctx="page:p|car" data-so-node="slide" data-so-items="s${i}"><p data-so-ctx="page:p|car" data-so-node="caption" data-so-items="s${i}">Slide ${i}</p></li>`).join('') +
+  `</ul></section><div style="height:600px"></div>`;
+
 // faq: two questions share a label, the third is already open (as a visitor would find it). faq2: a second placement
 // reuses an item id. faq3: the list is repeated inside another list's rows. faq4: one item's id contains the other's
 // after a comma, and another list of the section reuses an id. faq5: a design that wraps each question's disclosure in a row of its own, all inside a disclosure.
@@ -32,6 +39,7 @@ ${item('page:p|faq', 'c', 'Other question?', 'Answer C', true)}
 <section data-so-ctx="page:p" data-so-node="faq3">${item('page:p|faq3', 'o1,e', 'Nested?', 'Under the first row')}${item('page:p|faq3', 'o1,f', 'Other nested?', 'Not this one')}${item('page:p|faq3', 'o2,e', 'Nested?', 'Under the second row')}</section>
 <section data-so-ctx="page:p" data-so-node="faq4">${item('page:p|faq4', 'e', 'Plain id?', 'E')}${item('page:p|faq4', 'x,e', 'Comma id?', 'X, E')}<details data-so-ctx="page:p|faq4" data-so-node="links-item" data-so-items="e"><summary>Another list, same id</summary></details><details data-so-ctx="page:p|faq4" data-so-node="inner-item" data-so-items="x,e"><summary>A list inside another row, same id</summary></details></section>
 <section data-so-ctx="page:p" data-so-node="faq5"><details data-so-ctx="page:p|faq5" data-so-node="outer"><summary>More questions</summary><div data-so-ctx="page:p|faq5" data-so-node="row" data-so-items="w">${item('page:p|faq5', 'w', 'Wrapped?', 'Inside a row')}</div></details></section>
+${CAROUSEL}
 <script type="module" src="/bridge.js"></script></body></html>`;
 
 const HOST = `<!doctype html><title>host</title><input id="field" value="Answer B">
@@ -340,5 +348,71 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
     expect((await state()).open['faq:b']).toBe(true);
     await reveal(null);
     expect((await state()).open).toEqual({ 'faq:a': false, 'faq:b': false, 'faq:c': true, 'faq2:b': false });
+  });
+  describe('a slide of a carousel', () => {
+    const slide = (id: string) => `doc.querySelector('li[data-so-ctx="page:p|car"][data-so-items="${id}"]')`;
+    const track = `doc.querySelector('ul.track')`;
+    const revealSlide = (id: string | null, text?: string) => reveal(id, 'page:p|car', { nodes: ['slide'], within: ['slide', 'caption'], ...(text === undefined ? {} : { text, textNodes: ['caption'] }) });
+    /** Where the list is scrolled to, whether the slide shows whole inside it and in the frame, and the last outline. */
+    const where = (id: string) =>
+      inFrame<{ scrollLeft: number; inList: boolean; inFrame: boolean; outline: unknown; box: unknown }>(`
+        const r = ${slide(id)}.getBoundingClientRect();
+        const t = ${track}.getBoundingClientRect();
+        const rects = window.replies.filter((m) => m.type === 'rects');
+        return {
+          scrollLeft: ${track}.scrollLeft,
+          inList: r.left >= t.left - 1 && r.right <= t.right + 1,
+          inFrame: r.top >= 0 && r.bottom <= frames[0].innerHeight,
+          outline: rects[rects.length - 1].payload.revealed[0],
+          box: { x: r.left, y: r.top, width: r.width, height: r.height }
+        };
+      `);
+
+    it('scrolls the list sideways to the slide, and the page down to the list, without taking focus', async () => {
+      await inFrame(`frames[0].scrollTo(0, 0); ${track}.scrollLeft = 0;`);
+      await settle();
+      await revealSlide('s5');
+      const w = await where('s5');
+      expect(w.scrollLeft).toBeGreaterThan(0);
+      expect(w.inList).toBe(true);
+      expect(w.inFrame).toBe(true);
+      expect(w.outline).toEqual(w.box);
+      const s = await state();
+      expect(s.focused).toBe('field');
+      // A slide that already shows leaves the list where it is; one that does not is brought in sideways alone,
+      // with the page left where it is.
+      const at = w.scrollLeft;
+      await revealSlide('s4');
+      expect((await where('s4')).scrollLeft).toBe(at);
+      await revealSlide('s1');
+      expect(await where('s1')).toMatchObject({ scrollLeft: 0, inList: true, inFrame: true });
+      expect((await state()).scrollY).toBe(s.scrollY);
+    });
+
+    it('moves the outline with the list as it scrolls', async () => {
+      await revealSlide('s2');
+      expect((await where('s2')).box).toMatchObject({ x: 270 });
+      // To where the list stops for the second slide.
+      await inFrame(`${track}.scrollLeft = 270;`);
+      await settle();
+      const w = await where('s2');
+      expect(w.box).toMatchObject({ x: 0 });
+      expect(w.outline).toEqual(w.box);
+    });
+
+    it('brings the slide back into a list the page renders afresh, but leaves the list where the author scrolls it', async () => {
+      await revealSlide('s5');
+      // The author scrolls the list back to the start while the slide is open; typing its caption leaves it there.
+      await inFrame(`${track}.scrollLeft = 0;`);
+      await settle();
+      await revealSlide('s5', 'Slide five');
+      expect((await where('s5')).scrollLeft).toBe(0);
+      expect(await inFrame(`return ${slide('s5')}.textContent;`)).toBe('Slide five');
+      // An update renders the list afresh, scrolled to its start: the slide is brought back in, once.
+      await inFrame(`const old = ${track}; const fresh = old.cloneNode(true); old.replaceWith(fresh);`);
+      await settle();
+      expect((await where('s5')).inList).toBe(true);
+      await revealSlide(null);
+    });
   });
 });
