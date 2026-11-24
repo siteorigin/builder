@@ -702,7 +702,7 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
  * Pictures in an entry's text that cannot show: no longer in the library, or not a picture. One the author left
  * undescribed (and did not mark decorative) is said too, as an image on a page is. Numbered as the text shows them.
  */
-function bodyImageProblems(state: ProjectState, body: RichText, what: string, owner: CollectionDiagnostic['owner']): CollectionDiagnostic[] {
+export function bodyImageProblems(state: ProjectState, body: RichText, what: string, owner: CollectionDiagnostic['owner']): CollectionDiagnostic[] {
   const out: CollectionDiagnostic[] = [];
   let n = 0;
   for (const b of body) {

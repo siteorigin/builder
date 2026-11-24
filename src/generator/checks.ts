@@ -1022,6 +1022,8 @@ interface RenderedLink {
   inText: boolean;
   /** In a panel kept in the page hidden (a \`kept\` walk): seen only once the panel shows. */
   hidden?: boolean;
+  /** The label is not the words visitors see on the link: an element's name, or a field's name, stands in for them. */
+  unnamed?: boolean;
 }
 
 const isLinkValue = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && 'target' in (v as object);
@@ -1046,7 +1048,7 @@ export const labelKeyFor = (key: string) => (key.endsWith('Link') ? `${key.slice
  * shipped header (`which`) shows its notice's link only beside the notice's words, which a label alone does not show.
  */
 function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, out: RenderedLink[], which?: string) {
-  const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, fallback: string, at: string) => {
+  const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, fallback: { text: string; shown: boolean }, at: string) => {
     const schema = schemas[key];
     // A list item without the field shows the field's default, as the site does.
     const v = Object.hasOwn(values, key) ? values[key] : (schema as { default?: unknown } | undefined)?.default;
@@ -1055,17 +1057,19 @@ function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, rep
     const labelKey = labelKeyFor(key);
     const paired = schemas[labelKey]?.type === 'string';
     if (paired && !values[labelKey]) return;
-    const label = String((paired ? values[labelKey] : undefined) ?? fallback).trim();
-    out.push({ link: v, label, reportId, key: at, inText: false });
+    const label = String((paired ? values[labelKey] : undefined) ?? fallback.text).trim();
+    out.push({ link: v, label, reportId, key: at, inText: false, ...(paired || fallback.shown ? {} : { unnamed: true }) });
   };
   for (const [key, schema] of Object.entries(def.properties)) {
     if (which === 'shell.header' && key === 'noticeLink' && !headerNoticeLinkNamed(props)) continue;
-    take(def.properties, props, key, schema.label, `${placement}:${key}`);
+    take(def.properties, props, key, { text: schema.label, shown: false }, `${placement}:${key}`);
     if (schema.type !== 'list' || !Array.isArray(props[key])) continue;
     (props[key] as Array<Record<string, unknown>>).forEach((item, i) => {
       if (!item || typeof item !== 'object') return;
       const title = item[schema.titleField ?? 'label'];
-      for (const [f, fs] of Object.entries(schema.fields)) take(schema.fields, item, f, typeof title === 'string' && title.trim() ? title : fs.label, `${placement}:${key}:${String(item.id ?? i)}:${f}`);
+      // A list item's link is named by the item's title (a menu item's words), else by the field's name.
+      const named = typeof title === 'string' && !!title.trim();
+      for (const [f, fs] of Object.entries(schema.fields)) take(schema.fields, item, f, { text: named ? title : fs.label, shown: named }, `${placement}:${key}:${String(item.id ?? i)}:${f}`);
     });
   }
 }
@@ -1090,7 +1094,7 @@ function renderedLinks(state: ProjectState, tree: NodeTree, everyState = false, 
       if (n.kind !== 'element' || n.link === undefined) return;
       if (n.action !== undefined && n.action !== null && (!actionWraps(n) || evaluate(n.action, scope) !== 'link')) return;
       const link = evaluate(n.link, scope);
-      if (isLinkValue(link)) out.push({ link, label: n.name ?? '', reportId, key: at(n, scope), inText: false, ...hidden(scope) });
+      if (isLinkValue(link)) out.push({ link, label: n.name ?? '', reportId, key: at(n, scope), inText: false, unnamed: true, ...hidden(scope) });
     },
     code: (def, props, reportId, placement, _n, scope) => {
       const from = out.length;
@@ -1366,10 +1370,10 @@ export function publicationIds(plan: Pick<PublicationPlan, 'published' | 'publis
 }
 
 /**
- * The draft a typed web address opens, when it is on the site's own public URL and names a draft's address or an
- * old address that leads to a draft. `withheld` maps those addresses, lowercased, to the draft.
+ * What a typed web address opens, when it is on the site's own public URL and names one of the addresses `withheld`
+ * maps (lowercased) to what is there: a draft's address or an old address that leads to a draft, say.
  */
-function draftAtAddress(state: ProjectState, target: string, withheld: Map<string, DraftTarget>): (DraftTarget & { anchor?: string }) | null {
+function targetAtAddress<T extends object>(state: ProjectState, target: string, withheld: Map<string, T>): (T & { anchor?: string }) | null {
   // Only a public URL the site is built from makes an address the site's own.
   const base = publicUrl(state.site);
   if (!base || !withheld.size) return null;
@@ -1461,7 +1465,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
           : link.type === 'entry' && draftEntryIds.has(link.target)
             ? { entryId: link.target }
             : link.type === 'url'
-              ? draftAtAddress(state, link.target, withheld)
+              ? targetAtAddress(state, link.target, withheld)
               : null;
       if (!to) continue;
       // A link the walk reaches twice (a repeated slot, say) is reported once.
@@ -1481,7 +1485,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
           : link.type === 'page' && draftIds.has(link.target)
             ? { pageId: link.target, ...(link.anchor ? { anchor: link.anchor } : {}) }
             : link.type === 'url'
-              ? draftAtAddress(state, link.target, withheld)
+              ? targetAtAddress(state, link.target, withheld)
               : null;
       if (to) found.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, inText: true, ...to });
     }
@@ -1489,6 +1493,76 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     if (found.length && showsBody(collection, entryArticle(state, collection, entry))) draftLinks.push(...found);
   }
   return { published, drafts, publishedEntries, draftEntries, draftLinks };
+}
+
+/** A link visitors see on the published website, with where it is, the words on it, and the page it leads to. */
+export interface SiteLink {
+  /**
+   * Where it is: a published page, the shared header or footer (when anything published shows it), a collection's
+   * layout as a published entry's page shows it, or a published entry's text.
+   */
+  owner: { kind: 'page' | 'shell' | 'template' | 'entry'; id: string };
+  /** The node that holds it (the instance, for a link inside a component); empty in an entry's text. */
+  nodeId: string;
+  /** Tells apart the links one node holds. */
+  key: string;
+  /** For a layout's link, the first published entry whose page shows it; for an entry's text, that entry. */
+  entryId?: string;
+  link: LinkValue;
+  /** The words on it, or what stands in for them when `unnamed`. */
+  label: string;
+  /** Visitors do not see `label` on the link: an element's or a field's name stands in for words it may not have. */
+  unnamed?: boolean;
+  /** Inside rich text. */
+  inText: boolean;
+  /** The page it leads to: by a link to the page, or by a typed address of the page (or an old one of it) on the public URL. */
+  pageId?: string;
+}
+
+/**
+ * Every link the published website shows, as `publicationPlan` reads them: the published pages, the shared header
+ * and footer while a published page (or entry, or collection index) shows them, each collection's layout as each
+ * published entry's page shows it, and published entries' text where their layout shows it. A link reached by
+ * choosing a tab or opening a disclosure counts as one shown at first. A link the walk reaches twice is listed once.
+ */
+export function siteLinks(state: ProjectState): SiteLink[] {
+  const live = publishedState(state);
+  const published = live.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id) && typeof state.pages[id]?.route === 'string').map((id) => state.pages[id]);
+  const entries = siteEntries(live);
+  const archived = archivePages(state).length > 0;
+  // Addresses the website answers at with a page: each page's own, and the old addresses kept for it.
+  const addresses = new Map<string, { pageId: string }>(published.map((p) => [p.route.toLowerCase(), { pageId: p.id }]));
+  for (const r of liveRedirects(live)) if (r.page) addresses.set(r.from.toLowerCase(), { pageId: r.page.id });
+  const pageOf = (link: LinkValue): string | undefined => {
+    if (link.type === 'page') return Object.hasOwn(state.pages, link.target) ? link.target : undefined;
+    return link.type === 'url' && typeof link.target === 'string' ? targetAtAddress(state, link.target, addresses)?.pageId : undefined;
+  };
+  const sources: Array<{ owner: SiteLink['owner']; tree: NodeTree; entryId?: string }> = [
+    ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
+    ...SHELL_PARTS.filter((part) => entries.length > 0 || archived || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
+    ...entries.map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry), entryId: e.entry.id }))
+  ];
+  const out: SiteLink[] = [];
+  const seen = new Set<string>();
+  for (const src of sources)
+    for (const { link, label, reportId, key, inText, unnamed } of renderedLinks(state, src.tree, true)) {
+      // A layout's link is listed once, unless it leads somewhere else on another entry's page.
+      const id = JSON.stringify([src.owner, reportId, key, link]);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const pageId = pageOf(link);
+      out.push({ owner: src.owner, nodeId: reportId, key, ...(src.entryId ? { entryId: src.entryId } : {}), link, label, ...(unnamed ? { unnamed } : {}), inText, ...(pageId ? { pageId } : {}) });
+    }
+  for (const { entry, collection } of entries) {
+    const links = entryTextLinks(entry.body);
+    // Text the entry's layout does not show links nowhere on the website.
+    if (!links.length || !showsEntryText(state, collection, entry)) continue;
+    links.forEach(({ link, label }, i) => {
+      const pageId = pageOf(link);
+      out.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', key: `body:${i}`, entryId: entry.id, link, label, inText: true, ...(pageId ? { pageId } : {}) });
+    });
+  }
+  return out;
 }
 
 /**
@@ -1893,6 +1967,11 @@ function entryArticle(state: ProjectState, collection: Collection, entry: EntryD
   const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
   entryTrees.set(tree, { collectionId: collection.settings.id, entryId: entry.id });
   return tree;
+}
+
+/** Whether an entry's page shows its text: its collection's layout places the entry's text. */
+export function showsEntryText(state: ProjectState, collection: Collection, entry: EntryDoc): boolean {
+  return showsBody(collection, entryArticle(state, collection, entry));
 }
 
 /** The entry each entry's page read by these checks is for, so its feeds are worked out as that page has them. */

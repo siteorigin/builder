@@ -707,7 +707,18 @@ export interface PageSeo {
   noindex?: boolean;
   /** Left out of the site's own search (the Site search section), whatever search engines are told. */
   searchHidden?: boolean;
+  /**
+   * The address search engines are told is this page's own, when it is somewhere other than its address on the
+   * public URL: an absolute http(s) address. Absent, or not a usable address: the page's own (see generator/seo-metadata).
+   */
+  canonical?: string;
 }
+
+/**
+ * What a collection entry says to search engines and link previews, each overriding what the entry shows (its title,
+ * its excerpt, its featured image), read the way a page's are. Read through generator/seo-metadata; no edit sets it yet.
+ */
+export type EntrySeo = PageSeo;
 
 export interface PageDoc extends NodeTree {
   schemaVersion: number;
@@ -925,6 +936,8 @@ export interface EntryDoc {
   excerpt?: string;
   /** A library image's asset ID. */
   featuredImage?: string;
+  /** Search and sharing overrides. Absent on every entry stored before they existed. */
+  seo?: EntrySeo;
   /** Assigned term IDs, by taxonomy ID. */
   terms: Record<string, string[]>;
   /** Custom field values by field name. A field left out shows its default. */
