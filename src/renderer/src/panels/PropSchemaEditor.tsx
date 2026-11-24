@@ -233,7 +233,7 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
         )}
         {type === 'richtext' && (
           <>
-            <Field label="Default" hint="One paragraph per line.">
+            <Field label="Default" hint="One paragraph per line; end a line with \ to break it inside the paragraph.">
               <DraftInput multiline rows={2} value={richDefault(s)} onLive={live(richDefault(s))} onCommit={(v) => set({ default: v as never })} ariaLabel={named('default')} />
             </Field>
             <Field label="Your code receives" controlId={`${uid}-form`} hint="Blocks keep links, lists and headings: render them with RichText.svelte. Paragraph text is one string per paragraph, with **bold** and *italic*.">

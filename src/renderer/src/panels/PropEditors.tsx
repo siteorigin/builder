@@ -641,7 +641,7 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
           value={richTextToMarkdown(toRichText(value, schema.plainAs), state.pages, schema.plainAs)}
           onCommit={onChange}
           ariaLabel={name}
-          placeholder={'One paragraph per line. Use **bold**, *italic*, [a link](/about/), "- " for lists and "### " for headings.'}
+          placeholder={'One paragraph per line; end a line with \\ to break it inside the paragraph. Use **bold**, *italic*, [a link](/about/), "- " for lists and "### " for headings.'}
         />
       );
     case 'number':

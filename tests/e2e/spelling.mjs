@@ -102,8 +102,8 @@ const clickCanvas = async (el, opts = {}) => {
   const p = await canvasPoint(el, opts.word);
   await win.mouse.click(p.x, p.y, { button: opts.button ?? 'left' });
 };
-const dblclickCanvas = async (el) => {
-  const p = await canvasPoint(el);
+const dblclickCanvas = async (el, word) => {
+  const p = await canvasPoint(el, word);
   await win.mouse.dblclick(p.x, p.y);
 };
 const rightClickWord = (el, word) => clickCanvas(el, { word, button: 'right' });
@@ -187,7 +187,7 @@ step('the first right-click in copy as its edit begins goes to the word under th
 // The misspelling already on the page is marked as the spellchecker would mark it, in the preview's own frame,
 // just before the right-click: the hidden window's own idle check soon clears a marker it did not find itself,
 // and DevTools drops its markers when its session ends. If the marker goes before the click lands, the attempt
-// starts over from a new edit, so every attempt right-clicks inside the edit's untouched whole selection.
+// starts over from a new edit, so every attempt right-clicks the word the edit began with selected.
 const preview = await (await win.locator('.frame-box iframe').elementHandle()).contentFrame();
 const cdp = await win.context().newCDPSession(preview);
 const mark = async () => {
@@ -200,10 +200,10 @@ let freshChip;
 for (let attempt = 1; attempt <= 3; attempt++) {
   await clickCanvas(h1);
   await settle();
-  await dblclickCanvas(h1);
+  await dblclickCanvas(h1, 'recieve');
   await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
-  // The edit begins with the whole heading selected, ready to be typed over.
-  assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve confirmation', 'the edit selects the whole heading');
+  // The edit begins with the word double-clicked selected, as a double-click selects a word in any text.
+  assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve', 'the edit selects the word double-clicked');
   freshChip = await chip();
   const target = await canvasPoint(h1, 'recieve');
   freshMenu = await nextWritingMenu(async () => {
@@ -234,6 +234,8 @@ await clickCanvas(h1);
 await settle();
 await dblclickCanvas(h1);
 await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
+// A double-click starts at the word clicked; Select All takes the whole heading.
+await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('Gret recieve confirmation', { delay: 20 });
 await settle();
 const chipBefore = await chip();
@@ -271,6 +273,7 @@ await clickCanvas(rich);
 await settle();
 await dblclickCanvas(rich);
 await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited'));
+await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('We ', { delay: 20 });
 await win.keyboard.press(`${MOD}+b`);
 await win.keyboard.type('recieve', { delay: 20 });

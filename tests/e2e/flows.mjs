@@ -18,6 +18,8 @@ await h1.click();
 await win.waitForTimeout(300);
 await h1.dblclick();
 await win.waitForTimeout(300);
+// A double-click starts at the word clicked; Select All takes the whole heading.
+await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('Rooms that work beautifully');
 await win.keyboard.press('Enter');
 await eventually(() => assert.ok(read('src/routes/+page.svelte').includes('Rooms that work beautifully'), 'the new heading is written to the page source'));
@@ -73,6 +75,90 @@ await eventually(async () => {
 });
 await eventually(async () => assert.equal(await rich.locator('a[href="/about/"] strong em').count(), 1, 'the preview shows the linked bold italic words'));
 assert.ok(!read('src/lib/siteorigin/runtime/RichText.svelte').includes('data-so-'), 'no editor instrumentation in the rich text helper');
+
+step('inline rich text: the word double-clicked, and line breaks inside a paragraph (#175)');
+const mediaBody = () =>
+  win.evaluate(async () => {
+    const s = await window.builder.project.snapshot();
+    for (const n of Object.values(s.state.pages[s.state.site.homePageId].nodes)) {
+      const b = n.props?.body;
+      if (Array.isArray(b) && b.some((x) => x.spans?.some((sp) => sp.text.startsWith('Before we draw')))) return { body: b, revision: s.revision };
+    }
+    return null;
+  });
+const lastText = (body) => body[1].spans.map((x) => x.text).join('');
+const second = rich.locator('p').nth(1);
+// The canvas is scaled to fit, so a word's place on screen is its place in the frame, scaled.
+const onScreen = async (word) => {
+  const at = await second.evaluate((p, w) => {
+    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const i = n.nodeValue.indexOf(w);
+      if (i < 0) continue;
+      const r = document.createRange();
+      r.setStart(n, i + 2);
+      r.setEnd(n, i + 3);
+      const b = r.getBoundingClientRect();
+      return { x: b.left + b.width / 2, y: b.top + b.height / 2, width: innerWidth };
+    }
+    throw new Error(`no ${w}`);
+  }, word);
+  const box = await win.locator('.frame-box iframe').boundingBox();
+  const scale = box.width / at.width;
+  return { x: box.x + at.x * scale, y: box.y + at.y * scale };
+};
+// Selected first, where the editor scrolls it to, then double-clicked where it then is.
+await rich.click();
+await win.waitForTimeout(800);
+const cushion = await onScreen('cushion');
+await win.mouse.dblclick(cushion.x, cushion.y);
+await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited'));
+assert.equal(await rich.evaluate(() => getSelection().toString()), 'cushion', 'the edit selects the word double-clicked, not the whole text');
+await win.keyboard.type('detail');
+// The address goes at the end of the paragraph, with Shift+Enter between its lines.
+await second.evaluate((p) => {
+  const range = document.createRange();
+  range.selectNodeContents(p);
+  range.collapse(false);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+});
+await win.keyboard.press('Shift+Enter');
+await win.keyboard.type('Studio 4');
+await win.keyboard.press('Shift+Enter');
+await win.keyboard.type('Harbour Lane');
+await win.keyboard.press(`${MOD}+Enter`);
+await eventually(async () => {
+  const found = await mediaBody();
+  assert.equal(found.body.length, 2, 'the two paragraphs stay two: no line becomes a paragraph of its own');
+  assert.equal(lastText(found.body), 'That conversation shapes every decision that follows, from the first sketch to the last detail.\nStudio 4\nHarbour Lane', 'the word and the lines are stored in their paragraph');
+  assert.ok(found.body[0].spans[0].text.startsWith('Before we draw'), 'the first paragraph is untouched');
+  assert.ok(found.body[1].spans.some((x) => x.text === 'conversation' && x.strong && x.em && x.link?.type === 'page'), 'the linked bold italic words keep their marks');
+});
+const edited = await mediaBody();
+await eventually(async () => assert.equal(await second.locator('br').count(), 2, 'the preview shows the lines inside one paragraph'));
+assert.match(read('src/lib/siteorigin/runtime/RichText.svelte'), /<br \/>/, 'the exported helper writes a line break as <br>');
+assert.ok(read('src/routes/+page.svelte').includes('Harbour Lane'), 'the page source holds the address');
+// Undo and Redo take the whole edit back and forth.
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(async () => assert.ok(lastText((await mediaBody()).body).endsWith('last cushion.'), 'undo puts the word and the paragraph back'));
+await eventually(async () => assert.equal(await second.locator('br').count(), 0, 'the preview shows the paragraph as it was'));
+await win.locator('[aria-label^="Redo"]').first().click();
+await eventually(async () => assert.deepEqual((await mediaBody()).body, edited.body, 'redo writes the edit again, marks and links included'));
+await eventually(async () => assert.equal(await second.locator('br').count(), 2, 'the lines are back'));
+// Opening the edit again and leaving it changes nothing.
+const settled = (await mediaBody()).revision;
+await rich.click();
+await win.waitForTimeout(800);
+const detail = await onScreen('detail');
+await win.mouse.dblclick(detail.x, detail.y);
+await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited again'));
+assert.equal(await rich.evaluate(() => getSelection().toString()), 'detail', 'the edit starts at the word double-clicked again');
+await win.keyboard.press(`${MOD}+Enter`);
+await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), null, 'the edit ends'));
+await win.waitForTimeout(500);
+assert.equal((await mediaBody()).revision, settled, 'reopening and leaving the text is no change');
+assert.equal(await second.locator('br').count(), 2, 'the lines stay');
 
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();

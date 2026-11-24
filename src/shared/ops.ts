@@ -8,7 +8,7 @@ import { sha256Hex } from './sha256';
  * Tool schemas and runtime validators are both derived from these definitions.
  */
 /** What rich text accepts, for models writing a value. */
-const RICH_TEXT_VALUE = 'For richtext: a string or string[] with **bold**, *italic*, [label](/route/ or URL), and line prefixes "- ", "1. ", "- [x] ", "### ", "#### ", "> ".';
+const RICH_TEXT_VALUE = 'For richtext: a string or string[] with **bold**, *italic*, [label](/route/ or URL), and line prefixes "- ", "1. ", "- [x] ", "### ", "#### ", "> ". Each line is a block; a line ending in \\ continues the same block after a line break (an address).';
 /** What a table property accepts, for models writing a whole table. */
 const TABLE_VALUE = 'For table: { "columns": ["Day", "Workshop"], "rows": [["Monday", "Clay basics"]] }; to change one cell, row or column use instance.editTable.';
 

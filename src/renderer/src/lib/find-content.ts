@@ -91,6 +91,8 @@ const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.h
 const isLink = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && typeof (v as LinkValue).target === 'string';
 const sameLink = (a: LinkValue | undefined, b: LinkValue | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const oneLine = (t: string) => t.replace(/\s+/g, ' ');
+/** A line break inside rich text, shown where text is shown on one line, so a change that only adds or removes one shows. */
+const breaksShown = (t: string) => t.replace(/[ \t]*\n[ \t]*/g, ' ↵ ');
 /** Text as a page shows it: the whitespace HTML collapses, collapsed (a non-breaking space is deliberate and stays). */
 const shownText = (t: string) => t.replace(/[ \t\r\n\f]+/g, ' ').replace(/^ | $/g, '');
 
@@ -327,6 +329,7 @@ function matchAt(f: ContentField, part: Part, start: number, end: number, held?:
   const from = Math.max(0, start - 40);
   const to = Math.min(part.text.length, end + 60);
   const blocked = blockedReason(f, part, start, end) ?? held;
+  const shown = (t: string) => oneLine(part.spans ? breaksShown(t) : t);
   return {
     id: `${f.key}|${part.path}|${start}`,
     field: f,
@@ -334,9 +337,9 @@ function matchAt(f: ContentField, part: Part, start: number, end: number, held?:
     kind: part.kind,
     start,
     end,
-    before: (from > 0 ? '…' : '') + oneLine(part.text.slice(from, start)),
-    match: oneLine(part.text.slice(start, end)),
-    after: oneLine(part.text.slice(end, to)) + (to < part.text.length ? '…' : ''),
+    before: (from > 0 ? '…' : '') + shown(part.text.slice(from, start)),
+    match: shown(part.text.slice(start, end)),
+    after: shown(part.text.slice(end, to)) + (to < part.text.length ? '…' : ''),
     ...(blocked ? { blocked } : {})
   };
 }
@@ -524,7 +527,7 @@ function linkedRuns(spans: RichSpan[]): number[][] {
   return runs.filter((r) => r.some((i) => spans[i].text.trim()));
 }
 
-const spansText = (spans: RichSpan[]) => shownText(spans.map((s) => s.text).join(''));
+const spansText = (spans: RichSpan[]) => shownText(breaksShown(spans.map((s) => s.text).join('')));
 
 /** The field's next value with the chosen matches replaced, and what that changes in words. */
 function replaceIn(state: ProjectState, f: ContentField, matches: ContentMatch[], replacement: string): { value: unknown; changes: ContentChange[]; error?: string } | null {

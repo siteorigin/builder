@@ -17,8 +17,6 @@ let linkEditor = null; // { host, input, range }
 /** Larger commits than this would be dropped by the editor's message size check, or refused by the editor. */
 const MAX_COMMIT_CHARS = 150000;
 const MAX_TEXT_CHARS = 20000;
-/** On macOS a Control-click opens the context menu, as a right-click does. */
-const IS_MAC = /Mac/.test(navigator.platform);
 const errors = [];
 
 function send(type, payload = {}) {
@@ -365,7 +363,8 @@ document.addEventListener(
     if (mode !== 'edit' || editing) return;
     e.preventDefault();
     e.stopPropagation();
-    send('dblclick', { chain: chainFrom(e.target) });
+    pendingHit = { id: String(++hitCount), target: new WeakRef(e.target), at: textAt(e.clientX, e.clientY) };
+    send('dblclick', { chain: chainFrom(e.target), hit: pendingHit.id });
   },
   true
 );
@@ -785,25 +784,136 @@ for (const t of ['focusout', 'pointerdown']) document.addEventListener(t, () => 
 // Inline text editing
 // ---------------------------------------------------------------------------
 
-function beginTextEdit(desc, editId) {
-  const el = findAll(desc)[0];
+/**
+ * The last double-click, until the editor answers it with an edit (or not): which one it was, the element under the
+ * pointer, and the text position there. The edit it starts begins where the author clicked.
+ */
+let pendingHit = null;
+let hitCount = 0;
+
+/**
+ * The text under a point: the text node, the caret position nearest the point, and the character the pointer is on
+ * (the caret can fall on either side of it). Null off text.
+ */
+function textAt(x, y) {
+  const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+  if (!r || r.startContainer.nodeType !== Node.TEXT_NODE) return null;
+  const node = r.startContainer;
+  const box = (i) => {
+    if (i < 0 || i >= node.length) return null;
+    const c = document.createRange();
+    c.setStart(node, i);
+    c.setEnd(node, i + 1);
+    return c.getBoundingClientRect();
+  };
+  const holds = (b) => !!b && x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
+  // Off the characters (blank space beside a line): the nearest caret, and no word.
+  const char = holds(box(r.startOffset)) ? r.startOffset : holds(box(r.startOffset - 1)) ? r.startOffset - 1 : -1;
+  return { node: new WeakRef(node), text: node.nodeValue, caret: r.startOffset, char };
+}
+
+const isInline = (el) => getComputedStyle(el).display.startsWith('inline');
+
+/**
+ * The word at a text position inside `el`, as a double-click selects it: the word may run across marks
+ * (`co<strong>oper</strong>ate`), but not across a line break or another block. A caret where the position is not
+ * on a word (a space, punctuation).
+ */
+function wordRange(el, node, at) {
+  const range = document.createRange();
+  range.setStart(node, Math.min(at.caret, node.length));
+  let block = node.parentElement;
+  while (block && block !== el && isInline(block)) block = block.parentElement;
+  if (!block || typeof Intl.Segmenter !== 'function') return range;
+  // The text nodes of the line the position is on, in order.
+  let line = [];
+  let found = false;
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeType === Node.TEXT_NODE) {
+      line.push(n);
+      if (n === node) found = true;
+    } else if (n.tagName === 'BR' || !isInline(n)) {
+      if (found) break;
+      line = [];
+    }
+  }
+  const starts = [];
+  let text = '';
+  let pos = -1;
+  for (const t of line) {
+    if (t === node && at.char >= 0 && at.char < node.length) pos = text.length + at.char;
+    starts.push(text.length);
+    text += t.nodeValue;
+  }
+  if (pos < 0) return range;
+  const seg = new Intl.Segmenter(undefined, { granularity: 'word' }).segment(text).containing(pos);
+  if (!seg || !seg.isWordLike) return range;
+  // Where a position falls on the edge between two text nodes, the word starts in the later one and ends in the
+  // earlier one.
+  const point = (p, end) => {
+    for (let i = 0; i < line.length; i++) {
+      const a = starts[i];
+      const b = a + line[i].nodeValue.length;
+      if (end ? p > a && p <= b : p < b) return [line[i], p - a];
+    }
+    return null;
+  };
+  const from = point(seg.index, false);
+  const to = point(seg.index + seg.segment.length, true);
+  if (!from || !to) return range;
+  range.setStart(from[0], from[1]);
+  range.setEnd(to[0], to[1]);
+  return range;
+}
+
+/**
+ * Begins editing the text of the element `desc` names, after the editor checked it can be edited there. `hitId` is
+ * the double-click that asked for it: the edit is of the copy the author clicked, and starts with the word clicked
+ * selected (or a caret, off a word), as a double-click does in any text. Whole text is for Select All. An answer to
+ * an earlier double-click than the last one starts nothing: the author has double-clicked something else since.
+ */
+function beginTextEdit(desc, editId, hitId) {
+  // An answer to an older double-click leaves the newer one waiting for its own answer.
+  const hit = hitId && pendingHit && pendingHit.id === hitId ? pendingHit : null;
+  if (hit) pendingHit = null;
+  if (mode !== 'edit' || (hitId && !hit)) return send('textCancel', { desc, editId });
+  let clicked = null;
+  if (hit) {
+    const target = hit.target.deref();
+    clicked = target && target.isConnected ? (target instanceof Element ? target : target.parentElement) : null;
+    while (clicked && !(clicked.hasAttribute('data-so-node') && sameDesc(descOf(clicked), desc))) clicked = clicked.parentElement;
+    // The text double-clicked has been replaced since (the page updated): what the author meant to edit is gone.
+    if (!clicked) return send('textCancel', { desc, editId });
+  }
+  const el = clicked || findAll(desc)[0];
   // The editor is waiting for this edit to end: tell it there is nothing to edit.
   if (!el) return send('textCancel', { desc, editId });
   if (editing) commitEdit();
   // Typed text shown there from the inspector gives way to the page's own text, which the edit then works on.
   restoreDraft(el);
+  // The page's own text can have replaced typed text shown there: the word is found again in the same words, and
+  // otherwise the edit starts with a caret at the end.
+  let node = hit && hit.at && hit.at.node.deref();
+  // The words under the pointer changed before the editor answered: the word clicked is no longer there.
+  if (node && el.contains(node) && node.nodeValue !== hit.at.text) return send('textCancel', { desc, editId });
+  if (node && !el.contains(node)) node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue === hit.at.text);
   const rich = el.classList.contains('so-rich');
-  // selectedAll: the whole text is still selected as the edit began (until a key or a press inside it).
   // before: the plain text shown as the edit began, so the editor can tell what the author typed over.
-  editing = { el, desc, editId, original: el.innerHTML, rich, selectedAll: true, before: rich ? null : el.innerText.replace(/\s+/g, ' ').trim() };
+  editing = { el, desc, editId, original: el.innerHTML, rich, before: rich ? null : el.innerText.replace(/\s+/g, ' ').trim() };
   // Rich text keeps its bold, italic (⌘B, ⌘I) and links (⌘K); everything else is plain text.
   el.setAttribute('contenteditable', rich ? 'true' : 'plaintext-only');
   el.setAttribute('spellcheck', 'true');
   el.style.outline = 'none';
   el.style.cursor = 'text';
   el.focus();
-  const range = document.createRange();
-  range.selectNodeContents(el);
+  let range;
+  if (node && el.contains(node)) range = wordRange(el, node, hit.at);
+  else {
+    range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+  }
   const s = getSelection();
   s.removeAllRanges();
   s.addRange(range);
@@ -812,34 +922,9 @@ function beginTextEdit(desc, editId) {
   el.addEventListener('input', scheduleRects);
   el.addEventListener('paste', onEditPaste);
   el.addEventListener('drop', onEditDrop);
-  el.addEventListener('pointerdown', onEditPress);
-  // Edit → Select All, which reaches the text with no key or press: the selection is now the author's.
-  el.addEventListener('selectstart', onEditSelectStart);
   send('textEditStarted', { desc });
 }
-/**
- * A right-click (or Control-click) on text the edit selected when it began goes to the word under the pointer,
- * as it does anywhere else in the text: kept inside the whole selection, it would get no spelling suggestions.
- * A selection the author made is left for Cut and Copy.
- */
-function onEditPress(e) {
-  if (!editing) return;
-  const fresh = editing.selectedAll;
-  editing.selectedAll = false;
-  if (!fresh || !(e.button === 2 || (IS_MAC && e.button === 0 && e.ctrlKey))) return;
-  const at = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
-  if (!at || !editing.el.contains(at.startContainer)) return;
-  const s = getSelection();
-  s.removeAllRanges();
-  s.addRange(at);
-}
-function onEditSelectStart() {
-  if (editing) editing.selectedAll = false;
-}
-/** Keys that only hold a modifier (Control before a Control-click) leave the selection as it is. */
-const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'CapsLock', 'Fn']);
 function onEditKey(e) {
-  if (editing && !MODIFIER_KEYS.has(e.key)) editing.selectedAll = false;
   e.stopPropagation();
   // Keys that compose a character (an IME, a dead key for an accent) belong to the composition.
   if (e.isComposing || e.keyCode === 229) return;
@@ -961,11 +1046,181 @@ function applyLink(raw) {
   closeLinkEditor(true);
   document.execCommand('createLink', false, href);
 }
-/** Pasted content arrives as plain text: formatting, images and markup from elsewhere never get in. */
+/**
+ * Paste. Into rich text, formatting copied from elsewhere comes in as far as the text can hold it: paragraphs,
+ * headings, quotes, lists, bold, italic, links and line breaks, rebuilt from scratch so nothing else gets in
+ * (styles, classes, images, scripts). Paste and Match Style hands the page the plain text alone, and pastes plain
+ * words. Plain text takes the words alone, on one line. Either way it is one step of the text's own undo.
+ */
 function onEditPaste(e) {
   e.preventDefault();
-  const text = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
-  document.execCommand('insertText', false, editing && !editing.rich ? text.replace(/\s+/g, ' ') : text);
+  if (!editing) return;
+  const data = e.clipboardData;
+  const html = editing.rich && data ? pastedRich(data.getData('text/html')) : '';
+  if (html) {
+    document.execCommand('insertHTML', false, html);
+    return;
+  }
+  const text = (data && data.getData('text/plain')) || '';
+  // Nothing to paste (an image alone): the selection stays as it is.
+  if (!text) return;
+  document.execCommand('insertText', false, editing.rich ? text : text.replace(/\s+/g, ' '));
+}
+
+/** Pasted elements dropped with everything inside them. */
+const PASTE_DROP = new Set(['HEAD', 'TITLE', 'META', 'LINK', 'BASE', 'STYLE', 'SCRIPT', 'TEMPLATE', 'NOSCRIPT', 'IFRAME', 'FRAME', 'OBJECT', 'EMBED', 'APPLET', 'SVG', 'MATH', 'CANVAS', 'IMG', 'PICTURE', 'VIDEO', 'AUDIO', 'MAP', 'AREA', 'INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'OPTION', 'DIALOG']);
+/** Pasted blocks, as the rich text holds them. Anything else is read for its text, marks and links. */
+const PASTE_BLOCKS = { P: 'p', DIV: 'p', SECTION: 'p', ARTICLE: 'p', HEADER: 'p', FOOTER: 'p', MAIN: 'p', ASIDE: 'p', NAV: 'p', ADDRESS: 'p', PRE: 'p', FIGURE: 'p', FIGCAPTION: 'p', DL: 'p', DT: 'p', DD: 'p', TR: 'p', CAPTION: 'p', H1: 'h3', H2: 'h3', H3: 'h3', H4: 'h4', H5: 'h4', H6: 'h4', BLOCKQUOTE: 'blockquote', UL: 'ul', OL: 'ol', LI: 'li' };
+const HTML_NS = 'http://www.w3.org/1999/xhtml';
+
+/**
+ * A copied link's address as the rich text can store it, or '' when it cannot: its words are then pasted unlinked.
+ * A link to one of this site's pages copied from the preview is a link to that page. The editor checks the address
+ * again, and finds the page for a route, when the edit is committed.
+ */
+function pastedHref(raw) {
+  let href = raw.trim();
+  if (/^https?:\/\//i.test(href)) {
+    try {
+      const url = new URL(href);
+      if (url.origin === location.origin) href = url.pathname + url.hash;
+    } catch {
+      return '';
+    }
+  }
+  const storable =
+    /^https?:\/\/[^\s<>"]+$/i.test(href) ||
+    /^mailto:[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/i.test(href) ||
+    /^tel:[+0-9 ().-]{3,30}$/i.test(href) ||
+    /^#[A-Za-z][\w-]*$/.test(href) ||
+    /^\/(?!\/)[^\s<>"]*$/.test(href);
+  return storable && href.length <= 2000 ? href : '';
+}
+
+/**
+ * Copied HTML as markup the rich text can hold, or '' when it holds no words. It is read in one pass, in reading
+ * order, as lines: each block (a paragraph, heading, quote or list item) is a line of its own, a block inside a list item, quote or heading is another line of that kind, and the items
+ * of a list inside a list join the outer one, as the rich text holds them. Every element written is a new one:
+ * only these blocks, bold, italic, line breaks, and a link's address and new tab.
+ */
+function pastedRich(html) {
+  if (!html || html.length > 2000000) return '';
+  // Parsed inert (nothing runs or loads), from inside a body: what comes before the copy's own body (comments, Word's
+  // conditional blocks) lands there too, never in the document itself, which Chromium is slow to add many nodes to.
+  const src = new DOMParser().parseFromString(`<body>${html}`, 'text/html').body;
+  /** { kind: '' (words outside any block) | 'p' | 'h3' | 'h4' | 'blockquote' | 'li', list, runs: [{ text } | { br }] with marks } */
+  const lines = [];
+  let line = null;
+  const add = (ctx, run) => {
+    if (!line) {
+      line = { kind: ctx.kind, list: ctx.list, runs: [] };
+      lines.push(line);
+    }
+    line.runs.push(run);
+  };
+  const walk = (n, ctx, m) => {
+    if (n.nodeType === Node.TEXT_NODE) {
+      const parts = m.pre ? n.nodeValue.split(/\r?\n/) : [n.nodeValue.replace(/[ \t\r\n\f]+/g, ' ')];
+      parts.forEach((text, i) => {
+        if (i) add(ctx, { br: true, m });
+        if (text) add(ctx, { text, m });
+      });
+      return;
+    }
+    // SVG and MathML (their titles and labels included) are not text.
+    if (n.nodeType !== Node.ELEMENT_NODE || n.namespaceURI !== HTML_NS || PASTE_DROP.has(n.tagName)) return;
+    if (n.tagName === 'BR') return add(ctx, { br: true, m });
+    const inner = { ...m };
+    const style = n.style || {};
+    const weight = style.fontWeight;
+    if (n.tagName === 'B' || n.tagName === 'STRONG' || n.tagName === 'TH') inner.strong = true;
+    // Google Docs wraps a whole copy in <b style="font-weight:normal">, and marks bold words with a style instead.
+    if (weight) inner.strong = weight === 'bold' || weight === 'bolder' || Number(weight) >= 600;
+    if (n.tagName === 'I' || n.tagName === 'EM') inner.em = true;
+    if (style.fontStyle) inner.em = style.fontStyle === 'italic' || style.fontStyle === 'oblique';
+    if (n.tagName === 'A') {
+      const href = pastedHref(n.getAttribute('href') || '');
+      if (href) {
+        inner.href = href;
+        inner.newTab = n.getAttribute('target') === '_blank';
+      } else delete inner.href;
+    }
+    if (n.tagName === 'PRE') inner.pre = true;
+    const kind = PASTE_BLOCKS[n.tagName];
+    // A table cell's words stay apart from the next cell's.
+    if ((n.tagName === 'TD' || n.tagName === 'TH') && line && line.runs.length) add(ctx, { text: ' ', m });
+    let within = ctx;
+    if (kind === 'ul' || kind === 'ol') within = { kind: 'li', list: ctx.list || kind };
+    // A list item copied without its list is a paragraph.
+    else if (kind === 'li') within = ctx.list ? { kind: 'li', list: ctx.list } : { kind: 'p', list: '' };
+    else if (kind) within = ctx.kind === 'li' || ctx.kind === 'blockquote' || ctx.kind === 'h3' || ctx.kind === 'h4' ? ctx : { kind, list: '' };
+    // A block starts a line of its own, and what follows it starts another.
+    if (kind) line = null;
+    for (const c of n.childNodes) walk(c, within, inner);
+    if (kind) line = null;
+  };
+  for (const c of src.childNodes) walk(c, { kind: '', list: '' }, {});
+
+  /** A line without the spacing a page collapses at its ends (a non-breaking space stays); null when it holds no words. */
+  const trimmed = (l) => {
+    const spacing = (r) => r.text !== undefined && !/[^ \t\r\n\f]/.test(r.text);
+    let a = 0;
+    let b = l.runs.length;
+    while (a < b && spacing(l.runs[a])) a++;
+    while (b > a && spacing(l.runs[b - 1])) b--;
+    const runs = l.runs.slice(a, b);
+    return runs.some((r) => r.text !== undefined && /\S/.test(r.text)) ? { ...l, runs } : null;
+  };
+  const kept = lines.map(trimmed).filter(Boolean);
+  if (!kept.length) return '';
+  /** Text or a break inside its marks and link, joining the run before it where that has the same ones. */
+  const put = (parent, node, m) => {
+    let host = parent;
+    const wraps = [m.href !== undefined && 'A', m.strong && 'STRONG', m.em && 'EM'].filter(Boolean);
+    for (const tag of wraps) {
+      const last = host.lastChild;
+      const same = last && last.nodeType === Node.ELEMENT_NODE && last.tagName === tag && (tag !== 'A' || (last.getAttribute('href') === m.href && last.hasAttribute('target') === !!m.newTab));
+      if (same) host = last;
+      else {
+        const w = document.createElement(tag);
+        if (tag === 'A') {
+          w.setAttribute('href', m.href);
+          if (m.newTab) w.setAttribute('target', '_blank');
+        }
+        host.appendChild(w);
+        host = w;
+      }
+    }
+    host.appendChild(node);
+  };
+  const fill = (el, runs) => {
+    for (const r of runs) put(el, r.br ? document.createElement('br') : document.createTextNode(r.text), r.m);
+  };
+  const out = document.createElement('div');
+  // Words alone, outside any block, go into the paragraph at the caret; a <br> that ended them showed nothing.
+  if (kept.length === 1 && !kept[0].kind) {
+    const runs = kept[0].runs;
+    fill(out, runs[runs.length - 1].br ? runs.slice(0, -1) : runs);
+    return out.innerHTML;
+  }
+  let list = null;
+  for (const l of kept) {
+    if (l.kind === 'li') {
+      if (!list || list.tagName.toLowerCase() !== l.list) {
+        list = document.createElement(l.list);
+        out.appendChild(list);
+      }
+      const item = document.createElement('li');
+      list.appendChild(item);
+      fill(item, l.runs);
+    } else {
+      list = null;
+      const block = document.createElement(l.kind || 'p');
+      out.appendChild(block);
+      fill(block, l.runs);
+    }
+  }
+  return out.innerHTML;
 }
 function onEditDrop(e) {
   e.preventDefault();
@@ -982,8 +1237,6 @@ function endEdit() {
   el.removeEventListener('input', scheduleRects);
   el.removeEventListener('paste', onEditPaste);
   el.removeEventListener('drop', onEditDrop);
-  el.removeEventListener('pointerdown', onEditPress);
-  el.removeEventListener('selectstart', onEditSelectStart);
   editing = null;
   getSelection()?.removeAllRanges();
   // The edited element no longer takes typing, but keeps focus without a focus event.
@@ -1020,9 +1273,10 @@ function commitEdit(detached = false) {
 function richCopy(root) {
   let budget = 4000;
   const copy = (n, depth) => {
+    // Only what goes in the copy counts: a page has a comment for every piece of text Svelte renders.
+    if (n.nodeType !== 1 && n.nodeType !== 3) return null;
     if (budget-- <= 0 || depth > 16) throw new Error('too large');
     if (n.nodeType === 3) return n.nodeValue;
-    if (n.nodeType !== 1) return null;
     const out = { tag: n.tagName.toLowerCase(), children: [] };
     const w = n.style && n.style.fontWeight;
     if (w) out.b = w === 'bold' || w === 'bolder' || Number(w) >= 600;
@@ -1274,6 +1528,8 @@ window.addEventListener('message', async (e) => {
     case 'mode':
       mode = m.payload.mode === 'preview' ? 'preview' : 'edit';
       formEpoch++;
+      // A double-click from before the change starts nothing after it.
+      pendingHit = null;
       if (editing) commitEdit();
       document.documentElement.toggleAttribute('data-so-editing', mode === 'edit');
       // A full-size image a visitor opened in Preview is a modal: it would cover the page being edited.
@@ -1334,7 +1590,7 @@ window.addEventListener('message', async (e) => {
       setReveal(m.payload.target);
       break;
     case 'beginTextEdit':
-      beginTextEdit(m.payload.desc, m.payload.editId);
+      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit);
       break;
     // The editor is saving, or leaving the project: hand back the text being edited, as leaving it would. A
     // link still being typed is left out, as moving focus away does (a link already there keeps its address),

@@ -336,7 +336,9 @@ export function Canvas() {
             pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]), base: getState().snapshot, ai: aiActivity() });
             inlineEdit.active = true;
             markDraft(CANVAS_DRAFT, true);
-            post('beginTextEdit', { desc, editId });
+            // The double-click it answers, so the edit starts at the word clicked (and not after a newer one).
+            const hit = typeof p.hit === 'string' && p.hit.length <= 20 ? p.hit : undefined;
+            post('beginTextEdit', { desc, editId, hit });
           } else if (ref) {
             setState({ selection: ref, rightTab: 'inspect' });
             const r = resolveRef(st, ref);
