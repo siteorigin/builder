@@ -16,6 +16,7 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { nestingProblems, tagOptions, tagProblem } from '@engine/semantic-tags';
 import { defFile, generateProject } from '@generator/index';
+import { ELEMENT_TAG_GROUPS, TEXT_TAG_GROUPS, tagSelectOptions } from '../../src/renderer/src/lib/tag-options';
 
 const { managed } = FOUNDATION;
 const blank = () => createStarterState('blank', 'Blank', false);
@@ -336,6 +337,23 @@ describe('the Inspector’s choices (#189)', () => {
     const text = tagOptions(s, o, 'n_text0001');
     expect(text.map((x) => x.tag)).toEqual([...TEXT_TAGS]);
     expect(text.filter((x) => x.problem).map((x) => x.tag)).toEqual(['dt', 'dd', 'figcaption']);
+  });
+});
+
+describe('the tag select (#189)', () => {
+  it('names every tag once, so a stored tag always has its option', () => {
+    expect(TEXT_TAG_GROUPS.flatMap((g) => g.tags.map(([t]) => t)).sort()).toEqual([...TEXT_TAGS].sort());
+    expect(ELEMENT_TAG_GROUPS.flatMap((g) => g.tags.map(([t]) => t)).sort()).toEqual([...ELEMENT_TAGS].sort());
+    for (const tag of TEXT_TAGS) expect(tagSelectOptions('text', tag, new Map()), tag).toMatchObject({ value: tag, unknown: null });
+    for (const tag of ELEMENT_TAGS) expect(tagSelectOptions('element', tag, new Map()), tag).toMatchObject({ value: tag, unknown: null });
+  });
+
+  it('shows a tag this version doesn’t offer as the one the node has, and marks tags that don’t fit', () => {
+    expect(tagSelectOptions('text', 'marquee', new Map())).toMatchObject({ value: 'marquee', unknown: 'marquee' });
+    const { groups } = tagSelectOptions('element', 'div', new Map([['li', 'A container is a list item, so it goes directly inside a list (ul or ol).']]));
+    const options = groups.flatMap((g) => g.options);
+    expect(options.find((o) => o.tag === 'li')).toEqual({ tag: 'li', name: 'List item', problem: expect.stringMatching(/list item/) });
+    expect(options.find((o) => o.tag === 'section')?.problem).toBeNull();
   });
 });
 

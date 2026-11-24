@@ -5,7 +5,7 @@
  */
 import { variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import { isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
+import { TEXT_TAGS, isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
 import { getTree } from '@engine/tree';
@@ -93,12 +93,12 @@ export function selectionTarget(ref: ElementRef | null | undefined): SelectionTa
 
 const choice = (label: string, values: readonly string[]): PropSchema => ({ type: 'enum', label, default: values[0], options: values.map((value) => ({ value, label: value })) });
 /** The tags the engine lets a plain text element change to. */
-const TEXT_TAG_CHOICES = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'] as const;
+const TEXT_TAG_CHOICES = TEXT_TAGS;
 const APPEARANCES: readonly ButtonAppearance[] = ['primary', 'secondary', 'text', 'light', 'link', 'plain'];
 
 /** Content fields of a basic element, expressed as properties so one tool edits every kind of selection. */
 const NODE_FIELDS: Partial<Record<GraphNode['kind'], Record<string, PropSchema>>> = {
-  text: { text: { type: 'string', label: 'Text', default: '', multiline: true, maxLength: 20000 }, tag: choice('Heading level or paragraph', TEXT_TAG_CHOICES) },
+  text: { text: { type: 'string', label: 'Text', default: '', multiline: true, maxLength: 20000 }, tag: choice('HTML tag: heading level, paragraph, or inline, quote, term or caption text', TEXT_TAG_CHOICES) },
   image: { image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } },
   link: {
     label: { type: 'string', label: 'Button label', default: '' },

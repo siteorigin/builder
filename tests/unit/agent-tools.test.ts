@@ -1101,10 +1101,11 @@ describe('selection tools', () => {
       [
         (req) => {
           const props = (req.tools[0].parameters.properties as { props: { properties: Record<string, { enum?: string[] }> } }).props.properties;
-          expect(props.tag.enum).toEqual(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p']);
+          // Every plain text tag the engine takes (#189).
+          expect(props.tag.enum).toEqual(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'small', 'strong', 'blockquote', 'div', 'cite', 'dt', 'dd', 'figcaption']);
           return [call('t1', 'update_selected_props', { props: { tag: 'h2' } })];
         },
-        () => [call('t2', 'update_selected_props', { props: { tag: 'span' } })],
+        () => [call('t2', 'update_selected_props', { props: { tag: 'section' } })],
         () => finish(),
         (req) => {
           const props = (req.tools[0].parameters.properties as { props: { properties: Record<string, { enum?: string[] }> } }).props.properties;

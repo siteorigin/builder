@@ -32,7 +32,7 @@ import {
   Trash2,
   Users
 } from 'lucide-react';
-import type { ComponentDefinition, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue, TextNode } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
@@ -54,6 +54,7 @@ import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, 
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
+import { TagField } from './TagField';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, placedOnPage, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
@@ -367,7 +368,9 @@ const doneEditing = () => {
 function elementKind(node: GraphNode): { name: string; icon: ReactNode } {
   switch (node.kind) {
     case 'text':
-      return node.tag === 'p' || node.rich ? { name: 'Paragraph', icon: <Pilcrow /> } : { name: 'Heading', icon: <Heading /> };
+      if (node.rich) return { name: 'Rich text', icon: <Pilcrow /> };
+      if (typeof node.tag === 'string' && /^h[1-6]$/.test(node.tag)) return { name: 'Heading', icon: <Heading /> };
+      return node.tag === 'p' ? { name: 'Paragraph', icon: <Pilcrow /> } : { name: 'Text', icon: <Pilcrow /> };
     case 'image':
       return { name: 'Image', icon: <ImageIcon /> };
     case 'link':
@@ -1565,17 +1568,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
       <Section title="Content" id="prim-content" level={LEVEL}>
         {node.kind === 'text' && (
           <>
-            {!node.rich && !isBinding(node.tag) && (
-              <Field label="Type">
-                <select className="select" value={node.tag} onChange={(e) => content('tag', e.target.value)}>
-                  {['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'].map((tg) => (
-                    <option key={tg} value={tg}>
-                      {tg === 'p' ? 'Paragraph' : `Heading ${tg.slice(1)}`}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
+            {!node.rich && !isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
             <div data-field="text" style={{ display: 'contents' }}>
               {node.rich && !isBinding(node.text) ? (
                 <Field label="Text" hint="Or double-click the text on the page to edit it there." controlId={`${node.id}-text`}>
@@ -1632,7 +1625,14 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
             <IconPicker id={iconId} value={isBinding(node.icon) ? 'sparkles' : String(node.icon)} onChange={(v) => content('icon', v)} />
           </Field>
         )}
-        {node.kind === 'element' && <p className="faint insp-note">A container with {node.children.length} item{node.children.length === 1 ? '' : 's'}. With it selected, add elements inside it from Insert.</p>}
+        {node.kind === 'element' && (
+          <>
+            {!isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
+            <p className="faint insp-note">
+              A container with {node.children.length} item{node.children.length === 1 ? '' : 's'}. With it selected, add elements inside it from Insert.
+            </p>
+          </>
+        )}
       </Section>
       <Section title="Style" id="prim-style" level={LEVEL} scope={countStyles(node.styles) ? changes(countStyles(node.styles)) : undefined}>
         <StyleControls
@@ -1747,15 +1747,20 @@ function ForwardedDefault({ state, def, binding }: { state: ProjectState; def: C
 function DesignContentSection({ state, def, node }: { state: ProjectState; def: ComponentDefinition; node: GraphNode }) {
   const iconId = useId();
   const fields = designContent(def, node);
-  if (!fields.length) return null;
+  const tag = designTag(def, node);
+  if (!fields.length && !tag) return null;
   const kind = elementKind(node).name;
   const set = (f: DesignContent, label: string) => (v: unknown, edit?: PendingEdit) => void applyWith(edit, [designContentOp(def, node.id, f.field, v)], label, `${def.id}:${node.id}:${f.field}`);
+  // The design's own tag, or the default of the choice each placement makes: either way the node's tag edit.
+  const setTag = (v: unknown, edit?: PendingEdit) => void applyWith(edit, [{ type: 'node.setContent', owner: { kind: 'component', id: def.id }, nodeId: node.id, field: 'tag', value: v }], 'Edit tag everywhere', `${def.id}:${node.id}:tag`);
   const items = fields.filter((f): f is Extract<DesignContent, { source: 'item' }> => f.source === 'item');
   const list = items[0]?.list ? (def.properties[items[0].list] as ListProp | undefined) : undefined;
-  const sources = new Set(fields.map((f) => f.source));
+  const sources = new Set([...fields.map((f) => f.source), ...(tag ? [tag.source] : [])]);
   const scope = sources.size > 1 ? undefined : sources.has('design') ? 'Same in every placement' : sources.has('default') ? 'Filled in on each placement' : `Each ${list?.itemLabel.toLowerCase() ?? 'item'}`;
   return (
     <Section title="Content" id="def-content" level={LEVEL} scope={scope}>
+      {tag?.source === 'design' && <TagField state={state} owner={{ kind: 'component', id: def.id }} node={tag.node} onChange={(v) => setTag(v)} hint={sources.size > 1 ? 'Same in every placement.' : undefined} />}
+      {tag?.source === 'default' && <DefaultField state={state} def={def} prop={tag.prop} schema={tag.schema} label="Default tag" onChange={setTag} />}
       {fields.map((f) => {
         if (f.source === 'item') return null;
         if (f.source === 'default') return <DefaultField key={f.field} state={state} def={def} prop={f.prop} schema={f.schema} label={f.field === 'label' ? `${kind} text` : undefined} onChange={set(f, `Edit ${f.schema.label} default`)} />;
@@ -1820,6 +1825,18 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
       )}
     </Section>
   );
+}
+
+/**
+ * The tag of a container or plain text in a component's design, and who owns it: fixed in the design, or the default
+ * of the choice it is bound to (each placement chooses its own). A tag each list item sets is changed with the list.
+ */
+function designTag(def: ComponentDefinition, node: GraphNode): { source: 'design'; node: ElementNode | TextNode } | { source: 'default'; prop: string; schema: ScalarPropSchema } | null {
+  if (node.kind !== 'element' && !(node.kind === 'text' && !node.rich)) return null;
+  if (!isBinding(node.tag)) return { source: 'design', node };
+  if (!('$prop' in node.tag)) return null;
+  const schema = Object.hasOwn(def.properties, node.tag.$prop) ? def.properties[node.tag.$prop] : undefined;
+  return schema?.type === 'enum' ? { source: 'default', prop: node.tag.$prop, schema } : null;
 }
 
 /** A component placed in the design: the inputs the design gives it, the same in every placement. */
