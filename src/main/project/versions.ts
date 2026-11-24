@@ -6,17 +6,20 @@
  * place since is still held as it was.
  */
 import { randomBytes } from 'node:crypto';
-import { constants, existsSync, promises as fs } from 'node:fs';
+import { constants, promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { atomicWrite, ensureDir, sha, syncDir, toJson } from './fsutil';
+import { atomicWrite, ensureDir, removeDurable, sha, syncDir, toJson } from './fsutil';
 import { isCanonicalPath } from './documents';
 
 /** The format of versions.json. A newer one is left alone: nothing is saved, deleted or collected. */
 export const VERSIONS_FORMAT = 1;
 /** The longest name a version can have. */
 export const VERSION_NAME_MAX = 80;
-/** A media file a version can hold: one directly in static/assets/, where the asset importer puts them. */
-export const VERSION_MEDIA_RE = /^static\/assets\/(?!\.\.?$)[^/\\\0]+$/;
+/** A media file a version can hold: a public file of the site, anywhere under static/, by a plain relative path. */
+export function isVersionMedia(path: string): boolean {
+  const parts = path.split('/');
+  return parts.length >= 2 && parts[0] === 'static' && parts.slice(1).every((p) => p !== '' && p !== '.' && p !== '..' && !/[\\\0]/.test(p));
+}
 const OBJECT_RE = /^[a-f0-9]{64}$/;
 const ID_RE = /^v[a-z0-9]{6,40}$/;
 /** A copy left by a save that stopped part way is removed once it is this old. */
@@ -62,7 +65,7 @@ function validVersion(v: unknown): v is SavedVersion {
   if (v.auto !== undefined && typeof v.auto !== 'boolean') return false;
   if (!record(v.docs) || !record(v.media)) return false;
   if (!Object.entries(v.docs).every(([p, h]) => isCanonicalPath(p) && typeof h === 'string' && OBJECT_RE.test(h))) return false;
-  return Object.entries(v.media).every(([p, h]) => VERSION_MEDIA_RE.test(p) && (h === null || (typeof h === 'string' && OBJECT_RE.test(h))));
+  return Object.entries(v.media).every(([p, h]) => isVersionMedia(p) && (h === null || (typeof h === 'string' && OBJECT_RE.test(h))));
 }
 
 /** Every object a version needs. */
@@ -92,6 +95,10 @@ export class VersionStore {
 
   private get indexPath() {
     return join(this.root, 'versions.json');
+  }
+  /** Written while a restore puts files back and saves its documents, so a restore that stopped part way is told. */
+  private get restoringPath() {
+    return join(this.root, 'restoring.json');
   }
   private get objectDir() {
     return join(this.root, 'objects');
@@ -130,14 +137,17 @@ export class VersionStore {
     }
   }
 
-  private has(h: string): boolean {
-    return this.sizes.has(h) && existsSync(this.objectPath(h));
+  /** Whether the object is stored whole: a copy cut short (by a full disk, say) is written again rather than reused. */
+  private async has(h: string, bytes: number): Promise<boolean> {
+    if (!this.sizes.has(h)) return false;
+    const st = await fs.stat(this.objectPath(h)).catch(() => null);
+    return !!st?.isFile() && st.size === bytes;
   }
 
   /** Store `buf` (if not already stored) and return its hash. */
   async putBuffer(buf: Buffer): Promise<string> {
     const h = sha(buf);
-    if (this.has(h)) return h;
+    if (await this.has(h, buf.length)) return h;
     await atomicWrite(this.objectPath(h), buf);
     this.sizes.set(h, buf.length);
     return h;
@@ -155,7 +165,7 @@ export class VersionStore {
   async putFile(abs: string): Promise<string> {
     const buf = await fs.readFile(abs);
     const h = sha(buf);
-    if (this.has(h)) return h;
+    if (await this.has(h, buf.length)) return h;
     await ensureDir(this.objectDir);
     const tmp = join(this.objectDir, `.${randomBytes(6).toString('hex')}.tmp`);
     try {
@@ -201,8 +211,43 @@ export class VersionStore {
   /** Replace the index with `next`, durably, then use it. */
   async publish(next: SavedVersion[]): Promise<void> {
     if (this.problem) throw new Error(this.problem);
-    await atomicWrite(this.indexPath, toJson({ format: VERSIONS_FORMAT, versions: next } satisfies VersionsFile));
+    try {
+      await atomicWrite(this.indexPath, toJson({ format: VERSIONS_FORMAT, versions: next } satisfies VersionsFile));
+    } catch (e) {
+      // The new list may be on disk even so (only flushing its folder failed): whatever is there is what counts, so a
+      // collection never takes what it names.
+      await this.load().catch(() => {
+        this.problem = VERSIONS_UNREADABLE;
+      });
+      throw e;
+    }
     this.versions = next;
+  }
+
+  /** Note that a restore of `version` is under way, with the version holding the work it replaces. */
+  async markRestoring(version: string, backup: string): Promise<void> {
+    await atomicWrite(this.restoringPath, toJson({ version, backup, time: new Date().toISOString() }));
+  }
+
+  async clearRestoring(): Promise<void> {
+    await removeDurable(this.restoringPath);
+  }
+
+  /** A restore that stopped part way, if one did: its names, once. */
+  async takeRestoring(): Promise<{ version: string; backup: string } | null> {
+    let text: string;
+    try {
+      text = await fs.readFile(this.restoringPath, 'utf8');
+    } catch {
+      return null;
+    }
+    await removeDurable(this.restoringPath);
+    try {
+      const r = JSON.parse(text) as { version?: unknown; backup?: unknown };
+      return { version: typeof r.version === 'string' ? r.version : 'a saved version', backup: typeof r.backup === 'string' ? r.backup : 'Before restoring' };
+    } catch {
+      return { version: 'a saved version', backup: 'Before restoring' };
+    }
   }
 
   /**

@@ -288,8 +288,10 @@ function registerIpc() {
   handle('project:reviewVersion', (id: unknown, key: unknown) =>
     typeof id === 'string' && typeof key === 'string' ? controller.reviewVersion(id, key) : { ok: false, message: 'That saved version is no longer there.' }
   );
-  handle('project:restoreVersion', (id: unknown, revision: unknown, key: unknown) =>
-    typeof id === 'string' && Number.isInteger(revision) && typeof key === 'string' ? controller.restoreVersion(id, revision as number, key) : { ok: false, message: 'That saved version is no longer there.' }
+  handle('project:restoreVersion', (id: unknown, revision: unknown, files: unknown, key: unknown) =>
+    typeof id === 'string' && Number.isInteger(revision) && Array.isArray(files) && files.every((f) => typeof f === 'string') && typeof key === 'string'
+      ? controller.restoreVersion(id, revision as number, files as string[], key)
+      : { ok: false, message: 'That saved version is no longer there.' }
   );
   handle('project:deleteVersion', (id: unknown, key: unknown) =>
     typeof id === 'string' && typeof key === 'string' ? controller.deleteVersion(id, key) : { ok: false, message: 'That saved version is no longer there.' }

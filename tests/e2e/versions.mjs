@@ -21,6 +21,7 @@ const projectMenu = async (item) => {
 };
 
 step('save a version from the project menu');
+const started = Date.now();
 await projectMenu('Save version…');
 const name = history.getByRole('textbox', { name: 'Version name' });
 await name.waitFor();
@@ -28,6 +29,8 @@ await eventually(async () => assert.equal(await win.evaluate(() => document.acti
 await win.keyboard.type('Approved by client');
 await win.keyboard.press('Enter');
 await eventually(async () => assert.deepEqual(await versionNames(), [['Approved by client', false]]));
+const savedAt = Date.parse((await snapshot()).versions.list[0].time);
+assert.ok(savedAt >= started - 1000 && savedAt <= Date.now(), 'it records when it was saved');
 const row = history.locator('.versions-list li', { hasText: 'Approved by client' });
 await row.waitFor();
 assert.match(await row.innerText(), new RegExp(String(new Date().getFullYear())), 'the row says when it was saved, date included');
@@ -69,16 +72,13 @@ await eventually(async () => {
 });
 
 step('the versions are still there after closing and reopening the project');
-const dir = (await snapshot()).dir;
+const { dir, versions: before } = await snapshot();
 await win.evaluate(() => window.builder.projects.close());
 await win.waitForSelector('.welcome');
 const reopened = await win.evaluate((d) => window.builder.projects.open(d), dir);
 assert.equal(reopened.ok, true, `the project opens: ${reopened.message ?? ''}`);
 await win.waitForSelector('.editor');
-await eventually(async () => assert.deepEqual(await versionNames(), [
-  ['Before restoring “Approved by client”', true],
-  ['Approved by client', false]
-]));
+await eventually(async () => assert.deepEqual((await snapshot()).versions, before, 'the same versions, saved at the same times, holding as much'));
 
 step('delete a version once the author confirms');
 await projectMenu('History…');
@@ -92,6 +92,8 @@ await history.getByRole('button', { name: 'Delete “Approved by client”' }).c
 await confirm.getByRole('button', { name: 'Delete version' }).click();
 await eventually(async () => assert.deepEqual(await versionNames(), [['Before restoring “Approved by client”', true]]));
 await history.locator('.versions-list li', { hasText: 'Approved by client' }).filter({ hasNotText: 'Before restoring' }).waitFor({ state: 'detached' });
+assert.ok(await history.isVisible(), 'History stays open after deleting');
+assert.match(await win.locator('.toast', { hasText: 'Deleted “Approved by client”' }).innerText(), /Deleted/);
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

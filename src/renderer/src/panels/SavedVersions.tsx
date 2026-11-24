@@ -11,13 +11,14 @@ import { describeReview, fileName, restoredNotice, savedAt } from '../lib/versio
 const NAME_MAX = 80;
 
 /** Switches History between its two views: recent changes, and versions saved for good. */
-export function HistoryTabs({ tab }: { tab: 'changes' | 'versions' }) {
+export function HistoryTabs({ tab, busy }: { tab: 'changes' | 'versions'; busy?: boolean }) {
+  // While a save, restore or delete is under way the view stays, so its answer is shown where it was asked.
   return (
     <div className="segmented history-tabs" role="group" aria-label="Show">
-      <button aria-pressed={tab === 'changes'} onClick={() => setState({ modal: { kind: 'history' } })}>
+      <button aria-pressed={tab === 'changes'} disabled={busy} onClick={() => setState({ modal: { kind: 'history' } })}>
         <History aria-hidden="true" /> Changes
       </button>
-      <button aria-pressed={tab === 'versions'} onClick={() => setState({ modal: { kind: 'history', tab: 'versions' } })}>
+      <button aria-pressed={tab === 'versions'} disabled={busy} onClick={() => setState({ modal: { kind: 'history', tab: 'versions' } })}>
         <Bookmark aria-hidden="true" /> Saved versions
       </button>
     </div>
@@ -47,6 +48,12 @@ export function SavedVersionsModal() {
   const blocked = readOnly ?? (snap?.aiBusy ? 'Wait for the AI to finish to save or restore a version.' : (info?.problem ?? null));
   const close = () => setState({ modal: null });
   const nameField = useRef<HTMLInputElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // A review replaces the list, and the button that opened it: its heading takes focus, so it is read out.
+  const reviewing = open?.version.id;
+  useEffect(() => {
+    if (reviewing) heading.current?.focus();
+  }, [reviewing]);
   // Opened from a menu, the menu holds on to focus until it has gone: the name field takes it then.
   useEffect(() => {
     const t = setTimeout(() => {
@@ -64,6 +71,7 @@ export function SavedVersionsModal() {
     setBusy(true);
     setError(null);
     const problem = await settled();
+    if (getState().snapshot?.workspaceKey !== key) return setBusy(false);
     const r = problem ? { ok: false, message: problem } : await api.project.saveVersion(clean, key).catch((err: Error) => ({ ok: false, message: err.message, missing: undefined }));
     setBusy(false);
     if (getState().snapshot?.workspaceKey !== key) return;
@@ -79,7 +87,13 @@ export function SavedVersionsModal() {
     if (!key) return;
     setOpen({ version, review: null });
     setError(note);
-    await settled();
+    // A change that could not be saved would leave the review comparing with something other than the screen.
+    const problem = await settled();
+    if (getState().snapshot?.workspaceKey !== key) return;
+    if (problem) {
+      setOpen(null);
+      return setError(problem);
+    }
     const r = await api.project.reviewVersion(version.id, key).catch((err: Error) => ({ ok: false, message: err.message, review: undefined }));
     if (getState().snapshot?.workspaceKey !== key) return;
     if (!r.ok || !r.review) {
@@ -97,16 +111,19 @@ export function SavedVersionsModal() {
     setBusy(true);
     setError(null);
     const problem = await settled();
-    const r = problem ? { ok: false, message: problem } : await api.project.restoreVersion(version.id, seen.revision, key).catch((err: Error) => ({ ok: false, message: err.message }));
+    if (getState().snapshot?.workspaceKey !== key) return setBusy(false);
+    const r = problem ? { ok: false, message: problem } : await api.project.restoreVersion(version.id, seen.revision, seen.files, key).catch((err: Error) => ({ ok: false, message: err.message }));
     setBusy(false);
     if (getState().snapshot?.workspaceKey !== key) return;
     // The project changed since the review (a field still being typed in landed, say): show what restoring does now.
     if ('stale' in r && r.stale) return void review(version, r.message ?? null);
     if (!r.ok) return setError(r.message ?? 'The version could not be restored.');
-    close();
+    // Only this view closes: the author may have moved on to another dialog meanwhile.
+    const m = getState().modal;
+    if (m?.kind === 'history' && m.tab === 'versions') close();
     if ('unchanged' in r && r.unchanged) return toast(`Your site already matches “${version.name}”.`, 'info');
-    const done = r as { entryId?: string; revision?: number; backup?: { name: string } };
-    toast(restoredNotice(version.name, !!done.backup), 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
+    const done = r as { entryId?: string; revision?: number; backup?: { name: string }; replaced?: number };
+    toast(restoredNotice(version.name, !!done.backup, done.replaced ?? 0), 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
   };
 
   const remove = async (version: SavedVersionInfo) => {
@@ -114,7 +131,7 @@ export function SavedVersionsModal() {
     if (!key || busy) return;
     const yes = await confirmDialog({
       title: 'Delete saved version?',
-      body: `“${version.name}” will be deleted for good${version.bytes ? `, freeing ${formatBytes(version.bytes)}` : ''}. Your site and its undo history stay as they are.`,
+      body: `“${version.name}” will be deleted for good${version.bytes ? `, freeing up to ${formatBytes(version.bytes)}` : ''}. Your site and its undo history stay as they are.`,
       confirmLabel: 'Delete version',
       danger: true
     });
@@ -157,10 +174,12 @@ export function SavedVersionsModal() {
         )
       }
     >
-      <HistoryTabs tab="versions" />
+      <HistoryTabs tab="versions" busy={busy} />
       {open ? (
         <div className="version-review" data-testid="version-review">
-          <h3 className="ellipsis">{open.version.name}</h3>
+          <h3 className="ellipsis" ref={heading} tabIndex={-1}>
+            {open.version.name}
+          </h3>
           <p className="muted">
             Saved {savedAt(open.version.time)}
             {open.version.auto ? ' by SiteOrigin Builder, just before a restore' : ''}
@@ -188,7 +207,13 @@ export function SavedVersionsModal() {
                   {plural(r.missing.length, 'file was', 'files were')} missing when it was saved, so restoring can’t bring {r.missing.length === 1 ? 'it' : 'them'} back: {r.missing.map(fileName).join(', ')}.
                 </p>
               )}
-              <p className="muted">Your current work is saved first as a version of its own, and Undo takes the restore back in one step.</p>
+              {r.replaced.length > 0 ? (
+                <p className="muted">
+                  Your current work is saved first as a version of its own. Undo takes back the pages and settings in one step, but not the {plural(r.replaced.length, 'file', 'files')} it replaces: restore that saved work to get {r.replaced.length === 1 ? 'it' : 'them'} back.
+                </p>
+              ) : (
+                <p className="muted">Your current work is saved first as a version of its own, and Undo takes the restore back in one step.</p>
+              )}
             </>
           )}
           {(error || (r && blocked)) && (
@@ -203,7 +228,7 @@ export function SavedVersionsModal() {
             Save a version before a redesign or a review. It keeps every page, style and component, with the images and fonts they use, until you delete it. Changes only reach back 100 steps.
           </p>
           <form className="version-save" onSubmit={(e) => void save(e)}>
-            <input ref={nameField} className="input" aria-label="Version name" data-autofocus placeholder="Name, such as “Approved by client”" maxLength={NAME_MAX} value={name} disabled={!!blocked || busy} onChange={(e) => setName(e.target.value)} />
+            <input ref={nameField} className="input" aria-label="Version name" data-autofocus={blocked ? undefined : true} placeholder="Name, such as “Approved by client”" maxLength={NAME_MAX} value={name} disabled={!!blocked || busy} onChange={(e) => setName(e.target.value)} />
             <button className="btn btn-primary" type="submit" disabled={!!blocked || busy || !name.trim()}>
               {busy ? <Spinner decorative /> : <BookmarkPlus />} Save version
             </button>
@@ -241,7 +266,7 @@ export function SavedVersionsModal() {
                 ))}
               </ol>
               <p className="muted version-total">
-                {plural(list.length, 'saved version takes', 'saved versions take')} {formatBytes(info?.bytes ?? 0)}. The size beside each is what deleting it frees: what it shares with another saved version stays.
+                {plural(list.length, 'saved version takes', 'saved versions take')} up to {formatBytes(info?.bytes ?? 0)}. The size beside each is the most deleting it frees: what it shares with another saved version stays.
               </p>
             </>
           )}

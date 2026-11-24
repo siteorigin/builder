@@ -28,13 +28,20 @@ export function describeReview(r: VersionReview): string[] {
   if (r.styles) lines.push('Changes site styles: colors, fonts and spacing');
   if (r.components) lines.push(`Changes ${plural(r.components, 'component', 'components')}`);
   if (r.library) lines.push('Changes the images and fonts in the library');
-  if (r.files.length) lines.push(`Puts back ${plural(r.files.length, 'file', 'files')} the site uses`);
+  const missing = r.files.length - r.replaced.length;
+  if (missing) lines.push(`Puts back ${plural(missing, 'file', 'files')} the site uses`);
+  if (r.replaced.length) lines.push(`Replaces ${plural(r.replaced.length, 'file', 'files')} changed since it was saved: ${r.replaced.map(fileName).join(', ')}`);
   return lines;
 }
 
-/** The notice after a restore: what came back, and that the work it replaced is kept. */
-export function restoredNotice(name: string, kept: boolean): string {
-  return kept ? `Restored “${name}”. Your work from before is kept in Saved versions.` : `Restored “${name}”.`;
+/**
+ * The notice after a restore: what came back, and that the work it replaced is kept. Undo takes back documents only,
+ * so files the restore put over others are pointed to the saved work from before.
+ */
+export function restoredNotice(name: string, kept: boolean, replaced = 0): string {
+  if (!kept) return `Restored “${name}”.`;
+  if (!replaced) return `Restored “${name}”. Your work from before is kept in Saved versions.`;
+  return `Restored “${name}”. Undo won’t bring back the ${plural(replaced, 'file', 'files')} it replaced, but your work from before, kept in Saved versions, has ${replaced === 1 ? 'it' : 'them'}.`;
 }
 
 /** A file named by its own name, for lists of missing files. */
