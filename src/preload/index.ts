@@ -118,4 +118,4 @@ const api: BuilderApi = {
 
 contextBridge.exposeInMainWorld('builder', api);
 // Development-only hooks; the main process registers these handlers only in unpackaged builds.
-contextBridge.exposeInMainWorld('builderTest', { exportStatic: invoke('test:exportStatic'), exportSource: invoke('test:exportSource'), previewComponent: invoke('test:previewComponent'), thumbCaptures: invoke('test:thumbCaptures') });
+contextBridge.exposeInMainWorld('builderTest', { exportStatic: invoke('test:exportStatic'), exportSource: invoke('test:exportSource'), previewComponent: invoke('test:previewComponent'), thumbCaptures: invoke('test:thumbCaptures'), inspectLayout: invoke('test:inspectLayout') });

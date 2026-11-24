@@ -72,6 +72,22 @@ const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
  * Show components in isolated preview frames in the editor window, step by step (see ComponentPreviewStep), and give
  * back what each frame reported.
  */
+/** Measure a page in the editor's hidden preview frame at `width` CSS px (see the renderer's runInspection). */
+function inspectLayout(pageId: string, width: number): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const requestId = Math.random().toString(36).slice(2);
+    const timer = setTimeout(() => {
+      pendingInspections.delete(requestId);
+      reject(new Error('The preview did not respond in time.'));
+    }, 50000); // The renderer may load the page twice (two 20s attempts plus a pause) before answering.
+    pendingInspections.set(requestId, (r) => {
+      clearTimeout(timer);
+      resolve(r);
+    });
+    controller.send('inspect:request', { requestId, pageId, width });
+  });
+}
+
 function previewComponents(steps: ComponentPreviewStep[]): Promise<ComponentPreviewResult[]> {
   return new Promise((resolve, reject) => {
     const requestId = Math.random().toString(36).slice(2);
@@ -163,19 +179,7 @@ const orchestrator = new Orchestrator({
   adapter: orchestratorDeps.adapter,
   emit: (e) => controller.send('ai:event', e),
   compileAll: async (): Promise<Diagnostic[]> => (controller.session ? compileProject(controller.session.state) : []),
-  inspectLayout: (pageId, width) =>
-    new Promise((resolve, reject) => {
-      const requestId = Math.random().toString(36).slice(2);
-      const timer = setTimeout(() => {
-        pendingInspections.delete(requestId);
-        reject(new Error('The preview did not respond in time.'));
-      }, 50000); // The renderer may load the page twice (two 20s attempts plus a pause) before answering.
-      pendingInspections.set(requestId, (r) => {
-        clearTimeout(timer);
-        resolve(r);
-      });
-      controller.send('inspect:request', { requestId, pageId, width });
-    }),
+  inspectLayout,
   onBusyChange: () => controller.broadcast(),
   codeEnabled: async () => (await loadSettings()).settings.developerMode
 });
@@ -369,6 +373,7 @@ function registerIpc() {
     handle('test:exportSource', (dest: string, format?: unknown) => controller.exportSourceTo(dest, format === 'zip' ? 'zip' : 'folder'));
     handle('test:previewComponent', (steps: unknown) => previewComponents(Array.isArray(steps) ? (steps as ComponentPreviewStep[]) : []));
     handle('test:thumbCaptures', () => controller.thumbs.captures);
+    handle('test:inspectLayout', (pageId: unknown, width: unknown) => inspectLayout(String(pageId), Number.isFinite(width) ? Math.min(4000, Math.max(200, Math.round(width as number))) : 390));
   }
   handle('ai:providers', () => providerStatuses());
   handle('ai:setKey', async (p: ProviderId, key: string | null) => {
