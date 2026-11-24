@@ -222,6 +222,12 @@ describe.skipIf(!browserInstalled)('the video player in a browser', () => {
       await settle(site);
       expect(await frames(site)).toBe(0);
       expect(await site.getByRole('button', { name: /Loads the player from YouTube/ }).count()).toBe(1);
+      // Through an empty address and back: still its button.
+      await site.evaluate(`window.setVideo('')`);
+      await expect.poll(() => site.getByRole('button').count()).toBe(0);
+      await site.evaluate(`window.setVideo('https://youtu.be/${YT}')`);
+      await settle(site);
+      expect(await frames(site)).toBe(0);
       expect(hosts).toEqual([PLAYER]);
     } finally {
       await page.close();

@@ -4,7 +4,7 @@ import { P } from '../dsl';
 import { FOUNDATION } from './pack';
 
 /**
- * Video: one YouTube or Vimeo video in a 16:9 frame, under an optional heading. A theme code component, because
+ * Video: one YouTube or Vimeo video in a widescreen (16:9) frame, under an optional heading. A theme code component, because
  * the player waits for the visitor: nothing loads from the video's host until they press Play (see
  * src/generator/video.ts for the player and the addresses it reads).
  */
@@ -105,7 +105,7 @@ export const video: ComponentDefinition = {
   owner: 'theme',
   name: 'Video',
   description:
-    'One YouTube or Vimeo video in a 16:9 frame that fits every screen, under an optional heading. Paste the address of a single video. Visitors see a Play button naming the video and its host; the host’s player loads from YouTube or Vimeo only when they press it. Use for a studio tour, a product demo or a talk.',
+    'One YouTube or Vimeo video in a widescreen frame that fits every screen, under an optional heading. Paste the address of a single video. Visitors see a Play button naming the video and its host; the host’s player loads from YouTube or Vimeo only when they press it. Use for a studio tour, a product demo or a talk.',
   category: 'media',
   tags: ['video', 'youtube', 'vimeo', 'embed', 'film', 'movie', 'clip', 'player', 'watch', 'tour', 'studio tour', 'demo', 'media'],
   icon: 'video',
