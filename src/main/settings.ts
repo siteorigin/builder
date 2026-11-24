@@ -165,21 +165,57 @@ function sameProject(old: RecentProject, opened: RecentProject): boolean {
 }
 
 /**
+ * The list as it is kept: every pinned project (#259), and the newest MAX_RECENTS of the rest, so a project pinned
+ * long ago is never rotated off by others opened since. `keep` is an entry this opening may not push off the end
+ * (#217): it holds one of the places, and the newest of the others fill the rest.
+ */
+function capped(list: RecentProject[], keep?: RecentProject): RecentProject[] {
+  let room = MAX_RECENTS - (keep && keep.pinned !== true ? 1 : 0);
+  return list.filter((r) => r.pinned === true || r === keep || room-- > 0);
+}
+
+/** An entry with its pin as given; an unpinned one carries no flag at all, as entries listed before pins did. */
+function withPin(r: RecentProject, pinned: boolean): RecentProject {
+  const { pinned: _was, ...rest } = r;
+  return pinned ? { ...rest, pinned: true } : rest;
+}
+
+/**
  * Lists a project folder as the one opened last. `replaces` is the missing entry the author chose this folder for
  * (Find folder… on its card, #217): it is dropped when this is the same project and its old folder is still not
  * there, in the same save, so the list never shows both. Any other project leaves that entry as it was, never
- * pushed off the end of the list by this opening.
+ * pushed off the end of the list by this opening. A pinned project stays pinned when it is opened again, and when
+ * its moved folder takes over its missing entry (#259); opening it takes no other project off the list.
  */
 export async function addRecent(dir: string, name: string, projectId: string, replaces?: string) {
   const s = await loadSettings();
-  const entry: RecentProject = { dir, name, openedAt: new Date().toISOString(), projectId };
   // An older entry may name the same folder through a link.
   const real = canonicalDir(dir);
-  let rest = s.recents.filter((r) => r.dir !== dir && canonicalDir(r.dir) !== real);
-  const old = replaces === undefined ? undefined : rest.find((r) => r.dir === replaces);
-  if (old && listedFolderGone(old.dir) && sameProject(old, entry)) rest = rest.filter((r) => r !== old);
-  else if (old && rest.indexOf(old) >= MAX_RECENTS - 1) rest = [...rest.filter((r) => r !== old).slice(0, MAX_RECENTS - 2), old];
-  s.recents = [entry, ...rest].slice(0, MAX_RECENTS);
+  const same = (r: RecentProject) => r.dir === dir || canonicalDir(r.dir) === real;
+  let pinned = s.recents.some((r) => same(r) && r.pinned === true);
+  let rest = s.recents.filter((r) => !same(r));
+  const entry: RecentProject = { dir, name, openedAt: new Date().toISOString(), projectId };
+  let old = replaces === undefined ? undefined : rest.find((r) => r.dir === replaces);
+  if (old && listedFolderGone(old.dir) && sameProject(old, entry)) {
+    pinned ||= old.pinned === true;
+    rest = rest.filter((r) => r !== old);
+    old = undefined;
+  }
+  // A pinned project opened again takes no other project's place, even one an unpin has left past the end.
+  s.recents = pinned ? [withPin(entry, true), ...rest] : capped([entry, ...rest], old);
+  await saveSettings();
+}
+
+/**
+ * Pins a listed project folder, or unpins it (#259). A pinned project stays listed however many others are opened
+ * after it; unpinned, it takes its place among the rest by when it was last opened again, and goes once newer ones
+ * fill the list. A folder not on the list stays off it.
+ */
+export async function pinRecent(dir: string, pinned: boolean) {
+  const s = await loadSettings();
+  const at = s.recents.findIndex((r) => r.dir === dir);
+  if (at < 0 || (s.recents[at].pinned === true) === pinned) return;
+  s.recents = s.recents.map((r, i) => (i === at ? withPin(r, pinned) : r));
   await saveSettings();
 }
 
@@ -204,7 +240,8 @@ export async function renameRecent(dir: string, name: string) {
 
 export async function recents(): Promise<RecentProject[]> {
   const s = await loadSettings();
-  return s.recents.map((r) => ({ ...r, missing: !existsSync(join(r.dir, MANIFEST)) }));
+  // Only a pin given as one counts: a hand-edited file can hold anything.
+  return s.recents.map((r) => ({ ...withPin(r, r.pinned === true), missing: !existsSync(join(r.dir, MANIFEST)) }));
 }
 
 export async function removeRecent(dir: string) {

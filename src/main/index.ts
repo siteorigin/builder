@@ -14,7 +14,7 @@ import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { writingMenuTemplate } from './writing-menu';
-import { loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
+import { loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
@@ -320,6 +320,7 @@ function registerIpc() {
   handle('dialogs:defaultProjectsFolder', () => defaultProjectsFolder());
   handle('projects:recents', () => recents());
   handle('projects:removeRecent', (dir: string) => removeRecent(dir));
+  handle('projects:pinRecent', (dir: string, pinned: boolean) => pinRecent(dir, pinned === true));
   handle('projects:create', (opts) => controller.create(opts));
   handle('projects:cancelCreate', () => controller.cancelCreate());
   handle('projects:websiteTools', () => controller.websiteTools());

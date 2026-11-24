@@ -35,6 +35,7 @@ const api: BuilderApi = {
   projects: {
     recents: invoke('projects:recents'),
     removeRecent: invoke('projects:removeRecent'),
+    pinRecent: invoke('projects:pinRecent'),
     create: invoke('projects:create'),
     cancelCreate: invoke('projects:cancelCreate'),
     websiteTools: invoke('projects:websiteTools'),
