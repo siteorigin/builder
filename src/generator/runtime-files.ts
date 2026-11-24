@@ -125,6 +125,7 @@ export const IMAGE_SVELTE = `<script>
 			<path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" />
 		</svg>
 	</div>
+	{#if image?.decorative && fallback}<span class="so-visually-hidden">{fallback}</span>{/if}
 {/if}
 `;
 

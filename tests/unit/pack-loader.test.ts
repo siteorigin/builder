@@ -256,6 +256,14 @@ describe('loading a theme pack release', () => {
       (def.properties as Record<string, unknown>).action = { type: 'object', label: 'Action', fields: { label: { type: 'string', label: 'Label', default: '' } }, default: { label: '' } };
       def.tree!.nodes[root].when = { ref: { $prop: 'action', field: 'colour' }, eq: 'red' };
     }), /uses the field "colour" of "action"/],
+    ['a carousel mark on a list that is no longer a plain list (issue #381)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      (def.tree!.nodes.track as { tag: string }).tag = 'div';
+    }), /node "track" is marked as a carousel, which only a bulleted list \(ul\)/],
+    ['a carousel mark on text (issue #381)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      (def.tree!.nodes.caption as { carousel?: boolean }).carousel = true;
+    }), /node "caption" is marked as a carousel/],
     ['a WOFF2 file cut short', (d) => {
       const f = firstFont(d);
       replaceListed(d, f, readFileSync(join(d, f)).subarray(0, 200));

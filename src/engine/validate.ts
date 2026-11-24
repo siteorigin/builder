@@ -14,7 +14,7 @@ import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { nestingChecker } from './semantic-tags';
 import { MAX_UI_STATES, bindingProblem, bindingSlots, boundSchema, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
-import { cardLinkProblems } from '@generator/card-links';
+import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, type FormNameClash } from '@generator/checks';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
@@ -678,6 +678,9 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     for (const n of Object.values(tree.nodes)) {
       if (n.kind === 'element' && !isBinding(n.tag) && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
       if (n.kind === 'text' && !isBinding(n.tag) && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
+      // A carousel's buttons go beside its list, which only a plain list can have.
+      if ((n as { carousel?: unknown }).carousel !== undefined && !isCarouselTrack(n))
+        out.push({ severity: 'error', code: 'CAROUSEL_INVALID', message: `${label}: ${nodeLabel(n)} is marked as a carousel, which only a bulleted list (ul) that is not itself a link can be.`, owner, nodeId: n.id });
       if (n.kind === 'text' && n.datetime !== undefined && (n.rich || (!isBinding(n.datetime) && (typeof n.datetime !== 'string' || (n.datetime.trim() !== '' && !isArticleDate(n.datetime.trim()))))))
         out.push({ severity: 'error', code: 'DATETIME_INVALID', message: `${label}: ${nodeLabel(n)} ${n.rich ? 'is rich text, which cannot state a date' : 'states a date that is not written YYYY-MM-DD'}.`, owner, nodeId: n.id });
       if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });

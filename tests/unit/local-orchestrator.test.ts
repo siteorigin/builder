@@ -571,8 +571,9 @@ describe('what a constrained local run sends first (#364)', () => {
    * one should be a deliberate decision.
    */
   const BUDGETS = {
-    site: { code: false, baseline: 42_641, budget: 30_500 },
-    'site (code)': { code: true, baseline: 44_027, budget: 31_800 },
+    // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
+    site: { code: false, baseline: 42_641, budget: 31_400 },
+    'site (code)': { code: true, baseline: 44_027, budget: 32_700 },
     section: { code: false, baseline: 12_723, budget: 9_700 },
     part: { code: false, baseline: 10_001, budget: 7_550 },
     ask: { code: false, baseline: 13_138, budget: 9_600 },

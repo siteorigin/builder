@@ -171,6 +171,22 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     }
   },
   {
+    id: 'carousel-product-tour',
+    componentId: 'media.carousel',
+    keywords: ['carousel', 'slider', 'slides', 'slideshow', 'swipe', 'product tour', 'case study', 'portfolio'],
+    description: 'Slides that scroll sideways with Previous and Next buttons: an image and caption each, optionally linking to a page. layout one-column, two-columns or default (three) sets how many show at once on a desktop',
+    variants: { layout: 'two-columns' },
+    props: {
+      eyebrow: 'Product tour',
+      heading: 'See how it comes together',
+      slides: [
+        { image: NO_IMAGE, caption: 'Measuring the room', link: '/about/' },
+        { image: NO_IMAGE, caption: 'Choosing the finishes' },
+        { image: NO_IMAGE, caption: 'Fitting day' }
+      ]
+    }
+  },
+  {
     id: 'video-studio-tour',
     componentId: 'media.video',
     keywords: ['video', 'youtube', 'vimeo', 'embed', 'film', 'tour', 'demo', 'watch', 'clip'],

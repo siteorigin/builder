@@ -66,7 +66,8 @@ import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/ite
 import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
 import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, isArticleDate, pageArticle } from '@shared/articles';
-import { actionWraps, brokenCardKeys, cardKey, isCardLink } from './card-links';
+import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
+import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 import { derived, isTracked, type GenerationCache } from './cache';
@@ -127,7 +128,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'richList', 'thumbnail']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
 const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', '__so', '__so_at', 'children']);
 
@@ -1578,6 +1579,11 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
         const tag = choices.tags.length === 1 ? js(fallback) : `${js(choices.tags.slice(0, -1))}.includes(${choices.value}) ? ${choices.value} : ${js(fallback)}`;
         return `${p}<SoLink link={${link}} card={${tag}} ${attrs}>${children ? `\n${children}\n${p}` : ''}</SoLink>`;
       }
+      // A carousel's list is rendered by the runtime helper, which puts its buttons beside it.
+      if (!card && isCarouselTrack(node)) {
+        useImport(ctx, 'SoCarousel', `${RUNTIME_DIR}/Carousel.svelte`);
+        return `${p}<SoCarousel ${attrs}>${children ? `\n${children}\n${p}` : ''}</SoCarousel>`;
+      }
       if (choices.tags.length === 1) markup = `${q}<${choices.tags[0]} ${attrs}>${children ? `\n${children}\n${q}` : ''}</${choices.tags[0]}>`;
       else {
         // A bound tag renders the children once, from a snippet each possible tag renders.
@@ -2788,6 +2794,8 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
   files.set(`${RUNTIME_DIR}/Link.svelte`, linkSvelte(!!opts.instrument));
   files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
   files.set(`${RUNTIME_DIR}/Action.svelte`, ACTION_SVELTE);
+  files.set(`${RUNTIME_DIR}/Carousel.svelte`, CAROUSEL_SVELTE);
+  files.set(`${RUNTIME_DIR}/carousel.js`, CAROUSEL_JS);
   files.set(`${RUNTIME_DIR}/RichText.svelte`, RICHTEXT_SVELTE);
   files.set(`${RUNTIME_DIR}/Icon.svelte`, iconSvelte());
   files.set(`${RUNTIME_DIR}/icons.js`, file('icons.js', iconsJs));

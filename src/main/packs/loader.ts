@@ -14,6 +14,7 @@ import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST,
 import { FONT_FAMILY_RE } from '@shared/fonts';
 import { variantIdsValid } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
+import { isCarouselTrack } from '@generator/card-links';
 import { boundSchema } from '@engine/schema';
 import { defKey, slotIdent } from '@generator/index';
 import { MAX_UI_STATES, stateActionProblem, stateRefProblem, uiStateProblem } from '@engine/schema';
@@ -180,6 +181,8 @@ function checkTree(def: ComponentDefinition) {
   for (const [id, n] of Object.entries(nodes)) {
     if (!SAFE_ID.test(id)) refuse(`${where}: the element ID "${id.slice(0, 40)}" may only use letters, digits, "-" and "_".`);
     if (n.id !== id) refuse(`${where}: node "${id}" is stored under another ID.`);
+    // A carousel mark the generator would ignore is refused, as project validation reports it.
+    if ((n as { carousel?: unknown }).carousel !== undefined && !isCarouselTrack(n)) refuse(`${where}: node "${id}" is marked as a carousel, which only a bulleted list (ul) that is not itself a link can be.`);
     const slot = (n as { slot?: unknown }).slot;
     if (slot !== undefined && (typeof slot !== 'string' || !SAFE_ID.test(slot))) refuse(`${where}: node "${id}" has an unusable slot name.`);
     for (const child of (n as GraphNode & { children?: string[] }).children ?? []) if (!nodes[child]) refuse(`${where}: node "${id}" lists a child "${child}" that does not exist.`);

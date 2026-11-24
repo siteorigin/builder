@@ -40,6 +40,14 @@ export function isCardLink(n: GraphNode): boolean {
   return isBinding(n.link) || ((n.link as LinkValue).type !== undefined && (n.link as LinkValue).type !== 'none');
 }
 
+/**
+ * Whether an element is a carousel track (`ElementNode.carousel`) that renders with its Previous and Next buttons: a
+ * literal list that is not a card. An element marked as one in any other way renders as itself.
+ */
+export function isCarouselTrack(n: GraphNode): boolean {
+  return n.kind === 'element' && n.carousel === true && n.tag === 'ul' && !isCardLink(n);
+}
+
 /** Where a card is: the tree that owns it (a page, the shell or a definition) and its node. */
 export interface CardRef {
   owner: OwnerRef;
@@ -79,6 +87,7 @@ function describe(n: GraphNode, def?: ComponentDefinition): string {
     case 'element':
       if (name) return `the ${name} element`;
       if (isCardLink(n)) return n.action !== undefined ? 'a container that opens its image or a link' : 'another card link';
+      if (isCarouselTrack(n)) return 'a carousel with Previous and Next buttons';
       return isBinding(n.tag) ? 'an element that can render as a details disclosure' : `a ${n.tag} element`;
     case 'text':
       return name ? `the ${name} text` : 'rich text with links';
@@ -175,7 +184,7 @@ function firstInteractive(pass: Pass, def: ComponentDefinition | undefined, tree
         case 'link':
           return describe(n);
         case 'element':
-          if (isCardLink(n) || interactiveTag(def, n)) return describe(n);
+          if (isCardLink(n) || interactiveTag(def, n) || isCarouselTrack(n)) return describe(n);
           inner = firstInteractive(pass, def, tree, n.children, path);
           break;
         case 'repeat':

@@ -77,9 +77,14 @@ describe('authoring a pack', () => {
   it('builds Foundation and its development fixture from their own identities', () => {
     expect(FOUNDATION_PACK.components.map((c) => c.componentId)).toEqual([
       'shell.header', 'shell.footer', 'hero.centered', 'hero.split', 'intro.page', 'content.article', 'logos.strip', 'features.grid', 'content.media', 'content.text', 'stats.row',
-      'testimonials.grid', 'team.grid', 'pricing.plans', 'data.table', 'faq.list', 'content.pages', 'content.news', 'media.gallery', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section'
+      'testimonials.grid', 'team.grid', 'pricing.plans', 'data.table', 'faq.list', 'content.pages', 'content.news', 'media.gallery', 'media.carousel', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section'
     ]);
     expect(FOUNDATION_ALT_PACK.components.map((c) => c.componentId)).toEqual(FOUNDATION_PACK.components.map((c) => c.componentId));
+    for (const pack of [FOUNDATION_PACK, FOUNDATION_ALT_PACK]) {
+      const { nodes } = pack.components.find((c) => c.componentId === 'media.carousel')!.tree!;
+      expect(nodes.track).toMatchObject({ tag: 'ul', carousel: true, styles: { base: { layout: 'row' } } });
+      expect((nodes.track as { children: string[] }).children.map((id) => nodes[id].kind)).toEqual(['repeat']);
+    }
     const altHero = FOUNDATION_ALT_PACK.components.find((c) => c.componentId === 'hero.split')!;
     expect(altHero.tree!.nodes.grid.styles?.base).toMatchObject({ layout: 'stack', textAlign: 'center' });
     for (const c of FOUNDATION_PACK.components) expect([c.id, c.provenance?.pack, c.provenance?.packVersion, c.license]).toEqual([`foundation.${c.componentId}`, 'foundation', '0.1.0', 'GPL-3.0-or-later']);

@@ -125,6 +125,8 @@ export function SectionSketch({ id }: { id: string }) {
       return <span className="sketch cols mid">{[...Array(5)].map((_, i) => <i key={i} className="hi" style={{ height: 5 }} />)}</span>;
     case 'media.gallery':
       return <span className="sketch grid3">{[...Array(6)].map((_, i) => <i key={i} className="img" />)}</span>;
+    case 'media.carousel':
+      return <span className="sketch carousel">{[...Array(3)].map((_, i) => <i key={i} className="img" />)}</span>;
     case 'layout.section':
       return (
         <span className="sketch open">
@@ -640,7 +642,7 @@ const SPARSE = 0.05;
  * preview adds their layout sketch in a corner, so both the theme's look and the section's shape are visible. A
  * measured threshold cannot pick them out: Statistics' useful artwork reaches no further down than Gallery's heading.
  */
-const STARTS_EMPTY = new Set(['media.gallery', 'media.video']);
+const STARTS_EMPTY = new Set(['media.gallery', 'media.carousel', 'media.video']);
 
 function ItemIcon({ it }: { it: Item }) {
   return (

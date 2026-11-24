@@ -36,7 +36,8 @@ const COMPONENTS = [
   'content.news',
   'content.article',
   'data.table',
-  'media.video'
+  'media.video',
+  'media.carousel'
 ] as const;
 type ComponentId = (typeof COMPONENTS)[number];
 
@@ -912,6 +913,89 @@ describe('media.video (issue #73)', () => {
     const helper = bundle.files.get('src/lib/siteorigin/runtime/VideoPlayer.svelte')!;
     expect(helper).toMatch(/aspect-ratio: 16 \/ 9/);
     expect(helper).toMatch(/\.so-video \{[^}]*width: 100%/);
+  });
+});
+
+describe('media.carousel (issue #381)', () => {
+  const bare = (out: string) => out.replace(/ class="svelte-[a-z0-9]+"/g, '').replace(/ svelte-[a-z0-9]+(?=")/g, '');
+  const slide = (id: string, caption: string, link = { type: 'none', target: '' }, alt = '') => ({ id, image: { assetId: null as string | null, alt, decorative: false }, caption, link });
+  const SLIDES = [slide('a', 'Measuring the room'), slide('b', 'Choosing the finishes', { type: 'url', target: 'https://example.com/finishes' }), slide('c', '')];
+  const rendered = (props: Record<string, unknown>) => bare(authoredHtml('media.carousel', props));
+  const list = (out: string) => out.match(/<ul\b([^>]*)>([\s\S]*)<\/ul>/);
+
+  it('renders every slide as an item of one list that scrolls, named by the heading and reachable by keyboard', () => {
+    const out = rendered({ heading: 'Kitchens we have built', slides: SLIDES });
+    expect(out.match(/<ul\b/g)).toHaveLength(1);
+    const [, attrs, inner] = list(out)!;
+    expect(attrs).toMatch(classed('so-carousel__list'));
+    expect(attrs).toMatch(classed(nodeClass('media.carousel', 'track')));
+    expect(attrs).toContain('aria-label="Kitchens we have built"');
+    expect(attrs).toContain('tabindex="0"');
+    // Each slide is a list item holding a figure: its image, and its caption while it has one.
+    expect(inner.match(/<li\b/g)).toHaveLength(3);
+    expect(tags(inner, 'figcaption')).toEqual(['Measuring the room', 'Choosing the finishes']);
+    expect(inner.match(/<img\b/g) ?? inner.match(/so-img--placeholder/g)).toHaveLength(3);
+  });
+
+  it('makes a slide with a destination one link around its picture and caption, and leaves the others plain', () => {
+    const out = rendered({ slides: SLIDES });
+    const items = tags(list(out)![2], 'li');
+    expect(items[1]).toMatch(/^\s*<a\b[^>]*href="https:\/\/example\.com\/finishes"[^>]*>\s*<figure\b[\s\S]*<\/figure>\s*<\/a>\s*$/);
+    for (const i of [0, 2]) {
+      expect(items[i]).not.toContain('<a');
+      expect(items[i]).toMatch(/^\s*<div\b[^>]*>\s*<figure\b/);
+    }
+  });
+
+  it('names a linked slide with no caption and a decorative or missing picture, so its link is never empty', () => {
+    const named = (s: ReturnType<typeof slide>) => tags(tags(list(rendered({ slides: [s] }))![2], 'li')[0], 'a')[0];
+    const away = { type: 'url', target: 'https://example.com/a' };
+    bundle.state.assets.assets['as_room'] = { id: 'as_room', name: 'Room', file: 'static/media/room.jpg', mime: 'image/jpeg', bytes: 1, width: 800, height: 600, hash: 'r', kind: 'image', createdAt: '' } as never;
+    const decorative = { ...slide('d', '', away), image: { assetId: 'as_room', alt: '', decorative: true } };
+    // No picture chosen: the placeholder is named.
+    expect(named(slide('p', '', away))).toMatch(/role="img" aria-label="Slide"/);
+    // A decorative picture keeps its empty description and says it as hidden text, chosen or not.
+    expect(named(decorative)).toMatch(/<img\b[^>]*alt=""[\s\S]*<span class="so-visually-hidden">Slide<\/span>/);
+    const decorativeMissing = { ...slide('m', '', away), image: { assetId: null, alt: '', decorative: true } };
+    expect(named(decorativeMissing)).toMatch(/aria-hidden="true"[\s\S]*<span class="so-visually-hidden">Slide<\/span>/);
+    // Its own description and its caption name it otherwise.
+    expect(named(slide('c', 'Kitchen', away))).toContain('Kitchen</figcaption>');
+    expect(named(slide('a', '', away, 'A calm kitchen'))).toContain('aria-label="A calm kitchen"');
+  });
+
+  it('has no buttons or count until the page’s script runs, and nothing at all without slides', () => {
+    const out = rendered({ slides: SLIDES });
+    expect(out).not.toMatch(/<button|so-carousel__controls|role="status"/);
+    for (const empty of [{}, { slides: [] }]) {
+      const none = rendered(empty);
+      expect(none).not.toMatch(/<ul|so-carousel/);
+      expect(tags(none, 'h2')).toEqual(['Featured projects']);
+    }
+  });
+
+  it('is still named when its heading is cleared', () => {
+    expect(list(rendered({ heading: '', slides: SLIDES }))![1]).toContain('aria-label="Slides"');
+  });
+
+  it('names a list without a heading in the language of the site', async () => {
+    const s = structuredClone(bundle.state);
+    s.site.language = 'ar';
+    const home = s.pages[s.site.homePageId];
+    const placed = Object.values(home.nodes).find((n) => n.kind === 'instance' && n.definitionId === bundle.defs['media.carousel'].id) as InstanceNode;
+    placed.props = { heading: '', slides: SLIDES };
+    home.rootIds = [placed.id];
+    expect(list(await renderRoute(s, s.site.homePageId))![1]).toContain('aria-label="الشرائح"');
+  });
+
+  it('shows three slides at a time on a desktop, two or one when chosen, and one with the edge of the next on a phone', () => {
+    const css = componentsCss();
+    const cls = nodeClass('media.carousel', 'slide');
+    expect(css).toMatch(new RegExp(`\\.${cls}[^{]*\\{[^}]*width: 85%`));
+    // The space between slides is the site's Large spacing, which the widths allow for whatever it is set to.
+    expect(css).toMatch(/@media \(min-width: 1024px\)[\s\S]*width: calc\(\(100% - 2 \* var\(--so-space-lg\)\) \/ 3\)/);
+    expect(css).toMatch(/--layout-two-columns[^{]*\{[^}]*width: calc\(\(100% - 1 \* var\(--so-space-lg\)\) \/ 2\)/);
+    expect(css).toMatch(/--layout-one-column[^{]*\{[^}]*width: 100%/);
+    expect(css).toMatch(new RegExp(`\\.${nodeClass('media.carousel', 'track')}[^{]*\\{[^}]*gap: var\\(--so-space-lg\\)`));
   });
 });
 
