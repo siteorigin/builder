@@ -144,6 +144,21 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 }
 .so-carousel__step:not([aria-disabled='true']):hover { border-color: currentColor; background: color-mix(in srgb, currentColor 8%, transparent); }
 
+/* A list's category filter: a row of pills above its items, the one chosen filled in. Disabled until the page's script
+   runs, they look the same, so nothing moves when they start working. */
+.so-filter { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-block-end: var(--so-space-lg); }
+.so-filter__pill {
+  display: inline-flex; align-items: center; min-height: 2.5rem; padding: 0.35em 1.1em; border-radius: var(--so-radius-pill);
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent); background: none; color: inherit; font: inherit;
+  font-size: var(--so-text-small-size); line-height: var(--so-text-small-line-height); cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+.so-filter__pill:disabled { cursor: default; }
+.so-filter__pill:not([aria-pressed='true']):not(:disabled):hover { border-color: currentColor; }
+.so-filter__pill[aria-pressed='true'] {
+  border-color: var(--so-surface-ink, var(--so-color-brand)); background: var(--so-surface-ink, var(--so-color-brand)); color: var(--so-surface-ink-text, var(--so-color-on-brand));
+}
+
 .so-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 0.5em;
   min-height: 46px; padding: 0.7em 1.35em;

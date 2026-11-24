@@ -526,7 +526,7 @@ describe('the document format', () => {
     for (const d of docs(s)) d.schemaVersion = from;
     const before = structuredClone(s);
     const out = migrateProject(s)!;
-    expect(out.applied).toEqual(['style-states', 'entry-addresses', 'collection-templates', 'entry-articles']);
+    expect(out.applied).toEqual(['style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters']);
     const unversioned = (p: ProjectState) => JSON.parse(JSON.stringify({ ...p, themeLock: undefined }, (k, v) => (k === 'schemaVersion' ? undefined : v)));
     expect(unversioned(out.state)).toEqual(unversioned(before));
   });

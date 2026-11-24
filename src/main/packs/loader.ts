@@ -17,7 +17,7 @@ import { propBindingSchema } from '@shared/bindings';
 import { isCarouselTrack } from '@generator/card-links';
 import { boundSchema } from '@engine/schema';
 import { defKey, slotIdent } from '@generator/index';
-import { MAX_UI_STATES, stateActionProblem, stateRefProblem, uiStateProblem } from '@engine/schema';
+import { MAX_UI_STATES, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from '@engine/schema';
 import { sha } from '../project/fsutil';
 import { readRegularFile, type PackFileSource } from './files';
 import type { PackRefusal } from '@shared/api';
@@ -227,6 +227,10 @@ function checkTree(def: ComponentDefinition) {
     }
     if (Object.hasOwn(n, 'stateAction')) {
       const problem = n.kind === 'link' ? stateActionProblem(def, n.stateAction) : 'changes UI state, which only a button can.';
+      if (problem) refuse(`${where}: node "${id}" ${problem}`);
+    }
+    if (Object.hasOwn(n, 'filter')) {
+      const problem = n.kind === 'repeat' ? repeatFilterProblem(def, n) : 'has a category filter, which only a repeat can.';
       if (problem) refuse(`${where}: node "${id}" ${problem}`);
     }
   }

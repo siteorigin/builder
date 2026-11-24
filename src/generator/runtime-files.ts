@@ -541,6 +541,31 @@ export function tabKey(event) {
 	next.click();
 }
 
+/**
+ * The category an item names for a list's category filter (RepeatNode.filter), as the key its pill goes by: a choice
+ * field's value while it is one of \`options\`, or text by its trimmed, lower-case words, so "Commercial" and
+ * " commercial" are one category. '' when it names none.
+ */
+export function filterKey(value, options) {
+	if (options) return typeof value === 'string' && options.some((o) => o.value === value) ? value : '';
+	return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+/**
+ * The categories a list's items name, each once, as { key, label } for its pills: a choice field's in the order of its
+ * \`options\` (those no item names left out), text in the order items first name it, spelt as it is there.
+ */
+export function filterCategories(rows, field, options) {
+	const found = new Map();
+	for (const row of rows) {
+		const value = row?.[field];
+		const key = filterKey(value, options);
+		if (key && !found.has(key)) found.set(key, String(value).trim());
+	}
+	if (options) return options.filter((o) => found.has(o.value)).map((o) => ({ key: o.value, label: o.label }));
+	return [...found].map(([key, label]) => ({ key, label }));
+}
+
 /** Rich text blocks as paragraph strings, for code components written against that older form. */
 /**
  * Rich text shown as one list of \`kind\`, for a design that lists a value it shares with places showing it as

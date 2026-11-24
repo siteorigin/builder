@@ -19,6 +19,7 @@ import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/in
 import { effectiveProps, evaluate, rendersIn, type Scope } from '@generator/checks';
 import { anchorCapable, anchorsInUse, fail, findParent, getNode, getTree, settledRoot } from './tree';
 import { slotLandingProblem } from './slots';
+import { repeatFilterProblem } from './schema';
 import { clone } from './install';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -67,6 +68,13 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   if (Object.values(def.properties).some((p) => p.type === 'list' && p.feed === 'entries'))
     fail(`“${label}” lists posts that come and go with their collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
   if (Object.keys(def.state ?? {}).length) fail(`“${label}” has UI state its buttons change, which elements on a page would not keep. Remove its UI state first.`);
+  // Nor can they filter themselves: a list whose category buttons are on here would lose them.
+  const filtering = Object.values(def.tree.nodes).some((n) => {
+    if (n?.kind !== 'repeat' || n.filter === undefined || repeatFilterProblem(def, n)) return false;
+    const on = n.filter.when?.$prop;
+    return on === undefined || (Object.hasOwn(inst.props, on) ? inst.props[on] : def.properties[on]?.default) === true;
+  });
+  if (filtering) fail(`“${label}” filters its items by category here, which elements on a page would not keep. Turn its filter off first.`);
   const design = def.tree;
   if (!settledRoot(design)) fail(`“${label}” has no single element at the top of its design, so it cannot be detached. Fix its design first.`);
   const parent = findParent(tree, op.nodeId) ?? fail('This placement is not on the page.');

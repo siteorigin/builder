@@ -1,7 +1,7 @@
 /**
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
-import type { BindingRef, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema, StateRef, TokenGroup, UiStateSchema } from '@shared/types';
+import type { BindingRef, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, RepeatFilter, ScalarPropSchema, StateRef, TokenGroup, UiStateSchema } from '@shared/types';
 import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
 import { feedRowFields } from '@shared/entry-feed';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
@@ -261,7 +261,9 @@ export type BindField =
   | 'unless'
   | 'list'
   | 'prop'
-  | 'variant';
+  | 'variant'
+  /** The yes/no property that turns a repeat's category filter on (RepeatNode.filter.when). */
+  | 'filter';
 
 /** Property types each bindable node field accepts. `null` means any type (visibility conditions). */
 export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSchema): readonly string[] | null {
@@ -294,6 +296,8 @@ export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSc
       return ['link'];
     case 'list':
       return ['list'];
+    case 'filter':
+      return ['boolean'];
     case 'prop':
       return nested ? [nested.type] : null;
   }
@@ -329,9 +333,17 @@ export function bindingSlots(n: GraphNode): BindingSlot[] {
     case 'icon':
       out.push(field('icon'), field('ariaLabel'));
       break;
-    case 'repeat':
+    case 'repeat': {
       out.push(field('list'));
+      // The filter's switch is a binding like any other: a property change or removal, a copy into a new component and
+      // load validation all see it. A filter without one has no slot, so nothing binds one in where there was none.
+      const f = n.filter as unknown;
+      if (f && typeof f === 'object' && !Array.isArray(f) && (f as RepeatFilter).when !== undefined) {
+        const filter = f as RepeatFilter;
+        out.push({ field: 'filter', value: filter.when, set: (v) => (filter.when = v as RepeatFilter['when']) });
+      }
       break;
+    }
     case 'instance':
       for (const k of Object.keys(n.props)) out.push({ field: 'prop', prop: k, value: n.props[k], set: (v) => (n.props[k] = v) });
       for (const k of Object.keys(n.variants ?? {})) out.push({ field: 'variant', prop: k, value: n.variants![k], set: (v) => (n.variants![k] = v as string) });
@@ -625,6 +637,68 @@ export function stateActionProblem(def: ComponentDefinition, action: unknown): s
         : `sets "${a.state}" to ${JSON.stringify(a.value) ?? 'nothing'}, which is not one of its options (${listed(declared.options.map((o) => o.value))}).`;
   }
 }
+
+/**
+ * What is wrong with a repeat's category filter (RepeatNode.filter), as words that follow the repeat's name, or null when
+ * it works or there is none. The pills go just above the element holding the repeat, so that element must hold the
+ * repeat alone, inside the design's top element, where a row of buttons may go (not in a list, a carousel's slides or a
+ * card that links somewhere). Each item must render as one element the filter can hide. Shared by load validation, the
+ * pack loader, whole-design writes and the generator, which renders a repeat whose filter has a problem as a plain one.
+ */
+export function repeatFilterProblem(def: ComponentDefinition, node: GraphNode): string | null {
+  if (node.kind !== 'repeat' || node.filter === undefined) return null;
+  const f: unknown = node.filter;
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return 'has a category filter that is not one.';
+  const extra = Object.keys(f).filter((k) => k !== 'field' && k !== 'when');
+  if (extra.length) return `has a category filter that also says ${extra.map((k) => `"${k}"`).join(', ')}; a filter names only its field and the property that turns it on.`;
+  const { field, when } = f as RepeatFilter;
+  const listName = node.list && typeof node.list === 'object' ? node.list.$prop : undefined;
+  const list = typeof listName === 'string' && Object.hasOwn(def.properties, listName) ? def.properties[listName] : undefined;
+  if (list?.type !== 'list') return 'filters a list the component does not have.';
+  if (typeof field !== 'string' || !field) return 'has a category filter that names no item field.';
+  const schema = Object.hasOwn(list.fields, field) ? list.fields[field] : undefined;
+  if (!schema) return `filters by "${field}", which items of "${list.label}" do not have.`;
+  if (schema.type !== 'string' && schema.type !== 'enum') return `filters by "${schema.label}", a ${schema.type} field; a category is a text or choice field.`;
+  if (when !== undefined) {
+    const prop = when && typeof when === 'object' && !Array.isArray(when) && Object.keys(when).length === 1 && typeof when.$prop === 'string' ? when.$prop : undefined;
+    if (prop === undefined) return 'has a category filter turned on by something other than a property.';
+    const p = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
+    if (!p) return `has a category filter turned on by "${prop}", which the component does not have.`;
+    if (p.type !== 'boolean') return `has a category filter turned on by "${p.label}", which is not a yes/no property.`;
+  }
+  const tree = def.tree;
+  if (!tree) return null;
+  const roots = new Set(tree.rootIds);
+  const seen = new Set<string>([node.id]);
+  const ancestors: GraphNode[] = [];
+  for (let at = findParent(tree, node.id); at?.parentId && !seen.has(at.parentId); at = findParent(tree, at.parentId)) {
+    seen.add(at.parentId);
+    const n = tree.nodes[at.parentId];
+    if (n) ancestors.push(n);
+  }
+  const host = ancestors[0];
+  if (ancestors.some((a) => a.kind === 'repeat')) return 'is inside another list, where every row would share its pills.';
+  if (!host || host.kind !== 'element' || roots.has(host.id)) return 'needs an element of its own, inside the design’s top element, to hold it: its pills go just above that element.';
+  if (host.children.length !== 1) return 'shares the element holding it with other content; its pills go just above that element, so it must hold the list alone.';
+  if (host.carousel) return 'is a carousel’s slides, which scroll sideways rather than filter.';
+  const inside = ancestors.slice(1);
+  if (inside.some((a) => a.kind === 'element' && (a.link !== undefined || a.action !== undefined))) return 'is inside a card that links somewhere, where its pills could not be buttons.';
+  // The pills are a block of their own beside the holding element, which only an element that takes such blocks can hold.
+  const tags = (n: GraphNode): string[] => {
+    if (n.kind !== 'element') return [];
+    if (typeof n.tag === 'string') return [n.tag];
+    const bound = isBindingRef(n.tag) && '$prop' in n.tag ? propBindingSchema(def.properties, n.tag) : undefined;
+    return bound?.type === 'enum' ? bound.options.map((o) => o.value) : [];
+  };
+  const holder = inside[0];
+  if (holder && tags(holder).some((t) => FILTER_BAR_REFUSES.has(t))) return 'is held by an element inside a list, a paragraph or a summary, where a row of buttons cannot go.';
+  if (tags(host).some((t) => t === 'li' || t === 'dt' || t === 'dd' || t === 'summary')) return 'is held by a list item, term or summary, beside which a row of buttons cannot go.';
+  const items = node.children.map((c) => tree.nodes[c]);
+  if (!items.length || items.some((c) => !c || c.kind !== 'element' || c.action !== undefined)) return 'shows items that are not one element each; the filter hides an item by its element, such as a list item or a card.';
+  return null;
+}
+/** Elements whose children a row of filter buttons cannot sit among. */
+const FILTER_BAR_REFUSES = new Set(['ul', 'ol', 'dl', 'p', 'summary', 'span']);
 
 /** Every node of a design that reads or changes one UI state variable, with what it does. */
 export function stateUsers(def: ComponentDefinition, name: string): Array<{ node: GraphNode; field: BindField | 'stateAction'; prop?: string }> {

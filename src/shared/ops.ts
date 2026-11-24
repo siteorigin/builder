@@ -144,7 +144,12 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
       ...DESIGN_NODE_BASE,
       list: z.string().describe('The list property shown once per item; nodes inside show item fields with {"$item": field}.'),
       children: DESIGN_CHILDREN,
-      appearStagger: z.boolean().optional()
+      appearStagger: z.boolean().optional(),
+      filter: z
+        .object({ field: z.string().min(1).max(64), when: z.object({ $prop: z.string().min(1).max(64) }).strict().optional() })
+        .strict()
+        .optional()
+        .describe("Category filter pills for the items: visitors pick a category (or All) and only items whose `field` holds it show. `field` is a text or choice field of the list's items; `when` a yes/no property that turns the pills on. The repeat must be the only child of an element inside the design's top element; the pills go just above that element.")
     })
     .strict(),
   z.object({ kind: z.literal('slot'), ...DESIGN_NODE_BASE, slot: z.string().describe('The declared slot whose content shows here.') }).strict()
