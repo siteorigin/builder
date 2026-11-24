@@ -1,7 +1,7 @@
 /**
  * The link field on the canvas (⌘K while editing rich text) runs the real preview bridge in a real browser frame
  * on another origin, as the editor's preview is. The host page stands in for the editor: it answers the bridge's
- * check of each destination, as Canvas does with inlineLinkProblem.
+ * check of each destination, as Canvas does with inlineLinkProblem, and says when it kept nothing of an edit.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -143,8 +143,9 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     // The author goes on typing before the answer arrives: a late "good" for the old text links nothing.
     await page.keyboard.type('x');
     await toFrame('linkChecked', { check: first.check });
+    const asked = await checks();
     await page.keyboard.press('Enter');
-    const second = await nextCheck(await checks() - 1);
+    const second = await nextCheck(asked);
     expect(second.href).toBe('/abot/x');
     expect(second.check).toBeGreaterThan(first.check);
     expect(await field()).toMatchObject({ open: true, value: '/abot/x' });
@@ -155,6 +156,21 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     await expect.poll(async () => (await field()).error).toBe('No page has the address /abot/x.');
   });
 
+  it('tells the editor when the field is left before its answer about a destination arrives', async () => {
+    await openField();
+    await page.keyboard.type('/about/');
+    await page.keyboard.press('Enter');
+    const { check } = await nextCheck(0);
+    // Focus leaves the field (a click elsewhere in the page) before the editor answers.
+    await frame.evaluate(`document.querySelector('[data-so-node="s"]').setAttribute('tabindex', '-1'); document.querySelector('[data-so-node="s"]').focus()`);
+    await expect.poll(async () => (await field()).open).toBe(false);
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'linkDropped' && m.payload.editId === `e${edits}`)).toBe(true);
+    // The late answer links nothing.
+    await toFrame('linkChecked', { check });
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'textCancel' || m.type === 'textCommit')).toBe(true);
+    expect(await hrefs()).toEqual(['/about/']);
+  });
+
   it('says what is wrong with a destination it can tell is not one, without asking', async () => {
     await openField();
     await page.keyboard.type('about us');
@@ -162,6 +178,28 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     await expect.poll(async () => (await field()).errorShown).toBe(true);
     expect(await checks()).toBe(0);
     expect(await hrefs()).toEqual(['/about/']);
+  });
+
+  it('puts back the saved text on Escape from an edit opened again before the editor said it kept nothing', async () => {
+    await page.evaluate(`window.seen = []`);
+    await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(RICH)}`);
+    await page.evaluate(`document.querySelector('iframe').focus()`);
+    // The first edit replaces the words and is committed; the editor has not answered yet.
+    await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: 'refused-1' });
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
+    await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = '<p>Words the editor will not keep</p>'`);
+    await page.keyboard.press(`${MOD}+Enter`);
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'textCommit')).toBe(true);
+    // Opened again at once, from the text that was not kept; then the editor says it kept nothing.
+    await page.evaluate(`window.seen = []`);
+    await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: 'refused-2' });
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
+    await toFrame('restoreText', { editId: 'refused-1' });
+    // The edit open now is left alone until it ends; Escape then shows what was saved.
+    await page.evaluate(`new Promise((r) => setTimeout(r, 100))`);
+    expect(await frame.innerHTML('[data-so-node="r"]')).toBe('<p>Words the editor will not keep</p>');
+    await page.keyboard.press('Escape');
+    await expect.poll(() => frame.innerHTML('[data-so-node="r"]')).toBe(RICH);
   });
 });
 

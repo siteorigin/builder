@@ -63,6 +63,7 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
     await page.addInitScript(`if (location.origin === '${HOST}') { window.reports = []; window.flushed = false; window.addEventListener('message', (e) => {
       if (!e.data || e.data.sessionId !== 'so-test') return;
       if (e.data.type === 'navigated') window.reports.push(e.data.payload);
+      if (e.data.type === 'measured') window.measured = e.data.payload;
       if (e.data.type === 'flushed') window.flushed = true;
     }); }`);
   }, 30000);
@@ -105,6 +106,22 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
     expect(await flushed()).toEqual([{ path: '/contact/' }, { path: '/contact/', navId: 2 }]);
     expect(await frame.evaluate(`window.loads`)).toBe(1);
     expect(await frame.evaluate(`location.pathname`)).toBe('/contact/');
+  });
+
+  it('measures each sibling with the CSS order it is laid out by', async () => {
+    await frame.evaluate(`document.querySelector('main').insertAdjacentHTML('beforeend', \`
+      <div style="display: flex">
+        <div data-so-ctx="page:p" data-so-node="a" style="order: 1">A</div>
+        <div data-so-ctx="page:p" data-so-node="b">B</div>
+        <div data-so-ctx="page:p" data-so-node="w" style="display: contents"><span style="display: none; order: 0">hidden</span><span style="order: 2">shown</span></div>
+      </div>
+      <div><div data-so-ctx="page:p" data-so-node="c" style="order: 1">C</div></div>\`)`);
+    const descs = ['a', 'b', 'w', 'c'].map((node) => ({ ctx: 'page:p', node, items: '' }));
+    await command('measure', { requestId: 'm1', descs });
+    await expect.poll(() => page.evaluate(`window.measured && window.measured.requestId`)).toBe('m1');
+    // A block parent lays out by document order whatever its children's order says; a display: contents
+    // wrapper is laid out as the child of it that shows.
+    expect(await page.evaluate(`window.measured.rects.map((r) => r && r.order)`)).toEqual([1, 0, 2, 0]);
   });
 
   it('still loads the page in full when its latest request cannot be made in the page', async () => {

@@ -69,10 +69,17 @@ function findAll(desc) {
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   return [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
 }
-/** The CSS order the page lays an element out by among its siblings (an element with display: contents is laid
- *  out as its first child). */
+/** The CSS order the page lays an element out by among its siblings: only a flex or grid container orders its
+ *  items. An element with display: contents is laid out as its first child that shows. */
 function layoutOrder(el) {
-  const item = getComputedStyle(el).display === 'contents' ? el.firstElementChild || el : el;
+  const shows = (c) => {
+    const r = c.getBoundingClientRect();
+    return r.width > 0 || r.height > 0;
+  };
+  const item = getComputedStyle(el).display === 'contents' ? [...el.children].find(shows) || el : el;
+  let parent = item.parentElement;
+  while (parent && getComputedStyle(parent).display === 'contents') parent = parent.parentElement;
+  if (!parent || !/(^|-)(flex|grid)$/.test(getComputedStyle(parent).display)) return 0;
   const order = Number.parseInt(getComputedStyle(item).order, 10);
   return Number.isSafeInteger(order) ? order : 0;
 }
@@ -1207,9 +1214,12 @@ function openLinkEditor() {
   });
   root.addEventListener('focusout', (e) => {
     if (!linkEditor || linkEditor.input !== input || root.contains(e.relatedTarget)) return;
+    // A destination still being checked is not applied: the editor is told, as saving with the field open does.
+    const checking = !!linkEditor.check;
     closeLinkEditor(false);
     // Back to the text or on to the toolbar: the edit goes on without the link still being typed.
     if (editing && (e.relatedTarget === editing.el || (toolbar && e.relatedTarget === toolbar.host))) return updateToolbar();
+    if (checking && editing) send('linkDropped', { desc: editing.desc, editId: editing.editId });
     commitEdit();
   });
   linkEditor = { host, input, error, range, check: null };
@@ -2234,6 +2244,8 @@ window.addEventListener('message', async (e) => {
         // Each edit's own record, so a reply for one never answers (or forgets) another.
         const c = committed.get(m.payload.editId);
         if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
+        // Edited again before the answer came, from the text that was not kept: Escape now goes back to what was.
+        else if (c && editing?.el === c.el && editing.original === c.left) editing.original = c.original;
         committed.delete(m.payload.editId);
       }
       break;

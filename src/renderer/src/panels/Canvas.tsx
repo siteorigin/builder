@@ -427,7 +427,17 @@ export function Canvas() {
           sentReveal.current = null;
           syncReveal();
           const request = nav.current.request;
-          if (sameFrame && request) {
+          if (!sameFrame) {
+            // A new frame (another server, Try again) opened the page shown when it was made, and a request sent
+            // while it loaded never reached it: it is asked for the page shown now. Try again keeps the preview
+            // ready, so the navigate effect does not run for it.
+            nav.current.request = null;
+            if (s.pageId) openShownPage();
+            else {
+              syncPage(path);
+              followed(nav.current, getState().pageId);
+            }
+          } else if (request) {
             // A new document loaded while the editor's request was on its way (the request's own fallback, or a
             // visitor's link): the request still stands, and goes to the new document if it is not there already.
             if (samePath(path, request.path)) nav.current.request = null;
@@ -436,9 +446,8 @@ export function Canvas() {
               post('navigate', { path: request.path, navId: request.id });
             }
           }
-          // A page chosen while the preview was starting wins: the navigate effect opens it next. So does one
-          // chosen in the editor that the frame has not been asked for yet.
-          else if ((!s.pageId || reloaded) && s.pageId === nav.current.asked) {
+          // A page chosen in the editor that the frame has not been asked for yet wins: the navigate effect opens it.
+          else if (reloaded && s.pageId === nav.current.asked) {
             syncPage(path);
             followed(nav.current, getState().pageId);
           }
@@ -852,16 +861,20 @@ export function Canvas() {
     };
   });
 
-  // Navigate when the current page changes.
-  useEffect(() => {
-    if (!ready || !page) return;
+  /** Ask the frame for the page the editor shows, unless it is there already or already asked for. */
+  function openShownPage() {
+    const s = getState();
+    const shown = s.pageId ? s.snapshot?.state.pages[s.pageId] : undefined;
+    if (!shown) return;
+    const request = nav.current.request;
+    if (request && nav.current.asked === shown.id && samePath(shown.route, request.path)) return;
     // The page already went there itself (a link clicked while previewing): leave it where it is.
-    if (samePath(page.route, frameAt.current)) return void askFrame(nav.current, page.id, null);
+    if (samePath(shown.route, frameAt.current)) return void askFrame(nav.current, shown.id, null);
     // A page the editor opens while previewing (a new address, a page picked) is where the visitor starts again; Edit
     // no longer returns to a selection on another page.
     if (getState().mode === 'preview') {
       previewFrom.current = null;
-      if (getState().previewReturn && getState().previewReturn?.pageId !== pageId) setState({ previewReturn: null });
+      if (getState().previewReturn && getState().previewReturn?.pageId !== shown.id) setState({ previewReturn: null });
     }
     // Until the page confirms the navigation, it is "opening", not ready. Focus in the leaving page moves to the
     // canvas, which stays.
@@ -871,9 +884,13 @@ export function Canvas() {
     setFrameError(null);
     setRetrying(false);
     if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
-    const navId = askFrame(nav.current, page.id, page.route);
+    const navId = askFrame(nav.current, shown.id, shown.route);
     frameAt.current = null;
-    post('navigate', { path: page.route, navId });
+    post('navigate', { path: shown.route, navId });
+  }
+  // Navigate when the current page changes.
+  useEffect(() => {
+    if (ready && page) openShownPage();
   }, [pageId, page?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**

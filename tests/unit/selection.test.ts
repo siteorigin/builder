@@ -99,6 +99,11 @@ describe('canvas selection steps in one level per click', () => {
     // A click on the Container's own space, with no content of it under the pointer, still selects it.
     const padding = ['inner', 'root'].map((id) => descOf(s, part(id)));
     expect(selectionFromChain(s, padding, first, false)).toEqual({ ...part('inner'), partId: 'container' });
+    // A button goes the same way, past the row of Actions around it as well.
+    const button = ['primary', 'actions', 'content', 'grid', 'inner', 'root'].map((id) => descOf(s, part(id)));
+    expect(strip(selectionFromChain(s, button, first, false))).toEqual(part('primary'));
+    // And from the Container, selected in Layers, a click on the heading inside it selects the heading.
+    expect(selectionFromChain(s, chain, { ...part('inner'), partId: 'container' }, false)).toEqual(second);
   });
 
   it('goes from a component whose root places a hero straight to the hero’s heading', () => {
