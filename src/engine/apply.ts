@@ -3200,7 +3200,8 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
         return sameOwner(r.owner) || sameOwner(r.toOwner) || (typeof r.definitionId === 'string' && sameOwner({ kind: 'component', id: r.definitionId }));
       });
     const by = problem ? retagged.findLast((r) => (r.nodeId === undefined ? !editedAfter(r.i) : r.nodeId === problem.nodeId) && sameOwner(r.owner)) : undefined;
-    if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (${by.type}): ${problem.message}` : problem.message);
+    // The node is named in details too, so a caller that built the design can point at the node it described.
+    if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (${by.type}): ${problem.message}` : problem.message, { owner: problem.owner, nodeId: problem.nodeId });
   }
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };

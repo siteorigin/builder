@@ -20,7 +20,7 @@ import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
 import { applyContextBudget, contextVerdict, estimateRequestTokens } from './budget';
 import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, type MissingPage, type WantedPage } from './completeness';
-import { exampleSection, retrieveExamples } from './examples';
+import { blueprintSection, exampleSection, retrieveBlueprints, retrieveExamples } from './examples';
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
 import { modelInfo } from './models';
 import { readRecipient, replayedHistory, turnModelText, type Recipient } from '@shared/turn-model';
@@ -266,6 +266,7 @@ Theme guidance for ${theme.name} (reference data):
 ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
     return `You build and edit small business websites made of ready-made section components.
 - Build one page per upsert_page_with_sections call, with several sections: an opening section, the content the page is for, and usually a closing call to action. Internal links use routes such as /contact/.
+- When the user asks for a new reusable component, build it whole with one upsert_managed_component call, following componentBlueprints in <editor_context>; placeOnPage also puts it on a page.
 - One request can take many replies; the user does not answer between them. Keep going until every page the user asked for is finished.
 - When the user wants advice or ideas in chat only, give them and change nothing.
 - When the user asks for checks at screen sizes, run inspect_layout on each page they name at each of those sizes, after its last change.
@@ -316,6 +317,7 @@ ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
   return `You build and edit small business websites made of ready-made section components.
 - upsert_page_with_sections creates or updates a whole page in one call, with all its sections, and adds it to the navigation. Build one page per call, each with several sections: an opening section, the content the page is for, and usually a closing call to action.
 - update_site_brand sets the site name, tagline, contact details, colors, fonts and type scale everywhere at once.
+- upsert_managed_component builds a new reusable component whole, or rebuilds one, in one call, when the user asks for a component: componentBlueprints in <editor_context> show the shape. placeOnPage also puts it on a page.
 - read_project with sections ["catalogue"] lists every component with its properties. read_page shows a page.
 - Internal links use routes such as /contact/, even for pages you have not built yet.
 - request_clarification asks the user one question and waits for the answer. ${ASKING}
@@ -342,11 +344,10 @@ function headerNoticeGuidance(state: ProjectState): string {
 /** How a new reusable component is made: from the designs already here, as a managed design with a clean contract. */
 const COMPONENT_GUIDANCE = `Making a new reusable component (when the user asks for a component, or the request came from Create component):
 - Start from what is here: search_components for what it is, then read_component with structure: true on the one to three closest theme or project components. Their structure shows how a good design is built in this site: containers with layout and gap, text styles and colors as site tokens, phone/tablet/desktop rules, and which content is bound to properties.
-- Make it with component.create (name, description). Its result names the new definitionId and rootNodeId. In your next step build the design inside rootNodeId with node.insert and node.setStyle under owner { kind: "component", id: definitionId }. Use site tokens, not fixed colors or sizes, so it matches the site and follows its styles.
-- Give it clean inspector properties: component.setPropSchema for each piece of content an author will change (with a label and a useful default), then node.setBinding to bind the node to it ({ "$prop": name }). Repeated cards or items are a list property with a "repeat" node bound to it, its fields bound with { "$item": field }. Name the parts an author would style with component.setPart. Add variant options with component.setVariant and give each option its look with node.setStyle { variant, axis }: an option without style rules changes nothing.
+- Build it whole in one upsert_managed_component call, which componentBlueprints in <editor_context> show worked through: its properties, a clean inspector with each piece of content an author will change (a label and a useful default); its design as a flat list of nodes with IDs of your own, each container naming its children, under one root element; nodes bound to properties with { "$prop": name }; repeated cards or items as a list property shown by a "repeat" node, its fields bound with { "$item": field }; the parts an author would style; and variant options whose style rules restyle nodes (an option without rules changes nothing). Use site tokens, not fixed colors or sizes, so it matches the site and follows its styles, and add phone/tablet/desktop rules with scope. If it reports errors, fix exactly the paths it names with repair: true. Its result names the definitionId: change the whole design again with the same tool and that definitionId, or make a small change with the node and component operations under owner { kind: "component", id: definitionId }.
 - It is a managed component. Only when the user asks for code, and component.createCode is offered (Developer mode), write a code component instead.
 - Check it with inspect_component { definitionId } once it is built: every variant option at phone and desktop width, with long text, empty links and few or many items. Fix what it finds and check again.
-- Place it on a page with node.insert { definitionId } only when the user asks for it there; otherwise it waits in Insert, under Your components. Finish by saying what you made and what an author can change on each placement.`;
+- Place it on a page (placeOnPage, or node.insert { definitionId }) only when the user asks for it there; otherwise it waits in Insert, under Your components. Finish by saying what you made and what an author can change on each placement.`;
 
 /** For a small model building a new component: the rules it needs, without the page and brand tools it was not given. */
 function componentPrompt(state: ProjectState): string {
@@ -367,7 +368,7 @@ function systemPrompt(state: ProjectState, run: RunTools, constrained = false): 
   const theme = getTheme(state.site.themeId);
   const preferred =
     run.mode === 'site'
-      ? `\n\nPreferred tools: build or rewrite a page with one upsert_page_with_sections call (all its sections, navigation included, no IDs or revisions), and change the name, contact details, colors, fonts or type scale with update_site_brand. Several of these calls may run in one step. Use apply_operations for finer edits they cannot express.`
+      ? `\n\nPreferred tools: build or rewrite a page with one upsert_page_with_sections call (all its sections, navigation included, no IDs or revisions), change the name, contact details, colors, fonts or type scale with update_site_brand, and build or rebuild a reusable component whole with one upsert_managed_component call. Several of these calls may run in one step. Use apply_operations for finer edits they cannot express.`
       : run.mode === 'page'
         ? `\n\nPreferred tools: build or rewrite this page with one upsert_page_with_sections call by its route (all its sections, no IDs or revisions). Use apply_operations for finer edits on this page that it cannot express.`
       : run.mode === 'selection'
@@ -973,6 +974,8 @@ export class Orchestrator {
     // A grammar-constrained edit with the selection's own tools is not told how operations it does not have would do it.
     const selection = ctx ? describeSelection(readState(), ctx.selection, { operations: !(constrainedJson && current.focused && !ask) }) : null;
     const examples = authority.kind === 'site' && !ask ? retrieveExamples(session.state, userMsg.text).map(exampleSection) : [];
+    // A component request, with the tool that builds one whole, starts from a worked call or two of that tool.
+    const blueprints = current.tools.some((t) => t.name === 'upsert_managed_component') && (componentTask || /\bcomponents?\b/i.test(requestText)) ? retrieveBlueprints(session.state, requestText).map(blueprintSection) : [];
     /** How the context is written: a grammar-constrained local model reads every byte before its first token, so no indentation for it. */
     const indent = constrainedJson ? undefined : 1;
     /**
@@ -1006,7 +1009,8 @@ export class Orchestrator {
                   : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via ${current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification with widenScope'}`,
           // A selection, page or component edit needs that, not the whole site; the rest is one read away if it is widened.
           project: authority.kind !== 'site' ? compactProjectSummary(readState(), readRevision()) : projectSummary(readState(), readRevision()),
-          ...(examples.length ? { workedExamples: examples } : {})
+          ...(examples.length ? { workedExamples: examples } : {}),
+          ...(blueprints.length ? { componentBlueprints: blueprints } : {})
         },
         null,
         indent
@@ -1262,7 +1266,7 @@ export class Orchestrator {
       const caps = ad.adapter.capabilities();
       const windowTokens = caps.contextWindowKnown ? caps.contextWindowTokens : reported?.windowTokens;
       // A refusal of the adapter's own correction says nothing about the request the run sent.
-      const v = contextVerdict({ system, tools, items, current: requestItem, windowTokens, maxOutputTokens: caps.maxOutputTokens, reported, rejected: !!reported && !reported.retried });
+      const v = contextVerdict({ system, tools, items, current: requestItem, windowTokens, maxOutputTokens: caps.maxOutputTokens, reported, rejected: !!reported && !reported.retried, constrained: constrainedJson });
       const n = (t: number) => t.toLocaleString('en-US');
       const size = windowTokens ? `${n(windowTokens)}-token context` : 'context';
       const help = ad.adapter.contextHelp?.(v.recommendedTokens) ?? `Load the model with a context of ${n(v.recommendedTokens)} tokens or more.`;
@@ -1286,7 +1290,7 @@ export class Orchestrator {
      */
     const narrowTools = () => {
       if (onlyFocused) return false;
-      const size = (run: RunTools) => estimateRequestTokens(systemPrompt(readState(), run, constrainedJson), run.tools, []);
+      const size = (run: RunTools) => estimateRequestTokens(systemPrompt(readState(), run, constrainedJson), run.tools, [], constrainedJson);
       const before = size(runTools());
       onlyFocused = true;
       if (size(runTools()) < before) return true;
@@ -1732,6 +1736,8 @@ function activityLabel(call: ToolCall, state: ProjectState): string {
       return `Building the ${String(args.title ?? args.slug ?? '')} page`.replace('  ', ' ');
     case 'update_site_brand':
       return 'Updating the site brand';
+    case 'upsert_managed_component':
+      return `${args.definitionId ? 'Rebuilding' : 'Building'} the ${String(args.name ?? '').trim() || 'new'} component`;
     case 'update_selected_props':
     case 'edit_selected_list':
     case 'edit_selected_table':

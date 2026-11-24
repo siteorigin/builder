@@ -7,6 +7,7 @@
  * the conversation stays stable for prompt caches on providers and local runtimes.
  */
 import type { CanonicalItem, ContextOverflow, ModelCapabilities, ToolDefinition } from './types';
+import { envelopeInstructions } from './constrained';
 
 /** Above this share of the usable window, reads that a newer read of the same thing replaced are collapsed. */
 export const SOFT_LIMIT = 0.5;
@@ -36,8 +37,12 @@ function itemTokens(item: CanonicalItem): number {
   return estimateTokens(item.text) + item.toolCalls.reduce((n, c) => n + estimateTokens(c.arguments) + 8, 0);
 }
 
-export function estimateRequestTokens(system: string, tools: ToolDefinition[], items: CanonicalItem[]): number {
-  const toolTokens = tools.reduce((n, t) => n + estimateTokens(t.name + t.description + JSON.stringify(t.parameters)), 0);
+/**
+ * `constrained`: the tools go out as they are sent to a grammar-constrained model, as signatures in the system prompt
+ * (see constrained.ts), not as their JSON schemas, which only the grammar reads.
+ */
+export function estimateRequestTokens(system: string, tools: ToolDefinition[], items: CanonicalItem[], constrained = false): number {
+  const toolTokens = constrained ? estimateTokens(envelopeInstructions(tools)) : tools.reduce((n, t) => n + estimateTokens(t.name + t.description + JSON.stringify(t.parameters)), 0);
   return estimateTokens(system) + toolTokens + items.reduce((n, i) => n + itemTokens(i), 0);
 }
 
@@ -194,7 +199,7 @@ export function applyContextBudget(
   opts: {
     system: string;
     tools: ToolDefinition[];
-    capabilities: Pick<ModelCapabilities, 'contextWindowTokens' | 'maxOutputTokens'>;
+    capabilities: Pick<ModelCapabilities, 'contextWindowTokens' | 'maxOutputTokens'> & Partial<Pick<ModelCapabilities, 'toolCalling'>>;
     isMutation: (toolName: string) => boolean;
     /** The project's revision now. Some changes (links connected when a page is created) are not a tool's result. */
     revision?: number;
@@ -202,7 +207,7 @@ export function applyContextBudget(
 ): BudgetResult {
   const { contextWindowTokens: window, maxOutputTokens } = opts.capabilities;
   const available = window - Math.min(maxOutputTokens, Math.floor(window / 4));
-  let estimate = estimateRequestTokens(opts.system, opts.tools, items);
+  let estimate = estimateRequestTokens(opts.system, opts.tools, items, opts.capabilities.toolCalling === 'constrained-json');
   let tombstoned = 0;
 
   if (estimate > available * SOFT_LIMIT) {
@@ -300,13 +305,13 @@ export interface ContextVerdict {
  * own work. The server's count of the whole request, when its error gave one, scales the estimate of each part; how
  * the count splits between them is still an estimate.
  */
-export function contextVerdict(o: { system: string; tools: ToolDefinition[]; items: CanonicalItem[]; current: CanonicalItem; windowTokens?: number; maxOutputTokens: number; reported?: ContextOverflow; rejected: boolean }): ContextVerdict {
+export function contextVerdict(o: { system: string; tools: ToolDefinition[]; items: CanonicalItem[]; current: CanonicalItem; windowTokens?: number; maxOutputTokens: number; reported?: ContextOverflow; rejected: boolean; constrained?: boolean }): ContextVerdict {
   const at = Math.max(0, o.items.indexOf(o.current));
-  const whole = estimateRequestTokens(o.system, o.tools, o.items);
+  const whole = estimateRequestTokens(o.system, o.tools, o.items, o.constrained);
   const counted = o.reported?.promptTokens;
   const scale = counted && whole > 0 ? counted / whole : 1;
   const reply = Math.min(MIN_OUTPUT_TOKENS, o.maxOutputTokens);
-  const size = (items: CanonicalItem[]) => Math.ceil(estimateRequestTokens(o.system, o.tools, items) * scale) + reply;
+  const size = (items: CanonicalItem[]) => Math.ceil(estimateRequestTokens(o.system, o.tools, items, o.constrained) * scale) + reply;
   const history = at > 0;
   // The request that was measured or refused held nothing but this message.
   const onlyThisMessage = !history && o.items.length === 1;
