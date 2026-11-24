@@ -114,6 +114,7 @@ await eventually(async () => assert.equal((await posts()).length, 3, 'Redo bring
 step('a folder of Markdown posts joins them');
 await chooseImport(/Folder of Markdown posts/, { dialog: 'open', selection: 'folder', paths: [md] });
 await modal.getByRole('heading', { name: 'Import 4 posts' }).waitFor({ timeout: 30000 });
+assert.match(await modal.getByTestId('post-import-row').first().innerText(), /It links to “Winter hours”, which arrives as a draft: publish that post, or change the link, before the website is exported\./, 'the review says a published post links to a draft');
 await modal.getByTestId('post-import-confirm').click();
 await modal.waitFor({ state: 'detached', timeout: 60000 });
 await eventually(async () => assert.equal((await posts()).length, 7, 'seven posts in all'));
@@ -147,8 +148,13 @@ await eventually(async () => assert.match(await win.locator('.toast.error').last
 assert.equal((await snapshot()).revision, rev, 'nothing changed');
 
 step('the static website has the imported blog, its old addresses and its sitemap');
-const site = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://riverside.example' }] }, { label: 'Address' }));
-assert.equal(site.ok, true);
+// The author publishes the draft the open day links to, as the review asked, and gives the site its address.
+const hours = (await posts()).find((e) => e.slug === 'winter-hours');
+const site = await win.evaluate(
+  (id) => window.builder.project.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: id, draft: false }, { type: 'site.update', baseUrl: 'https://riverside.example' }] }, { label: 'Publish' }),
+  hours.id
+);
+assert.equal(site.ok, true, site.error?.message);
 const exportsDir = join(WORK, 'exports');
 mkdirSync(exportsDir);
 await answerChoosers(app, [{ dialog: 'open', selection: 'folder', paths: [exportsDir] }]);
@@ -169,7 +175,8 @@ const refresh = page('2019', '03', 'winter-workshop').match(/<meta http-equiv="r
 assert.ok(refresh, 'the old WordPress address sends visitors on');
 assert.equal(new URL(refresh.replace(/&amp;/g, '&'), 'https://riverside.example/2019/03/winter-workshop/').pathname, '/blog/winter-workshop/');
 assert.match(page('blog', 'open-day'), /We open our doors on <strong>Saturday<\/strong>\. This paragraph runs over two lines\./, 'the Markdown post has its page');
-assert.ok(!existsSync(join(stat.path, 'blog', 'summer-plans')) && !existsSync(join(stat.path, 'blog', 'winter-hours')), 'drafts have no page');
+assert.ok(existsSync(join(stat.path, 'blog', 'winter-hours', 'index.html')), 'the post published since has its page');
+assert.ok(!existsSync(join(stat.path, 'blog', 'summer-plans')) && !existsSync(join(stat.path, 'blog', 'bad-draft')), 'drafts have no page');
 assert.ok(existsSync(join(stat.path, 'blog', 'category', 'news', 'index.html')), 'categories get their archives');
 const sitemap = readFileSync(join(stat.path, 'sitemap.xml'), 'utf8');
 assert.ok(sitemap.includes('<url><loc>https://riverside.example/blog/winter-workshop/</loc><lastmod>2019-03-01</lastmod></url>'), `the sitemap lists the imported post: ${sitemap}`);

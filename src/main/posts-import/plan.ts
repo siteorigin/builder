@@ -147,8 +147,17 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   const oldClaims = new Map<string, number>();
   for (const p of source.posts) if (p.oldPath && !p.draft) oldClaims.set(lower(p.oldPath), (oldClaims.get(lower(p.oldPath)) ?? 0) + 1);
 
+  const byKey = new Map(source.posts.map((p) => [p.key, p]));
   const posts: PlannedPost[] = source.posts.map((p, i) => {
     const notes = [...p.notes];
+    // A published post linking to one that arrives as a draft: the website can't be exported until one of them changes.
+    if (!p.draft) {
+      const linked = new Set(p.body.flatMap((b) => spanRuns(b).flat()).flatMap((s) => (s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? [s.link.target.slice(POST_LINK_PREFIX.length)] : [])));
+      for (const key of linked) {
+        const target = byKey.get(key);
+        if (target?.draft) notes.push(`It links to “${target.title}”, which arrives as a draft: publish that post, or change the link, before the website is exported.`);
+      }
+    }
     const { slug, wanted } = slugs[i];
     const entryRoute = `${route}${slug}/`;
     const title = clip(p.title || 'Untitled post', 200);

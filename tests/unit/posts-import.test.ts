@@ -281,6 +281,8 @@ describe('planning an import', () => {
     expect(after.collections.posts.settings.taxonomies.categories.terms).toEqual({ events: { label: 'Events' }, news: { label: 'News' } });
     expect(after.site.redirects).toBeUndefined();
     expect(plan.media.map((m) => m.ref)).toEqual(['images/oven.png', 'snow.jpg']);
+    // The published open day links to a post that arrives as a draft: the review says so.
+    expect(plan.posts[0].notes).toContain('It links to “Winter hours”, which arrives as a draft: publish that post, or change the link, before the website is exported.');
     expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
   });
 });
