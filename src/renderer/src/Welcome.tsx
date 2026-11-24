@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronRight, Folder, FolderOpen, LayoutTemplate, MousePointerClick, Plus, Settings, Upload, X } from 'lucide-react';
+import { ChevronRight, CircleAlert, Folder, FolderOpen, Plus, Settings, X } from 'lucide-react';
 import type { RecentProject } from '@shared/api';
 import { api, errorText, setState, toast, useStore } from './store';
 import { openDialogs, Spinner } from './components/ui';
@@ -34,14 +34,23 @@ export function Welcome() {
   const [trust, setTrust] = useState<{ dir: string; name: string } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const openingRef = useRef(false);
+  // The missing entry a found project takes over, once it has really opened (a trust prompt can still be cancelled).
+  const replacing = useRef<string | undefined>(undefined);
+  // What started an open: it is disabled meanwhile, so focus comes back to it when nothing else has taken over.
+  const returnFocus = useRef<HTMLElement | null>(null);
+  // The card to move to once a removed one has gone ('' when none are left: the first-run button).
+  const focusAfterRemove = useRef<string | null>(null);
   const modal = useStore((s) => s.modal);
+  const openingRecent = recents?.find((r) => r.dir === opening);
+  const openingNote = openingRecent ? `${openingRecent.missing ? 'Finding' : 'Opening'} ${openingRecent.name}…` : opening ? 'Opening a project…' : '';
   const refresh = () => void api.projects.recents().then(setRecents);
   useEffect(() => {
     refresh();
     const onCmd = (e: Event) => {
       if (openDialogs.length) return;
       const cmd = (e as CustomEvent).detail;
-      if (cmd === 'new-project') setCreating(true);
+      // A project on its way may still ask for trust: a New project form must not be underneath that.
+      if (cmd === 'new-project' && !openingRef.current) setCreating(true);
       if (cmd === 'open-project') void open();
       if (cmd === 'open-project-folder') void open(undefined, { folder: true });
     };
@@ -51,14 +60,43 @@ export function Welcome() {
     return () => window.removeEventListener('builder-command', onCmd);
   }, []);
 
-  const open = async (dir?: string, opts?: { folder?: boolean }) => {
+  useEffect(() => {
+    if (opening || trust) return;
+    const back = returnFocus.current;
+    returnFocus.current = null;
+    if (back?.isConnected && (!document.activeElement || document.activeElement === document.body)) back.focus();
+  }, [opening, trust]);
+  useEffect(() => {
+    const next = focusAfterRemove.current;
+    if (next === null || recents === null) return;
+    focusAfterRemove.current = null;
+    const card = [...document.querySelectorAll<HTMLElement>('.recent-card')].find((b) => b.title.endsWith(`\n${next}`));
+    (card ?? document.querySelector<HTMLElement>('.empty-state .btn'))?.focus();
+  }, [recents]);
+
+  /**
+   * A project found in a new place takes over its old entry, but only when it is recognisably the same project (its
+   * name or folder name): choosing some other folder must not cost the shortcut. The newest recent is the one just opened.
+   */
+  const forgetMissing = async (dir: string) => {
+    const list = await api.projects.recents();
+    const old = list.find((x) => x.dir === dir && x.missing);
+    const found = list[0];
+    const folderName = (d: string) => d.split(/[\\/]/).filter(Boolean).pop();
+    if (old && found && found !== old && !found.missing && (found.name === old.name || folderName(found.dir) === folderName(old.dir))) await api.projects.removeRecent(dir);
+  };
+
+  const open = async (dir?: string, opts?: { folder?: boolean; replaces?: string }) => {
     // One open at a time: a second request must not clear the busy state of the first, or race it in the main process.
     // The disabled buttons show it; this also stops the Open project menu command, which no button state reaches.
     if (openingRef.current) return;
     openingRef.current = true;
-    setOpening(dir ?? (opts?.folder ? 'folder-dialog' : 'dialog'));
+    returnFocus.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    setOpening(dir ?? opts?.replaces ?? (opts?.folder ? 'folder-dialog' : 'dialog'));
     try {
-      const r = await api.projects.open(dir, opts);
+      const r = await api.projects.open(dir, opts?.folder ? { folder: true } : undefined);
+      if (opts?.replaces && r.ok) await forgetMissing(opts.replaces).catch(() => undefined);
+      replacing.current = r.needsTrust ? opts?.replaces : undefined;
       if (r.needsTrust) setTrust(r.needsTrust);
       else if (!r.ok && r.message) toast(r.message, 'error');
     } catch (e) {
@@ -84,7 +122,8 @@ export function Welcome() {
           </div>
         </div>
         <div className="welcome-actions no-drag">
-          <button className="welcome-action" onClick={() => setCreating(true)}>
+          {/* On first run the main pane's button is the one primary action. */}
+          <button className={`welcome-action${recents?.length === 0 ? ' secondary' : ''}`} disabled={!!opening} onClick={() => setCreating(true)}>
             <span className="ico">
               <Plus size={18} />
             </span>
@@ -129,7 +168,7 @@ export function Welcome() {
           </details>
         )}
         <div className="col no-drag" style={{ gap: 4 }}>
-          <button className="btn btn-ghost" style={{ justifyContent: 'flex-start' }} onClick={() => setState({ modal: { kind: 'settings' } })}>
+          <button className="btn btn-ghost" style={{ justifyContent: 'flex-start' }} disabled={!!opening} onClick={() => setState({ modal: { kind: 'settings' } })}>
             <Settings /> Settings
           </button>
           <p className="faint" style={{ margin: '6px 12px 0', fontSize: 12 }}>
@@ -138,39 +177,31 @@ export function Welcome() {
         </div>
       </aside>
       <main className="welcome-main">
+        <div className="sr-only" role="status">
+          {openingNote}
+        </div>
         {recents === null ? null : recents.length === 0 ? (
           <>
-            <h2>Welcome to SiteOrigin Builder</h2>
+            <h2>Make your first website</h2>
             <p className="muted" style={{ margin: 0 }}>
-              Build a website for your business, visually. No code, no hosting account needed.
+              Three steps, with no code and no hosting account. It takes about a minute to set up.
             </p>
             <div className="empty-state">
-              <span className="empty-icon">
-                <AppMark size={64} />
-              </span>
-              <strong>Make your first website</strong>
-              <span>Start from a ready-made site and make it yours. It takes about a minute to set up.</span>
               <ol className="first-steps">
                 <li>
-                  <b>
-                    <LayoutTemplate /> Pick a starter
-                  </b>
+                  <b>Pick a starter</b>
                   Pages, sections and sample images, ready to change.
                 </li>
                 <li>
-                  <b>
-                    <MousePointerClick /> Click to edit
-                  </b>
+                  <b>Click to edit</b>
                   Change text, images and colors right on the page.
                 </li>
                 <li>
-                  <b>
-                    <Upload /> Export anywhere
-                  </b>
+                  <b>Export anywhere</b>
                   Your site is a folder you own. Host it anywhere.
                 </li>
               </ol>
-              <button className="btn btn-primary btn-lg" onClick={() => setCreating(true)}>
+              <button className="btn btn-primary btn-lg" disabled={!!opening} onClick={() => setCreating(true)}>
                 <Plus /> New project
               </button>
             </div>
@@ -184,28 +215,41 @@ export function Welcome() {
           <div className="recent-grid">
             {recents.map((r) => (
               <div key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}`}>
-                <button className="recent-card" style={{ width: '100%' }} disabled={!!opening} title={`${r.name}\n${r.dir}`} onClick={() => (r.missing ? toast('That project folder could not be found. It may have been moved or deleted.', 'error', { label: 'Remove from list', run: () => void api.projects.removeRecent(r.dir).then(refresh) }) : void open(r.dir))}>
-                  <div className="recent-thumb" aria-hidden="true">{opening === r.dir ? <Spinner large decorative /> : initials(r.name)}</div>
+                {/* A missing project's card finds it: the picker opens, and the same project found elsewhere takes over this entry. */}
+                <button className="recent-card" style={{ width: '100%' }} disabled={!!opening} aria-busy={opening === r.dir || undefined} title={`${r.name}\n${r.dir}`} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
+                  <div className="recent-thumb" aria-hidden="true">{opening === r.dir ? <Spinner decorative /> : initials(r.name)}</div>
                   <div className="recent-meta">
                     <strong>{r.name}</strong>
                     <span className="where">
                       <Folder />
                       <span className="ellipsis" style={{ direction: 'rtl', textAlign: 'left' }}>
-                        <bdi>{r.missing ? 'Folder not found' : shortPath(r.dir.replace(/[\\/][^\\/]+$/, ''))}</bdi>
+                        <bdi>{shortPath(whereLabel(r, recents))}</bdi>
                       </span>
                     </span>
-                    <span>{opening === r.dir ? 'Opening…' : `Opened ${timeAgo(r.openedAt)}`}</span>
+                    {r.missing ? (
+                      <span className="recent-status">
+                        <span className="label">
+                          <CircleAlert aria-hidden="true" /> Folder not found
+                        </span>
+                        <span className="find">{opening === r.dir ? 'Finding folder…' : 'Find folder…'}</span>
+                      </span>
+                    ) : (
+                      <span>{opening === r.dir ? 'Opening…' : `Opened ${timeAgo(r.openedAt)}`}</span>
+                    )}
                   </div>
                 </button>
                 <button
                   className="icon-btn sm remove"
                   aria-label={`Remove ${r.name} from recent projects`}
-                  title="Remove from this list (the folder is not deleted)"
+                  title={r.missing ? 'Remove from this list' : 'Remove from this list (the folder is not deleted)'}
                   disabled={!!opening}
                   onClick={async () => {
                     await api.projects.removeRecent(r.dir);
+                    const rest = recents.filter((x) => x.dir !== r.dir);
+                    const at = recents.indexOf(r);
+                    focusAfterRemove.current = (rest[at] ?? rest[at - 1])?.dir ?? '';
                     refresh();
-                    toast(`${r.name} was removed from this list. Its folder is untouched.`);
+                    toast(r.missing ? `${r.name} was removed from this list.` : `${r.name} was removed from this list. Its folder is untouched.`);
                   }}
                 >
                   <X />
@@ -217,17 +261,32 @@ export function Welcome() {
         )}
       </main>
       {creating && <NewProjectModal onClose={() => setCreating(false)} />}
-      {trust && <TrustProjectModal project={trust} onClose={() => setTrust(null)} />}
+      {trust && (
+        <TrustProjectModal
+          project={trust}
+          onClose={() => setTrust(null)}
+          onOpened={() => {
+            if (replacing.current) void forgetMissing(replacing.current).catch(() => undefined);
+          }}
+        />
+      )}
       {modal?.kind === 'settings' && <SettingsModal />}
     </div>
   );
 }
 
+/** The folder a project is in, or its own folder when that is all that tells two same-named projects apart. */
+function whereLabel(r: RecentProject, all: RecentProject[]) {
+  const parent = (d: string) => d.replace(/[\\/][^\\/]+$/, '');
+  return all.some((x) => x !== r && x.name === r.name && parent(x.dir) === parent(r.dir)) ? r.dir : parent(r.dir);
+}
+
 function initials(name: string) {
+  // Words only, so "Tide & Timber" is TT rather than T&.
   return name
     .split(/\s+/)
-    .filter(Boolean)
+    .filter((w) => /^[\p{L}\p{N}]/u.test(w))
     .slice(0, 2)
-    .map((w) => w[0].toUpperCase())
+    .map((w) => [...w][0].toUpperCase())
     .join('');
 }
