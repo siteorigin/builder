@@ -58,13 +58,13 @@ const INVISIBLE = /^[\s\p{Cf}\u115F\u1160\u2800\u3164\uFFA0]*$/u;
  * What the page says: the author's own wording, or the default for anything left empty or showing nothing. Read
  * defensively, since site.json may have been edited by hand: the link home always has a name visitors can read.
  */
-export function notFoundCopy(site: Pick<SiteDoc, 'language' | 'notFoundHeading' | 'notFoundMessage' | 'notFoundLinkLabel'>): typeof NOT_FOUND_DEFAULTS {
+export function notFoundCopy(site: Pick<SiteDoc, 'notFoundHeading' | 'notFoundMessage' | 'notFoundLinkLabel'> & Partial<Pick<SiteDoc, 'language'>>): typeof NOT_FOUND_DEFAULTS {
   const own = (v: unknown, limit: number) => {
     const text = typeof v === 'string' ? clipText(v.trim(), limit).trim() : '';
     return INVISIBLE.test(text) ? '' : text;
   };
   // The page is in the site's language.
-  const defaults = notFoundDefaults(siteLanguage(site));
+  const defaults = notFoundDefaults(siteLanguage({ language: site.language ?? '' }));
   return {
     heading: own(site.notFoundHeading, NOT_FOUND_LIMITS.heading) || defaults.heading,
     message: own(site.notFoundMessage, NOT_FOUND_LIMITS.message) || defaults.message,

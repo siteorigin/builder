@@ -61,6 +61,9 @@ p { text-wrap: pretty; }
 ul, ol { margin: 0; padding: 0; list-style: none; }
 img, svg { display: block; max-width: 100%; }
 a { color: inherit; }
+/* A phone number or email address keeps its own order inside right-to-left text: what the link says decides which
+   way it runs, so "+1 555 0134" reads left to right while an Arabic "Call us" still reads right to left. */
+a:is([href^='tel:' i], [href^='mailto:' i]) { unicode-bidi: plaintext; }
 address, cite { font-style: normal; }
 /* Jump links land 1rem below the sticky site header instead of under it. The header publishes the height it
    occupies (0 when it does not stick); before it has, the default assumes one 72px row. */

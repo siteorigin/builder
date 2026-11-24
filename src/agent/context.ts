@@ -11,7 +11,7 @@ import { teaserFields } from '@shared/page-teasers';
 import { pageParents } from '@shared/page-tree';
 import { notFoundCopy } from '@shared/not-found';
 import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
-import { isLanguageCode, pageLanguage, translationPeers } from '@shared/languages';
+import { isLanguageCode, pageLanguage, siteDirection, translationPeers } from '@shared/languages';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -114,7 +114,16 @@ export function projectSummary(state: ProjectState, revision: number) {
   const parents = pageParents(Object.values(state.pages));
   return {
     revision,
-    site: { name: state.site.name, description: state.site.description, language: state.site.language, baseUrl: state.site.baseUrl ?? null, notFoundPage: notFoundCopy(state.site) },
+    site: {
+      name: state.site.name,
+      description: state.site.description,
+      language: state.site.language,
+      // Which way its text runs, and whether that is the author's choice or follows the language.
+      direction: { runs: siteDirection(state.site), automatic: state.site.direction === undefined },
+      baseUrl: state.site.baseUrl ?? null,
+      notFoundPage: notFoundCopy(state.site),
+      ...(state.site.visitorText ? { visitorText: state.site.visitorText } : {})
+    },
     theme: { id: theme.id, name: theme.name },
     homePageId: state.site.homePageId,
     pages: state.site.pageOrder.map((id) => {

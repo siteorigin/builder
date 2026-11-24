@@ -358,6 +358,47 @@ describe('page languages in the website', () => {
     }
   });
 
+  it('gives a page in a language written the other way its own dir, on first load and as visitors move between pages (issue #71)', async () => {
+    const { s } = bilingual();
+    const he = create(s, 'אודות');
+    let t = apply(he.s, { type: 'page.update', pageId: he.id, route: '/he/odot/', language: 'he' });
+    const html = '<!doctype html>\n<html lang="en" dir="ltr"><head></head>';
+    for (const instrument of [false, true]) {
+      const files = generateProject(t, { instrument });
+      expect(files.get('src/app.html')).toContain('<html lang="en" dir="ltr">');
+      expect(files.get(SERVER_HOOK_FILE)).toMatch(/const DIRECTIONS = \{\n\t"\/he\/odot": "rtl"\n\};/);
+      const render = await loadHook(files);
+      expect(render('/he/odot', [html])[0]).toBe('<!doctype html>\n<html lang="he" dir="rtl"><head></head>');
+      expect(render('/fr/a-propos', [html])[0]).toBe('<!doctype html>\n<html lang="fr" dir="ltr"><head></head>');
+      for (const id of ['/about', '/', null]) expect(render(id, [html])[0]).toBe(html);
+      // A template of the project's own: dir is added where it has none, and replaced however it is written.
+      expect(render('/he/odot', ['<html class="x" lang="en">'])[0]).toBe('<html class="x" lang="he" dir="rtl">');
+      expect(render('/he/odot', ["<html DIR='ltr' lang=en>"])[0]).toBe('<html dir="rtl" lang="he">');
+      const layout = files.get('src/routes/+layout.svelte')!;
+      expect(layout).toContain('const pageDirections = {\n\t\t"/he/odot": "rtl"\n\t};');
+      expect(layout).toContain('document.documentElement.dir = id && Object.hasOwn(pageDirections, id) ? pageDirections[id] : "ltr";');
+      expect(() => compile(layout, { generate: 'client', filename: 'src/routes/+layout.svelte', runes: true })).not.toThrow();
+    }
+    // An Arabic site runs right to left: its French page is the one that runs the other way.
+    t = apply(t, { type: 'site.update', language: 'ar' });
+    let files = generateProject(t);
+    expect(files.get('src/app.html')).toContain('<html lang="ar" dir="rtl">');
+    expect(files.get(SERVER_HOOK_FILE)).toMatch(/const DIRECTIONS = \{\n\t"\/fr\/a-propos": "ltr"\n\};/);
+    expect((await loadHook(files))('/he/odot', ['<html lang="ar" dir="rtl">'])[0]).toBe('<html lang="he" dir="rtl">');
+    // Its author's choice of left to right holds for the pages in Arabic; the Hebrew page still runs right to left.
+    t = apply(t, { type: 'site.update', direction: 'ltr' });
+    files = generateProject(t);
+    expect(files.get('src/app.html')).toContain('<html lang="ar" dir="ltr">');
+    expect(files.get(SERVER_HOOK_FILE)).toMatch(/const DIRECTIONS = \{\n\t"\/he\/odot": "rtl"\n\};/);
+    expect(pageLanguageWarning(t, byTitle(t, 'About'), '<html lang="ar" dir="ltr">')).toBeNull();
+    expect(pageLanguageWarning(t, t.pages[he.id], '<html lang="he" dir="rtl">')).toBeNull();
+    expect(pageLanguageWarning(t, t.pages[he.id], '<html lang="he">')).toMatch(/built without a direction, not right to left/);
+    // Automatic again: the direction follows the language once more, and the document keeps no choice.
+    t = apply(t, { type: 'site.update', direction: 'auto' });
+    expect(t.site.direction).toBeUndefined();
+    expect(generateProject(t).get('src/app.html')).toContain('<html lang="ar" dir="rtl">');
+  });
+
   it('gives the not-found page and each page in another language one server hook that does both', async () => {
     const { s } = trilingual();
     for (const instrument of [false, true]) {

@@ -368,6 +368,14 @@ ${FIELD_NAME_SOURCE}
 	.so-form__field textarea {
 		resize: vertical;
 	}
+	/* Email addresses and phone numbers are typed left to right, whichever way the page runs, and start at the side
+	   the page's text does. */
+	.so-form__field input:is([type='email'], [type='tel']) {
+		direction: ltr;
+	}
+	.so-form__field:dir(rtl) input:is([type='email'], [type='tel']) {
+		text-align: right;
+	}
 	.so-form__field input:focus-visible,
 	.so-form__field textarea:focus-visible {
 		outline: 2px solid var(--so-surface-ink, var(--so-color-focus));

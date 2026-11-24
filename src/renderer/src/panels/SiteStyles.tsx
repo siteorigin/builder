@@ -19,10 +19,11 @@ import { CustomTokens } from './CustomTokens';
 import { FontSelect, familyName } from './FontSelect';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ForegroundSuggestion } from '@shared/contrast';
-import { NOT_FOUND_DEFAULTS, NOT_FOUND_LIMITS, clipText } from '@shared/not-found';
+import { NOT_FOUND_LIMITS, clipText, notFoundDefaults } from '@shared/not-found';
+import { VisitorTextFields } from './VisitorText';
 import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl } from '@shared/public-url';
-import { LANGUAGE_CODE_ERROR, siteLanguageProblem } from '@shared/languages';
+import { LANGUAGE_CODE_ERROR, languageDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
 
 /**
  * What the Foundation theme uses each colour for, checked against its base CSS and component styles, so an
@@ -1375,6 +1376,13 @@ export function SiteStyles() {
           unusable="The website is built in English (en) until it is corrected."
           onCommit={(v) => updSite({ language: v.trim() })}
         />
+        <Field label="Text direction" hint="Automatic follows the language: right to left for Arabic, Hebrew, Persian or Urdu. Pages in another language run that language’s way.">
+          <select className="select" value={site.direction ?? 'auto'} onChange={(e) => updSite({ direction: e.target.value })}>
+            <option value="auto">Automatic ({languageDirection(siteLanguage(site)) === 'rtl' ? 'right to left' : 'left to right'})</option>
+            <option value="ltr">Left to right</option>
+            <option value="rtl">Right to left</option>
+          </select>
+        </Field>
         <Field label="Favicon">
           <select className="select" value={site.favicon ?? ''} onChange={(e) => updSite({ favicon: e.target.value || null })}>
             <option value="">None</option>
@@ -1397,15 +1405,19 @@ export function SiteStyles() {
         </Field>
       </Section>
 
+      <Section title="Visitor text" id="site-visitor-text" defaultOpen={false}>
+        <VisitorTextFields state={st} onCommit={(language, key, value) => updSite({ visitorText: { language, text: { [key]: value } } })} />
+      </Section>
+
       <Section title="Not-found page" id="site-not-found" defaultOpen={false}>
         <Field label="Heading" hint="Visitors see this page, with your header and footer, at any address your site does not have. Leave a field empty to use the wording shown.">
-          <DraftInput value={site.notFoundHeading ?? ''} placeholder={NOT_FOUND_DEFAULTS.heading} onCommit={(v) => updSite({ notFoundHeading: clipText(v.trim(), NOT_FOUND_LIMITS.heading) })} />
+          <DraftInput value={site.notFoundHeading ?? ''} placeholder={notFoundDefaults(siteLanguage(site)).heading} onCommit={(v) => updSite({ notFoundHeading: clipText(v.trim(), NOT_FOUND_LIMITS.heading) })} />
         </Field>
         <Field label="Message">
-          <DraftInput multiline value={site.notFoundMessage ?? ''} placeholder={NOT_FOUND_DEFAULTS.message} onCommit={(v) => updSite({ notFoundMessage: clipText(v.trim(), NOT_FOUND_LIMITS.message) })} />
+          <DraftInput multiline value={site.notFoundMessage ?? ''} placeholder={notFoundDefaults(siteLanguage(site)).message} onCommit={(v) => updSite({ notFoundMessage: clipText(v.trim(), NOT_FOUND_LIMITS.message) })} />
         </Field>
         <Field label="Home link" hint="The page always ends with this link to your Home page.">
-          <DraftInput value={site.notFoundLinkLabel ?? ''} placeholder={NOT_FOUND_DEFAULTS.linkLabel} onCommit={(v) => updSite({ notFoundLinkLabel: clipText(v.trim(), NOT_FOUND_LIMITS.linkLabel) })} />
+          <DraftInput value={site.notFoundLinkLabel ?? ''} placeholder={notFoundDefaults(siteLanguage(site)).linkLabel} onCommit={(v) => updSite({ notFoundLinkLabel: clipText(v.trim(), NOT_FOUND_LIMITS.linkLabel) })} />
         </Field>
       </Section>
     </div>

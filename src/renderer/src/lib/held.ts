@@ -50,6 +50,14 @@ const PAGE_FIELDS: Record<string, string[]> = {
 };
 const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel'];
 
+/** The author's wording for these pieces of visitor text in a language: the one piece's text, or each piece's. */
+function visitorTextRead(state: ProjectState, language: string, keys: string[]): unknown {
+  const all = state.site.visitorText;
+  const own = all && typeof all === 'object' ? has(all, language.toLowerCase()) : undefined;
+  const value = (key: string) => (own && typeof own === 'object' ? has(own, key) : undefined);
+  return keys.length === 1 ? value(keys[0]) : Object.fromEntries(keys.map((k) => [k, value(k)]));
+}
+
 function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   if (owner.kind === 'page') return has(state.pages, owner.id);
   if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
@@ -104,7 +112,10 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
     }
     case 'site.update': {
       const keys = SITE_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);
-      return found(Object.fromEntries(keys.map((k) => [k, (state.site as unknown as Record<string, unknown>)[k]])));
+      const fields: Record<string, unknown> = Object.fromEntries(keys.map((k) => [k, (state.site as unknown as Record<string, unknown>)[k]]));
+      // Visitor text is read piece by piece, so wording typed for one piece never waits on a change to another.
+      if (op.visitorText) fields.visitorText = visitorTextRead(state, op.visitorText.language, Object.keys(op.visitorText.text));
+      return found(fields);
     }
     case 'node.rename': {
       const node = nodeOf(state, op.owner, op.nodeId);
@@ -313,6 +324,10 @@ export function typedText(op: EditOperation): string | null {
   if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'asset.update') {
     const key = Object.keys(o).find((k) => k !== 'type' && !TARGET_KEYS.has(k) && o[k] !== undefined);
     if (key === 'font') return shownValue((o.font as { family?: unknown } | undefined)?.family);
+    if (key === 'visitorText') {
+      const text = Object.values((o.visitorText as { text?: Record<string, unknown> } | undefined)?.text ?? {});
+      return text.length === 1 ? shownValue(text[0]) : null;
+    }
     return key ? shownValue(o[key]) : null;
   }
   if (op.type === 'node.rename' || op.type === 'component.rename') return shownValue(op.name);
