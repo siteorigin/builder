@@ -38,6 +38,9 @@ describe('rich text from the canvas', () => {
     expect(blocks([el('p', 'A', el('br'), ' ')])).toEqual([p('A')]);
     expect(blocks([el('p', el('br'), 'B')])).toEqual([p('\nB')]);
     expect(blocks([el('ul', el('li', 'Item', el('br'), el('br')))])).toEqual([{ type: 'ul', items: [[{ text: 'Item\n' }]] }]);
+    expect(blocks([el('h3', 'A', el('br'), el('br'))])).toEqual([{ type: 'h3', spans: [{ text: 'A\n' }] }]);
+    // A non-breaking space after the break shows a line: the break before it is the writer's.
+    expect(blocks([el('p', 'A', el('br'), '\u00a0')])).toEqual([p('A\n')]);
     // Breaks go outside marks, as spaces do, and the spaces beside a break go.
     expect(blocks([el('p', el('strong', 'Bold ', el('br')), ' next')])).toEqual([p({ text: 'Bold', strong: true }, '\nnext')]);
     expect(blocks([el('p', el('strong', 'one', el('br'), 'two'))])).toEqual([p({ text: 'one\ntwo', strong: true })]);

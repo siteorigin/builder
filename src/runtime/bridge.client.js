@@ -1101,6 +1101,15 @@ function pastedRich(html) {
   let words = false;
   /** Lines (list items, headings, quotes) where a block joined the text: the next words go on a new line. */
   const breakAfter = new WeakSet();
+  /** How many runs of words each line or block holds so far, so a joined block's are counted without rereading. */
+  const wordRuns = new WeakMap();
+  const runsIn = (el) => wordRuns.get(el) || 0;
+  /** A list item that goes on after a list nested in it was lifted out: its later words go in a new item there. */
+  const continued = new WeakMap();
+  const current = (el) => {
+    while (continued.has(el)) el = continued.get(el);
+    return el;
+  };
   const lineBreak = (parent) => {
     breakAfter.delete(parent);
     put(parent, document.createElement('br'), {});
@@ -1139,6 +1148,7 @@ function pastedRich(html) {
         if (!t) return;
         if (/\S/.test(t)) {
           words = true;
+          wordRuns.set(parent, runsIn(parent) + 1);
           if (breakAfter.has(parent)) lineBreak(parent);
         }
         put(parent, document.createTextNode(t), m);
@@ -1168,7 +1178,7 @@ function pastedRich(html) {
     }
     if (n.tagName === 'PRE') inner.pre = true;
     const kind = PASTE_BLOCKS[n.tagName];
-    const kids = (into) => n.childNodes.forEach((c) => walk(c, into, inner));
+    const kids = (into) => n.childNodes.forEach((c) => walk(c, current(into), inner));
     if (!kind) {
       // A table cell's words stay apart from the next cell's.
       if ((n.tagName === 'TD' || n.tagName === 'TH') && parent.lastChild) put(parent, document.createTextNode(' '), m);
@@ -1177,7 +1187,15 @@ function pastedRich(html) {
     if (kind === 'ul' || kind === 'ol') {
       // A list inside a list has no stored form: its items join the list around it.
       const outer = parent.tagName === 'LI' ? parent.parentNode : parent.tagName === 'UL' || parent.tagName === 'OL' ? parent : null;
-      if (outer) return kids(outer);
+      if (outer) {
+        kids(outer);
+        if (parent.tagName === 'LI') {
+          const next = document.createElement('li');
+          outer.appendChild(next);
+          continued.set(parent, next);
+        }
+        return;
+      }
       const list = document.createElement(kind);
       parent.appendChild(list);
       return kids(list);
@@ -1189,11 +1207,15 @@ function pastedRich(html) {
     // A block inside a list item, heading or quote joins the text there on a line of its own: the rich text holds
     // no deeper structure.
     if (!inList && parent !== out) {
-      const before = parent.textContent;
+      const before = runsIn(parent);
       breakAfter.delete(parent);
-      if (/\S/.test(before)) lineBreak(parent);
+      if (before) lineBreak(parent);
       kids(parent);
-      if (/\S/.test(parent.textContent.slice(before.length))) breakAfter.add(parent);
+      // A <br> that ended the joined block showed nothing there, and the next words get a line of their own anyway.
+      let end = parent.lastChild;
+      while (end && end.nodeType === Node.ELEMENT_NODE && end.tagName !== 'BR' && end.lastChild) end = end.lastChild;
+      if (end && end.nodeName === 'BR') end.remove();
+      if (runsIn(parent) > before) breakAfter.add(parent);
       return;
     }
     const block = document.createElement(inList ? 'li' : kind === 'li' ? 'p' : kind);
@@ -1201,6 +1223,8 @@ function pastedRich(html) {
     kids(block);
   };
   src.childNodes.forEach((c) => walk(c, out, {}));
+  // A list item left with nothing in it (after a nested list was lifted out at its end) is not an item.
+  for (const li of out.querySelectorAll('li')) if (!/\S/.test(li.textContent)) li.remove();
   return words ? out.innerHTML : '';
 }
 function onEditDrop(e) {

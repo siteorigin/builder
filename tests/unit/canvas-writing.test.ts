@@ -310,12 +310,12 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       // A paste event can carry markup straight from another app, unsanitized.
       await editAt('r', 'word');
       await pasteRaw(
-        '<p onclick="steal()">Safe <b onmouseover="steal()">bold</b><img src="/x.png" onerror="steal()"><script>steal()</script><style>p{}</style><iframe src="/x"></iframe><button>Buy now</button><svg><title>Company logo</title></svg><a href="javascript:steal()" style="x">plain</a> <a href="file:///etc/hosts">file</a> <a href="//example.com/x">far</a> <a href="tel:office">call</a></p>',
+        '<p onclick="steal()">Safe <b onmouseover="steal()">bold</b><img src="/x.png" onerror="steal()"><script>steal()</script><style>p{}</style><iframe src="/x"></iframe><button>Buy now</button><svg><title>Company logo</title></svg><math><mi>Formula</mi></math><a href="javascript:steal()" style="x">plain</a> <a href="file:///etc/hosts">file</a> <a href="//example.com/x">far</a> <a href="tel:office">call</a></p>',
         'Safe bold plain'
       );
       const inserted = await html('r');
       expect(inserted).toContain('<strong>bold</strong>');
-      expect(inserted).not.toMatch(/<(img|script|style|iframe|a|button|svg)\b|steal|on\w+=|style=|Buy now|Company logo/);
+      expect(inserted).not.toMatch(/<(img|script|style|iframe|a|button|svg|math)\b|steal|on\w+=|style=|Buy now|Company logo|Formula/);
       expect(await commit()).toEqual([untouched[0], p('The second paragraph has a Safe ', { text: 'bold', strong: true }, 'plain file far call to change.'), untouched[2], untouched[3]]);
     });
 
@@ -323,12 +323,13 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       await editAt('r', 'Fourth');
       await page.keyboard.press('ControlOrMeta+A');
       await pasteRaw(
-        `<blockquote>\n  <p>First</p>Second</blockquote><ul><li>One<ul><li>Inner<ul><li>Deeper</li></ul></li></ul></li><li>Two</li></ul><p><a href="${SITE}/about/#team">Our team</a></p>`,
+        `<blockquote>\n  <p>First<br></p>Second</blockquote><ul><li>One<ul><li>Inner<ol><li>Deeper</li></ol></li></ul>after</li><li>Two</li></ul><p><a href="${SITE}/about/#team">Our team</a></p>`,
         'First Second'
       );
       expect(await commit()).toEqual([
         { type: 'blockquote', spans: [{ text: 'First\nSecond' }] },
-        { type: 'ul', items: [[{ text: 'One' }], [{ text: 'Inner' }], [{ text: 'Deeper' }], [{ text: 'Two' }]] },
+        // Lifted out in reading order: what followed the nested list stays after it.
+        { type: 'ul', items: [[{ text: 'One' }], [{ text: 'Inner' }], [{ text: 'Deeper' }], [{ text: 'after' }], [{ text: 'Two' }]] },
         p({ text: 'Our team', link: { type: 'page', target: 'pg_about', anchor: 'team' } })
       ]);
     });
@@ -396,6 +397,15 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       await page.keyboard.type('A');
       await page.keyboard.press('Shift+Enter');
       expect(await commit()).toEqual([p('A\n')]);
+    });
+
+    it('stores two breaks for two Shift+Enters at the end', async () => {
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await page.keyboard.type('A');
+      await page.keyboard.press('Shift+Enter');
+      await page.keyboard.press('Shift+Enter');
+      expect(await commit()).toEqual([p('A\n\n')]);
     });
   });
 });

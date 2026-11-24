@@ -49,12 +49,14 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks:
   let droppedLinks = 0;
   /** The breaks read from <br>: the last one in a block shows no line (see flush). */
   const brs = new WeakSet<RichSpan>();
+  /** Runs of text that show something: words, or a non-breaking space (which a page never collapses). */
+  const shown = new WeakSet<RichSpan>();
   const flush = () => {
     // A <br> that ends a block shows nothing: it is the browser's own, holding the caret on the empty line after a
     // Shift+Enter, or the one the page adds after a block that ends with a break (RichText.svelte). Only the
     // breaks before it are the writer's.
     let last = run.length - 1;
-    while (last >= 0 && !/[^ ]/.test(run[last].text)) last--;
+    while (last >= 0 && !brs.has(run[last]) && !shown.has(run[last])) last--;
     if (last >= 0 && brs.has(run[last])) run.splice(last, 1);
     if (run.some((s) => s.text.trim())) {
       if (list) list.items.push(run);
@@ -67,7 +69,9 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages): { blocks:
       // Whitespace in the text itself (a line feed in pasted or source markup) collapses, as the page shows it: only
       // a <br> is a line break. Browsers type non-breaking spaces into editable text wherever a plain space would
       // collapse.
-      run.push({ text: n.replace(/[ \t\r\n\f]+/g, ' ').replace(/\u00a0/g, ' '), ...marks });
+      const text = { text: n.replace(/[ \t\r\n\f]+/g, ' ').replace(/\u00a0/g, ' '), ...marks };
+      if (/[^ \t\r\n\f]/.test(n)) shown.add(text);
+      run.push(text);
       return;
     }
     const tag = n.tag.toLowerCase();
