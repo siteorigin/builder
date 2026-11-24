@@ -1267,7 +1267,7 @@ export class Controller {
     const dest = join(opts.parentDir, projectFolderName(name));
     // The copy would land inside the folder it copies, and write into a project that may be read-only here.
     if (isInside(s.dir, dest)) return { ok: false, field: 'location', message: 'Choose a folder outside the project folder.' };
-    const taken = { ok: false as const, field: 'location' as const, message: `${dest} already exists and is not empty. Choose another name or folder.` };
+    const taken = { ok: false as const, field: 'location' as const, message: `A folder named “${basename(dest)}” is already there and is not empty. Choose another name or folder.` };
     if (existsSync(dest) && !(await fs.readdir(dest).then((names) => names.length === 0, () => false))) return taken;
     const tmp = `${dest}.${randomUUID()}.tmp`;
     try {

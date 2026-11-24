@@ -158,7 +158,7 @@ describe('a duplicated project (#176)', () => {
     expect(await c.duplicate({ name: 'Fall Campaign', parentDir: sites, opening })).toEqual({
       ok: false,
       field: 'location',
-      message: `${join(sites, 'fall-campaign')} already exists and is not empty. Choose another name or folder.`
+      message: 'A folder named “fall-campaign” is already there and is not empty. Choose another name or folder.'
     });
     expect(readdirSync(join(sites, 'fall-campaign'))).toEqual(['notes.txt']);
     expect(await c.duplicate({ name: '   ', parentDir: sites, opening })).toMatchObject({ ok: false, field: 'name' });
@@ -184,7 +184,7 @@ describe('a duplicated project (#176)', () => {
     const opts = { name: 'Fall Campaign', parentDir: sites, opening: c.openingKey! };
     const results = await Promise.all([c.duplicate(opts), c.duplicate(opts)]);
     expect(results.filter((r) => r.ok)).toHaveLength(1);
-    expect(results.find((r) => !r.ok)).toMatchObject({ field: 'location', message: expect.stringMatching(/already exists/) });
+    expect(results.find((r) => !r.ok)).toMatchObject({ field: 'location', message: expect.stringMatching(/is already there/) });
     expect(readdirSync(sites).sort()).toEqual(['fall-campaign', 'storefront']);
     expect(read(join(sites, 'fall-campaign'), 'siteorigin.project.json').workingCopyName).toBe('Fall Campaign');
   });
