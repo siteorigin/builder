@@ -308,7 +308,7 @@ export function Canvas() {
     let live = true;
     measureWaiters.current.set(requestId, (raw) => {
       if (!live) return;
-      const found = (measuredRects(raw, descs.length) ?? []).filter((r): r is Rect => !!r);
+      const found = (measuredRects(raw, descs.length) ?? []).filter((r): r is Rect & { order: number } => !!r);
       setEmptyTop(found.length ? Math.max(...found.map((r) => r.y + r.height)) : 0);
     });
     post('measure', { requestId, descs });
