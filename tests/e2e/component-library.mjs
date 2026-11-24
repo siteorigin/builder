@@ -47,7 +47,6 @@ const componentSection = async () => {
   if ((await head.getAttribute('aria-expanded')) === 'false') await head.click();
 };
 
-step('an Exhibitor card made from a group, and a second copy from Insert');
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 
@@ -83,6 +82,7 @@ await dialog.getByRole('button', { name: 'Cancel' }).click();
 await dialog.waitFor({ state: 'detached' });
 assert.deepEqual(await library(), {}, 'Cancel makes nothing');
 
+step('an Exhibitor card made from a group, and a second copy from Insert');
 // Blank's Home starts empty: a section to build in first.
 const [{ nodeId: section }] = await apply([{ type: 'node.insert', owner, componentId: 'layout.section' }], 'Insert section');
 const [{ nodeId: stack }] = await apply([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'stack' }], 'Insert stack');
