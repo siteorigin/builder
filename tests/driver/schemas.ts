@@ -49,9 +49,9 @@ const POINTER_TARGET = {
 const SEARCH = {
   ref: REF,
   role: { type: 'string', pattern: '^[a-z]+$', description: 'An ARIA role, such as "button", "textbox" or "dialog".' },
-  name: { type: 'string', minLength: 1, description: 'Its accessible name.' },
+  name: { type: 'string', pattern: '\\S', description: 'Its accessible name.' },
   exact: { type: 'boolean', description: 'Match the name exactly (default, after collapsing whitespace), or false for a case-insensitive substring.' },
-  region: { type: 'string', minLength: 1, description: 'Only inside a region: its role, its name, or role "name", as region paths show them.' },
+  region: { type: 'string', pattern: '\\S', description: 'Only inside a region: its role, its name, or role "name", as region paths show them.' },
   within: { ...REF, description: 'Only inside the element this ref names (searches its own scope).' },
   scope: SCOPE
 };

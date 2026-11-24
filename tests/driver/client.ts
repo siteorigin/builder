@@ -30,7 +30,7 @@ export interface ConnectOptions {
 
 /** The deadline a request asks for, when it is one the host accepts; the host answers any other at once (BAD_REQUEST). */
 const DEFAULT_WAIT_MS = 180_000;
-const askedDeadline = (t: unknown): number => (Number.isInteger(t) && (t as number) > 0 && (t as number) <= MAX_TIMEOUT_MS ? (t as number) : DEFAULT_WAIT_MS);
+export const askedDeadline = (t: unknown): number => (Number.isInteger(t) && (t as number) > 0 && (t as number) <= MAX_TIMEOUT_MS ? (t as number) : DEFAULT_WAIT_MS);
 
 export interface RequestOptions {
   timeoutMs?: number;
@@ -69,6 +69,8 @@ export class DriverClient {
     host.stdin!.on('error', () => undefined);
     const lines = createInterface({ input: host.stdout!, crlfDelay: Infinity });
     lines.on('line', (line) => this.receive(line));
+    // readline passes an input error on to its own listeners, and one with none throws.
+    lines.on('error', (e) => this.fail(new TransportError(`The session host's output failed: ${e.message}`)));
     // Requests still waiting fail once every reply the host wrote has been read, not when it exits: its exit can be
     // seen before its last lines are.
     lines.on('close', () => {

@@ -35,7 +35,7 @@ import type { AppProbe, Checkpoint, Condition, ExportBrief, LocateSample, Verdic
 import { killTree, killTreeSync, ownedEntries, processTable } from './processes.ts';
 import type { ProcessEntry } from './processes.ts';
 import { DriverError, PROTOCOL_VERSION, errorInfo, failure, frameIdentity, parseRequest, success } from './protocol.ts';
-import type { Capability, CloseArgs, CloseResult, FixtureName, KeepArtifacts, Reply, ReplyContext, Request, SessionEvent, StartArgs, WindowRef } from './protocol.ts';
+import type { Capability, CloseArgs, CloseResult, FixtureName, KeepArtifacts, LocateArgs, Reply, ReplyContext, Request, SessionEvent, StartArgs, WindowRef } from './protocol.ts';
 import { DEFAULT_STARTUP_MS, OPERATIONS, capabilities } from './operations.ts';
 import type { OpSpec } from './operations.ts';
 import { RefRegistry, scrubDeep, scrubber } from './snapshot.ts';
@@ -109,14 +109,23 @@ export interface SessionOptions {
   contained?: boolean;
 }
 
-/** The largest image `evidence.read` returns, before base64. */
-export const MAX_EVIDENCE_BYTES = 8 * 1024 * 1024;
+/**
+ * The largest image `evidence.read` returns, before base64: its reply (a third larger as base64) stays well inside the
+ * 10 MiB line the official MCP SDK reads.
+ */
+export const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
 
 /**
  * The bytes of an image the session saved at `path`, while it is still a plain file inside its artifacts folder (no
- * link put in its place, or in a folder's), and no larger than `limit`.
+ * link put in its place, or in a folder's), no larger than `limit`, and the very bytes it captured.
  */
-export async function readSavedImage(artifactsDir: string, path: string, id: string, limit = MAX_EVIDENCE_BYTES): Promise<{ bytes: number; sha256: string; data: string }> {
+export async function readSavedImage(
+  artifactsDir: string,
+  path: string,
+  id: string,
+  captured: { bytes: number; sha256: string },
+  limit = MAX_EVIDENCE_BYTES
+): Promise<{ bytes: number; sha256: string; data: string }> {
   const moved = () => new DriverError('OP_FAILED', `The screenshot ${id} is no longer where the session saved it.`, { details: { reason: 'moved' } });
   const tooLarge = (bytes: number) => new DriverError('OP_FAILED', `The screenshot ${id} is ${bytes} bytes, more than evidence.read returns (${limit}).`, { details: { reason: 'too-large', bytes, limit } });
   const artifacts = await realpath(artifactsDir).catch(() => null);
@@ -130,7 +139,10 @@ export async function readSavedImage(artifactsDir: string, path: string, id: str
     if (info.size > limit) throw tooLarge(info.size);
     const png = await file.readFile();
     if (png.length > limit) throw tooLarge(png.length);
-    return { bytes: png.length, sha256: createHash('sha256').update(png).digest('hex'), data: png.toString('base64') };
+    // Only the bytes it captured: a file changed or put in its place since (by any path) is not that screenshot.
+    const sha256 = createHash('sha256').update(png).digest('hex');
+    if (png.length !== captured.bytes || sha256 !== captured.sha256) throw new DriverError('OP_FAILED', `The screenshot ${id} has changed since the session saved it.`, { details: { reason: 'changed' } });
+    return { bytes: png.length, sha256, data: png.toString('base64') };
   } finally {
     await file.close().catch(() => undefined);
   }
@@ -556,7 +568,7 @@ export function parseStartArgs(args: Record<string, unknown> | undefined, contai
   for (const key of ['headed', 'artifactsDir'])
     if (contained && a[key] !== undefined) throw new DriverError('BAD_REQUEST', `session.start does not take "${key}" here: this session keeps its window hidden and its artifacts inside the session.`);
   if (a.fixture !== undefined) {
-    if (a.fixture !== 'welcome' && !(typeof a.fixture === 'string' && a.fixture in FIXTURES)) throw new DriverError('BAD_REQUEST', `Unknown fixture "${String(a.fixture)}": use welcome or ${Object.keys(FIXTURES).join(', ')}.`);
+    if (a.fixture !== 'welcome' && !(typeof a.fixture === 'string' && Object.hasOwn(FIXTURES, a.fixture))) throw new DriverError('BAD_REQUEST', `Unknown fixture "${String(a.fixture)}": use welcome or ${Object.keys(FIXTURES).join(', ')}.`);
     out.fixture = a.fixture as FixtureName;
   }
   if (a.provider !== undefined) {
@@ -721,7 +733,9 @@ export class Session {
   /** Every credential the session's observations have seen: kept out of everything else it reports. */
   private readonly secrets = new Set<string>();
   /** Every screenshot saved this session, by evidence id, for `evidence.read`. */
-  private readonly evidence = new Map<string, { surface: 'editor' | 'preview'; path: string; width: number; height: number }>();
+  private readonly evidence = new Map<string, { surface: 'editor' | 'preview'; path: string; width: number; height: number; bytes: number; sha256: string }>();
+  /** Begins this session's evidence ids. */
+  private readonly evidenceTag = randomBytes(3).toString('hex');
   private starting: Promise<unknown> | null = null;
   private launching: Promise<unknown> | null = null;
   private closing: Promise<CloseResult> | null = null;
@@ -771,7 +785,7 @@ export class Session {
     try {
       const timeoutMs = request.timeoutMs ?? spec.defaultTimeoutMs;
       let result: unknown;
-      if (request.op === 'session.start') result = await this.start(parseStartArgs(request.args, this.options.contained), { timeoutMs });
+      if (request.op === 'session.start') result = await this.start((request.args ?? {}) as StartArgs, { timeoutMs });
       else if (request.op === 'session.close') result = await this.close(parseCloseArgs(request.args));
       else result = await this.withDeadline(request, spec, timeoutMs, entry);
       return done(success(request, result, await this.replyContext(began)));
@@ -868,7 +882,8 @@ export class Session {
         const args = parseSnapshotArgs(request.args);
         await this.settled();
         const result = await uiSnapshot(this.observer(this.windowFor(request), signal), args, ++this.observations);
-        if (!signal.aborted) this.keepEvidence(result.screenshots);
+        // Nothing is published by a capture that ran out of time, or that finished while the session closed.
+        if (!signal.aborted && this.state === 'ready') this.keepEvidence(result.screenshots);
         return result;
       }
       case 'ui.locate': {
@@ -880,7 +895,17 @@ export class Session {
         const args = parseWaitArgs(request.args);
         await this.settled();
         const env = this.observer(this.windowFor(request), signal);
-        return waitFor((search) => uiLocate(env, search), args, { deadline, signal });
+        // Every look is at the window the wait began on: one replacing it or closing is answered as any request's is.
+        const pinned = () => this.windowFor({ expectWindow: env.generation });
+        const look = async (search: LocateArgs) => {
+          pinned();
+          try {
+            return await uiLocate(env, search);
+          } finally {
+            pinned();
+          }
+        };
+        return waitFor(look, args, { deadline, signal });
       }
       case 'evidence.read':
         return this.readEvidence(request.args);
@@ -934,7 +959,7 @@ export class Session {
   private keepEvidence(shots: Shots | undefined) {
     for (const surface of ['editor', 'preview'] as const) {
       const shot = shots?.[surface];
-      if (shot) this.evidence.set(shot.id, { surface, path: shot.path, width: shot.width, height: shot.height });
+      if (shot) this.evidence.set(shot.id, { surface, path: shot.path, width: shot.width, height: shot.height, bytes: shot.bytes, sha256: shot.sha256 });
     }
   }
 
@@ -949,14 +974,22 @@ export class Session {
     if (typeof a.id !== 'string' || !a.id) throw new DriverError('BAD_REQUEST', '"id" is an evidence id from a screenshot: screenshots.editor.id or screenshots.preview.id.');
     const found = this.evidence.get(a.id);
     if (!found)
-      throw new DriverError('BAD_REQUEST', `No screenshot "${a.id.slice(0, 60)}" in this session: ids come from ui.snapshot's screenshots, and last until the session closes.`, {
+      throw new DriverError('BAD_REQUEST', 'No screenshot of this session has that id: ids come from ui.snapshot\'s screenshots, and last until the session closes.', {
         details: { known: [...this.evidence.keys()].slice(-20) }
       });
     const out: Evidence = { id: a.id, surface: found.surface, mimeType: 'image/png', width: found.width, height: found.height, path: found.path };
     const page = this.bound && !this.bound.closed ? this.bound.page : null;
-    const clear = async () => !this.secrets.size && !(await this.storedSecrets(true)).length && (!page || !(await frameSecrets(page, { strict: true })).length);
+    const clear = async () => {
+      // A credential seen here is remembered, as one an observation sees is: later replies scrub it too.
+      const shown = page ? await frameSecrets(page, { strict: true }) : [];
+      for (const x of shown) if (x) this.secrets.add(x);
+      return !this.secrets.size && !(await this.storedSecrets(true)).length && !shown.length;
+    };
     if (!(await bounded(clear().catch(() => false), 3000, false))) return { ...out, withheld: 'A credential is known in this session, and the image could show it.' };
-    return { ...out, ...(await readSavedImage(this.paths!.artifacts, found.path, a.id)) };
+    const image = await readSavedImage(this.paths!.artifacts, found.path, a.id, found);
+    // A close that began meanwhile has the last word.
+    if (this.state !== 'ready') throw new DriverError('CLOSED', 'The session closed while the screenshot was read.');
+    return { ...out, ...image };
   }
 
   private observer(page: Page, signal: AbortSignal): ObserveEnv {
@@ -965,6 +998,7 @@ export class Session {
       generation: this.bound!.ref.generation,
       registry: this.refs,
       artifacts: this.paths?.artifacts ?? null,
+      evidenceTag: this.evidenceTag,
       signal,
       storedSecrets: (strict) => this.storedSecrets(strict),
       remember: (secrets) => {
@@ -1679,7 +1713,7 @@ export class Session {
    */
   async start(args: StartArgs = {}, { timeoutMs = DEFAULT_STARTUP_MS }: { timeoutMs?: number } = {}): Promise<Description> {
     if (this.state !== 'new') throw new DriverError(this.state === 'closing' || this.state === 'closed' ? 'CLOSED' : 'ALREADY_STARTED', 'This session was already started; each session starts once.');
-    this.args = parseStartArgs(args as Record<string, unknown>);
+    this.args = parseStartArgs(args as Record<string, unknown>, this.options.contained);
     this.state = 'starting';
     let phase: StartPhase = 'build';
     let timer: ReturnType<typeof setTimeout> | undefined;

@@ -14,6 +14,7 @@
  * knows (scrubDeep), on top of the raw tree's own redaction. Screenshots are taken only while no credential is known
  * at all: pixels cannot be scrubbed, and a credential can be painted where no text check sees it.
  */
+import { createHash } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ElementHandle, Frame, Locator, Page } from 'playwright';
@@ -58,6 +59,8 @@ export interface ObserveEnv {
   registry: RefRegistry;
   /** Where screenshots are saved, or null when the session has no artifacts folder. */
   artifacts: string | null;
+  /** Begins every screenshot's evidence id, so an id from another session never names one of this session's. */
+  evidenceTag?: string;
   signal: AbortSignal;
   /** The provider keys the app has saved in this session's own profile: never returned either. Strict: a key file
    *  that exists but cannot be read throws. */
@@ -393,8 +396,8 @@ async function observeInto(env: ObserveEnv, seen: string[], before?: (docs: Docs
 // Refs
 // ---------------------------------------------------------------------------
 
-function stale(reason: StaleReason, ref: string, message: string): DriverError {
-  return new DriverError('STALE_REF', message, { details: { ref, reason, hint: REFRESH_HINT } });
+function stale(reason: StaleReason, ref: string, message: string, extra: Record<string, unknown> = {}): DriverError {
+  return new DriverError('STALE_REF', message, { details: { ref, reason, hint: REFRESH_HINT, ...extra } });
 }
 
 class Minter {
@@ -465,7 +468,7 @@ async function checkRef(env: ObserveEnv, ref: string, obs: Observation, minter: 
   if (b.opening !== obs.docs.editor.opening) throw stale('project', ref, `"${ref}" was seen in another project, or another opening of this one.`);
   if (b.scope === 'preview') {
     if (obs.previewState !== 'ready' || !obs.docs.preview || !obs.preview)
-      throw stale('loading', ref, `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}; "${ref}" cannot be checked until it is ready.`);
+      throw stale('loading', ref, `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}; "${ref}" cannot be checked until it is ready.`, { preview: obs.previewState });
     if (obs.docs.preview.token !== b.doc) throw stale('document', ref, `"${ref}" was seen on a page the preview has since reloaded or left.`);
   } else if (obs.docs.editor.token !== b.doc) throw stale('document', ref, `"${ref}" was seen before the editor reloaded.`);
   // Names are left out of these messages: a page can come to show a credential where a name was.
@@ -583,6 +586,9 @@ export interface Shot {
   /** Names the image for `evidence.read` until the session closes. */
   id: string;
   path: string;
+  /** The PNG's size and SHA-256 as it was captured: `evidence.read` returns those bytes or none. */
+  bytes: number;
+  sha256: string;
   /** In CSS pixels, as the image's own pixels are (one image pixel is one CSS pixel of the window). */
   width: number;
   height: number;
@@ -811,6 +817,8 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   await mkdir(dir, { recursive: true });
   const base = String(id).padStart(4, '0');
   const stem = join(dir, base);
+  const tag = env.evidenceTag ? `${env.evidenceTag}-` : '';
+  const digest = (png: Buffer) => ({ bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') });
   const written: string[] = [];
   try {
     aborted(signal);
@@ -830,8 +838,11 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   const still = !!before && !!after && !sceneChange(before, after);
   const f = still ? after!.frame : null;
   const out: Shots = {
-    editor: { id: `${base}-editor`, path: `${stem}-editor.png`, width: vp.width, height: vp.height },
-    preview: previewPng && clip ? { id: `${base}-preview`, path: `${stem}-preview.png`, width: clip.width, height: clip.height, clip, ...(f ? { origin: f.origin, scale: f.scale.x } : {}) } : null
+    editor: { id: `${tag}${base}-editor`, path: `${stem}-editor.png`, ...digest(editorPng), width: vp.width, height: vp.height },
+    preview:
+      previewPng && clip
+        ? { id: `${tag}${base}-preview`, path: `${stem}-preview.png`, ...digest(previewPng), width: clip.width, height: clip.height, clip, ...(f ? { origin: f.origin, scale: f.scale.x } : {}) }
+        : null
   };
   // Points on the images stand for what they show only if nothing moved while they were taken.
   if (token && env.shots && still && after!.editor.viewport.width === vp.width && after!.editor.viewport.height === vp.height) {
@@ -942,7 +953,10 @@ export async function waitFor(locate: (args: LocateArgs) => Promise<Located>, ar
   const until = o.deadline - WAIT_LIMITS.marginMs;
   let checks = 0;
   let last: DriverError | null = null;
-  const loading = (e: DriverError) => e.code === 'STALE_REF' && e.details?.reason === 'loading';
+  // A preview still loading cannot be searched yet; one that is not shown at all has nothing in it.
+  const loading = (e: DriverError) => e.code === 'STALE_REF' && e.details?.reason === 'loading' && e.details?.preview !== 'absent';
+  // "Not found" settles absence only where the whole search could look: not while a preview it covers is loading.
+  const settled = (e: DriverError) => e.code === 'TARGET_NOT_FOUND' && (args.search.scope === 'editor' || e.details?.preview !== 'loading');
   for (;;) {
     aborted(o.signal);
     checks++;
@@ -955,22 +969,25 @@ export async function waitFor(locate: (args: LocateArgs) => Promise<Located>, ar
       if (args.state === 'present') {
         if (e.code !== 'TARGET_NOT_FOUND' && !loading(e)) throw e;
       } else {
-        if (e.code === 'TARGET_NOT_FOUND') return { state: 'absent', waitedMs: now() - began, checks };
+        if (settled(e)) return { state: 'absent', waitedMs: now() - began, checks };
         const reason = e.details?.reason;
-        if (args.search.ref && e.code === 'STALE_REF' && typeof reason === 'string' && GONE.has(reason)) return { state: 'absent', reason, waitedMs: now() - began, checks };
-        // Several matches are still there.
-        if (e.code !== 'AMBIGUOUS_TARGET' && !loading(e)) throw e;
+        if (args.search.ref && e.code === 'STALE_REF' && typeof reason === 'string' && (GONE.has(reason) || (reason === 'loading' && !loading(e))))
+          return { state: 'absent', reason: reason === 'loading' ? 'gone' : reason, waitedMs: now() - began, checks };
+        // Several matches are still there, or the preview they may be in is still loading.
+        if (e.code !== 'AMBIGUOUS_TARGET' && e.code !== 'TARGET_NOT_FOUND' && !loading(e)) throw e;
       }
       last = e;
     }
-    if (now() + interval > until) {
-      const what = args.search.ref ?? `${args.search.role}${args.search.name ? ` "${args.search.name}"` : ''}`;
-      throw new DriverError('TIMEOUT', args.state === 'present' ? `No ${what} appeared in time.` : `${what} was still there when the wait ran out.`, {
+    const left = until - now();
+    if (left <= 0) {
+      // Not the search itself: a name searched for can be a credential the page shows, which observations scrub.
+      throw new DriverError('TIMEOUT', args.state === 'present' ? `Nothing fitting the search appeared in time (${checks} looks).` : `What the search found was still there when the wait ran out (${checks} looks).`, {
         details: { phase: 'ui.waitFor', sessionState: 'ready', state: args.state, waitedMs: now() - began, checks, ...(last ? { last: { code: last.code, message: last.message } } : {}) }
       });
     }
+    // The last look comes at the end of the budget, however little of an interval is left.
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(done, interval);
+      const timer = setTimeout(done, Math.min(interval, left));
       function done() {
         clearTimeout(timer);
         o.signal.removeEventListener('abort', done);

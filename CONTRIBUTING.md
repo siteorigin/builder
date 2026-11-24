@@ -53,7 +53,7 @@ npm ci
 npm run build             # the server drives the built app in out/: build again after changing the app
 ```
 
-Node 24.15 or newer runs the server's TypeScript directly. On Linux, start the client under `xvfb-run -a`, as for the end-to-end scripts.
+Node 24.15 or newer runs the server's TypeScript directly. On Linux, start the client under `xvfb-run -a`, as for the end-to-end scripts, and let `DISPLAY` and `XAUTHORITY` through to the server: clients that pass on only a few variables, as Codex and the MCP SDK do, need them named (`--print-config` does this for Codex on Linux).
 
 **Codex.** Print the server's entry for this checkout, with the full paths of your Node and the checkout filled in, and add it to `~/.codex/config.toml`:
 
@@ -71,10 +71,12 @@ args = ["/path/to/builder/tests/driver/mcp.ts"]
 cwd = "/path/to/builder"
 startup_timeout_sec = 30
 tool_timeout_sec = 300
-default_tools_approval_mode = "approve"
+# Codex asks before each tool that is not read-only, and `codex exec` refuses them. Uncomment to run them unasked:
+# the app is a disposable copy, but in Developer mode it runs code a person writes, with your permissions.
+# default_tools_approval_mode = "approve"
 ```
 
-Keep `tool_timeout_sec` at 300 or more: starting a session can take up to three minutes on a cold machine. `default_tools_approval_mode = "approve"` lets these tools run without asking each time. They only ever act on the disposable copy of the app, never on your own projects or settings. Without it, Codex asks before every tool that isn't read-only, and `codex exec` refuses them outright. Then start Codex anywhere and ask it to use the tools, for example:
+Keep `tool_timeout_sec` at 300 or more: starting a session can take up to three minutes on a cold machine. As printed, Codex asks before each tool that isn't read-only, which is the safe default for an interactive session. `codex exec` can't ask, so it refuses those tools; uncomment `default_tools_approval_mode = "approve"` to let them run unasked. Only do that knowingly. The session is a disposable copy of the app in a temporary profile of its own, and its choosers only reach the session's own folders. But the tools can do anything a person can do in the app, and that includes turning on Developer mode and writing code that the project's preview runs with your user's permissions. Then start Codex anywhere and ask it to use the tools, for example:
 
 > Use the SiteOrigin Builder MCP tools. Start a session at Welcome and tell me what the screen shows. Open New project, fill Project name with "MCP smoke", read the value back, and show me a screenshot of the dialog. Cancel with Escape. Use the old Project name ref again and report the error, then open the dialog again and fill the new field. Try a snapshot with maxNodes 0 and report the error. Then close the session.
 
@@ -86,7 +88,7 @@ Keep `tool_timeout_sec` at 300 or more: starting a session can take up to three 
 
 **What the tools do.** There is one tool per driver operation, named with `_` for `.` (`ui.click` is `ui_click`), and each tool's description says its kind: `observe` only reads, `act` does what a person could with real input, `fixture` prepares state no person made through the UI (chooser answers, sample files), and `session` manages the run. A call answers with the driver's own reply, both as structured content and as the same JSON in text. A failure is that reply marked as an error: `{ code, message, retryable, details }`, the same codes the Node tests see (`details.hint` often says what to do next, such as observing again after `STALE_REF`). `ui_snapshot` with `screenshot: true` saves screenshots, and `evidence_read` returns one by its id as an image. `ui_waitFor` waits for an element to appear or go.
 
-Each session runs headless in its own profile and workspace, with a scripted AI provider that costs nothing. Over MCP the window can't be shown and the artifacts stay inside the session's run folder (`keepArtifacts: "always"` keeps them after it closes; `session_close` says where). After `session_close`, the next `session_start` starts a fresh session. If the client disconnects, the app and every process it started are ended, and the run's folder is removed. Lifecycle messages go to the server's stderr. `HOST_LOST` means the session's host process ended: whatever that call did may or may not have happened, and `session_start` starts again.
+Each session runs headless in its own profile and workspace, with a scripted AI provider that costs nothing. Over MCP the window can't be shown and the artifacts stay inside the session's run folder (`keepArtifacts: "always"` keeps them after it closes; `session_close` says where). After `session_close`, the next `session_start` starts a fresh session. If the client disconnects, the app and every process it started are ended, and the run's folder is removed, except for the artifacts the session was asked to keep. Lifecycle messages go to the server's stderr. `HOST_LOST` means the session's host process ended: whatever that call did may or may not have happened, and `session_start` starts again.
 
 `node tests/e2e/mcp.mjs` drives the same journey with the official MCP SDK client, as a regression test.
 

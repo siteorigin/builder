@@ -6,9 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterAll, describe, expect, it } from 'vitest';
-import { connect } from '../driver/client.ts';
+import { askedDeadline, connect } from '../driver/client.ts';
 import { serve } from '../driver/host.ts';
 import type { HostedSession } from '../driver/host.ts';
+import { MAX_TIMEOUT_MS } from '../driver/protocol.ts';
 import type { Failure, Reply, Success } from '../driver/protocol.ts';
 import { OPERATIONS, Session, buildIdentity, isInside, sessionEnv } from '../driver/session.ts';
 import type { StartPhase } from '../driver/session.ts';
@@ -114,6 +115,13 @@ describe('a session before it starts', () => {
     });
   });
 
+  it('runs its wait and its evidence read like the other observations', async () => {
+    const d = ok<any>(await new Session({ appRoot }).call(req('session.describe'))).result;
+    const flags = (op: string) => d.capabilities.find((c: any) => c.op === op);
+    expect(flags('ui.waitFor')).toMatchObject({ kind: 'observe', needsApp: true, usesWindow: true });
+    expect(flags('evidence.read')).toMatchObject({ kind: 'observe', needsApp: true, usesWindow: false });
+  });
+
   it('fingerprints the build by the bytes of its files', async () => {
     const first = await buildIdentity(appRoot);
     expect(first).toMatchObject({ files: 2, packageVersion: '9.9.9', git: null, fingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) });
@@ -136,6 +144,7 @@ describe('a session before it starts', () => {
     const broken = err(await s.call('{"v":1,'));
     expect([broken.id, broken.error.code]).toEqual([null, 'BAD_REQUEST']);
     expect(err(await s.call(req('session.start', { args: { fixture: 'unknown' } }))).error.code).toBe('BAD_REQUEST');
+    expect(err(await s.call(req('session.start', { args: { fixture: 'constructor' } }))).error.code, 'not a fixture, though every object has one').toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { artifactsDir: 'relative/path' } }))).error.code).toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { colour: 'red' } }))).error.code).toBe('BAD_REQUEST');
     expect(err(await s.call(req('session.start', { args: { provider: 'openai' } }))).error.code).toBe('BAD_REQUEST');
@@ -155,6 +164,9 @@ describe('a session before it starts', () => {
       const e = err(await s.call(req('session.start', { args }))).error;
       expect([e.code, e.message]).toEqual(['BAD_REQUEST', `session.start does not take "${Object.keys(args)[0]}" here: this session keeps its window hidden and its artifacts inside the session.`]);
     }
+    expect([s.state, readdirSync(parentDir)]).toEqual(['new', []]);
+    // However it is started: in process too, not only through call().
+    await expect(s.start({ headed: true })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     expect([s.state, readdirSync(parentDir)]).toEqual(['new', []]);
   });
 
@@ -389,6 +401,15 @@ describe('the stdio host', () => {
     expect([ended, s.state]).toEqual(['closed', 'closed']);
   });
 
+  it('closes the session when its input fails, rather than throwing', async () => {
+    const fake = fakeSession((frame) => reply(frame));
+    const input = new PassThrough();
+    const ended = new Promise<string>((resolve) => serve({ session: fake.session, input, write: (_line, done) => done(), onEnd: (reason) => resolve(reason) }));
+    input.destroy(new Error('EIO: i/o error, read'));
+    expect(await ended).toBe('disconnected');
+    expect(fake.closes()).toBe(1);
+  });
+
   it('a client disconnecting mid-start closes a real session and removes its folders', async () => {
     const { session, parentDir, atPhase } = heldSession('root');
     const input = new PassThrough();
@@ -420,6 +441,11 @@ describe('the stdio host', () => {
     expect(ok(await client.request('session.describe')).ok).toBe(true);
     expect(await client.disconnect()).toEqual({ code: 0, signal: null });
   }, 30000);
+
+  it('times a reply by the deadline asked for, when it is one the host accepts', () => {
+    for (const t of [1, 5000, MAX_TIMEOUT_MS]) expect(askedDeadline(t)).toBe(t);
+    for (const t of [undefined, 0, -5, 1.5, MAX_TIMEOUT_MS + 1, 1e12, 'soon', NaN, Infinity]) expect(askedDeadline(t), String(t)).toBe(180_000);
+  });
 
   it('a contained host refuses a visible window', async () => {
     const client = await connect({ stderr: 'ignore', contained: true });

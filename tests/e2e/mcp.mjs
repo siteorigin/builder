@@ -7,7 +7,9 @@
 // the client (whether a process is alive, whether a folder exists) only read.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { relative, isAbsolute } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { MCP_PATH } from '../driver/mcp.ts';
@@ -20,8 +22,10 @@ let client = null;
 let transport = null;
 const roots = [];
 
+// The SDK passes on only a few variables; under xvfb-run, Electron needs the display too.
+const display = Object.fromEntries(['DISPLAY', 'XAUTHORITY'].filter((k) => process.env[k]).map((k) => [k, process.env[k]]));
 const connectClient = async () => {
-  transport = new StdioClientTransport({ command: process.execPath, args: ['--no-warnings', MCP_PATH], env: { WORK }, stderr: 'inherit' });
+  transport = new StdioClientTransport({ command: process.execPath, args: ['--no-warnings', MCP_PATH], env: { WORK, ...display }, stderr: 'inherit' });
   client = new Client({ name: 'mcp-e2e', version: '1.0.0' });
   await client.connect(transport);
 };
@@ -46,6 +50,27 @@ const refused = async (name, args, code) => {
   return r.structuredContent.error;
 };
 const allGone = (pids, what, ms = 60_000) => eventually(() => assert.deepEqual(pids.filter(isAlive), [], `${what}: still running`), ms, 200);
+const inside = (parent, child) => {
+  const rel = relative(parent, child);
+  return !!rel && !rel.startsWith('..') && !isAbsolute(rel);
+};
+/** The session hosts the server has started and that still run. */
+const hosts = async () => (await processTable()).filter((e) => e.ppid === transport.pid).map((e) => e.pid);
+/** Processes whose command line names `dir`: a check that does not rely on the session's own bookkeeping. */
+const naming = (dir) =>
+  new Promise((resolve, reject) =>
+    execFile('ps', ['-A', '-o', 'pid=,command='], { maxBuffer: 16 * 1024 * 1024 }, (e, out) => (e ? reject(e) : resolve(String(out).split('\n').filter((l) => l.includes(dir)))))
+  );
+/** The workspace two levels deep: a project is made in a folder inside it. */
+const workspaceTree = async () => {
+  const top = (await ok('files_list', { path: 'workspace' })).entries;
+  const tree = [];
+  for (const e of top) {
+    tree.push(e.name);
+    if (e.type === 'folder') for (const f of (await ok('files_list', { path: `workspace/${e.name}` })).entries) tree.push(`${e.name}/${f.name}`);
+  }
+  return tree.sort();
+};
 
 try {
   step('initialize and discover the tools, with nothing launched yet');
@@ -58,6 +83,7 @@ try {
   assert.match(tools.find((t) => t.name === 'desktop_setAnswers').description, /Kind: fixture/);
   assert.match(tools.find((t) => t.name === 'ui_click').description, /Kind: act/);
   assert.equal('headed' in tools.find((t) => t.name === 'session_start').inputSchema.properties, false, 'a window cannot be asked for');
+  assert.deepEqual(await hosts(), [], 'nothing is launched to list the tools');
 
   step('launch at Welcome, headless, and inspect it');
   const started = await ok('session_start', { fixture: 'welcome' });
@@ -65,16 +91,24 @@ try {
   roots.push(first.root);
   assert.equal(first.state, 'ready');
   assert.equal(first.headless, true);
-  assert.ok(first.root.startsWith(WORK), `the run is in the client's WORK (${first.root})`);
+  assert.ok(inside(WORK, first.root), `the run is in the client's WORK (${first.root})`);
+  const [firstHost] = await hosts();
+  assert.ok(firstHost, 'a session host serves it');
+  assert.equal((await ok('window_info', {})).visible, false, 'its window is not shown');
   const welcome = await ok('ui_snapshot', { scope: 'editor' });
   assert.equal(welcome.context.screen, 'welcome');
-  const workspace = (await ok('files_list', { path: 'workspace' })).entries.map((e) => e.name).sort();
+  const workspace = await workspaceTree();
 
   step('open New project, fill its name and read it back');
   const newProject = (await ok('ui_locate', { role: 'button', name: 'New project', scope: 'editor' })).node;
   const clicked = await ok('ui_click', { target: { ref: newProject.ref } });
   assert.equal(clicked.dispatched, 'complete');
   const dialog = (await ok('ui_waitFor', { role: 'dialog', name: 'New project', scope: 'editor' })).node;
+  // A wait that cannot be met runs out with its own reason, and the session goes on.
+  const notYet = await refused('ui_waitFor', { role: 'dialog', name: 'New project', scope: 'editor', state: 'absent', timeoutMs: 1500 }, 'TIMEOUT');
+  assert.equal(notYet.details.phase, 'ui.waitFor');
+  assert.equal(notYet.details.sessionState, 'ready');
+  assert.ok(notYet.details.checks >= 2, `it looked more than once (${notYet.details.checks})`);
   const field = (await ok('ui_locate', { role: 'textbox', name: 'Project name', within: dialog.ref })).node;
   await ok('ui_fill', { target: { ref: field.ref }, text: 'MCP smoke' });
   assert.equal((await ok('ui_locate', { ref: field.ref })).node.value, 'MCP smoke', 'the field holds what was filled');
@@ -103,11 +137,13 @@ try {
   const back = await ok('ui_snapshot', { scope: 'editor', maxNodes: 20 });
   assert.equal(back.context.screen, 'welcome');
   assert.equal(back.context.dialog, null);
-  assert.deepEqual((await ok('files_list', { path: 'workspace' })).entries.map((e) => e.name).sort(), workspace, 'nothing was created');
+  assert.deepEqual(await workspaceTree(), workspace, 'nothing was created');
 
   step('a stale ref is refused with a reason, and a fresh observation recovers');
   const stale = await refused('ui_fill', { target: { ref: field.ref }, text: 'Too late' }, 'STALE_REF');
-  assert.ok(stale.details?.reason && stale.details?.hint, `it says why and what to do (${JSON.stringify(stale.details)})`);
+  assert.equal(stale.details.ref, field.ref, 'it names the ref');
+  assert.equal(stale.details.reason, 'gone', 'the field went with its dialog');
+  assert.match(stale.details.hint, /observ|snapshot|locate/i, 'and says to look again');
   await ok('ui_click', { target: { ref: (await ok('ui_locate', { role: 'button', name: 'New project', scope: 'editor' })).node.ref } });
   const again = (await ok('ui_waitFor', { role: 'dialog', name: 'New project', scope: 'editor' })).node;
   const fresh = (await ok('ui_locate', { role: 'textbox', name: 'Project name', within: again.ref })).node;
@@ -118,33 +154,61 @@ try {
   await ok('ui_waitFor', { role: 'dialog', name: 'New project', state: 'absent', scope: 'editor' });
 
   step('input the driver refuses is a tool error the session survives');
+  const before = await reply('session_describe', {});
   await refused('ui_snapshot', { maxNodes: 0 }, 'BAD_REQUEST');
   await refused('ui_click', {}, 'BAD_REQUEST');
   await refused('ui_press', { key: 'Esc' }, 'BAD_REQUEST');
-  await refused('session_start', { headed: true }, 'BAD_REQUEST');
   await refused('session_start', {}, 'ALREADY_STARTED');
   await assert.rejects(tool('ui.click', {}), /-32602|no tool/i, 'a tool that is not there is a protocol error');
   assert.equal((await ok('ui_snapshot', { scope: 'editor', maxNodes: 5 })).context.screen, 'welcome', 'and the session goes on');
+  const after = await reply('session_describe', {});
+  assert.deepEqual([after.structuredContent.sessionId, after.structuredContent.window], [before.structuredContent.sessionId, before.structuredContent.window], 'the same session, in the same window');
 
   step('close: the app ends and the run is removed');
   const closed = await ok('session_close', {});
   assert.equal(closed.ended, 'quit');
   assert.equal(closed.artifacts, null, 'a run that passed keeps no artifacts');
-  await allGone(first.processes, 'after session_close');
+  await allGone([firstHost, ...first.processes], 'after session_close, its host as well');
   assert.equal(existsSync(first.root), false, 'the run root is gone');
 
-  step('a new session over the same connection, then the client disconnects without closing it');
-  const second = (await ok('session_start', { fixture: 'welcome' })).session;
+  step('a new session over the same connection, with a project and its preview: every screenshot reads back as saved');
+  // A new session refuses to show its window: over MCP the app is always headless.
+  await refused('session_start', { headed: true }, 'BAD_REQUEST');
+  const second = (await ok('session_start', { fixture: 'business-v1' })).session;
   roots.push(second.root);
   assert.notEqual(second.id, first.id, 'a session of its own');
-  assert.ok(second.processes.every(isAlive), 'its app is running');
+  await refused('evidence_read', { id: editorShot.id }, 'BAD_REQUEST');
+  const shots = [];
+  for (let i = 0; i < 2; i++) {
+    const s = await eventually(async () => {
+      const r = await ok('ui_snapshot', { maxNodes: 5, screenshot: true });
+      assert.equal(r.context.preview.state, 'ready', 'the preview is up');
+      assert.ok(r.screenshots.preview, 'and in the picture');
+      return r.screenshots;
+    }, 60_000);
+    shots.push(s);
+  }
+  assert.notEqual(shots[0].editor.id, shots[1].editor.id);
+  for (const shot of [shots[0].editor, shots[0].preview, shots[1].preview]) {
+    const r = await reply('evidence_read', { id: shot.id });
+    assert.ok(!r.isError, JSON.stringify(r.structuredContent.error ?? null));
+    const block = r.content.find((c) => c.type === 'image');
+    assert.ok(block, `${shot.id} comes back as an image`);
+    assert.deepEqual(Buffer.from(block.data, 'base64'), readFileSync(shot.path), `${shot.id} is the file the session saved`);
+    assert.equal(r.structuredContent.result.surface, shot.id.endsWith('-preview') ? 'preview' : 'editor');
+  }
+
+  step('the client disconnects without closing it: server, host, app, preview and run folder all go');
+  const live = (await ok('session_describe', {})).session;
+  assert.ok(live.processes.length >= 3 && live.processes.every(isAlive), `the app and its helpers run (${live.processes})`);
   const server = transport.pid;
-  const host = (await processTable()).find((e) => e.ppid === server)?.pid;
-  assert.ok(host && isAlive(host), 'a session host serves it');
+  const serving = await hosts();
+  assert.equal(serving.length, 1, 'one session host serves it');
   await client.close();
   client = null;
-  await allGone([server, host, ...second.processes], 'after the client disconnected');
+  await allGone([server, ...serving, ...live.processes], 'after the client disconnected');
   await eventually(() => assert.equal(existsSync(second.root), false, 'the run root is gone'), 30_000);
+  assert.deepEqual(await naming(second.root), [], 'no process names the run root');
 
   passed = true;
   console.log('\nmcp: PASS');

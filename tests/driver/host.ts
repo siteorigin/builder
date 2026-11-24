@@ -73,6 +73,8 @@ export function serve({ session, input, write, onEnd }: ServeOptions): Server {
     void handled.finally(() => inFlight.delete(handled));
   });
   lines.on('close', () => void end('disconnected'));
+  // readline passes an input error on to its own listeners, and one with none throws.
+  lines.on('error', () => void end('disconnected'));
   input.on('error', () => void end('disconnected'));
   return { end };
 }

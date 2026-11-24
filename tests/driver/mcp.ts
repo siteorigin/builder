@@ -21,8 +21,7 @@
  * shipped app or an exported site.
  */
 import { readFileSync, realpathSync } from 'node:fs';
-import { createInterface } from 'node:readline';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { connect } from './client.ts';
 import type { RequestOptions } from './client.ts';
@@ -36,8 +35,11 @@ import type { JsonSchema } from './schemas.ts';
 export const MCP_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 
-/** The MCP revisions this server speaks, newest first: a client asking for another is offered the newest. */
-export const MCP_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
+/**
+ * The MCP revisions this server speaks, newest first: a client asking for another is offered the newest. Not 2025-03-26,
+ * the one revision whose receivers must take JSON-RPC batches.
+ */
+export const MCP_VERSIONS = ['2025-11-25', '2025-06-18', '2024-11-05'] as const;
 
 export const SERVER_NAME = 'siteorigin-builder-driver';
 
@@ -80,7 +82,7 @@ export interface McpTool {
   title: string;
   description: string;
   inputSchema: JsonSchema;
-  annotations: { title: string; readOnlyHint: boolean; openWorldHint: false };
+  annotations: { title: string; readOnlyHint: boolean; openWorldHint?: false };
 }
 
 /** A tool's name for an operation: `ui.click` is `ui_click` (some clients turn tool names into function names, which take no dots). */
@@ -104,7 +106,8 @@ export function listTools(): McpTool[] {
       title: op,
       description: `${spec.summary}\n\n${KINDS[spec.kind]}${spec.needsApp ? ' Needs a started session.' : ''}`,
       inputSchema,
-      annotations: { title: op, readOnlyHint: READ_ONLY.has(op), openWorldHint: false }
+      // What the app does once acted on is not closed: Developer mode runs code a person writes, with their permissions.
+      annotations: { title: op, readOnlyHint: READ_ONLY.has(op), ...(READ_ONLY.has(op) ? { openWorldHint: false as const } : {}) }
     };
   });
 }
@@ -156,6 +159,56 @@ function hostLost(op: string, message: string, outcome: 'not-sent' | 'unknown', 
   return { content: [{ type: 'text', text: JSON.stringify(failure) }], structuredContent: failure, isError: true };
 }
 
+const describeExit = (exit: unknown): string => (isRecord(exit) ? `code ${String(exit.code)}, signal ${String(exit.signal)}` : 'no exit status');
+
+// ---------------------------------------------------------------------------
+// Reading lines
+// ---------------------------------------------------------------------------
+
+/**
+ * Split a stream into lines, holding at most `max` characters of any one: a longer line is dropped through its
+ * newline, unread, and reported once. Ends (once) when the stream ends, closes or fails.
+ */
+export function readLines(input: NodeJS.ReadableStream, max: number, on: { line(line: string): void; oversized(): void; end(reason: 'end' | 'error'): void }): void {
+  let buffer = '';
+  let dropping = false;
+  let ended = false;
+  const finish = (reason: 'end' | 'error') => {
+    if (ended) return;
+    ended = true;
+    on.end(reason);
+  };
+  const emit = (line: string) => on.line(line.endsWith('\r') ? line.slice(0, -1) : line);
+  input.setEncoding('utf8');
+  input.on('data', (chunk: string) => {
+    let start = 0;
+    for (;;) {
+      const nl = chunk.indexOf('\n', start);
+      const piece = chunk.slice(start, nl === -1 ? undefined : nl);
+      if (dropping) {
+        if (nl !== -1) dropping = false;
+      } else if (buffer.length + piece.length > max) {
+        buffer = '';
+        dropping = nl === -1;
+        on.oversized();
+      } else if (nl === -1) buffer += piece;
+      else {
+        emit(buffer + piece);
+        buffer = '';
+      }
+      if (nl === -1) break;
+      start = nl + 1;
+    }
+  });
+  input.on('end', () => {
+    if (buffer && !dropping) emit(buffer);
+    buffer = '';
+    finish('end');
+  });
+  input.on('close', () => finish('end'));
+  input.on('error', () => finish('error'));
+}
+
 // ---------------------------------------------------------------------------
 // The server
 // ---------------------------------------------------------------------------
@@ -184,10 +237,14 @@ type Message = { jsonrpc: '2.0'; id?: Id; result?: unknown; error?: { code: numb
 
 interface Link {
   ready: Promise<HostConnection>;
+  /** Calls sent to it and not yet answered: they report its loss themselves. */
+  pending: number;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-const isId = (v: unknown): v is Id => typeof v === 'string' || (typeof v === 'number' && Number.isInteger(v));
+/** A string, or an integer JSON.parse keeps exactly (a larger one could stand for two ids). */
+const isId = (v: unknown): v is Id => typeof v === 'string' || (typeof v === 'number' && Number.isSafeInteger(v));
+const idKey = (id: Id) => `${typeof id}:${id}`;
 const ok = (id: Id, result: unknown): Message => ({ jsonrpc: '2.0', id, result });
 /** An error answer; one to a message whose id could not be read carries none. */
 const fail = (id: Id | null, code: number, message: string): Message => ({ jsonrpc: '2.0', ...(id === null ? {} : { id }), error: { code, message } });
@@ -203,6 +260,10 @@ export class McpServer {
   private readonly links = new Set<Link>();
   private readonly inFlight = new Set<Promise<void>>();
   private ending: Promise<void> | null = null;
+  /** Tool calls not yet answered, by request id, and whether the client cancelled them. */
+  private readonly calls = new Map<string, { cancelled: boolean }>();
+  /** A host that exited by itself while nothing was waiting on it: the next call (but a start) is told, once. */
+  private lost: string | null = null;
 
   constructor(opts: ServerOptions) {
     this.opts = opts;
@@ -219,8 +280,18 @@ export class McpServer {
   /** Take one line from the client. */
   handle(line: string): void {
     if (this.ending || !line.trim()) return;
-    const work = this.receive(line).then(
-      (answer) => (answer ? this.send(answer) : undefined),
+    this.track(this.receive(line));
+  }
+
+  /** A line longer than MAX_MESSAGE arrived and was dropped unread (readLines). */
+  oversized(): void {
+    if (this.ending) return;
+    this.track(Promise.resolve(fail(null, INVALID_REQUEST, `A message may be at most ${MAX_MESSAGE} characters; that one was dropped.`)));
+  }
+
+  private track(answer: Promise<Message | null>) {
+    const work = answer.then(
+      (a) => (a ? this.send(a) : undefined),
       (e: unknown) => this.log(`a message could not be answered: ${e instanceof Error ? e.message : String(e)}`)
     );
     this.inFlight.add(work);
@@ -255,8 +326,12 @@ export class McpServer {
   private notification(method: string, params: unknown) {
     if (method === 'notifications/cancelled') {
       const id = isRecord(params) ? params.requestId : undefined;
-      // The driver has no way to stop a request part way: it runs on to its own deadline, and its answer is dropped.
-      this.log(`request ${JSON.stringify(id)} was cancelled by the client; the driver finishes it within its own deadline`);
+      const call = isId(id) ? this.calls.get(idKey(id)) : undefined;
+      if (!call) return;
+      // Not yet sent to the driver: it never is. Sent: the driver cannot stop it part way, so it runs on to its own
+      // deadline. Either way the client gets no answer to it.
+      call.cancelled = true;
+      this.log(`request ${JSON.stringify(id)} was cancelled by the client; it is not answered`);
     }
   }
 
@@ -273,11 +348,12 @@ export class McpServer {
     if (this.initialized) return fail(id, INVALID_REQUEST, 'This connection is already initialized.');
     const asked = params.protocolVersion;
     if (typeof asked !== 'string' || !asked) return fail(id, INVALID_PARAMS, '"protocolVersion" is the MCP revision the client speaks, such as "2025-11-25".');
-    if (params.capabilities !== undefined && !isRecord(params.capabilities)) return fail(id, INVALID_PARAMS, '"capabilities" is an object.');
-    if (params.clientInfo !== undefined && !isRecord(params.clientInfo)) return fail(id, INVALID_PARAMS, '"clientInfo" is an object.');
+    if (!isRecord(params.capabilities)) return fail(id, INVALID_PARAMS, '"capabilities" is an object: what the client supports.');
+    const info = params.clientInfo;
+    if (!isRecord(info) || typeof info.name !== 'string' || !info.name || typeof info.version !== 'string') return fail(id, INVALID_PARAMS, '"clientInfo" is { "name", "version" }: the client\'s own.');
     this.initialized = true;
     const version = (MCP_VERSIONS as readonly string[]).includes(asked) ? asked : MCP_VERSIONS[0];
-    const client = isRecord(params.clientInfo) && typeof params.clientInfo.name === 'string' ? params.clientInfo.name : 'a client';
+    const client = info.name;
     this.log(`${client.slice(0, 100)} connected (MCP ${version})`);
     return ok(id, {
       protocolVersion: version,
@@ -292,24 +368,44 @@ export class McpServer {
     if (typeof name !== 'string' || !name) return fail(id, INVALID_PARAMS, '"name" is the tool to call.');
     const op = TOOL_OPS.get(name);
     if (!op) return fail(id, INVALID_PARAMS, `There is no tool "${name.slice(0, 100)}": tools/list lists them.`);
-    const args = params.arguments ?? {};
+    // Left out, a tool has no arguments; anything but an object is not arguments (null is not "none").
+    const args = params.arguments === undefined ? {} : params.arguments;
     if (!isRecord(args)) return fail(id, INVALID_PARAMS, '"arguments" is an object.');
-    // The request's own options travel beside its args, as the driver's requests carry them; the host checks them.
-    const { timeoutMs, expectWindow, ...rest } = args;
+    // The request's own options travel beside its args, as the driver's requests carry them, and the host checks them.
+    // A window guard is one only for an operation that runs against the window; elsewhere it stays an argument, which
+    // the operation refuses as one it does not take.
+    const { timeoutMs, ...rest } = args;
     const options: RequestOptions = {};
     if (timeoutMs !== undefined) options.timeoutMs = timeoutMs as number;
-    if (expectWindow !== undefined) options.expectWindow = expectWindow as number;
-    return ok(id, await this.forward(op, rest, options));
+    if (OPERATIONS[op].usesWindow && 'expectWindow' in rest) {
+      options.expectWindow = rest.expectWindow as number;
+      delete rest.expectWindow;
+    }
+    const call = { cancelled: false };
+    this.calls.set(idKey(id), call);
+    try {
+      const result = await this.forward(op, rest, options, call);
+      return call.cancelled ? null : ok(id, result);
+    } finally {
+      if (this.calls.get(idKey(id)) === call) this.calls.delete(idKey(id));
+    }
   }
 
   /** The host the next call goes to, started if there is none. */
   private acquire(): Link {
     if (!this.link) {
-      const link: Link = { ready: this.opts.connect() };
+      const link: Link = { ready: this.opts.connect(), pending: 0 };
       this.link = link;
       this.links.add(link);
       link.ready.then(
-        (host) => void host.exited?.then(() => this.links.delete(link)),
+        (host) =>
+          void host.exited?.then((exit) => {
+            this.links.delete(link);
+            // A host that ends by itself takes its session with it: the next call starts afresh, and is told.
+            if (this.link !== link || this.ending) return;
+            this.link = null;
+            if (!link.pending) this.lost = `The session host exited by itself (${describeExit(exit)}); its session is gone.`;
+          }),
         () => this.links.delete(link)
       );
     }
@@ -321,10 +417,15 @@ export class McpServer {
     if (this.link === link) this.link = null;
   }
 
-  private async forward(op: string, args: Record<string, unknown>, options: RequestOptions): Promise<ToolResult> {
+  private async forward(op: string, args: Record<string, unknown>, options: RequestOptions, call: { cancelled: boolean }): Promise<ToolResult> {
     const began = Date.now();
     const closing = 'The MCP server is shutting down.';
     if (this.ending) return hostLost(op, closing, 'not-sent', began);
+    if (this.lost) {
+      const lost = this.lost;
+      this.lost = null;
+      if (op !== 'session.start') return hostLost(op, lost, 'not-sent', began);
+    }
     const link = this.acquire();
     let host: HostConnection;
     try {
@@ -333,14 +434,20 @@ export class McpServer {
       this.retire(link);
       return hostLost(op, `The session host could not be started: ${e instanceof Error ? e.message : String(e)}`, 'not-sent', began);
     }
-    // The client may have gone while the host started: then nothing reaches it, and closing it ends it.
+    // The client may have gone, or given up on this call, while the host started: then nothing reaches the host.
     if (this.ending) return hostLost(op, closing, 'not-sent', began);
+    if (call.cancelled) return hostLost(op, 'The client cancelled this call before it was sent.', 'not-sent', began);
     let reply: Reply;
+    link.pending++;
     try {
       reply = await host.request(op, args, options);
     } catch (e) {
+      // The host can no longer be talked to: told its client has gone, it closes its session and ends the app.
       this.retire(link);
+      void host.disconnect().catch(() => undefined);
       return hostLost(op, e instanceof Error ? e.message : String(e), 'unknown', began);
+    } finally {
+      link.pending--;
     }
     // A close that ran ends its host (host.ts), however it went; one refused before it ran leaves the session as it was.
     if (op === 'session.close' && (reply.ok || !REFUSED_CODES.has(reply.error.code))) this.retire(link);
@@ -382,7 +489,7 @@ export class McpServer {
 export function thisNode(path = process.env.PATH ?? '', self = process.execPath): string {
   for (const dir of path.split(delimiter)) {
     if (!dir) continue;
-    const candidate = join(dir, process.platform === 'win32' ? 'node.exe' : 'node');
+    const candidate = resolve(dir, process.platform === 'win32' ? 'node.exe' : 'node');
     try {
       if (realpathSync(candidate) === realpathSync(self)) return candidate;
     } catch {
@@ -393,7 +500,7 @@ export function thisNode(path = process.env.PATH ?? '', self = process.execPath)
 }
 
 /** A Codex configuration (~/.codex/config.toml) that runs this server from this checkout with this Node. */
-export function codexConfig(node = thisNode(), root = REPO_ROOT): string {
+export function codexConfig(node = thisNode(), root = REPO_ROOT, platform: NodeJS.Platform = process.platform): string {
   const toml = (s: string) => JSON.stringify(s);
   return [
     '[mcp_servers.siteorigin_builder]',
@@ -403,9 +510,10 @@ export function codexConfig(node = thisNode(), root = REPO_ROOT): string {
     '# Starting a session can take a few minutes on a cold machine (180 s by default, plus the client\'s grace).',
     'startup_timeout_sec = 30',
     'tool_timeout_sec = 300',
-    '# The tools act only on a disposable, headless copy of the app in a temporary profile of its own, so they run',
-    '# without asking each time (Codex otherwise asks before every tool that is not read-only, and `codex exec` refuses).',
-    'default_tools_approval_mode = "approve"',
+    ...(platform === 'linux' ? ['# Electron needs the display (run Codex under xvfb-run -a on a machine without one).', 'env_vars = ["DISPLAY", "XAUTHORITY"]'] : []),
+    '# Codex asks before each tool that is not read-only, and `codex exec` refuses them. Uncomment to run them unasked:',
+    '# the app is a disposable copy, but in Developer mode it runs code a person writes, with your permissions.',
+    '# default_tools_approval_mode = "approve"',
     ''
   ].join('\n');
 }
@@ -446,10 +554,11 @@ function main() {
       if (gone) process.exit();
       else stdout.write('', () => process.exit());
     });
-  const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  lines.on('line', (line) => server.handle(line));
-  lines.on('close', () => finish('the client closed its input'));
-  process.stdin.on('error', () => finish('the client\'s input failed'));
+  readLines(process.stdin, MAX_MESSAGE, {
+    line: (line) => server.handle(line),
+    oversized: () => server.oversized(),
+    end: (reason) => finish(reason === 'error' ? 'the client\'s input failed' : 'the client closed its input')
+  });
   stdout.on('error', () => {
     gone = true;
     finish('the client stopped reading');
