@@ -244,7 +244,7 @@ function focusedPrompt(state: ProjectState, mode: RunTools['mode'], images = fal
     if (mode === 'definition')
       return `You edit the design of one reusable component of a small business website: editingComponent in <editor_context>, and the node selected in it if there is one. Every placement of the component shows each change. Change only what allowedScope says; ask first with request_clarification (widenScope: true) when the request needs more.
 - read_component with structure lists the design's nodes with their IDs, its parts and its variant rules.
-- Add a property with manage_component_prop before you bind a node to it with bind_definition_field.
+- Add a property with manage_component_prop before you bind a node to it with bind_definition_field. A new element (insert_definition_node) returns its nodeId for the next step.
 - style_definition_element without variant sets the base style; with variant, that option's rule only.${images ? ' An image is set by its assetId.' : ''}
 ${rules} Mention anything a tool found that the user needs to act on.`;
     // A selection run has no layout checks for the result card to list.
@@ -289,6 +289,7 @@ ${shared}`;
 - read_component with structure: true lists the design's nodes with their IDs, its parts and its variant rules, a part at a time: call again with the offset it returns until next is null.
 - edit_definition_node changes a node's content, which every placement shows unless the node is bound to a property, or exposes the node as a part that authors can style on each placement.
 - manage_component_prop adds a property that authors fill in on each placement (for the whole component, it also sets a default or removes one). bind_definition_field then binds a node's text, image, link or condition (when / unless) to it, or, inside a repeat, to a field of each list item.
+- insert_definition_node adds an element inside one of its containers and returns its nodeId; remove_definition_node removes one.
 - style_definition_element styles a node or part: without variant, the base style every placement starts from; with variant { axis, option }, that option's rule only. Use scope "phone", "tablet" or "desktop" for one screen size, "base" for all. add_definition_variant adds an option placements can choose.
 - request_clarification asks the user one question and waits for the answer. Ask with widenScope: true before changing anything outside allowedScope: the app rejects those changes until the user allows them.${
       images
@@ -1542,7 +1543,7 @@ export class Orchestrator {
               msg.text = '';
               this.setStatus('running');
               addActivity('Checking the components can be reused', 'reusability').status = 'done';
-              items.push({ kind: 'user', text: reusabilityNudge(fixable) });
+              items.push({ kind: 'user', text: reusabilityNudge(fixable, current.mode === 'definition') });
               continue outer;
             }
             const checks: ChatCheck[] = [...buildChecks(diags), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];

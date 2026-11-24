@@ -102,8 +102,8 @@ describe('orchestrator with constrained JSON', () => {
     await expect.poll(() => orch.busy, { timeout: 5000, interval: 5 }).toBe(false);
     const result = [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message?.result;
     expect(result?.status).toBe('completed');
-    const def = session.state.components[id].properties.items as unknown as { default: Array<{ title: string }> };
-    expect(def.default.map((i) => i.title)).toEqual(['Services']);
+    const def = session.state.components[id].properties.items as unknown as { default: Array<Record<string, unknown>> };
+    expect(def.default).toEqual([expect.objectContaining({ icon: 'leaf', title: 'Services', description: 'What we do.' })]);
   });
 
   it('still enforces the selection scope', async () => {
@@ -646,7 +646,7 @@ describe('what a constrained local run sends first (#364)', () => {
 
 describe("a component's design on a small model (#360)", () => {
   const posts = () => server.requests.filter((r) => r.method === 'POST').map((r) => r.body);
-  const grammar = (body: { response_format: { json_schema: { schema: unknown } } }) => JSON.stringify(body.response_format.json_schema.schema);
+  const grammar = (body: Record<string, any>) => JSON.stringify(body.response_format.json_schema.schema);
 
   /** The Split hero copied for editing everywhere, as the editor makes one. */
   async function editEverywhere(session: ProjectSession) {
@@ -685,7 +685,7 @@ describe("a component's design on a small model (#360)", () => {
     expect(def.properties.showButtons).toMatchObject({ type: 'boolean', label: 'Show buttons', default: true });
     expect(def.tree!.nodes.actions.when).toEqual({ $prop: 'showButtons' });
     expect(def.parts.copy).toMatchObject({ nodeId: 'content', label: 'Copy' });
-    expect(JSON.stringify(def.variantAxes!.tone.options.muted.styles)).toContain('space.lg');
+    expect(def.variantAxes!.tone.options.muted.styles).toMatchObject({ content: { phone: { gap: { token: 'space.lg' } } } });
     // Only the muted option's rule: the base style and the other options are as they were.
     expect(def.tree!.nodes.content.styles).toEqual(before.tree!.nodes.content.styles);
     expect(def.variantAxes!.tone.options.inverse).toEqual(before.variantAxes!.tone.options.inverse);
@@ -711,6 +711,9 @@ describe("a component's design on a small model (#360)", () => {
     const first = posts()[0];
     // The node selected and what is inside it: nothing beside it is offered, and the contract only grows.
     expect(grammar(first)).not.toContain('"media"');
+    // The binding is held to the grammar sent after the property was added, which offers it.
+    expect(grammar(first)).not.toContain('"headline"');
+    expect(grammar(posts()[1])).toContain('"headline"');
     expect(grammar(first)).not.toContain('"remove"');
     expect(grammar(first)).not.toContain('apply_operations');
     // Each later request replays the conversation, so the one refusal is counted once.
@@ -721,7 +724,7 @@ describe("a component's design on a small model (#360)", () => {
     expect((def.tree!.nodes.heading as { text?: unknown }).text).toEqual({ $prop: 'headline' });
     expect(def.properties.headline.default).toBe('Made by hand');
     expect(def.parts.copy.nodeId).toBe('content');
-    expect(JSON.stringify(def.variantAxes!.layout.options['media-start'].styles)).toContain('space.lg');
+    expect(def.variantAxes!.layout.options['media-start'].styles).toMatchObject({ content: { base: { gap: { token: 'space.lg' } } } });
   });
 });
 

@@ -1,7 +1,7 @@
 // Asking the AI to change a component while it is edited everywhere (issue #191), with Developer mode off: the
 // composer names the component instead of the page behind it, the request is limited to the component's design, the
-// model is offered the component's contract operations, and adding an editable tagline changes the design and
-// nothing on the page. The model is a local OpenAI-compatible server in this process, scripted reply by reply, so
+// small model is offered the design's own tools (#360) instead of the general operations, and adding an editable
+// tagline changes the design and nothing on the page. The model is a local OpenAI-compatible server in this process, scripted reply by reply, so
 // nothing is sent to a real provider.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -88,25 +88,23 @@ try {
   server.script(
     (req) => {
       seen.push(req);
-      // Something outside the component first: the logo strip on the page behind it.
+      // Something outside the component first: the logo strip on the page behind it, through a tool it is not offered.
       return envelopeReply('apply_operations', { expectedRevision: before.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: home.rootIds[1], prop: 'heading', value: 'Changed' }] });
     },
     (req) => {
       seen.push(req);
-      return envelopeReply('apply_operations', {
-        expectedRevision: before.revision,
-        operations: [
-          { type: 'component.setPropSchema', definitionId: def.id, prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: 'Made by hand' } },
-          { type: 'node.insert', owner, parentId: 'content', primitive: 'paragraph', text: 'Made by hand' }
-        ]
-      });
+      return envelopeReply('manage_component_prop', { change: { action: 'add', prop: 'tagline', label: 'Tagline', type: 'string', default: 'Made by hand' } });
+    },
+    (req) => {
+      seen.push(req);
+      return envelopeReply('insert_definition_node', { parentId: 'content', primitive: 'paragraph', text: 'Made by hand', index: 2 });
     },
     (req) => {
       seen.push(req);
       // The new element's ID comes back in the result of the insert, the latest tool result.
       insertedId = [...lastResult(req).matchAll(/nodeId\\*"\s*:\s*\\*"(n_[a-z0-9]{4,32})/g)].at(-1)?.[1];
       assert.ok(insertedId, `the insert returned the new element's ID: ${lastResult(req).slice(0, 400)}`);
-      return envelopeReply('apply_operations', { expectedRevision: before.revision + 1, operations: [{ type: 'node.setBinding', owner, nodeId: insertedId, field: 'text', binding: { $prop: 'tagline' } }] });
+      return envelopeReply('bind_definition_field', { nodeId: insertedId, field: 'text', binding: { $prop: 'tagline' } });
     },
     envelopeReply('finish', { message: 'Added an editable tagline under the heading.' })
   );
@@ -120,10 +118,13 @@ try {
   assert.deepEqual(ctx.editingComponent.rootIds, def.tree.rootIds);
   assert.equal(ctx.selection, null);
   assert.match(ctx.allowedScope, /^only the Split hero component's own design/, 'and that the request is limited to it');
-  assert.match(lastResult(seen[1]), /SCOPE_MISMATCH/, 'the write to the page behind it was refused');
+  assert.match(lastResult(seen[1]), /Unknown tool[^a-z]*apply_operations/, 'the write to the page behind it was refused');
   const grammar = JSON.stringify(seen[0].body.response_format ?? seen[0].body.tools ?? {});
-  for (const op of ['component.setPropSchema', 'node.setBinding', 'component.setPart']) assert.ok(grammar.includes(op), `${op} is offered without Developer mode`);
+  for (const tool of ['manage_component_prop', 'bind_definition_field', 'insert_definition_node', 'exposeAsPart', 'style_definition_element']) assert.ok(grammar.includes(tool), `${tool} is offered without Developer mode`);
+  assert.ok(!grammar.includes('apply_operations'), 'the small model is not offered the general operations');
   assert.ok(!grammar.includes('component.createCode'), 'code stays behind Developer mode');
+  // The binding is offered the property the request added, and the element it inserted.
+  assert.ok(JSON.stringify(seen[3].body.response_format).includes(`"${insertedId}"`), 'the next step can name the new element');
 
   const after = await snapshot();
   const design = after.state.components[def.id];

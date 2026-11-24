@@ -6,12 +6,13 @@
  * what may change.
  */
 import { z } from 'zod';
-import { STYLE_STATES, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema } from '@shared/types';
+import { STYLE_STATES, isBinding, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { axesOf } from '@shared/variants';
-import { bindingSlots, normalizePropSchema } from '@engine/schema';
-import { enclosingRepeatProp, subtreeIds } from '@engine/tree';
+import { bindingSlots, enclosingList, normalizePropSchema } from '@engine/schema';
+import { subtreeIds } from '@engine/tree';
+import { selectionAbridged } from './context';
 import { checkProps, fieldError, type FieldIssue } from './macros';
 import { propsJsonSchema, writableProp, type JsonSchema } from './propschema';
 import { applySelected, nodeFields, STYLE_VALUE } from './selection';
@@ -44,6 +45,8 @@ const PLAIN_DEFAULTS = new Set<PropSchema['type']>(['string', 'richtext', 'numbe
 const UNOFFERED_BINDINGS = new Set(['prop', 'variant', 'list', 'action']);
 /** Above this many, node IDs are checked when a call arrives instead of listed in the grammar. */
 const MAX_LISTED_NODES = 80;
+/** What a small model adds to a design: elements and layout. Repeats and slots need a list or slot of their own first. */
+const INSERTED = ['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'richtext', 'image', 'button', 'icon', 'divider'] as const;
 
 export const DEFINITION_ARGS = {
   edit_definition_node: z
@@ -93,7 +96,9 @@ export const DEFINITION_ARGS = {
         .max(12)
     })
     .strict(),
-  add_definition_variant: z.object({ axis: z.string(), option: z.string(), label: z.string().min(1).max(60) }).strict()
+  add_definition_variant: z.object({ axis: z.string(), option: z.string(), label: z.string().min(1).max(60) }).strict(),
+  insert_definition_node: z.object({ parentId: z.string(), primitive: z.enum(INSERTED), text: z.string().max(2000).optional(), index: z.number().int().min(0).optional() }).strict(),
+  remove_definition_node: z.object({ nodeId: z.string() }).strict()
 } as const;
 
 export type DefinitionToolName = keyof typeof DEFINITION_ARGS;
@@ -107,7 +112,10 @@ export const DEFINITION_DESCRIPTIONS: Record<DefinitionToolName, string> = {
     "Change the component's properties, which every placement fills in: add one (a camelCase name, its label, type and an optional default), set an existing one's default, or remove one.",
   style_definition_element:
     'Style a node of the design, by nodeId or by one of its parts. Without variant this is the base style every placement starts from; with variant { axis, option } it is that option\'s rule, which applies only to placements that choose it. scope "phone", "tablet" or "desktop" styles one screen size, "base" all; state "hover", "focus" or "active" styles that state only (colors, background, border, radius, shadow, opacity). Prefer token values such as {"token":"space.lg"}; null clears a value.',
-  add_definition_variant: 'Add a variant option that placements can choose, on an axis such as tone or layout. Then style it with style_definition_element and its variant.'
+  add_definition_variant: 'Add a variant option that placements can choose, on an axis such as tone or layout. Then style it with style_definition_element and its variant.',
+  insert_definition_node:
+    "Add an element to the design inside one of its containers (at index among its children, by default the end): a heading, paragraph, button, image, icon, divider or a layout container. The result names the new node's nodeId, to bind, style or expose in the next step.",
+  remove_definition_node: 'Remove a node, and everything inside it, from the design: every placement loses it.'
 };
 
 /** The same rules for a grammar-constrained local model, which reads every byte before it answers. */
@@ -117,7 +125,9 @@ export const DEFINITION_BRIEFS: Record<DefinitionToolName, string> = {
   manage_component_prop: 'add a property (camelCase name), set an existing default, or remove one.',
   style_definition_element:
     'Without variant: the base style; with variant: that option\'s rule. scope styles one screen size, base all; state, that state only. Prefer tokens such as {"token":"space.lg"}; null clears.',
-  add_definition_variant: 'A new option placements can choose; style it next with style_definition_element.'
+  add_definition_variant: 'A new option placements can choose; style it next with style_definition_element.',
+  insert_definition_node: 'A new element inside a container (index: its position, default the end). The result names its nodeId.',
+  remove_definition_node: 'Removes it and what is inside it from every placement.'
 };
 
 const noTarget = (): ToolOutcome => ({ ok: false, content: { error: 'INVALID_ARGUMENT', message: "The component's design, or the node selected in it, is no longer in the site." } });
@@ -142,8 +152,11 @@ function resolveScope(state: ProjectState, target: DefinitionTarget): Scope | nu
   return { def, tree, nodes, ...(target.part ? { part: target.part } : {}) };
 }
 
-/** A part picked inside a placement, which the run may style: a public part of it, not one deeper inside. */
-const styledPart = (s: Scope): string | undefined => (s.part && !s.part.nested && s.part.partId ? s.part.partId : undefined);
+/**
+ * A part picked inside a placement, which the run may style: a public part of it, not one deeper inside. One item of a
+ * repeated part is never one: a design styles every item alike, and the selection reaches that item alone.
+ */
+const styledPart = (s: Scope): string | undefined => (s.part && !s.part.nested && s.part.partId && s.part.itemId === undefined ? s.part.partId : undefined);
 
 /** The IDs as an enum, or a plain string checked when the call arrives when there are too many to list. */
 function idSchema(ids: string[], description: string): JsonSchema {
@@ -156,11 +169,13 @@ const rendered = (n: GraphNode | undefined) => !!n && n.kind !== 'repeat' && n.k
 /** Fields of each node that a small model may bind. */
 const bindableFields = (n: GraphNode) => bindingSlots(n).map((s) => s.field).filter((f) => !UNOFFERED_BINDINGS.has(f));
 
-/** List item fields shown by a node: those of the list its nearest repeat repeats. */
-function itemFields(def: ComponentDefinition, nodeId: string): string[] {
-  const list = enclosingRepeatProp(def, nodeId);
-  const schema = list && Object.hasOwn(def.properties, list) ? def.properties[list] : undefined;
-  return schema?.type === 'list' ? Object.keys(schema.fields) : [];
+/** List item fields a node can show: those of the list its nearest repeat repeats, as the engine finds it. */
+const itemFields = (def: ComponentDefinition, nodeId: string): string[] => Object.keys(enclosingList(def, nodeId)?.fields ?? {});
+
+/** Whether content the context shows of the design is shortened, so it must be read whole before it is rewritten. */
+export function definitionAbridged(state: ProjectState, target: DefinitionTarget): boolean {
+  const s = resolveScope(state, target);
+  return !!s && !s.part && s.nodes.some((nodeId) => selectionAbridged(state, { owner: { kind: 'component', id: s.def.id }, nodeId }));
 }
 
 const closed = (properties: Record<string, JsonSchema>, required: string[] = []): JsonSchema => ({ type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false });
@@ -210,18 +225,19 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
           nodeId: idSchema(editable, 'The node to change.'),
           ...(Object.keys(content).length ? { content: { ...propsJsonSchema({ properties: content }), description: 'The content fields to change; send only those that change.' } } : {}),
           ...(exposable.length
-            ? { exposeAsPart: closed({ partId: { type: 'string', description: 'A new camelCase part name, such as "eyebrow".' }, label: { type: 'string', maxLength: 60, description: 'What authors see, such as "Eyebrow".' } }, ['partId', 'label']) }
+            ? { exposeAsPart: closed({ partId: { type: 'string', description: 'A new camelCase part name, such as "eyebrow".' }, label: { type: 'string', minLength: 1, maxLength: 60, description: 'What authors see, such as "Eyebrow".' } }, ['partId', 'label']) }
             : {})
         },
         ['nodeId']
       )
     });
-  // Bindings: any property, and the item fields of the lists repeated around these nodes.
+  // Bindings: any property, and the item fields of the lists repeated around these nodes. With neither, a binding can
+  // still be removed (a condition on the design's UI state, say).
   const props = Object.keys(def.properties);
-  const objects = Object.entries(def.properties).filter(([, p]) => p.type === 'object') as Array<[string, Extract<PropSchema, { type: 'object' }>]>;
+  const objectFields = [...new Set(Object.values(def.properties).flatMap((p) => (p.type === 'object' ? Object.keys(p.fields) : [])))];
   const fields = [...new Set(nodes.flatMap((id) => itemFields(def, id)))];
   const bindable = [...new Set(nodes.flatMap((id) => bindableFields(tree.nodes[id])))];
-  if (bindable.length && (props.length || fields.length))
+  if (bindable.length)
     tools.push({
       ...describe('bind_definition_field'),
       parameters: closed(
@@ -231,7 +247,7 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
           binding: {
             anyOf: [
               ...(props.length
-                ? [closed({ $prop: { type: 'string', enum: props }, ...(objects.length ? { field: { type: 'string', enum: [...new Set(objects.flatMap(([, o]) => Object.keys(o.fields)))], description: 'One field of an object property.' } } : {}) }, ['$prop'])]
+                ? [closed({ $prop: { type: 'string', enum: props }, ...(objectFields.length ? { field: { type: 'string', enum: objectFields, description: 'One field of an object property.' } } : {}) }, ['$prop'])]
                 : []),
               ...(fields.length ? [closed({ $item: { type: 'string', enum: fields } }, ['$item'])] : []),
               { type: 'null' }
@@ -248,7 +264,7 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
     {
       action: { type: 'string', enum: ['add'] },
       prop: { type: 'string', description: 'A new camelCase name, such as "tagline".' },
-      label: { type: 'string', maxLength: 80 },
+      label: { type: 'string', minLength: 1, maxLength: 80 },
       type: { type: 'string', enum: [...ADDED_TYPES] },
       options: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 60 }, description: 'enum only: its option values, in order.' },
       default: { ...SCALAR, description: 'Optional: what placements start with, for a text, number, yes/no, enum or link.' }
@@ -266,12 +282,13 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
   const styled = nodes.filter((id) => rendered(tree.nodes[id]));
   const parts = Object.keys(def.parts).filter((p) => styled.includes(def.parts[p].nodeId));
   const axes = axesOf(def);
+  const fallback = styleDefault(s, target);
   if (styled.length)
     tools.push({
       ...describe('style_definition_element'),
       parameters: closed(
         {
-          nodeId: idSchema(styled, `The node to style. Defaults to ${target.nodeId ?? tree.rootIds[0]}.`),
+          nodeId: idSchema(styled, fallback ? `The node to style. Defaults to ${fallback}.` : 'The node to style: the selected node renders no element of its own, so name one inside it.'),
           ...(parts.length ? { partId: { type: 'string', enum: parts, description: 'Or the part to style, instead of nodeId.' } } : {}),
           ...(axes.length
             ? { variant: { ...oneOf(axes.map(([axis, a]) => closed({ axis: { type: 'string', enum: [axis] }, option: { type: 'string', enum: Object.keys(a.options) } }, ['axis', 'option']))), description: "A variant option's rule instead of the base style." } }
@@ -289,19 +306,46 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
         {
           axis: whole ? { type: 'string', description: `The axis to add to${axes.length ? `: ${axes.map(([a]) => a).join(', ')}` : ''}. A new camelCase name adds an axis.` } : { type: 'string', enum: axes.map(([a]) => a) },
           option: { type: 'string', description: 'The new option ID: lowercase letters, numbers and hyphens, such as "muted".' },
-          label: { type: 'string', maxLength: 60 }
+          label: { type: 'string', minLength: 1, maxLength: 60 }
         },
         ['axis', 'option', 'label']
       )
     });
+  // Structure: new elements go inside a container here; any node but the design's own root can go.
+  const containers = nodes.filter((id) => tree.nodes[id]?.kind === 'element');
+  if (containers.length)
+    tools.push({
+      ...describe('insert_definition_node'),
+      parameters: closed(
+        {
+          parentId: idSchema(containers, 'The container to add it to.'),
+          primitive: { type: 'string', enum: [...INSERTED] },
+          text: { type: 'string', maxLength: 2000, description: 'Its text, for a heading, paragraph or button.' },
+          index: { type: 'integer', minimum: 0, description: 'Its position among the container\'s children. Omit for the end.' }
+        },
+        ['parentId', 'primitive']
+      )
+    });
+  const removable = nodes.filter((id) => id !== tree.rootIds[0]);
+  if (removable.length) tools.push({ ...describe('remove_definition_node'), parameters: closed({ nodeId: idSchema(removable, 'The node to remove.') }, ['nodeId']) });
   return tools;
 }
 
-/** The node a call names, checked against the run's nodes; null with an issue when it is not one of them. */
-function namedNode(s: Scope, nodeId: string, ids: string[], issues: FieldIssue[], field = 'nodeId'): GraphNode | null {
+/** The node a style call without nodeId or partId styles: the selected node, or the design's root, when it renders one. */
+function styleDefault(s: Scope, target: DefinitionTarget): string | undefined {
+  const id = target.nodeId ?? s.tree.rootIds[0];
+  return rendered(s.tree.nodes[id]) ? id : undefined;
+}
+
+/**
+ * The node a call names, checked against the nodes this call can take (`ids`, among the run's); null with an issue when
+ * it is not one of them. `cannot` says why a node of the run's is not one (it renders no element, say).
+ */
+function namedNode(s: Scope, nodeId: string, ids: string[], issues: FieldIssue[], field = 'nodeId', cannot = 'cannot be used here'): GraphNode | null {
   if (ids.includes(nodeId)) return s.tree.nodes[nodeId];
   const listed = ids.length > 20 ? `${ids.slice(0, 20).join(', ')}, …` : ids.join(', ');
-  issues.push({ field, message: Object.hasOwn(s.tree.nodes, nodeId) ? `"${nodeId}" is outside what this request may change. Nodes: ${listed}` : `no node "${nodeId}". Nodes: ${listed}` });
+  const why = !Object.hasOwn(s.tree.nodes, nodeId) ? `no node "${nodeId}"` : s.nodes.includes(nodeId) ? `"${nodeId}" ${cannot}` : `"${nodeId}" is outside what this request may change`;
+  issues.push({ field, message: `${why}. Nodes: ${listed || 'none'}` });
   return null;
 }
 
@@ -314,7 +358,8 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
   const owner = { kind: 'component' as const, id: def.id };
   const issues: FieldIssue[] = [];
   // A part picked inside a placement is styled on that placement, and nothing else is offered.
-  if (s.part && name !== 'style_definition_element') return fieldError([{ field: 'arguments', message: 'only the selected part\'s styles can change here: use style_definition_element, or ask the author before changing more' }], NOTHING_APPLIED);
+  if (s.part && (name !== 'style_definition_element' || !styledPart(s)))
+    return fieldError([{ field: 'arguments', message: styledPart(s) ? "only the selected part's styles can change here: use style_definition_element, or ask the author before changing more" : 'this selection is inside another component placed here, or one item of it: ask the author before changing it' }], NOTHING_APPLIED);
 
   if (name === 'edit_definition_node') {
     const a = args as z.infer<(typeof DEFINITION_ARGS)['edit_definition_node']>;
@@ -329,6 +374,13 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
       for (const k of unknown) issues.push({ field: `content.${k}`, message: Object.keys(fields).length ? `this ${node.kind} node has ${Object.keys(fields).join(', ')}` : 'this node has no content of its own' });
       if (!sent.length) issues.push({ field: 'content', message: 'send the fields to change' });
       const known = Object.fromEntries(Object.entries(a.content).filter(([k]) => Object.hasOwn(fields, k)));
+      // New alt text alone keeps the picture: an image read without its assetId would otherwise become none.
+      const image = known.image;
+      if (image && typeof image === 'object' && !Array.isArray(image) && !Object.hasOwn(image, 'assetId')) {
+        const current = node.kind === 'image' ? node.image : undefined;
+        if (current && typeof current === 'object' && !isBinding(current)) known.image = { ...current, ...image };
+        else issues.push({ field: 'content.image', message: 'send its assetId with the alt text' });
+      }
       const { props, deferred } = checkProps({ name: 'Element', properties: fields } as ComponentDefinition, known, state, 'content', issues);
       // A design's content cannot create pages, so a link must point at one that exists.
       for (const d of deferred) issues.push({ field: `content.${d.prop}`, message: `no page uses the route ${d.route}` });
@@ -350,8 +402,13 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
     const a = args as z.infer<(typeof DEFINITION_ARGS)['bind_definition_field']>;
     const node = namedNode(s, a.nodeId, s.nodes, issues);
     if (!node) return fieldError(issues, NOTHING_APPLIED);
-    const fields = bindableFields(node);
+    const fields: string[] = bindableFields(node);
     if (!fields.includes(a.field)) return fieldError([{ field: 'field', message: `this ${node.kind} node binds ${fields.join(', ')}` }], NOTHING_APPLIED);
+    // The fields of every list here are offered; this node shows only those of the list repeated around it.
+    if (a.binding && '$item' in a.binding) {
+      const own = itemFields(def, node.id);
+      if (!own.includes(a.binding.$item)) return fieldError([{ field: 'binding.$item', message: own.length ? `this node is inside a list whose items have ${own.join(', ')}` : 'this node is not inside a repeat, so it has no list item fields' }], NOTHING_APPLIED);
+    }
     // The engine checks the property, the item field and the comparison against this node.
     const op = { type: 'node.setBinding', owner, nodeId: node.id, field: a.field, binding: a.binding, ...(a.eq !== undefined ? { eq: a.eq } : {}), ...(a.ne !== undefined ? { ne: a.ne } : {}) } as EditOperation;
     return applySelected([op], host, a.binding === null ? `Unbind ${a.field}` : `Bind ${a.field}`, callId);
@@ -389,6 +446,24 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
     return applySelected([{ type: 'component.setPropDefault', definitionId: def.id, prop: change.prop, value: checked.props[change.prop] }], host, `Change ${schema.label}`, callId);
   }
 
+  if (name === 'insert_definition_node') {
+    const a = args as z.infer<(typeof DEFINITION_ARGS)['insert_definition_node']>;
+    const parent = namedNode(s, a.parentId, s.nodes.filter((id) => tree.nodes[id]?.kind === 'element'), issues, 'parentId', 'holds no children: name a container');
+    if (!parent) return fieldError(issues, NOTHING_APPLIED);
+    const op: EditOperation = { type: 'node.insert', owner, parentId: parent.id, primitive: a.primitive, ...(a.text !== undefined ? { text: a.text } : {}), ...(a.index !== undefined ? { index: a.index } : {}) };
+    const res = await applySelected([op], host, `Add ${a.primitive}`, callId);
+    // The new node's ID, for the next step that binds, styles or exposes it.
+    const made = res.ok ? (res.results?.[0] as { nodeId?: string } | undefined)?.nodeId : undefined;
+    return made ? { ...res, content: { ...(res.content as Record<string, unknown>), nodeId: made } } : res;
+  }
+
+  if (name === 'remove_definition_node') {
+    const a = args as z.infer<(typeof DEFINITION_ARGS)['remove_definition_node']>;
+    const node = namedNode(s, a.nodeId, s.nodes.filter((id) => id !== tree.rootIds[0]), issues, 'nodeId', "is the design's root, which every placement is");
+    if (!node) return fieldError(issues, NOTHING_APPLIED);
+    return applySelected([{ type: 'node.remove', owner, nodeId: node.id }], host, `Remove ${node.name ?? node.id}`, callId);
+  }
+
   if (name === 'add_definition_variant') {
     const a = args as z.infer<(typeof DEFINITION_ARGS)['add_definition_variant']>;
     const axis = axesOf(def).find(([id]) => id === a.axis)?.[1];
@@ -416,7 +491,9 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
     const viaPart = a.partId !== undefined && Object.hasOwn(def.parts, a.partId) ? def.parts[a.partId].nodeId : undefined;
     if (a.partId !== undefined && viaPart === undefined) issues.push({ field: 'partId', message: `no part "${a.partId}". Parts: ${Object.keys(def.parts).join(', ')}` });
     nodeId = viaPart ?? a.nodeId ?? target.nodeId ?? tree.rootIds[0];
-    if (!namedNode(s, nodeId, styled, issues, a.partId !== undefined ? 'partId' : 'nodeId')) return fieldError(issues, NOTHING_APPLIED);
+    const named = a.partId !== undefined ? 'partId' : 'nodeId';
+    if (!namedNode(s, nodeId, styled, issues, named, a.partId === undefined && a.nodeId === undefined ? 'renders no element of its own: name a node inside it' : 'renders no element of its own: style an element inside it'))
+      return fieldError(issues, NOTHING_APPLIED);
     if (a.variant) {
       const axis = axesOf(def).find(([id]) => id === a.variant!.axis)?.[1];
       if (!axis) issues.push({ field: 'variant.axis', message: `no variant axis "${a.variant.axis}". Axes: ${axesOf(def).map(([id]) => id).join(', ') || 'none: add one with add_definition_variant'}` });

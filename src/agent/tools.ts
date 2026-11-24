@@ -15,7 +15,7 @@ import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
-import { DEFINITION_ARGS, DEFINITION_BRIEFS, DEFINITION_DESCRIPTIONS, definitionTools, runDefinitionTool, type DefinitionTarget, type DefinitionToolName } from './definition';
+import { DEFINITION_ARGS, DEFINITION_BRIEFS, DEFINITION_DESCRIPTIONS, definitionAbridged, definitionTools, runDefinitionTool, type DefinitionTarget, type DefinitionToolName } from './definition';
 import { examplesFor, exampleSection } from './examples';
 import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
@@ -356,7 +356,9 @@ export function toolsForRun(opts: {
     const micro = definitionTools(state, opts.definitionTarget);
     if (micro) {
       const images = JSON.stringify(micro).includes('"assetId"') || !!opts.attachedImages;
-      return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...(images ? [plainTool('search_assets')] : []), plainTool('request_clarification')], mode: 'definition', focused };
+      // Text too long to show whole can still be read whole, a part at a time, before it is rewritten.
+      const reads = definitionAbridged(state, opts.definitionTarget) ? [plainTool('inspect_element')] : [];
+      return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...reads, ...(images ? [plainTool('search_assets')] : []), plainTool('request_clarification')], mode: 'definition', focused };
     }
   }
   const general = toolDefinitions({ codeEnabled, definitionOps });
@@ -794,6 +796,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'manage_component_prop':
     case 'style_definition_element':
     case 'add_definition_variant':
+    case 'insert_definition_node':
+    case 'remove_definition_node':
       return runDefinitionTool(name as DefinitionToolName, args, host, callId);
   }
 }
