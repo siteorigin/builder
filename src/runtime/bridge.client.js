@@ -69,6 +69,13 @@ function findAll(desc) {
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   return [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
 }
+/** The CSS order the page lays an element out by among its siblings (an element with display: contents is laid
+ *  out as its first child). */
+function layoutOrder(el) {
+  const item = getComputedStyle(el).display === 'contents' ? el.firstElementChild || el : el;
+  const order = Number.parseInt(getComputedStyle(item).order, 10);
+  return Number.isSafeInteger(order) ? order : 0;
+}
 function rectOf(el) {
   let r = el.getBoundingClientRect();
   if (getComputedStyle(el).display === 'contents') {
@@ -2240,7 +2247,8 @@ window.addEventListener('message', async (e) => {
       break;
     case 'measure': {
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
-      send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => { const el = findAll(d)[0]; return el ? rectOf(el) : null; }) });
+      // Each box with its CSS order, which can lay siblings out in another order than the document's.
+      send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => { const el = findAll(d)[0]; const r = el && rectOf(el); return r ? { ...r, order: layoutOrder(el) } : null; }) });
       break;
     }
     case 'inspect':

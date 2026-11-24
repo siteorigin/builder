@@ -5,6 +5,7 @@ import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
+import { linkFieldProblem } from '../lib/link-problems';
 import type { ListPlace } from '../lib/reveal';
 import { DraftInput, Field, FieldHome, openSection, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -271,9 +272,15 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
   // A type that needs a destination before it is a valid link (an address, a number) waits here until one
   // is entered; a new value (an undo, another selection) ends the wait.
   const [pending, setPending] = useState<LinkValue['type'] | null>(null);
+  // What is wrong with a destination typed for an address, email or phone link, shown beside the field, which
+  // keeps the text, unsent, until it is corrected or discarded with Escape (the project would refuse it).
+  const [problem, setProblem] = useState<string | null>(null);
+  const problemId = useId();
   const valueKey = JSON.stringify(value ?? null);
   useEffect(() => setPending(null), [valueKey]);
   const type = pending ?? v.type;
+  // Another kind of link is another field (keyed by type): what the last one kept goes with it.
+  useEffect(() => setProblem(null), [type]);
   const target = pending ? '' : v.target;
   const base = label?.replace(/ link$/i, '');
   const named = (what: string) => (base && base.toLowerCase() !== 'link' ? `${base} ${what.toLowerCase()}` : what);
@@ -371,7 +378,13 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
           className="input sm"
           value={target}
           autoFocus={!!pending}
-          aria-describedby={[pending && v.type !== 'none' ? pendingId : '', describedBy ?? ''].filter(Boolean).join(' ') || undefined}
+          aria-describedby={[problem ? problemId : '', pending && v.type !== 'none' ? pendingId : '', describedBy ?? ''].filter(Boolean).join(' ') || undefined}
+          aria-invalid={problem ? true : undefined}
+          check={(t) => {
+            const wrong = linkFieldProblem(type, t, state);
+            return wrong ? { message: wrong } : null;
+          }}
+          onProblem={(p) => setProblem(p?.message ?? null)}
           ariaLabel={named(type === 'url' ? 'Web address' : type === 'email' ? 'Email address' : 'Phone number')}
           placeholder={type === 'url' ? 'https://example.com' : type === 'email' ? 'hello@example.com' : '+1 555 0100'}
           onCommit={(t) => {
@@ -381,6 +394,11 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
         />
       ) : null}
       {/* A kind of link that still needs its destination: until it has one, the saved link is the one visitors get. */}
+      {problem && (
+        <div className="field-error" id={problemId} role="alert">
+          {problem}
+        </div>
+      )}
       {pending && v.type !== 'none' && (
         <div className="field-hint" id={pendingId}>
           Until you choose where it goes, the link still {savedDestination(v, state, savedSectionGone)}.

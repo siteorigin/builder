@@ -10,7 +10,7 @@ import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveL
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
-import { dropAt, moveIndex } from '../lib/reorder';
+import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
 import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
@@ -1012,7 +1012,7 @@ export function Canvas() {
     window.addEventListener('pointercancel', early, { once: true });
     window.addEventListener('blur', early, { once: true });
     const requestId = Math.random().toString(36).slice(2);
-    const rects = await new Promise<Array<Rect | null> | null>((resolve) => {
+    const rects = await new Promise<Array<(Rect & { order: number }) | null> | null>((resolve) => {
       measureWaiters.current.set(requestId, (raw) => resolve(measuredRects(raw, info.list.length)));
       // A sibling the page cannot show (no placement) is asked for by a descriptor that matches nothing.
       // Siblings share the selection's repeated item, so every box comes from the same copy of the list.
@@ -1024,10 +1024,13 @@ export function Canvas() {
     window.removeEventListener('pointercancel', early);
     window.removeEventListener('blur', early);
     const from = info.index;
-    // Siblings hidden at this width take no space on the page: the drag moves among the visible ones.
+    // Siblings hidden at this width take no space on the page: the drag moves among the visible ones, in the
+    // order the page shows them (an Order style can show one before siblings the document puts first).
     const visible = rects ? rects.flatMap((r, i) => (r ? [i] : [])) : [];
     if (released || !rects?.[from] || visible.length < 2) return;
-    const boxes = visible.map((i) => rects[i]!);
+    const order = (i: number) => rects[i]?.order ?? 0;
+    const shown = shownOrder(visible, order);
+    const boxes = shown.map((i) => rects[i]!);
     const name = chromeLabel(st, t);
     let to: number | null = null;
     setDragging(true);
@@ -1041,9 +1044,10 @@ export function Canvas() {
       const z = currentZoom();
       const inside = ev.clientX >= box.left && ev.clientX <= box.right && ev.clientY >= box.top && ev.clientY <= box.bottom;
       const drop = dropAt(boxes, (ev.clientX - box.left) / z, (ev.clientY - box.top) / z);
-      // Outside the page, or over the element's own place, a release moves nothing.
-      to = inside && moveIndex(visible, from, drop.to) !== null ? drop.to : null;
-      setReorder({ line: to === null ? null : drop.line, name });
+      // Outside the page, or over the element's own place, a release moves nothing. A gap among siblings of
+      // another order is one no move reaches: no line shows there either.
+      to = inside ? drop.to : null;
+      setReorder({ line: to !== null && moveIndex(shown, from, to, order) !== null ? drop.line : null, name });
     };
     const end = (commit: boolean) => {
       window.removeEventListener('pointermove', move);
@@ -1053,7 +1057,11 @@ export function Canvas() {
       window.removeEventListener('keydown', key, true);
       setDragging(false);
       setReorder(null);
-      const index = commit && to !== null ? moveIndex(visible, from, to) : null;
+      if (commit && to !== null && !dropReaches(shown, from, to, order)) {
+        toast('Its Order style keeps it out of that spot at this size, so it stays where it was. Change Order in its styles to move it there.', 'info');
+        return;
+      }
+      const index = commit && to !== null ? moveIndex(shown, from, to, order) : null;
       if (index !== null) void announcedMove(() => applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], 'Move'));
     };
     const up = () => end(true);
