@@ -46,8 +46,9 @@ const entryId = Object.keys(s1.state.collections.posts.entries)[0];
 assert.ok(entryId, 'the post is in the project');
 assert.equal(s1.state.collections.posts.entries[entryId].draft, true, 'a new post is a draft');
 assert.equal(await win.locator('.post-row .post-status').innerText(), 'Draft', 'the list says it is a draft');
-// The writer has the canvas's place.
+// The writer has the canvas's place, and the canvas under it takes no input meanwhile.
 assert.equal(await win.locator('.post-writer-holder').isVisible(), true);
+assert.notEqual(await win.locator('.canvas-holder').getAttribute('inert'), null, 'the canvas is inert while writing');
 
 step('writing: paragraphs, a section heading, a list and a link to a page');
 await body.click();
@@ -78,12 +79,13 @@ await win.keyboard.type('.');
 step('a library picture with its description and caption');
 await win.locator('.post-tools [aria-label="Picture"]').click();
 const picture = win.getByRole('dialog', { name: 'Add a picture' });
-await picture.getByRole('button', { name: 'Choose image…' }).click();
-await picture.getByRole('listbox', { name: 'Your images' }).getByRole('option').first().click();
-await picture.getByPlaceholder('What the image shows').fill('The kiln, glowing orange');
+await picture.getByRole('listbox', { name: 'Library pictures' }).getByRole('option', { name: /kiln/i }).click();
+await picture.getByLabel('Description').fill('The kiln, glowing orange');
 await picture.getByLabel('Caption').fill('First firing of the year.');
 await picture.getByRole('button', { name: 'Add picture' }).click();
 await eventually(async () => assert.equal(await body.locator('figure.post-figure img').count(), 1, 'the picture shows in the text'), 20000);
+assert.equal(await body.locator('figure.post-figure img').getAttribute('alt'), 'The kiln, glowing orange', 'the writer shows the picture with its description');
+assert.equal(await body.locator('figure.post-figure figcaption').innerText(), 'First firing of the year.', 'and its caption');
 await writerFocused();
 
 step('the last words, then straight to Assets: nothing typed is lost');
@@ -104,9 +106,11 @@ assert.deepEqual(
   ['p', 'h2', 'ul', 'p', 'image', 'p'],
   `the post keeps its blocks: ${words(saved)}`
 );
+assert.deepEqual(saved[0], { type: 'p', spans: [{ text: 'The first firing of the year.' }] });
 assert.deepEqual(saved[1], { type: 'h2', spans: [{ text: 'What we fired' }] });
 assert.deepEqual(saved[2].items, [[{ text: 'Bowls' }], [{ text: 'Mugs' }]]);
-assert.deepEqual(saved[3].spans.find((s) => s.link)?.link, { type: 'page', target: about.id }, 'the link stores the page by its ID');
+assert.deepEqual(saved[3].spans, [{ text: 'Come by during our ' }, { text: 'studio hours', link: { type: 'page', target: about.id } }, { text: '.' }], 'the link stores the page by its ID, in its words');
+assert.deepEqual(saved[5], { type: 'p', spans: [{ text: 'Thanks for coming.' }] });
 assert.deepEqual(saved[4], { type: 'image', assetId: photoId, alt: 'The kiln, glowing orange', caption: 'First firing of the year.' });
 
 step('Assets lists the picture as a use, and opens the post at it');
@@ -129,6 +133,9 @@ await eventually(() => assert.match(words(entryFile(entryId).body), /See you soo
 await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.doesNotMatch(await body.innerText(), /See you soon\./, 'Undo takes the words back in the writer'), 20000);
 await eventually(() => assert.doesNotMatch(words(entryFile(entryId).body), /See you soon\./, 'and in the post file'), 20000);
+// Only that step: what was written before, the picture included, stays.
+assert.match(words(entryFile(entryId).body), /Thanks for coming\./);
+assert.equal(entryFile(entryId).body.filter((b) => b.type === 'image').length, 1);
 await win.keyboard.press(`${MOD}+Shift+z`);
 await eventually(async () => assert.match(await body.innerText(), /See you soon\./, 'Redo brings them back'), 20000);
 const history = (await snapshot()).history.entries.filter((e) => e.applied).map((e) => e.label);
@@ -143,6 +150,7 @@ await eventually(async () => assert.equal(await frame.locator('body').evaluate((
 const article = frame.locator('article.so-entry');
 await eventually(async () => assert.equal(await article.locator('h1').innerText(), 'Opening the kiln'), 60000);
 assert.equal(await frame.locator('header.so-header').count(), 1, 'in the site’s own header');
+assert.ok((await frame.locator('footer').count()) >= 1, 'and its footer');
 assert.equal(await article.locator('.so-entry__body h2').innerText(), 'What we fired');
 assert.deepEqual(await article.locator('.so-entry__body ul li').allInnerTexts(), ['Bowls', 'Mugs']);
 assert.equal(await article.locator('.so-entry__body a', { hasText: 'studio hours' }).getAttribute('href'), about.route);
@@ -170,8 +178,9 @@ await win.getByRole('button', { name: 'Preview in site' }).click();
 await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), path), 60000);
 await eventually(async () => assert.equal(await frame.locator('article.so-entry time').getAttribute('datetime'), '2025-06-01', 'the page shows the backdated day'), 60000);
 await win.locator('.posts-panel').getByRole('button', { name: 'Back to writing' }).click();
-// Back on the page the editor shows.
-await eventually(async () => assert.notEqual(await frame.locator('body').evaluate(() => location.pathname), path, 'the canvas returns to the page'), 60000);
+// Back on the page the editor shows (Home), editing again.
+await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), '/', 'the canvas returns to the page'), 60000);
+assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer shows again');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

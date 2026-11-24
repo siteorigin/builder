@@ -1,11 +1,105 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Copy, Newspaper, Plus, Search, Trash2, X } from 'lucide-react';
 import { formatArticleDate } from '@shared/articles';
 import { entryLinkUses } from '@engine/page-links';
-import { commitOps, confirmDialog, getState, setState, toast, undoAction, useStore } from '../store';
+import { commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
+import { Field, Modal } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { POST_SORTS, duplicatePostOps, newPostOps, postAt, postRows, postsCollection, MAX_POST_TITLE, type PostSort } from '../lib/posts';
+import { POST_SORTS, duplicatePostOps, newPostOps, postAt, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort } from '../lib/posts';
+import { orderedEntries } from '@shared/collections';
 import { flushOpenPost } from '../lib/post-draft';
+
+/**
+ * Save the post open in the writer before another takes its place. False, said in a notice, when its text could not
+ * be saved: the writer keeps it, with what to do about it above the text.
+ */
+async function openSaved(): Promise<boolean> {
+  if (await flushOpenPost()) return true;
+  toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
+  return false;
+}
+
+/** Remove a post, letting go of it in the writer only once it is gone. */
+async function deletePost(ref: PostRef, title: string, replacement: { replacementPageId?: string; replacementEntryId?: string }): Promise<boolean> {
+  const r = await commitOps([{ type: 'entry.remove', collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }], 'Delete post');
+  if (!r) return false;
+  const s = getState();
+  if (s.post?.entryId === ref.entryId) setState({ post: null, postView: 'write' });
+  toast(`Deleted “${title}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
+  return true;
+}
+
+/**
+ * Deleting a post that other places link to: the author chooses where those links (and its old addresses kept
+ * working) go instead, a page or another post, so readers of a replaced article reach its successor.
+ */
+function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () => void }) {
+  const snap = useStore((s) => s.snapshot);
+  const uid = useId();
+  const [to, setTo] = useState(() => `page:${snap?.state.site.homePageId ?? ''}`);
+  const [busy, setBusy] = useState(false);
+  const state = snap?.state;
+  const e = state && postAt(state, target);
+  if (!state || !e) return null;
+  const uses = entryLinkUses(state, target.entryId);
+  const where = [...new Set(uses.map((u) => u.where))];
+  const posts = Object.keys(state.collections)
+    .sort()
+    .flatMap((id) => orderedEntries(state.collections[id]).filter((x) => x.id !== target.entryId));
+  const confirm = async () => {
+    const [kind, id] = [to.slice(0, to.indexOf(':')), to.slice(to.indexOf(':') + 1)];
+    setBusy(true);
+    const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id });
+    setBusy(false);
+    if (done) onClose();
+  };
+  return (
+    <Modal
+      title="Delete this post?"
+      onClose={onClose}
+      busy={busy}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn btn-danger-fill" onClick={() => void confirm()} disabled={busy}>
+            Delete post
+          </button>
+        </>
+      }
+    >
+      <p>
+        <strong>{e.title}</strong> is linked from {where.slice(0, 3).join(', ')}
+        {where.length > 3 ? ' and more' : ''} ({uses.length === 1 ? 'one link' : `${uses.length} links`}). Those links, and any old address of the post kept working, go here instead:
+      </p>
+      <Field label="Send its links to" controlId={`${uid}-to`}>
+        <select id={`${uid}-to`} className="select" value={to} onChange={(ev) => setTo(ev.target.value)}>
+          <optgroup label="Pages">
+            {state.site.pageOrder
+              .filter((id) => Object.hasOwn(state.pages, id))
+              .map((id) => (
+                <option key={id} value={`page:${id}`}>
+                  {state.pages[id].title} ({state.pages[id].route})
+                </option>
+              ))}
+          </optgroup>
+          {posts.length > 0 && (
+            <optgroup label="Posts">
+              {posts.map((p) => (
+                <option key={p.id} value={`entry:${p.id}`}>
+                  {p.title}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+      </Field>
+      <p className="posts-note">You can undo it.</p>
+    </Modal>
+  );
+}
 
 /** The order the list was last shown in, for this window. */
 let lastSort: PostSort = 'newest';
@@ -25,9 +119,14 @@ export function PostsPanel() {
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState<PostRef | null>(null);
   const findInput = useRef<HTMLInputElement>(null);
   const addInput = useRef<HTMLInputElement>(null);
   const uid = useId();
+  // A title typed for a new post is a change not made yet: Save and leaving the project say so.
+  const newKey = `posts-new:${uid}`;
+  useEffect(() => markDraft(newKey, adding && !!title.trim(), 'A new post has a title but was not created. Create it, or cancel it.'), [newKey, adding, title]);
+  useEffect(() => () => markDraft(newKey, false), [newKey]);
   const state = snap?.state;
   const collection = state ? postsCollection(state, collectionId ?? post?.collectionId) : undefined;
   const rows = useMemo(() => (collection ? postRows(collection, query, sort) : []), [collection, query, sort]);
@@ -40,18 +139,18 @@ export function PostsPanel() {
     setSortState(s);
   };
 
-  /** Open a post, once the one being written is saved (or kept, if it cannot be yet). */
+  /** Open a post, once the one being written is saved; never over text that could not be (the writer says why). */
   const open = async (entryId: string) => {
     if (!collection) return;
     if (post?.entryId === entryId && post.collectionId === collection.settings.id) return setState({ postView: 'write' });
-    await flushOpenPost();
+    if (!(await openSaved())) return;
     setState({ post: { collectionId: collection.settings.id, entryId }, postView: 'write', postReveal: null });
   };
 
   const create = async () => {
     const t = title.trim();
     if (!t || busy) return;
-    await flushOpenPost();
+    if (!(await openSaved())) return;
     const s = getState().snapshot;
     if (!s) return;
     const { ops, ref } = newPostOps(s.state, collection?.settings.id ?? null, t);
@@ -62,6 +161,8 @@ export function PostsPanel() {
     setAdding(false);
     setTitle('');
     setQuery('');
+    // Typed into the open post while the new one was made: saved first, or the new one waits in the list.
+    if (!(await openSaved())) return;
     setState({ post: ref, postView: 'write', postReveal: null });
     // Straight into the text: the title is already written.
     requestAnimationFrame(() => document.querySelector<HTMLElement>('.post-body')?.focus());
@@ -70,39 +171,34 @@ export function PostsPanel() {
   const duplicate = async (entryId: string) => {
     if (!collection) return;
     const ref = { collectionId: collection.settings.id, entryId };
-    if (post?.entryId === entryId) await flushOpenPost();
+    // The copy opens in the writer: whatever it holds is saved first (and the copy has the latest words of its own).
+    if (!(await openSaved())) return;
     const s = getState().snapshot;
     const plan = s && duplicatePostOps(s.state, ref);
     if (!plan) return;
     const r = await commitOps(plan.ops, 'Duplicate post');
-    if (!r) return;
+    if (!r || !(await openSaved())) return;
     setState({ post: plan.ref, postView: 'write', postReveal: null });
     toast(`Duplicated as a draft: “${postAt(getState().snapshot!.state, plan.ref)?.title ?? 'copy'}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
   };
 
+  /** Delete a post. One that is linked to asks where those links go instead (see DeletePostDialog). */
   const remove = async (entryId: string) => {
     if (!collection) return;
     const s = getState().snapshot;
     const e = s && postAt(s.state, { collectionId: collection.settings.id, entryId });
     if (!s || !e) return;
-    const uses = entryLinkUses(s.state, entryId);
-    const home = s.state.pages[s.state.site.homePageId];
+    if (entryLinkUses(s.state, entryId).length) return setDeleting({ collectionId: collection.settings.id, entryId });
     const ok = await confirmDialog({
       title: 'Delete this post?',
-      body: uses.length ? `${uses.length === 1 ? 'One link on the site goes' : `${uses.length} links on the site go`} to this post. They will go to the ${home?.title ?? 'Home'} page instead.` : 'The post and its text are removed from the project.',
+      body: 'The post and its text are removed from the project.',
       confirmLabel: 'Delete post',
       danger: true,
       icon: 'delete',
       subject: e.title,
-      details: [
-        ...(uses.length ? [{ kind: 'risk' as const, text: `Linked from ${[...new Set(uses.map((u) => u.where))].slice(0, 3).join(', ')}${uses.length > 3 ? ' and more' : ''}.` }] : []),
-        { kind: 'undo', text: 'You can undo it.' }
-      ]
+      details: [{ kind: 'undo', text: 'You can undo it.' }]
     });
-    if (!ok) return;
-    if (post?.entryId === entryId) setState({ post: null, postView: 'write' });
-    const r = await commitOps([{ type: 'entry.remove', collectionId: collection.settings.id, entryId, ...(uses.length && home ? { replacementPageId: home.id } : {}) }], 'Delete post');
-    if (r) toast(`Deleted “${e.title}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
+    if (ok) void deletePost({ collectionId: collection.settings.id, entryId }, e.title, {});
   };
 
   return (
@@ -129,6 +225,7 @@ export function PostsPanel() {
           </button>
         </div>
       )}
+      {deleting && <DeletePostDialog target={deleting} onClose={() => setDeleting(null)} />}
       {collections.length > 1 && collection && (
         <div className="posts-collection">
           <select className="select sm" aria-label="Collection" value={collection.settings.id} onChange={(e) => setCollectionId(e.target.value)}>

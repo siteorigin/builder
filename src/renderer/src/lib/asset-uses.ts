@@ -98,8 +98,11 @@ export function imageUseRows(state: ProjectState, assetId: string): ImageUseRow[
     const key = t ? useKey(t) : `unnamed:${i}`;
     if (u.entry) {
       const e = u.entry;
-      const post = { collectionId: e.collectionId, entryId: e.entryId, ...(e.n ? { n: e.n } : {}) };
-      return { key: JSON.stringify(['entry', e.entryId, e.field, e.n ?? 0]), target: null, icon: 'post', where: e.title, what: e.field === 'featured' ? 'Featured image' : `Picture ${e.n} in the text`, post };
+      const key = JSON.stringify(['entry', e.collectionId, e.entryId, e.field, e.label ?? '', e.n ?? 0]);
+      const what = e.field === 'featured' ? 'Featured image' : e.field === 'body' ? `Picture ${e.n} in the text` : e.field === 'default' ? `${e.label}: starting picture for new entries` : (e.label ?? 'Picture');
+      // A collection's default is in no one entry: there is no post to open for it.
+      if (e.field === 'default') return { key, target: null, icon: 'post', where: e.title, what };
+      return { key, target: null, icon: 'post', where: e.title, what, post: { collectionId: e.collectionId, entryId: e.entryId, ...(e.n ? { n: e.n } : {}) } };
     }
     if (!u.place) {
       if (t?.kind === 'pageSharing') return { key, target: t, icon: 'page', where: state.pages[t.pageId].title, what: 'Sharing image', setting: { pageId: t.pageId } };

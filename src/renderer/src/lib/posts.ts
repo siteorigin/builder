@@ -6,7 +6,12 @@ import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, orderedEntries } from '@shared/collections';
 import { newId } from '@shared/ids';
-import type { PostRef } from '../store';
+
+/** A collection entry the Posts workspace has open. */
+export interface PostRef {
+  collectionId: string;
+  entryId: string;
+}
 
 export type PostSort = 'order' | 'newest' | 'oldest' | 'title';
 export const POST_SORTS: Array<{ id: PostSort; label: string }> = [

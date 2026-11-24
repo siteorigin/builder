@@ -1,17 +1,19 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
 import type { ImageValue, LinkValue, ProjectState, RichText } from '@shared/types';
+import type { ProjectSnapshot } from '@shared/api';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { linkFromTarget, sameRichText } from '@shared/richtext';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { api, applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
 import { DraftInput, Field, Modal } from '../components/ui';
-import { ImageEditor } from './PropEditors';
+import { AssetImage } from '../components/AssetImage';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { isImeComposing } from '../lib/ime';
-import { registerFlush, trackApply } from '../lib/pending';
-import { PostDraft, setOpenWriter, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
-import { blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
+import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
+import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
+import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, postAt } from '../lib/posts';
 import { setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
@@ -60,9 +62,15 @@ function problemText(p: DraftProblem): string {
 export function PostWriter({ hidden }: { hidden: boolean }) {
   const post = useStore((s) => s.post);
   const exists = useStore((s) => !!(s.snapshot && postAt(s.snapshot.state, s.post)));
+  // A writer already open stays while the post is gone from the project (the AI, an Undo): it may hold unsaved text,
+  // which it offers to keep. It lets go of the post itself once nothing is left unsaved.
+  const shown = useRef<string | null>(null);
+  const key = post ? `${post.collectionId}/${post.entryId}` : null;
+  const keep = key !== null && (exists || shown.current === key);
+  shown.current = keep ? key : null;
   return (
     <div className="post-writer" hidden={hidden}>
-      {post && exists ? (
+      {post && keep ? (
         <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
       ) : (
         <div className="post-none">
@@ -82,19 +90,22 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const aiBusy = useStore((s) => !!s.snapshot?.aiBusy);
   const reveal = useStore((s) => s.postReveal);
   const state = snap.state;
-  const collection = state.collections[post.collectionId];
-  const entry = collection.entries[post.entryId];
+  const live = postAt(state, post);
+  /** The post as last seen in the project, shown while it is gone and the writer still holds its unsaved text. */
+  const last = useRef({ entry: live!, collection: state.collections[post.collectionId], snap });
+  if (live) last.current = { entry: live, collection: state.collections[post.collectionId], snap };
+  const { entry, collection } = last.current;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   const uid = useId();
   const root = useRef<HTMLDivElement>(null);
+  /** The editable element, kept after React lets go of it: a writer going away still saves what it held. */
+  const rootEl = useRef<HTMLDivElement | null>(null);
+  /** The project this writer was opened in. */
+  const opening = useRef(snap.workspaceKey);
+  /** Why the stored text cannot be edited here, if it cannot. */
+  const unreadable = articleProblem(entry.body);
   /** The text the writer and the project last agreed on: what it showed from the project, or what it saved. */
-  const agreed = useRef<RichText>(entry.body);
-  /** The project as the writer last had the post's text from it: a save is checked against it. */
-  const base = useRef(snap);
-  /** A save that landed at this revision: the next one is checked against the project from then on. */
-  const landedAt = useRef(0);
-  /** Each formatting command starts a new undo step: typing after it is not joined to the typing before. */
-  const group = useRef(0);
+  const agreed = useRef<RichText>(Array.isArray(entry.body) ? entry.body : []);
   /** Where the caret was when Undo or Redo was asked for, to put it back once the text is shown again. */
   const caretAfterHistory = useRef<ArticleCaret | null>(null);
   const [status, setStatus] = useState<{ dirty: boolean; saving: boolean; problem: DraftProblem | null }>({ dirty: false, saving: false, problem: null });
@@ -105,27 +116,20 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const draft = useMemo(
     () =>
       new PostDraft({
-        read: () => (root.current ? readArticle(root.current, getState().snapshot?.state ?? state) : agreed.current),
-        save: async (body) => {
-          let from: typeof base.current | null = base.current;
-          // After a save of its own, the writer's starting point is the project from that save on.
-          if (landedAt.current) {
-            const now = getState().snapshot;
-            from = now && now.revision >= landedAt.current ? now : await api.project.snapshot().catch(() => now ?? from);
-          }
-          if (!from || from.workspaceKey !== getState().snapshot?.workspaceKey) return { kind: 'closed' };
-          const key = `post-text:${post.entryId}:${group.current}`;
-          let committed: Promise<{ revision: number } | null> = Promise.resolve(null);
-          const outcome = commitIfUnchanged(from, () => (committed = commitOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, body }], 'Edit post text', key)));
+        read: () => {
+          const el = root.current ?? rootEl.current;
+          return el ? readArticle(el, getState().snapshot?.state ?? state) : agreed.current;
+        },
+        save: async (body, step) => {
+          const from = checkedBase();
+          if (!from) return { kind: 'closed' };
+          let committed: Promise<unknown> = Promise.resolve();
+          const outcome = commitIfUnchanged(from, () => (committed = commitOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, body }], 'Edit post text', `post-text:${post.entryId}:${step}`)));
           // Followed as a save in flight: Save and leaving the project wait for it.
           trackApply(outcome.then((o) => (o.kind === 'applied' || o.kind === 'unchanged' ? { ok: true } : { ok: false, message: o.kind === 'failed' ? o.message : undefined })));
           const o = await outcome;
-          // The revision the save made, which arrives just after its outcome: the next save is checked from there.
-          const r = await committed.catch(() => null);
-          if (o.kind === 'applied') {
-            agreed.current = body;
-            if (r?.revision) landedAt.current = r.revision;
-          }
+          await committed.catch(() => undefined);
+          if (o.kind === 'applied') agreed.current = body;
           return draftOutcome(o);
         },
         onChange: (s) => setStatus(s)
@@ -133,33 +137,49 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     [] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  /**
+   * What a save is checked against: the project as it is now, with the post's text as the writer and the project last
+   * agreed on. A change to the text made anywhere else since then makes the save stop and ask (it would be replaced);
+   * the writer's own earlier saves never do. A post no longer in the project is checked against the last project that
+   * had it, so the save says it has gone. Null once the project has closed.
+   */
+  const checkedBase = (): ProjectSnapshot | null => {
+    const now = getState().snapshot;
+    if (!now || now.workspaceKey !== opening.current) return null;
+    const c = now.state.collections[post.collectionId];
+    const e = c && Object.hasOwn(c.entries, post.entryId) ? c.entries[post.entryId] : undefined;
+    if (!c || !e) return last.current.snap;
+    return { ...now, state: { ...now.state, collections: { ...now.state.collections, [c.settings.id]: { ...c, entries: { ...c.entries, [e.id]: { ...e, body: agreed.current } } } } } };
+  };
+
   // Show the post's text once, then only when it changes in the project while nothing here is unsaved (an Undo).
   useEffect(() => {
     const el = root.current;
-    if (!el) return;
+    rootEl.current = el;
+    if (!el || unreadable) return;
     // Enter starts a paragraph, as the site's text has them.
     document.execCommand('defaultParagraphSeparator', false, 'p');
     renderArticle(el, entry.body, state, devUrl);
     agreed.current = entry.body;
-    base.current = snap;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const el = root.current;
-    if (!el) return;
-    if (sameRichText(entry.body, agreed.current)) {
-      if (!landedAt.current && !draft.dirty) base.current = snap;
-      return;
-    }
+    if (!el || !live || unreadable || sameRichText(entry.body, agreed.current)) return;
     if (draft.dirty || draft.isComposing) return;
     const focused = el.contains(document.activeElement) || document.activeElement === el;
     const caret = caretAfterHistory.current ?? (focused ? caretIn(el) : null);
     caretAfterHistory.current = null;
     renderArticle(el, entry.body, state, devUrl);
     agreed.current = entry.body;
-    base.current = snap;
-    landedAt.current = 0;
     if (focused) placeCaret(el, caret);
   }, [entry.body]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Gone from the project: unsaved text is saved, which says the post has gone and offers to keep it; with nothing
+  // unsaved, the writer lets go of the post.
+  useEffect(() => {
+    if (live) return;
+    if (draft.dirty) void draft.flush();
+    else setState({ post: null, postView: 'write' });
+  }, [!!live, status.dirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pictures follow the library and the preview server (a file replaced, the preview started).
   useEffect(() => {
@@ -171,12 +191,22 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   useEffect(() => {
     const offFlush = registerFlush(() => draft.flush());
     const offOpen = setOpenWriter(() => draft.flush());
+    const offHistory = setWriterHistory((action) => void history(action));
+    // Edit → Undo and Redo reach the text as the browser's own history: they are the project's here too.
     const el = root.current;
+    const onBeforeInput = (e: InputEvent) => {
+      if (e.inputType !== 'historyUndo' && e.inputType !== 'historyRedo') return;
+      e.preventDefault();
+      void history(e.inputType === 'historyRedo' ? 'redo' : 'undo');
+    };
+    el?.addEventListener('beforeinput', onBeforeInput);
     return () => {
       offFlush();
       offOpen();
-      // Gone without being saved first (the project closed): what it held is read now, while it still can be.
-      if (el && draft.dirty) void draft.flush().finally(() => draft.close());
+      offHistory();
+      el?.removeEventListener('beforeinput', onBeforeInput);
+      // Gone without being saved first (the project closed): what it held is read now, from the element kept for it.
+      if (draft.dirty) void draft.flush().finally(() => draft.close());
       else draft.close();
       markDraft(draftKey, false);
     };
@@ -216,26 +246,27 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const update = (fields: Record<string, unknown>, label: string) => applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label);
 
   /** Undo or Redo the project, with what was typed saved first as its own step. */
-  const history = async (action: 'undo' | 'redo') => {
+  async function history(action: 'undo' | 'redo') {
     if (draft.isComposing) return;
     const el = root.current;
     caretAfterHistory.current = el ? caretIn(el) : null;
     const saved = await draft.flush();
     if (!saved && draft.dirty) return;
-    group.current++;
+    draft.newStep();
     projectHistory(action);
-  };
+  }
 
-  /** Run a formatting command where the caret is: one undo step of its own. */
+  /**
+   * Run a formatting command where the caret is: one undo step of its own, between the typing before it and the typing
+   * after it.
+   */
   const command = (run: () => void) => {
     const el = root.current;
-    if (!el || draft.isComposing) return;
-    // What was typed before it is saved as it was, and the command starts a step of its own.
-    void draft.flush();
-    group.current++;
+    if (!el || draft.isComposing || unreadable) return;
     if (!el.contains(document.getSelection()?.anchorNode ?? null)) el.focus();
+    draft.checkpoint(false);
     run();
-    draft.input();
+    draft.checkpoint(true);
   };
   // Blocks and lists change in the DOM directly: the browser's own commands can nest a list in a paragraph.
   const block = (tag: ArticleBlockTag) => command(() => void setBlock(root.current!, tag));
@@ -347,21 +378,32 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     if (mod && !e.shiftKey && !e.altKey && k === 'k') return void (e.preventDefault(), e.stopPropagation(), openLink());
   };
 
-  const publish = async (draftOn: boolean) => {
+  /**
+   * Everything typed in the post saved: its text, and the field being typed in (its title, excerpt…), which commits as
+   * it loses focus. False, said beside the field or above the text, when any of it could not be.
+   */
+  const saveAll = async (): Promise<boolean> => {
+    const at = document.activeElement;
+    if (at instanceof HTMLElement && at.closest('.post-page') && !at.closest('.post-body')) at.blur();
     const saved = await draft.flush();
-    if (!saved) return toast(draftOn ? 'The post’s text is not saved yet, so it stays as it is.' : 'The post’s text is not saved yet, so it was not published. See the note above the text.', 'error');
+    await appliesLanded();
+    return saved && !getState().refusedDrafts;
+  };
+  const publish = async (draftOn: boolean) => {
+    if (!(await saveAll())) return toast(draftOn ? 'Part of the post is not saved yet, so it stays as it is. See the note beside it.' : 'Part of the post is not saved yet, so it was not published. See the note beside it.', 'error');
     const r = await update({ draft: draftOn }, draftOn ? 'Move post to drafts' : 'Publish post');
     if (r) toast(draftOn ? 'Moved to drafts: it is no longer on the website.' : 'Published: it is on the website from the next export.', 'success');
   };
   const saveDraft = async () => {
-    const saved = await draft.flush();
-    if (saved) toast(entry.draft === false ? 'Saved.' : 'Saved as a draft.', 'success');
+    if (await saveAll()) toast(entry.draft === false ? 'Saved.' : 'Saved as a draft.', 'success');
+    else toast('Part of the post is not saved yet. See the note beside it.', 'error');
   };
   const preview = async () => {
-    await draft.flush();
+    // The preview shows what is saved: text that could not be saved stays in view with its note.
+    if (!(await saveAll())) return toast('Part of the post is not saved yet, so the preview would not show it. See the note beside it.', 'error');
     if (getState().runtime.state !== 'ready') return toast('The preview is still starting. Try again in a moment.', 'info');
-    setMode('preview');
     setState({ postView: 'preview' });
+    setMode('preview');
     // Once the canvas shows again.
     requestAnimationFrame(() => {
       const c = getState().snapshot?.state.collections[post.collectionId];
@@ -373,11 +415,13 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     });
   };
 
+  /** The author keeps their text over the one saved elsewhere: the next save replaces it, checked from here on. */
   const keepMine = () => {
-    base.current = getState().snapshot ?? base.current;
-    landedAt.current = 0;
+    const e = getState().snapshot && postAt(getState().snapshot!.state, post);
+    if (e) agreed.current = e.body;
     void draft.retry();
   };
+  /** The author takes the text saved elsewhere: the writer shows it, and what they typed goes. */
   const showSaved = () => {
     const el = root.current;
     const now = getState().snapshot;
@@ -385,10 +429,10 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     if (!el || !e || !now) return;
     renderArticle(el, e.body, now.state, devUrl);
     agreed.current = e.body;
-    base.current = now;
-    landedAt.current = 0;
     draft.reset();
   };
+  /** The post is gone and the author lets its unsaved text go too. */
+  const discard = () => draft.reset();
   const saveAsNew = async () => {
     const el = root.current;
     const now = getState().snapshot;
@@ -525,14 +569,22 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                   <button className="btn btn-sm" onClick={() => void navigator.clipboard?.writeText(root.current?.innerText ?? '').catch(() => undefined)}>
                     Copy text
                   </button>
+                  <button className="btn btn-sm btn-danger" onClick={discard}>
+                    Discard it
+                  </button>
                 </div>
               )}
+            </div>
+          )}
+          {unreadable && (
+            <div className="post-problem" role="alert">
+              <p>{unreadable}</p>
             </div>
           )}
           <div
             ref={root}
             className="post-body"
-            contentEditable
+            contentEditable={!unreadable}
             suppressContentEditableWarning
             role="textbox"
             aria-multiline="true"
@@ -541,16 +593,10 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             onInput={() => draft.input()}
             onCompositionStart={() => draft.compositionStart()}
             onCompositionEnd={() => draft.compositionEnd()}
+            // Coming back to the text starts an undo step of its own; leaving it saves.
+            onFocus={() => draft.newStep()}
             onBlur={() => void draft.flush()}
             onKeyDown={onKeyDown}
-            onBeforeInput={(e) => {
-              const type = (e.nativeEvent as InputEvent).inputType;
-              // Edit → Undo and Redo reach the text as the browser's own: they are the project's here too.
-              if (type === 'historyUndo' || type === 'historyRedo') {
-                e.preventDefault();
-                void history(type === 'historyRedo' ? 'redo' : 'undo');
-              }
-            }}
             onPaste={(e) => {
               // Words only: formatting comes from the toolbar, pictures from the library.
               e.preventDefault();
@@ -588,7 +634,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             </>
           }
         >
-          <ImageEditor value={dialog.value} state={state} onChange={(v) => setDialog({ ...dialog, value: v })} />
+          <PicturePicker state={state} devUrl={devUrl} value={dialog.value} onChange={(value) => setDialog({ ...dialog, value })} />
           <Field label="Caption" hint="Shown under the picture.">
             <input className="input" value={dialog.caption} maxLength={MAX_CAPTION} aria-label="Caption" onChange={(e) => setDialog({ ...dialog, caption: e.target.value })} />
           </Field>
@@ -596,6 +642,43 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       )}
       {dialog?.kind === 'link' && <LinkDialog dialog={dialog} state={state} self={post.entryId} onChange={setDialog} onApply={applyLink} />}
     </>
+  );
+}
+
+/**
+ * A picture from the library for the text, with what it shows for people who cannot see it. Nothing reaches the project
+ * until the dialog's Add or Update: new pictures are added in Assets.
+ */
+function PicturePicker({ state, devUrl, value, onChange }: { state: ProjectState; devUrl: string | null; value: ImageValue; onChange: (v: ImageValue) => void }) {
+  const uid = useId();
+  const [q, setQ] = useState('');
+  const images = useMemo(() => sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), 'name'), [state.assets]);
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? images.filter((a) => `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)) : images;
+  if (!images.length) return <p className="posts-note">The library has no pictures yet. Add them in Assets, then choose one here.</p>;
+  const pick = (id: string) => {
+    if (id === value.assetId) return;
+    const a = state.assets.assets[id];
+    // A description written for another picture is not this one's: the new picture's suggestion, else none.
+    onChange({ assetId: id, alt: a.altSuggestion ?? '', ...(value.decorative ? { decorative: true } : {}) });
+  };
+  return (
+    <div className="post-picker">
+      {images.length > 8 && <input type="search" className="input sm" placeholder="Search pictures" aria-label="Search pictures" value={q} onChange={(e) => setQ(e.target.value)} />}
+      <div className="post-picker-grid" role="listbox" aria-label="Library pictures">
+        {shown.map((a) => (
+          <button key={a.id} type="button" role="option" aria-selected={a.id === value.assetId} className="post-picker-tile" title={a.name} onClick={() => pick(a.id)}>
+            {devUrl ? <AssetImage asset={a} devUrl={devUrl} cover /> : <span className="post-picker-name">{a.name}</span>}
+          </button>
+        ))}
+      </div>
+      <Field label="Description" controlId={`${uid}-alt`} hint="What the picture shows, for people who cannot see it.">
+        <textarea id={`${uid}-alt`} className="input" rows={2} maxLength={TEXT_LIMITS.imageAlt} disabled={!!value.decorative} placeholder="What the picture shows" value={value.alt} onChange={(e) => onChange({ ...value, alt: e.target.value })} />
+      </Field>
+      <label className="post-picker-decorative">
+        <input type="checkbox" checked={!!value.decorative} onChange={(e) => onChange({ ...value, ...(e.target.checked ? { decorative: true } : { decorative: undefined }) })} /> Decorative: it adds nothing the text does not say
+      </label>
+    </div>
   );
 }
 

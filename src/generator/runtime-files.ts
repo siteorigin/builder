@@ -564,11 +564,12 @@ export function richList(value, kind) {
  */
 export function richParagraphs(value, fields) {
 	if (!Array.isArray(value)) return value;
-	const isBlock = (b) => !!b && typeof b === 'object' && (Array.isArray(b.spans) || Array.isArray(b.items));
+	const isBlock = (b) => !!b && typeof b === 'object' && (Array.isArray(b.spans) || Array.isArray(b.items) || b.type === 'image');
 	const line = (spans) => spans.map((s) => (s.strong ? '**' + s.text + '**' : s.em ? '*' + s.text + '*' : s.text)).join('');
 	const item = (it) => !!it && typeof it === 'object' && !Array.isArray(it);
 	if (Array.isArray(fields)) return value.map((it) => (item(it) ? { ...it, ...Object.fromEntries(fields.filter((f) => Object.hasOwn(it, f)).map((f) => [f, richParagraphs(it[f])])) } : it));
-	if (value.length && value.every(isBlock)) return value.flatMap((b) => (b.items ? b.items.map(line) : [line(b.spans)]));
+	// A picture between paragraphs (an article's) has no paragraph string of its own.
+	if (value.length && value.every(isBlock)) return value.flatMap((b) => (b.items ? b.items.map(line) : b.spans ? [line(b.spans)] : []));
 	return value.map((it) => (item(it) ? Object.fromEntries(Object.entries(it).map(([k, v]) => [k, richParagraphs(v)])) : it));
 }
 `;

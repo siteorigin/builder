@@ -11,17 +11,14 @@ import { checkHeld, fieldKey, placeOf, readFields, shownField, tableRowNameEdit,
 import type { RevealedItem } from './lib/reveal';
 import type { StyleCopy } from './lib/style-copy';
 import type { LayerSet } from './lib/layer-set';
+import type { PostRef } from './lib/posts';
 import { notePlace, type PagePlaces } from './lib/page-place';
 import type { TemplateMode } from './lib/template-view';
 
 export const api = window.builder;
 
 export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets';
-/** A collection entry the Posts workspace has open. */
-export interface PostRef {
-  collectionId: string;
-  entryId: string;
-}
+export type { PostRef };
 export type RightTab = 'inspect' | 'chat' | 'styles';
 export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'paste-style'; ref: ElementRef; opening: string };
 

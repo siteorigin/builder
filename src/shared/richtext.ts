@@ -50,9 +50,10 @@ export const spanRuns = (b: RichBlock): RichSpan[][] => (isListBlock(b) ? b.item
 
 export function isRichBlock(v: unknown): v is RichBlock {
   if (!v || typeof v !== 'object') return false;
-  const b = v as { type?: unknown; spans?: unknown; items?: unknown; assetId?: unknown };
+  const b = v as { type?: unknown; spans?: unknown; items?: unknown; assetId?: unknown; alt?: unknown; caption?: unknown; decorative?: unknown };
   if (typeof b.type !== 'string') return false;
-  if (b.type === 'image') return typeof b.assetId === 'string';
+  // A picture's fields are each what they claim to be: text damaged by a hand edit is no picture, and is reported.
+  if (b.type === 'image') return typeof b.assetId === 'string' && (b.alt === undefined || typeof b.alt === 'string') && (b.caption === undefined || typeof b.caption === 'string') && (b.decorative === undefined || typeof b.decorative === 'boolean');
   return TEXT_BLOCKS.includes(b.type) ? Array.isArray(b.spans) : LIST_BLOCKS.includes(b.type) && Array.isArray(b.items);
 }
 

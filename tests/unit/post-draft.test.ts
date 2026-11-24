@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RichText } from '@shared/types';
-import { PostDraft, flushOpenPost, setOpenWriter, type DraftSaveOutcome } from '../../src/renderer/src/lib/post-draft';
+import { PostDraft, flushOpenPost, runWriterHistory, setOpenWriter, setWriterHistory, type DraftSaveOutcome } from '../../src/renderer/src/lib/post-draft';
 import { registerFlush, resetPendingForTests, settle } from '../../src/renderer/src/lib/pending';
 
 const para = (t: string): RichText => [{ type: 'p', spans: [{ text: t }] }];
@@ -13,13 +13,13 @@ const para = (t: string): RichText => [{ type: 'p', spans: [{ text: t }] }];
 /** A writer whose text is `text`, with saves answered by hand and timers run by hand. */
 function harness() {
   let text = '';
-  const saves: Array<{ body: RichText; answer: (o: DraftSaveOutcome) => void }> = [];
+  const saves: Array<{ body: RichText; step: number; answer: (o: DraftSaveOutcome) => void }> = [];
   const timers = new Map<number, () => void>();
   let next = 0;
   const states: Array<{ dirty: boolean; saving: boolean; problem: unknown }> = [];
   const draft = new PostDraft({
     read: () => para(text),
-    save: (body) => new Promise((answer) => saves.push({ body, answer })),
+    save: (body, step) => new Promise((answer) => saves.push({ body, step, answer })),
     onChange: (s) => states.push(s),
     setTimer: (fn) => (timers.set(++next, fn), next),
     clearTimer: (t) => void timers.delete(t as number)
@@ -59,6 +59,7 @@ describe('the post draft', () => {
     h.type('One two');
     // A second flush joins the save under way rather than sending another beside it.
     const again = h.draft.flush();
+    expect(again).toBe(flushed);
     expect(h.saves).toHaveLength(1);
     h.saves[0].answer({ kind: 'applied' });
     await h.settled();
@@ -73,7 +74,11 @@ describe('the post draft', () => {
 
   it('never saves in the middle of a composition, and saves what it composed once it ends', async () => {
     const h = harness();
+    // A pause already counting when the composition starts is stopped.
+    h.type('Before ');
+    expect(h.timers.size).toBe(1);
     h.draft.compositionStart();
+    expect(h.timers.size).toBe(0);
     h.type('にほ');
     expect(h.timers.size).toBe(0);
     expect(await h.draft.flush()).toBe(false);
@@ -129,6 +134,8 @@ describe('the post draft', () => {
     h.type('Short');
     expect(h.draft.problem).toBeNull();
     h.tick();
+    // The corrected text is what is sent, not the refused one again.
+    expect(h.saves.map((s) => s.body)).toEqual([para('Too long'), para('Short')]);
     h.saves[1].answer({ kind: 'applied' });
     await h.settled();
     expect(h.draft.dirty).toBe(false);
@@ -137,19 +144,74 @@ describe('the post draft', () => {
   it('shows the saved text again without saving anything (reset), and stops for good once closed', async () => {
     const h = harness();
     h.type('Unwanted');
+    const refused = h.draft.flush();
+    h.saves[0].answer({ kind: 'changed' });
+    await refused;
     h.draft.reset();
     expect(h.draft.dirty).toBe(false);
+    expect(h.draft.problem).toBeNull();
     expect(h.timers.size).toBe(0);
+    h.type('Pending');
+    expect(h.timers.size).toBe(1);
     h.draft.close();
+    expect(h.timers.size).toBe(0);
     h.type('After');
     expect(h.timers.size).toBe(0);
-    expect(await h.draft.flush()).toBe(true);
-    expect(h.saves).toHaveLength(0);
+    await h.draft.flush();
+    expect(h.saves).toHaveLength(1);
+  });
+
+  it('makes a formatting command an undo step of its own, between the typing before and after it', async () => {
+    const h = harness();
+    h.type('Typed');
+    // A save of earlier typing is on its way when the command runs: the steps still come out exact, in order.
+    const first = h.draft.flush();
+    h.type('Typed more');
+    h.draft.checkpoint(false);
+    h.setText('Typed more, formatted');
+    h.draft.checkpoint(true);
+    h.type('Typed more, formatted, and after');
+    h.saves[0].answer({ kind: 'applied' });
+    await h.settled();
+    h.saves[1].answer({ kind: 'applied' });
+    await h.settled();
+    h.saves[2].answer({ kind: 'applied' });
+    await h.settled();
+    h.saves[3].answer({ kind: 'applied' });
+    await first;
+    expect(h.saves.map((s) => [s.step, s.body])).toEqual([
+      [0, para('Typed')],
+      [0, para('Typed more')],
+      [1, para('Typed more, formatted')],
+      [2, para('Typed more, formatted, and after')]
+    ]);
+    expect(h.draft.dirty).toBe(false);
+  });
+
+  it('starts a new undo step when asked (the writer was left, an Undo ran), saving what it holds as the step before', async () => {
+    const h = harness();
+    h.type('Before leaving');
+    h.draft.newStep();
+    h.saves[0].answer({ kind: 'applied' });
+    await h.settled();
+    h.type('Back again');
+    h.tick();
+    expect(h.saves.map((s) => s.step)).toEqual([0, 1]);
   });
 });
 
 describe('saving the open post from elsewhere', () => {
   afterEach(() => resetPendingForTests());
+
+  it('gives Edit → Undo to the writer while one is registered, and to no one once it unregisters', () => {
+    const asked: string[] = [];
+    const off = setWriterHistory((a) => asked.push(a));
+    expect(runWriterHistory('undo')).toBe(true);
+    expect(runWriterHistory('redo')).toBe(true);
+    off();
+    expect(runWriterHistory('undo')).toBe(false);
+    expect(asked).toEqual(['undo', 'redo']);
+  });
 
   it('lets the Posts list save the open post before opening another', async () => {
     const h = harness();
@@ -160,6 +222,10 @@ describe('saving the open post from elsewhere', () => {
     h.saves[0].answer({ kind: 'applied' });
     expect(await done).toBe(true);
     off();
+    // Unregistered: a later writer's refusal is its own, never this one's.
+    const refusing = setOpenWriter(() => Promise.resolve(false));
+    expect(await flushOpenPost()).toBe(false);
+    refusing();
     expect(await flushOpenPost()).toBe(true);
   });
 
@@ -167,9 +233,13 @@ describe('saving the open post from elsewhere', () => {
     const h = harness();
     const off = registerFlush(() => h.draft.flush());
     h.type('Unsaved words');
-    const saved = settle({ blur: () => undefined, wait: () => new Promise((r) => setTimeout(r, 0)) });
+    let done = false;
+    const saved = settle({ blur: () => undefined, wait: () => new Promise((r) => setTimeout(r, 0)) }).then((o) => ((done = true), o));
     await h.settled();
     expect(h.saves.map((s) => s.body)).toEqual([para('Unsaved words')]);
+    // The settle waits for the save it started.
+    await h.settled();
+    expect(done).toBe(false);
     h.saves[0].answer({ kind: 'applied' });
     const out = await saved;
     out.finish();

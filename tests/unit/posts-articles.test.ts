@@ -14,6 +14,7 @@ import { imageUses } from '@engine/image-uses';
 import { validateState } from '@engine/validate';
 import { cleanBlocks, escapeLineStart, isRichBlock, parseRichText, richTextToMarkdown, richTextToPlain, spanRuns, toRichText } from '@shared/richtext';
 import { generateEntry, resolveRichText } from '@generator/index';
+import { todayArticleDate } from '@shared/articles';
 import { RICHTEXT_SVELTE } from '@generator/runtime-files';
 import { blocksFromDom } from '../../src/renderer/src/lib/richtext';
 import { readField, fieldKey, placeOf } from '../../src/renderer/src/lib/held';
@@ -52,9 +53,21 @@ describe('article text', () => {
   it('reads pictures as blocks of their own, with a description and a caption collapsed to one line', () => {
     expect(isRichBlock({ type: 'image', assetId: 'img_a', alt: '' })).toBe(true);
     expect(isRichBlock({ type: 'image', alt: 'no picture' })).toBe(false);
+    expect(isRichBlock({ type: 'image', assetId: 7, alt: '' })).toBe(false);
+    // Each field is what it claims to be, so a hand-damaged picture is reported, never read.
+    expect(isRichBlock({ type: 'image', assetId: 'img_a', alt: 7 })).toBe(false);
+    expect(isRichBlock({ type: 'image', assetId: 'img_a', alt: '', caption: 3 })).toBe(false);
+    expect(isRichBlock({ type: 'image', assetId: 'img_a', alt: '', decorative: 'yes' })).toBe(false);
     expect(isRichBlock({ type: 'h2', spans: [] })).toBe(true);
-    const clean = cleanBlocks([{ type: 'image', assetId: 'img_a', alt: '  Two\n potters ', caption: ' Saturday  at the studio. ', decorative: true }, { type: 'image', assetId: '', alt: 'gone' }]);
-    expect(clean).toEqual([{ type: 'image', assetId: 'img_a', alt: 'Two potters', caption: 'Saturday at the studio.', decorative: true }]);
+    const clean = cleanBlocks([
+      { type: 'image', assetId: 'img_a', alt: '  Two\n potters ', caption: ' Saturday  at the studio. ', decorative: true },
+      { type: 'image', assetId: 'img_b', alt: 'x', caption: '   ' },
+      { type: 'image', assetId: '', alt: 'gone' }
+    ]);
+    expect(clean).toEqual([
+      { type: 'image', assetId: 'img_a', alt: 'Two potters', caption: 'Saturday at the studio.', decorative: true },
+      { type: 'image', assetId: 'img_b', alt: 'x' }
+    ]);
     expect(spanRuns(clean[0])).toEqual([]);
     expect(toRichText(ARTICLE)).toEqual(ARTICLE);
   });
@@ -62,6 +75,8 @@ describe('article text', () => {
   it('reads "## " as a section heading only in an article, and escapes a paragraph that starts with it', () => {
     expect(parseRichText('## Hours', { markdown: true })).toEqual([{ type: 'p', spans: [{ text: '## Hours' }] }]);
     expect(parseRichText('## Hours', { markdown: true, articles: true })).toEqual([{ type: 'h2', spans: [{ text: 'Hours' }] }]);
+    expect(parseRichText('##Hours', { markdown: true, articles: true })).toEqual([{ type: 'p', spans: [{ text: '##Hours' }] }]);
+    expect(parseRichText('## Hours', { articles: true })).toEqual([{ type: 'p', spans: [{ text: '## Hours' }] }]);
     const md = richTextToMarkdown([{ type: 'p', spans: [{ text: '## not a heading' }] }], {});
     expect(md).toBe('\\## not a heading');
     expect(parseRichText(md, { markdown: true, articles: true })).toEqual([{ type: 'p', spans: [{ text: '## not a heading' }] }]);
@@ -70,6 +85,12 @@ describe('article text', () => {
 
   it('says a picture in words by its caption, else its description, and in the text form as an image line', () => {
     expect(richTextToPlain(ARTICLE)).toBe('We open the doors.\n\nAt the workshop\n\nSaturday at the studio.\n\nClay\nGlaze');
+    const bare: RichText = [
+      { type: 'image', assetId: 'img_a', alt: 'A kiln' },
+      { type: 'image', assetId: 'img_b', alt: 'Hidden words', decorative: true }
+    ];
+    expect(richTextToPlain(bare)).toBe('A kiln');
+    expect(richTextToMarkdown(bare, {})).toBe('![A kiln](asset:img_a)\n\n![](asset:img_b)');
     const md = richTextToMarkdown(ARTICLE, {});
     expect(md).toContain('## At the workshop');
     expect(md).toContain('![Two potters glazing](asset:img_a "Saturday at the studio.")');
@@ -102,7 +123,12 @@ describe('entry text in the project', () => {
     expect(() => withBody(s, [{ type: 'image', assetId: 'img_gone', alt: '' }])).toThrow(EngineError);
     expect(() => withBody(s, [{ type: 'image', assetId: 'doc_a', alt: '' }])).toThrow(/not an image/);
     expect(() => withBody(s, [{ type: 'image', assetId: 'img_a', alt: '', caption: 'x'.repeat(301) }])).toThrow(/caption/);
-    expect(() => withBody(s, [{ type: 'image', assetId: 'img_a', alt: 7 }])).toThrow(/alt text/);
+    expect(withBody(s, [{ type: 'image', assetId: 'img_a', alt: '', caption: 'x'.repeat(300) }]).collections.posts.entries.en_spring.body).toHaveLength(1);
+    expect(() => withBody(s, [{ type: 'image', assetId: 'img_a', alt: 7 }])).toThrow(EngineError);
+    expect(() => withBody(s, [{ type: 'image', assetId: 'img_a', alt: '', caption: 4 }])).toThrow(EngineError);
+    // Stored as the page shows it: one line, and no empty caption.
+    const t = withBody(s, [{ type: 'image', assetId: 'img_a', alt: ' Two\n potters ', caption: ' ' }]);
+    expect(t.collections.posts.entries.en_spring.body).toEqual([{ type: 'image', assetId: 'img_a', alt: 'Two potters' }]);
   });
 
   it('gives an entry room for a long article, and a component its own smaller limit', () => {
@@ -122,6 +148,29 @@ describe('pictures in posts as uses of the library', () => {
     expect(assetUsages(s).img_a).toBe(3);
     expect(assetUsages(s).img_b).toBe(1);
     expect(() => run(s, { type: 'asset.remove', assetId: 'img_b' })).toThrow(EngineError);
+  });
+
+  it('numbers the pictures of a post as its text shows them, and lists picture fields too', () => {
+    const s0 = withBody(blog(), [
+      { type: 'image', assetId: 'img_b', alt: 'Other' },
+      { type: 'image', assetId: 'img_a', alt: 'First' },
+      { type: 'p', spans: [{ text: 'Between' }] },
+      { type: 'image', assetId: 'img_a', alt: 'Second' }
+    ]);
+    const s = run(
+      s0,
+      { type: 'collection.update', collectionId: 'posts', fields: { cover: { type: 'image', label: 'Cover', default: { assetId: 'img_a', alt: '' } } } },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', values: { cover: { assetId: 'img_a', alt: 'Snow' } } }
+    );
+    const rows = imageUseRows(s, 'img_a').filter((r) => r.icon === 'post');
+    expect(rows.map((r) => [r.where, r.what])).toEqual([
+      ['Posts', 'Cover: starting picture for new entries'],
+      ['Spring open studio', 'Picture 2 in the text'],
+      ['Spring open studio', 'Picture 3 in the text'],
+      ['Winter hours', 'Cover']
+    ]);
+    expect(rows.map((r) => r.post)).toEqual([undefined, { collectionId: 'posts', entryId: 'en_spring', n: 2 }, { collectionId: 'posts', entryId: 'en_spring', n: 3 }, { collectionId: 'posts', entryId: 'en_winter' }]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(4);
   });
 
   it('lists the uses in Assets by post, and opens the post from each', () => {
@@ -154,12 +203,69 @@ describe('pictures in posts as uses of the library', () => {
     expect(assetUsages(s).img_a).toBeUndefined();
   });
 
+  it('changes pictures in posts only with every other use, keeping a decorative one and a kept description as they are', () => {
+    const start = withBody(blog(), [
+      { type: 'image', assetId: 'img_a', alt: 'A potter at the wheel' },
+      { type: 'image', assetId: 'img_a', alt: 'Shown as nothing', decorative: true },
+      { type: 'image', assetId: 'img_b', alt: 'Unrelated' }
+    ]);
+    const page = start.site.homePageId;
+    // Placed on a page too, so a replacement can choose that place alone.
+    const s0 = run(start, { type: 'page.update', pageId: page, socialImage: 'img_a' } as EditOperation);
+    expect(s0.pages[page].seo.socialImage).toBe('img_a');
+    const some = run(s0, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b', uses: [{ kind: 'pageSharing', pageId: page }] });
+    expect(some.collections.posts.entries.en_spring.body).toEqual(s0.collections.posts.entries.en_spring.body);
+    const all = run(s0, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b' });
+    expect(all.collections.posts.entries.en_spring.body).toEqual([
+      { type: 'image', assetId: 'img_b', alt: 'Bowls drying on a shelf' },
+      { type: 'image', assetId: 'img_b', alt: 'Shown as nothing', decorative: true },
+      { type: 'image', assetId: 'img_b', alt: 'Unrelated' }
+    ]);
+    const kept = run(s0, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b', keepAlt: true });
+    expect(kept.collections.posts.entries.en_spring.body[0]).toEqual({ type: 'image', assetId: 'img_b', alt: 'A potter at the wheel' });
+  });
+
+  it('follows a suggested description written with doubled spaces, as the picture stores it on one line', () => {
+    const s0 = blog();
+    s0.assets.assets.img_a.altSuggestion = 'A potter  at the wheel';
+    const s = run(withBody(s0, [{ type: 'image', assetId: 'img_a', alt: 'A potter  at the wheel' }]), { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b' });
+    expect(s.collections.posts.entries.en_spring.body).toEqual([{ type: 'image', assetId: 'img_b', alt: 'Bowls drying on a shelf' }]);
+  });
+
+  it('reports a damaged picture as damaged text, without failing to open the project', () => {
+    const s = withBody(blog(), ARTICLE);
+    (s.collections.posts.entries.en_spring.body as unknown[])[2] = { type: 'image', assetId: 'img_a', alt: { toString: null } };
+    const found = validateState(s).filter((d) => d.code === 'ENTRY_INVALID');
+    expect(found.map((d) => d.message)).toEqual(['The Posts collection: the entry en_spring is damaged.']);
+    // The page leaves it out rather than showing what it holds.
+    const resolved = resolveRichText(s.collections.posts.entries.en_spring.body, { state: s }) as Array<{ type: string }>;
+    expect(resolved.map((b) => b.type)).toEqual(['p', 'h2', 'ul', 'image']);
+  });
+
+  it('warns about a section heading or picture in a page\'s text, which only a post holds', () => {
+    const s = blog();
+    const home = s.pages[s.site.homePageId];
+    const node = Object.values(home.nodes).find((n) => n.kind === 'text' && n.rich);
+    if (!node || node.kind !== 'text') return;
+    (node as { text: unknown }).text = [{ type: 'h2', spans: [{ text: 'Sneaked in' }] }];
+    expect(validateState(s).filter((d) => d.code === 'ARTICLE_BLOCK').map((d) => d.nodeId)).toEqual([node.id]);
+  });
+
   it('reports a picture that is no longer in the library, and one left undescribed', () => {
-    const s = withBody(blog(), [{ type: 'image', assetId: 'img_a', alt: '' }, { type: 'image', assetId: 'img_b', alt: '', decorative: true }]);
-    expect(validateState(s).filter((d) => d.code === 'ALT_MISSING' && /picture 1 in its text/.test(d.message))).toHaveLength(1);
+    const s = withBody(blog(), [
+      { type: 'image', assetId: 'img_b', alt: 'Described' },
+      { type: 'image', assetId: 'img_a', alt: '' },
+      { type: 'image', assetId: 'img_b', alt: '', decorative: true }
+    ]);
+    const body = (t: ProjectState) => validateState(t).filter((d) => /in its text/.test(d.message)).map((d) => [d.code, d.message]);
+    expect(body(s)).toEqual([['ALT_MISSING', 'Posts: “Spring open studio”: picture 2 in its text has no description.']]);
     delete s.assets.assets.img_a;
-    const found = validateState(s).filter((d) => d.code === 'ASSET_MISSING').map((d) => d.message);
-    expect(found).toEqual(['Posts: “Spring open studio”: picture 1 in its text is not in the library.']);
+    s.assets.assets.img_b = { ...s.assets.assets.img_b, kind: 'document', mime: 'application/pdf' };
+    expect(body(s)).toEqual([
+      ['ASSET_NOT_IMAGE', 'Posts: “Spring open studio”: picture 1 in its text is “Photo img_b”, which is a document, not a picture.'],
+      ['ASSET_MISSING', 'Posts: “Spring open studio”: picture 2 in its text is not in the library.'],
+      ['ASSET_NOT_IMAGE', 'Posts: “Spring open studio”: picture 3 in its text is “Photo img_b”, which is a document, not a picture.']
+    ]);
   });
 });
 
@@ -209,9 +315,9 @@ describe('the Posts writer reads its text', () => {
     ]);
   });
 
-  it('leaves the canvas as it was: a heading there is a page section (h3), and no picture is read', () => {
-    const { blocks } = blocksFromDom([{ tag: 'h2', children: ['Hours'] }, { tag: 'figure', image: { assetId: 'img_a', alt: 'x' }, children: [] }], s.pages);
-    expect(blocks).toEqual([{ type: 'h3', spans: [{ text: 'Hours' }] }]);
+  it('leaves the canvas as it was: a heading there is a page section (h3), and a picture is read as its words', () => {
+    const { blocks } = blocksFromDom([{ tag: 'h2', children: ['Hours'] }, { tag: 'figure', image: { assetId: 'img_a', alt: 'x' }, children: [{ tag: 'figcaption', children: ['Kiln at night'] }] }], s.pages);
+    expect(blocks).toEqual([{ type: 'h3', spans: [{ text: 'Hours' }] }, { type: 'p', spans: [{ text: 'Kiln at night' }] }]);
   });
 });
 
@@ -220,6 +326,9 @@ describe('checked writes of a post', () => {
     const s = withBody(blog(), ARTICLE);
     const op: EditOperation = { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [] };
     expect(readField(s, op)).toEqual({ found: true, value: { body: ARTICLE } });
+    expect(readField(s, { ...op, body: undefined, title: 'x', excerpt: null, draft: true } as EditOperation)).toEqual({ found: true, value: { title: 'Spring open studio', excerpt: undefined, draft: false } });
+    expect(fieldKey([op])).not.toBe(fieldKey([{ ...op, collectionId: 'news' } as EditOperation]));
+    expect(fieldKey([op])).not.toBe(fieldKey([{ ...op, body: undefined, title: 'x' } as EditOperation]));
     expect(readField(s, { ...op, entryId: 'en_gone' } as EditOperation)).toEqual({ found: false, what: 'post' });
     expect(placeOf(s, op)).toBe('Spring open studio');
     // Typing in one post's text never replaces a held edit of another's.
@@ -236,6 +345,12 @@ describe('the Posts list', () => {
     expect(postRows(c, '', 'oldest').map((r) => r.id)).toEqual(['en_winter', 'en_autumn', 'en_spring']);
     expect(postRows(c, '', 'title').map((r) => r.title)).toEqual(['Autumn kiln firing', 'Spring open studio', 'Winter hours']);
     expect(postRows(c, 'GLAZE', 'newest').map((r) => r.id)).toEqual(['en_autumn']);
+    expect(postRows(c, 'kiln', 'newest').map((r) => r.id)).toEqual(['en_autumn']);
+    expect(postRows(c, 'open-studio', 'newest').map((r) => r.id)).toEqual(['en_spring']);
+    // A chosen order decides between posts of the same day, and is the order of its own.
+    const ordered = run(s, { type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_spring', 'en_winter', 'en_autumn'] }).collections.posts;
+    expect(postRows(ordered, '', 'newest').map((r) => r.id)).toEqual(['en_spring', 'en_autumn', 'en_winter']);
+    expect(postRows(ordered, '', 'order').map((r) => r.id)).toEqual(['en_spring', 'en_winter', 'en_autumn']);
     expect(postRows(c, 'ana', 'newest').map((r) => r.id)).toEqual(['en_winter']);
     expect(postRows(c, '', 'newest').find((r) => r.id === 'en_spring')).toMatchObject({ draft: false, date: '2027-03-02', route: '/blog/spring-open-studio/' });
     expect(postRows(c, '', 'newest').find((r) => r.id === 'en_winter')?.draft).toBe(true);
@@ -250,14 +365,25 @@ describe('the Posts list', () => {
     const next = newPostOps(s, 'posts', 'Second');
     expect(next.ops).toHaveLength(1);
     expect(postsCollection(s, null)?.settings.id).toBe('posts');
+    // Into the collection shown, when the project has several.
+    const two = run(s, { type: 'collection.create', collectionId: 'case-studies' });
+    const study = newPostOps(two, 'case-studies', 'Harbour house');
+    expect(study.ref.collectionId).toBe('case-studies');
+    expect(run(two, ...study.ops).collections['case-studies'].entries[study.ref.entryId].title).toBe('Harbour house');
   });
 
   it('duplicates a post as a dated draft with its text, pictures and byline', () => {
-    const s = run(withBody(blog(), ARTICLE), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', author: 'Ana', excerpt: 'Doors open', featuredImage: 'img_b' });
+    const s = run(
+      withBody(blog(), ARTICLE),
+      { type: 'collection.update', collectionId: 'posts', taxonomies: { categories: { label: 'Categories', terms: { news: { label: 'News' } } } }, fields: { mood: { type: 'string', label: 'Mood', default: '' } } },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', author: 'Ana', excerpt: 'Doors open', featuredImage: 'img_b', publishedAt: '2020-01-02', terms: { categories: ['news'] }, values: { mood: 'Warm' } }
+    );
     const plan = duplicatePostOps(s, { collectionId: 'posts', entryId: 'en_spring' })!;
     const t = run(s, ...plan.ops);
     const copy = t.collections.posts.entries[plan.ref.entryId];
-    expect(copy).toMatchObject({ title: 'Spring open studio (copy)', draft: true, author: 'Ana', excerpt: 'Doors open', featuredImage: 'img_b', body: ARTICLE });
+    expect(copy).toMatchObject({ title: 'Spring open studio (copy)', draft: true, author: 'Ana', excerpt: 'Doors open', featuredImage: 'img_b', body: ARTICLE, terms: { categories: ['news'] }, values: { mood: 'Warm' } });
+    // Dated the day it is made, not the day of the post it copies.
+    expect(copy.publishedAt).toBe(todayArticleDate());
     expect(copy.slug).not.toBe(s.collections.posts.entries.en_spring.slug);
     expect(assetUsages(t).img_a).toBe(2);
   });

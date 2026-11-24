@@ -714,6 +714,7 @@ export function openSiteStyles() {
  */
 export async function openPost(collectionId: string, entryId: string, picture?: number): Promise<void> {
   const s = getState();
-  if (s.post?.entryId !== entryId) await flushOpenPost();
+  // Never over text the open post could not save: it stays, with its note above the text.
+  if (s.post?.entryId !== entryId && !(await flushOpenPost())) return void toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
   setState({ modal: null, leftTab: 'posts', post: { collectionId, entryId }, postView: 'write', postReveal: picture ? { entryId, picture, seq: (getState().postReveal?.seq ?? 0) + 1 } : null });
 }

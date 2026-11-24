@@ -4,7 +4,9 @@ import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
 import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
 import { Toolbar } from './panels/Toolbar';
-import { Canvas, showEditedPage, stepVisitor } from './panels/Canvas';
+import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
+import { entryRoute } from '@shared/collections';
+import { flushOpenPost } from './lib/post-draft';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
 import { PostsPanel } from './panels/PostsPanel';
@@ -485,6 +487,16 @@ export function Editor() {
           if (s.mode === 'preview') setMode('edit');
           showEditedPage();
         } else if (s.postView === 'preview' && prev.mode === 'preview' && s.mode === 'edit') setState({ postView: 'write' });
+        // Preview chosen in the toolbar while writing: the post open is what is previewed, once what was typed is saved.
+        else if (prev.mode === 'edit' && s.mode === 'preview' && s.leftTab === 'posts' && s.postView === 'write') {
+          setState({ postView: 'preview' });
+          void flushOpenPost().then(() => {
+            const now = getState();
+            const c = now.post && now.snapshot?.state.collections[now.post.collectionId];
+            const e = c && now.post && Object.hasOwn(c.entries, now.post.entryId) ? c.entries[now.post.entryId] : undefined;
+            if (c && e && now.postView === 'preview' && now.mode === 'preview') visitAddress(entryRoute(c, e));
+          });
+        }
       }),
     []
   );

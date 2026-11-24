@@ -60,16 +60,21 @@ export function stepVisitor(dir: 'back' | 'forward'): boolean {
 
 /** Set while the canvas is shown: opens an address that is no page of the editor's (a post), or the page shown again. */
 let frameVisit: ((path: string | null) => boolean) | null = null;
+/** The address visitAddress asked for, until showEditedPage: a new frame (the preview restarted) opens it again. */
+let visitWanted: string | null = null;
 /**
  * Show `path` in the preview, as the editor asks for a page: the editor's page stays the one it shows, and asking for
  * that page again (showEditedPage) overtakes this request even before the frame gets there. False while the preview
  * is not ready to be asked.
  */
 export function visitAddress(path: string): boolean {
-  return frameVisit?.(path) ?? false;
+  const asked = frameVisit?.(path) ?? false;
+  if (asked) visitWanted = path;
+  return asked;
 }
 /** Back to the page the editor shows, from an address visitAddress opened. */
 export function showEditedPage(): void {
+  visitWanted = null;
   frameVisit?.(null);
 }
 
@@ -483,7 +488,9 @@ export function Canvas() {
             // while it loaded never reached it: it is asked for the page shown now. Try again keeps the preview
             // ready, so the navigate effect does not run for it.
             nav.current.request = null;
-            if (viewKey(s)) openShownPage();
+            // An address visitAddress opened (a post previewed) is opened again in the new frame.
+            if (visitWanted) visit(visitWanted);
+            else if (viewKey(s)) openShownPage();
             else {
               syncPage(path);
               followed(nav.current, viewKey(getState()));
@@ -947,28 +954,34 @@ export function Canvas() {
         return ready;
       }
       if (!ready) return false;
-      // Already there, with nothing asked for since.
-      if (!nav.current.request && samePath(path, frameAt.current)) return true;
-      // As a page the editor opens: "opening" until the frame says it is there, and a problem reported was about the
-      // address it is leaving. The request is the editor's latest, so a page asked for after it (Back to writing)
-      // overtakes it, and its late report is never followed.
-      setState({ frameReady: false });
-      markTimedOut(false);
-      setFrameError(null);
-      setRetrying(false);
-      if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
-      const navId = askFrame(nav.current, getState().pageId ?? '', path);
-      frameAt.current = null;
-      post('navigate', { path, navId });
-      return true;
+      return visit(path);
     };
     return () => {
       frameVisit = null;
     };
   });
+  /** Ask the frame for an address that is no page of the editor's (see visitAddress). */
+  function visit(path: string): boolean {
+    // Already there, with nothing asked for since.
+    if (!nav.current.request && samePath(path, frameAt.current)) return true;
+    // As a page the editor opens: "opening" until the frame says it is there, and a problem reported was about the
+    // address it is leaving. The request is the editor's latest, so a page asked for after it (Back to writing)
+    // overtakes it, and its late report is never followed.
+    setState({ frameReady: false });
+    markTimedOut(false);
+    setFrameError(null);
+    setRetrying(false);
+    if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
+    const navId = askFrame(nav.current, viewKey(getState()) ?? '', path);
+    frameAt.current = null;
+    post('navigate', { path, navId });
+    return true;
+  }
 
   /** Ask the frame for the page the editor shows, unless it is there already or already asked for. */
   function openShownPage() {
+    // The editor's page is what the frame shows from now on, not an address visited before.
+    visitWanted = null;
     const s = getState();
     const shown = s.snapshot ? shownView(s.snapshot.state, s.pageId, s.templateMode) : null;
     if (!shown?.route) return;
@@ -994,9 +1007,14 @@ export function Canvas() {
     frameAt.current = null;
     post('navigate', { path: shown.route, navId });
   }
-  // Navigate when the current page changes.
+  // Navigate when the current page changes. A frame that has just become ready while a post is visited (the preview
+  // restarted) stays on the post its 'ready' report asked for again.
+  const shownBefore = useRef<string | null>(null);
   useEffect(() => {
-    if (ready && view?.route) openShownPage();
+    const key = `${view?.key}\n${view?.route}`;
+    const moved = shownBefore.current !== key;
+    shownBefore.current = key;
+    if (ready && view?.route && (moved || !visitWanted)) openShownPage();
   }, [view?.key, view?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**

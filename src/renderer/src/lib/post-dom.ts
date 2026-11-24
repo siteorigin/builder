@@ -5,7 +5,7 @@
  * around: they are chosen and described in a dialog, never typed into.
  */
 import type { LinkValue, ProjectState, RichBlock, RichImageBlock, RichSpan, RichText } from '@shared/types';
-import { ENTRY_LINK_PREFIX, isImageBlock, isListBlock, linkFromTarget, linkToTarget } from '@shared/richtext';
+import { ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, linkFromTarget, linkToTarget } from '@shared/richtext';
 import { findEntry } from '@shared/collections';
 import { blocksFromDom, type ArticleRead, type RichDomNode } from './richtext';
 import { assetUrl } from './model';
@@ -13,11 +13,34 @@ import { assetUrl } from './model';
 /** The class a check list carries, as the site's own lists do. */
 const CHECK_CLASS = 'so-rich--check';
 
+/**
+ * A link the writer shows carries the destination it was stored with (`data-link`) beside the address it showed for it
+ * (`data-href`): a page whose address changes since is still that page, and a link to an address another page has
+ * taken since never moves to it. Read back as `so-link:` and the stored link.
+ */
+const KEPT_LINK = 'so-link:';
+
+function keptLink(json: string, state: ProjectState): LinkValue | null {
+  let l: unknown;
+  try {
+    l = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!l || typeof l !== 'object') return null;
+  const { type, target } = l as LinkValue;
+  if (typeof target !== 'string') return null;
+  if (type === 'page') return Object.hasOwn(state.pages, target) ? (l as LinkValue) : null;
+  if (type === 'entry') return findEntry(state, target) ? (l as LinkValue) : null;
+  return type === 'url' || type === 'email' || type === 'tel' || type === 'anchor' ? (l as LinkValue) : null;
+}
+
 /** How the writer reads a link it shows: a page or post of this project, or an address of anywhere else. */
 export function articleLinks(state: ProjectState): ArticleRead {
   return {
     link: (href, newTab) => {
       const t = href.trim();
+      if (t.startsWith(KEPT_LINK)) return keptLink(t.slice(KEPT_LINK.length), state);
       if (t.startsWith(ENTRY_LINK_PREFIX)) {
         const id = t.slice(ENTRY_LINK_PREFIX.length);
         return findEntry(state, id) ? { type: 'entry', target: id, ...(newTab ? { newTab: true } : {}) } : null;
@@ -38,12 +61,19 @@ function appendText(parent: Node, text: string) {
   });
 }
 
+function keepLink(a: HTMLElement, link: LinkValue, href: string) {
+  a.dataset.link = JSON.stringify(link);
+  a.dataset.href = href;
+}
+
 function appendSpans(parent: HTMLElement, spans: RichSpan[], state: ProjectState) {
   for (const s of spans) {
     let host: HTMLElement = parent;
     if (s.link) {
       const a = document.createElement('a');
-      a.setAttribute('href', linkHref(s.link, state));
+      const href = linkHref(s.link, state);
+      a.setAttribute('href', href);
+      keepLink(a, s.link, href);
       if (s.link.newTab) a.setAttribute('target', '_blank');
       host.appendChild(a);
       host = a;
@@ -64,8 +94,8 @@ export function figureElement(b: RichImageBlock, state: ProjectState, devUrl: st
   fig.className = 'post-figure';
   fig.contentEditable = 'false';
   fig.dataset.assetId = b.assetId;
-  fig.dataset.alt = b.alt;
-  if (b.caption) fig.dataset.caption = b.caption;
+  fig.dataset.alt = typeof b.alt === 'string' ? b.alt : '';
+  if (typeof b.caption === 'string' && b.caption) fig.dataset.caption = b.caption;
   if (b.decorative) fig.dataset.decorative = 'true';
   fillFigure(fig, state, devUrl);
   return fig;
@@ -155,16 +185,45 @@ function toDom(n: Node): RichDomNode | null {
   const style = el.style?.fontStyle;
   if (style) out.i = style === 'italic' || style === 'oblique';
   if (tag === 'a') {
-    out.href = el.getAttribute('href') ?? '';
+    const href = el.getAttribute('href') ?? '';
+    // The stored destination while the address shown is still the one it was shown with; a new address typed over it
+    // is read as typed.
+    out.href = el.dataset.link && el.dataset.href === href ? KEPT_LINK + el.dataset.link : href;
     if (el.getAttribute('target') === '_blank') out.newTab = true;
   }
   if (tag === 'ul' && el.classList.contains(CHECK_CLASS)) out.check = true;
   return out;
 }
 
-/** The text the writer shows, as the post stores it. Links that cannot be stored keep their words. */
+/**
+ * The text the writer shows, as the post stores it. Links that cannot be stored keep their words. A link made in the
+ * writer since it was last read takes its destination now, so it keeps it however addresses change later.
+ */
 export function readArticle(root: HTMLElement, state: ProjectState): RichText {
-  return blocksFromDom(articleDom(root), state.pages, articleLinks(state)).blocks;
+  const links = articleLinks(state);
+  root.querySelectorAll<HTMLElement>('a[href]').forEach((a) => {
+    const href = a.getAttribute('href') ?? '';
+    if (a.dataset.link && a.dataset.href === href) return;
+    const link = links.link(href, a.getAttribute('target') === '_blank');
+    if (link) keepLink(a, link, href);
+  });
+  return blocksFromDom(articleDom(root), state.pages, links).blocks;
+}
+
+/**
+ * Why the writer cannot edit a post's stored text in place, or null when it can: text damaged by a hand edit, or
+ * written by a newer version, which writing it back would lose.
+ */
+export function articleProblem(body: unknown): string | null {
+  const spans = (v: unknown) => Array.isArray(v) && v.every((s) => !!s && typeof s === 'object' && typeof (s as { text?: unknown }).text === 'string');
+  const ok =
+    Array.isArray(body) &&
+    body.every((b) => {
+      if (!isRichBlock(b)) return false;
+      if (isImageBlock(b)) return true;
+      return isListBlock(b) ? b.items.every(spans) : spans(b.spans);
+    });
+  return ok ? null : 'This post’s text holds something the writer cannot show (a hand edit, or a newer version of SiteOrigin Builder), so it is not edited here. Project health says what.';
 }
 
 /** Where the caret is, as the number of the block it is in and how far into that block's text: kept across a redraw. */
@@ -283,6 +342,22 @@ function caretItem(root: HTMLElement): { list: HTMLElement; li: HTMLElement } | 
   return li && block.contains(li) ? { list: block, li } : null;
 }
 
+/**
+ * Run `move`, which moves the caret's block content into another element, and put the caret back on the same text node
+ * and offset, which moving keeps (a caret beside a line break stays on its side of it). When the caret was on the moved
+ * element itself, it goes `offset` characters into `to`.
+ */
+function keepingCaret(from: Element, move: () => HTMLElement): HTMLElement {
+  const sel = from.ownerDocument.getSelection();
+  const node = sel?.rangeCount ? sel.anchorNode : null;
+  const at = sel?.anchorOffset ?? 0;
+  const offset = caretOffset(from) ?? 0;
+  const to = move();
+  if (sel && node && node !== from && node.isConnected && to.contains(node)) sel.collapse(node, Math.min(at, node.nodeType === Node.TEXT_NODE ? (node as Text).length : node.childNodes.length));
+  else caretTo(to, offset);
+  return to;
+}
+
 /** Give a block's content to a new element, keeping a line to type in when it is empty. */
 function moveInto(from: Element, to: HTMLElement): HTMLElement {
   to.append(...from.childNodes);
@@ -312,19 +387,21 @@ export function setBlock(root: HTMLElement, tag: ArticleBlockTag): boolean {
   const doc = root.ownerDocument;
   const item = caretItem(root);
   if (item) {
-    const offset = caretOffset(item.li) ?? 0;
-    const el = moveInto(item.li, doc.createElement(tag));
-    liftItem(item.list, item.li, el);
-    caretTo(el, offset);
+    keepingCaret(item.li, () => {
+      const el = moveInto(item.li, doc.createElement(tag));
+      liftItem(item.list, item.li, el);
+      return el;
+    });
     return true;
   }
   const block = blockAtCaret(root);
   if (!block || block.tagName === 'FIGURE' || listKind(block)) return false;
   if (block.tagName.toLowerCase() === tag) return true;
-  const offset = caretOffset(block) ?? 0;
-  const el = moveInto(block, doc.createElement(tag));
-  block.replaceWith(el);
-  caretTo(el, offset);
+  keepingCaret(block, () => {
+    const el = moveInto(block, doc.createElement(tag));
+    block.replaceWith(el);
+    return el;
+  });
   return true;
 }
 
@@ -337,26 +414,28 @@ export function toggleList(root: HTMLElement, kind: ArticleListKind): boolean {
   const item = caretItem(root);
   if (item) {
     if (listKind(item.list) === kind) return setBlock(root, 'p');
-    const offset = caretOffset(item.li) ?? 0;
-    const list = newList(doc, kind);
-    list.append(...item.list.childNodes);
-    item.list.replaceWith(list);
-    caretTo(item.li, offset);
+    keepingCaret(item.list, () => {
+      const list = newList(doc, kind);
+      list.append(...item.list.childNodes);
+      item.list.replaceWith(list);
+      return list;
+    });
     return true;
   }
   const block = blockAtCaret(root);
   if (!block || block.tagName === 'FIGURE' || listKind(block)) return false;
-  const offset = caretOffset(block) ?? 0;
-  const li = moveInto(block, doc.createElement('li'));
-  const prev = block.previousElementSibling;
-  if (prev && listKind(prev) === kind) {
-    prev.appendChild(li);
-    block.remove();
-  } else {
-    const list = newList(doc, kind);
-    list.appendChild(li);
-    block.replaceWith(list);
-  }
-  caretTo(li, offset);
+  keepingCaret(block, () => {
+    const li = moveInto(block, doc.createElement('li'));
+    const prev = block.previousElementSibling;
+    if (prev && listKind(prev) === kind) {
+      prev.appendChild(li);
+      block.remove();
+    } else {
+      const list = newList(doc, kind);
+      list.appendChild(li);
+      block.replaceWith(list);
+    }
+    return li;
+  });
   return true;
 }

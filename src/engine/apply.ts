@@ -443,9 +443,15 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       // review list yet.
       if (!op.uses) {
         for (const e of collectionEntries(state)) if (e.featuredImage === op.assetId) e.featuredImage = op.withAssetId;
-        for (const v of [...collectionImageValues(state, op.assetId), ...entryBodyImages(state, op.assetId)]) {
+        for (const v of collectionImageValues(state, op.assetId)) {
           v.assetId = op.withAssetId;
           if (!op.keepAlt && !v.decorative && (typeof v.alt === 'string' ? v.alt.trim() : '') === was) v.alt = now;
+        }
+        // A picture in an article keeps its description on one line, as it stores it: compared and written that way.
+        const line = (t: string) => t.replace(/\s+/g, ' ').trim();
+        for (const v of entryBodyImages(state, op.assetId)) {
+          v.assetId = op.withAssetId;
+          if (!op.keepAlt && !v.decorative && line(typeof v.alt === 'string' ? v.alt : '') === line(was)) v.alt = line(now);
         }
       }
       return { altReview };

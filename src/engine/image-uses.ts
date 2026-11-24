@@ -8,10 +8,13 @@ import { orderedEntries } from '@shared/collections';
  */
 export interface EntryImagePlace {
   collectionId: string;
+  /** Empty for a collection's own default of a picture field, which no one entry holds. */
   entryId: string;
   title: string;
-  field: 'featured' | 'body';
+  field: 'featured' | 'body' | 'value' | 'default';
   n?: number;
+  /** A picture field's label (`value`, `default`). */
+  label?: string;
 }
 
 /**
@@ -88,10 +91,14 @@ export function entryImageUses(state: ProjectState, assetId: string): ImageUse[]
   for (const id of Object.keys(state.collections ?? {}).sort()) {
     const c = state.collections[id];
     if (!c?.entries || typeof c.entries !== 'object') continue;
+    // Picture fields: each one's default, and each entry's own value below, change with every other use too.
+    const pictures = Object.entries(c.settings?.fields ?? {}).filter(([, f]) => f?.type === 'image');
+    for (const [, f] of pictures) if ((f.default as { assetId?: unknown } | undefined)?.assetId === assetId) out.push({ target: null, entry: { collectionId: id, entryId: '', title: c.settings.name, field: 'default', label: f.label } });
     for (const e of orderedEntries(c)) {
       if (!e || typeof e !== 'object') continue;
       const at = { collectionId: id, entryId: e.id, title: typeof e.title === 'string' ? e.title : e.id };
       if (e.featuredImage === assetId) out.push({ target: null, entry: { ...at, field: 'featured' } });
+      for (const [name, f] of pictures) if ((e.values?.[name] as { assetId?: unknown } | undefined)?.assetId === assetId) out.push({ target: null, entry: { ...at, field: 'value', label: f.label } });
       let n = 0;
       for (const b of Array.isArray(e.body) ? e.body : []) {
         if (!b || typeof b !== 'object' || b.type !== 'image') continue;

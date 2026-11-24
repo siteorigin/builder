@@ -32,8 +32,11 @@ export type DraftProblem =
 export interface PostDraftDeps {
   /** The text as the writer shows it now. */
   read: () => RichText;
-  /** Save `body` to the post, checked against what the writer last had from the project. */
-  save: (body: RichText) => Promise<DraftSaveOutcome>;
+  /**
+   * Save `body` to the post, checked against what the writer last had from the project. `step` names the undo step it
+   * belongs to: saves of the same step join one step of the project's history, a new step starts another.
+   */
+  save: (body: RichText, step: number) => Promise<DraftSaveOutcome>;
   /** Hears when the text becomes unsaved or saved, and every change of problem. */
   onChange?: (state: { dirty: boolean; saving: boolean; problem: DraftProblem | null }) => void;
   /** How long typing pauses before the text is saved. */
@@ -54,6 +57,10 @@ export class PostDraft {
   private closed = false;
   private problemNow: DraftProblem | null = null;
   private savingNow = false;
+  /** The undo step typing goes into now. */
+  private stepNow = 0;
+  /** Text read at a step's end (a formatting command), saved in order before the text as it is now. */
+  private queued: Array<{ body: RichText; step: number; gen: number }> = [];
 
   constructor(private readonly deps: PostDraftDeps) {}
 
@@ -65,6 +72,27 @@ export class PostDraft {
   }
   get isComposing(): boolean {
     return this.composing;
+  }
+
+  /** What is typed from now on is an undo step of its own (the writer was left and came back, an Undo ran). */
+  newStep(): void {
+    if (this.dirty) this.checkpoint(false);
+    else this.stepNow++;
+  }
+
+  /**
+   * End the undo step here: the text as it is now is saved as that step, before anything typed after it, which starts
+   * the next. A formatting command calls it before it changes the text (`changed` false: the typing so far) and after
+   * (`changed` true: the command's own step). Never in the middle of a composition.
+   */
+  checkpoint(changed: boolean): void {
+    if (this.closed || this.composing) return;
+    if (changed) this.gen++;
+    if (this.gen !== this.saved && !this.queued.some((q) => q.gen === this.gen)) this.queued.push({ body: this.deps.read(), step: this.stepNow, gen: this.gen });
+    this.stepNow++;
+    if (this.problemNow?.kind === 'failed') this.problemNow = null;
+    this.emit();
+    if (this.queued.length) void this.flush();
   }
 
   /** The author changed the text: unsaved now, saved after a pause (never while composing). */
@@ -120,6 +148,8 @@ export class PostDraft {
    */
   reset(): void {
     this.cancelTimer();
+    this.queued = [];
+    this.stepNow++;
     this.saved = this.gen;
     this.problemNow = null;
     this.emit();
@@ -134,13 +164,15 @@ export class PostDraft {
   private async drain(): Promise<boolean> {
     while (this.dirty && !this.closed) {
       if (this.problemNow && this.problemNow.kind !== 'failed' && this.problemNow.kind !== 'busy') return false;
-      if (this.composing) return false;
-      const gen = this.gen;
+      // A step ended earlier goes first, as it was read then; otherwise the text as it is now.
+      const item = this.queued[0];
+      if (!item && this.composing) return false;
+      const gen = item?.gen ?? this.gen;
       let outcome: DraftSaveOutcome;
       this.savingNow = true;
       this.emit();
       try {
-        outcome = await this.deps.save(this.deps.read());
+        outcome = await this.deps.save(item?.body ?? this.deps.read(), item?.step ?? this.stepNow);
       } catch (e) {
         outcome = { kind: 'failed', message: e instanceof Error ? e.message : undefined };
       } finally {
@@ -148,6 +180,7 @@ export class PostDraft {
       }
       if (outcome.kind === 'applied' || outcome.kind === 'unchanged') {
         // Only what was read is saved: text typed while it was on its way goes in the next turn of the loop.
+        if (item) this.queued.shift();
         this.saved = Math.max(this.saved, gen);
         this.problemNow = null;
         this.emit();
@@ -202,4 +235,25 @@ export function setOpenWriter(flush: () => Promise<boolean>): () => void {
  */
 export function flushOpenPost(): Promise<boolean> {
   return openWriter ? openWriter() : Promise.resolve(true);
+}
+
+/** Undo and Redo as the writer runs them: its unsaved text first, then the project's history. */
+let writerHistory: ((action: 'undo' | 'redo') => void) | null = null;
+
+/** The writer registers its Undo and Redo while its text can have focus; returns the unregister. */
+export function setWriterHistory(run: (action: 'undo' | 'redo') => void): () => void {
+  writerHistory = run;
+  return () => {
+    if (writerHistory === run) writerHistory = null;
+  };
+}
+
+/**
+ * Edit → Undo or Redo while the writer's text has focus: the writer's own, never the browser's text history (which
+ * would undo something else and save that as a new change). False when no writer takes it.
+ */
+export function runWriterHistory(action: 'undo' | 'redo'): boolean {
+  if (!writerHistory) return false;
+  writerHistory(action);
+  return true;
 }
