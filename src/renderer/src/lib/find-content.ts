@@ -30,6 +30,8 @@ export interface ContentField {
   source?: ContentSource;
   /** A custom code component's property: found and opened, but changed in the inspector. */
   custom?: boolean;
+  /** Shown by a News list or Article header from a page's article settings, and changed there. */
+  computed?: boolean;
   defNodeId?: string;
   itemPath?: string[];
   direct: boolean;
@@ -168,6 +170,7 @@ export function contentFields(state: ProjectState): ContentField[] {
         ...(plainAs ? { plainAs } : {}),
         ...(c.source ? { source: c.source } : {}),
         ...(c.custom ? { custom: true } : {}),
+        ...(c.computed ? { computed: true } : {}),
         ...(c.defNodeId ? { defNodeId: c.defNodeId } : {}),
         ...(c.itemPath ? { itemPath: c.itemPath } : {}),
         direct: !!c.direct,
@@ -288,6 +291,7 @@ function crossesLink(spans: RichSpan[], start: number, end: number): boolean {
 }
 
 function blockedReason(f: ContentField, part: Part, start: number, end: number): string | undefined {
+  if (f.computed) return 'This comes from an article’s page settings. Open that page to change its title, date, byline or excerpt.';
   if (!f.source) return 'This is part of a component’s design. Open it to change it everywhere, or to make this placement its own.';
   if (f.custom) return 'This belongs to a custom code component, which may use it as a setting. Change it in the inspector.';
   if (part.blocked) return part.blocked;

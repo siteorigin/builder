@@ -12,7 +12,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
-import { STYLES_DIR, defFile, generateProject, resolveInstanceProps } from '@generator/index';
+import { STYLES_DIR, defFile, generateProject, pageFile, resolveInstanceProps } from '@generator/index';
+import { applyOperations } from '@engine/apply';
 
 const COMPONENTS = [
   'stats.row',
@@ -32,6 +33,8 @@ const COMPONENTS = [
   'content.media',
   'cta.banner',
   'content.pages',
+  'content.news',
+  'content.article',
   'data.table',
   'media.video'
 ] as const;
@@ -105,6 +108,59 @@ async function bundleComponents(): Promise<{ module: Rendered; files: Map<string
   return { module: (await import(pathToFileURL(file).href)) as Rendered, files, defs, state: s, dir };
 }
 
+/**
+ * A page of a project as the exported site prerenders it: its generated route, with every generated file it imports,
+ * compiled for the server and rendered. Returns the page's body HTML without hydration comments.
+ */
+async function renderRoute(state: ProjectState, pageId: string): Promise<string> {
+  const files = generateProject(state);
+  const route = pageFile(state.pages[pageId]);
+  const entry = `export { render } from 'svelte/server';\nexport { default as Page } from ${JSON.stringify(GEN + route)};`;
+  const out = (await build({
+    configFile: false,
+    logLevel: 'silent',
+    ssr: { noExternal: true },
+    plugins: [
+      {
+        name: 'generated-route',
+        enforce: 'pre',
+        resolveId(id, importer) {
+          if (id === '\0entry' || id.startsWith(GEN)) return id;
+          if (id === '$app/paths' || id === '$app/state' || id === '$app/navigation') return `\0${id}`;
+          if (importer?.startsWith(GEN) && id.startsWith('.')) {
+            const path = posix.join(posix.dirname(importer.slice(GEN.length)), id);
+            if (files.has(path)) return GEN + path;
+          }
+          return null;
+        },
+        load(id) {
+          if (id === '\0entry') return entry;
+          if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
+          if (id === '\0$app/state') return "export const page = { route: { id: '/' }, url: new URL('https://site.test/') };";
+          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {};';
+          if (!id.startsWith(GEN)) return null;
+          const path = id.slice(GEN.length);
+          const source = files.get(path)!;
+          const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
+          return { code, moduleType: 'js' };
+        }
+      }
+    ],
+    build: { write: false, ssr: true, minify: false, rolldownOptions: { input: '\0entry', output: { format: 'esm', codeSplitting: false } } }
+  })) as Rolldown.RolldownOutput | Rolldown.RolldownOutput[];
+  const chunk = (Array.isArray(out) ? out[0] : out).output.find((o) => o.type === 'chunk');
+  if (!chunk || chunk.type !== 'chunk') throw new Error('The route did not bundle');
+  const dir = mkdtempSync(join(tmpdir(), 'so-route-html-'));
+  try {
+    const file = join(dir, 'route.mjs');
+    writeFileSync(file, chunk.code);
+    const mod = (await import(pathToFileURL(file).href)) as { render: Rendered['render']; Page: unknown };
+    return mod.render(mod.Page, { props: {} }).body.replace(/<!--[\s\S]*?-->/g, '');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 let bundle: Awaited<ReturnType<typeof bundleComponents>>;
 
 beforeAll(async () => {
@@ -122,10 +178,10 @@ function html(componentId: ComponentId, props: Record<string, unknown> = {}): st
 }
 
 /** The HTML for a placement holding these authored (stored) property values, resolved the way the export resolves them. */
-function authoredHtml(componentId: ComponentId, props: Record<string, unknown>): string {
+function authoredHtml(componentId: ComponentId, props: Record<string, unknown>, pageId?: string): string {
   const def = bundle.defs[componentId];
   const node: InstanceNode = { id: 'n_test', kind: 'instance', definitionId: def.id, props };
-  return html(componentId, resolveInstanceProps(def, node, { state: bundle.state }));
+  return html(componentId, resolveInstanceProps(def, node, { state: bundle.state, pageId }));
 }
 
 /** The generated stylesheet for every component. */
@@ -540,6 +596,111 @@ describe('content.pages', () => {
     expect(out).not.toMatch(EMPTY_HEADING);
     // With no pages chosen yet the section is its heading alone: no empty list.
     expect(authoredHtml('content.pages', { heading: 'Projects', items: [] })).not.toContain('<ul');
+  });
+});
+
+describe('dated articles', () => {
+  /** Two announcements, the later one added first, on a site written in British English. */
+  function announcements() {
+    const s = bundle.state;
+    s.site.language = 'en-GB';
+    const base = structuredClone(s.pages[s.site.homePageId]);
+    s.pages.pg_spring = { ...base, id: 'pg_spring', title: 'Spring makers announced', route: '/news/spring-makers/', seo: {}, rootIds: [], nodes: {}, article: { date: '2027-03-02', byline: 'Market team', excerpt: 'Twenty new stallholders.' } };
+    s.pages.pg_winter = { ...structuredClone(base), id: 'pg_winter', title: 'Winter opening hours', route: '/news/winter-hours/', seo: {}, rootIds: [], nodes: {}, article: { date: '2026-11-14' } };
+    return s;
+  }
+  const cards = (out: string) =>
+    tags(out, 'article').map((card) => {
+      const a = /<a\b[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/.exec(card);
+      const t = /<time datetime="([^"]+)">([^<]*)<\/time>/.exec(card);
+      return [a?.[1], a?.[2], t?.[1], t?.[2]];
+    });
+
+  it('renders the News list newest first, each card a link to its article with a machine-readable date', () => {
+    const s = announcements();
+    try {
+      const out = authoredHtml('content.news', { heading: 'Market news' }, s.site.homePageId);
+      expect(cards(out)).toEqual([
+        ['/news/spring-makers/', 'Spring makers announced', '2027-03-02', '2 March 2027'],
+        ['/news/winter-hours/', 'Winter opening hours', '2026-11-14', '14 November 2026']
+      ]);
+      expect(out).toContain('>Market team<');
+      expect(out).toContain('>Twenty new stallholders.<');
+      expect(out).not.toMatch(EMPTY_HEADING);
+      expect(out).not.toContain('data-so-');
+      // Winter has no byline: its card shows no empty one.
+      expect(out).not.toMatch(/<span\b[^>]*>\s*<\/span>/);
+      // Redated, the winter notice moves to the top, with its new date.
+      s.pages.pg_winter.article = { date: '2027-04-01' };
+      expect(cards(authoredHtml('content.news', {}, s.site.homePageId))).toEqual([
+        ['/news/winter-hours/', 'Winter opening hours', '2027-04-01', '1 April 2027'],
+        ['/news/spring-makers/', 'Spring makers announced', '2027-03-02', '2 March 2027']
+      ]);
+    } finally {
+      delete s.pages.pg_spring;
+      delete s.pages.pg_winter;
+      s.site.language = 'en';
+    }
+  });
+
+  it('renders the generated Home route newest first, and again after a redating, with each date as a time element', async () => {
+    let s = createStarterState('business', 'Riverside Market', false);
+    s.site.language = 'en-GB';
+    s = applyOperations(s, [
+      { type: 'page.create', pageId: 'pg_spring', title: 'Spring makers announced', route: '/news/spring-makers/', starter: 'article', articleDate: '2027-03-02' },
+      { type: 'page.create', pageId: 'pg_winter', title: 'Winter opening hours', route: '/news/winter-hours/', starter: 'article', articleDate: '2026-11-14' },
+      { type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, componentId: 'content.news', props: { heading: 'Market news' } }
+    ]).state;
+    expect(cards(await renderRoute(s, s.site.homePageId))).toEqual([
+      ['/news/spring-makers/', 'Spring makers announced', '2027-03-02', '2 March 2027'],
+      ['/news/winter-hours/', 'Winter opening hours', '2026-11-14', '14 November 2026']
+    ]);
+    const later = applyOperations(s, [{ type: 'page.update', pageId: 'pg_winter', articleDate: '2027-04-01' }]).state;
+    expect(cards(await renderRoute(later, later.site.homePageId))).toEqual([
+      ['/news/winter-hours/', 'Winter opening hours', '2027-04-01', '1 April 2027'],
+      ['/news/spring-makers/', 'Spring makers announced', '2027-03-02', '2 March 2027']
+    ]);
+    // The article's own route shows its title as its Heading 1 and its date.
+    const page = await renderRoute(later, 'pg_winter');
+    expect(tags(page, 'h1')).toEqual(['Winter opening hours']);
+    expect(page).toContain('<time datetime="2027-04-01">1 April 2027</time>');
+  }, 60_000);
+
+  it('leaves no empty list behind before there are any articles', () => {
+    const out = authoredHtml('content.news', { heading: 'Market news' }, bundle.state.site.homePageId);
+    expect(out).not.toContain('<ul');
+    expect(out).toContain('>Market news<');
+  });
+
+  it('renders the Article header with the page title as its Heading 1, its date, byline and excerpt', () => {
+    const s = announcements();
+    try {
+      const out = authoredHtml('content.article', {}, 'pg_spring');
+      expect(tags(out, 'h1')).toEqual(['Spring makers announced']);
+      expect(out).toContain('<time datetime="2027-03-02">2 March 2027</time>');
+      // Title, then date and byline, then the excerpt.
+      const at = (text: string) => out.indexOf(text);
+      expect(at('Spring makers announced')).toBeLessThan(at('2 March 2027'));
+      expect(at('2 March 2027')).toBeLessThan(at('Market team'));
+      expect(at('Market team')).toBeLessThan(at('Twenty new stallholders.'));
+      expect(out).toContain('>Market team<');
+      expect(out).toContain('>Twenty new stallholders.<');
+      // An article with no byline or excerpt shows neither, nor an empty paragraph for them.
+      const winter = authoredHtml('content.article', {}, 'pg_winter');
+      expect(winter).toContain('<time datetime="2026-11-14">14 November 2026</time>');
+      expect(winter).not.toMatch(/<p\b[^>]*>\s*<\/p>/);
+      expect(winter).not.toMatch(/<span\b[^>]*>\s*<\/span>/);
+      // On an ordinary page it is the title alone; with no page (a shared part) it shows nothing of a page.
+      const plain = authoredHtml('content.article', {}, s.site.homePageId);
+      expect(tags(plain, 'h1')).toEqual([s.pages[s.site.homePageId].title]);
+      expect(plain).not.toContain('<time');
+      expect(plain).not.toMatch(/<p\b[^>]*>\s*<\/p>/);
+      expect(authoredHtml('content.article', {})).not.toContain('<h1');
+    } finally {
+      delete s.pages.pg_spring;
+      delete s.pages.pg_winter;
+      s.site.language = 'en';
+    }
   });
 });
 

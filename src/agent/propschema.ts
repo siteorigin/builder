@@ -120,9 +120,14 @@ export function propJsonSchema(s: PropSchema): JsonSchema {
 }
 
 /** The closed object of a component's properties. */
+/** Whether the model may write a property: a computed list (news, an article header) is filled from the site's pages. */
+export function writableProp(s: PropSchema): boolean {
+  return !(s.type === 'list' && s.feed);
+}
+
 export function propsJsonSchema(def: Pick<ComponentDefinition, 'properties'>): JsonSchema {
   const properties: Record<string, JsonSchema> = {};
-  for (const [k, s] of Object.entries(def.properties)) properties[k] = propJsonSchema(s);
+  for (const [k, s] of Object.entries(def.properties)) if (writableProp(s)) properties[k] = propJsonSchema(s);
   return { type: 'object', properties, additionalProperties: false };
 }
 
@@ -130,6 +135,7 @@ export function propsJsonSchema(def: Pick<ComponentDefinition, 'properties'>): J
 export function compactPropsSchema(def: Pick<ComponentDefinition, 'properties'>): JsonSchema {
   const properties: Record<string, JsonSchema> = {};
   for (const [k, s] of Object.entries(def.properties)) {
+    if (!writableProp(s)) continue;
     if (s.type === 'table') {
       properties[k] = tableSchema();
       continue;

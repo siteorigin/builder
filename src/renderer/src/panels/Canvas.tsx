@@ -14,7 +14,7 @@ import { dropAt, moveIndex } from '../lib/reorder';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
-import { boundaryOf, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { boundaryOf, computedAt, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelection, moveSelection, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
@@ -292,7 +292,10 @@ export function Canvas() {
           } else if (ref) {
             setState({ selection: ref, rightTab: 'inspect' });
             const r = resolveRef(st, ref);
-            if (r.node?.kind === 'text' || r.node?.kind === 'link')
+            const bound = r.node?.kind === 'text' ? r.node.text : r.node?.kind === 'link' ? r.node.label : undefined;
+            // A News card or article header shows a page's article details, changed in that page's settings.
+            if (computedAt(st, ref, bound)) toast('This comes from the article’s page settings. Open the article’s page to change its title, date, byline or excerpt.', 'info');
+            else if (r.node?.kind === 'text' || r.node?.kind === 'link')
               toast(
                 s.definitionMode && inDefinition(ref, s.definitionMode.definitionId)
                   ? 'Each placement fills in this text. Change its default in the Inspector, or click Done editing to change it on a page.'

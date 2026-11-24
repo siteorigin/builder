@@ -1,5 +1,6 @@
 /** Read-only helpers over the project state for the editor UI. */
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import { articleRows, feedLimit } from '@shared/articles';
 import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
 import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
@@ -417,6 +418,16 @@ export function followsPageAt(state: ProjectState, ref: ElementRef, bound: unkno
   return !!item && followsPage(item[bound.$item]) && inheritedValue(state, schema, item, bound.$item) !== undefined;
 }
 
+/** Whether a reference's bound field belongs to a computed list (news, an article header): its words come from a
+ *  page's settings and are never typed where they show. */
+export function computedAt(state: ProjectState, ref: ElementRef, bound: unknown): boolean {
+  if (!isBinding(bound) || !('$item' in bound)) return false;
+  const r = resolveRef(state, ref);
+  const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
+  const schema = list ? r.def!.properties[list] : undefined;
+  return schema?.type === 'list' && !!schema.feed;
+}
+
 /** The value a reference's inline-editable field shows in `state`: a bound field shows its placement's value,
  *  or the property's default when the placement has none. A page list's card shows its page's title (and so on)
  *  while it has none of its own, so leaving that text as it was writes nothing. */
@@ -428,6 +439,13 @@ export function shownValue(state: ProjectState, ref: ElementRef, bound: unknown)
   const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
   const schema = list ? r.def!.properties[list] : undefined;
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  // A computed list shows its page's row, where the placement sits directly on a page.
+  if (schema?.type === 'list' && schema.feed) {
+    const pageId = ref.owner.kind === 'page' ? ref.owner.id : undefined;
+    const limit = feedLimit(schema);
+    const row = articleRows(state, schema.feed, pageId, Number.isFinite(limit) ? limit : undefined).find((x) => x.id === itemId) as Record<string, unknown> | undefined;
+    return row?.[bound.$item];
+  }
   const items = list ? (Object.hasOwn(props, list) ? props[list] : schema?.default) : undefined;
   const item = Array.isArray(items) ? items.find((it) => (it as { id?: unknown } | null)?.id === itemId) : undefined;
   if (!item || typeof item !== 'object') return undefined;

@@ -1,6 +1,7 @@
+import { isArticleDate, pageArticle } from '@shared/articles';
 import type { GraphNode, ImageValue, ProjectState, ResponsiveStyles } from '@shared/types';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
-import { ELEMENT_TAGS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
+import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { validateRoute } from '@shared/routes';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
@@ -59,6 +60,9 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     routes.set(key, p.title);
     if (p.language !== undefined && !isLanguageCode(p.language))
       out.push({ severity: 'warning', code: 'LANGUAGE_INVALID', message: `${p.title}: “${shownValue(p.language)}” is not a language code, so the page uses the site language.`, owner: { kind: 'page', id } });
+    // A hand-edited article with no readable date would otherwise vanish from the news lists without a word.
+    if (p.article !== undefined && !pageArticle(p))
+      out.push({ severity: 'warning', code: 'ARTICLE_DATE_INVALID', message: `${p.title}: its publication date is not a calendar date written YYYY-MM-DD, so news lists leave it out.`, owner: { kind: 'page', id } });
   }
   // Translations in the same language cannot tell visitors apart. Published ones then list none of their versions;
   // a draft only matters once it is published.
@@ -91,6 +95,14 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   for (const p of Object.values(state.pages)) {
     if ((p.route === '/') !== (p.id === state.site.homePageId))
       out.push({ severity: 'error', code: 'HOME_ROUTE', message: p.route === '/' ? `${p.title} uses "/" but is not the Home page.` : `The Home page (${p.title}) must use "/".`, owner: { kind: 'page', id: p.id } });
+  }
+  // Computed lists (a hand-edited definition): a feed this version knows, and a whole-number limit.
+  for (const def of Object.values(state.components)) {
+    for (const [k, p] of Object.entries(def.properties ?? {})) {
+      if (p?.type !== 'list' || p.feed === undefined) continue;
+      if (!(LIST_FEEDS as readonly unknown[]).includes(p.feed) || (p.max !== undefined && !(Number.isInteger(p.max) && p.max >= 0)))
+        out.push({ severity: 'error', code: 'FEED_INVALID', message: `${def.name}: "${p.label ?? k}" is filled from the site's pages in a way this version cannot read. Check its feed and its limit.`, owner: { kind: 'component', id: def.id } });
+    }
   }
   // Component definitions: bindings must resolve in scope, and declared parts must exist.
   for (const def of Object.values(state.components)) {
@@ -345,6 +357,8 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     for (const n of Object.values(tree.nodes)) {
       if (n.kind === 'element' && !isBinding(n.tag) && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
       if (n.kind === 'text' && !isBinding(n.tag) && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
+      if (n.kind === 'text' && n.datetime !== undefined && (n.rich || (!isBinding(n.datetime) && (typeof n.datetime !== 'string' || (n.datetime.trim() !== '' && !isArticleDate(n.datetime.trim()))))))
+        out.push({ severity: 'error', code: 'DATETIME_INVALID', message: `${label}: ${nodeLabel(n)} ${n.rich ? 'is rich text, which cannot state a date' : 'states a date that is not written YYYY-MM-DD'}.`, owner, nodeId: n.id });
       if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
       else if (n.kind === 'slot' && !Object.hasOwn(def!.slots ?? {}, n.slot))
         out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });

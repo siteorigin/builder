@@ -37,7 +37,11 @@ export function freshListIds(schema: Record<string, PropSchema>, props: Record<s
 
 export function defaultProps(def: ComponentDefinition): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, s] of Object.entries(def.properties)) out[k] = clone(s.default);
+  for (const [k, s] of Object.entries(def.properties)) {
+    // A computed list stores nothing: its items come from the site's pages wherever it is placed.
+    if (s.type === 'list' && s.feed) continue;
+    out[k] = clone(s.default);
+  }
   return out;
 }
 

@@ -608,10 +608,16 @@ export function DraftInput({
   ariaLabel,
   autoFocus,
   id,
+  type,
+  maxLength,
   'aria-describedby': describedBy,
   'aria-invalid': invalid
 }: {
   id?: string;
+  /** For a single-line field: the input type, such as "date". */
+  type?: string;
+  /** The most characters the project keeps for this field. */
+  maxLength?: number;
   'aria-describedby'?: string;
   'aria-invalid'?: boolean;
   value: string;
@@ -743,7 +749,7 @@ export function DraftInput({
       }
     }
   };
-  return multiline ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? 3} {...common} /> : <input className={className} {...common} />;
+  return multiline ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? 3} maxLength={maxLength} {...common} /> : <input className={className} type={type} maxLength={maxLength} {...common} />;
 }
 
 const HELD_LABELS: Record<HeldAction, string> = {

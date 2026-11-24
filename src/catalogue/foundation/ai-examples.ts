@@ -142,6 +142,20 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     props: { eyebrow: 'Our work', heading: 'Selected projects', items: [{ pageLink: '/about/' }, { pageLink: '/contact/', description: 'Tell us about your project and we will reply within two days.' }] }
   },
   {
+    id: 'news-latest',
+    componentId: 'content.news',
+    keywords: ['news', 'articles', 'posts', 'blog', 'announcements', 'updates', 'latest', 'recent', 'journal'],
+    description: "The latest dated articles, newest first. The cards fill themselves from the site's article pages: never send items. Make a page an article with page.create starter \"article\" or page.update articleDate",
+    props: { eyebrow: 'News', heading: 'Latest from the market' }
+  },
+  {
+    id: 'article-header',
+    componentId: 'content.article',
+    keywords: ['article', 'news', 'post', 'announcement', 'byline', 'date', 'published'],
+    description: "The top of a dated article page. Its title, date, byline and excerpt come from the page's article settings (page.update articleDate, byline, excerpt): never send them as props",
+    props: { eyebrow: 'Announcement' }
+  },
+  {
     id: 'gallery-work',
     componentId: 'media.gallery',
     keywords: ['gallery', 'portfolio', 'work', 'photos', 'images', 'projects'],

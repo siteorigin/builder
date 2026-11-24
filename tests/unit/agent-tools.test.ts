@@ -21,6 +21,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { validateState } from '@engine/validate';
 import { installComponent, makeInstance } from '@engine/install';
 import { compileProject } from '../../src/main/compile';
+import { resolveInstanceProps } from '@generator/index';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[];
 
@@ -173,6 +174,43 @@ describe('upsert_page_with_sections', () => {
     expect(schema.properties.language.type).toBe('string');
     expect(schema.properties.translationOf.type).toBe('string');
     expect(schema.required).not.toContain('language');
+  });
+
+  it('makes a dated article that opens with its header, and lists it in a News list it never writes items to', async () => {
+    const { session, adapter, run } = await setup([
+      () => [call('a1', 'upsert_page_with_sections', { slug: 'news/winter-hours', title: 'Winter opening hours', articleDate: '2026-11-14', excerpt: 'Shorter days.', sections: [{ componentId: 'content.text', props: { heading: '', body: 'From December we close at four.' } }] })],
+      () => [call('a2', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'content.news', props: { eyebrow: 'Rejected eyebrow', items: [{ title: 'Typed' }] } }] })],
+      () => [call('a3', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'content.news', props: { heading: 'Market news', lead: 'From the market office' } }] })],
+      () => [call('a4', 'upsert_page_with_sections', { slug: 'news/spring', title: 'Spring makers', articleDate: '2027-03-02', newsHidden: true, sections: [{ componentId: 'content.article', props: { eyebrow: 'Announcement' } }] })],
+      () => finish()
+    ]);
+    await run('Post the winter hours and list news on Home');
+    const article = pageAt(session.state, '/news/winter-hours/')!;
+    expect(article.article).toEqual({ date: '2026-11-14', excerpt: 'Shorter days.' });
+    expect(article.rootIds.map((id) => session.state.components[(article.nodes[id] as InstanceNode).definitionId].componentId)).toEqual(['content.article', 'content.text']);
+    const home = pageAt(session.state, '/')!;
+    const news = Object.values(home.nodes).find((n) => n.kind === 'instance' && session.state.components[n.definitionId].componentId === 'content.news') as InstanceNode;
+    expect(news.props.heading).toBe('Market news');
+    expect(news.props.lead).toBe('From the market office');
+    // Nothing of the refused call was applied.
+    expect(news.props.eyebrow ?? '').toBe('');
+    expect(news.props).not.toHaveProperty('items');
+    const def = session.state.components[news.definitionId];
+    expect((resolveInstanceProps(def, news, { state: session.state, pageId: home.id }).items as Array<{ title: string }>).map((r) => r.title)).toEqual(['Winter opening hours']);
+    // An article that places its own header gets no second one, and can be kept out of News lists.
+    const spring = pageAt(session.state, '/news/spring/')!;
+    expect(spring.rootIds.map((id) => session.state.components[(spring.nodes[id] as InstanceNode).definitionId].componentId)).toEqual(['content.article']);
+    expect(spring.article).toEqual({ date: '2027-03-02', hidden: true });
+    // Items sent for it are refused with a pointer to the article pages, and nothing of that call is applied.
+    const refused = adapter.requests[2].items.find((i) => i.kind === 'tool_result' && i.callId === 'a2') as { content: string; isError: boolean };
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toMatch(/fills itself from the site's dated articles/);
+    // Both sections are offered, with nothing computed to send.
+    const schema = upsertToolSchema(session.state) as { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] }; props: { properties: Record<string, unknown> } } }> } } } };
+    const offered = schema.properties.sections.items.oneOf;
+    const propsOf = (id: string) => Object.keys(offered.find((o) => o.properties.componentId.enum[0] === id)!.properties.props.properties);
+    expect(propsOf('content.news')).not.toContain('items');
+    expect(propsOf('content.article')).toEqual(['eyebrow']);
   });
 
   it('moves a contact link with the address a rewrite changes, unless the rewrite sends the link', async () => {

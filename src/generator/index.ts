@@ -15,6 +15,8 @@ import type {
   ImageValue,
   InstanceNode,
   LinkValue,
+  ListFeed,
+  ListProp,
   NodeTree,
   OwnerRef,
   PageDoc,
@@ -26,7 +28,7 @@ import type {
   TokenDef,
   TokenValue
 } from '@shared/types';
-import { ELEMENT_TAGS, GENERATOR_VERSION, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
+import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
 import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, linkOf, resolveVisibility, styleDeclOrder, styleToCss, textLinkLeadsToText, textStyleValue, tokenVar, wideOnlyStyle } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
@@ -40,6 +42,7 @@ import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type Ri
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
+import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, isArticleDate, pageArticle } from '@shared/articles';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink } from './card-links';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
@@ -100,9 +103,9 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_eager', '__so', 'has', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'thumbnail']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'thumbnail']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
-const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_eager', '__so', 'children']);
+const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', 'children']);
 
 /**
  * The key a managed component's property is passed under (instance attribute and `$props()` key). Names the
@@ -148,6 +151,12 @@ export interface ResolveContext {
   state: ProjectState;
   /** Rich text goes to a code component written for paragraph strings. */
   richAsParagraphs?: boolean;
+  /**
+   * The page whose own content is being written, which computed lists (news, an article's header) are worked out
+   * for. Absent in the shared header and footer and inside component designs, which every page shares: a design
+   * gets its page's rows handed down as `so_pages` instead.
+   */
+  pageId?: string;
 }
 
 /**
@@ -253,7 +262,12 @@ export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx
         ? richTextToParagraphs(toRichText(value ?? schema.default, schema.plainAs))
         : resolveRichText(value ?? schema.default, ctx, schema.plainAs);
     case 'list': {
-      const items = Array.isArray(value) ? value : schema.default;
+      // A computed list holds what the site's pages give it where it is placed, whatever is stored.
+      const items: Array<Record<string, unknown>> = schema.feed
+        ? (articleRows(ctx.state, schema.feed, ctx.pageId, Number.isFinite(feedLimit(schema)) ? feedLimit(schema) : undefined) as unknown as Array<Record<string, unknown>>)
+        : Array.isArray(value)
+          ? value
+          : schema.default;
       return items.map((raw: Record<string, unknown>) => {
         // A page list's empty fields show the linked page's own values, as they are when the site is generated.
         const it = effectiveItem(ctx.state, schema, raw);
@@ -1359,7 +1373,8 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const labels = !node.anchor && parent && labellingHeading(ctx, parent)?.id === node.id;
       const idAttr = labels ? ` id={${headingIdExpr(ctx, node)}}` : anchorAttr(ctx, node);
       const attrs = `class=${classExpr(ctx, node)}${idAttr}${ids}`;
-      return perTag(ctx, tagChoices(ctx, node), (tag) => `${pad(ctx)}<${tag} ${attrs}>{${val}}</${tag}>`);
+      const content = timeContent(ctx, node, val);
+      return perTag(ctx, tagChoices(ctx, node), (tag) => `${pad(ctx)}<${tag} ${attrs}>${content}</${tag}>`);
     }
     case 'image': {
       useImport(ctx, 'SoImage', `${RUNTIME_DIR}/Image.svelte`);
@@ -1418,6 +1433,21 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
 }
 
 /**
+ * A plain text's words, inside a `<time>` element while it states a date: its `datetime` (a YYYY-MM-DD date, bound
+ * or literal) is the machine-readable form of the words. A date that is empty or not a calendar day leaves the words
+ * as they are.
+ */
+function timeContent(ctx: EmitCtx, node: GraphNode & { kind: 'text' }, val: string): string {
+  const dt = node.datetime;
+  if (dt === undefined || node.rich) return `{${val}}`;
+  if (!isBinding(dt)) return typeof dt === 'string' && isArticleDate(dt.trim()) ? `<time datetime={${js(dt.trim())}}>{${val}}</time>` : `{${val}}`;
+  // A bound value is only a date when it is one: a placement's text that is not leaves the words plain.
+  useImport(ctx, '{ isDate }', `${RUNTIME_DIR}/util.js`);
+  const expr = bindExpr(ctx, dt);
+  return `{#if isDate(${expr})}<time datetime={${expr}}>{${val}}</time>{:else}{${val}}{/if}`;
+}
+
+/**
  * What a link shows: its label, and its icon (decorative, since the label names the link) on the chosen side.
  * A bound icon shows only while it is set, and a bound side is read at runtime.
  */
@@ -1450,7 +1480,11 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   for (const [propName, schema] of Object.entries(def.properties).sort(([a], [b]) => a.localeCompare(b))) {
     const raw = Object.hasOwn(node.props, propName) ? node.props[propName] : schema.default;
     const paragraphs = takesParagraphs(def);
-    let expr = isBinding(raw) ? bindExpr(ctx, raw) : js(resolveValue(schema, raw, paragraphs ? { ...ctx.rctx, richAsParagraphs: true } : ctx.rctx));
+    const rctx = paragraphs ? { ...ctx.rctx, richAsParagraphs: true } : ctx.rctx;
+    // A computed list is never bound or stored: on a page it is worked out for that page, and inside a design (which
+    // every page shares) it takes the rows the page handed down (`so_pages`).
+    const feed = schema.type === 'list' && schema.feed;
+    let expr = feed ? (ctx.def ? designRowsExpr(schema, rctx) : js(resolveValue(schema, [], rctx))) : isBinding(raw) ? bindExpr(ctx, raw) : js(resolveValue(schema, raw, rctx));
     if (paragraphs && isBinding(raw) && holdsRichText(schema)) {
       useImport(ctx, '{ richParagraphs }', `${RUNTIME_DIR}/util.js`);
       expr = `richParagraphs(${expr})`;
@@ -1476,6 +1510,10 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
+  // A design with a computed list somewhere inside gets the page's rows: worked out here for a page (or, in the
+  // shared header and footer, for none), and passed on unchanged by every design in between.
+  const needs = pageRowNeeds(ctx.state, def);
+  if (needs) attrs.push(ctx.def ? 'so_pages={so_pages}' : `so_pages={${js(pageRows(ctx.rctx, needs))}}`);
   // The first section's images load eagerly through every definition between the page and the image.
   if (takesEager(ctx.state, def)) {
     if (!ctx.items.length && (ctx.def || ctx.firstSection)) attrs.push(ctx.def ? 'so_eager={so_eager}' : 'so_eager={true}');
@@ -1555,6 +1593,8 @@ function renderImports(imports: Map<string, string>): string {
 // ---------------------------------------------------------------------------
 
 function propDefaultExpr(schema: PropSchema, ctx: ResolveContext): string {
+  // A computed list is filled by each placement, for its page; the component's own file never holds articles.
+  if (schema.type === 'list' && schema.feed) return '[]';
   return js(resolveValue(schema, schema.default, ctx));
 }
 
@@ -1602,6 +1642,76 @@ function treeTakesEager(state: ProjectState, def: ComponentDefinition, memo: Map
   return found;
 }
 
+/** What a design needs of its page's rows: how many of the newest articles (Infinity: all, 0: none) and the page itself. */
+interface RowNeeds {
+  articles: number;
+  currentPage: boolean;
+}
+
+/**
+ * What of its page's rows a definition needs handed down (`so_pages`), or null for none: the computed lists placed
+ * anywhere in its tree (a News list or Article header inside a group made into a component), and what any design or
+ * converted code inside it needs in turn. Code that reads `so_pages` gets everything, since its source decides.
+ */
+function pageRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<string, RowNeeds | null> = new Map(), path: Set<string> = new Set()): RowNeeds | null {
+  if (def.kind === 'code') return !Object.hasOwn(def.properties, 'so_pages') && /\bso_pages\b/.test(def.source ?? '') ? { articles: Infinity, currentPage: true } : null;
+  return treeRowNeeds(state, def, memo, path);
+}
+
+/** What a definition's tree needs of its page's rows, whatever kind the definition is (a copy being converted to code is written from its tree). */
+function treeRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<string, RowNeeds | null> = new Map(), path: Set<string> = new Set()): RowNeeds | null {
+  if (!def.tree || path.has(def.id)) return null;
+  if (memo.has(def.id)) return memo.get(def.id)!;
+  path.add(def.id);
+  const out: RowNeeds = { articles: 0, currentPage: false };
+  const add = (n: RowNeeds | null) => {
+    if (!n) return;
+    out.articles = Math.max(out.articles, n.articles);
+    out.currentPage ||= n.currentPage;
+  };
+  for (const n of Object.values(def.tree.nodes)) {
+    if (n.kind !== 'instance') continue;
+    const child = state.components[n.definitionId];
+    if (!child) continue;
+    for (const p of Object.values(child.properties)) {
+      if (p.type !== 'list' || !p.feed) continue;
+      if (feedLimit(p) === 0) continue;
+      if (p.feed === 'currentPage') out.currentPage = true;
+      else if (p.feed === 'articles') out.articles = Math.max(out.articles, feedLimit(p));
+    }
+    add(pageRowNeeds(state, child, memo, path));
+  }
+  path.delete(def.id);
+  const found = out.articles > 0 || out.currentPage ? out : null;
+  memo.set(def.id, found);
+  return found;
+}
+
+/** The rows a page hands to a design, resolved as list items are (a page link becomes its address), and no more than it needs. */
+function pageRows(rctx: ResolveContext, needs: RowNeeds): Partial<Record<ListFeed, Array<Record<string, unknown>>>> {
+  const resolve = (feed: ListFeed, max?: number) => articleRows(rctx.state, feed, rctx.pageId, max).map((r) => ({ ...r, pageLink: resolveLink(r.pageLink, rctx) }));
+  return {
+    ...(needs.articles > 0 ? { articles: resolve('articles', Number.isFinite(needs.articles) ? needs.articles : undefined) } : {}),
+    ...(needs.currentPage ? { currentPage: resolve('currentPage') } : {})
+  };
+}
+
+/**
+ * A computed list inside a design: the rows its page handed down, cut to its own limit and shaped as a directly
+ * placed list's items (its declared fields only, a field rows do not fill set to its default).
+ */
+function designRowsExpr(schema: ListProp, rctx: ResolveContext): string {
+  const feed = (LIST_FEEDS as readonly string[]).includes(schema.feed as string) ? (schema.feed as ListFeed) : null;
+  const limit = feedLimit(schema);
+  // Nothing to show needs nothing handed down (and reads no `so_pages`, which the design then does not declare).
+  if (!feed || limit === 0) return '[]';
+  // Each row as a directly placed list's item: its ID and the list's own fields, a row's value or the field's default.
+  const fields = Object.entries(schema.fields).filter(([k]) => k !== 'id').map(([k, f]) => `${js(k)}: ${Object.hasOwn(ARTICLE_ROW_FIELDS, k) ? `row[${js(k)}]` : js(resolveValue(f, f.default, rctx))}`);
+  let expr = `(so_pages?.[${js(feed)}] ?? [])`;
+  if (Number.isFinite(limit)) expr += `.slice(0, ${limit})`;
+  return `${expr}.map((row) => ({ id: row.id${fields.map((f) => `, ${f}`).join('')} }))`;
+}
+
 export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions): string {
   const file = defFile(def);
   const tree = def.tree!;
@@ -1642,6 +1752,8 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   propDecls.push(`\t\tso_id = undefined,`);
   // A converted copy is generated before its source exists, so its markup decides, not the source.
   if (treeTakesEager(state, def, new Map(), new Set())) propDecls.push(`\t\tso_eager = false,`);
+  // A converted copy is generated before its source exists, so its tree decides, as for `so_eager`.
+  if (treeRowNeeds(state, def)) propDecls.push(`\t\tso_pages = undefined,`);
   if (opts.instrument) propDecls.push(`\t\t__so = '',`);
   propDecls.push(`\t\tclass: className = ''`);
   const imports = renderImports(ctx.imports);
@@ -1687,7 +1799,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
     tree: page,
     ctxExpr: `page:${page.id}`,
     items: [],
-    rctx: { state },
+    rctx: { state, pageId: page.id },
     indent: 0,
     locals: new Map()
   };
@@ -1706,7 +1818,10 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   // User text is emitted as Svelte string literals, never as template text, so "{" cannot become code.
   const head: string[] = [`\t<title>{${js(title)}}</title>`];
   if (description) head.push(`\t<meta name="description" content={${js(description)}} />`);
-  head.push(`\t<meta property="og:type" content="website" />`);
+  // A dated article says so, with its publication date in a form other sites and readers can use.
+  const article = pageArticle(page);
+  head.push(`\t<meta property="og:type" content="${article ? 'article' : 'website'}" />`);
+  if (article) head.push(`\t<meta property="article:published_time" content={${js(article.date)}} />`);
   head.push(`\t<meta property="og:title" content={${js(title)}} />`);
   if (description) head.push(`\t<meta property="og:description" content={${js(description)}} />`);
   const socialId = page.seo.socialImage ?? site.socialImage;

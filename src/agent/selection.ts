@@ -139,7 +139,8 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
       additionalProperties: false
     }
   });
-  const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list') as Array<[string, Extract<PropSchema, { type: 'list' }>]>;
+  // A computed list (news, an article header) is filled from the site's pages: it has no items to edit.
+  const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, Extract<PropSchema, { type: 'list' }>]>;
   if (lists.length) {
     // One closed object with the fields of every list; the app checks them against the list named by `prop`.
     const fields: Record<string, JsonSchema> = {};
@@ -263,6 +264,7 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     const a = args as z.infer<(typeof SELECTION_ARGS)['edit_selected_list']>;
     const schema = Object.hasOwn(r.properties, a.prop) ? r.properties[a.prop] : undefined;
     if (r.node.kind !== 'instance' || schema?.type !== 'list') return fieldError([{ field: 'prop', message: `"${a.prop}" is not a list here` }], note);
+    if (schema.feed) return fieldError([{ field: 'prop', message: `"${a.prop}" fills itself from the site's article pages; change those pages with page.update (articleDate, byline, excerpt, newsHidden) instead` }], note);
     // A placement without its own list shows (and edits) the definition's items.
     const own = r.node.props[a.prop];
     const items = (Array.isArray(own) ? own : own === undefined && Array.isArray(schema.default) ? schema.default : []) as Array<{ id: string }>;

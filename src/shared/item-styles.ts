@@ -22,8 +22,9 @@ function slotted(def: ComponentDefinition): Set<string> {
 
 /**
  * The list property whose items a definition's part can be styled one at a time: a part of a managed definition
- * that sits inside exactly one repeat, iterating a list property. Nested repeats render the same item once per outer
- * item, so an item ID there names several elements; such parts, and parts outside every list, have none.
+ * that sits inside exactly one repeat, iterating a list property that keeps its own items (not a computed one).
+ * Nested repeats render the same item once per outer item, so an item ID there names several elements; such parts,
+ * and parts outside every list, have none.
  */
 export function repeatedPartList(def: ComponentDefinition, partId: string): string | undefined {
   if (def.kind !== 'managed' || !def.tree) return undefined;
@@ -47,7 +48,10 @@ export function repeatedPartList(def: ComponentDefinition, partId: string): stri
     list = n.list.$prop;
   }
   if (repeats !== 1 || !list) return undefined;
-  return own(def.properties, list)?.type === 'list' ? list : undefined;
+  const schema = own(def.properties, list);
+  // A computed list (a News list's articles) keeps no items of its own: its rows are worked out from the site's
+  // pages wherever it is placed, so its parts are styled for every row together.
+  return schema?.type === 'list' && !schema.feed ? list : undefined;
 }
 
 /** The items a placement's list shows: its own, or the definition's defaults while it has none. */

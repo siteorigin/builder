@@ -851,7 +851,7 @@ export class Orchestrator {
         executedOps.push(...(links.outcome.ops ?? []));
         opResults.push(...(links.outcome.results ?? []));
         // A connected link can change how its page looks (a button that had nowhere to go).
-        inspections.invalidate(links.outcome.ops?.length ? pagesTouched(links.outcome.ops) : 'all');
+        inspections.invalidate(links.outcome.ops?.length ? pagesTouched(links.outcome.ops, session.state) : 'all');
       }
       return links;
     };
@@ -1120,7 +1120,7 @@ export class Orchestrator {
             executedOps.push(...(outcome.ops ?? []));
             opResults.push(...(outcome.results ?? (outcome.ops ?? []).map(() => ({}))));
             // A change the tool did not itemise could have touched any page.
-            inspections.invalidate(outcome.ops?.length ? pagesTouched(outcome.ops) : 'all');
+            inspections.invalidate(outcome.ops?.length ? pagesTouched(outcome.ops, session.state) : 'all');
           }
           if (signal.aborted) throw new Error('Cancelled');
           activity.status = outcome.ok ? 'done' : 'error';
