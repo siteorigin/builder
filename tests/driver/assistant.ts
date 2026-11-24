@@ -319,7 +319,9 @@ export class AssistantTracker {
       }
       this.diff(run, m, base);
       run.last = m;
-      // The whole turn, as it is now: whatever a gap hid of its questions and result is known again.
+      // The whole turn, as it is now: whatever a gap hid of its questions and result is known again. A question still
+      // unanswered in a turn with no result is one the run waits on, whether or not the status that said so was read.
+      if (v.gap && !v.result && !(v.status && TERMINAL.has(v.status)) && v.questions.some((q) => q.answer === undefined)) v.status = 'awaiting-input';
       delete v.gap;
       this.settle(v);
       return;
@@ -750,14 +752,30 @@ function strings(v: unknown): string[] {
   return [];
 }
 
+/**
+ * Where the request's own message is in a request: the latest user message that ends with the editor context the app
+ * appends to it. An author's words or a tool's result may mention the tag; neither ends with the block.
+ */
+function requestIndex(messages: unknown[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (isRecord(m) && m.role === 'user' && strings(m.content).join('').trimEnd().endsWith('</editor_context>')) return i;
+  }
+  return -1;
+}
+
 /** The editor context the latest request carries, as the model reads it. */
 export function requestContext(req: Pick<MockRequest, 'body'>): Record<string, unknown> | null {
-  const said = strings(req.body?.messages).filter((t) => t.includes('<editor_context>')).at(-1);
-  // The app appends the real one after the author's words, which may quote an example: the last block is the app's.
-  const m = said ? [...said.matchAll(/<editor_context>\s*([\s\S]*?)\s*<\/editor_context>/g)].at(-1) : undefined;
-  if (!m) return null;
+  const messages: unknown[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const i = requestIndex(messages);
+  if (i < 0) return null;
+  const said = strings((messages[i] as Record<string, unknown>).content).join('');
+  // The app's block closes the message; an author's words before it may quote the tag, matched or not.
+  const close = said.lastIndexOf('</editor_context>');
+  const open = said.lastIndexOf('<editor_context>', close);
+  if (open < 0) return null;
   try {
-    const ctx = JSON.parse(m[1]);
+    const ctx = JSON.parse(said.slice(open + '<editor_context>'.length, close));
     return isRecord(ctx) ? ctx : null;
   } catch {
     return null;
@@ -767,9 +785,9 @@ export function requestContext(req: Pick<MockRequest, 'body'>): Record<string, u
 /** The latest tool result a request carries, parsed, with the tool it answered. */
 export function latestResult(req: Pick<MockRequest, 'body'>): { tool: string; value: unknown } | null {
   const messages: unknown[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
-  // Only this request's own results: they come after its message (the one carrying the editor context). Anything
-  // before it, an author's message that reads like a result included, is not one.
-  const own = messages.map((m) => strings(m).some((t) => t.includes('<editor_context>'))).lastIndexOf(true);
+  // Only this request's own results: they come after its message. Anything before it, an author's message that reads
+  // like a result included, is not one.
+  const own = requestIndex(messages);
   for (let i = messages.length - 1; i > own; i--) {
     const m = messages[i];
     if (!isRecord(m)) continue;
@@ -1110,4 +1128,28 @@ export function rendered(chat: ShownChat, run: RunView, reason: 'terminal' | 'in
 export async function writeLiveKey(profile: string, s: LiveSetup) {
   if (!s.key || s.provider === 'local') return;
   await writeFile(join(profile, 'api-keys.json'), JSON.stringify({ [s.provider]: s.key }), { mode: 0o600, flag: 'wx' });
+}
+
+// ---------------------------------------------------------------------------
+// Keeping credentials out of what the assistant ops return
+// ---------------------------------------------------------------------------
+
+/** Keys whose values are the app's own IDs or a fixed vocabulary: kept as they are when they look like one. */
+const KEPT_KEYS = new Set(['runId', 'conversationId', 'messageId', 'userMessageId', 'questionId', 'id', 'status', 'state', 'type', 'mode', 'reason', 'role', 'kind', 'phase', 'sessionState']);
+const APP_ID = /^[a-z]{1,8}_[a-z0-9]{4,40}$/;
+const VOCABULARY = new Set<string>([...TERMINAL_STATUSES, 'preparing', 'running', 'awaiting-input', 'validating', 'repairing', 'stopping', 'working', 'input', 'ending', 'terminal', 'edit', 'ask', 'user', 'assistant', 'run.started', 'text', 'step', 'question', 'answer', 'model', 'result', 'update', 'gap', 'done', 'error', 'ready', 'closing', 'closed', 'assistant.wait', 'assistant.observe']);
+
+/**
+ * Every known credential replaced wherever it appears, except in an ID the app made or a word of the protocol, which
+ * a short credential that happens to occur in it must not break (a remembered "run" in "running" or in "run_…").
+ */
+export function scrubAssistant<T>(value: T, secrets: string[], scrub: (s: string) => string): T {
+  if (!secrets.some(Boolean)) return value;
+  const visit = (v: unknown, key?: string): unknown => {
+    if (typeof v === 'string') return key && KEPT_KEYS.has(key) && (APP_ID.test(v) || VOCABULARY.has(v)) ? v : scrub(v);
+    if (Array.isArray(v)) return v.map((x) => visit(x));
+    if (isRecord(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, visit(x, k)]));
+    return v;
+  };
+  return visit(value) as T;
 }

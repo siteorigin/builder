@@ -23,6 +23,7 @@ import {
   rendered,
   requestContext,
   resolveArgs,
+  scrubAssistant,
   settledState,
   shownTurn,
   writeLiveKey
@@ -300,6 +301,15 @@ describe('the tracker', () => {
     expect([after.state, after.gap, after.questions[0].answer]).toEqual(['terminal', undefined, 'A']);
   });
 
+  it('after a gap, takes an unanswered question in the run’s whole turn as waiting for the author', () => {
+    const t = new AssistantTracker();
+    t.ingest([{ seq: 1, at: 1, event: { runId: 'run_a', conversationId: 'c_a', kind: 'status', status: 'running' } }]);
+    // The status that said it waits was dropped; the turn with the question arrives.
+    t.ingest([{ seq: 4, at: 4, event: { runId: 'run_a', conversationId: 'c_a', kind: 'message', message: { id: 'm_a', role: 'assistant', runId: 'run_a', text: '', questions: [{ id: 'q_1', text: 'Who?', choices: [] }] } } }], 2);
+    const v = t.runView('run_a')!;
+    expect([v.status, v.state, v.gap, settledState(v)]).toEqual(['awaiting-input', 'input', undefined, { reason: 'input' }]);
+  });
+
   it('never hides a gap behind a filter, and counts it as missed', () => {
     const t = new AssistantTracker();
     t.ingest([{ seq: 9, at: 9, event: { runId: 'run_a', conversationId: 'c_a', kind: 'status', status: 'running' } }], 8);
@@ -463,6 +473,17 @@ describe('the script', () => {
     expect(JSON.parse(r.body!).error.message).toBe('Step 2 could not be sent: the request carries no tool result');
   });
 
+  it('reads the app’s block even after an unmatched tag, and a result that mentions the tag is still a result', () => {
+    const s = new Script();
+    s.add(parseScript({ steps: [{ tool: 'a', args: { page: { $context: 'pageId' }, heading: { $result: 'heading' } } }] }).steps);
+    const req = request([
+      { role: 'user', content: `What does <editor_context> mean?\n\n<editor_context>\n${JSON.stringify({ currentPage: { id: 'pg_real' } })}\n</editor_context>` },
+      { role: 'assistant', content: '{"brief_status":"Reading","action":{"tool":"read_page","args":{}}}' },
+      { role: 'user', content: `Result of read_page:\n${JSON.stringify({ heading: 'About <editor_context> tags' })}` }
+    ]);
+    expect(envelope(s.next(req)).action.args).toEqual({ page: 'pg_real', heading: 'About <editor_context> tags' });
+  });
+
   it('takes the latest of several results, and refuses a path that names several values', () => {
     const s = new Script();
     s.add(parseScript({ steps: [{ tool: 'a', args: { node: { $result: 'nodeId' } } }, { tool: 'b', args: { node: { $result: 'nodeId' } } }, { tool: 'c', args: { node: { $result: 'results.1.nodeId' } } }] }).steps);
@@ -601,6 +622,21 @@ describe('reading a request', () => {
     expect(resolveArgs({ a: [{ b: 'c' }], d: { $context: 'x', y: 1 } }, request([]))).toEqual({ a: [{ b: 'c' }], d: { $context: 'x', y: 1 } });
     expect(() => resolveArgs({ a: { $context: 'pageId' } }, request([]))).toThrow('the request carries no editor context');
     expect(() => resolveArgs({ a: { $context: 'nope' } }, request([ctxMessage({ currentPage: { id: 'pg_1' } })]))).toThrow('the editor context has no nope');
+  });
+});
+
+describe('keeping credentials out', () => {
+  it('replaces a known credential everywhere but in the app’s own IDs and the protocol’s words', () => {
+    const secrets = ['run', 'sk-live-0123456789'];
+    const scrub = (x: string) => x.replaceAll('sk-live-0123456789', '[redacted]').replaceAll('run', '[redacted]');
+    const out = scrubAssistant(
+      { runId: 'run_ab12cd34', status: 'running', state: 'working', type: 'run.started', request: { text: 'Please run it with sk-live-0123456789' }, composer: { scopeLabel: 'run sk-live-0123456789' }, runIdTyped: 'run' },
+      secrets,
+      scrub
+    );
+    expect(out).toEqual({ runId: 'run_ab12cd34', status: 'running', state: 'working', type: 'run.started', request: { text: 'Please [redacted] it with [redacted]' }, composer: { scopeLabel: '[redacted] [redacted]' }, runIdTyped: '[redacted]' });
+    // An ID-shaped key holding something that is not an ID is scrubbed like any text.
+    expect(scrubAssistant({ runId: 'sk-live-0123456789' }, secrets, scrub)).toEqual({ runId: '[redacted]' });
   });
 });
 
@@ -784,6 +820,29 @@ describe('a configured provider', () => {
       expect(timed.error).toMatchObject({ code: 'TIMEOUT', details: { runId: 'run_b', state: 'working', status: 'running', sessionState: 'ready' } });
       // The session goes on: the next request is answered.
       expect(((await t.call({ v: 1, id: 'o', op: 'assistant.observe', args: { runId: 'run_b' } })) as any).ok).toBe(true);
+    });
+
+    it('after a gap, ends a wait on the finished card the panel shows', async () => {
+      let all: RawRecord[] = [{ seq: 1, at: 1, event: { runId: 'run_a', conversationId: 'c_a', kind: 'message', message: { id: 'm_a', role: 'assistant', runId: 'run_a', text: '', activities: [] } } }];
+      const done = shownWith({ messages: [{ messageId: 'm_a', role: 'assistant', runId: 'run_a', text: '', result: { status: 'completed', heading: 'Completed', summary: 'Done.', buttons: [] } }] });
+      const s = stubbed(() => all, () => done);
+      await s.call({ v: 1, id: 'o', op: 'assistant.observe' });
+      // Everything after is dropped from the journal before it is read.
+      all = [{ seq: 50, at: 50, event: { runId: 'run_z', conversationId: 'c_z', kind: 'status', status: 'running' } }];
+      (s as any).pull = async () => s.assistant.ingest(all.filter((r) => r.seq > s.assistant.cursor), 48);
+      const r = (await s.call({ v: 1, id: 'w', op: 'assistant.wait', args: { runId: 'run_a' }, timeoutMs: 1500 })) as any;
+      expect([r.ok, r.result?.reason, r.result?.run.gap]).toEqual([true, 'terminal', true]);
+    });
+
+    it('turns any failure it meets into one that quotes no credential', async () => {
+      const SECRET = 'sk-known-session-secret-4567';
+      const s = stubbed(() => [], () => null, [SECRET]);
+      (s as any).pull = async () => {
+        throw new Error(`page crashed while showing ${SECRET}`);
+      };
+      const r = (await s.call({ v: 1, id: 'o', op: 'assistant.observe' })) as any;
+      expect(r.error.code).toBe('OP_FAILED');
+      expect(JSON.stringify(r)).not.toContain(SECRET);
     });
 
     it('keeps a credential it knows out of every assistant reply and failure, display text included', async () => {

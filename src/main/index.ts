@@ -229,6 +229,7 @@ const orchestrator = new Orchestrator({
 aiJournal?.onSpent(() => {
   orchestrator.stop();
   fixAbort?.abort();
+  for (const test of testAborts) test.abort();
 });
 controller.aiBusy = () => orchestrator.editing;
 controller.aiRunId = () => (orchestrator.editing ? orchestrator.runId : null);
@@ -442,11 +443,11 @@ function registerIpc() {
   // Tests the key and model as typed in Settings when given, so an unsaved key can be checked before saving.
   handle('ai:test', async (p: ProviderId, typedKey?: unknown, typedModel?: unknown) => {
     if (p !== 'openai' && p !== 'anthropic' && p !== 'local') return { ok: false, message: 'Unknown provider.' };
-    // A connection test asks the provider too: a test's cap counts it like any other request.
-    if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
     const typed = typeof typedKey === 'string' ? typedKey.trim() : '';
     const custom = typeof typedModel === 'string' ? typedModel.trim() : '';
     if (typed.length > 1000 || custom.length > 200) return { ok: false, message: 'That key or model ID is too long.' };
+    // A connection test asks the provider too: a test's cap counts it like any other request.
+    if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
     if (p === 'local') {
       // Registered before the saved setup is read, so remote access withdrawn meanwhile stops it too.
       const abort = new AbortController();
@@ -495,6 +496,8 @@ function registerIpc() {
     if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
     const sent = await orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined, recipient);
     if (!sent.ok) aiJournal?.giveBack();
+    // Admitted just before the deadline, but started after it stopped everything: stopped now.
+    else if (aiJournal?.turns().spent && sent.runId) void orchestrator.stopRun(sent.runId);
     return sent;
   });
   // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.

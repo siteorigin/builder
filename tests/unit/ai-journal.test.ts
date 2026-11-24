@@ -98,6 +98,20 @@ describe('the journal', () => {
     expect(j.read(2).missed).toBe(0);
   });
 
+  it('never counts text a later record replaced as missed, even once the reader has fallen behind', () => {
+    const j = new AiJournal({ maxRecords: 2 });
+    j.record(ev('run_a', 1));
+    j.record(ev('run_a', 2));
+    j.record({ runId: 'run_a', conversationId: 'c_a', kind: 'text', text: 'H' });
+    j.record({ runId: 'run_a', conversationId: 'c_a', kind: 'text', text: 'Hi' });
+    j.record(ev('run_a', 5));
+    const page = j.read(2);
+    expect(page.records.map((r) => r.seq)).toEqual([4, 5]);
+    expect(page.missed).toBe(0);
+    // Those truly let go (seqs 1 and 2) are still counted.
+    expect(j.read(0).missed).toBe(2);
+  });
+
   it('keeps its place for an event it cannot copy', () => {
     const j = new AiJournal();
     const loop: Record<string, unknown> = {};

@@ -51,6 +51,8 @@ export interface AiJournalOptions {
 
 export class AiJournal {
   private records: Array<{ seq: number; at: number; json: string; bytes: number; text?: string }> = [];
+  /** Seqs whose streamed text a later record replaced (ascending): not missed by a reader, since the later one holds it. */
+  private superseded: number[] = [];
   private bytes = 0;
   private seq = 0;
   private readonly maxRecords: number;
@@ -81,7 +83,12 @@ export class AiJournal {
     // A run's text, sent whole each time it grows: the latest replaces the one just before it.
     const text = e && e.kind === 'text' && typeof e.runId === 'string' ? `${e.runId}|${String(e.conversationId)}` : undefined;
     const last = this.records.at(-1);
-    if (text && last?.text === text) this.bytes -= this.records.pop()!.bytes;
+    if (text && last?.text === text) {
+      const gone = this.records.pop()!;
+      this.bytes -= gone.bytes;
+      this.superseded.push(gone.seq);
+      if (this.superseded.length > 100_000) this.superseded.splice(0, this.superseded.length - 100_000);
+    }
     const bytes = Buffer.byteLength(json);
     this.records.push({ seq: ++this.seq, at: this.now(), json, bytes, ...(text ? { text } : {}) });
     this.bytes += bytes;
@@ -142,7 +149,9 @@ export class AiJournal {
   read(after = 0, limit = 500): JournalPage {
     const oldest = this.records[0]?.seq ?? this.seq + 1;
     const from = Math.max(after, 0);
-    const missed = Math.max(0, oldest - from - 1);
+    // Events between the cursor and the oldest kept that were let go, not those replaced by later text.
+    const replaced = this.superseded.filter((x) => x > from && x < oldest).length;
+    const missed = Math.max(0, oldest - from - 1 - replaced);
     const records: JournalRecord[] = [];
     for (const r of this.records) {
       if (r.seq <= from) continue;

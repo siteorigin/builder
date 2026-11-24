@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { LIVE_OPT_IN } from '../driver/assistant.ts';
 import { Session } from '../driver/session.ts';
-import { MockOpenAIServer, envelopeReply } from '../unit/mock-openai-server.ts';
+import { MockOpenAIServer, envelopeReply, textReply } from '../unit/mock-openai-server.ts';
 import { eventually, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('assistant');
@@ -413,8 +413,9 @@ try {
   live = new Session({ parentDir: WORK });
   current = live;
   latest = 0;
-  const started = await ok('session.start', { fixture: 'business-v1', provider: 'configured', live: { provider: 'local', baseURL: provider.baseURL, model: 'test-model', maxTurns: 2, timeoutMs: 40000 } });
-  assert.deepEqual(started.session.provider, { kind: 'configured', provider: 'local', model: 'test-model', maxTurns: 2, timeoutMs: 40000 });
+  const LIMITS = { maxTurns: 3, timeoutMs: 30000 };
+  const started = await ok('session.start', { fixture: 'business-v1', provider: 'configured', live: { provider: 'local', baseURL: provider.baseURL, model: 'test-model', ...LIMITS } });
+  assert.deepEqual(started.session.provider, { kind: 'configured', provider: 'local', model: 'test-model', ...LIMITS });
   await refused('assistant.script', { scenario: 'answer', params: { text: 'x' } }, 'OP_FAILED');
   await click('tab', 'AI', { exact: false, region: 'Right panel views' });
   const posts = () => provider.requests.filter((r) => r.method === 'POST').length;
@@ -422,25 +423,32 @@ try {
   const first = await send('Say hello');
   const greeted = await wait(first.runId);
   assert.equal(greeted.reason, 'terminal');
-  assert.deepEqual([greeted.budget.maxTurns, greeted.budget.turnsUsed, greeted.budget.spent], [2, 1, false]);
-  // The second request is held at the server until the time runs out: the app stops it itself.
+  assert.deepEqual([greeted.budget.maxTurns, greeted.budget.turnsUsed, greeted.budget.spent], [3, 1, false]);
+  // The second request is held at the server, and stays there until the time runs out.
   let letGo;
-  provider.script({ ...envelopeReply('finish', { message: 'Too late.' }), hold: new Promise((r) => (letGo = r)) });
+  provider.script({ ...envelopeReply('finish', { message: 'Too late.' }), hold: new Promise((r) => (letGo = r)) }, textReply('OK'));
   const second = await send('Say more');
+  await eventually(async () => assert.equal(posts(), 2, 'the second request reached the server'));
+  // The third turn goes to a connection test; the fourth is past the cap while the deadline is still ahead.
+  const testConnection = () => live.page.evaluate(() => window.builder.ai.testProvider('local'));
+  assert.equal((await testConnection()).ok, true, 'a connection test within the cap reaches the server');
+  assert.equal(posts(), 3);
+  const capped = await testConnection();
+  assert.match(capped.message, /allows no more AI requests/, 'past the cap, it does not');
+  assert.equal((await observe({ after: latest })).budget.spent, false, 'refused by the cap, not the deadline');
+  assert.equal(posts(), 3, 'nothing more reached the server');
+  // The app stops the held run itself when the time runs out.
   const stoppedLive = await wait(second.runId, undefined, 60000);
   assert.deepEqual([stoppedLive.reason, stoppedLive.run.status], ['terminal', 'cancelled'], 'the deadline stopped the run');
-  assert.equal(stoppedLive.budget.spent, true);
+  assert.deepEqual([stoppedLive.budget.turnsUsed, stoppedLive.budget.spent], [3, true]);
   letGo();
-  const before = posts();
   const box = await find('textbox', 'Message');
   await ok('ui.fill', { target: { ref: box.ref }, text: 'One more, please' });
   const refusedAt = await mark();
   await press('Enter');
   await eventually(async () => assert.ok((await shown()).notices.some((x) => /allows no more AI requests/.test(x.text)), 'the editor says why nothing was sent'));
   assert.equal((await observe({ after: refusedAt })).entries.filter((e) => e.type === 'run.started').length, 0, 'no run started');
-  // Nor does a connection test reach the provider once the limit is used (a read-only guard check, not a user step).
-  assert.match((await live.page.evaluate(() => window.builder.ai.testProvider('local'))).message, /allows no more AI requests/);
-  assert.equal(posts(), before, 'nothing more reached the provider');
+  assert.equal(posts(), 3, 'nothing more reached the server');
   assert.equal((await ok('session.close')).ended, 'quit');
 
   passed = true;
