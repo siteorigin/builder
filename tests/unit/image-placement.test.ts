@@ -55,7 +55,8 @@ type Placement = { at: { owner: OwnerRef; parentId: string | null; slot?: string
 interface ActionsModule {
   imagePlacement(): Placement;
   placeAsset(assetId: string, shown: string): Promise<boolean>;
-  insert(spec: { primitive?: string; componentId?: string; text?: string }, label: string): Promise<void>;
+  insert(spec: { primitive?: string; componentId?: string; definitionId?: string; text?: string }, label: string): Promise<void>;
+  insertPlan(spec: { primitive?: string; componentId?: string; definitionId?: string }): { role: string; at: Placement['at'] };
 }
 
 interface ReviewModule {
@@ -713,6 +714,39 @@ describe('placing a library image from Assets (issue #13)', () => {
       expect(node.kind === 'text' && node.text).toEqual([{ type: kind, items: words.map((text) => [{ text }]) }]);
       expect(store.getState().selection).toMatchObject({ owner });
     }
+  });
+
+  it('inserts into the Section whose Container is picked in Layers, not the page’s last Section (#185)', async () => {
+    const { owner, page } = await library();
+    const sections = await write([
+      { type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' },
+      { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }
+    ]);
+    const [first, last] = sections.results!.map((r) => r.nodeId as string);
+    const stack = (await write([{ type: 'node.insert', owner, parentId: first, slot: 'content', primitive: 'stack' }])).results![0].nodeId as string;
+    const made = await write([{ type: 'component.createFromNode', owner, nodeId: stack, name: 'Feature card' }]);
+    const card = made.results![0].definitionId as string;
+    const content = (id: string) => (page().nodes[id] as InstanceNode).slots?.content ?? [];
+    const pickContainer = () => {
+      const def = session!.state.components[(page().nodes[first] as InstanceNode).definitionId];
+      store.setState({ selection: { owner, instancePath: [first], nodeId: def.parts.container.nodeId, partId: 'container' } });
+    };
+    // Layers › Section › Parts › Container: the Insert panel's line and the click agree on the Section it is part of.
+    pickContainer();
+    expect(actions.insertPlan({ definitionId: card })).toEqual({ role: 'element', at: { owner, parentId: first, slot: 'content' } });
+    await actions.insert({ definitionId: card }, 'Feature card');
+    expect(content(first)).toHaveLength(2);
+    expect((page().nodes[content(first)[1]] as InstanceNode).definitionId).toBe(card);
+    expect(content(last)).toEqual([]);
+    // A basic element goes there too, and a whole section goes after that Section rather than at the end of the page.
+    pickContainer();
+    await actions.insert({ primitive: 'heading' }, 'Heading');
+    expect(content(first)).toHaveLength(3);
+    pickContainer();
+    await actions.insert({ componentId: 'layout.section' }, 'Section');
+    expect(page().rootIds.indexOf(first)).toBe(0);
+    expect((page().nodes[page().rootIds[1]] as InstanceNode).definitionId).toBe('foundation.layout.section');
+    expect(page().rootIds.at(-1)).toBe(last);
   });
 
   it('keeps a formatting command its own Undo step, even right after typing in the same field', async () => {

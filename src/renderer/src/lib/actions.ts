@@ -13,7 +13,7 @@ import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import type { InsertSpec } from './insert-search';
-import { elementWhere, insertOps, insertRole, insideComponent, nodeBefore, nodeLabel, placeFor, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { elementWhere, insertOps, insertRole, insideComponent, nodeBefore, nodeLabel, placeFor, placementOf, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
@@ -341,13 +341,14 @@ export async function moveToPage(pageId: string, plan = planLayers(), follow = f
 export type { InsertAt, Where } from './insert-at';
 export { elementWhere, nodeBefore, nodeLabel } from './insert-at';
 
-/** Work out where an inserted section or element should go, relative to the selection (or to `from`), in the project
- *  as this window has it (or as `snapshot` has it). `definitionId`: the component being inserted (see placeFor). */
+/** Work out where an inserted section or element should go, relative to the selection (or to `from`; a part of a
+ *  placed component counts as the placement, see placementOf), in the project as this window has it (or as
+ *  `snapshot` has it). `definitionId`: the component being inserted (see placeFor). */
 export function insertionPoint(kind: InsertRole, from: ElementRef | null = getState().selection, snapshot: ProjectSnapshot | null = getState().snapshot, definitionId?: string): InsertAt | null {
   const owner = currentOwner();
   if (!snapshot || !owner) return null;
   const state = snapshot.state;
-  return insideComponent(state, placeFor(state, owner, kind, structuralTarget(from, { withRoot: true, state }), definitionId));
+  return insideComponent(state, placeFor(state, owner, kind, structuralTarget(placementOf(from), { withRoot: true, state }), definitionId));
 }
 
 /** Where `spec` goes when its tile is clicked now: how it is placed, and the place. */
@@ -385,8 +386,7 @@ export function imagePlacement(snap: ProjectSnapshot | null = getState().snapsho
   if (!page) return { at: null, reason: 'Open a page to place the image on it.' };
   const sel = s.selection;
   const onPage = sel?.owner.kind === 'page' && sel.owner.id === page.id;
-  const from = onPage && sel.instancePath.length ? { owner: sel.owner, instancePath: [], nodeId: sel.instancePath[0] } : onPage ? sel : null;
-  const at = insertionPoint('element', from, snap);
+  const at = insertionPoint('element', onPage ? sel : null, snap);
   const where = elementWhere(snap.state, at);
   if (!at || !where || at.owner.kind !== 'page') return { at: null, reason: 'Open a page to place the image on it.' };
   // The node it goes after is named by ID: two Galleries side by side share a label, and can trade places.

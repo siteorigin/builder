@@ -65,6 +65,13 @@ export function insertRole(state: ProjectState, spec: InsertSpec): InsertRole {
 }
 
 /**
+ * What Insert reads a selection as. A part of a placed component, or anything inside its design, counts as the
+ * placement, so what is inserted goes into its slot or beside it, as with the placement itself selected: a card
+ * inserted with a Section's Container picked in Layers goes into that Section, not the page's last one.
+ */
+export const placementOf = (ref: ElementRef | null): ElementRef | null => (ref?.instancePath.length ? { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] } : ref);
+
+/**
  * Where something placed as `role` goes in `owner`, relative to `sel` (a node of the owner's own tree, see
  * structuralTarget). An element goes inside a selected container or a placed component's slot, else just after the
  * selection, in its own list; with nothing selected on a page it goes into the last section that holds content. A
