@@ -877,7 +877,9 @@ export function applyAiEvent(e: AiEvent) {
     return;
   }
   const conv = s.conversation;
-  if (!conv) return;
+  // A run's messages belong to the conversation it was filed in: one shown in any other thread (or from a project
+  // closed mid-run, tagged with none) would look sent there while being saved elsewhere. Status stays app-wide.
+  if (!conv || e.conversationId !== conv.id) return;
   if (e.kind === 'message' && e.message) {
     const msgs = [...conv.messages];
     const i = msgs.findIndex((m) => m.id === e.message!.id);

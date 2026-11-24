@@ -95,6 +95,11 @@ interface ActiveRun {
   /** The question waiting for an answer; an answer or Stop takes it, so it is settled exactly once. */
   pendingQuestion: { id: string; resolve: (answer: string) => void } | null;
   message: ChatMessage;
+  /**
+   * The conversation the run was filed in, as its events name it. Emptied when its project closes: a run may still
+   * be ending then, and nothing it sends may show in the next opening's thread, not even the same one read again.
+   */
+  conversationId: string;
 }
 
 /** The longest answer replayed to later requests in full. */
@@ -436,6 +441,7 @@ export class Orchestrator {
 
   reset() {
     this.conversation = null;
+    if (this.run) this.run.conversationId = '';
     // Another project never waits on this one's transcript write.
     this.saving = Promise.resolve();
   }
@@ -444,14 +450,20 @@ export class Orchestrator {
   // Runs
   // -------------------------------------------------------------------------
 
+  /** The conversation run `runId`'s events belong to; a transcript update outside a run (`runId` '') is the open one's. */
+  private eventConversation(runId: string): string {
+    if (!runId) return this.conversation?.id ?? '';
+    return this.run?.id === runId ? this.run.conversationId : '';
+  }
+
   private emitMessage(m: ChatMessage, runId = '') {
-    this.deps.emit({ runId, conversationId: this.conversation?.id ?? '', kind: 'message', message: structuredClone(m) });
+    this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'message', message: structuredClone(m) });
   }
 
   private setStatus(status: RunStatus) {
     if (!this.run) return;
     this.run.status = status;
-    this.deps.emit({ runId: this.run.id, conversationId: this.conversation?.id ?? '', kind: 'status', status, mode: this.run.mode });
+    this.deps.emit({ runId: this.run.id, conversationId: this.run.conversationId, kind: 'status', status, mode: this.run.mode });
   }
 
   /** `conversationId` is the conversation the message was written in; it is sent only if that one is still open. */
@@ -503,7 +515,7 @@ export class Orchestrator {
     const request = [...conv.messages].reverse().find((m) => m.role === 'user' && typeof m.text === 'string' && !CONTINUE.test(m.text))?.text;
     conv.messages.push(userMsg, assistant);
     if (conv.title === 'New conversation') conv.title = text.trim().slice(0, 60);
-    this.run = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant };
+    this.run = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id };
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
     this.emitMessage(assistant, runId);
@@ -1105,7 +1117,7 @@ export class Orchestrator {
               if (ev.type === 'text') {
                 turnText += ev.delta;
                 msg.text = finalText + turnText;
-                this.deps.emit({ runId, conversationId: this.conversation?.id ?? '', kind: 'text', text: msg.text });
+                this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
               } else if (ev.type === 'done') done = ev;
               else if (ev.type === 'error') err = ev;
             }
@@ -1151,7 +1163,7 @@ export class Orchestrator {
           if (tooLong && failed.context && turns === 1 && narrowTools()) {
             turns--;
             msg.text = finalText;
-            this.deps.emit({ runId, conversationId: this.conversation?.id ?? '', kind: 'text', text: msg.text });
+            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
             continue outer;
           }
           if (tooLong && failed.context) {
