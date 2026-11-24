@@ -52,13 +52,15 @@ export interface ContextOverflow {
   retried?: boolean;
 }
 
-export type ModelErrorCode = 'auth' | 'rate_limit' | 'overloaded' | 'network' | 'invalid_request' | 'cancelled' | 'unknown';
+/** `unreachable`: nothing answered at the server's address, so retrying at once will not help. */
+export type ModelErrorCode = 'auth' | 'rate_limit' | 'overloaded' | 'network' | 'unreachable' | 'invalid_request' | 'cancelled' | 'unknown';
 
 export type ModelEvent =
   | { type: 'text'; delta: string }
   | { type: 'tool_call'; call: ToolCall }
   | { type: 'done'; stopReason: StopReason; text: string; toolCalls: ToolCall[]; providerData?: unknown; usage?: { inputTokens: number; outputTokens: number } }
-  | { type: 'error'; code: ModelErrorCode; message: string; retryAfterMs?: number; context?: ContextOverflow };
+  /** `setup`: the server or model is not usable as set up (not this request's fault), so the fix is in AI settings. */
+  | { type: 'error'; code: ModelErrorCode; message: string; retryAfterMs?: number; context?: ContextOverflow; setup?: 'server' | 'chat' };
 
 export interface AgentModelAdapter {
   capabilities(): ModelCapabilities;

@@ -10,6 +10,11 @@ export interface LocalProviderSettings {
   toolMode: LocalToolMode;
   /** The context size the model is loaded with, in tokens. Null reads it from the server when the server reports it. */
   contextWindow: number | null;
+  /**
+   * The model chosen on each server, by its normalized address (see `localServerKey`). A server with no entry, or an
+   * empty one, uses the first model it lists, so switching servers never sends one server's model to another.
+   */
+  modelsByServer: Record<string, string>;
 }
 
 /** Plain connection presets. llama.cpp is the primary runtime; nothing else in the app branches on these. */
@@ -20,7 +25,7 @@ export const LOCAL_PRESETS = [
   { id: 'mlx', label: 'MLX', baseURL: 'http://127.0.0.1:8000/v1' }
 ] as const;
 
-export const DEFAULT_LOCAL_SETTINGS: LocalProviderSettings = { baseURL: LOCAL_PRESETS[0].baseURL, allowRemote: false, toolMode: 'auto', contextWindow: null };
+export const DEFAULT_LOCAL_SETTINGS: LocalProviderSettings = { baseURL: LOCAL_PRESETS[0].baseURL, allowRemote: false, toolMode: 'auto', contextWindow: null, modelsByServer: {} };
 
 /** The range a typed context size may take. Below the minimum no request the assistant makes can fit. */
 export const LOCAL_CONTEXT_MIN = 1024;
@@ -72,6 +77,22 @@ export function checkLocalBaseURL(raw: string, allowRemote = false): LocalURLChe
   if (remote && allowRemote !== true) return { ok: false, message: `${u.hostname} is not on this computer. Turn on "Allow a server on another machine" to send project content there.` };
   const path = u.pathname.replace(/\/+$/, '') || '/v1';
   return { ok: true, url: `${u.protocol}//${u.host}${path}`, remote };
+}
+
+/**
+ * The address a server's model choice is kept under: the normalized URL, so `http://127.0.0.1:8080/v1/` and
+ * `http://127.0.0.1:8080/v1` are the same server. Null when the address cannot be read at all.
+ */
+export function localServerKey(baseURL: string): string | null {
+  const check = checkLocalBaseURL(baseURL, true);
+  return check.ok ? check.url : null;
+}
+
+/** The model chosen for the saved server, or '' to use the first one it lists. */
+export function localModelFor(local: Pick<LocalProviderSettings, 'baseURL' | 'modelsByServer'>): string {
+  const key = localServerKey(local.baseURL);
+  const chosen = key && local.modelsByServer && Object.hasOwn(local.modelsByServer, key) ? local.modelsByServer[key] : '';
+  return typeof chosen === 'string' ? chosen : '';
 }
 
 /**

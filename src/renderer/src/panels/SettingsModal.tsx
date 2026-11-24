@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
-import { api, setState, useStore, confirmDialog } from '../store';
+import { api, setState, useStore, confirmDialog, refreshProviders, setProviders } from '../store';
 import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } from './LocalModelSettings';
 import { checkLocalBaseURL, localKeyProblem } from '@shared/local';
 
 /** A connection test's outcome, shown only while what it tested is still what is on screen. */
-type TestResult = { signature: string; provider: ProviderId; edits: number; ok: boolean; message: string; draft: boolean };
+type TestResult = { signature: string; provider: ProviderId; edits: number; ok: boolean; message: string; draft: boolean; stage?: 'server' | 'chat' };
 type KeyNotice = { provider: ProviderId; kind: 'saved' | 'removed' | 'failed'; message?: string };
 type ConnectionView = { tone: 'neutral' | 'ready' | 'problem' | 'busy'; icon: ReactNode; title: string; detail?: string };
 
@@ -61,8 +61,12 @@ export function SettingsModal() {
   // shows as typed text until the user asks for the list).
   const [customMode, setCustomMode] = useState<Partial<Record<ProviderId, boolean>>>({});
   const [modelDrafts, setModelDrafts] = useState<Partial<Record<ProviderId, string>>>({});
-  useEffect(() => void api.ai.providers().then((p) => setState({ providers: p })), []);
-  const updateSettings = useCallback(async (patch: SettingsPatch) => setState({ settings: await api.app.setSettings(patch) }), []);
+  useEffect(() => void refreshProviders(), []);
+  // Each change can change what Chat shows (the provider, the local server, its model or its last check).
+  const updateSettings = useCallback(async (patch: SettingsPatch) => {
+    setState({ settings: await api.app.setSettings(patch) });
+    void refreshProviders();
+  }, []);
   // Opened straight to a section (from chat, say), focus starts on that section's tab rather than the first one.
   const loaded = !!settings;
   useEffect(() => {
@@ -118,7 +122,7 @@ export function SettingsModal() {
               for (const p of unsavedProviders) {
                 const submitted = keys[p].trim();
                 try {
-                  setState({ providers: await api.ai.setKey(p, submitted) });
+                  setProviders(await api.ai.setKey(p, submitted));
                   setKeys((k) => (k[p].trim() === submitted ? { ...k, [p]: '' } : k));
                 } catch (e) {
                   // Settings stays open on the key that failed, still typed, and says why.
@@ -146,7 +150,8 @@ export function SettingsModal() {
   const canTypeModel = settings.developerMode || (!!status && !known);
   const custom = canTypeModel && (customMode[provider] ?? (!!status && !known));
   const modelDraft = modelDrafts[provider] ?? model;
-  const setModel = (id: string) => update({ ai: { models: { ...settings.ai.models, [provider]: id } } });
+  // Only this provider's model: the local one is kept per server, and the screen may not have the latest of it.
+  const setModel = (id: string) => update({ ai: { models: { [provider]: id } } });
   const commitModelDraft = () => {
     const id = modelDraft.trim();
     if (id && id !== model) void setModel(id);
@@ -168,7 +173,7 @@ export function SettingsModal() {
     keyWrite.current = true;
     setKeyBusy(true);
     try {
-      setState({ providers: await api.ai.setKey(provider, submitted) });
+      setProviders(await api.ai.setKey(provider, submitted));
     } catch (e) {
       setKeyNotice({ provider, kind: 'failed', message: errorText(e) });
       return;
@@ -208,7 +213,7 @@ export function SettingsModal() {
     keyWrite.current = true;
     setKeyBusy(true);
     try {
-      setState({ providers: await api.ai.setKey(provider, null) });
+      setProviders(await api.ai.setKey(provider, null));
     } catch (e) {
       setKeyNotice({ provider, kind: 'failed', message: errorText(e) });
       return;
@@ -249,9 +254,9 @@ export function SettingsModal() {
     const edits = keyEdits[provider];
     const outcome = { provider, edits, draft };
     // A result for a setup that changed while it ran describes nothing on screen.
-    const settle = (ok: boolean, message: string) => {
+    const settle = (ok: boolean, message: string, stage?: TestResult['stage']) => {
       if (run !== testRun.current) return;
-      setTest({ ...outcome, signature, ok, message });
+      setTest({ ...outcome, signature, ok, message, stage });
       if (draft) setFailedDrafts((f) => ({ ...f, [provider]: ok ? undefined : edits }));
     };
     let signature = signatureFor(server);
@@ -269,7 +274,9 @@ export function SettingsModal() {
       if (run !== testRun.current) return;
       // What is on screen is what gets tested: a typed but unsaved key, and a typed model ID.
       const r = await api.ai.testProvider(provider, keys[provider].trim() || undefined, custom && !isLocal ? modelDraft.trim() || undefined : undefined);
-      settle(r.ok, r.message);
+      settle(r.ok, r.message, r.stage);
+      // A local test of the saved setup is what Chat goes by too.
+      if (server && !draft) void refreshProviders();
     } catch (e) {
       settle(false, errorText(e));
     } finally {
@@ -293,7 +300,7 @@ export function SettingsModal() {
 
     // A long custom ID is in its own field below; the status names it in words.
     const testedName = status?.models.some((m) => m.id === testedModel) ? modelLabelFor(testedModel) : 'Your custom model';
-    if (testingNow) return busy('Testing the connection…', isLocal ? server?.url : testedName);
+    if (testingNow) return busy('Testing the connection…', isLocal ? `Listing the models at ${server?.url}, then sending ${model || 'the first one'} a short chat request.` : testedName);
     if (notice?.kind === 'failed') return problem('Could not update the key', notice.message);
     if (server?.phase === 'invalid') return neutral(server.url ? 'Still using the saved server' : 'No server in use yet', server.url || 'Enter a valid address to connect.');
     if (server?.phase === 'pending')
@@ -304,8 +311,10 @@ export function SettingsModal() {
       );
     if (server?.phase === 'checking') return busy('Checking the server…', server.url);
     if (replacing[provider] && !unsavedKey && !server) return neutral(`Replacing your ${label} key`, `Chat keeps using ${currentKey} until you save a new one.`, <KeyRound />);
-    // What happened, in the provider's words; what to do about the key is said at the key.
-    if (result && !result.ok) return problem(result.draft ? (keyRejected(result.message) ? `${isLocal ? 'The server' : label} didn’t accept this key` : 'This key didn’t pass the test') : 'Connection failed', result.message);
+    // What happened, in the provider's words; what to do about the key is said at the key. A model the server lists
+    // can still fail to chat, which is why a local test sends a request rather than reading the list.
+    const failedTitle = result?.stage === 'chat' ? 'The model did not answer' : result?.draft ? 'This key didn’t pass the test' : 'Connection failed';
+    if (result && !result.ok) return problem(result.draft && keyRejected(result.message) ? `${isLocal ? 'The server' : label} didn’t accept this key` : failedTitle, result.message);
     if (result?.ok && result.draft) return passed('This key works', 'Save it to use it in chat.');
     if (result?.ok) return passed('Connection test passed', server ? result.message.replace(/^Connected\.\s*/, '') : `${testedName} responded.`);
     if (keyProblem) return problem('This key cannot be used here', keyProblem);
@@ -324,7 +333,7 @@ export function SettingsModal() {
     if (server?.phase === 'empty') return problem('No models loaded', 'Load a model in your server app, then refresh.');
     if (server?.phase === 'ready') {
       if (server.missing) return problem(`${model} is not on this server`, 'Choose one of its models.');
-      return neutral('Server reachable, not tested yet', `${hostOf(server.url)} has ${server.models} ${server.models === 1 ? 'model' : 'models'}. Test it to check the model responds.`, <Server />);
+      return neutral('Server reachable, not tested yet', `${hostOf(server.url)} lists ${server.models} ${server.models === 1 ? 'model' : 'models'}. A listed model may still fail to chat: Test connection sends it a short request.`, <Server />);
     }
     if (notice?.kind === 'removed' && !status?.configured) return neutral(`${label} key removed`, 'Add a key to use the assistant.', <KeyRound />);
     if (status?.configured) return untested(`${known ? modelLabel : 'Your custom model'}, using ${currentKey}.`);

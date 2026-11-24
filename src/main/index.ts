@@ -8,18 +8,17 @@ import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/compo
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
 import { visitorStepKey } from '@shared/preview-keys';
-import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder, resourcesDir } from './controller';
 import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from './packs/installed';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { writingMenuTemplate } from './writing-menu';
-import { loadSettings, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
+import { loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
-import { listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
+import { listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
@@ -129,6 +128,8 @@ const menuCommands = createMenuCommands<BrowserWindow>({
 });
 controller.onOpeningChange = () => updateProjectMenu();
 let fixAbort: AbortController | null = null;
+/** Connection tests in flight, stopped with everything else when a remote server is no longer allowed. */
+const testAborts = new Set<AbortController>();
 
 async function orchestratorAdapter(signal?: AbortSignal) {
   return orchestratorDeps.adapter(signal);
@@ -138,17 +139,24 @@ const orchestratorDeps = {
   adapter: async (signal?: AbortSignal) => {
     const s = (await loadSettings()).settings.ai;
     const provider = s.provider;
-    if (!provider) return { error: 'Choose an AI provider in Settings to use the assistant.' };
+    if (!provider) return { error: 'Choose an AI provider in Settings to use the assistant.', repair: 'settings' };
     if (provider === 'local') {
-      const opened = await openLocalAdapter(await localEndpoint(), { signal });
-      return 'error' in opened ? opened : { ...opened, provider };
+      const epoch = localCheckEpoch();
+      const endpoint = await localEndpoint();
+      // What the request learns about this server and model is what Chat and Settings show until something newer.
+      const record = localCheckRecorder(endpoint, epoch);
+      let used = endpoint.model;
+      const opened = await openLocalAdapter(endpoint, { signal, onCheck: (check) => record(check, used) });
+      if ('error' in opened) return opened.setup ? { error: opened.error, repair: 'settings' } : { error: opened.error };
+      used = opened.model;
+      return { ...opened, provider };
     }
     const key = await getKey(provider);
-    if (!key) return { error: `Add your ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key in Settings to use the assistant.` };
+    if (!key) return { error: `Add your ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key in Settings to use the assistant.`, repair: 'key' };
     const model = s.models[provider];
     return { adapter: provider === 'openai' ? new OpenAIAdapter(key.key, model) : new AnthropicAdapter(key.key, model), model, provider };
   }
-} as { adapter: (signal?: AbortSignal) => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId } | { error: string }> };
+} as { adapter: (signal?: AbortSignal) => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId } | { error: string; repair?: 'settings' | 'key' }> };
 
 const orchestrator = new Orchestrator({
   session: () => controller.session,
@@ -231,11 +239,12 @@ function registerIpc() {
   handle('app:getSettings', async () => (await loadSettings()).settings);
   handle('app:setSettings', async (patch: SettingsPatch) => {
     const before = (await loadSettings()).settings.ai;
-    const url = checkLocalBaseURL(before.local.baseURL, before.local.allowRemote);
-    // Withdrawing permission ends work in progress at once, which would otherwise keep sending to that server.
-    if (before.provider === 'local' && url.ok && url.remote && patch.ai?.local && 'allowRemote' in patch.ai.local && patch.ai.local.allowRemote !== true) {
+    // Withdrawing permission ends work in progress at once, which would otherwise keep sending to that server. The
+    // work may have started on a remote server before the address in use changed, so the address is not checked.
+    if (before.provider === 'local' && before.local.allowRemote === true && patch.ai?.local && 'allowRemote' in patch.ai.local && patch.ai.local.allowRemote !== true) {
       orchestrator.stop();
       fixAbort?.abort();
+      for (const test of testAborts) test.abort();
     }
     const s = await updateSettings(patch);
     // The editor redraws itself; Electron keeps following this computer, so the website preview never changes with it.
@@ -372,8 +381,20 @@ function registerIpc() {
     const custom = typeof typedModel === 'string' ? typedModel.trim() : '';
     if (typed.length > 1000 || custom.length > 200) return { ok: false, message: 'That key or model ID is too long.' };
     if (p === 'local') {
-      const endpoint = await localEndpoint();
-      return testLocal({ ...endpoint, apiKey: typed || endpoint.apiKey, model: custom || endpoint.model });
+      // Registered before the saved setup is read, so remote access withdrawn meanwhile stops it too.
+      const abort = new AbortController();
+      testAborts.add(abort);
+      try {
+        const epoch = localCheckEpoch();
+        const endpoint = await localEndpoint();
+        const record = localCheckRecorder(endpoint, epoch);
+        const r = await testLocal({ ...endpoint, apiKey: typed || endpoint.apiKey, model: custom || endpoint.model }, { signal: abort.signal });
+        // A typed key is not saved yet, so what it showed is not the saved setup's; a stopped test showed nothing.
+        if (!typed && !custom && !abort.signal.aborted) record(r.ok ? { ok: true } : { ok: false, stage: r.stage ?? 'server', message: r.message }, r.model);
+        return r;
+      } finally {
+        testAborts.delete(abort);
+      }
     }
     const key = typed || (await getKey(p))?.key;
     if (!key) return { ok: false, message: 'No API key is set.' };
@@ -381,7 +402,16 @@ function registerIpc() {
     return p === 'openai' ? testOpenAI(key, model) : testAnthropic(key, model);
   });
   // Always the saved server, so a key is only ever sent to the address the user saved.
-  handle('ai:localModels', async () => listLocalModels(await localEndpoint()));
+  handle('ai:localModels', async () => {
+    const epoch = localCheckEpoch();
+    const endpoint = await localEndpoint();
+    const record = localCheckRecorder(endpoint, epoch);
+    const found = await listLocalModels(endpoint);
+    const problem = listedProblem(found, endpoint.model);
+    record(problem ? { ok: false, stage: 'server', message: problem } : { listed: found.models });
+    // Which server answered, so Settings shows the list for that server only.
+    return { ...found, server: endpoint.baseURL };
+  });
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());
   handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));

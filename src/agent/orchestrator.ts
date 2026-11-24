@@ -76,8 +76,11 @@ export interface RunSession {
 
 export interface OrchestratorDeps {
   session(): RunSession | null;
-  /** `signal` ends anything the factory asks a server while preparing, such as reading a local model's window. */
-  adapter(signal?: AbortSignal): Promise<{ adapter: AgentModelAdapter; model: string; provider: ProviderId } | { error: string }>;
+  /**
+   * `signal` ends anything the factory asks a server while preparing, such as reading a local model's window. `repair`
+   * says where an error that stops the request before it starts is fixed.
+   */
+  adapter(signal?: AbortSignal): Promise<{ adapter: AgentModelAdapter; model: string; provider: ProviderId } | { error: string; repair?: 'settings' | 'key' }>;
   emit(e: AiEvent): void;
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
@@ -166,6 +169,8 @@ function withAttachments(text: string, raw: unknown): string {
 
 /** What a question tool hears when the user stops the request instead of answering. */
 const STOPPED_ANSWER = '(The user stopped the request.)';
+/** How a request that failed before changing anything says so. */
+const UNCHANGED = 'Nothing in the site was changed.';
 
 /**
  * When to ask with request_clarification instead of writing the options into the reply, which would end the run
@@ -661,7 +666,8 @@ export class Orchestrator {
         ...(extra.unfinished?.length ? { unfinished: extra.unfinished } : {}),
         ...(extra.pendingLinks?.length ? { pendingLinks: extra.pendingLinks.map((l) => ({ ...l })) } : {}),
         ...(ask ? { ask: true } : {}),
-        ...(extra.locations?.length ? { locations: extra.locations } : {})
+        ...(extra.locations?.length ? { locations: extra.locations } : {}),
+        ...(extra.repair ? { repair: extra.repair } : {})
       };
       for (const a of activities) if (a.status === 'running') a.status = status === 'completed' || status === 'no-changes' ? 'done' : 'error';
       this.setStatus(status);
@@ -675,7 +681,8 @@ export class Orchestrator {
       return;
     }
     if ('error' in ad) {
-      await finish('failed', ad.error, { error: ad.error });
+      // Nothing was started, let alone changed; a question could never change anything, so it does not say so.
+      await finish('failed', ask ? ad.error : `${ad.error} ${UNCHANGED}`, { error: ad.error, ...(ad.repair ? { repair: ad.repair } : {}) });
       return;
     }
     /** Working time the run may use, not counting time spent waiting for the user's answers. */
@@ -966,10 +973,11 @@ export class Orchestrator {
     };
     const notCreated = (w: MissingPage) => `The page ${describePage(w)} was not created.`;
 
-    const revertAndFinish = async (status: RunStatus, summary: string, error?: string) => {
+    /** `repair`: the AI setup failed, not the request, and the card offers the way to fix it and send it again. */
+    const revertAndFinish = async (status: RunStatus, summary: string, error?: string, repair?: 'settings' | 'key') => {
       // A question holds nothing and changed nothing, so it just ends.
       if (ask) {
-        await finish(status, summary, { error, usage });
+        await finish(status, summary, { error, usage, repair });
         return;
       }
       let r: Awaited<ReturnType<typeof session.abortRun>>;
@@ -988,7 +996,10 @@ export class Orchestrator {
       }
       // Pages the request still lacks are named, so "Edit and try again" knows what is left.
       const lost = status === 'failed' ? missing().map((w): ChatCheck => ({ status: 'issue', text: notCreated(w) })) : [];
-      await finish(status, mutated && r.restored ? `${summary} The project was restored to how it was before this request.` : summary, { error, usage, ...(lost.length ? { checks: lost } : {}) });
+      // A setup failure says plainly whether the site changed, since the request is about to be sent again. Changes
+      // that could not be confirmed undone are checked first, so the request is not offered again until they are.
+      const outcome = mutated && r.restored ? ' The project was restored to how it was before this request.' : repair && !mutated ? ` ${UNCHANGED}` : '';
+      await finish(status, `${summary}${outcome}`, { error, usage, repair: mutated && !r.restored ? undefined : repair, ...(lost.length ? { checks: lost } : {}) });
     };
 
     /** Connect links whose page now exists, recording the change like any other step of the run. */
@@ -1074,7 +1085,8 @@ export class Orchestrator {
             : v.kind === 'run'
               ? `The model's ${size} filled up while it worked on this request, before anything changed. Try a smaller request, or load the model with a larger context.`
               : `The request is too long for this model's context. If this conversation is long, start a new one. If a new conversation fails too, the model needs a larger context: ${needs} ${help}`;
-      await revertAndFinish('failed', summary, error);
+      // A model loaded with too small a context is the setup's, fixed where the server and its size are set.
+      await revertAndFinish('failed', summary, error, v.kind === 'setup' && ad.provider === 'local' ? 'settings' : undefined);
     };
 
     /**
@@ -1206,7 +1218,9 @@ export class Orchestrator {
             await failForContext(system, tools, failed.message, failed.context);
             return;
           }
-          await revertAndFinish('failed', failed.code === 'auth' ? 'The AI provider rejected the API key. Update it in Settings.' : `The AI request failed: ${failed.message}`, failed.message);
+          // A rejected key, or a server or model that is not usable as set up, is fixed in AI settings.
+          const repair = failed.code === 'auth' ? 'key' : failed.setup ? 'settings' : undefined;
+          await revertAndFinish('failed', failed.code === 'auth' ? 'The AI provider rejected the API key. Update it in Settings.' : `The AI request failed: ${failed.message}`, failed.message, repair);
           return;
         }
         if (!done) throw new Error('Cancelled');

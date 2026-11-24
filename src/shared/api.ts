@@ -29,7 +29,11 @@ export interface AppSettings {
   };
 }
 
-export type SettingsPatch = Omit<Partial<AppSettings>, 'ai'> & { ai?: Partial<Omit<AppSettings['ai'], 'local'>> & { local?: Partial<LocalProviderSettings> } };
+/**
+ * A change to settings. Only the models named change. A local model given here is chosen for the server the patch
+ * leaves saved; `local.modelsByServer` entries are added to the ones already kept.
+ */
+export type SettingsPatch = Omit<Partial<AppSettings>, 'ai'> & { ai?: Partial<Omit<AppSettings['ai'], 'local' | 'models'>> & { models?: Partial<AppSettings['ai']['models']>; local?: Partial<LocalProviderSettings> } };
 
 export interface ProviderStatus {
   id: ProviderId;
@@ -41,7 +45,16 @@ export interface ProviderStatus {
   models: Array<{ id: string; label: string; note?: string }>;
   /** Shown wherever the user decides what to send: project content would leave this computer. */
   warning?: string;
+  /**
+   * Local only: the last thing this app session learned about the saved server and model, from a model list, a
+   * connection test or a chat request. Absent until something has been tried, and reset when the server, the
+   * model or the key changes.
+   */
+  check?: LocalCheck;
 }
+
+/** Whether the local model answered the last time it was asked. A failure says where it failed. */
+export type LocalCheck = { ok: true } | { ok: false; stage: 'server' | 'chat'; message: string };
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -423,6 +436,11 @@ export interface ChatMessage {
     ask?: boolean;
     /** Fields the AI located for the answer, each offered as "Open in inspector". */
     locations?: FieldLocation[];
+    /**
+     * The request failed because of the AI setup, not the request: fixed in AI settings (`settings`), or with a new
+     * API key (`key`). Either way the same request can be sent again once it is.
+     */
+    repair?: 'settings' | 'key';
   };
   /** Every question the assistant asked during this turn, in the order asked. */
   questions?: ChatQuestion[];
@@ -670,9 +688,11 @@ export interface BuilderApi {
     providers(): Promise<ProviderStatus[]>;
     setKey(provider: ProviderId, key: string | null): Promise<ProviderStatus[]>;
     /** Test a key and model; the typed (unsaved) key and model are used when given. */
-    testProvider(provider: ProviderId, key?: string, model?: string): Promise<{ ok: boolean; message: string }>;
+    /** `stage`, for a local server: whether reaching it and finding the model failed, or the chat request. */
+    testProvider(provider: ProviderId, key?: string, model?: string): Promise<{ ok: boolean; message: string; stage?: 'server' | 'chat' }>;
     /** Models the saved local server reports. */
-    localModels(): Promise<{ ok: boolean; models: string[]; message?: string }>;
+    /** `server`: the saved address that was asked, which the list belongs to. */
+    localModels(): Promise<{ ok: boolean; models: string[]; message?: string; server?: string }>;
     conversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;

@@ -332,6 +332,8 @@ describe('the loaded context window', () => {
     expect(result?.summary).toMatch(/at least 10,240 tokens(?! \(an estimate\))/);
     // The error's shape identifies llama.cpp, so the advice names its setting.
     expect(result?.summary).toMatch(/--ctx-size 32768/);
+    // The fix is the server's and its size in Settings, so the card offers them (#83).
+    expect(result?.repair).toBe('settings');
     expect(chatPosts()).toHaveLength(1);
     expect(session.revision).toBe(0);
   });
@@ -624,5 +626,71 @@ describe('what a constrained local run sends first (#364)', () => {
     }
     expect(results[0]).toEqual({ heading: 'Sharper', image: { assetId: null, alt: 'A calm room' }, tone: 'muted' });
     expect(results[1]).toEqual(results[0]);
+  });
+});
+
+describe('a request that fails on the local setup (#83)', () => {
+  const rejected = (message: string) => ({ status: 400, body: JSON.stringify({ error: { message } }) });
+
+  it('says nothing changed and points to AI settings when no server answers', async () => {
+    const port = await closedPort();
+    const { session, run, header } = await setup({ baseURL: `http://127.0.0.1:${port}/v1` });
+    const before = headerName(session, header);
+    const { result } = await run('Rename the site to Harbor Coffee');
+    expect(result).toMatchObject({ status: 'failed', repair: 'settings', canUndo: false });
+    expect(result?.summary).toMatch(/^The AI request failed: Could not connect to a model server at .+ Is your local server running\? Nothing in the site was changed\.$/);
+    expect(headerName(session, header)).toBe(before);
+  });
+
+  it('does the same for a listed model that rejects the chat request', async () => {
+    const { session, run, header } = await setup();
+    const before = headerName(session, header);
+    server.script(rejected('studio-b cannot generate chat completions'));
+    const { result } = await run('Rename the site to Harbor Coffee');
+    expect(result).toMatchObject({ status: 'failed', repair: 'settings', summary: 'The AI request failed: studio-b cannot generate chat completions Nothing in the site was changed.' });
+    expect(headerName(session, header)).toBe(before);
+  });
+
+  it("offers no setup fix for a failure that is the request's own, such as a request too large for the server", async () => {
+    const { run } = await setup();
+    server.script({ status: 413, body: JSON.stringify({ error: { message: 'Payload too large' } }) });
+    const { result } = await run('Rename the site to Harbor Coffee');
+    expect(result).toMatchObject({ status: 'failed', summary: 'The AI request failed: Payload too large' });
+    expect(result?.repair).toBeUndefined();
+  });
+
+  it('says the project was restored when the model failed after changing it', async () => {
+    const { session, run, header } = await setup();
+    const before = headerName(session, header);
+    server.script(envelopeReply('update_site_brand', rename('Harbor Coffee'), 'Renaming the site'), rejected('the model crashed'));
+    const { result } = await run('Rename the site to Harbor Coffee');
+    expect(result).toMatchObject({ status: 'failed', repair: 'settings', summary: 'The AI request failed: the model crashed The project was restored to how it was before this request.' });
+    expect(headerName(session, header)).toBe(before);
+  });
+
+  it('carries the repair of a setup error found before the request starts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-local-'));
+    dirs.push(dir);
+    const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
+    const events: AiEvent[] = [];
+    const orch = new Orchestrator({
+      session: () => session,
+      adapter: async () => ({ error: 'Connected, but the server has no models loaded.', repair: 'settings' }),
+      emit: (e) => events.push(e),
+      compileAll: async () => [],
+      inspectLayout: async () => ({ issues: [] }),
+      onBusyChange: () => undefined,
+      codeEnabled: async () => true
+    });
+    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
+    expect((await orch.send('Add a page', ctx)).ok).toBe(true);
+    await expect.poll(() => orch.busy, { timeout: 5000, interval: 5 }).toBe(false);
+    const result = [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message?.result;
+    expect(result).toMatchObject({ status: 'failed', repair: 'settings', summary: 'Connected, but the server has no models loaded. Nothing in the site was changed.' });
+    // A question could never change anything, so it does not say so.
+    expect((await orch.send('Which pages are there?', { ...ctx, mode: 'ask' })).ok).toBe(true);
+    await expect.poll(() => orch.busy, { timeout: 5000, interval: 5 }).toBe(false);
+    const asked = [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message?.result;
+    expect(asked).toMatchObject({ status: 'failed', repair: 'settings', summary: 'Connected, but the server has no models loaded.' });
   });
 });

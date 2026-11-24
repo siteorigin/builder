@@ -493,6 +493,8 @@ describe('failures', () => {
     const error = errorOf(await run(native(), { tools: [] }));
     await new Promise((r) => elsewhere.close(r));
     expect(error.message).toMatch(/redirect/);
+    // A server set up to redirect is the setup's to fix.
+    expect(error.setup).toBe('server');
     expect(reached).toBe(0);
   });
 });
@@ -681,13 +683,142 @@ describe('model discovery', () => {
     expect(await listLocalModels({ baseURL: `http://127.0.0.1:${port}/v1` })).toMatchObject({ ok: false, models: [], message: expect.stringMatching(/Is your local server running/) });
   });
 
-  it('tests a connection without generating anything', async () => {
-    expect(await testLocal({ baseURL: server.baseURL, model: 'test-model' })).toMatchObject({ ok: true });
-    expect(await testLocal({ baseURL: server.baseURL, model: '' })).toMatchObject({ ok: true, message: expect.stringContaining('test-model') });
-    expect(await testLocal({ baseURL: server.baseURL, model: 'ghost' })).toMatchObject({ ok: false, message: expect.stringContaining('ghost') });
+  it('tests a connection with one short chat request to the chosen model, or the first listed', async () => {
+    server.models = { data: [{ id: 'first-model' }, { id: 'test-model' }] };
+    server.script(textReply('OK'), textReply('OK'));
+    expect(await testLocal({ baseURL: server.baseURL, model: 'test-model' })).toEqual({ ok: true, model: 'test-model', message: 'Connected. test-model answered a test chat request.' });
+    expect(await testLocal({ baseURL: server.baseURL, model: '' })).toEqual({ ok: true, model: 'first-model', message: 'Connected. first-model answered a test chat request.' });
+    expect(posts().map((p) => [p.url, p.body.model])).toEqual([
+      ['/v1/chat/completions', 'test-model'],
+      ['/v1/chat/completions', 'first-model']
+    ]);
+    // Plain chat, as small as a reply can be: no tools and no grammar, so any chat model can answer it.
+    expect(posts()[0].body).toMatchObject({ max_tokens: 16, messages: [{ role: 'system' }, { role: 'user', content: 'Reply with OK.' }] });
+    expect(posts()[0].body.tools).toBeUndefined();
+    expect(posts()[0].body.response_format).toBeUndefined();
+  });
+
+  it('sends no chat request when nothing answers, the model is not listed, or none is loaded', async () => {
+    const port = await closedPort();
+    expect(await testLocal({ baseURL: `http://127.0.0.1:${port}/v1`, model: '' })).toMatchObject({ ok: false, stage: 'server', message: expect.stringMatching(/Is your local server running/) });
+    expect(await testLocal({ baseURL: server.baseURL, model: 'ghost' })).toMatchObject({ ok: false, stage: 'server', message: expect.stringContaining('ghost') });
     server.models = { data: [] };
-    expect(await testLocal({ baseURL: server.baseURL, model: '' })).toMatchObject({ ok: false, message: expect.stringMatching(/no models/) });
+    expect(await testLocal({ baseURL: server.baseURL, model: '' })).toMatchObject({ ok: false, stage: 'server', message: expect.stringMatching(/no models/) });
     expect(posts()).toHaveLength(0);
+  });
+
+  it('fails a model the server lists but that rejects a chat request', async () => {
+    server.models = { data: [{ id: 'studio-b' }] };
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'studio-b cannot generate chat completions' } }) });
+    const r = await testLocal({ baseURL: server.baseURL, model: 'studio-b' });
+    expect(r).toEqual({ ok: false, stage: 'chat', model: 'studio-b', message: 'The server lists studio-b, but a test chat request failed: studio-b cannot generate chat completions' });
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('passes a reply cut off at the small budget, which a reasoning model spends thinking, and says so', async () => {
+    // No usage chunk: not every server reports one, and the reply still came from the model.
+    server.script({ frames: [sseChunk({ role: 'assistant' }), sseChunk({ reasoning_content: 'The user wants' }), sseChunk({}, 'length'), DONE] });
+    expect(await testLocal({ baseURL: server.baseURL, model: 'test-model' })).toEqual({ ok: true, model: 'test-model', message: 'Connected. test-model started answering a test chat request.' });
+  });
+
+  it('names the size a run will use, which a smaller size set in Settings holds it to', async () => {
+    server.script(textReply('OK'));
+    server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 32768 } } };
+    expect((await testLocal({ baseURL: server.baseURL, model: 'test-model', contextWindow: 4096 })).message).toMatch(/held to the 4,096-token context set in Settings\. The assistant works best with 32,768 tokens/);
+  });
+
+  it('fails a model that declines the test request', async () => {
+    server.script(textReply('', { finish: 'content_filter' }));
+    expect(await testLocal({ baseURL: server.baseURL, model: 'test-model' })).toMatchObject({ ok: false, stage: 'chat', message: expect.stringMatching(/declined it/) });
+  });
+
+  it('ends within its deadline however slowly the reply trickles in', async () => {
+    server.script({ frames: [sseChunk({ role: 'assistant' })], endless: { frame: sseChunk({ content: '.' }), everyMs: 20 } });
+    const started = Date.now();
+    const r = await testLocal({ baseURL: server.baseURL, model: 'test-model' }, { deadlineMs: 300 });
+    expect(r).toMatchObject({ ok: false, stage: 'chat', message: expect.stringMatching(/did not finish a short reply/) });
+    expect(Date.now() - started).toBeLessThan(3000);
+    await expect.poll(() => server.disconnects).toBe(1);
+  });
+
+  it('stops when asked: before anything is sent, or in the middle of the chat request', async () => {
+    const stopped = new AbortController();
+    stopped.abort();
+    expect(await testLocal({ baseURL: server.baseURL, model: 'test-model' }, { signal: stopped.signal })).toMatchObject({ ok: false, message: 'The test was stopped.' });
+    expect(server.requests).toHaveLength(0);
+
+    server.script({ ...textReply('OK'), delayMs: 5000 });
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(), 100);
+    const started = Date.now();
+    expect(await testLocal({ baseURL: server.baseURL, model: 'test-model' }, { signal: stop.signal })).toMatchObject({ ok: false, message: 'The test was stopped.' });
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('gives up on a model that never starts answering, and lets the connection go', async () => {
+    server.script({ frames: [sseChunk({ role: 'assistant' })], stallAfter: 0 });
+    const r = await testLocal({ baseURL: server.baseURL, model: 'test-model' }, { firstTokenTimeoutMs: 150 });
+    expect(r).toMatchObject({ ok: false, stage: 'chat', message: expect.stringMatching(/did not start responding/) });
+    await expect.poll(() => server.disconnects).toBe(1);
+  });
+});
+
+describe('what a chat request shows about the setup', () => {
+  const reported = (endpoint: Partial<LocalEndpoint> = {}) => {
+    const checks: unknown[] = [];
+    return { checks, a: adapter(endpoint, { onCheck: (c) => checks.push(c) }) };
+  };
+
+  it('reports a finished reply as working', async () => {
+    server.script(textReply('Hi'));
+    const { checks, a } = reported();
+    await run(a, { tools: [] });
+    expect(checks).toEqual([{ ok: true }]);
+  });
+
+  it('reports a server that is not there and a refused chat request, each with where it failed, and marks them as the setup', async () => {
+    const port = await closedPort();
+    const down = reported({ baseURL: `http://127.0.0.1:${port}/v1` });
+    expect(errorOf(await run(down.a))).toMatchObject({ code: 'unreachable', setup: 'server' });
+    expect(down.checks).toEqual([{ ok: false, stage: 'server', message: expect.stringMatching(/Is your local server running/) }]);
+
+    // A key the chat request needs is a chat failure: the model list may not need one, so listing cannot clear it.
+    server.script({ status: 401, body: '{}' }, { status: 400, body: JSON.stringify({ error: { message: 'model cannot chat' } }) });
+    const refused = reported();
+    expect(errorOf(await run(refused.a))).toMatchObject({ code: 'auth', setup: 'chat' });
+    expect(errorOf(await run(refused.a))).toMatchObject({ code: 'invalid_request', setup: 'chat' });
+    expect(refused.checks).toEqual([
+      { ok: false, stage: 'chat', message: expect.stringMatching(/rejected the API key/) },
+      { ok: false, stage: 'chat', message: 'model cannot chat' }
+    ]);
+  });
+
+  it('treats a refusal sent inside the stream like the same refusal as a status, by number or by name', async () => {
+    server.script({ frames: [sseChunk({ role: 'assistant' }), { error: { code: 404, message: 'model not found' } }, DONE] }, { frames: [sseChunk({ role: 'assistant' }), { error: { code: 'model_not_found', message: 'no such model' } }, DONE] }, { frames: [sseChunk({ role: 'assistant' }), { error: { type: 'invalid_request_error', message: 'Input prompt too large' } }, DONE] });
+    const { checks, a } = reported();
+    expect(errorOf(await run(a))).toMatchObject({ setup: 'chat', message: expect.stringMatching(/model not found/) });
+    expect(errorOf(await run(a))).toMatchObject({ setup: 'chat', message: expect.stringMatching(/no such model/) });
+    expect(errorOf(await run(a)).setup).toBeUndefined();
+    expect(checks).toEqual([
+      { ok: false, stage: 'chat', message: expect.stringMatching(/model not found/) },
+      { ok: false, stage: 'chat', message: expect.stringMatching(/no such model/) }
+    ]);
+  });
+
+  it('says nothing about a request too large for the server, which is the request\'s own', async () => {
+    server.script({ status: 413, body: JSON.stringify({ error: { message: 'Payload too large' } }) });
+    const { checks, a } = reported();
+    expect(errorOf(await run(a)).setup).toBeUndefined();
+    expect(checks).toEqual([]);
+  });
+
+  it("says nothing about a busy or loading server, or a conversation too long for the model: they are not the setup's", async () => {
+    server.script({ status: 429, body: '{}' }, { status: 503, body: JSON.stringify({ error: { message: 'Loading model' } }) }, { status: 400, body: JSON.stringify({ error: { message: 'the request exceeds the available context size' } }) });
+    const { checks, a } = reported();
+    const errors = [errorOf(await run(a)), errorOf(await run(a)), errorOf(await run(a))];
+    expect(errors.map((e) => e.setup)).toEqual([undefined, undefined, undefined]);
+    expect(errors[2].message).toMatch(/too long for this model/);
+    expect(checks).toEqual([]);
   });
 });
 
@@ -1283,11 +1414,13 @@ describe('the loaded context window', () => {
   });
 
   it('names the loaded size when a connection is tested', async () => {
+    // The test sends one short chat request each time (#83), then reads the size.
+    server.script(textReply('OK'), textReply('OK'));
     server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 4096 } } };
     expect(await testLocal({ baseURL: server.baseURL, model: 'test-model' })).toMatchObject({ ok: true, message: expect.stringMatching(/4,096-token context\. The assistant works best with 32,768 tokens or more/) });
     server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 65536 } } };
-    expect((await testLocal({ baseURL: server.baseURL, model: 'test-model' })).message).toBe('Connected. test-model is available, loaded with a 65,536-token context.');
-    expect(posts()).toHaveLength(0);
+    expect((await testLocal({ baseURL: server.baseURL, model: 'test-model' })).message).toBe('Connected. test-model answered a test chat request, loaded with a 65,536-token context.');
+    expect(posts()).toHaveLength(2);
   });
 });
 
