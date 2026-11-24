@@ -597,3 +597,56 @@ describe('history retention and garbage collection (spec 18.4)', () => {
     expect(existsSync(join(dir, 'static/assets/hand-placed.png'))).toBe(true);
   });
 });
+
+describe('external edits against problems the project already has (#205)', () => {
+  /** A page node that shows a component property, which only a component's design can. */
+  const bind = (page: { rootIds: string[]; nodes: Record<string, unknown> }, id: string) => {
+    page.nodes[id] = { id, kind: 'text', tag: 'p', text: { $prop: 'heading' } };
+    page.rootIds.push(id);
+  };
+
+  it('accepts an unrelated external edit, and refuses one that brings in the same mistake elsewhere', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-recovery-'));
+    dirs.push(dir);
+    const start = createStarterState('business', 'Persist', false);
+    bind(start.pages[start.site.homePageId] as never, 'n_old');
+    const s = await ProjectSession.create(dir, start);
+    open.push(s);
+    expect(s.diagnostics().filter((d) => d.code === 'BINDING_SCOPE').map((d) => d.nodeId)).toEqual(['n_old']);
+    // Unrelated: the problem stays as it was, so the change is kept.
+    const site = read(dir, SITE);
+    site.description = 'Edited in another editor';
+    write(dir, SITE, site);
+    expect(await s.reloadFromDisk()).toEqual({ ok: true });
+    expect(s.state.site.description).toBe('Edited in another editor');
+    // The same mistake on another element is new, so the change is refused.
+    const pagePath = `siteorigin/pages/${s.state.site.homePageId}.json`;
+    const page = read(dir, pagePath);
+    bind(page, 'n_new');
+    write(dir, pagePath, page);
+    const r = await s.reloadFromDisk();
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/component property or list item field/);
+    expect(s.state.pages[s.state.site.homePageId].nodes.n_new).toBeUndefined();
+  });
+
+  it('refuses an external edit that repeats an older problem on another element of the same page', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-recovery-'));
+    dirs.push(dir);
+    const start = createStarterState('business', 'Persist', false);
+    const home = start.pages[start.site.homePageId];
+    const missing = (id: string) => ({ id, kind: 'text', tag: 'p', text: 'x', styles: { base: { color: { token: 'color.gone' } } } });
+    home.nodes.n_a = missing('n_a') as never;
+    home.rootIds.push('n_a');
+    const s = await ProjectSession.create(dir, start);
+    open.push(s);
+    const pagePath = `siteorigin/pages/${s.state.site.homePageId}.json`;
+    const page = read(dir, pagePath);
+    page.nodes.n_b = missing('n_b');
+    page.rootIds.push('n_b');
+    write(dir, pagePath, page);
+    const r = await s.reloadFromDisk();
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/color\.gone/);
+  });
+});

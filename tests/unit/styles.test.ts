@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
 import { STYLE_PROPS, STYLE_PROP_MAP, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
@@ -29,6 +30,92 @@ function ruleOf(text: string, selector: string): string {
 const PHONE = '(max-width: 767.98px)';
 const WIDE = '(min-width: 768px)';
 const TABLET = '(min-width: 768px) and (max-width: 1023.98px)';
+
+describe('length values (#205)', () => {
+  const NON_NEGATIVE = ['paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd', 'gap', 'rowGap', 'columnGap', 'width', 'height', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'radius', 'fontSize', 'lineHeight'];
+  const SIGNED = ['marginBlockStart', 'marginBlockEnd', 'marginInlineStart', 'marginInlineEnd', 'letterSpacing'];
+
+  it('refuses a unitless number other than zero, which CSS drops', () => {
+    for (const p of [...NON_NEGATIVE.filter((x) => x !== 'lineHeight'), ...SIGNED]) {
+      expect(validateStyleValue(p, '64'), p).toMatch(/needs a unit/);
+      expect(validateStyleValue(p, 64), p).toMatch(/needs a unit/);
+      expect(validateStyleValue(p, '1.5'), p).toMatch(/needs a unit/);
+    }
+    expect(validateStyleValue('inset', '8')).toMatch(/offset/);
+    expect(validateStyleValue('inset', '0 8')).toMatch(/offset/);
+    expect(validateStyleValue('inset', '0 0 0 8')).toMatch(/offset/);
+    expect(validateStyleValue('inset', '0 0 8')).toMatch(/offset/);
+  });
+
+  it('refuses a negative length where CSS allows none, and keeps signed ones where it does', () => {
+    for (const p of NON_NEGATIVE) {
+      expect(validateStyleValue(p, '-10px'), p).toMatch(/cannot be negative/);
+      expect(validateStyleValue(p, '-.5rem'), p).toMatch(/cannot be negative/);
+      expect(validateStyleValue(p, '-.1px'), p).toMatch(/cannot be negative/);
+      expect(validateStyleValue(p, '-9px'), p).toMatch(/cannot be negative/);
+    }
+    expect(validateStyleValue('lineHeight', '-1.5')).toMatch(/cannot be negative/);
+    for (const p of SIGNED) {
+      expect(validateStyleValue(p, '-10px'), p).toBeNull();
+      expect(validateStyleValue(p, '-0.02em'), p).toBeNull();
+      expect(validateStyleValue(p, '-10'), p).toMatch(/needs a unit/);
+    }
+    expect(validateStyleValue('inset', 'auto -8px 0 5%')).toBeNull();
+  });
+
+  it('keeps zero, units, keywords and math as before', () => {
+    for (const p of [...NON_NEGATIVE, ...SIGNED]) {
+      for (const v of ['0', 0, '0px', '-0', '0.0', '.5rem', '24px', '50%', '1.5em', 'calc(100% - 2rem)', 'clamp(2rem, 5vw, 4rem)', 'min(2vw, 3rem)', 'max(1rem, min(2vw, 3rem))', 'calc(var(--so-space-md) - 1rem)'])
+        expect(validateStyleValue(p, v), `${p}: ${v}`).toBeNull();
+    }
+    expect(validateStyleValue('lineHeight', '1.6')).toBeNull();
+    expect(validateStyleValue('lineHeight', 1.5)).toBeNull();
+    for (const v of ['fill', 'fit', 'auto']) expect(validateStyleValue('width', v), v).toBeNull();
+    expect(validateStyleValue('height', 'auto')).toBeNull();
+    // `auto` only where CSS works a length out: sizes, margins and offsets.
+    for (const p of ['height', 'minWidth', 'minHeight', 'marginBlockStart', 'marginBlockEnd', 'marginInlineStart', 'marginInlineEnd']) expect(validateStyleValue(p, 'auto'), p).toBeNull();
+    expect(validateStyleValue('inset', 'auto 0')).toBeNull();
+    for (const p of ['paddingBlock', 'paddingInlineStart', 'gap', 'columnGap', 'maxWidth', 'maxHeight', 'radius', 'fontSize', 'lineHeight', 'letterSpacing']) expect(validateStyleValue(p, 'auto'), p).toMatch(/cannot be auto/);
+    // A bare variable is still not a length, as before.
+    expect(validateStyleValue('width', 'var(--so-width)')).not.toBeNull();
+    expect(validateStyleValue('gap', '10 px')).toMatch(/not a valid length/);
+  });
+
+  it('refuses the reported values through node.setStyle', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const set = (property: string, value: string, scope = 'base') => applyOperations(s, [{ type: 'node.setStyle', owner: { kind: 'page', id: s.site.homePageId }, nodeId: hero.id, scope, property, value } as EditOperation]);
+    expect(() => set('paddingBlock', '64')).toThrow(/needs a unit/);
+    expect(() => set('gap', '-10px', 'tablet')).toThrow(/cannot be negative/);
+    expect(() => set('radius', '-8px', 'phone')).toThrow(/cannot be negative/);
+    expect(() => set('marginBlockStart', '-8px', 'desktop')).not.toThrow();
+  });
+});
+
+describe('column sizes for all sizes (#205)', () => {
+  it('keep phones to the Grid’s own columns and win over its desktop count', () => {
+    let s = createStarterState('blank', 'Blank', false);
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const host = home(s).rootIds[0];
+    const r = applyOperations(s, [{ type: 'node.insert', owner, parentId: host, slot: 'content', primitive: 'grid' }]);
+    const gridId = r.results[0].nodeId as string;
+    s = applyOperations(r.state, [
+      { type: 'node.setStyle', owner, nodeId: gridId, scope: 'tablet', property: 'columns', value: 2 },
+      { type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: '1fr 2fr' }
+    ]).state;
+    const text = css(s, 'site');
+    const sel = `.so-n-${gridId}`;
+    expect(ruleOf(section(text, null), sel)).toContain('grid-template-columns: repeat(1, minmax(0, 1fr))');
+    expect(ruleOf(section(text, null), sel)).not.toContain('minmax(0, 2fr)');
+    expect(ruleOf(section(text, WIDE), sel)).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 2fr)');
+    expect(section(text, '(min-width: 1024px)')).not.toContain(sel);
+    expect(section(text, TABLET)).not.toContain(sel);
+    // Without the column sizes, the desktop count is back.
+    s = applyOperations(s, [{ type: 'node.setStyle', owner, nodeId: gridId, scope: 'base', property: 'gridTemplate', value: null }]).state;
+    expect(ruleOf(section(css(s, 'site'), '(min-width: 1024px)'), sel)).toContain('repeat(3, minmax(0, 1fr))');
+    expect(ruleOf(section(css(s, 'site'), TABLET), sel)).toContain('repeat(2, minmax(0, 1fr))');
+  });
+});
 
 describe('style registry', () => {
   it('emits a declaration for every property it offers', () => {

@@ -1,5 +1,5 @@
 import type { ResponsiveScope, ResponsiveStyles, StyleValue } from '@shared/types';
-import { cascadeStyles, cssRivals, wideOnlyStyle } from '@shared/styles';
+import { cascadeStyles, columnSizesForAllSizes, cssRivals, wideOnlyStyle } from '@shared/styles';
 
 export interface StyleSourceInput {
   prop: string;
@@ -41,6 +41,9 @@ export function styleUnder({ prop, scope, styles, inherited, designSizesWin, wid
     const design = inherited?.[scope]?.[prop];
     return { value: design, from: design !== undefined ? 'design' : undefined };
   }
+  // The design's own column sizes for All sizes, as changed here, override its column count from tablet up.
+  if (designSizesWin && prop === 'columns' && (scope === 'tablet' || scope === 'desktop') && columnSizesForAllSizes({ base: { ...inherited?.base, ...styles?.base } }))
+    return { value: undefined, from: undefined };
   // Under All sizes, the design's value shows only where neither it is replaced at that size nor an own value writing
   // the same CSS wins there.
   if (!designSizesWin && cssRivals(prop).length && inherited?.base?.[prop] !== undefined) {

@@ -44,7 +44,8 @@ import {
   textLinkLeadsToText,
   textStyleValue,
   tokenVar,
-  wideOnlyStyle
+  wideOnlyStyle,
+  withColumnSizes
 } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
@@ -505,7 +506,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
   const selector = wrap(raw);
   // Starting values for the element itself at zero specificity, which every rule naming it overrides.
   const quiet = wrap(`:where(${raw})`);
-  const styles = resolveVisibility(input);
+  const styles = resolveVisibility(withColumnSizes(input));
   for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
     // Showing a part a weaker layer hides needs an explicit display value, decided before visibility folding, and
     // only in the ranges where it is hidden: anywhere else the weaker layer's own layout must keep applying.
@@ -1173,7 +1174,9 @@ type SizingBox = SizingLayer[];
 function boxStyle(box: SizingBox, prop: string, range: SizeRange): unknown {
   let best: unknown;
   let rank = -1;
-  box.forEach(({ styles, tier }, order) => {
+  box.forEach(({ styles: own, tier }, order) => {
+    // A column count its own column sizes override is never written.
+    const styles = withColumnSizes(own);
     let block = -1;
     let value: unknown;
     if (styles[range]?.[prop] !== undefined) {
@@ -1250,7 +1253,8 @@ function sizingBoxes(walk: SizingWalk, tree: NodeTree, nodeId: string, placement
 /**
  * The fraction of a grid's content width one of its items takes in a range: an equal share for each column it
  * spans, or for uneven columns the widest run it could sit in. Columns that fit as many as they can stay whole,
- * since how many fit is unknown here. With both columns and column sizes set, the wider reading wins.
+ * since how many fit is unknown here. With both columns and column sizes set, the wider reading wins: a stronger
+ * rule this walk cannot see (a placement's, an item's) may decide which one applies.
  */
 function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRange): number {
   const spanValue = item ? boxStyle(item, 'columnSpan', range) : undefined;

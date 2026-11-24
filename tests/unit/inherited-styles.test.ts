@@ -189,6 +189,47 @@ describe('the Inspector’s inherited styles match the generated CSS', () => {
     agree(span);
   });
 
+  it('keeps column sizes for all sizes off phones, and lets them override the column count from tablet up (#205)', () => {
+    // The Grid element as inserted (one column, three on desktop), then given uneven column sizes for All sizes.
+    const { state, def } = grid({ node: { grid: { base: { layout: 'grid', columns: 1, gridTemplate: '1fr 2fr' }, desktop: { columns: 3 } } } });
+    const rows = compare(state, def, 'grid', 'gridTemplate', 'grid-template-columns');
+    expect(rows.map((r) => r.rendered)).toEqual([cssOf('columns', 1), cssOf('gridTemplate', '1fr 2fr'), cssOf('gridTemplate', '1fr 2fr')]);
+    const inherited = designStyles(def, 'grid', undefined);
+    expect(inherited.phone).toMatchObject({ columns: 1 });
+    expect(inherited.phone?.gridTemplate).toBeUndefined();
+    expect(inherited.desktop?.columns).toBeUndefined();
+    agree(compare(state, def, 'grid', 'columns', 'grid-template-columns').filter((r) => r.size === 'phone'));
+    agree(rows.filter((r) => r.size !== 'phone'));
+  });
+
+  it('applies column sizes set for one size there only, and a phone’s own column sizes on phones (#205)', () => {
+    const tabletOnly = grid({ node: { grid: { base: { layout: 'grid', columns: 1 }, tablet: { gridTemplate: '1fr 2fr' }, desktop: { columns: 3 } } } });
+    const shownAt = (g: ReturnType<typeof grid>) => {
+      const rules = parseCss(generateComponentsCss(g.state));
+      const inherited = designStyles(g.def, 'grid', undefined);
+      return SIZES.map((size) => {
+        const at = inherited[size];
+        const shown = at?.gridTemplate !== undefined ? cssOf('gridTemplate', at.gridTemplate) : at?.columns !== undefined ? cssOf('columns', at.columns) : undefined;
+        const rendered = computed(rules, element(g.def, 'grid'), WIDTH[size], 'grid-template-columns');
+        expect(shown, size).toBe(rendered);
+        return rendered;
+      });
+    };
+    expect(shownAt(tabletOnly)).toEqual([cssOf('columns', 1), cssOf('gridTemplate', '1fr 2fr'), cssOf('columns', 3)]);
+    const phoneOwn = grid({ node: { grid: { base: { layout: 'grid', columns: 1, gridTemplate: '1fr 1fr' }, phone: { gridTemplate: '1fr 2fr' }, desktop: { columns: 3 } } } });
+    expect(shownAt(phoneOwn)).toEqual([cssOf('gridTemplate', '1fr 2fr'), cssOf('gridTemplate', '1fr 1fr'), cssOf('gridTemplate', '1fr 1fr')]);
+    // A phone's own column count stays, and so does a desktop count of one.
+    const phoneCount = grid({ node: { grid: { base: { layout: 'grid', gridTemplate: '1fr 1fr' }, phone: { columns: 2 }, desktop: { columns: 1 } } } });
+    expect(shownAt(phoneCount)).toEqual([cssOf('columns', 2), cssOf('gridTemplate', '1fr 1fr'), cssOf('gridTemplate', '1fr 1fr')]);
+    // A variant's column sizes override that variant's own desktop count too.
+    const variant = grid({ node: { grid: { base: { layout: 'grid', columns: 1 } } }, layout: { grid: { base: { gridTemplate: '2fr 1fr' }, desktop: { columns: 4 } } } });
+    expect(shownAt(variant)).toEqual([cssOf('columns', 1), cssOf('gridTemplate', '2fr 1fr'), cssOf('gridTemplate', '2fr 1fr')]);
+    // Column sizes the stylesheet would not write override nothing.
+    const broken = grid({ node: { grid: { base: { layout: 'grid', columns: 1, gridTemplate: 'repeat(99, 1fr)' }, desktop: { columns: 3 } } } });
+    const rules = parseCss(generateComponentsCss(broken.state));
+    expect(SIZES.map((size) => computed(rules, element(broken.def, 'grid'), WIDTH[size], 'grid-template-columns'))).toEqual([cssOf('columns', 1), cssOf('columns', 1), cssOf('columns', 3)]);
+  });
+
   it('reports a grid template, not a column count, where the template wins', () => {
     const { state, def } = grid({ node: { grid: { base: { layout: 'grid' }, desktop: { columns: 3 } } }, layout: { grid: { base: { gridTemplate: '2fr 1fr' } } } });
     const inherited = designStyles(def, 'grid', undefined);
@@ -372,10 +413,20 @@ describe('a placement’s own grid for all sizes', () => {
     expect(styleUnder({ prop: 'columns', scope: 'base', styles: undefined, inherited, wideColumns: true })).toEqual({ value: 3, from: 'design' });
   });
 
-  it('lets a design’s own size values beat its All sizes grid template while editing it everywhere', () => {
+  it('lets a design’s All sizes column sizes override its own column counts from tablet up while editing it everywhere (#205)', () => {
     const original = { base: { layout: 'grid', columns: 1 }, tablet: { columns: 2 }, desktop: { columns: 3 } } as ResponsiveStyles;
     const changed = { base: { gridTemplate: '2fr 1fr' } } as ResponsiveStyles;
-    expect(styleUnder({ prop: 'columns', scope: 'tablet', styles: changed, inherited: original, designSizesWin: true })).toEqual({ value: 2, from: 'design' });
+    for (const scope of ['tablet', 'desktop'] as const) {
+      expect(styleUnder({ prop: 'columns', scope, styles: changed, inherited: original, designSizesWin: true }), scope).toEqual({ value: undefined, from: undefined });
+      expect(styleUnder({ prop: 'gridTemplate', scope, styles: changed, inherited: original, designSizesWin: true }), scope).toEqual({ value: '2fr 1fr', from: 'all-sizes' });
+    }
+    // Phones keep the design's own column count, and without the column sizes each size's count shows again.
+    expect(styleUnder({ prop: 'columns', scope: 'phone', styles: changed, inherited: original, designSizesWin: true })).toEqual({ value: 1, from: 'design' });
+    expect(styleUnder({ prop: 'gridTemplate', scope: 'phone', styles: changed, inherited: original, designSizesWin: true })).toEqual({ value: undefined, from: undefined });
+    expect(styleUnder({ prop: 'columns', scope: 'tablet', styles: {}, inherited: original, designSizesWin: true })).toEqual({ value: 2, from: 'design' });
+    // Column sizes the design already had override its counts the same way.
+    const withSizes = { ...original, base: { ...original.base, gridTemplate: '2fr 1fr' } } as ResponsiveStyles;
+    expect(styleUnder({ prop: 'columns', scope: 'desktop', styles: {}, inherited: withSizes, designSizesWin: true })).toEqual({ value: undefined, from: undefined });
   });
 
   it('keeps one column for all sizes on phones too', () => {

@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
-import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, type StylePropDef } from '@shared/styles';
+import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, withColumnSizes, type StylePropDef } from '@shared/styles';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
@@ -281,7 +281,9 @@ export function StyleControls({
     // Under All sizes, a size with its own value here wins over whatever is set for all sizes; so does the
     // design's own value for the previewed size when nothing here overrides it (or, for a component's own
     // design, whenever it has one).
-    const exceptions = scope === 'base' ? SIZES.filter((s) => styles?.[s]?.[p.id] !== undefined) : [];
+    // A column count that the same styles' column sizes override is never written, so it is no exception.
+    const written = styles ? withColumnSizes(styles) : styles;
+    const exceptions = scope === 'base' ? SIZES.filter((s) => written?.[s]?.[p.id] !== undefined) : [];
     const lines: Array<{ text: string; previewed?: boolean; quiet?: boolean }> = [];
     if (value === undefined && underFrom) lines.push({ text: underFrom, quiet: underFrom === 'From the design' });
     for (const s of exceptions) lines.push({ text: `${SCOPE_LABEL[s]} uses ${describeStyleValue(p, styles![s]![p.id], tokens)}`, previewed: s === preview });

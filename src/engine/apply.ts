@@ -19,7 +19,7 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
+import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isBinding, isComparison, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
@@ -37,13 +37,13 @@ import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_D
 import { slotsInsideCards } from '@generator/card-links';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { editTable } from './table';
-import { bindingSlots, checkPropName, enclosingList, isProtoKey, normalizeProperties } from './schema';
+import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties } from './schema';
 import { declaredTokens, findTokenCycle, forEachTokenRef, tokenUsageCounts } from './tokens';
 import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
@@ -131,8 +131,11 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return nodeInsert(state, op);
     case 'node.remove': {
       const tree = editableTree(state, op.owner);
+      const settled = settledRoot(tree);
+      if (op.owner.kind === 'component' && settled && tree.rootIds[0] === op.nodeId) fail(ROOT_IS_COMPONENT('removed'));
       const removed = new Set(subtreeIds(tree, op.nodeId));
       removeNode(tree, op.nodeId);
+      if (op.owner.kind === 'component' && !settled) followRoot(state.components[op.owner.id]);
       // In definition editing, parts and variant rules for removed elements go with them.
       if (op.owner.kind === 'component') {
         const def = state.components[op.owner.id];
@@ -933,6 +936,11 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   const tree = editableTree(state, op.owner);
   if (op.newNodeId && Object.hasOwn(tree.nodes, op.newNodeId)) fail(`Node "${op.newNodeId}" already exists.`);
   const list = insertionList(tree, op.parentId, op.slot, state);
+  const settled = settledRoot(tree);
+  if (op.owner.kind === 'component' && list === tree.rootIds) {
+    if (settled) fail('Insert inside the component, not beside its root.');
+    if (!op.primitive || !HOLDERS.has(op.primitive)) fail(UNSETTLED);
+  }
   let nodes: GraphNode[];
   if (op.primitive === 'slot' || op.primitive === 'repeat') {
     nodes = [structuralNode(state, op.owner, op.primitive, op.bind)];
@@ -970,6 +978,7 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   for (const n of nodes) tree.nodes[n.id] = n;
   const index = op.index === undefined ? list.length : Math.min(op.index, list.length);
   list.splice(index, 0, nodes[0].id);
+  if (op.owner.kind === 'component' && !settled) followRoot(state.components[op.owner.id]);
   return { nodeId: nodes[0].id };
 }
 
@@ -1001,6 +1010,33 @@ function dependsOn(state: ProjectState, defId: string, targetId: string, seen = 
   return false;
 }
 
+/**
+ * A managed definition renders through its one root: the generator gives `rootIds[0]` the component's classes, its
+ * anchor and its variant rules, so nothing may replace it, move it or stand beside it.
+ */
+const ROOT_IS_COMPONENT = (what: string) => `This is the component itself, so it cannot be ${what}. Change what is inside it instead.`;
+
+/**
+ * Whether a definition has the one root it renders through. One that does not (a file from an older version, with
+ * extra top-level elements, none, or a repeat at the top) can have its top level put right, and only that: an element
+ * that holds others inserted there, the top level reordered, and the old roots (the first included) moved into it or
+ * removed.
+ */
+function settledRoot(tree: NodeTree): boolean {
+  const root = tree.rootIds.length === 1 && Object.hasOwn(tree.nodes, tree.rootIds[0]) ? tree.nodes[tree.rootIds[0]] : undefined;
+  return !!root && root.kind !== 'repeat' && root.kind !== 'slot';
+}
+
+/** The elements that can hold a design's old top-level elements while it is put right. */
+const HOLDERS: ReadonlySet<string> = new Set(['container', 'stack', 'row', 'grid']);
+const UNSETTLED = 'This design has no single top-level element yet. Insert a container at the top level to hold the others, then move them into it.';
+
+/** The definition's `root` part is its first top-level element, whichever that is while its top level is put right. */
+function followRoot(def: ComponentDefinition) {
+  const first = def.tree?.rootIds[0];
+  if (first && def.parts.root && def.parts.root.nodeId !== first) def.parts.root = { ...def.parts.root, nodeId: first };
+}
+
 function removeNode(tree: NodeTree, nodeId: string) {
   const info = findParent(tree, nodeId) ?? fail(`Node "${nodeId}" is not attached.`);
   info.list.splice(info.index, 1);
@@ -1012,15 +1048,62 @@ function nodeMove(state: ProjectState, op: Op<'node.move'>): OpResult {
   getNode(tree, op.nodeId);
   if (op.parentId && subtreeIds(tree, op.nodeId).includes(op.parentId)) fail('Cannot move a node inside itself.');
   const info = findParent(tree, op.nodeId) ?? fail('Node is not attached.');
+  const def = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
+  const settled = settledRoot(tree);
+  if (def && settled && tree.rootIds[0] === op.nodeId) fail(ROOT_IS_COMPONENT('moved'));
   const target = insertionList(tree, op.parentId, op.slot, state);
+  // Until the design has its one root, its top level can be reordered, but nothing more can join it.
+  if (def && target === tree.rootIds && (settled || info.list !== tree.rootIds)) fail(settled ? 'Move it inside the component, not beside its root.' : UNSETTLED);
+  // Only what shows list items, or repeats one, depends on the repeat around it.
+  const listed = def ? subtreeIds(tree, op.nodeId).filter((id) => tree.nodes[id].kind === 'repeat' || showsItemField(tree.nodes[id])) : [];
+  const listsBefore = def ? new Map(listed.map((id) => [id, enclosingRepeatProp(def, id)])) : undefined;
   info.list.splice(info.index, 1);
   target.splice(Math.min(op.index, target.length), 0, op.nodeId);
+  if (def && listsBefore) checkMovedItemFields(state, def, listsBefore);
+  if (def && !settled) followRoot(def);
   return {};
+}
+
+/** The bindings a node holds, conditions included (the binding a comparison reads). */
+function nodeBindings(n: GraphNode) {
+  return bindingSlots(n).flatMap((slot) => {
+    const condition = slot.field === 'when' || slot.field === 'unless';
+    const b = condition ? conditionRef(slot.value) : isBinding(slot.value) ? slot.value : undefined;
+    return b ? [{ slot, b, comparison: condition && isComparison(slot.value) ? slot.value : undefined }] : [];
+  });
+}
+
+const showsItemField = (n: GraphNode) => nodeBindings(n).some(({ b }) => '$item' in b);
+
+/**
+ * Moved definition content must still find the list items it shows. Where a node's nearest repeat now goes over
+ * another list (or there is none), each item field it shows has to be a field of that list, of a type that fits
+ * where it is shown; a repeat cannot land inside a repeat over its own list. A move between two repeats over the
+ * same list changes nothing it shows.
+ */
+function checkMovedItemFields(state: ProjectState, def: ComponentDefinition, listsBefore: Map<string, string | undefined>) {
+  for (const [id, before] of listsBefore) {
+    const n = def.tree!.nodes[id];
+    const list = enclosingRepeatProp(def, id);
+    if (list === before) continue;
+    if (n.kind === 'repeat' && list !== undefined && n.list.$prop === list) fail('A repeat cannot repeat the list it is already inside.');
+    for (const { slot, b, comparison } of nodeBindings(n)) {
+      if (!('$item' in b)) continue;
+      const what = `${displayName(state, n, def)} shows the list item field "${b.$item}"`;
+      if (list === undefined) fail(`${what}, so it has to stay inside a repeat over its list.`);
+      const schema = boundSchema(def, id, b);
+      const nested = slot.field === 'prop' && n.kind === 'instance' ? state.components[n.definitionId]?.properties[slot.prop!] : undefined;
+      const ok = acceptedTypes(n, slot.field, nested);
+      if (!schema || (ok && !ok.includes(schema.type)) || bindingProblem(state, { node: n, field: slot.field, prop: slot.prop, comparison }, schema))
+        fail(`${what}, which "${list}" items do not have${schema ? ' in a fitting type' : ''}.`);
+    }
+  }
 }
 
 function nodeDuplicate(state: ProjectState, op: Op<'node.duplicate'>): OpResult {
   const tree = editableTree(state, op.owner);
   const info = findParent(tree, op.nodeId) ?? fail('Node is not attached.');
+  if (op.owner.kind === 'component' && info.list === tree.rootIds) fail(ROOT_IS_COMPONENT('duplicated'));
   // The copy goes right after the original, or (the editor duplicating several siblings) where `index` says in the
   // same list, so the copies stay together after the last of them.
   const at = op.index ?? info.index + 1;

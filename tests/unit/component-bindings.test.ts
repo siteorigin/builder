@@ -794,6 +794,8 @@ describe('bindings outside a component (#90)', () => {
     const page = home(s);
     page.nodes.n_named = { id: 'n_named', kind: 'link', link: { type: 'url', target: 'https://example.com/named' }, label: 'Named', appearance: 'link', ariaLabel: { $item: 'name' } };
     page.rootIds.push('n_named');
+    // It still renders, and opening the project says what is wrong with it (#205).
+    expect(validateState(s).filter((d) => d.code === 'BINDING_SCOPE').map((d) => d.nodeId)).toEqual(['n_named']);
     expect(compileErrors(s)).toEqual([]);
     expect(await renderHome(s)).toMatch(/<a href="https:\/\/example\.com\/named"[^>]*>Named<\/a>/);
   });

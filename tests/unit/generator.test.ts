@@ -468,10 +468,14 @@ describe('SEO and performance', () => {
     // Two of three columns: two thirds of the container.
     wrap.styles = { base: { columnSpan: '2' } };
     expect(photoSizes(s)).toEqual(['(min-width: 1024px) 800px, (min-width: 768px) 100vw, 100vw', DEFAULT, DEFAULT]);
-    // Uneven columns: an item may sit in the widest one.
+    // Uneven columns: an item may sit in the widest one. For all sizes they apply from tablet up, so a phone keeps
+    // one column.
     gridNode.styles = { base: { layout: 'grid', gridTemplate: '1fr 2fr' } };
     wrap.styles = {};
-    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 800px, (min-width: 768px) 66.67vw, 66.67vw']);
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 800px, (min-width: 768px) 66.67vw, 100vw']);
+    // With a count and column sizes both set, a stronger rule sizing cannot see may pick either: the wider one is assumed.
+    gridNode.styles = { base: { layout: 'grid', columns: 1, gridTemplate: '1fr 1fr' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
     // A column count that is not a whole number makes no columns.
     gridNode.styles = { base: { layout: 'grid', columns: 2.5 } };
     expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);

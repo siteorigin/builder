@@ -298,6 +298,10 @@ function slotFor(state: ProjectState, definitionId: string): string | undefined 
 /** Work out where an inserted section or element should go, relative to the selection (or to `from`), in the project
  *  as this window has it (or as `snapshot` has it). */
 export function insertionPoint(kind: 'section' | 'element', from: ElementRef | null = getState().selection, snapshot: ProjectSnapshot | null = getState().snapshot): InsertAt | null {
+  return snapshot ? insideComponent(snapshot.state, placeFor(kind, from, snapshot)) : null;
+}
+
+function placeFor(kind: 'section' | 'element', from: ElementRef | null, snapshot: ProjectSnapshot): InsertAt | null {
   const owner = currentOwner();
   if (!owner || !snapshot) return null;
   const state = snapshot.state;
@@ -333,6 +337,22 @@ export function insertionPoint(kind: 'section' | 'element', from: ElementRef | n
     if (last?.kind === 'instance') return { owner, parentId: last.id, slot: slotFor(state, last.definitionId) };
   }
   return { owner, parentId: null };
+}
+
+/**
+ * A component has one top-level element, the component itself: what would go beside it goes at the end of it, and
+ * nothing can be inserted into one that holds nothing (a paragraph). A design from an older version without its one
+ * root keeps the top level, where an element can be inserted to hold the others.
+ */
+function insideComponent(state: ProjectState, at: InsertAt | null): InsertAt | null {
+  if (!at || at.owner.kind !== 'component' || at.parentId) return at;
+  const tree = treeFor(state, at.owner);
+  if (tree?.rootIds.length !== 1) return at;
+  const node = tree.nodes[tree.rootIds[0]];
+  if (node?.kind === 'element') return { owner: at.owner, parentId: node.id };
+  const slot = node?.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
+  if (slot) return { owner: at.owner, parentId: node!.id, slot };
+  return node?.kind === 'repeat' || node?.kind === 'slot' ? at : null;
 }
 
 /**

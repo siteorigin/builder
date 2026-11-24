@@ -252,7 +252,15 @@ export function tokenVar(tokenId: string): string {
   return `--so-${tokenId.replace(/[^a-zA-Z0-9]+/g, '-')}`;
 }
 
-const LENGTH_RE = /^(-?\d*\.?\d+(px|rem|em|%|vw|vh|svh|dvh|ch|ex)?|auto|0)$/;
+/** A length literal: a number with a unit, or a unitless zero (CSS drops any other unitless number). */
+const LENGTH_RE = /^(-?\d*\.?\d+(px|rem|em|%|vw|vh|svh|dvh|ch|ex)|-?0*\.?0+)$/;
+/** Lengths CSS lets the browser work out (`auto`): sizes, margins and offsets, not padding, gaps or corners. */
+const AUTO_LENGTHS = new Set(['width', 'height', 'minWidth', 'minHeight', 'marginBlockStart', 'marginBlockEnd', 'marginInlineStart', 'marginInlineEnd', 'inset']);
+/** Lengths CSS gives no negative value: a negative padding, gap, size, corner radius or font size is dropped. */
+const NON_NEGATIVE_LENGTHS = new Set([
+  'paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd',
+  'gap', 'rowGap', 'columnGap', 'width', 'height', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'radius', 'fontSize', 'lineHeight'
+]);
 const FN_RE = /^(clamp|min|max|calc)\([0-9a-z.,%+\-*/ ()]+\)$/i;
 const COLOR_RE = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color-mix)\([0-9a-z.,%+\-/ ()#]+\)|transparent|currentcolor|white|black)$/i;
 const SAFE_RE = /^[^;{}<>\\]*$/;
@@ -654,9 +662,15 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       if (propId === 'inset') {
         // One to four offsets; spaces inside calc() and friends do not separate values.
         const parts = splitTop(s, (ch) => /\s/.test(ch));
-        return parts.length <= 4 && parts.every((x) => LENGTH_RE.test(x) || FN_RE.test(x)) ? null : `"${s}" is not a valid offset. Use one to four lengths such as 0 or 12px 24px.`;
+        return parts.length <= 4 && parts.every((x) => x === 'auto' || LENGTH_RE.test(x) || FN_RE.test(x)) ? null : `"${s}" is not a valid offset. Use one to four lengths such as 0 or 12px 24px.`;
       }
-      return LENGTH_RE.test(s) || FN_RE.test(s) ? null : `"${s}" is not a valid length. Use values such as 24px, 1.5rem or 50%.`;
+      if (FN_RE.test(s)) return null;
+      if (s === 'auto') return AUTO_LENGTHS.has(propId) ? null : `${def.label} cannot be auto. Use a length such as 24px.`;
+      const length = LENGTH_RE.test(s);
+      const number = /^-?\d*\.?\d+$/.test(s);
+      if (!length && !number) return `"${s}" is not a valid length. Use values such as 24px, 1.5rem or 50%.`;
+      if (NON_NEGATIVE_LENGTHS.has(propId) && s.startsWith('-') && /[1-9]/.test(s)) return `${def.label} cannot be negative.`;
+      return length ? null : `"${s}" needs a unit, such as ${s}px or ${s}rem.`;
     case 'textStyle':
       // Text styles are token references. A bare token ID ("text.h2") is read as one; anything else is refused.
       return TEXT_TOKEN_RE.test(s) ? null : `${def.label} must be a text token reference such as { "token": "text.h2" }, not "${s.slice(0, 40)}".`;
@@ -904,9 +918,34 @@ export function scopeForWidth(width: number): 'phone' | 'tablet' | 'desktop' {
  */
 export function wideOnlyStyle(prop: string, value: unknown, wideColumns = false): boolean {
   if (prop === 'columnSpan') return value !== 'full' && Number(value) > 1;
+  // Column sizes for all sizes are uneven or as-many-as-fit tracks: a phone keeps its own column count.
+  if (prop === 'gridTemplate') return true;
   if (!wideColumns) return false;
-  if (prop === 'columns') return Number(value) > 1;
-  return prop === 'gridTemplate';
+  return prop === 'columns' && Number(value) > 1;
+}
+
+/** Whether a source of styles sets column sizes for All sizes that the stylesheet writes (see `withColumnSizes`). */
+export function columnSizesForAllSizes(styles: ResponsiveStyles | undefined): boolean {
+  const template = styles?.base?.gridTemplate;
+  return template !== undefined && template !== null && !validateStyleValue('gridTemplate', typeof template === 'string' ? template.trim() : template);
+}
+
+/**
+ * One source of styles (a node's own, a variant's, a placement's) as the generated CSS writes it. Column sizes
+ * override Columns: set for all sizes, they apply from tablet up (see `wideOnlyStyle`), and a column count the same
+ * source sets for tablet or desktop is left out so it cannot win back those sizes. The All sizes count stays as the
+ * phone layout. A template the stylesheet would not write overrides nothing.
+ */
+export function withColumnSizes(styles: ResponsiveStyles): ResponsiveStyles {
+  if (!columnSizesForAllSizes(styles)) return styles;
+  if (styles.tablet?.columns === undefined && styles.desktop?.columns === undefined) return styles;
+  const out: ResponsiveStyles = { ...styles };
+  for (const size of ['tablet', 'desktop'] as const) {
+    if (out[size]?.columns === undefined) continue;
+    const { columns: _overridden, ...rest } = out[size]!;
+    out[size] = rest;
+  }
+  return out;
 }
 
 /**
@@ -982,7 +1021,7 @@ export function cascadeStyles(layers: StyleLayer[]): ResponsiveStyles {
     // Where a weaker rule hides the element, so a `hidden: false` here writes a display that shows it again.
     const weakerHides = (size: Size) => !!layer.unhides?.some((l) => l?.base?.hidden === true || l?.[size]?.hidden === true);
     // Visibility is folded the way the stylesheet writes it: a hide with sizes shown again hides in the others.
-    const folded = resolveVisibility(raw);
+    const folded = resolveVisibility(withColumnSizes(raw));
     for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
       for (const [prop, value] of Object.entries(folded[scope] ?? {})) {
         if (value === undefined) continue;
