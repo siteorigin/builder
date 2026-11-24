@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArchiveRestore, ArrowLeft, Bookmark, BookmarkPlus, History, Trash2 } from 'lucide-react';
 import type { SavedVersionInfo, VersionReview } from '@shared/api';
 import { api, confirmDialog, getState, setState, toast, undoAction, useStore } from '../store';
@@ -46,6 +46,15 @@ export function SavedVersionsModal() {
   const readOnly = snap?.readOnly?.reason ?? null;
   const blocked = readOnly ?? (snap?.aiBusy ? 'Wait for the AI to finish to save or restore a version.' : (info?.problem ?? null));
   const close = () => setState({ modal: null });
+  const nameField = useRef<HTMLInputElement>(null);
+  // Opened from a menu, the menu holds on to focus until it has gone: the name field takes it then.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const field = nameField.current;
+      if (field && !field.disabled && !field.closest('.modal')?.contains(document.activeElement)) field.focus();
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -194,7 +203,7 @@ export function SavedVersionsModal() {
             Save a version before a redesign or a review. It keeps every page, style and component, with the images and fonts they use, until you delete it. Changes only reach back 100 steps.
           </p>
           <form className="version-save" onSubmit={(e) => void save(e)}>
-            <input className="input" aria-label="Version name" data-autofocus placeholder="Name, such as “Approved by client”" maxLength={NAME_MAX} value={name} disabled={!!blocked || busy} onChange={(e) => setName(e.target.value)} />
+            <input ref={nameField} className="input" aria-label="Version name" data-autofocus placeholder="Name, such as “Approved by client”" maxLength={NAME_MAX} value={name} disabled={!!blocked || busy} onChange={(e) => setName(e.target.value)} />
             <button className="btn btn-primary" type="submit" disabled={!!blocked || busy || !name.trim()}>
               {busy ? <Spinner decorative /> : <BookmarkPlus />} Save version
             </button>
