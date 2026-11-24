@@ -1275,6 +1275,16 @@ export class Controller {
     return s && key && this.workspaceKey === key && !this.closing ? s : null;
   }
 
+  /**
+   * Copy page content for the editor's Paste, in the opening `key` only (#240): a Copy pressed in one project never
+   * reads another that opened meanwhile, which may be a duplicate holding the same page and element IDs.
+   */
+  copy(pageId: string, nodeId: string | readonly string[], expectedRevision: number, key: string): Promise<{ ok: boolean; clipboardId?: string; message?: string }> {
+    const s = this.openedAs(key);
+    if (!s) return Promise.resolve({ ok: false, message: 'That project is no longer open.' });
+    return s.copy(pageId, nodeId, expectedRevision);
+  }
+
   /** Save the site as it is now as a named version (issue 260), in the opening `key` only. */
   async saveVersion(name: string, key: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }> {
     const s = this.openedAs(key);
