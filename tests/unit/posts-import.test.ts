@@ -313,7 +313,7 @@ describe('the import reader process', () => {
     };
     return { spawn, spawned };
   }
-  const source: ParsedSource = { kind: 'markdown', label: 'posts', root: '/x', posts: [], media: [], skipped: [] };
+  const source: ParsedSource = { kind: 'markdown', label: 'posts', root: '/x', realRoot: '/x', posts: [], media: [], skipped: [] };
 
   it('answers with what the reader read, and ends the reader', async () => {
     const { spawn, spawned } = fakeWorker((m, w) => w.reply({ id: m.id, ok: true, source }));
@@ -602,7 +602,7 @@ describe('the import reader process: what it asks and how it stops', () => {
   it('sends the project’s pages, and stop() ends every read in progress', async () => {
     const sent: ReadRequest[] = [];
     let killed = 0;
-    const spawn = (): ReaderHandle => ({ postMessage: (m) => void sent.push(m), on: () => undefined, kill: () => (killed++, true) }) as unknown as ReaderHandle;
+    const spawn = (): ReaderHandle => ({ postMessage: (m: ReadRequest) => void sent.push(m), on: () => undefined, kill: () => (killed++, true) }) as unknown as ReaderHandle;
     const reader = createSourceReader(spawn, { timeoutMs: 5000 });
     const pagesMap = { pg_1: { id: 'pg_1', route: '/about/' } };
     const reads = [reader.read('wordpress', '/x/a.xml', pagesMap), reader.read('markdown', '/x/posts', {})];
