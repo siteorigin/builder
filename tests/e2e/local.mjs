@@ -198,7 +198,8 @@ try {
   await eventually(async () => assert.equal(await runModel(), 'Sent to Local model · second-model'));
   await chooseLocalModel('first-model');
   const composerModel = win.locator('.composer-model');
-  await win.getByRole('button', { name: 'Next: Local model · first-model', exact: true }).waitFor();
+  await win.getByRole('button', { name: 'Next: first-model, Local model. Change AI provider or model', exact: true }).waitFor();
+  assert.equal((await composerModel.innerText()).trim(), 'Next: first-model');
   assert.equal(await runModel(), 'Sent to Local model · second-model', 'the running turn still names the model it went to');
   assert.match(await strip.locator('.run-phase').innerText(), /Working/);
   const notice = win.locator('.switch-note');
@@ -209,9 +210,9 @@ try {
   await win.locator('.msg-ai').last().getByText('Noted cobalt.').waitFor();
   assert.equal(posts().at(-1).body.model, 'second-model', 'the held request was sent to the model chosen when it started');
   assert.deepEqual(await turnModels(), ['Handled by Local model · second-model', 'Handled by Local model · second-model']);
-  // Once nothing runs, the selector names the next message to assistive technology only.
-  await win.getByRole('button', { name: 'Next message: Local model · first-model', exact: true }).waitFor();
-  assert.equal(await composerModel.locator('.sr-only').innerText(), 'Next message:');
+  // Once nothing runs, the selector shows the model, and says out loud that it is for the next message.
+  await win.getByRole('button', { name: 'Next message: first-model, Local model. Change AI provider or model', exact: true }).waitFor();
+  assert.equal((await composerModel.innerText()).trim(), 'first-model');
 
   step('Start fresh takes the unsent message to a new conversation without the earlier ones');
   await notice.waitFor();
