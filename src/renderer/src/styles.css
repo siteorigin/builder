@@ -1302,6 +1302,18 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .history-list li.focus { background: var(--accent-soft); }
 .history-list li.undone .grow { text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 50%, transparent); }
 .history-list time { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.history-tabs { margin-bottom: 12px; }
+.version-save { display: flex; gap: 8px; margin: 0 0 12px; }
+.version-save .input { flex: 1; min-width: 0; }
+.version-save + .scope-note { margin-bottom: 12px; }
+.versions-list li { min-height: 48px; padding: 6px 8px 6px 12px; }
+.version-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.version-text small { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.version-total { margin: 8px 0 0; font-size: 12px; }
+.version-review h3 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+.version-review > .muted:first-of-type { margin-top: 0; }
+.version-review .scope-note { margin-top: 12px; }
+.version-loading { display: flex; align-items: center; gap: 8px; color: var(--text-2); }
 .modal-foot .spacer { flex: 1; }
 .switch-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
 .switch-row label { font-weight: 400; color: var(--text); }

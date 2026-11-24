@@ -64,6 +64,78 @@ export interface HistoryInfo {
   entries: Array<{ id: string; label: string; source: string; time: string; applied: boolean; runId?: string }>;
 }
 
+/** One saved version of the site, as History lists it (issue 260). */
+export interface SavedVersionInfo {
+  id: string;
+  name: string;
+  /** When it was saved (ISO time). */
+  time: string;
+  /** Saved by the app before a restore, as the way back to the work that restore replaced. */
+  auto: boolean;
+  /** How many pages it holds. */
+  pages: number;
+  /** What deleting it frees: what no other saved version also holds. */
+  bytes: number;
+  /** Files its documents name that were missing from the project folder when it was saved. */
+  missing: string[];
+}
+
+/** The saved versions of the open project. */
+export interface VersionsInfo {
+  /** Newest first. */
+  list: SavedVersionInfo[];
+  /** What all saved versions take together, each file counted once. */
+  bytes: number;
+  /** Why versions can't be saved or deleted (their list could not be read), if so. */
+  problem?: string;
+}
+
+/** What restoring a saved version would change in the project as it is now. */
+export interface VersionReview {
+  /** The revision this was worked out at: a restore passes it back, and a project changed since is refused. */
+  revision: number;
+  /** Why the version can't be restored, if so. */
+  problem?: string;
+  /** Page titles: pages that come back, pages that go, and pages that change. */
+  pages: { back: string[]; gone: string[]; changed: string[] };
+  /** Site settings (name, header, footer, addresses) change. */
+  site: boolean;
+  /** Site styles (colors, fonts, spacing) change. */
+  styles: boolean;
+  /** How many components change, come back or go. */
+  components: number;
+  /** The image and font library changes. */
+  library: boolean;
+  /** Files put back in the project folder: missing now, or holding something else. */
+  files: string[];
+  /** Of those, the files there now holding something else: Undo leaves them as the version has them. */
+  replaced: string[];
+  /** Files the restore that saved this version put where none were, which restoring it leaves (Undo of that needs them). */
+  left: string[];
+  /** Files its documents name that were missing when it was saved: restoring can't bring them back. */
+  missing: string[];
+  /** The project already matches it. */
+  unchanged: boolean;
+}
+
+export interface RestoreVersionResult {
+  ok: boolean;
+  message?: string;
+  revision?: number;
+  /** The history entry the restore made, for its Undo. Absent when only files changed. */
+  entryId?: string;
+  /** The saved version that holds the work the restore replaced. */
+  backup?: { id: string; name: string };
+  /** The project changed since the version was reviewed: review it again. */
+  stale?: boolean;
+  /** The project already matched the version, so nothing changed. */
+  unchanged?: boolean;
+  /** How many files that held something else it put back: Undo leaves them, the saved work from before has them. */
+  replaced?: number;
+  /** Files an earlier restore put back that this one leaves in the project folder. */
+  left?: string[];
+}
+
 export type RuntimeState =
   | { state: 'idle' }
   | { state: 'preparing'; message: string }
@@ -98,6 +170,8 @@ export interface ProjectSnapshot {
   workspaceKey: string;
   /** What this opening of the project exported, newest first. */
   recentExports: RecentExport[];
+  /** Named versions of the site saved in this project. */
+  versions?: VersionsInfo;
 }
 
 export interface LocalWorkspaceState {
@@ -175,6 +249,8 @@ export interface StorageInfo {
   kept: StorageSize;
   /** The saved document versions Undo and Redo restore. */
   history: { steps: number; bytes: number };
+  /** Named versions saved in History, with the documents and files each holds. Only deleting a version frees them. */
+  versions: { count: number; bytes: number };
   /** What freeing up space would do; null when there is nothing to free. */
   reclaim: ReclaimPlan | null;
   /** Why space cannot be freed right now, if so. */
@@ -498,6 +574,17 @@ export interface BuilderApi {
     storage(workspaceKey: string): Promise<StorageInfo | null>;
     /** Carry out the reclaim `planKey` (from `storage`) in the opening `workspaceKey`, dropping the undo steps it named. */
     reclaimStorage(planKey: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; freed?: number }>;
+    /** Save the site as it is now as a named version, kept until it is deleted (opening `workspaceKey`). `missing`: files its documents name that are not in the folder. */
+    saveVersion(name: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }>;
+    /** What restoring saved version `id` would change now. */
+    reviewVersion(id: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; review?: VersionReview }>;
+    /**
+     * Restore saved version `id` as reviewed at `revision`, putting back the files the review listed: one Undo step for
+     * the documents, after saving the work it replaces as a version. Anything else changed since is `stale`.
+     */
+    restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, workspaceKey: string): Promise<RestoreVersionResult>;
+    /** Delete saved version `id`, freeing what only it held. */
+    deleteVersion(id: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; freed?: number }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
     /**
      * Build the website. `published` is the IDs of the pages the author was shown as published: an export whose

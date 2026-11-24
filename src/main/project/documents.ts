@@ -94,6 +94,8 @@ export interface ReadOptions {
   overlay?: Map<string, string | null>;
   /** Read a project written by a newer version (for read-only inspection only). */
   allowNewer?: boolean;
+  /** Read these documents and nothing from the folder (a saved version): a document not here is absent. */
+  only?: Map<string, string>;
 }
 
 /** The project in the current format. Reading never writes: a session publishes a migration itself. */
@@ -129,16 +131,18 @@ export async function readProject(dir: string, opts: ReadOptions = {}): Promise<
 }
 
 async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, string>): Promise<ProjectState> {
-  const overlay = opts.overlay ?? new Map<string, string | null>();
+  const only = opts.only;
+  // Reading only given documents, every other document counts as absent, whatever the folder holds.
+  const overlay: Map<string, string | null> = only ?? opts.overlay ?? new Map<string, string | null>();
   const text = async (rel: string): Promise<string | null> => {
-    const t = overlay.has(rel) ? overlay.get(rel)! : await readIfExists(safeJoin(dir, rel));
+    const t = overlay.has(rel) ? overlay.get(rel)! : only ? null : await readIfExists(safeJoin(dir, rel));
     if (t !== null) raw.set(rel, t);
     return t;
   };
-  const exists = (rel: string) => (overlay.has(rel) ? overlay.get(rel) !== null : existsSync(join(dir, rel)));
+  const exists = (rel: string) => (overlay.has(rel) ? overlay.get(rel) !== null : !only && existsSync(join(dir, rel)));
   /** Directory entries on disk, plus overlay documents in that folder, minus overlay deletions. */
   const list = async (rel: string, pick: (overlayPath: string) => string | null): Promise<string[]> => {
-    const names = new Set(existsSync(join(dir, rel)) ? await fs.readdir(join(dir, rel)) : []);
+    const names = new Set(!only && existsSync(join(dir, rel)) ? await fs.readdir(join(dir, rel)) : []);
     for (const [p, c] of overlay) {
       const name = pick(p);
       if (name !== null && c !== null) names.add(name);

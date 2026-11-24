@@ -7,7 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import type { PageDoc, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
-import type { StorageInfo } from '@shared/api';
+import type { RestoreVersionResult, StorageInfo, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '@engine/apply';
 import { listThemes, themePinProblem } from '@catalogue/index';
@@ -24,6 +24,7 @@ import { packFileInfo, readPackFile } from '../packs/files';
 import { checkSvelteSource, componentSources } from '../codecheck';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -170,6 +171,21 @@ interface AssetFile {
   mtimeMs: number;
   ino: number;
   token: string;
+}
+
+/** Does `text` name `file` as a whole file name, so that `a-logo.svg` is not found inside `ba-logo.svg`? */
+function namesFile(text: string, file: string): boolean {
+  for (let i = text.indexOf(file); i >= 0; i = text.indexOf(file, i + 1)) if (i === 0 || !/[\w.-]/.test(text[i - 1])) return true;
+  return false;
+}
+
+/** A restore stopped before its documents were saved: the files it put back are put back as they were. */
+class RestoreStopped extends Error {}
+
+/** The name of the version saved before restoring the one named `name`, kept short however often restores nest. */
+function backupName(name: string): string {
+  const short = name.length > 50 ? `${name.slice(0, 49).trimEnd()}…` : name;
+  return `Before restoring “${short}”`;
 }
 
 /** Every stored version a history entry restores or expects. */
@@ -383,9 +399,12 @@ export class ProjectSession extends EventEmitter {
   private clipboards: Clipboard[] = [];
   /** A save failed after its journal was written: only reopening the project can finish it, so nothing else is written. */
   private unsettled = false;
+  /** Named versions of the site, kept apart from history until the author deletes them (issue 260). */
+  private versions: VersionStore;
 
   constructor(public readonly dir: string) {
     super();
+    this.versions = new VersionStore(this.local('versions'));
   }
 
   local(...parts: string[]): string {
@@ -442,6 +461,7 @@ export class ProjectSession extends EventEmitter {
     s.state = await readState(dir, { allowNewer: true });
     s.docs = stateToDocs(s.state);
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)).catch(() => null));
+    await s.versions.load().catch(() => undefined);
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
     return s;
@@ -459,6 +479,10 @@ export class ProjectSession extends EventEmitter {
     s.migrationDue = !!read.migration;
     s.docs = stateToDocs(s.state);
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)));
+    // Before the first sweep, which collects what no saved version names.
+    await s.versions.load();
+    const interrupted = await s.versions.takeRestoring().catch(() => null);
+    if (interrupted) s.recoveryNotes.push(`Restoring “${interrupted.version}” was interrupted, so some of it may be missing. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
     s.generated = (await readIfExists(join(dir, 'siteorigin', 'generated-manifest.json')).then((t) => (t ? JSON.parse(t) : null))) ?? s.generated;
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
@@ -1780,6 +1804,8 @@ export class ProjectSession extends EventEmitter {
     }
     const keep = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs), ...(await this.blobsNamedOnDisk())]);
     for (const b of sizes.keys()) if (!keep.has(b)) await fs.rm(join(blobDir, `${b}.json`), { force: true });
+    // What a save of a version that stopped part way left, which no version names.
+    await this.versions.collect().catch(() => 0);
     await this.gateAssets(() => this.collectAssets());
   }
 
@@ -1997,7 +2023,14 @@ export class ProjectSession extends EventEmitter {
       if (inHistory && !inv!.pinned.has(f.token)) freeable.push(f);
     }
     const sum = (blobs: Iterable<string>) => [...new Set(blobs)].reduce((n, b) => n + (sizes.get(b) ?? 0), 0);
-    const info: StorageInfo = { media, kept, history: { steps: h.entries.length, bytes: sum(h.entries.flatMap(entryBlobs)) }, reclaim: null, blocked: this.reclaimBlocked() };
+    const info: StorageInfo = {
+      media,
+      kept,
+      history: { steps: h.entries.length, bytes: sum(h.entries.flatMap(entryBlobs)) },
+      versions: { count: this.versions.versions.length, bytes: this.versions.totalBytes() },
+      reclaim: null,
+      blocked: this.reclaimBlocked()
+    };
     if (!inv || !freeable.length) return { info, drop: null };
     const tokens = new Set(freeable.map((f) => f.token));
     const names = (i: number) => [...tokens].some((t) => inv.byEntry[i].has(t));
@@ -2091,12 +2124,412 @@ export class ProjectSession extends EventEmitter {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // Saved versions (issue 260)
+  // -------------------------------------------------------------------------
+
+  /** The saved versions, newest first, with what each one alone takes on disk. */
+  versionsInfo(): VersionsInfo {
+    const store = this.versions;
+    return {
+      list: [...store.versions].reverse().map((v) => ({
+        id: v.id,
+        name: v.name,
+        time: v.time,
+        auto: !!v.auto,
+        pages: Object.keys(v.docs).filter((p) => PAGE_DOC.test(p)).length,
+        bytes: store.exclusiveBytes(v),
+        missing: Object.keys(v.media).filter((p) => v.media[p] === null)
+      })),
+      bytes: store.totalBytes(),
+      ...(store.problem ? { problem: store.problem } : {})
+    };
+  }
+
+  /** Why a version can't be saved or restored now, if so. */
+  private async versionsBlocked(): Promise<string | null> {
+    const blocked = await this.writeBlocked();
+    if (blocked) return blocked.error?.message ?? LOCK_UNCHECKED;
+    // The documents hold the AI's provisional work while it runs.
+    if (this.activeRun) return 'Wait for the AI to finish, then try again.';
+    return this.versions.problem;
+  }
+
+  /**
+   * The media files a version of `docs` holds: every file the asset library lists (originals and smaller copies), and
+   * every other public file under static/ that a document names. A file directly in static/assets/ is named as the
+   * sweep finds it, an imported one by its eight hash characters and any other by its whole name (a code component's
+   * /assets/logo.svg); one anywhere else by its address on the site (/brand/logo.svg, or /brand/My%20Logo.svg).
+   * Generated and private files are never held (see heldAsMedia).
+   */
+  private async versionMediaPaths(docs: Map<string, string>): Promise<string[]> {
+    const out = new Set(libraryFiles(docs.get(ASSETS_DOC)).filter(heldAsMedia));
+    let root: string;
+    try {
+      root = safeJoin(this.dir, 'static');
+    } catch {
+      return [...out].sort();
+    }
+    const texts = [...docs.values()];
+    const byAddress = (rel: string) => {
+      const address = rel.slice('static'.length);
+      const encoded = encodeURI(address);
+      return texts.some((t) => namesFile(t, address) || (encoded !== address && namesFile(t, encoded)));
+    };
+    const consider = async (abs: string, rel: string, name: string) => {
+      if (out.has(rel) || !heldAsMedia(rel) || this.generated.files[rel]) return;
+      const named =
+        rel === `static/assets/${name}` ? (IMPORTED_ASSET_RE.test(name) ? texts.some((t) => t.includes(assetToken(name))) : texts.some((t) => namesFile(t, name)) || byAddress(rel)) : byAddress(rel);
+      // A link it names is held as missing, so the author is told rather than the file left out unseen. Folders aren't files.
+      const st = named ? await fs.lstat(abs).catch(() => null) : null;
+      if (st && !st.isDirectory()) out.add(rel);
+    };
+    const entries = async (dir: string) => ((await fs.lstat(dir).catch(() => null))?.isDirectory() ? await fs.readdir(dir).catch(() => [] as string[]) : []);
+    // static/assets/, where the app keeps media, always in full; then the rest of static/, through real folders only,
+    // up to a generous number of entries, so a huge folder of other files can't hold a save up.
+    for (const name of await entries(join(root, 'assets'))) if (!name.startsWith('.')) await consider(join(root, 'assets', name), `static/assets/${name}`, name);
+    let budget = 20_000;
+    const walk = async (dir: string, rel: string, depth: number): Promise<void> => {
+      for (const name of await entries(dir)) {
+        if (name.startsWith('.') || --budget < 0) continue;
+        const childRel = `${rel}/${name}`;
+        const abs = join(dir, name);
+        const st = await fs.lstat(abs).catch(() => null);
+        if (st?.isDirectory()) {
+          if (depth < 12) await walk(abs, childRel, depth + 1);
+        } else if (st && !st.isDirectory() && childRel !== `static/assets/${name}`) await consider(abs, childRel, name);
+      }
+    };
+    await walk(root, 'static', 0);
+    return [...out].sort();
+  }
+
+  /**
+   * Store the project as it is now, its documents and the media they name (and `also`, files a restore is about to put
+   * something else in), as a version not yet in the list. A file that is not there, or is a link, is kept as missing;
+   * one that could not be read stops the save.
+   */
+  private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
+    const docs: Record<string, string> = {};
+    for (const [path, content] of this.docs) docs[path] = await this.versions.putText(content);
+    const media: Record<string, string | null> = {};
+    for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
+      let abs: string;
+      try {
+        abs = safeJoin(this.dir, rel);
+      } catch {
+        // Reached through a link out of the project: not the project's own file, so held as missing.
+        media[rel] = null;
+        continue;
+      }
+      try {
+        const st = await fs.lstat(abs);
+        media[rel] = st.isFile() ? await this.versions.putFile(abs) : null;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`${rel} could not be read, so nothing was saved: ${(e as Error).message}`);
+        media[rel] = null;
+      }
+    }
+    const filled = opts.filled && Object.keys(opts.filled).length ? { filled: opts.filled } : {};
+    return { id: newVersionId(), name, time: new Date().toISOString(), revision: this.revision, schemaVersion: SCHEMA_VERSION, ...(opts.auto ? { auto: true } : {}), docs, media, ...filled };
+  }
+
+  /**
+   * Save the site as it is now as a named version, kept until the author deletes it. A file its documents name that
+   * is missing from the folder does not stop the save: it is listed in `missing`, and the version records it as such.
+   */
+  saveVersion(name: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }> {
+    return this.serialize(async () => {
+      const why = await this.versionsBlocked();
+      if (why) return { ok: false, message: why };
+      const clean = name.replace(/\s+/g, ' ').trim();
+      if (!clean) return { ok: false, message: 'Give the version a name.' };
+      if (clean.length > VERSION_NAME_MAX) return { ok: false, message: `Use a name of at most ${VERSION_NAME_MAX} characters.` };
+      // A change made outside the app and not loaded yet would be missing from it, under the author's chosen name.
+      const unloaded = await this.unloadedEdit(new Set());
+      if (unloaded) return { ok: false, message: `${unloaded} changed outside the app. Try again in a moment.` };
+      let v: SavedVersion;
+      try {
+        v = await this.captureVersion(clean);
+        // Storing a large library takes a while: something may have changed outside the app meanwhile, or an Unlock
+        // from another app taken the project over.
+        const late = await this.unloadedEdit(new Set());
+        if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
+        if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
+        await this.versions.publish([...this.versions.versions, v]);
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+      this.emit('history');
+      return { ok: true, id: v.id, missing: Object.keys(v.media).filter((p) => v.media[p] === null) };
+    });
+  }
+
+  /**
+   * What restoring `v` leaves: the project it holds, brought up to the current format if it is older, with this
+   * project's own manifest (its identity stays, whichever version of the site it holds), and the files to put back.
+   * Every object it needs is read and checked, and the project it leaves validated, before anything is written.
+   */
+  private async restorePlan(v: SavedVersion): Promise<{ ok: false; message: string } | { ok: true; state: ProjectState; docs: Map<string, string>; files: Array<{ path: string; hash: string; replaces: boolean }>; left: string[] }> {
+    const refuse = (message: string) => ({ ok: false as const, message });
+    if (v.schemaVersion > SCHEMA_VERSION) return refuse(`“${v.name}” was saved by a newer version of SiteOrigin Builder. Update the app to restore it.`);
+    const stored = new Map<string, string>();
+    try {
+      for (const [path, h] of Object.entries(v.docs)) stored.set(path, (await this.versions.read(h)).toString('utf8'));
+    } catch (e) {
+      return refuse((e as Error).message);
+    }
+    let state: ProjectState;
+    try {
+      const read = await readProject(this.dir, { only: stored });
+      state = { ...read.state, manifest: this.state.manifest };
+    } catch (e) {
+      return refuse(`“${v.name}” can’t be restored: ${(e as Error).message}`);
+    }
+    // Reading fills a component's missing code with nothing: a version without it is damaged, not empty.
+    for (const def of Object.values(state.components)) if (def.sourcePath && !stored.has(def.sourcePath)) return refuse(VERSION_DAMAGED);
+    const fatal = validateState(state, { sectionLinks: false }).find((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
+    if (fatal) return refuse(`“${v.name}” can’t be restored: ${fatal.message}`);
+    const resolve = componentSources(state.components);
+    for (const def of Object.values(state.components)) {
+      if (def.kind !== 'code' || def.source === undefined || def.source === this.state.components[def.id]?.source) continue;
+      if (def.owner === 'theme' && listThemes().some((t) => t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
+      const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
+      if (bad.length) return refuse(`The code for “${def.name}” in “${v.name}” has problems, so it can’t be restored: ${bad[0].message}`);
+    }
+    const files: Array<{ path: string; hash: string; replaces: boolean }> = [];
+    for (const [path, h] of Object.entries(v.media)) {
+      if (h === null || !heldAsMedia(path) || this.generated.files[path]) continue;
+      let abs: string;
+      try {
+        abs = safeJoin(this.dir, path);
+      } catch (e) {
+        return refuse(`“${v.name}” can’t put back ${path}: ${(e as Error).message}`);
+      }
+      const st = await fs.lstat(abs).catch(() => null);
+      if (st && !st.isFile()) return refuse(`${path} is not a file, so “${v.name}” can’t put back its own.`);
+      if (st && sha(await fs.readFile(abs)) === h) continue;
+      try {
+        await this.versions.read(h);
+      } catch (e) {
+        return refuse((e as Error).message);
+      }
+      files.push({ path, hash: h, replaces: !!st });
+    }
+    // Files the restore that saved this version put where none were, still as it left them: restoring this leaves them.
+    const left: string[] = [];
+    for (const [path, h] of Object.entries(v.filled ?? {})) {
+      if (v.media[path]) continue;
+      const abs = safeJoin(this.dir, path);
+      if ((await fs.lstat(abs).catch(() => null))?.isFile() && sha(await fs.readFile(abs)) === h) left.push(path);
+    }
+    return { ok: true, state, docs: stateToDocs(state), files, left };
+  }
+
+  /** What restoring saved version `id` would change in the project as it is now. Changes nothing. */
+  reviewVersion(id: string): Promise<{ ok: boolean; message?: string; review?: VersionReview }> {
+    // Queued behind any save, so it compares with a settled project, but it never writes.
+    return this.serialize(async () => {
+      const v = this.versions.versions.find((x) => x.id === id);
+      if (!v) return { ok: false, message: 'That saved version is no longer there.' };
+      const review: VersionReview = {
+        revision: this.revision,
+        pages: { back: [], gone: [], changed: [] },
+        site: false,
+        styles: false,
+        components: 0,
+        library: false,
+        files: [],
+        replaced: [],
+        left: [],
+        missing: Object.keys(v.media).filter((p) => v.media[p] === null),
+        unchanged: false
+      };
+      const plan = await this.restorePlan(v);
+      if (!plan.ok) return { ok: true, review: { ...review, problem: plan.message } };
+      const title = (s: ProjectState, pageId: string) => s.pages[pageId]?.title?.trim() || 'Untitled page';
+      let differs = false;
+      for (const p of new Set([...plan.docs.keys(), ...this.docs.keys()])) {
+        if (plan.docs.get(p) === this.docs.get(p)) continue;
+        differs = true;
+        const pageId = p.match(PAGE_DOC)?.[1];
+        if (pageId) {
+          if (!this.docs.has(p)) review.pages.back.push(title(plan.state, pageId));
+          else if (!plan.docs.has(p)) review.pages.gone.push(title(this.state, pageId));
+          else review.pages.changed.push(title(plan.state, pageId));
+        } else if (p === `${DOC_DIR}/site.json`) review.site = true;
+        else if (p === `${DOC_DIR}/tokens.json`) review.styles = true;
+        else if (p === ASSETS_DOC) review.library = true;
+      }
+      const ids = new Set([...Object.keys(plan.state.components), ...Object.keys(this.state.components)]);
+      review.components = [...ids].filter((c) => JSON.stringify(plan.state.components[c] ?? null) !== JSON.stringify(this.state.components[c] ?? null)).length;
+      review.files = plan.files.map((f) => f.path);
+      review.replaced = plan.files.filter((f) => f.replaces).map((f) => f.path);
+      review.left = plan.left;
+      review.unchanged = !differs && !plan.files.length;
+      return { ok: true, review };
+    }, false);
+  }
+
+  /**
+   * Restore saved version `id`, as reviewed at `expectedRevision` with `reviewed` files to put back. Whatever each of
+   * those files holds now is copied aside first, and the work the restore replaces is saved as a version of its own
+   * (holding those files too), unless one already holds exactly that, so the way back outlasts the undo history. Then
+   * the files are put back and the documents saved as one ordinary step that Undo takes back. Undo changes documents
+   * only: a file put back over another stays (the version saved first has the other), and one put back where none was
+   * is never removed, so every step history keeps still finds the files it names. If anything fails before the
+   * documents' save is journaled, the files go back to what they held; a stop part way is reported on reopening.
+   */
+  restoreVersion(id: string, expectedRevision: number, reviewed?: { files: string[]; replaced: string[] }): Promise<RestoreVersionResult> {
+    return this.serialize(async () => {
+      const why = await this.versionsBlocked();
+      if (why) return { ok: false, message: why };
+      const v = this.versions.versions.find((x) => x.id === id);
+      if (!v) return { ok: false, message: 'That saved version is no longer there.' };
+      const stale = { ok: false, stale: true, message: 'The project changed since this version was reviewed. Review it again before restoring.' };
+      if (expectedRevision !== this.revision) return stale;
+      const plan = await this.restorePlan(v);
+      if (!plan.ok) return { ok: false, message: plan.message };
+      // A file changed outside the app since the review would be put back without the author having been told.
+      const same = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+      if (reviewed && (!same(reviewed.files, plan.files.map((f) => f.path)) || !same(reviewed.replaced, plan.files.filter((f) => f.replaces).map((f) => f.path)))) return stale;
+      const docsChange = plan.docs.size !== this.docs.size || [...plan.docs].some(([p, c]) => this.docs.get(p) !== c);
+      if (!docsChange && !plan.files.length) return { ok: true, unchanged: true, revision: this.revision };
+      // A change made outside the app and not loaded yet would vanish under the restore: it waits for it.
+      const unloaded = await this.unloadedEdit(new Set());
+      if (unloaded) return { ok: false, message: `${unloaded} changed outside the app. Try again in a moment.` };
+      // What each file holds now, by hash, one at a time; whatever would be replaced is copied aside, path and all.
+      const aside = `restore-${Date.now()}`;
+      const prior = new Map<string, string | null>();
+      for (const f of plan.files) {
+        const abs = safeJoin(this.dir, f.path);
+        let bytes: Buffer | null = null;
+        try {
+          if (!(await fs.lstat(abs)).isFile()) return { ok: false, message: `${f.path} is not a file, so nothing was restored.` };
+          bytes = await fs.readFile(abs);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return { ok: false, message: `${f.path} could not be read, so nothing was restored: ${(e as Error).message}` };
+        }
+        if (!!bytes !== f.replaces) return stale;
+        prior.set(f.path, bytes && sha(bytes));
+        if (bytes && sha(bytes) !== f.hash) await atomicWrite(this.local('recovery', aside, f.path), bytes);
+      }
+      // The way back. If it can't be saved nothing is restored; a stop after it leaves one more version.
+      const replaced = plan.files.filter((f) => prior.get(f.path)).map((f) => f.path);
+      const filled = Object.fromEntries(plan.files.filter((f) => !prior.get(f.path)).map((f) => [f.path, f.hash]));
+      let backup: SavedVersion;
+      try {
+        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled });
+        const kept = this.versions.versions.find((x) => sameContents(x, now));
+        backup = kept ?? now;
+        if (!kept) {
+          if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
+          await this.versions.publish([...this.versions.versions, now]);
+        }
+      } catch (e) {
+        return { ok: false, message: `Your current work could not be saved first, so nothing was restored. ${(e as Error).message}` };
+      }
+      const way = { id: backup.id, name: backup.name };
+      this.emit('history');
+      const label = `Restore “${v.name}”`;
+      const written: Array<{ path: string; hash: string; prior: string | null }> = [];
+      let ev: SessionEvent | null = null;
+      const earlier = await this.versions.markRestoring(v.name, way.name);
+      const clear = async () => {
+        if (!earlier) await this.versions.clearRestoring().catch(() => undefined);
+      };
+      const docsBefore = this.docs;
+      try {
+        for (const f of plan.files) {
+          const before = prior.get(f.path) ?? null;
+          if (before === f.hash) continue;
+          // A takeover by another app, or a change to the file since it was copied aside, stops the restore.
+          if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
+          const abs = safeJoin(this.dir, f.path);
+          // Read before the file is checked, so as little time as possible passes between the check and the write.
+          const bytes = await this.versions.read(f.hash);
+          const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+          if (now !== before) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
+          // Noted before writing: a write that lands but fails to report so is still undone.
+          written.push({ path: f.path, hash: f.hash, prior: before });
+          await atomicWrite(abs, bytes);
+        }
+        if (written.length) await this.refreshAssetFiles().catch(() => false);
+        if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
+        if (docsChange) ev = await this.persist(plan.state, { label, source: 'user' });
+      } catch (e) {
+        // Once the documents are saved (in place, or journaled for reopening to finish), the files stay with them; before
+        // that, nothing of the restore is kept.
+        const installed = this.docs !== docsBefore;
+        const journaled = this.unsettled && existsSync(this.local('journal.json'));
+        if (installed && !journaled) await clear();
+        if (!installed && !journaled) {
+          if (await this.putFilesBack(written, aside)) await clear();
+          if (written.length) await this.refreshAssetFiles().catch(() => false);
+        }
+        if (e instanceof DiskConflictError || e instanceof RestoreStopped) return { ok: false, message: e.message, backup: way };
+        throw e;
+      }
+      await clear();
+      if (!ev) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: written.map((w) => w.path), label, source: 'user' } satisfies SessionEvent);
+      return { ok: true, revision: this.revision, entryId: ev?.entryId, backup: way, replaced: written.filter((w) => w.prior).length, left: plan.left };
+    });
+  }
+
+  /**
+   * Undo a restore's file writes, each only while it still holds what the restore wrote: a file goes back to the copy
+   * set aside in recovery/`aside`, and one that was not there is removed again. Says whether every one was settled.
+   */
+  private async putFilesBack(written: Array<{ path: string; hash: string; prior: string | null }>, aside: string): Promise<boolean> {
+    let clean = true;
+    for (const w of [...written].reverse()) {
+      try {
+        const abs = safeJoin(this.dir, w.path);
+        // The copy is read first, so the check below comes as close to the write as it can.
+        const copy = w.prior === null ? null : await fs.readFile(this.local('recovery', aside, w.path));
+        if (copy && sha(copy) !== w.prior) throw new Error('The copy set aside is damaged.');
+        const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+        // Never written, or changed again since by someone else: either way, not the restore's to touch.
+        if (now !== w.hash) continue;
+        if (copy) await atomicWrite(abs, copy);
+        else await removeDurable(abs);
+      } catch {
+        clean = false;
+      }
+    }
+    return clean;
+  }
+
+  /** Delete saved version `id`, and what no other version holds. */
+  deleteVersion(id: string): Promise<{ ok: boolean; message?: string; freed?: number }> {
+    return this.serialize(async () => {
+      const blocked = await this.writeBlocked();
+      if (blocked) return { ok: false, message: blocked.error?.message };
+      if (this.versions.problem) return { ok: false, message: this.versions.problem };
+      const left = this.versions.versions.filter((v) => v.id !== id);
+      if (left.length === this.versions.versions.length) return { ok: true, freed: 0 };
+      try {
+        await this.versions.publish(left);
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+      const freed = await this.versions.collect().catch(() => 0);
+      this.emit('history');
+      return { ok: true, freed };
+    });
+  }
+
   /** A canonical document, other than `skip`, that differs on disk from the loaded project, or a page file it lacks. */
   private async unloadedEdit(skip: Set<string>): Promise<string | null> {
     for (const [path, cur] of this.docs) if (!skip.has(path) && !sameContent(path, await this.diskContent(path), cur)) return path;
     for (const f of await fs.readdir(join(this.dir, DOC_DIR, 'pages')).catch(() => [] as string[])) {
       const path = `${DOC_DIR}/pages/${f}`;
       if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path)) return path;
+    }
+    // A component added outside the app (a folder left by an interrupted delete has no definition, and is no edit).
+    for (const d of await fs.readdir(join(this.dir, DOC_DIR, 'components')).catch(() => [] as string[])) {
+      const path = `${DOC_DIR}/components/${d}/component.json`;
+      if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path) && existsSync(join(this.dir, path))) return path;
     }
     return null;
   }
