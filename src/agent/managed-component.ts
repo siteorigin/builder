@@ -11,7 +11,9 @@
 import { z } from 'zod';
 import type { EditOperation, Op } from '@shared/ops';
 import type { PropSchema, ProjectState, TokenGroup } from '@shared/types';
-import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from '@shared/types';
+import { APPEAR_PRESETS, COMPONENT_CATEGORIES, ELEMENT_ACTIONS, SLOT_PRIMITIVES } from '@shared/types';
+import { TABLE_LIMITS } from '@engine/table';
+import { MAX_CHOICES } from '@engine/values';
 import { STYLE_PROP_MAP } from '@shared/styles';
 import { newId } from '@shared/ids';
 import { projectDefinitionId } from '@shared/component-ids';
@@ -59,7 +61,8 @@ const CONDITIONS = {
   unless: CONDITION.optional().describe('Hidden while it is set, or while the comparison holds.')
 };
 const CHILDREN = z.array(NODE_ID).max(200).optional().describe('IDs of the nodes inside it, in order.');
-const NODE_HEAD = { id: NODE_ID.describe('Its ID in the design, such as "title" or "card".'), name: z.string().max(60).optional() };
+const NODE_HEAD = { id: NODE_ID.describe('Its ID in the design, such as "title" or "card".'), name: z.string().max(60).optional(), anchor: z.string().max(62).optional() };
+const APPEAR = z.enum(APPEAR_PRESETS as unknown as [string, ...string[]]).optional().describe('How it enters when first scrolled into view.');
 
 const NODE = z.discriminatedUnion('kind', [
   z
@@ -71,7 +74,9 @@ const NODE = z.discriminatedUnion('kind', [
       link: bindable(LINK).optional().describe('Makes the whole container one link (a card): nothing inside may be a link.'),
       ariaLabel: bindable(z.string()).optional(),
       collapseEmpty: z.boolean().optional().describe('Hidden when everything inside it is hidden.'),
-      anchor: z.string().max(62).optional(),
+      action: bindable(z.enum(ELEMENT_ACTIONS as unknown as [string, ...string[]])).optional().describe('What clicking it does: none, image (open its image full size) or link.'),
+      carousel: z.literal(true).optional().describe('A list whose items scroll sideways as a carousel.'),
+      appear: APPEAR,
       styles: STYLES,
       ...CONDITIONS
     })
@@ -83,6 +88,7 @@ const NODE = z.discriminatedUnion('kind', [
       tag: bindable(z.string()).optional().describe('h2, h3, p, span… Defaults to p.'),
       text: bindable(z.union([z.string(), z.array(z.string())])),
       rich: z.boolean().optional().describe('Rich text (paragraphs, lists, links), bound to a richtext property.'),
+      datetime: bindable(z.string()).optional().describe('A YYYY-MM-DD date the text states, rendered as a <time>.'),
       styles: STYLES,
       ...CONDITIONS
     })
@@ -104,7 +110,14 @@ const NODE = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('icon'), ...NODE_HEAD, icon: bindable(z.string()), ariaLabel: bindable(z.string()).optional(), styles: STYLES, ...CONDITIONS }).strict(),
   z.object({ kind: z.literal('divider'), ...NODE_HEAD, styles: STYLES, ...CONDITIONS }).strict(),
   z
-    .object({ kind: z.literal('repeat'), ...NODE_HEAD, list: z.string().describe('The list property shown once per item; nodes inside show item fields with {"$item": field}.'), children: CHILDREN, ...CONDITIONS })
+    .object({
+      kind: z.literal('repeat'),
+      ...NODE_HEAD,
+      list: z.string().describe('The list property shown once per item; nodes inside show item fields with {"$item": field}.'),
+      children: CHILDREN,
+      appearStagger: z.boolean().optional(),
+      ...CONDITIONS
+    })
     .strict(),
   z.object({ kind: z.literal('slot'), ...NODE_HEAD, slot: z.string().describe('The declared slot whose content shows here.'), ...CONDITIONS }).strict()
 ]);
@@ -123,7 +136,7 @@ const scalarProps = () =>
     z.object({ type: z.literal('icon'), ...PROP_HEAD, default: z.string().max(40).optional() }).strict(),
     z.object({ type: z.literal('token'), ...PROP_HEAD, tokenGroup: z.enum(TOKEN_GROUPS), default: z.string().optional().describe('A token ID of that group, such as color.brand.') }).strict(),
     z
-      .object({ type: z.literal('choices'), ...PROP_HEAD, default: z.array(z.object({ label: z.string().max(200), value: z.string().max(200).optional() }).strict()).max(50).optional().describe('Answers a visitor picks from, in order.') })
+      .object({ type: z.literal('choices'), ...PROP_HEAD, default: z.array(z.object({ label: z.string().max(200), value: z.string().max(200).optional() }).strict()).max(MAX_CHOICES).optional().describe('Answers a visitor picks from, in order.') })
       .strict()
   ] as const;
 const FIELD = z.discriminatedUnion('type', [...scalarProps()]);
@@ -149,7 +162,10 @@ const PROPERTY = z.discriminatedUnion('type', [
       type: z.literal('table'),
       ...PROP_HEAD,
       default: z
-        .object({ columns: z.array(z.string().max(80)).min(1).max(12), rows: z.array(z.array(z.string().max(500)).max(12)).max(100) })
+        .object({
+          columns: z.array(z.string().max(TABLE_LIMITS.label)).min(1).max(TABLE_LIMITS.columns),
+          rows: z.array(z.array(z.string().max(TABLE_LIMITS.cell)).max(TABLE_LIMITS.columns)).max(TABLE_LIMITS.rows)
+        })
         .strict()
         .optional()
         .describe('Column names, then one row per entry with one text per column.')
@@ -276,8 +292,8 @@ const keyOf = (row: unknown, key: string): string | undefined => (isRecord(row) 
 
 /**
  * A rejected call's rows with a repair's applied: each row sent replaces every held row with its key (so a key that
- * was given twice is left once), a new key is added at the end, and `removed` keys go. A held row with no key, which the
- * error named for that, is left out: the repair sends it again with one.
+ * was given twice is left once), a new key is added at the end, and `removed` keys go. A held row with no key stays as
+ * it was (a property dropped unseen would take its values from every placement): only a whole call replaces it.
  */
 function mergeRows(held: unknown, sent: unknown, key: string, removed: ReadonlySet<string>): unknown {
   // Something that is not a list stays as it was sent, for the argument check to name: never read as an empty list.
@@ -285,7 +301,7 @@ function mergeRows(held: unknown, sent: unknown, key: string, removed: ReadonlyS
   if (!Array.isArray(held)) return sent === undefined ? held : sent;
   const out = held.filter((r) => {
     const k = keyOf(r, key);
-    return k !== undefined && !removed.has(k);
+    return k === undefined || !removed.has(k);
   });
   for (const row of (sent as unknown[] | undefined) ?? []) {
     const k = keyOf(row, key);
@@ -302,7 +318,7 @@ function mergeRows(held: unknown, sent: unknown, key: string, removed: ReadonlyS
 
 const REPAIR_KEYS = new Set(['repair', 'removeNodes', 'removeProperties', 'nodes', 'properties']);
 /** Checked before a repair uses them: a list of names, or nothing. */
-const names = (v: unknown): v is string[] | undefined => v === undefined || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+const names = (v: unknown, max: number): v is string[] | undefined => v === undefined || (Array.isArray(v) && v.length <= max && v.every((x) => typeof x === 'string'));
 
 function mergeRepair(held: Record<string, unknown>, sent: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...held };
@@ -339,11 +355,14 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
   if (!isRecord(raw)) return fieldError([{ field: 'arguments', message: 'expected an object' }], 'Nothing was applied.');
   // Anything but a plain true or false would be taken for a whole new description, losing what a repair keeps.
   if (raw.repair !== undefined && typeof raw.repair !== 'boolean') return fieldError([{ field: 'repair', message: 'expected true or false' }], 'Nothing was applied.');
-  for (const k of ['removeNodes', 'removeProperties'] as const) {
+  for (const [k, max] of [['removeNodes', 100], ['removeProperties', 60]] as const) {
     if (raw[k] === undefined) continue;
     if (raw.repair !== true) return fieldError([{ field: k, message: 'only with repair: true' }], 'Nothing was applied.');
-    if (!names(raw[k])) return fieldError([{ field: k, message: 'expected a list of names' }], 'Nothing was applied.');
+    if (!names(raw[k], max)) return fieldError([{ field: k, message: `expected a list of up to ${max} names` }], 'Nothing was applied.');
   }
+  // Read below before the arguments are checked: anything but text is the arguments' to name, never a crash here.
+  for (const k of ['name', 'definitionId'] as const)
+    if (raw[k] !== undefined && typeof raw[k] !== 'string') return fieldError([{ field: k, message: 'expected text' }], 'Nothing was applied.');
   const state = host.state();
   const drafts = (memory.componentDrafts ??= new Map());
   let given = raw;
@@ -355,12 +374,12 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
     const draft = drafts.get(from);
     if (!draft)
       return fieldError(
-        [{ field: 'repair', message: `there is no rejected call ${raw.definitionId !== undefined ? `rebuilding "${String(raw.definitionId)}"` : `creating "${String(raw.name ?? '')}"`} to repair. A rebuild's repair names its definitionId` }],
+        [{ field: 'repair', message: `there is no rejected call ${raw.definitionId !== undefined ? `rebuilding "${raw.definitionId as string}"` : `creating "${(raw.name as string | undefined) ?? ''}"`} to repair. A rebuild's repair names its definitionId` }],
         SEND_WHOLE
       );
     if (draft.target !== targetOf(state, draft.args)) {
       drafts.delete(from);
-      return fieldError([{ field: 'repair', message: `"${String(draft.args.name ?? '')}" changed since that call was rejected` }], `Read it again and ${SEND_WHOLE.charAt(0).toLowerCase()}${SEND_WHOLE.slice(1)}`);
+      return fieldError([{ field: 'repair', message: `"${typeof draft.args.name === 'string' ? draft.args.name : ''}" changed since that call was rejected` }], `Read it again and ${SEND_WHOLE.charAt(0).toLowerCase()}${SEND_WHOLE.slice(1)}`);
     }
     given = mergeRepair(draft.args, raw);
     target = draft.target;
@@ -370,7 +389,16 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
   if (from) drafts.delete(from);
   drafts.set(draftKey(held), { args: held, target });
   const parsed = MANAGED_COMPONENT_ARGS.safeParse(held);
-  if (!parsed.success) return fieldError(parsed.error.issues.flatMap((i) => issueRows(i)).slice(0, MAX_ISSUES), NOTHING_APPLIED);
+  if (!parsed.success) {
+    const rows = parsed.error.issues.flatMap((i) => issueRows(i)).slice(0, MAX_ISSUES);
+    // A row missing the id or name a repair addresses it by can only be replaced by a whole call.
+    for (const r of rows) {
+      const m = /^(nodes|properties)\[(\d+)\]\.(id|name)$/.exec(r.field);
+      const row = m && Array.isArray(held[m[1]]) ? (held[m[1]] as unknown[])[Number(m[2])] : undefined;
+      if (m && keyOf(row, m[3]) === undefined) r.message += `. A row without its ${m[3]} cannot be repaired by it: send the whole component again, without repair`;
+    }
+    return fieldError(rows, NOTHING_APPLIED);
+  }
   const compiled = compile(state, parsed.data);
   if ('issues' in compiled) return fieldError(compiled.issues.slice(0, MAX_ISSUES), NOTHING_APPLIED);
   const { op, place, index } = compiled;
@@ -386,23 +414,24 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
   // The engine checks the description as the finished component: run it on a copy first, alone so a problem it finds
   // is named by the field it came from, then with its placement, as the session will apply them, so what only the two
   // together break (a list item placed straight on a page) is named by placeOnPage.
-  const failure = (e: unknown, fallback: string) => {
+  const failure = (e: unknown, placing: boolean) => {
     const details = (e as EngineError).details;
     const owner = isRecord(details) && isRecord(details.owner) ? details.owner.kind : undefined;
-    // A page's problem is the placement asked for here; without one, it is an existing placement the design no longer fits.
-    const field = owner === 'page' ? (place ? 'placeOnPage' : 'nodes') : fallback === 'placeOnPage' && owner !== 'component' ? 'placeOnPage' : index.locate((e as Error).message, details);
+    // Alone, a page's problem is an existing placement the design no longer fits; only what the placement adds fails
+    // with it, and is the placement's unless it names a node of the design.
+    const field = owner === 'page' ? (placing ? 'placeOnPage' : 'nodes') : placing && owner !== 'component' ? 'placeOnPage' : index.locate((e as Error).message, details);
     return fieldError([{ field, message: (e as Error).message }], NOTHING_APPLIED);
   };
   try {
     applyOperations(state, [op]);
   } catch (e) {
-    return failure(e, 'nodes');
+    return failure(e, false);
   }
   if (place) {
     try {
       applyOperations(state, ops);
     } catch (e) {
-      return failure(e, 'placeOnPage');
+      return failure(e, true);
     }
   }
 
@@ -442,8 +471,8 @@ interface SourceIndex {
 type Compiled = { op: Op<'component.upsert'>; place: Op<'node.insert'> | null; index: SourceIndex } | { issues: FieldIssue[] };
 
 const BINDABLE: Partial<Record<NodeArgs['kind'], BindField[]>> = {
-  element: ['tag', 'link', 'ariaLabel'],
-  text: ['tag', 'text'],
+  element: ['tag', 'link', 'ariaLabel', 'action'],
+  text: ['tag', 'text', 'datetime'],
   image: ['image', 'fallbackAlt'],
   link: ['link', 'label', 'appearance', 'icon', 'ariaLabel'],
   icon: ['icon', 'ariaLabel']
@@ -493,21 +522,16 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     const sent = propertySchema(p, at, issues);
     if (!sent) return;
     const old = was && Object.hasOwn(was.properties, p.name) ? (was.properties[p.name] as unknown as Record<string, unknown>) : undefined;
-    const kept = old?.type === p.type ? keptSettings(old, sent) : sent;
+    const kept = old?.type === p.type ? keptSettings(old, restoreClipped(sent, old)) : sent;
+    const carried = KEPT_PROPERTY_KEYS.filter((k) => Object.hasOwn(kept, k) && !Object.hasOwn(sent, k));
+    properties[p.name] = kept;
     try {
       props.set(p.name, { at: i, schema: normalizePropSchema(kept, state, p.name) });
-      properties[p.name] = kept;
     } catch (e) {
-      // What it kept no longer fits the fields this call gives it (a page list's card fields renamed, say): the call's
-      // own description stands, as the call describes it.
-      try {
-        if (kept === sent) throw e;
-        props.set(p.name, { at: i, schema: normalizePropSchema(sent, state, p.name) });
-        properties[p.name] = sent;
-      } catch (err) {
-        properties[p.name] = sent;
-        issues.push({ field: propertyField(p, at, (err as Error).message), message: (err as Error).message });
-      }
+      // What it kept no longer fits the fields this call gives it: said, never dropped unseen (a list filled from the
+      // site's pages would become an empty list on every placement).
+      const why = carried.length ? ` It keeps ${carried.join(' and ')} from the component as it is, which this tool cannot change: keep the fields that needs, or give the property a new name.` : '';
+      issues.push({ field: propertyField(p, at, (e as Error).message), message: `${(e as Error).message}${why}` });
     }
   });
 
@@ -581,13 +605,9 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   const designNodes = nodes.map((n, i) => {
     const at = `nodes[${i}]`;
     const out: Record<string, unknown> = { ...n };
-    // A rebuild keeps what a node it names again had that this tool cannot say (a carousel track, an entrance, a
-    // date), and a text read back shortened (ending in …) keeps its whole text.
+    // A text a rebuild sends back as read_component shortened it keeps its whole text.
     const prev = was?.tree && Object.hasOwn(was.tree.nodes, n.id) ? (was.tree.nodes[n.id] as unknown as Record<string, unknown>) : undefined;
-    if (prev?.kind === n.kind) {
-      for (const k of KEPT_NODE_KEYS[n.kind] ?? []) if (Object.hasOwn(prev, k) && out[k] === undefined) out[k] = prev[k];
-      if (n.kind === 'text' && typeof n.text === 'string' && n.text.endsWith('…') && typeof prev.text === 'string' && prev.text.length > n.text.length && prev.text.startsWith(n.text.slice(0, -1))) out.text = prev.text;
-    }
+    if (prev?.kind === 'text' && n.kind === 'text') out.text = unclip(n.text, prev.text);
     for (const field of BINDABLE[n.kind] ?? []) {
       const v = (n as Record<string, unknown>)[field];
       if (v === undefined) continue;
@@ -728,17 +748,26 @@ function keptSettings(old: Record<string, unknown>, sent: Record<string, unknown
   return out;
 }
 
-/** What a design node keeps through a rebuild that this tool has no field for, by its kind. */
-const KEPT_NODE_KEYS: Partial<Record<string, readonly string[]>> = {
-  element: ['action', 'carousel', 'appear'],
-  text: ['datetime', 'anchor'],
-  image: ['anchor'],
-  link: ['anchor'],
-  icon: ['anchor'],
-  divider: ['anchor'],
-  repeat: ['appearStagger', 'anchor'],
-  slot: ['anchor']
-};
+/** How read_component shortens a long text it shows (see summarizeValue in context.ts): to this length, ending in …. */
+const SHOWN_CHARS = 220;
+/** A text sent back as a read shortened it: the stored whole text it stands for, else what was sent. */
+function unclip(sent: unknown, stored: unknown): unknown {
+  return typeof sent === 'string' && sent.length === SHOWN_CHARS && sent.endsWith('…') && typeof stored === 'string' && stored.length > SHOWN_CHARS && stored.startsWith(sent.slice(0, -1)) ? stored : sent;
+}
+
+/** A property's default, its list items' (by ID) and its object's values, with texts sent back shortened made whole. */
+function restoreClipped(sent: Record<string, unknown>, old: Record<string, unknown>): Record<string, unknown> {
+  const given = sent.default;
+  if (given === undefined) return sent;
+  if (typeof given === 'string') return { ...sent, default: unclip(given, old.default) };
+  const values = (v: Record<string, unknown>, was: Record<string, unknown>) => Object.fromEntries(Object.entries(v).map(([k, x]) => [k, unclip(x, was[k])]));
+  if (Array.isArray(given) && Array.isArray(old.default)) {
+    const byId = new Map(old.default.filter(isRecord).map((item) => [item.id, item]));
+    return { ...sent, default: given.map((item) => (isRecord(item) && typeof item.id === 'string' && byId.has(item.id) ? values(item, byId.get(item.id)!) : item)) };
+  }
+  if (isRecord(given) && isRecord(old.default)) return { ...sent, default: values(given, old.default) };
+  return sent;
+}
 
 /** The property's schema as the operation takes it, its rows turned back into maps. */
 function propertySchema(p: PropertyArgs, at: string, issues: FieldIssue[]): Record<string, unknown> | null {

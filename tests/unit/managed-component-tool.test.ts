@@ -495,32 +495,64 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(s.state.components[id]).toEqual(before);
   });
 
-  it('keeps through a rebuild the node settings the tool has no field for, and a text read back shortened', async () => {
+  it('takes back as whole a text, default or item value a read shortened, and nothing that only ends in an ellipsis', async () => {
     const { s, call } = await session();
     const long = 'Every plan includes setup, training and a named contact. '.repeat(6).trim();
+    const shown = `${long.slice(0, 219)}…`;
     const args = pricing();
     args.nodes[3] = { kind: 'text', id: 'intro', tag: 'p', text: long } as never;
+    (args.properties[0] as { default: string }).default = long;
+    (args.properties[3] as { default: Array<{ id?: string; values: unknown[] }> }).default[0].values.push({ field: 'price', value: long } as never);
+    (args.properties[3] as { default: Array<{ id?: string; values: unknown[] }> }).default[0].values.splice(1, 1);
     const made = await call(args);
+    expect(made.ok).toBe(true);
     const id = made.content.definitionId;
-    const r = await s.apply({ operations: [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: 'root', field: 'appear', value: 'fade' }] }, { label: 'Entrance' });
-    expect(r.ok).toBe(true);
-    // The rebuild sends the text as read_component shows it: cut short, ending in …
+    // The rebuild sends them as read_component shows them: cut to 220 characters, ending in …, with an entrance it read.
     const again = pricing({ definitionId: id });
-    again.nodes[3] = { kind: 'text', id: 'intro', tag: 'p', text: `${long.slice(0, 219)}…` } as never;
+    again.nodes[0] = { ...again.nodes[0], appear: 'fade' } as never;
+    again.nodes[3] = { kind: 'text', id: 'intro', tag: 'p', text: shown } as never;
+    (again.properties[0] as { default: string }).default = shown;
+    (again.properties[3] as { default: Array<{ id?: string; values: unknown[] }> }).default[0].values.splice(1, 1, { field: 'price', value: shown } as never);
+    again.nodes[8] = { kind: 'text', id: 'name', tag: 'h3', text: 'Plans…' } as never;
     expect((await call(again)).ok).toBe(true);
-    const nodes = s.state.components[id].tree!.nodes;
-    expect(nodes.root).toMatchObject({ appear: 'fade' });
-    expect(nodes.intro).toMatchObject({ text: long });
+    const def = s.state.components[id];
+    expect(def.tree!.nodes.intro).toMatchObject({ text: long });
+    expect(def.tree!.nodes.root).toMatchObject({ appear: 'fade' });
+    expect(def.properties.heading.default).toBe(long);
+    expect((def.properties.plans.default as ListItem[]).find((p) => p.id === 'basic')!.price).toBe(long);
+    // An ellipsis the call means is kept as it is.
+    expect(def.tree!.nodes.name).toMatchObject({ text: 'Plans…' });
   });
 
-  it('names a rebuild its existing placements cannot take by the design, not by a placement it did not ask for', async () => {
+  it('keeps a row a repair cannot address, and names a malformed definitionId instead of failing on it', async () => {
+    const { s, call } = await session();
+    const bad = pricing();
+    bad.properties.push({ type: 'string', label: 'Internal note' } as never);
+    bad.nodes[8] = { kind: 'text', id: 'name', tag: 'h3', text: { $item: 'title' } } as never;
+    const first = await call(bad);
+    expect(fields(first.content)).toEqual(expect.arrayContaining(['properties[5].name']));
+    const msg = (out: { content: Record<string, any> }, f: string) => (out.content.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)?.message;
+    expect(msg(first, 'properties[5].name')).toMatch(/cannot be repaired by it: send the whole component again/);
+    // Mending the node leaves the nameless property where it was, still refused, rather than dropping it unseen.
+    const again = await call({ name: 'Pricing table', repair: true, nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }] });
+    expect(fields(again.content)).toEqual(['properties[5].name']);
+    const count = Object.keys(s.state.components).length;
+    const odd = await executeTool('upsert_managed_component', JSON.stringify({ name: 'Cards', repair: true, definitionId: { toString: null } }), { ...{ state: () => s.state, revision: () => s.revision }, macros: newMacroMemory() } as unknown as ToolHost, 'odd');
+    expect(odd.ok).toBe(false);
+    expect((odd.content as { fields: Array<{ field: string }> }).fields.map((f) => f.field)).toEqual(['definitionId']);
+    expect(Object.keys(s.state.components)).toHaveLength(count);
+  });
+
+  it('names a rebuild its existing placements cannot take by the design, whether or not it asks for another placement', async () => {
     const { call, home } = await session();
     const made = await call(pricing({ placeOnPage: { pageId: home } }));
-    const next = pricing({ definitionId: made.content.definitionId });
-    next.nodes[0] = { ...next.nodes[0], tag: 'li' } as never;
-    const out = await call(next);
-    expect(out.ok).toBe(false);
-    expect(fields(out.content)).not.toContain('placeOnPage');
+    for (const placeOnPage of [undefined, { pageId: home }]) {
+      const next = pricing({ definitionId: made.content.definitionId, ...(placeOnPage ? { placeOnPage } : {}) });
+      next.nodes[0] = { ...next.nodes[0], tag: 'li' } as never;
+      const out = await call(next);
+      expect(out.ok).toBe(false);
+      expect(fields(out.content)).toEqual(['nodes']);
+    }
   });
 
   it('refuses a rebuild a placement cannot take, leaving the page, the design and the history as they were', async () => {
