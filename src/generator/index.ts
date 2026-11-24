@@ -30,8 +30,9 @@ import { ELEMENT_TAGS, GENERATOR_VERSION, TEXT_TAGS, isBinding, isComparison, ty
 import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, linkOf, resolveVisibility, styleDeclOrder, styleToCss, textLinkLeadsToText, textStyleValue, tokenVar, wideOnlyStyle } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
-import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
+import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, validateRoute } from '@shared/routes';
+import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
@@ -42,6 +43,8 @@ import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 import { derived, isTracked, type GenerationCache } from './cache';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
+// checks imports this module too: only its functions are used here, at generation time, never while loading.
+import { notFoundSectionRoutes } from './checks';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -1683,12 +1686,15 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const imports = renderImports(hctx.imports);
   // An old address only sends visitors on: it shows no header or footer while it does.
   const redirects = liveRedirects(state).map((r) => routeId(r.from));
-  const without = (part: ShellPart) =>
-    state.site.pageOrder
+  const without = (part: ShellPart) => {
+    const hidden = state.site.pageOrder
       .filter((id) => Object.hasOwn(state.pages, id) && !showsPart(state.pages[id], part))
       .map((id) => routeId(state.pages[id].route))
-      .concat(redirects)
-      .sort();
+      .concat(redirects);
+    // The not-found page shows the part when a page does. Served at a missing address, it starts with no route at all.
+    const shown = state.site.pageOrder.some((id) => Object.hasOwn(state.pages, id) && showsPart(state.pages[id], part));
+    return (shown ? hidden : hidden.concat(routeId(NOT_FOUND_ROUTE), '')).sort();
+  };
   const favicon = state.site.favicon && state.assets.assets[state.site.favicon];
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
   const iconType = favicon ? favicon.mime : 'image/svg+xml';
@@ -1888,6 +1894,115 @@ export function generateSitemap(state: ProjectState): string | null {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 }
 
+// ---------------------------------------------------------------------------
+// Not-found page
+// ---------------------------------------------------------------------------
+
+/** Where the not-found page sends section links, worked out once per state in a cached run (see notFoundSectionRoutes). */
+const notFoundSections = (state: ProjectState) => derived(state, 'notFoundSections', notFoundSectionRoutes);
+
+/** The route folder of the not-found page. */
+export const NOT_FOUND_DIR = `src/routes/${routeDir(NOT_FOUND_ROUTE)}`;
+
+/**
+ * The page visitors see at an address the site does not have: the author's heading and message inside the site's
+ * own header and footer, then a link to the Home page that is always there, whatever the wording. It is built to
+ * 404.html at the root of the website, the file static hosts serve for a missing address. Search engines are asked
+ * not to list it.
+ */
+export function generateNotFound(state: ProjectState): string {
+  const { heading, message, linkLabel } = notFoundCopy(state.site);
+  const title = `${heading} · ${state.site.name}`;
+  // The sections the header and footer link to "on this page": the build sends those links to the page that has
+  // each (see generateServerHook), and these targets keep the page buildable for a project with a hook of its own.
+  const targets = Object.keys(notFoundSections(state))
+    .map((id) => `\n\t\t<span id=${attrJs(id)}></span>`)
+    .join('');
+  return (
+    HEADER_NOTE('siteorigin/site.json') +
+    `<script>
+	import { resolve } from '$app/paths';
+</script>
+
+<svelte:head>
+	<title>{${js(title)}}</title>
+	<meta name="robots" content="noindex" />
+</svelte:head>
+
+<section class="so-not-found">
+	<div class="so-container so-not-found__inner">${targets}
+		<h1 class="so-not-found__heading">{${js(heading)}}</h1>
+		<p class="so-not-found__message">{${js(message)}}</p>
+		<a class="so-btn so-btn--primary" href={resolve('/')}>{${js(linkLabel)}}</a>
+	</div>
+</section>
+
+<style>
+	.so-not-found {
+		padding-block: var(--so-space-section, 5rem);
+	}
+	.so-not-found__inner {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--so-space-md, 1rem);
+		max-width: calc(var(--so-container-reading, 42rem) + 2 * var(--so-container-gutter, 1.5rem));
+	}
+	.so-not-found__heading {
+		font-family: var(--so-text-h1-family, inherit);
+		font-size: var(--so-text-h1-size, 2.5rem);
+		line-height: var(--so-text-h1-line-height, 1.1);
+		font-weight: var(--so-text-h1-weight, 600);
+		letter-spacing: var(--so-text-h1-tracking, normal);
+		text-transform: var(--so-text-h1-transform, none);
+	}
+	.so-not-found__message {
+		margin-block-end: var(--so-space-sm, 0.5rem);
+		font-family: var(--so-text-lead-family, inherit);
+		font-size: var(--so-text-lead-size, 1.25rem);
+		line-height: var(--so-text-lead-line-height, 1.5);
+		font-weight: var(--so-text-lead-weight, 400);
+		letter-spacing: var(--so-text-lead-tracking, normal);
+		text-transform: var(--so-text-lead-transform, none);
+	}
+</style>
+`
+  );
+}
+
+/** Builds the not-found page as 404.html rather than 404.html/index.html. */
+export const NOT_FOUND_PAGE_JS = `// Generated by SiteOrigin Builder. The page static hosts show at an address the site does not have,
+// built as 404.html at the root of the website.
+export const trailingSlash = 'never';
+`;
+
+/** The project file of the generated server hook. */
+export const SERVER_HOOK_FILE = 'src/hooks.server.js';
+
+/**
+ * Hosts serve 404.html at whatever address was missing, however deep, where addresses relative to the page lead
+ * nowhere. While the site is built, this makes every address in the not-found page start from the site's root,
+ * under the sub-path SvelteKit builds it for: the page is built at that sub-path's /404.html. The shared header and
+ * footer's links to sections the page does not have go to a page that has them. It only runs during a build: the
+ * dev server serves the page where it was built.
+ */
+export function generateServerHook(state: ProjectState): string {
+  return `// Generated by SiteOrigin Builder. Makes 404.html, the not-found page, work at any missing address.
+import { building } from '$app/env';
+import { publishNotFound } from './lib/siteorigin/runtime/not-found.js';
+
+/** Sections the shared header and footer link to "on this page", with the page that has each. */
+const SECTIONS = ${js(notFoundSections(state))};
+
+export function handle({ event, resolve }) {
+	if (!building || event.route.id !== ${js(NOT_FOUND_ROUTE)}) return resolve(event);
+	const path = event.url.pathname;
+	const base = path.endsWith(${js(NOT_FOUND_ROUTE)}) ? path.slice(0, -${NOT_FOUND_ROUTE.length}) : '';
+	return resolve(event, { transformPageChunk: ({ html }) => publishNotFound(html, base, SECTIONS) });
+}
+`;
+}
+
 /** Served path of the generated favicon used until a favicon image is chosen. */
 export const DEFAULT_FAVICON = 'favicon.svg';
 
@@ -1957,6 +2072,7 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
     files.set(`${RUNTIME_DIR}/${VIDEO_HELPER_FILE}`, VIDEO_JS);
     files.set(`${RUNTIME_DIR}/${VIDEO_PLAYER_FILE}`, videoPlayerSvelte(!!opts.instrument));
   }
+  files.set(`${RUNTIME_DIR}/not-found.js`, NOT_FOUND_JS);
   files.set(`${STYLES_DIR}/tokens.css`, file('tokens.css', generateTokensCss));
   const fontNotice = file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '');
   if (fontNotice) files.set(`${FONTS_DIR}/NOTICE.txt`, fontNotice);
@@ -1975,6 +2091,10 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
     if (page) files.set(pageFile(page), file(`page:${id}${mode}`, (s) => generatePage(s, s.pages[id], opts)));
   }
   for (const { from, page } of liveRedirects(state)) files.set(redirectFile(from), file(`redirect:${page.id}:${from}`, (s) => generateRedirect(s, from, s.pages[page.id])));
+  // The not-found page and the hook that makes it work at any address both read the whole site's sections.
+  files.set(`${NOT_FOUND_DIR}/+page.svelte`, file('not-found', generateNotFound));
+  files.set(`${NOT_FOUND_DIR}/+page.js`, NOT_FOUND_PAGE_JS);
+  files.set(SERVER_HOOK_FILE, file('hooks.server.js', generateServerHook));
   files.set(`${GEN_ROOT}/paths.json`, file('paths.json', generatePathsJson));
   if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, file('favicon', generateFaviconSvg));
   files.set('static/robots.txt', file('robots.txt', generateRobots));

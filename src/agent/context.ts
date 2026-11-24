@@ -8,6 +8,7 @@ import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { teaserFields } from '@shared/page-teasers';
+import { notFoundCopy } from '@shared/not-found';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -97,7 +98,7 @@ export function projectSummary(state: ProjectState, revision: number) {
   const theme = getTheme(state.site.themeId);
   return {
     revision,
-    site: { name: state.site.name, description: state.site.description, language: state.site.language, baseUrl: state.site.baseUrl ?? null },
+    site: { name: state.site.name, description: state.site.description, language: state.site.language, baseUrl: state.site.baseUrl ?? null, notFoundPage: notFoundCopy(state.site) },
     theme: { id: theme.id, name: theme.name },
     homePageId: state.site.homePageId,
     pages: state.site.pageOrder.map((id) => {

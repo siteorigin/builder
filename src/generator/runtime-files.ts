@@ -643,3 +643,143 @@ export function keepDrafts() {
 	});
 }
 `;
+
+/**
+ * Rewrites the built not-found page so it works at any address (see generateServerHook). Plain JavaScript, written
+ * with String.raw so its regular expressions keep their backslashes.
+ */
+export const NOT_FOUND_JS = String.raw`/**
+ * Makes the not-found page work at any address. It is built at the root of the website, so the addresses in it that
+ * are relative ("./about/", "./_app/…": its links, styles, scripts and images) are relative to the root, but a host
+ * serves it at whatever address was missing, however deep, where they would lead nowhere. Each becomes an address
+ * from the root, under the sub-path the site is built for, and SvelteKit starts from there rather than from the
+ * address the browser shows. Links to sections the page does not have ("#pricing", in the shared header or footer)
+ * go to the page that has the section. src/hooks.server.js calls this while the site is built.
+ */
+
+/** Scripts and styles whole, or a start tag as Svelte writes one: values in double quotes, quotes inside them escaped. */
+const PARTS = /<script(?=[\s/>])[^>]*>[\s\S]*?<\/script\s*>|<style(?=[\s/>])[^>]*>[\s\S]*?<\/style\s*>|<[a-zA-Z][^\s/>]*(?:\s+[^\s"'=<>/]+(?:="[^"]*")?)*\s*\/?>/gi;
+const ATTRIBUTE = /(\s)([^\s"'=<>/]+)="([^"]*)"/g;
+const URL_ATTRIBUTES = ['href', 'xlink:href', 'src', 'action', 'formaction', 'poster'];
+const SRCSET_ATTRIBUTES = ['srcset', 'imagesrcset'];
+/** Not relative to the page: with a scheme ("https:", "mailto:"), from the root or another host, a query or a fragment. */
+const NOT_RELATIVE = /^(?:[a-z][a-z\d+.-]*:|[/#?])/i;
+/** HTML's whitespace, which separates srcset candidates (a no-break space does not). */
+const SPACE = /[\t\n\f\r ]/;
+
+/** "./about/" as "/my-site/about/"; an address that is not relative to the page, or leads off the site, stays. */
+function fromRoot(url, base) {
+	if (!url || NOT_RELATIVE.test(url)) return url;
+	const to = new URL(url, 'http://site' + base + '/');
+	// " https://example.org/" (browsers drop the spaces) or "\\example.org" is another site.
+	if (to.origin !== 'http://site') return url;
+	return to.pathname + to.search + to.hash;
+}
+
+/** Each candidate in a srcset, read as browsers read it: its address runs to the next space, and commas end it. */
+function srcsetFromRoot(value, base) {
+	let out = '';
+	let i = 0;
+	while (i < value.length) {
+		let j = i;
+		while (j < value.length && (SPACE.test(value[j]) || value[j] === ',')) j++;
+		out += value.slice(i, j);
+		i = j;
+		if (i >= value.length) break;
+		while (j < value.length && !SPACE.test(value[j])) j++;
+		const word = value.slice(i, j);
+		const url = word.replace(/,+$/, '');
+		out += fromRoot(url, base) + word.slice(url.length);
+		i = j;
+		if (word.length > url.length) continue;
+		// Its descriptors ("640w", "2x") run to the next comma outside brackets.
+		for (let depth = 0; j < value.length; j++) {
+			const c = value[j];
+			if (c === '(') depth++;
+			else if (c === ')') depth = Math.max(0, depth - 1);
+			else if (c === ',' && !depth) break;
+		}
+		out += value.slice(i, j);
+		i = j;
+	}
+	return out;
+}
+
+/** The url() addresses in a style attribute, whose quotes Svelte writes as &quot;: quoted, they may hold anything. */
+const STYLE_URL = /url\(\s*(?:(&quot;|&#39;|')(.*?)\1|([^\s)'"&][^\s)'"]*))\s*\)/gi;
+function styleFromRoot(value, base) {
+	return value.replace(STYLE_URL, (match, quote, quoted, bare) => {
+		const url = quote ? quoted : bare;
+		const to = fromRoot(url, base);
+		return to === url ? match : 'url(' + (quote || '') + to + (quote || '') + ')';
+	});
+}
+
+/**
+ * A link to a section ("#pricing") the page does not have goes to the page that has it. One with nowhere known to go
+ * is listed in missing, for the page to get an empty target: a static build refuses a link to a section its page lacks.
+ */
+/** Whether SvelteKit's build can read an ID as an address fragment ("100%" it cannot). */
+function decodes(id) {
+	try {
+		return decodeURIComponent(id) !== undefined;
+	} catch {
+		return false;
+	}
+}
+
+function sectionFromRoot(value, base, sections, ids, missing) {
+	const id = value.slice(1);
+	if (Object.hasOwn(sections, id)) return base + sections[id] + value;
+	// "#" and "#top" go to the top of any page.
+	if (/^\S+$/.test(id) && id.toLowerCase() !== 'top' && !ids.has(id) && decodes(id)) missing.add(id);
+	return value;
+}
+
+function tagFromRoot(tag, base, sections, ids, missing) {
+	return tag.replace(ATTRIBUTE, (attribute, space, name, value) => {
+		const key = name.toLowerCase();
+		let to = value;
+		if (URL_ATTRIBUTES.includes(key)) to = value[0] === '#' ? sectionFromRoot(value, base, sections, ids, missing) : fromRoot(value, base);
+		else if (SRCSET_ATTRIBUTES.includes(key)) to = srcsetFromRoot(value, base);
+		else if (key === 'style') to = styleFromRoot(value, base);
+		return to === value ? attribute : space + name + '="' + to + '"';
+	});
+}
+
+/** SvelteKit's start script works out the site's root from the address shown unless told, and loads the app from it. */
+function startFromRoot(script, base) {
+	if (!script.includes('__sveltekit_')) return script;
+	return script
+		.replace(/new URL\((["'])\.\.?(?:\/\.\.)*\1, location\)\.pathname\.slice\(0, -1\)/g, JSON.stringify(base))
+		.replace(/import\((["'])([^"'\s]*)\1\)/g, (match, quote, url) => {
+			const to = fromRoot(url, base);
+			return to === url ? match : 'import(' + JSON.stringify(to) + ')';
+		});
+}
+
+/**
+ * The page's HTML with every address relative to the page made an address from the root, under base ("" or
+ * "/my-site"), and links to the sections listed ({ pricing: "/" }) sent to the page that has each.
+ */
+export function publishNotFound(html, base, sections) {
+	// The sub-path as vite.config.js and SiteOrigin Builder accept it; anything else is the root.
+	const root = typeof base === 'string' && /^(\/[\w.-]+)*$/.test(base) && !base.split('/').some((s) => s === '.' || s === '..') ? base : '';
+	const jumps = sections && typeof sections === 'object' ? sections : {};
+	// The sections the page has: the IDs its start tags carry.
+	const ids = new Set();
+	for (const [part] of html.matchAll(PARTS)) if (!/^<(script|style)(?=[\s/>])/i.test(part)) for (const [, , name, value] of part.matchAll(ATTRIBUTE)) if (name.toLowerCase() === 'id') ids.add(value);
+	const missing = new Set();
+	const out = html.replace(PARTS, (part) => {
+		if (/^<style(?=[\s/>])/i.test(part)) return part;
+		if (!/^<script(?=[\s/>])/i.test(part)) return tagFromRoot(part, root, jumps, ids, missing);
+		const open = /^<script[^>]*>/i.exec(part)[0];
+		return tagFromRoot(open, root, jumps, ids, missing) + startFromRoot(part.slice(open.length), root);
+	});
+	if (!missing.size) return out;
+	// Outside the part of the page SvelteKit hydrates, so the page starts as it was rendered.
+	const targets = [...missing].map((id) => '<span id="' + id + '"></span>').join('');
+	const end = out.toLowerCase().lastIndexOf('</body>');
+	return end < 0 ? out + targets : out.slice(0, end) + targets + out.slice(end);
+}
+`;

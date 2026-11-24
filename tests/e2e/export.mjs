@@ -377,6 +377,21 @@ const searchEdits = await win.evaluate(() =>
   )
 );
 assert.equal(searchEdits.ok, true, `the project pages change: ${searchEdits.error?.message}`);
+step('issue 66: a mistyped, nested address shows the branded not-found page');
+const missing = new URL('customer-storie/deep/', stat.previewUrl).href;
+assert.equal((await fetch(missing)).status, 404, 'a missing address is answered with HTTP 404');
+const lost = await proofTab(missing);
+assert.equal(lost.url(), missing, 'the address stays as it was typed');
+assert.match(await lost.title(), /^Page not found · /, 'the not-found page names itself and the site');
+assert.equal((await lost.locator('main h1').textContent())?.trim(), 'Page not found', 'the not-found page has its heading');
+assert.equal(await lost.locator('header').count(), 1, "the not-found page shows the site's header");
+assert.ok(await lost.evaluate(() => [...document.styleSheets].some((s) => s.href && s.cssRules.length > 0)), "the site's styles load at a nested missing address");
+const homeLink = lost.getByRole('link', { name: 'Go to the home page' });
+assert.equal(await homeLink.evaluate((a) => a.href), stat.previewUrl, 'its Home link leads to the Home page from any depth');
+await homeLink.click();
+await eventually(async () => assert.equal(await lost.title(), 'Client proof 1', 'following it reaches the Home page'));
+await lost.close();
+assert.ok(stat.warnings.some((w) => w.includes('set the 404 error document to /404.html')), `the website export says how to point a host at the not-found page: ${stat.warnings.join(' ')}`);
 
 step('#75: the exported gallery on a desktop and on a 390px phone');
 /** What the page has fetched so far (the browser's own record, which includes lazy images). */
@@ -534,6 +549,7 @@ assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`)
 assert.equal(statZip.path, staticZip);
 assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
 assert.ok(statZip.warnings.some((w) => w.includes(photo.name) && /leaves out where/.test(w)), `the website ZIP export says it left out where the photo was taken: ${statZip.warnings.join(' ')}`);
+assert.ok(statZip.warnings.some((w) => w.includes('set the 404 error document to /404.html')), `the website ZIP export says how to point a host at the not-found page: ${statZip.warnings.join(' ')}`);
 
 step('issue 212: a second website proof keeps the first one serving its own files');
 await titleProof('Client proof 2');
@@ -642,6 +658,8 @@ const listing = (zip) => spawnSync('unzip', ['-Z1', zip], { encoding: 'utf8' });
 const siteList = listing(staticZip);
 if (!siteList.error) {
   assert.ok(siteList.stdout.split('\n').includes('about/index.html'), 'the site ZIP holds the prerendered pages at its root');
+  assert.ok(siteList.stdout.split('\n').includes('404.html'), 'the site ZIP holds the not-found page at its root');
+  assert.match(spawnSync('unzip', ['-p', staticZip, '404.html'], { encoding: 'utf8' }).stdout, /<h1[^>]*>Page not found<\/h1>/, 'the site ZIP holds the whole not-found page');
   const sourceList = listing(sourceZip).stdout.split('\n');
   assert.ok(sourceList.includes('harbour-lane-studio-source/package.json'), 'the source ZIP holds the project in one named folder');
   const siteEntries = siteList.stdout.split('\n');
@@ -692,6 +710,24 @@ assert.equal(readFileSync(join(sourceOut, photo.file)).equals(kept), true, 'the 
 const finalState = (await win.evaluate(() => window.builder.project.snapshot())).state;
 assert.deepEqual(finalState.assets.assets[photoId], photo, 'the asset record is unchanged');
 assert.ok(JSON.stringify(finalState.pages[finalState.site.homePageId].nodes[homeHero.heroId]).includes(photoId), 'the Home hero still uses the photo');
+step('issue 66: a proof published in a sub-folder shows the custom not-found page at a nested missing address');
+const studio = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://example.com/studio', notFoundHeading: 'Nothing lives here', notFoundLinkLabel: 'Back to the studio' }] }, { label: 'Publish under /studio' }));
+assert.equal(studio.ok, true, `the site moves under /studio: ${studio.error?.message}`);
+const studioStat = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Static export under /studio');
+assert.equal(studioStat.ok, true, `the export under /studio succeeds: ${studioStat.message} ${studioStat.warnings?.join(' ')}`);
+assert.match(studioStat.previewUrl ?? '', /\/studio\/$/, 'the proof is served under /studio');
+assert.ok(studioStat.warnings.some((w) => w.includes('set the 404 error document to /studio/404.html (on Apache: ErrorDocument 404 /studio/404.html)')), `the export names the not-found page under /studio: ${studioStat.warnings.join(' ')}`);
+const missingStudio = new URL('customer-storie/deep/', studioStat.previewUrl).href;
+assert.equal((await fetch(missingStudio)).status, 404, 'a missing address under /studio is answered with HTTP 404');
+const lostStudio = await proofTab(missingStudio);
+assert.equal((await lostStudio.locator('main h1').textContent())?.trim(), 'Nothing lives here', 'the not-found page shows the heading the author set');
+assert.ok(await lostStudio.evaluate(() => [...document.styleSheets].some((s) => s.href && s.cssRules.length > 0)), "the site's styles load at a nested missing address under /studio");
+const studioHome = lostStudio.getByRole('link', { name: 'Back to the studio' });
+assert.equal(await studioHome.evaluate((a) => a.href), studioStat.previewUrl, 'its Home link leads to the Home page under /studio');
+await studioHome.click();
+await eventually(async () => assert.equal(await lostStudio.title(), 'Client proof 2', 'following it reaches the Home page under /studio'));
+await lostStudio.close();
+
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 
@@ -736,6 +772,8 @@ step('I09: scan the static export');
 const staticFiles = scan(staticOut, 'static');
 scan(staticOut2, 'second static');
 assert.ok(staticFiles.includes('index.html') && staticFiles.includes('about/index.html'), 'static export has the prerendered pages');
+assert.ok(staticFiles.includes('404.html'), 'static export has the not-found page for hosts to serve');
+assert.doesNotMatch(readFileSync(join(staticOut, '404.html'), 'utf8'), /(?:href|src)="\.\.?\/|new URL\("\.|import\(["']\./, 'every address in the not-found page starts from the root');
 noDeletedImage(staticFiles, 'static');
 assert.deepEqual(staticFiles.filter((f) => draftNames.includes(basename(f))), [], 'the website has no files of the unused draft');
 assert.ok(used.variants?.length, 'the starter image has responsive variants to check');
@@ -774,6 +812,9 @@ if (BUILD) {
   }
   assert.ok(existsSync(join(sourceOut, 'build', 'index.html')), 'the standalone build writes build/index.html');
   assert.ok(existsSync(join(sourceOut, 'build', 'about', 'index.html')), 'the standalone build prerenders nested routes');
+  const standalone404 = readFileSync(join(sourceOut, 'build', '404.html'), 'utf8');
+  assert.match(standalone404, /<h1[^>]*>Page not found<\/h1>/, 'the standalone build writes the not-found page');
+  assert.doesNotMatch(standalone404, /(?:href|src)="\.\.?\/|new URL\("\.|import\(["']\./, 'the standalone build writes a not-found page that works at any address');
   assert.ok(files(join(sourceOut, 'build')).some((f) => /lora.*\.woff2$/i.test(f)), 'the standalone build includes the chosen font');
 } else console.log('\n(skipping the standalone npm ci && npm run build; pass --build to run it)');
 

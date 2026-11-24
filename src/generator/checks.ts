@@ -568,15 +568,16 @@ export function placeholderImageCount(state: ProjectState): number {
  */
 const LAYOUT_IDS = ['main', 'top'];
 const LITERAL_ID = /\sid\s*=\s*(?:"([^"{}\s]+)"|'([^'{}\s]+)')/g;
-const codeIdCache = new WeakMap<ComponentDefinition, string[]>();
+/** Kept with the source they were read from: an edit can change a definition's source in place. */
+const codeIdCache = new WeakMap<ComponentDefinition, { source: string; ids: string[] }>();
 
 /** IDs a code component's markup writes out literally (`id="so-site-nav"`). IDs it computes cannot be known here. */
 function literalIds(def: ComponentDefinition): string[] {
-  let ids = codeIdCache.get(def);
-  if (!ids) {
-    ids = [...(def.source ?? '').matchAll(LITERAL_ID)].map((m) => m[1] ?? m[2]);
-    codeIdCache.set(def, ids);
-  }
+  const source = def.source ?? '';
+  const known = codeIdCache.get(def);
+  if (known?.source === source) return known.ids;
+  const ids = [...source.matchAll(LITERAL_ID)].map((m) => m[1] ?? m[2]);
+  codeIdCache.set(def, { source, ids });
   return ids;
 }
 
@@ -759,6 +760,36 @@ export interface SectionLinkIssue {
   pageId?: string;
   /** The pages it shows on that lack the section, for a link to a section of the page it is on. */
   pages?: string[];
+}
+
+/**
+ * Where the not-found page sends the shared header and footer's "on this page" links. It shows the header and
+ * footer but none of a page's sections, and a static build refuses a link to a section its page does not have, so a
+ * link to a section it lacks goes to that section on the first published page that has it (usually Home). A section
+ * no page has stays as it is: every page's build refuses it already.
+ */
+export function notFoundSectionRoutes(state: ProjectState): Record<string, string> {
+  const shell = shellIds(state);
+  const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id)).map((id) => state.pages[id]);
+  // The not-found page shows each shared part a page shows (see generateLayout), and the IDs those parts render.
+  const parts = SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part)));
+  const here = new Set([...LAYOUT_IDS, ...parts.flatMap((part) => [...shell[part]])]);
+  const published = pages.filter((p) => !isDraftPage(state, p));
+  const ids = new Map<string, Set<string>>();
+  const idsOf = (pageId: string) => {
+    if (!ids.has(pageId)) ids.set(pageId, pageIds(state, pageId, shell));
+    return ids.get(pageId)!;
+  };
+  const out: Record<string, string> = {};
+  for (const part of parts)
+    for (const { link } of renderedLinks(state, state.site.shell[part])) {
+      const fragment = link.type === 'anchor' ? link.target.replace(/^#/, '') : '';
+      if (!fragment || here.has(fragment) || Object.hasOwn(out, fragment)) continue;
+      // Where the link works: a page that shows its part and has the section, else any page that has it.
+      const page = published.find((p) => showsPart(p, part) && idsOf(p.id).has(fragment)) ?? published.find((p) => idsOf(p.id).has(fragment));
+      if (page) out[fragment] = page.route;
+    }
+  return out;
 }
 
 /**

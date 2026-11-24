@@ -17,7 +17,7 @@ import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { generateProject, GENERATOR_VERSION, packFileCopies } from '@generator/index';
+import { generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
@@ -349,6 +349,17 @@ export interface Conflict {
  * One open, writable project. Owns canonical state, the revision counter, history,
  * the publication journal and generated output. All writes pass through `apply` or `commitState`.
  */
+/**
+ * Does the project have a server hook of its own, one SvelteKit would load: src/hooks.server.ts, a file or folder
+ * named src/hooks.server, or a src/hooks.server.js that SiteOrigin Builder did not write?
+ */
+async function ownServerHook(dir: string, generatedKnown: boolean): Promise<boolean> {
+  const file = (f: string) => fs.lstat(join(dir, 'src', f)).then((s) => s.isFile(), () => false);
+  // A folder named src/hooks.server counts when it has the index file SvelteKit loads from it.
+  for (const f of ['hooks.server.ts', 'hooks.server', 'hooks.server/index.js', 'hooks.server/index.ts']) if (await file(f)) return true;
+  return !generatedKnown && (await file(SERVER_HOOK_FILE.slice('src/'.length)));
+}
+
 export class ProjectSession extends EventEmitter {
   state!: ProjectState;
   revision = 0;
@@ -1245,13 +1256,16 @@ export class ProjectSession extends EventEmitter {
 
   /** Regenerate derived files. Files edited externally since the last generation are preserved and reported. */
   private async publishGenerated(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
-    const clean = pre?.clean ?? this.generate(this.state, false);
-    const dev = pre?.dev ?? this.generate(this.state, true);
+    const clean = new Map(pre?.clean ?? this.generate(this.state, false));
+    const dev = new Map(pre?.dev ?? this.generate(this.state, true));
     const devRoot = this.local('cache', 'dev');
     const changedFiles: string[] = [];
     const prev = this.generated.files;
     const inflight = this.generated.pending ?? {};
     const known = (path: string) => !!prev[path] || !!inflight[path];
+    // SvelteKit runs one server hook: a project with its own keeps it, and the generated one is left out (the
+    // not-found page then keeps the addresses it was built with, and the export says so).
+    if (await ownServerHook(this.dir, known(SERVER_HOOK_FILE))) for (const files of [clean, dev]) files.delete(SERVER_HOOK_FILE);
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
     const authored = new Set(stateToAuthoredSources(this.state).keys());

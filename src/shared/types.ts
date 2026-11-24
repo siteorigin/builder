@@ -470,6 +470,10 @@ export interface SiteDoc {
    * current address. No page uses one of these routes; a page given one takes it over.
    */
   redirects?: SiteRedirect[];
+  /** The not-found page's heading, message and Home link label; the defaults are used while these are unset. */
+  notFoundHeading?: string;
+  notFoundMessage?: string;
+  notFoundLinkLabel?: string;
 }
 
 /** An old address that sends visitors on to a page, by ID, so it follows that page's later route changes. */

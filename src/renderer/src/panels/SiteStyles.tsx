@@ -14,6 +14,7 @@ import { CustomTokens } from './CustomTokens';
 import { FontSelect, familyName } from './FontSelect';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ForegroundSuggestion } from '@shared/contrast';
+import { NOT_FOUND_DEFAULTS, NOT_FOUND_LIMITS, clipText } from '@shared/not-found';
 
 /**
  * What the Foundation theme uses each colour for, checked against its base CSS and component styles, so an
@@ -989,6 +990,18 @@ export function SiteStyles() {
               </option>
             ))}
           </select>
+        </Field>
+      </Section>
+
+      <Section title="Not-found page" id="site-not-found" defaultOpen={false}>
+        <Field label="Heading" hint="Visitors see this page, with your header and footer, at any address your site does not have. Leave a field empty to use the wording shown.">
+          <DraftInput value={site.notFoundHeading ?? ''} placeholder={NOT_FOUND_DEFAULTS.heading} onCommit={(v) => updSite({ notFoundHeading: clipText(v.trim(), NOT_FOUND_LIMITS.heading) })} />
+        </Field>
+        <Field label="Message">
+          <DraftInput multiline value={site.notFoundMessage ?? ''} placeholder={NOT_FOUND_DEFAULTS.message} onCommit={(v) => updSite({ notFoundMessage: clipText(v.trim(), NOT_FOUND_LIMITS.message) })} />
+        </Field>
+        <Field label="Home link" hint="The page always ends with this link to your Home page.">
+          <DraftInput value={site.notFoundLinkLabel ?? ''} placeholder={NOT_FOUND_DEFAULTS.linkLabel} onCommit={(v) => updSite({ notFoundLinkLabel: clipText(v.trim(), NOT_FOUND_LIMITS.linkLabel) })} />
         </Field>
       </Section>
     </div>

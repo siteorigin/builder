@@ -3,7 +3,7 @@
  * to hand over. Nothing here depends on Electron, so it is unit tested directly.
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, promises as fs } from 'node:fs';
+import { existsSync, lstatSync, promises as fs, readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
@@ -12,7 +12,7 @@ import { validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, publicationPlan, unlinkedButtons } from '@generator/checks';
-import { RUNTIME_DIR, defFile, draftOnlyComponents, generateProject, liveRedirects, publishedState } from '@generator/index';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
@@ -20,6 +20,7 @@ import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
+import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
 
 const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
 
@@ -834,3 +835,149 @@ function generalFailure(read: ExplainedBuild): { message: string; warnings: stri
   return { message, warnings: warnings.slice(0, 8), details: read.report(message) };
 }
 
+
+/** Markup and code only the editor's preview may carry. */
+const EDITOR_MARKUP = /data-so-(ctx|node)|siteorigin-bridge/;
+
+/** Start tags as Svelte writes them, and whole scripts and styles; see NOT_FOUND_JS, which makes these addresses absolute. */
+const BUILT_PARTS = /<script(?=[\s/>])[^>]*>[\s\S]*?<\/script\s*>|<style(?=[\s/>])[^>]*>[\s\S]*?<\/style\s*>|<[a-zA-Z][^\s/>]*(?:\s+[^\s"'=<>/]+(?:="[^"]*")?)*\s*\/?>/gi;
+const BUILT_ATTRIBUTE = /\s([^\s"'=<>/]+)="([^"]*)"/g;
+/**
+ * Relative to the page: no scheme ("https:", "mailto:"), not from the root or another host, not a query or a fragment,
+ * read as browsers read it, without the spaces around it.
+ */
+const PAGE_RELATIVE = (url: string) => {
+  const u = url.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
+  return u !== '' && !/^(?:[a-z][a-z\d+.-]*:|[/\\#?])/i.test(u);
+};
+/** url() in a style attribute, whose quotes Svelte writes as &quot;: quoted, it may hold anything. */
+const STYLE_URL = /url\(\s*(?:(&quot;|&#39;|')(.*?)\1|([^\s)'"&][^\s)'"]*))\s*\)/gi;
+/** HTML's whitespace, which separates srcset candidates (a no-break space does not). */
+const SPACE = /[\t\n\f\r ]/;
+
+/**
+ * The address of each srcset candidate, read as browsers read it: it runs to the next space, commas at its end
+ * separate it from the next candidate, and otherwise its descriptors run to the next comma outside brackets.
+ */
+export function srcsetUrls(value: string): string[] {
+  const urls: string[] = [];
+  let i = 0;
+  while (i < value.length) {
+    while (i < value.length && (SPACE.test(value[i]) || value[i] === ',')) i++;
+    if (i >= value.length) break;
+    let j = i;
+    while (j < value.length && !SPACE.test(value[j])) j++;
+    const word = value.slice(i, j);
+    const url = word.replace(/,+$/, '');
+    urls.push(url);
+    i = j;
+    if (word.length > url.length) continue;
+    for (let depth = 0; i < value.length; i++) {
+      if (value[i] === '(') depth++;
+      else if (value[i] === ')') depth = Math.max(0, depth - 1);
+      else if (value[i] === ',' && !depth) break;
+    }
+  }
+  return urls;
+}
+
+/**
+ * Addresses in a built page that are relative to wherever it is shown ("./_app/…", "about/", or SvelteKit working
+ * out the site's root from the address), listed as found. The not-found page must have none: hosts show it at any
+ * address.
+ */
+export function pageRelativeAddresses(html: string): string[] {
+  const found: string[] = [];
+  for (const [part] of html.matchAll(BUILT_PARTS)) {
+    if (/^<style(?=[\s/>])/i.test(part)) continue;
+    const script = /^<script(?=[\s/>])/i.test(part);
+    const tag = script ? (/^<script[^>]*>/i.exec(part)?.[0] ?? '') : part;
+    for (const [, name, value] of tag.matchAll(BUILT_ATTRIBUTE)) {
+      const key = name.toLowerCase();
+      if (['href', 'xlink:href', 'src', 'action', 'formaction', 'poster'].includes(key) && PAGE_RELATIVE(value)) found.push(value);
+      if (key === 'srcset' || key === 'imagesrcset') found.push(...srcsetUrls(value).filter(PAGE_RELATIVE));
+      if (key === 'style') for (const [, quote, quoted, bare] of value.matchAll(STYLE_URL)) if (PAGE_RELATIVE(quote ? quoted : bare)) found.push(quote ? quoted : bare);
+    }
+    if (script && part.includes('__sveltekit_')) {
+      for (const [expr] of part.matchAll(/new URL\([^)]*,\s*location\)/g)) found.push(expr);
+      for (const [, , url] of part.matchAll(/import\((["'`])([^"'`\s]*)\1\)/g)) if (PAGE_RELATIVE(url)) found.push(url);
+    }
+  }
+  return found;
+}
+
+/** Why the built not-found page cannot be exported, or null. `html` is null when the build did not write it as a file. */
+export function notFoundPageProblem(html: string | null): string | null {
+  if (html === null) return `The build is missing ${NOT_FOUND_FILE}, the page shown at addresses the site does not have.`;
+  if (EDITOR_MARKUP.test(html)) return `Editor-only markup was found in ${NOT_FOUND_FILE}. Export aborted.`;
+  return null;
+}
+
+/** The built not-found page in `out`, or null when the build did not write it as a plain file. */
+export async function readNotFoundPage(out: string): Promise<string | null> {
+  const file = join(out, NOT_FOUND_FILE);
+  const stat = await fs.lstat(file).catch(() => null);
+  return stat?.isFile() ? fs.readFile(file, 'utf8') : null;
+}
+
+/** Is there a 404.html of the project's own in static/ that the website build would copy: a file, a link or a folder with files? */
+function ownNotFoundFile(project: string): boolean {
+  const path = join(project, 'static', NOT_FOUND_FILE);
+  try {
+    const stat = lstatSync(path);
+    return !stat.isDirectory() || readdirSync(path).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Why a project cannot build its website because of a not-found page of its own in static/, or null. */
+export function ownNotFoundFileStop(project: string): string | null {
+  return ownNotFoundFile(project)
+    ? `static/${NOT_FOUND_FILE} takes the place of the not-found page SiteOrigin Builder generates, and the website cannot have both. Delete or rename static/${NOT_FOUND_FILE} (the page's wording is set in Site styles, under Not-found page), then export again.`
+    : null;
+}
+
+/** The note for an editable project whose build would fail on a not-found page of its own in static/, or null. */
+export function ownNotFoundFileNote(project: string): string | null {
+  return ownNotFoundFile(project)
+    ? `static/${NOT_FOUND_FILE} takes the place of the not-found page SiteOrigin Builder generates, so a build of the exported project fails until it is deleted or renamed.`
+    : null;
+}
+
+/** The export note for a not-found page that keeps addresses relative to where it was built, or null. */
+export function notFoundAddressWarning(html: string): string | null {
+  const left = pageRelativeAddresses(html);
+  return left.length
+    ? `${NOT_FOUND_FILE}, the not-found page, still uses addresses relative to where it was built (${left[0]}), so at deeper missing addresses it may show without the site's styles and links. This happens when the project has a server hook of its own (src/hooks.server) in place of the generated one.`
+    : null;
+}
+
+/** What an author needs to know to have their host show the not-found page, for a site published under `base`. */
+export function notFoundHostNote(base: string): string {
+  const path = notFoundPath(base);
+  return `Addresses your site does not have show its not-found page, ${NOT_FOUND_FILE}. Netlify, Cloudflare Pages and GitHub Pages use it automatically when they publish the exported website as it is. On other hosts, set the 404 error document to ${path} (on Apache: ErrorDocument 404 ${path}).`;
+}
+
+/**
+ * SvelteKit runs one server hook. The project's files can be a step behind a hook of its own (src/hooks.server.ts, or
+ * a file or folder named src/hooks.server) added or removed since SiteOrigin Builder last wrote them: a staged copy
+ * settles it as the next regeneration would, leaving the generated src/hooks.server.js out beside the project's own,
+ * and writing it when there is no hook at all. generated-manifest.json then lists what the copy has.
+ */
+export async function settleServerHook(dir: string, state: ProjectState): Promise<void> {
+  const file = (f: string) => lstatSync(join(dir, 'src', f), { throwIfNoEntry: false })?.isFile() ?? false;
+  // A folder named src/hooks.server counts when it has the index file SvelteKit loads from it.
+  const own = ['hooks.server.ts', 'hooks.server', 'hooks.server/index.js', 'hooks.server/index.ts'].some(file);
+  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
+  const files = (manifest.files ??= {});
+  if (own && Object.hasOwn(files, SERVER_HOOK_FILE)) {
+    await fs.rm(join(dir, SERVER_HOOK_FILE), { force: true });
+    delete files[SERVER_HOOK_FILE];
+  } else if (!own && !existsSync(join(dir, SERVER_HOOK_FILE))) {
+    const hook = generateServerHook(state);
+    await fs.writeFile(join(dir, SERVER_HOOK_FILE), hook);
+    files[SERVER_HOOK_FILE] = sha(hook);
+  } else return;
+  await fs.writeFile(join(dir, MANIFEST_PATH), toJson(manifest));
+}
