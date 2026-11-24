@@ -102,8 +102,8 @@ const clickCanvas = async (el, opts = {}) => {
   const p = await canvasPoint(el, opts.word);
   await win.mouse.click(p.x, p.y, { button: opts.button ?? 'left' });
 };
-const dblclickCanvas = async (el) => {
-  const p = await canvasPoint(el);
+const dblclickCanvas = async (el, word) => {
+  const p = await canvasPoint(el, word);
   await win.mouse.dblclick(p.x, p.y);
 };
 const rightClickWord = (el, word) => clickCanvas(el, { word, button: 'right' });
@@ -200,10 +200,10 @@ let freshChip;
 for (let attempt = 1; attempt <= 3; attempt++) {
   await clickCanvas(h1);
   await settle();
-  await dblclickCanvas(h1);
+  await dblclickCanvas(h1, 'recieve');
   await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
-  // The edit begins with the whole heading selected, ready to be typed over.
-  assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve confirmation', 'the edit selects the whole heading');
+  // The edit begins with the word double-clicked selected, as a double-click selects a word in any text.
+  assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve', 'the edit selects the word double-clicked');
   freshChip = await chip();
   const target = await canvasPoint(h1, 'recieve');
   freshMenu = await nextWritingMenu(async () => {
@@ -234,6 +234,8 @@ await clickCanvas(h1);
 await settle();
 await dblclickCanvas(h1);
 await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
+// A double-click starts at the word clicked; Select All takes the whole heading.
+await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('Gret recieve confirmation', { delay: 20 });
 await settle();
 const chipBefore = await chip();
@@ -271,6 +273,7 @@ await clickCanvas(rich);
 await settle();
 await dblclickCanvas(rich);
 await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited'));
+await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('We ', { delay: 20 });
 await win.keyboard.press(`${MOD}+b`);
 await win.keyboard.type('recieve', { delay: 20 });

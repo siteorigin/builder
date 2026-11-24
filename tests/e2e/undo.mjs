@@ -10,7 +10,7 @@
 // equivalent runs.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
 
 const mac = process.platform === 'darwin';
 const { WORK, cleanup } = scratch('undo');
@@ -176,6 +176,8 @@ await h1.click();
 await settle();
 await h1.dblclick();
 await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
+// A double-click starts at the word clicked; Select All takes the whole heading.
+await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('Fresh copy');
 await textHistory('inline heading', () => h1.innerText(), 'Fresh copy', original);
 await win.keyboard.press('Escape');
@@ -186,6 +188,7 @@ await h1.click();
 await settle();
 await h1.dblclick();
 await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
+await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('Committed heading');
 await win.keyboard.press('Enter');
 await eventually(async () => assert.match(await pages(), /Committed heading/, 'the heading edit is committed'));
