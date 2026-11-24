@@ -1700,6 +1700,19 @@ describe('review regressions', () => {
     expect(shellProps(session.state, 'footer').copyright).toBe('All of Test Studio, always.');
   });
 
+  it('keeps a header name the author wrote, says so, and keeps a copyright line asked for as it is (#31)', async () => {
+    const { session, adapter, run } = await setup([() => [call('b', 'update_site_brand', { siteName: 'Acme', copyright: `© ${new Date().getFullYear()} Test Studio. All rights reserved.` })], () => finish()], {}, 'business', (s) => {
+      (s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode).props.siteName = 'TS Journal';
+    });
+    await run('Rename the site to Acme, keeping the copyright line');
+    expect(session.state.site.name).toBe('Acme');
+    expect(shellProps(session.state, 'header').siteName).toBe('TS Journal');
+    expect(shellProps(session.state, 'footer').siteName).toBe('Acme');
+    expect(shellProps(session.state, 'footer').copyright).toBe(`© ${new Date().getFullYear()} Test Studio. All rights reserved.`);
+    const reply = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content) as { warnings?: string[] };
+    expect(reply.warnings?.join(' ')).toContain('The header keeps its own name, “TS Journal”');
+  });
+
   it('nudges for a page that was rejected and never retried, even with no other change', async () => {
     const { adapter, run } = await setup([
       () => [call('a', 'upsert_page_with_sections', { slug: 'gone', sections: [{ componentId: 'nope' }] })],

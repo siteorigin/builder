@@ -25,6 +25,7 @@ import { VisitorTextFields } from './VisitorText';
 import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl } from '@shared/public-url';
 import { LANGUAGE_CODE_ERROR, languageDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
+import { siteNameNote } from '@shared/site-name';
 
 /**
  * What the Foundation theme uses each colour for, checked against its base CSS and component styles, so an
@@ -1348,7 +1349,7 @@ export function SiteStyles() {
       </Section>
 
       <Section title="Site details" id="site-settings" defaultOpen={false} keepMounted>
-        <Field label="Site name">
+        <Field label="Site name" hint={siteNameNote(st)}>
           <DraftInput value={site.name} onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
         </Field>
         <Field label="Default description" hint="Used by pages without their own description.">

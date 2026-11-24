@@ -106,3 +106,27 @@ export function carrySiteName(state: ProjectState, previous: string, next: strin
     setKept(node, keep);
   }
 }
+
+/** What a brand field says about the site's name: whether it follows it, and so changes with a rename. */
+export function followNote(state: ProjectState, node: InstanceNode, prop: string): { follows: boolean; text: string } | undefined {
+  const follows = followsSiteName(state, node, prop);
+  if (follows === undefined) return undefined;
+  if (prop === BRAND_PROP) return { follows, text: follows ? 'Follows the site name: renaming the site changes it too.' : 'Its own name: renaming the site leaves it as it is.' };
+  return { follows, text: follows ? 'Names the site, so renaming the site changes it too.' : 'Its own wording: renaming the site leaves it as it is.' };
+}
+
+/**
+ * What the site's name field says about where else the name shows: the shared header and footer that follow it, and
+ * each one that keeps a name of its own. Undefined when neither shows a name.
+ */
+export function siteNameNote(state: ProjectState): string | undefined {
+  const placed = brandPlacements(state);
+  if (!placed.length) return undefined;
+  const following = placed.filter((p) => followsSiteName(state, p.node, BRAND_PROP));
+  const own = placed.filter((p) => !following.includes(p));
+  const parts = (list: typeof placed) => [...new Set(list.map((p) => p.part))].join(' and ');
+  const out: string[] = [];
+  if (following.length) out.push(`The ${parts(following)} ${following.length === 1 ? 'shows' : 'show'} it too.`);
+  for (const p of own) out.push(`The ${p.part} keeps its own name, “${String(shown(p.def, p.node, BRAND_PROP) ?? '').trim()}”.`);
+  return out.join(' ');
+}

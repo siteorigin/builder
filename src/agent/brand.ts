@@ -13,6 +13,7 @@ import { getTheme } from '@catalogue/index';
 import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
 import { contactInText } from '@shared/contact-links';
+import { BRAND_PROP, COPYRIGHT_PROP, brandPlacements, followsSiteName } from '@shared/site-name';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -33,7 +34,7 @@ export const BRAND_ARGS = z.object({
 export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 
 export const BRAND_DESCRIPTION =
-  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once). Send only what changes. Fonts must be installed; an error lists the choices.';
+  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once). Send only what changes. Fonts must be installed; an error lists the choices.';
 
 export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, and the type scale (every heading and text size at once). Send only what changes.';
 
@@ -144,12 +145,6 @@ function resolvedColor(tokens: Map<string, { value: unknown }>, id: string): str
   return typeof v === 'string' ? v : '';
 }
 
-/** Follows the site name only in the standard "© 2026 Name..." line; a custom line is left alone. */
-function renamedCopyright(line: string, previous: string, next: string): string | null {
-  const m = line.match(/^(©\s*\d{4}(?:\s*[-–]\s*\d{4})?\s+)(.*)$/);
-  return m && m[2].startsWith(previous) ? `${m[1]}${next}${m[2].slice(previous.length)}` : null;
-}
-
 export async function runBrand(args: BrandArgs, host: ToolHost, callId: string): Promise<ToolOutcome> {
   const state = host.state();
   const issues: FieldIssue[] = [];
@@ -218,18 +213,19 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   const setProp = (shell: 'header' | 'footer', node: InstanceNode, prop: string, value: unknown) => {
     if (Object.hasOwn(state.components[node.definitionId]?.properties ?? {}, prop) && node.props[prop] !== value) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: shell }, nodeId: node.id, prop, value });
   };
-  const header = shellInstance(state, 'header');
+  // The rename itself carries the name into the header and footer that showed the old one (shared/site-name.ts);
+  // a label of the author's own stays, and the reply says where, so the model can mention it.
   const footer = shellInstance(state, 'footer');
-  if (header && args.siteName !== undefined) setProp('header', header, 'siteName', args.siteName);
+  if (args.siteName !== undefined && args.siteName.trim() !== state.site.name) {
+    for (const { part, node } of brandPlacements(state))
+      if (followsSiteName(state, node, BRAND_PROP) === false) warnings.push(`The ${part} keeps its own name, “${String(node.props[BRAND_PROP] ?? '')}”, so it still shows that. Set its siteName with instance.setProp if it should change too.`);
+  }
   if (footer) {
-    if (args.siteName !== undefined) setProp('footer', footer, 'siteName', args.siteName);
     if (args.tagline !== undefined) setProp('footer', footer, 'tagline', args.tagline);
-    const previous = typeof footer.props.siteName === 'string' ? footer.props.siteName : '';
-    const line = typeof footer.props.copyright === 'string' ? footer.props.copyright : '';
-    if (args.copyright !== undefined) setProp('footer', footer, 'copyright', args.copyright);
-    else if (args.siteName !== undefined && previous) {
-      const renamed = renamedCopyright(line, previous, args.siteName);
-      if (renamed) setProp('footer', footer, 'copyright', renamed);
+    // A line asked for wins over the one the rename leaves, even when it is the line there now.
+    if (args.copyright !== undefined) {
+      if (args.siteName !== undefined && Object.hasOwn(state.components[footer.definitionId]?.properties ?? {}, COPYRIGHT_PROP)) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.id, prop: COPYRIGHT_PROP, value: args.copyright });
+      else setProp('footer', footer, COPYRIGHT_PROP, args.copyright);
     }
 
     const schema = state.components[footer.definitionId]?.properties.contact;

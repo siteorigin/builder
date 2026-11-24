@@ -7,7 +7,7 @@ import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { makeInstance } from '@engine/install';
-import { followsSiteName } from '@shared/site-name';
+import { followNote, followsSiteName, siteNameNote } from '@shared/site-name';
 
 const apply = (s: ProjectState, ...ops: Parameters<typeof applyOperations>[1]) => applyOperations(s, ops).state;
 const shell = (s: ProjectState, part: 'header' | 'footer') => s.site.shell[part].nodes[s.site.shell[part].rootIds[0]] as InstanceNode;
@@ -88,5 +88,28 @@ describe('what follows a rename and what the author keeps', () => {
     const s0 = business();
     expect(() => apply(s0, { type: 'site.update', name: '   ' })).toThrow(/needs a name/);
     expect(apply(s0, { type: 'site.update', name: ' Morning Press ' }).site.shell).toEqual(s0.site.shell);
+  });
+});
+
+describe('what the editor says about the site’s name', () => {
+  it('says under the site’s name where else it shows, and which shared part keeps a name of its own', () => {
+    const s = createStarterState('business', 'Morning Press', false);
+    expect(siteNameNote(s)).toBe('The header and footer show it too.');
+    shell(s, 'footer').props.siteName = 'Morning Press Co.';
+    expect(siteNameNote(s)).toBe('The header shows it too. The footer keeps its own name, “Morning Press Co.”.');
+    s.site.shell.header = { rootIds: [], nodes: {} };
+    expect(siteNameNote(s)).toBe('The footer keeps its own name, “Morning Press Co.”.');
+    s.site.shell.footer = { rootIds: [], nodes: {} };
+    expect(siteNameNote(s)).toBeUndefined();
+  });
+
+  it('says beside each brand field whether it follows the site’s name, and nothing beside other fields', () => {
+    const s = createStarterState('business', 'Morning Press', false);
+    shell(s, 'footer').props.copyright = 'Words by the team.';
+    expect(followNote(s, shell(s, 'header'), 'siteName')).toEqual({ follows: true, text: expect.stringContaining('Follows the site name') });
+    expect(followNote(s, shell(s, 'footer'), 'copyright')).toEqual({ follows: false, text: expect.stringContaining('Its own wording') });
+    expect(followNote(s, shell(s, 'footer'), 'tagline')).toBeUndefined();
+    const home = s.pages[s.site.homePageId];
+    expect(followNote(s, home.nodes[home.rootIds[0]] as InstanceNode, 'siteName')).toBeUndefined();
   });
 });

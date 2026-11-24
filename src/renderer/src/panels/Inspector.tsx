@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue, TextNode } from '@shared/types';
 import { isBinding, parseStyleScopeKey } from '@shared/types';
+import { followNote } from '@shared/site-name';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
@@ -107,6 +108,24 @@ const HEADING_LEVEL_HINT = 'Sets the page outline screen readers use, not the lo
 
 /** A video field's hint, when it has one. */
 const videoHint = (note: VideoFieldNotes['url'] | VideoFieldNotes['title'] | undefined) => (note && 'hint' in note ? note.hint : undefined);
+
+/**
+ * Under the shared header's or footer's name and copyright line: whether it follows the site's name, which Site
+ * details sets, and for a name of its own a way back to following it (#31).
+ */
+function siteNameHint(state: ProjectState, node: InstanceNode, prop: string, useSiteName: () => void): ReactNode | undefined {
+  const note = followNote(state, node, prop);
+  if (!note) return undefined;
+  if (note.follows || prop !== 'siteName') return note.text;
+  return (
+    <>
+      {note.text}{' '}
+      <button type="button" className="link-btn" onClick={useSiteName}>
+        Use the site name
+      </button>
+    </>
+  );
+}
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: Exclude<ListOp, { kind: 'pick' }>): EditOperation {
   switch (op.kind) {
@@ -943,7 +962,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   name={key}
                   schema={isHeadingLevel(schema) ? { ...schema, description: HEADING_LEVEL_HINT } : schema}
                   label={label}
-                  hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : videoHint(videoNote(key))}
+                  hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : (videoHint(videoNote(key)) ?? siteNameHint(state, node, key, () => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: state.site.name }], 'Use the site name')))}
                   value={node.props[key] ?? schema.default}
                   onChange={(v, edit) => set(key, v, edit)}
                   onField={(field, v, edit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label}`, `${node.id}:${key}:${field}`)}
@@ -1339,7 +1358,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                     schema={schema}
                     value={inst.props[b.prop] ?? schema.default}
                     state={state}
-                    hint={mixedReach ? `Same in every ${itemLabel}.` : undefined}
+                    hint={mixedReach ? `Same in every ${itemLabel}.` : everywhere ? undefined : siteNameHint(state, inst, b.prop, () => void applyOps([{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: state.site.name }], 'Use the site name'))}
                     everywhere={!!everywhere}
                     onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}`)}
                     onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}:${field}`)}
