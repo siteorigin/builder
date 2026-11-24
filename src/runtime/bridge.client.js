@@ -1063,7 +1063,6 @@ function onEditPaste(e) {
 const PASTE_DROP = new Set(['HEAD', 'TITLE', 'META', 'LINK', 'BASE', 'STYLE', 'SCRIPT', 'TEMPLATE', 'NOSCRIPT', 'IFRAME', 'FRAME', 'OBJECT', 'EMBED', 'APPLET', 'SVG', 'MATH', 'CANVAS', 'IMG', 'PICTURE', 'VIDEO', 'AUDIO', 'MAP', 'AREA', 'INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'OPTION', 'DIALOG']);
 /** Pasted blocks, as the rich text holds them. Anything else is read for its text, marks and links. */
 const PASTE_BLOCKS = { P: 'p', DIV: 'p', SECTION: 'p', ARTICLE: 'p', HEADER: 'p', FOOTER: 'p', MAIN: 'p', ASIDE: 'p', NAV: 'p', ADDRESS: 'p', PRE: 'p', FIGURE: 'p', FIGCAPTION: 'p', DL: 'p', DT: 'p', DD: 'p', TR: 'p', CAPTION: 'p', H1: 'h3', H2: 'h3', H3: 'h3', H4: 'h4', H5: 'h4', H6: 'h4', BLOCKQUOTE: 'blockquote', UL: 'ul', OL: 'ol', LI: 'li' };
-const PASTE_BLOCK_TAGS = Object.keys(PASTE_BLOCKS).join(',');
 const HTML_NS = 'http://www.w3.org/1999/xhtml';
 
 /**
@@ -1092,28 +1091,75 @@ function pastedHref(raw) {
 
 /**
  * Copied HTML as markup the rich text can hold, or '' when it holds no words. It is parsed inert (nothing runs or
- * loads) and every element written is a new one: only the tags above, and an address and new tab for a link.
+ * loads) and read in one pass, in reading order, as lines: each block (a paragraph, heading, quote or list item)
+ * is a line of its own, a block inside a list item, quote or heading is another line of that kind, and the items
+ * of a list inside a list join the outer one, as the rich text holds them. Every element written is a new one:
+ * only these blocks, bold, italic, line breaks, and a link's address and new tab.
  */
 function pastedRich(html) {
   if (!html || html.length > 2000000) return '';
   const src = new DOMParser().parseFromString(html, 'text/html').body;
-  const out = document.createElement('div');
-  let words = false;
-  /** Lines (list items, headings, quotes) where a block joined the text: the next words go on a new line. */
-  const breakAfter = new WeakSet();
-  /** How many runs of words each line or block holds so far, so a joined block's are counted without rereading. */
-  const wordRuns = new WeakMap();
-  const runsIn = (el) => wordRuns.get(el) || 0;
-  /** A list item that goes on after a list nested in it was lifted out: its later words go in a new item there. */
-  const continued = new WeakMap();
-  const current = (el) => {
-    while (continued.has(el)) el = continued.get(el);
-    return el;
+  /** { kind: '' (words outside any block) | 'p' | 'h3' | 'h4' | 'blockquote' | 'li', list, runs: [{ text } | { br }] with marks } */
+  const lines = [];
+  let line = null;
+  const add = (ctx, run) => {
+    if (!line) {
+      line = { kind: ctx.kind, list: ctx.list, runs: [] };
+      lines.push(line);
+    }
+    line.runs.push(run);
   };
-  const lineBreak = (parent) => {
-    breakAfter.delete(parent);
-    put(parent, document.createElement('br'), {});
+  const walk = (n, ctx, m) => {
+    if (n.nodeType === Node.TEXT_NODE) {
+      const parts = m.pre ? n.nodeValue.split(/\r?\n/) : [n.nodeValue.replace(/[ \t\r\n\f]+/g, ' ')];
+      parts.forEach((text, i) => {
+        if (i) add(ctx, { br: true, m });
+        if (text) add(ctx, { text, m });
+      });
+      return;
+    }
+    // SVG and MathML (their titles and labels included) are not text.
+    if (n.nodeType !== Node.ELEMENT_NODE || n.namespaceURI !== HTML_NS || PASTE_DROP.has(n.tagName)) return;
+    if (n.tagName === 'BR') return add(ctx, { br: true, m });
+    const inner = { ...m };
+    const style = n.style || {};
+    const weight = style.fontWeight;
+    if (n.tagName === 'B' || n.tagName === 'STRONG' || n.tagName === 'TH') inner.strong = true;
+    // Google Docs wraps a whole copy in <b style="font-weight:normal">, and marks bold words with a style instead.
+    if (weight) inner.strong = weight === 'bold' || weight === 'bolder' || Number(weight) >= 600;
+    if (n.tagName === 'I' || n.tagName === 'EM') inner.em = true;
+    if (style.fontStyle) inner.em = style.fontStyle === 'italic' || style.fontStyle === 'oblique';
+    if (n.tagName === 'A') {
+      const href = pastedHref(n.getAttribute('href') || '');
+      if (href) {
+        inner.href = href;
+        inner.newTab = n.getAttribute('target') === '_blank';
+      } else delete inner.href;
+    }
+    if (n.tagName === 'PRE') inner.pre = true;
+    const kind = PASTE_BLOCKS[n.tagName];
+    // A table cell's words stay apart from the next cell's.
+    if ((n.tagName === 'TD' || n.tagName === 'TH') && line && line.runs.length) add(ctx, { text: ' ', m });
+    let within = ctx;
+    if (kind === 'ul' || kind === 'ol') within = { kind: 'li', list: ctx.list || kind };
+    else if (kind === 'li') within = { kind: 'li', list: ctx.list || 'ul' };
+    else if (kind) within = ctx.kind === 'li' || ctx.kind === 'blockquote' || ctx.kind === 'h3' || ctx.kind === 'h4' ? ctx : { kind, list: '' };
+    // A block starts a line of its own, and what follows it starts another.
+    if (kind) line = null;
+    for (const c of n.childNodes) walk(c, within, inner);
+    if (kind) line = null;
   };
+  for (const c of src.childNodes) walk(c, { kind: '', list: '' }, {});
+
+  /** A line without the spacing at its ends; null when it holds no words. */
+  const trimmed = (l) => {
+    const runs = l.runs.slice();
+    while (runs.length && runs[0].text !== undefined && !/\S/.test(runs[0].text)) runs.shift();
+    while (runs.length && runs[runs.length - 1].text !== undefined && !/\S/.test(runs[runs.length - 1].text)) runs.pop();
+    return runs.some((r) => r.text !== undefined && /\S/.test(r.text)) ? { ...l, runs } : null;
+  };
+  const kept = lines.map(trimmed).filter(Boolean);
+  if (!kept.length) return '';
   /** Text or a break inside its marks and link, joining the run before it where that has the same ones. */
   const put = (parent, node, m) => {
     let host = parent;
@@ -1134,98 +1180,34 @@ function pastedRich(html) {
     }
     host.appendChild(node);
   };
-  const walk = (n, parent, m) => {
-    if (n.nodeType === Node.TEXT_NODE) {
-      // The spacing around blocks and list items in the copied markup is not text (between words it is).
-      if (!/\S/.test(n.nodeValue)) {
-        const prev = parent.lastChild;
-        if (parent.tagName === 'UL' || parent.tagName === 'OL') return;
-        if (parent === out && (!prev || (prev.nodeType === Node.ELEMENT_NODE && PASTE_BLOCKS[prev.tagName]))) return;
-      }
-      const lines = m.pre ? n.nodeValue.split(/\r?\n/) : [n.nodeValue.replace(/[ \t\r\n\f]+/g, ' ')];
-      lines.forEach((t, i) => {
-        if (i) put(parent, document.createElement('br'), m);
-        if (!t) return;
-        if (/\S/.test(t)) {
-          words = true;
-          wordRuns.set(parent, runsIn(parent) + 1);
-          if (breakAfter.has(parent)) lineBreak(parent);
-        }
-        put(parent, document.createTextNode(t), m);
-      });
-      return;
-    }
-    // SVG and MathML (their titles and labels included) are not text.
-    if (n.nodeType !== Node.ELEMENT_NODE || n.namespaceURI !== HTML_NS || PASTE_DROP.has(n.tagName)) return;
-    if (n.tagName === 'BR') {
-      breakAfter.delete(parent);
-      return put(parent, document.createElement('br'), m);
-    }
-    const inner = { ...m };
-    const style = n.style || {};
-    const weight = style.fontWeight;
-    if (n.tagName === 'B' || n.tagName === 'STRONG' || n.tagName === 'TH') inner.strong = true;
-    // Google Docs wraps a whole copy in <b style="font-weight:normal">, and marks bold words with a style instead.
-    if (weight) inner.strong = weight === 'bold' || weight === 'bolder' || Number(weight) >= 600;
-    if (n.tagName === 'I' || n.tagName === 'EM') inner.em = true;
-    if (style.fontStyle) inner.em = style.fontStyle === 'italic' || style.fontStyle === 'oblique';
-    if (n.tagName === 'A') {
-      const href = pastedHref(n.getAttribute('href') || '');
-      if (href) {
-        inner.href = href;
-        inner.newTab = n.getAttribute('target') === '_blank';
-      } else delete inner.href;
-    }
-    if (n.tagName === 'PRE') inner.pre = true;
-    const kind = PASTE_BLOCKS[n.tagName];
-    const kids = (into) => n.childNodes.forEach((c) => walk(c, current(into), inner));
-    if (!kind) {
-      // A table cell's words stay apart from the next cell's.
-      if ((n.tagName === 'TD' || n.tagName === 'TH') && parent.lastChild) put(parent, document.createTextNode(' '), m);
-      return kids(parent);
-    }
-    if (kind === 'ul' || kind === 'ol') {
-      // A list inside a list has no stored form: its items join the list around it.
-      const outer = parent.tagName === 'LI' ? parent.parentNode : parent.tagName === 'UL' || parent.tagName === 'OL' ? parent : null;
-      if (outer) {
-        kids(outer);
-        if (parent.tagName === 'LI') {
-          const next = document.createElement('li');
-          outer.appendChild(next);
-          continued.set(parent, next);
-        }
-        return;
-      }
-      const list = document.createElement(kind);
-      parent.appendChild(list);
-      return kids(list);
-    }
-    // Whatever sits directly in a list is one of its items.
-    const inList = parent.tagName === 'UL' || parent.tagName === 'OL';
-    // A wrapper around other blocks (a <div> of paragraphs) is not a block of its own.
-    if (!inList && kind === 'p' && n.querySelector(PASTE_BLOCK_TAGS)) return kids(parent);
-    // A block inside a list item, heading or quote joins the text there on a line of its own: the rich text holds
-    // no deeper structure.
-    if (!inList && parent !== out) {
-      const before = runsIn(parent);
-      breakAfter.delete(parent);
-      if (before) lineBreak(parent);
-      kids(parent);
-      // A <br> that ended the joined block showed nothing there, and the next words get a line of their own anyway.
-      let end = parent.lastChild;
-      while (end && end.nodeType === Node.ELEMENT_NODE && end.tagName !== 'BR' && end.lastChild) end = end.lastChild;
-      if (end && end.nodeName === 'BR') end.remove();
-      if (runsIn(parent) > before) breakAfter.add(parent);
-      return;
-    }
-    const block = document.createElement(inList ? 'li' : kind === 'li' ? 'p' : kind);
-    parent.appendChild(block);
-    kids(block);
+  const fill = (el, runs) => {
+    for (const r of runs) put(el, r.br ? document.createElement('br') : document.createTextNode(r.text), r.m);
   };
-  src.childNodes.forEach((c) => walk(c, out, {}));
-  // A list item left with nothing in it (after a nested list was lifted out at its end) is not an item.
-  for (const li of out.querySelectorAll('li')) if (!/\S/.test(li.textContent)) li.remove();
-  return words ? out.innerHTML : '';
+  const out = document.createElement('div');
+  // Words alone, outside any block, go into the paragraph at the caret; a <br> that ended them showed nothing.
+  if (kept.length === 1 && !kept[0].kind) {
+    const runs = kept[0].runs;
+    fill(out, runs[runs.length - 1].br ? runs.slice(0, -1) : runs);
+    return out.innerHTML;
+  }
+  let list = null;
+  for (const l of kept) {
+    if (l.kind === 'li') {
+      if (!list || list.tagName.toLowerCase() !== l.list) {
+        list = document.createElement(l.list);
+        out.appendChild(list);
+      }
+      const item = document.createElement('li');
+      list.appendChild(item);
+      fill(item, l.runs);
+    } else {
+      list = null;
+      const block = document.createElement(l.kind || 'p');
+      out.appendChild(block);
+      fill(block, l.runs);
+    }
+  }
+  return out.innerHTML;
 }
 function onEditDrop(e) {
   e.preventDefault();

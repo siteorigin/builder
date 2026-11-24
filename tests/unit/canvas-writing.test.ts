@@ -319,7 +319,7 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       expect(await commit()).toEqual([untouched[0], p('The second paragraph has a Safe ', { text: 'bold', strong: true }, 'plain file far call to change.'), untouched[2], untouched[3]]);
     });
 
-    it('keeps a quote’s paragraphs and a nested list’s items apart, and a link to the site’s own page', async () => {
+    it('keeps a quote’s paragraphs and a nested list’s items apart, in reading order, and a link to the site’s own page', async () => {
       await editAt('r', 'Fourth');
       await page.keyboard.press('ControlOrMeta+A');
       await pasteRaw(
@@ -327,12 +327,33 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
         'First Second'
       );
       expect(await commit()).toEqual([
-        { type: 'blockquote', spans: [{ text: 'First\nSecond' }] },
+        { type: 'blockquote', spans: [{ text: 'First' }] },
+        { type: 'blockquote', spans: [{ text: 'Second' }] },
         // Lifted out in reading order: what followed the nested list stays after it.
         { type: 'ul', items: [[{ text: 'One' }], [{ text: 'Inner' }], [{ text: 'Deeper' }], [{ text: 'after' }], [{ text: 'Two' }]] },
         p({ text: 'Our team', link: { type: 'page', target: 'pg_about', anchor: 'team' } })
       ]);
     });
+
+    it('reads blocks inside quotes and list items line by line, breaks included', async () => {
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await pasteRaw('<blockquote><p>A</p><p></p>B</blockquote><blockquote><p>Ends<br><br></p></blockquote><ul><li>One<blockquote><ul><li>Inner</li></ul>after</blockquote>tail</li></ul>', 'A B');
+      expect(await commit()).toEqual([
+        { type: 'blockquote', spans: [{ text: 'A' }] },
+        { type: 'blockquote', spans: [{ text: 'B' }] },
+        { type: 'blockquote', spans: [{ text: 'Ends\n' }] },
+        { type: 'ul', items: [[{ text: 'One' }], [{ text: 'Inner' }], [{ text: 'after' }], [{ text: 'tail' }]] }
+      ]);
+    });
+
+    it('reads a paste of many nested lists in one pass', async () => {
+      await editAt('r', 'word');
+      const started = Date.now();
+      await pasteRaw('<ul><li>Many' + '<ul></ul>'.repeat(150_000) + '</li></ul>', 'Many');
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(await html('r')).toContain('Many');
+    }, 20000);
 
     it('pastes words alone with Paste and Match Style', async () => {
       await copy(COPIED, 'See our studio or the shop.');
