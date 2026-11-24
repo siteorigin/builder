@@ -423,14 +423,26 @@ let pendingScroll = null;
 /** How long a scroll waits for its element: long enough for the site to build and mount a new section. */
 const SCROLL_WAIT_MS = 3000;
 /**
- * Scrolls the element `desc` names into view, unless it already shows comfortably; false while the page has no box
- * for it yet (not there, or a component's wrapper whose content has not arrived).
+ * Scrolls the element `desc` names into view, unless it already shows comfortably. False while there is nothing to
+ * scroll to yet: it is not on the page, or it is a component's wrapper whose content has not arrived. One that is on
+ * the page without a box of its own (hidden at this width, in a closed disclosure, an empty anchor) is asked to
+ * scroll as it is, and never waited for: the page is not moved to it later, when something else shows it.
  */
 function scrollToDesc(desc, show) {
-  const el = findAll(desc).find((e) => rectOf(e));
-  if (!el) return false;
+  const all = findAll(desc);
+  let el = all.find((e) => rectOf(e));
+  if (!el) {
+    if (!all.length || all.some((e) => getComputedStyle(e).display === 'contents')) return false;
+    el = all[0];
+  }
   stopKeeping();
-  const target = getComputedStyle(el).display === 'contents' ? [...el.children].find((c) => rectOf(c)) || el : el;
+  // A wrapper is laid out as its content: the first of its children that shows, through any wrapper inside it.
+  let target = el;
+  while (getComputedStyle(target).display === 'contents') {
+    const next = [...target.children].find((c) => rectOf(c));
+    if (!next) break;
+    target = next;
+  }
   const r = target.getBoundingClientRect();
   // Shown from Layers (`show`), one taller than the frame shows from its top. A pick on the page itself keeps its
   // place on the page.
@@ -445,11 +457,16 @@ function retryScroll() {
   if (performance.now() > p.until || mode !== 'edit') pendingScroll = null;
   else if (scrollToDesc(p.desc, p.show)) pendingScroll = null;
 }
-/** The keys that scroll the page. A modifier alone (Shift as a shortcut begins) moves nothing. */
-const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+/**
+ * The keys that scroll the page, or move focus to what the page then scrolls to (Tab). A modifier alone (Shift as a
+ * shortcut begins) moves nothing, and with Ctrl, Alt or Command held they are the editor's shortcuts.
+ */
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab']);
 // The author's own scrolling, or a click in the page: the page stays where the author has it.
 for (const type of ['wheel', 'touchstart', 'pointerdown']) window.addEventListener(type, () => (pendingScroll = null), { capture: true, passive: true });
-window.addEventListener('keydown', (e) => SCROLL_KEYS.has(e.key) && (pendingScroll = null), { capture: true, passive: true });
+window.addEventListener('keydown', (e) => {
+  if (SCROLL_KEYS.has(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey) pendingScroll = null;
+}, { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
 // The list item open in the editor's inspector, revealed while it is edited

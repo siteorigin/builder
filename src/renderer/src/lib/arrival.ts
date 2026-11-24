@@ -59,6 +59,6 @@ export function arrivalShown(measured: Desc | null, selected: Desc | null, box: 
   const v = viewport && typeof viewport === 'object' ? (viewport as Record<string, unknown>) : {};
   const w = v.width;
   const h = v.height;
-  if (typeof w !== 'number' || typeof h !== 'number' || !Number.isFinite(w) || !Number.isFinite(h)) return false;
+  if (typeof w !== 'number' || typeof h !== 'number' || !Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return false;
   return box.y < h && box.y + box.height > 0 && box.x < w && box.x + box.width > 0;
 }

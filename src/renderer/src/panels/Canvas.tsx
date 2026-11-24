@@ -163,9 +163,14 @@ export function Canvas() {
   const arrivals = useRef(0);
   useEffect(() => {
     if (!arrival) return;
-    const t = setTimeout(() => setArrival(null), ARRIVAL_MS);
+    // Only this cue ends: a next one may already be on its way to the screen.
+    const t = setTimeout(() => setArrival((a) => (a === arrival ? null : a)), ARRIVAL_MS);
     return () => clearTimeout(t);
   }, [arrival]);
+  // Preview hides it, and Edit after it shows the selection as it is, without the rest of a cue.
+  useEffect(() => {
+    if (mode !== 'edit') setArrival(null);
+  }, [mode]);
   /** The element chain under the pointer in the page, so hover can be re-resolved when the selection changes. */
   const hoverChain = useRef<BridgeDesc[] | null>(null);
   /** While editing a component everywhere: the placement the last pick went through, and the one under the
@@ -535,9 +540,11 @@ export function Canvas() {
           // The pointer is on the name of what it was over: that element keeps its outline while it rests there.
           setState({ rects: { selected, hovered: !hovered.length && overTag.current ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
           // An element just inserted now shows in view (mounted, and scrolled to): its outline arrives with a brief
-          // highlight. Only for a report measured for it, on its own page, while editing.
+          // highlight. Only for a report measured for it, on its own page, while its outline is drawn (editing, the
+          // frame showing the page the editor has, Site styles closed).
           const shownPage = st && s.pageId ? st.pages[s.pageId] : null;
-          const own = s.mode === 'edit' && shownPage && samePath(shownPage.route, frameAt.current) ? descFor(s.selection) : null;
+          const drawn = s.mode === 'edit' && s.frameReady && !(s.rightTab === 'styles' && s.dockOpen);
+          const own = drawn && shownPage && samePath(shownPage.route, frameAt.current) ? descFor(s.selection) : null;
           if (takeArrival(s.selection, arrivalShown(descOrNull(p.selectedDesc), own, selected[0], p.viewport)) && s.selection) setArrival({ key: refKey(s.selection), n: ++arrivals.current });
           // Kept only when it changes: the page reports every frame while it scrolls.
           const sp = spacingOf(p.spacing);

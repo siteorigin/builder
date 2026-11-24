@@ -364,9 +364,10 @@ export async function insert(spec: InsertSpec, label: string) {
   const r = await applyOps(insertOps(at, spec, role), `Insert ${label}`);
   const id = r?.at(-1)?.nodeId as string | undefined;
   if (!id) return;
-  // Selected, and outlined with the arrival cue once the page shows it (scrolled to as it mounts).
+  // Selected, and outlined with the arrival cue once the page shows it (scrolled to as it mounts). Inserted while
+  // previewing (the command menu), it is just selected: Edit shows it as the author left it.
   const ref: ElementRef = { owner: at.owner, instancePath: [], nodeId: id };
-  markArrival(ref);
+  if (getState().mode === 'edit') markArrival(ref);
   setState({ selection: ref, rightTab: 'inspect' });
 }
 

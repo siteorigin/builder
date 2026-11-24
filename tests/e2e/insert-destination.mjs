@@ -74,6 +74,32 @@ const selectIn = async (locator, name) => {
   assert.fail(`${name} is selected; the chip says ${(await win.locator('.ov-chip .label').allInnerTexts()).join(' ')}`);
 };
 
+/**
+ * Watches for the arrival cue an inserted element's outline shows (#509), from before the insert: it is brief. Keeps
+ * where it first showed on screen and how it was drawn then; `arrival()` reads that back.
+ */
+const watchArrival = () =>
+  win.evaluate(() => {
+    window.arrivalSeen = null;
+    window.arrivalWatch?.disconnect();
+    const watch = () => {
+      const el = document.querySelector('.ov-selected.arriving');
+      if (!el || window.arrivalSeen) return;
+      const r = el.getBoundingClientRect();
+      const css = getComputedStyle(el);
+      window.arrivalSeen = { top: r.top, bottom: r.bottom, first: el === document.querySelector('.ov-selected'), animation: css.animationName, background: css.backgroundColor };
+    };
+    window.arrivalWatch = new MutationObserver(watch);
+    window.arrivalWatch.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+  });
+const arrival = () =>
+  eventually(async () => {
+    const seen = await win.evaluate(() => window.arrivalSeen);
+    assert.ok(seen, 'the outline arrives with the cue');
+    assert.ok(seen.first, 'on the first outline of the selection');
+    return seen;
+  });
+
 step('Artist profiles: two sections, the first holding a grid with one Exhibitor card');
 await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
 const pageId = (await snapshot()).site.homePageId;
@@ -173,6 +199,7 @@ for (const [where, locator, fy, index, label] of [
   await eventually(async () => assert.match(await dropLabel.innerText(), label, `the label says where Gallery goes (${where})`));
   assert.ok(await dropLine.isVisible(), `a line shows the gap (${where})`);
   if (where === 'between') await win.screenshot({ path: join(SHOTS, 'insert-destination-drag-section.png') });
+  await watchArrival();
   await win.mouse.up();
   await eventually(async () => {
     const page = await home();
@@ -183,6 +210,8 @@ for (const [where, locator, fy, index, label] of [
   assert.notEqual((await newest()).id, changes?.id);
   assert.equal((await newest()).label, 'Insert Gallery', `one change (${where})`);
   assert.equal(await dropLabel.count(), 0, 'the drop indicator goes away');
+  // Dropped where it shows: its outline arrives with the cue there too.
+  assert.equal((await arrival()).animation, 'ov-arrive', `the dropped Gallery arrives with the cue (${where})`);
   await undo();
   await eventually(async () => assert.deepEqual((await home()).rootIds, roots, `one Undo takes it away (${where})`));
 }
@@ -340,18 +369,7 @@ step('a Gallery inserted at the end of a tall page is scrolled to as the page mo
   const frameBody = frame.locator('body');
   await frameBody.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   assert.equal(await frameBody.evaluate(() => window.scrollY), 0);
-  // The cue is brief: watched for from before the click, and where it showed on screen kept.
-  await win.evaluate(() => {
-    window.arrivalSeen = null;
-    const watch = () => {
-      const el = document.querySelector('.ov-selected.arriving');
-      if (el && !window.arrivalSeen) {
-        const r = el.getBoundingClientRect();
-        window.arrivalSeen = { top: r.top, bottom: r.bottom };
-      }
-    };
-    new MutationObserver(watch).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
-  });
+  await watchArrival();
   const roots = (await home()).rootIds;
   await openInsert();
   await sectionTile('Gallery').click();
@@ -380,17 +398,27 @@ step('a Gallery inserted at the end of a tall page is scrolled to as the page mo
     const o = await win.locator('.ov-box.ov-selected').first().boundingBox();
     assert.ok(o && Math.abs(o.y - at.top) < 12, `the outline is on Gallery (${o?.y} vs ${at.top})`);
   });
-  const seen = await eventually(async () => {
-    const s = await win.evaluate(() => window.arrivalSeen);
-    assert.ok(s, 'the outline arrives with the cue');
-    return s;
-  });
-  // It starts as Gallery comes into the frame's view (the page may still be scrolling to it), never off-screen.
+  const seen = await arrival();
+  // Drawn as the cue (its own animation, not the plain outline), as Gallery comes into the frame's view (the page may
+  // still be scrolling to it), never off-screen.
+  assert.equal(seen.animation, 'ov-arrive', 'the cue is animated');
   const f = await win.locator('.frame-box iframe').boundingBox();
   assert.ok(seen.top < f.y + f.height && seen.bottom > f.y, `the cue starts in view (${seen.top}-${seen.bottom} in ${f.y}-${f.y + f.height})`);
   await win.screenshot({ path: join(SHOTS, 'insert-destination-arrival.png') });
   // It is brief.
   await eventually(async () => assert.equal(await win.locator('.ov-selected.arriving').count(), 0, 'the cue ends'), 4000);
+
+  // With reduced motion, the next one arrives with the same highlight held still, for as long.
+  await win.emulateMedia({ reducedMotion: 'reduce' });
+  await watchArrival();
+  const count = (await home()).rootIds.length;
+  await sectionTile('Gallery').click();
+  await eventually(async () => assert.equal((await home()).rootIds.length, count + 1, 'a second Gallery is added'));
+  const still = await arrival();
+  assert.equal(still.animation, 'none', 'without motion');
+  assert.notEqual(still.background, 'rgba(0, 0, 0, 0)', `but with its wash (${still.background})`);
+  await eventually(async () => assert.equal(await win.locator('.ov-selected.arriving').count(), 0, 'and it ends'), 4000);
+  await win.emulateMedia({ reducedMotion: 'no-preference' });
 }
 
 assert.deepEqual(errors, [], 'no page errors');

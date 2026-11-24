@@ -25,26 +25,47 @@ section{box-sizing:border-box;margin:0;height:500px}
 .wrap{display:contents}
 </style></head><body><main id="main">${SECTIONS.map(section).join('')}</main>
 <script>
-  // What a hot update does as it lands: the new section is rendered at the end of the page, optionally inside a
-  // wrapper that is laid out as its children (a component's root), which may arrive empty and fill a moment later.
+  const main = document.getElementById('main');
+  const initial = main.innerHTML;
+  const wrapper = (node) => {
+    const w = document.createElement('div');
+    w.className = 'wrap';
+    w.dataset.soCtx = 'page:p';
+    w.dataset.soNode = node;
+    return w;
+  };
+  // What a hot update does as it lands: the new section is rendered at the end of the page (or in place of the last
+  // one, leaving the page as tall as it was), optionally inside a wrapper that is laid out as its children (a
+  // component's root, led by a style element that shows nothing, perhaps inside another such wrapper that a line of
+  // the component's own follows), which may arrive empty and fill a moment later. A hidden copy first (one a component shows at another width) shows nothing.
   window.mount = (node, how = {}) => {
     const s = document.createElement('section');
     s.id = node;
     s.dataset.soCtx = 'page:p';
     s.dataset.soNode = node;
     s.textContent = node;
-    if (!how.wrapped) return document.getElementById('main').append(s);
-    const w = document.createElement('div');
-    w.className = 'wrap';
+    if (how.hiddenCopy) {
+      const copy = s.cloneNode(true);
+      copy.id = node + '-hidden';
+      copy.style.display = 'none';
+      main.prepend(copy);
+    }
+    const put = (el) => (how.replace ? document.getElementById(how.replace).replaceWith(el) : main.append(el));
+    if (!how.wrapped) return put(s);
+    const w = wrapper(node);
     w.id = node + '-wrap';
-    w.dataset.soCtx = 'page:p';
-    w.dataset.soNode = node;
     s.removeAttribute('data-so-node');
-    document.getElementById('main').append(w);
-    if (how.later) setTimeout(() => w.append(s), how.later);
-    else w.append(s);
+    put(w);
+    const inner = how.nested ? w.appendChild(document.createElement('div')) : w;
+    if (how.nested) {
+      inner.className = 'wrap';
+      w.appendChild(document.createElement('p')).textContent = 'After the section';
+    }
+    const fill = () => inner.append(document.createElement('style'), s);
+    if (how.later) setTimeout(fill, how.later);
+    else fill();
   };
-  window.unmount = () => { for (const el of [...document.getElementById('main').children]) if (!${JSON.stringify(SECTIONS)}.includes(el.id)) el.remove(); };
+  window.unmount = () => (main.innerHTML = initial);
 </script>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
@@ -89,7 +110,7 @@ describe.skipIf(!browserInstalled)('scrolling to a new selection the page shows 
   const inFrame = <T>(code: string) => page.evaluate<T>(`(() => { const win = frames[0]; const doc = win.document; ${code} })()`);
   const scrollY = () => inFrame<number>(`return win.scrollY;`);
   /** As a hot update would, a moment after the request (`after` ms). */
-  const mount = async (node: string, how: { wrapped?: boolean; later?: number } = {}, after = 150) => {
+  const mount = async (node: string, how: { wrapped?: boolean; nested?: boolean; later?: number; hiddenCopy?: boolean; replace?: string } = {}, after = 150) => {
     await page.waitForTimeout(after);
     await inFrame(`win.mount(${JSON.stringify(node)}, ${JSON.stringify(how)});`);
     await settle();
@@ -141,24 +162,62 @@ describe.skipIf(!browserInstalled)('scrolling to a new selection the page shows 
     expect(await inView('wrapped')).toBe(true);
   });
 
-  it('leaves the page where the author scrolled it meanwhile', async () => {
-    await send('scrollTo', { desc: sel('late') });
-    await inFrame(`win.dispatchEvent(new win.WheelEvent('wheel', { deltaY: 100 })); win.scrollTo({ top: 300, behavior: 'instant' });`);
-    await settle();
-    await mount('late');
-    expect(await scrollY()).toBe(300);
+  it('scrolls through a wrapper inside another wrapper to the content that shows', async () => {
+    await send('track', { selected: sel('nested'), hovered: null });
+    await send('scrollTo', { desc: sel('nested') });
+    await mount('nested', { wrapped: true, nested: true });
+    expect(await inView('nested')).toBe(true);
   });
 
-  it('keeps waiting through a key that scrolls nothing (Shift, as a shortcut begins)', async () => {
-    await send('scrollTo', { desc: sel('late') });
-    await inFrame(`doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));`);
+  it('scrolls to the copy that shows, past a hidden one', async () => {
+    await send('track', { selected: sel('copied'), hovered: null });
+    await send('scrollTo', { desc: sel('copied') });
+    await mount('copied', { hiddenCopy: true });
+    expect(await inView('copied')).toBe(true);
+  });
+
+  it('scrolls to one the page puts in place of another, with nothing selected, the page no taller', async () => {
+    // Nothing selected or hovered, and the page keeps its height: only the change to the page itself wakes the wait.
+    await send('scrollTo', { desc: sel('swapped') });
+    await mount('swapped', { replace: 'contact' });
+    expect(await inView('swapped')).toBe(true);
+  });
+
+  it('does not wait for one that is on the page but hidden', async () => {
+    await inFrame(`win.mount('hidden'); doc.getElementById('hidden').style.display = 'none';`);
+    await send('scrollTo', { desc: sel('hidden') });
+    // Shown again later (a disclosure opened, another width): the page is not moved to it then.
+    await inFrame(`doc.getElementById('hidden').style.display = ''; doc.getElementById('main').append(doc.createElement('p'));`);
     await settle();
-    await mount('late');
-    expect(await inView('late')).toBe(true);
+    await settle();
+    expect(await scrollY()).toBe(0);
+  });
+
+  it('leaves the page where the author scrolled it meanwhile', async () => {
+    for (const input of [`new win.WheelEvent('wheel', { deltaY: 100 })`, `new win.Event('touchstart')`]) {
+      await inFrame(`win.unmount(); win.scrollTo({ top: 0, behavior: 'instant' });`);
+      await send('scrollTo', { desc: sel('late') });
+      await inFrame(`win.dispatchEvent(${input}); win.scrollTo({ top: 300, behavior: 'instant' });`);
+      await settle();
+      await mount('late');
+      expect(await scrollY()).toBe(300);
+    }
+  });
+
+  it('keeps waiting through a key that scrolls nothing (Shift, as a shortcut begins, or a shortcut with Ctrl)', async () => {
+    for (const key of [`{ key: 'Shift' }`, `{ key: 'ArrowLeft', ctrlKey: true }`]) {
+      await inFrame(`win.unmount(); win.scrollTo({ top: 0, behavior: 'instant' });`);
+      await send('scrollTo', { desc: sel('late') });
+      await inFrame(`doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { ...${key}, bubbles: true }));`);
+      await settle();
+      await mount('late');
+      expect(await inView('late')).toBe(true);
+    }
   });
 
   it('leaves the page where it is after a click or a scrolling key in it meanwhile', async () => {
-    for (const input of [`new win.PointerEvent('pointerdown', { bubbles: true })`, `new win.KeyboardEvent('keydown', { key: 'PageDown', bubbles: true })`]) {
+    const key = (k: string) => `new win.KeyboardEvent('keydown', { key: '${k}', bubbles: true })`;
+    for (const input of [`new win.PointerEvent('pointerdown', { bubbles: true })`, ...['PageDown', 'ArrowDown', 'End', ' ', 'Tab'].map(key)]) {
       await inFrame(`win.unmount();`);
       await send('scrollTo', { desc: sel('late') });
       await inFrame(`doc.body.dispatchEvent(${input});`);
@@ -209,7 +268,21 @@ describe.skipIf(!browserInstalled)('scrolling to a new selection the page shows 
 
     await inFrame(`win.unmount();`);
     await send('scrollTo', { desc: sel('late') });
+    await inFrame(`win.dispatchEvent(new win.PopStateEvent('popstate'));`);
+    await settle();
+    await mount('late');
+    expect(await scrollY()).toBe(0);
+
+    await inFrame(`win.unmount();`);
+    await send('scrollTo', { desc: sel('late') });
     await send('mode', { mode: 'preview' });
+    await mount('late');
+    expect(await scrollY()).toBe(0);
+
+    // Asked while previewing, and Edit back before it mounts: Preview never waits for it.
+    await inFrame(`win.unmount();`);
+    await send('scrollTo', { desc: sel('late') });
+    await send('mode', { mode: 'edit' });
     await mount('late');
     expect(await scrollY()).toBe(0);
   });
