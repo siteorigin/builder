@@ -139,7 +139,7 @@ assert.equal(photoImport.ok, true, `the photo imports: ${photoImport.message}`);
 const photoId = photoImport.assetIds[0];
 const photo = (await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets[photoId];
 assert.deepEqual([photo.width, photo.height], [2000, 1200], 'the photo is recorded as it is displayed');
-assert.deepEqual(photo.variants.map((v) => v.width), [480, 960, 1440], 'the photo has three responsive copies');
+assert.deepEqual(photo.variants.map((v) => v.width), [160, 480, 960, 1440], 'the photo has four responsive copies');
 const homeHero = await win.evaluate(async () => {
   const s = await window.builder.project.snapshot();
   const home = s.state.pages[s.state.site.homePageId];

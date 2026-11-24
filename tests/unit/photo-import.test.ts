@@ -183,13 +183,13 @@ describe('importing a HEIC photo', () => {
     expect(existing).toBe(false);
     expect(record).toMatchObject({ name: 'portrait rotated', mime: 'image/jpeg', width: 1200, height: 1600, kind: 'image' });
     expect(record.file).toMatch(/^static\/assets\/portrait-rotated-[0-9a-f]{8}\.jpg$/);
-    expect(record.variants?.map((v) => v.width)).toEqual([480, 960]);
+    expect(record.variants?.map((v) => v.width)).toEqual([160, 480, 960]);
     const stored = readFileSync(join(project, record.file));
     expect(sha(stored)).toBe(record.hash);
     await expectUpright(stored, 1200, 1600);
     // Upright pixels, so no orientation, location or device details travel with the copy.
     expect(photoMetadata(stored)).toMatchObject({ location: false, device: false });
-    for (const v of record.variants!) await expectUpright(readFileSync(join(project, v.file)), v.width, (v.width * 4) / 3);
+    for (const v of record.variants!) await expectUpright(readFileSync(join(project, v.file)), v.width, Math.round((v.width * 4) / 3));
     expect(readFileSync(path).equals(HEIC)).toBe(true);
     // The same photo again is the same copy, so it is the same asset.
     const again = await importAsset(project, sourceFile('again.heic', HEIC), [record], undefined, { decoder: heicDecoder() });
@@ -227,7 +227,7 @@ describe('a web-sized copy of a large photo', () => {
     const { record } = await importAsset(project, path, [], undefined, { webCopy: true });
     expect(record).toMatchObject({ name: 'field visit', mime: 'image/jpeg', width: 2560, height: 1920 });
     expect(record.bytes).toBeLessThan(original.length);
-    expect(record.variants?.map((v) => v.width)).toEqual([480, 960, 1440]);
+    expect(record.variants?.map((v) => v.width)).toEqual([160, 480, 960, 1440]);
     const stored = readFileSync(join(project, record.file));
     const credits = cleanPhoto(stored)?.credits.tiff?.toString('latin1');
     expect(credits).toContain('Ana Field');
@@ -374,7 +374,7 @@ describe('making a web-sized copy of a large library image', () => {
     const assets = c.session!.state.assets.assets;
     const copy = assets[r.assetId!];
     expect(copy).toMatchObject({ name: 'big hero (web-sized)', mime: 'image/jpeg', width: 2560, height: 1707, description: 'Our front room', altSuggestion: 'The front room at dusk' });
-    expect(copy.variants?.map((v) => v.width)).toEqual([480, 960, 1440]);
+    expect(copy.variants?.map((v) => v.width)).toEqual([160, 480, 960, 1440]);
     expect(existsSync(join(dir, copy.file))).toBe(true);
     const usage = assetUsages(c.session!.state);
     expect(usage[copy.id]).toBe(used);

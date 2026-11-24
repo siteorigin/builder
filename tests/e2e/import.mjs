@@ -76,7 +76,7 @@ const snap = await win.evaluate(() => window.builder.project.snapshot());
 const preview = new URL(await win.locator('.frame-box iframe').getAttribute('src'));
 for (const id of run.result.assetIds) {
   const asset = snap.state.assets.assets[id];
-  assert.deepEqual(asset.variants?.map((v) => v.width), [480, 960, 1440], `${id} has its copies`);
+  assert.deepEqual(asset.variants?.map((v) => v.width), [160, 480, 960, 1440], `${id} has its copies`);
   for (const v of asset.variants) {
     const res = await fetch(new URL(`/${v.file.replace(/^static\//, '')}`, preview.origin), { signal: AbortSignal.timeout(30000) });
     const data = Buffer.from(await res.arrayBuffer());
@@ -95,8 +95,10 @@ const shown = (sel) =>
 const checkSmall = (list, where) => {
   assert.equal(list.length, PHOTOS, `${where} shows every picture`);
   for (const p of list) {
-    assert.match(p.src, /-480w\.(jpg|png)$/, `${where} loads the 480px copy (${p.src})`);
-    assert.equal(p.natural, 480, `${where} decoded the 480px copy`);
+    // The smallest copy that covers the tile: 160px or 480px, never the 2000px original.
+    const width = Number(p.src.match(/-(160|480)w\.(jpg|png)$/)?.[1]);
+    assert.ok(width, `${where} loads a small copy (${p.src})`);
+    assert.equal(p.natural, width, `${where} decoded the copy it named`);
     assert.ok(p.natural >= p.shown * p.dpr, `${where} has a pixel for every device pixel (${p.natural} for ${p.shown}px at ${p.dpr}x)`);
   }
 };
@@ -119,7 +121,7 @@ await eventually(async () => {
 await eventually(async () => {
   const thumb = await shown('.insp-image-thumb img');
   assert.equal(thumb.length, 1, 'the chosen image previews in the inspector');
-  assert.match(thumb[0].src, /-480w\.(jpg|png)$/, 'the inspector preview loads a small copy');
+  assert.match(thumb[0].src, /-(160|480)w\.(jpg|png)$/, 'the inspector preview loads a small copy');
 });
 
 step('undo the hero and its image, so every imported picture is unused again');
@@ -138,16 +140,16 @@ const diskBytes = () => onDisk().reduce((n, f) => n + statSync(join(assetDir, f)
 const imported = onDisk();
 const importedBytes = diskBytes();
 const mb = (b) => `${(b / (1024 * 1024)).toFixed(1)} MB`;
-assert.equal(imported.length, PHOTOS * 4, 'each photo is an original and three responsive copies');
+assert.equal(imported.length, PHOTOS * 5, 'each photo is an original and four responsive copies');
 
 step('remove every unused image: the files stay, and the Assets panel says they are kept for Undo');
 await win.getByRole('button', { name: 'Assets', exact: true }).click();
 const storage = win.getByTestId('asset-storage');
-await storage.getByText(`${PHOTOS * 4} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText(`${PHOTOS * 5} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
 await win.getByRole('button', { name: /^Unused/ }).click();
 await win.getByRole('button', { name: `Remove all ${PHOTOS}` }).click();
 await storage.getByText('Kept for Undo').waitFor({ timeout: 15000 });
-await storage.getByText(`${PHOTOS * 4} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText(`${PHOTOS * 5} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
 await storage.getByText('0 files · 0 bytes').waitFor();
 assert.deepEqual(onDisk().sort(), imported.sort(), 'removing keeps every file for Undo');
 
@@ -170,7 +172,7 @@ const { plan, refused } = await win.evaluate(async () => {
   return { plan: info.reclaim, refused: await window.builder.project.reclaimStorage(info.reclaim.key, `${key}-another-opening`) };
 });
 assert.equal(refused.ok, false, 'a plan is only carried out in the opening it was made for');
-assert.deepEqual(plan.files, { files: PHOTOS * 4, bytes: importedBytes }, 'the plan frees every removed file');
+assert.deepEqual(plan.files, { files: PHOTOS * 5, bytes: importedBytes }, 'the plan frees every removed file');
 assert.deepEqual(onDisk().sort(), imported.sort(), 'nothing is deleted before the author confirms');
 await win.getByRole('button', { name: `Free ${mb(plan.files.bytes + plan.historyBytes)}`, exact: true }).click();
 await dialog.waitFor({ state: 'detached', timeout: 15000 });
@@ -241,13 +243,13 @@ const arrived = Object.values(now.state.assets.assets).filter((a) => !before.has
 const byName = Object.fromEntries(arrived.map((a) => [a.name, a]));
 assert.deepEqual(Object.keys(byName).sort(), [...(CONVERTS ? ['IMG 0042'] : []), 'field scan', 'plain'].sort(), 'the photos and the plain picture arrive; the text file does not');
 assert.deepEqual([byName['field scan'].mime, byName['field scan'].width, byName['field scan'].height], ['image/jpeg', 2560, 1707], 'the large PNG arrives as its web-sized JPEG');
-assert.deepEqual(byName['field scan'].variants.map((v) => v.width), [480, 960, 1440], 'the web-sized copy has its responsive copies');
+assert.deepEqual(byName['field scan'].variants.map((v) => v.width), [160, 480, 960, 1440], 'the web-sized copy has its responsive copies');
 assert.equal(byName.plain.mime, 'image/jpeg');
 const first = CONVERTS ? byName['IMG 0042'] : byName['field scan'];
 assert.equal(await win.locator('.asset-detail h4').innerText(), first.name, 'the first picture made opens in Assets');
 if (CONVERTS) {
   assert.deepEqual([first.mime, first.width, first.height], ['image/jpeg', 1200, 1600], 'the HEIC photo arrives as an upright JPEG');
-  assert.deepEqual(first.variants.map((v) => v.width), [480, 960], 'the converted photo has its responsive copies');
+  assert.deepEqual(first.variants.map((v) => v.width), [160, 480, 960], 'the converted photo has its responsive copies');
 }
 
 step('the inspector image picker: Choose image → Import reviews the photo and places it at once');
@@ -291,7 +293,7 @@ await copyButton.click();
 await eventually(async () => assert.equal(await win.locator('.asset-detail h4').innerText(), 'camera (web-sized)'), 60000);
 now = await win.evaluate(() => window.builder.project.snapshot());
 const copy = Object.values(now.state.assets.assets).find((a) => a.name === 'camera (web-sized)');
-assert.deepEqual([copy.mime, copy.width, copy.height, copy.variants.map((v) => v.width)], ['image/jpeg', 2560, 1920, [480, 960, 1440]], 'the copy is web-sized with its responsive copies');
+assert.deepEqual([copy.mime, copy.width, copy.height, copy.variants.map((v) => v.width)], ['image/jpeg', 2560, 1920, [160, 480, 960, 1440]], 'the copy is web-sized with its responsive copies');
 assert.ok(copy.bytes < original.bytes, 'the copy is lighter than the original');
 assert.ok(now.state.assets.assets[original.id], 'the original stays in Assets');
 

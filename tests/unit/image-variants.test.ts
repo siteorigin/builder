@@ -60,42 +60,43 @@ async function pixel(buf: Buffer, x: number, y: number) {
 describe('responsive copies', () => {
   it('makes each width meaningfully smaller than the picture, as JPEG without metadata', async () => {
     const variants = await renderVariants(await halves(2000, 1000, 'jpeg'), 'image/jpeg', 2000);
-    expect(variants.map((v) => v.width)).toEqual([480, 960, 1440]);
+    expect(variants.map((v) => v.width)).toEqual([160, 480, 960, 1440]);
     for (const v of variants) {
       const m = await sharp(v.data).metadata();
       expect(m).toMatchObject({ format: 'jpeg', width: v.width, height: v.width / 2 });
       expect(m.exif).toBeUndefined();
     }
     // A copy is made only when it is under 90% of the picture's width: 1440 is not, at 1600.
-    expect((await renderVariants(await halves(1600, 800, 'jpeg'), 'image/jpeg', 1600)).map((v) => v.width)).toEqual([480, 960]);
-    expect((await renderVariants(await halves(1602, 800, 'jpeg'), 'image/jpeg', 1602)).map((v) => v.width)).toEqual([480, 960, 1440]);
+    expect((await renderVariants(await halves(1600, 800, 'jpeg'), 'image/jpeg', 1600)).map((v) => v.width)).toEqual([160, 480, 960]);
+    expect((await renderVariants(await halves(1602, 800, 'jpeg'), 'image/jpeg', 1602)).map((v) => v.width)).toEqual([160, 480, 960, 1440]);
     // A header that overstates the width gets copies for the picture's real width, each labelled as it is.
     const small = await renderVariants(await halves(600, 300, 'jpeg'), 'image/jpeg', 2000);
-    expect(small.map((v) => v.width)).toEqual([480]);
-    expect((await sharp(small[0].data).metadata()).width).toBe(480);
+    expect(small.map((v) => v.width)).toEqual([160, 480]);
+    expect((await sharp(small[1].data).metadata()).width).toBe(480);
   });
 
   it('turns a copy the way its EXIF orientation says, sized by its displayed width', async () => {
     // Stored 1200x600 on its side (orientation 6: turn clockwise), so displayed 600x1200 with red on top.
     const variants = await renderVariants(await halves(1200, 600, 'jpeg', 6), 'image/jpeg', 600);
-    expect(variants.map((v) => v.width)).toEqual([480]);
-    const m = await sharp(variants[0].data).metadata();
+    expect(variants.map((v) => v.width)).toEqual([160, 480]);
+    const copy = variants.find((v) => v.width === 480)!;
+    const m = await sharp(copy.data).metadata();
     expect([m.width, m.height, m.orientation]).toEqual([480, 960, undefined]);
-    const top = await pixel(variants[0].data, 240, 100);
-    const bottom = await pixel(variants[0].data, 240, 860);
+    const top = await pixel(copy.data, 240, 100);
+    const bottom = await pixel(copy.data, 240, 860);
     expect(top.r).toBeGreaterThan(200);
     expect(top.b).toBeLessThan(60);
     expect(bottom.b).toBeGreaterThan(200);
     expect(bottom.r).toBeLessThan(60);
     // Orientation 2 mirrors: red ends up on the right.
-    const [mirrored] = await renderVariants(await halves(1200, 600, 'jpeg', 2), 'image/jpeg', 1200);
+    const mirrored = (await renderVariants(await halves(1200, 600, 'jpeg', 2), 'image/jpeg', 1200)).find((v) => v.width === 480)!;
     expect((await pixel(mirrored.data, 400, 100)).r).toBeGreaterThan(200);
     expect((await pixel(mirrored.data, 80, 100)).b).toBeGreaterThan(200);
   });
 
   it('keeps a PNG a PNG, transparency included', async () => {
     const clear = await sharp({ create: { width: 1200, height: 600, channels: 4, background: { r: 0, g: 128, b: 0, alpha: 0 } } }).png().toBuffer();
-    const [v] = await renderVariants(clear, 'image/png', 1200);
+    const v = (await renderVariants(clear, 'image/png', 1200)).find((c) => c.width === 480)!;
     expect(await sharp(v.data).metadata()).toMatchObject({ format: 'png', width: 480, height: 240, hasAlpha: true });
     expect((await pixel(v.data, 10, 10)).a).toBe(0);
   });
@@ -107,7 +108,7 @@ describe('responsive copies', () => {
     // The same pixels as an ordinary still PNG are still resized.
     const still = await sharp(moving).png().toBuffer();
     expect(chunksOf(still).map((c) => c.type)).not.toContain('acTL');
-    expect((await renderVariants(still, 'image/png', 1200)).map((v) => v.width)).toEqual([480, 960]);
+    expect((await renderVariants(still, 'image/png', 1200)).map((v) => v.width)).toEqual([160, 480, 960]);
   });
 
   it('leaves an AVIF image sequence to the browser, but not an AVIF whose brands nothing knows', async () => {
@@ -138,7 +139,7 @@ describe('responsive copies', () => {
   it('is deterministic, and leaves other formats alone', async () => {
     const photo = await halves(2000, 1000, 'jpeg');
     const [a, b] = [await renderVariants(photo, 'image/jpeg', 2000), await renderVariants(photo, 'image/jpeg', 2000)];
-    expect(a.map((v) => v.data.equals(b.find((x) => x.width === v.width)!.data))).toEqual([true, true, true]);
+    expect(a.map((v) => v.data.equals(b.find((x) => x.width === v.width)!.data))).toEqual([true, true, true, true]);
     for (const mime of ['image/webp', 'image/gif', 'image/avif']) expect(await renderVariants(photo, mime, 2000)).toEqual([]);
   });
 });
