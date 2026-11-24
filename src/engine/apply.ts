@@ -3,7 +3,6 @@ import type {
   AltReview,
   ComponentDefinition,
   GraphNode,
-  ImageValue,
   InstanceNode,
   LinkValue,
   ListItem,
@@ -19,7 +18,6 @@ import type {
   TokenValue,
   RichSpan,
   RichText,
-  ValuePlace,
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
@@ -39,6 +37,7 @@ import { catalogueComponent, getTheme, listThemes, themeLockEntry } from '@catal
 import { resolveFontStack } from '@catalogue/fonts';
 import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
+import { chosenUses, imageUses } from './image-uses';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
@@ -324,6 +323,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       const kind = state.assets.assets[op.assetId].kind;
       if (kind === 'document') {
         if (state.assets.assets[op.withAssetId].kind !== 'document') fail('Only a document can replace a document.');
+        if (op.uses) fail('A document is replaced in every place it is linked from.');
         // Every link to the document goes to the other one instead.
         walkValues(state, (v) => {
           if (isDocumentLink(v) && v.target === op.assetId) v.target = op.withAssetId;
@@ -331,6 +331,13 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         return {};
       }
       if (kind !== 'image' || state.assets.assets[op.withAssetId].kind !== 'image') fail('Only an image can replace an image.');
+      // Every use, or only the ones chosen: all of those must still show the image, or nothing is replaced.
+      let uses = imageUses(state, op.assetId);
+      if (op.uses) {
+        const chosen = chosenUses(uses, op.uses);
+        if ('error' in chosen) fail(`${chosen.error} Nothing was replaced: choose the places again.`);
+        uses = chosen.uses;
+      }
       if (op.assetId === op.withAssetId) return { altReview: [] };
       // A use that still has the old image's suggested description takes the new one's; a decorative use stays as it
       // is; a description of the use's own is kept, for the author to check against the new picture. A copy of the
@@ -338,18 +345,22 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       const was = state.assets.assets[op.assetId].altSuggestion?.trim() ?? '';
       const now = state.assets.assets[op.withAssetId].altSuggestion?.trim() ?? '';
       const altReview: AltReview[] = [];
-      walkImageUses(state, op.assetId, (v, at) => {
+      for (const u of uses) {
+        const t = u.target;
+        if (!u.value) {
+          if (t?.kind === 'pageSharing') state.pages[t.pageId].seo.socialImage = op.withAssetId;
+          else if (t?.kind === 'site') state.site[t.field] = op.withAssetId;
+          continue;
+        }
+        const v = u.value;
         v.assetId = op.withAssetId;
-        if (op.keepAlt || v.decorative) return;
+        if (op.keepAlt || v.decorative) continue;
         const alt = typeof v.alt === 'string' ? v.alt.trim() : '';
         if (alt === was) v.alt = now;
         // A use left with no description at all is listed too, however it came to have none.
-        if (!(alt === was ? now : alt)) altReview.push({ ...at(), reason: 'missing', alt: typeof v.alt === 'string' ? v.alt : '' });
-        else if (alt !== was && alt !== now) altReview.push({ ...at(), reason: 'custom', alt: v.alt });
-      });
-      if (state.site.favicon === op.assetId) state.site.favicon = op.withAssetId;
-      for (const pg of Object.values(state.pages)) if (pg.seo.socialImage === op.assetId) pg.seo.socialImage = op.withAssetId;
-      if (state.site.socialImage === op.assetId) state.site.socialImage = op.withAssetId;
+        if (!(alt === was ? now : alt)) altReview.push({ ...u.place, reason: 'missing', alt: typeof v.alt === 'string' ? v.alt : '' });
+        else if (alt !== was && alt !== now) altReview.push({ ...u.place, reason: 'custom', alt: v.alt });
+      }
       return { altReview };
     }
     case 'asset.relink': {
@@ -450,19 +461,6 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   for (const t of allTrees(state)) walk(t.tree.nodes);
   for (const d of Object.values(state.components)) walk(d.properties);
   for (const p of Object.values(state.pages)) walk(p.seo);
-}
-
-/** Every image value showing a library image, in the site's trees and its components' starting values; `at` says where it is. */
-function walkImageUses(state: ProjectState, assetId: string, fn: (v: ImageValue, at: () => ValuePlace) => void) {
-  const walk = (v: unknown, place: { owner: OwnerRef; nodeId: string } | { definitionId: string }, path: Array<string | number>) => {
-    if (Array.isArray(v)) v.forEach((x, i) => walk(x, place, [...path, x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' ? (x as { id: string }).id : i]));
-    else if (v && typeof v === 'object') {
-      if ((v as { assetId?: unknown }).assetId === assetId) fn(v as ImageValue, () => ({ ...place, path }));
-      for (const [k, x] of Object.entries(v)) walk(x, place, [...path, k]);
-    }
-  };
-  for (const t of allTrees(state)) for (const n of Object.values(t.tree.nodes)) walk(n, { owner: t.owner, nodeId: n.id }, []);
-  for (const d of Object.values(state.components)) for (const [prop, schema] of Object.entries(d.properties)) walk(schema, { definitionId: d.id }, [prop]);
 }
 
 /** A stored link to a library document (see LinkValue). */

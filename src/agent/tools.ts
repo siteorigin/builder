@@ -134,7 +134,7 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
           : t === 'node.duplicate'
             ? OPERATION_SCHEMAS[t].omit({ index: true })
             : t === 'asset.replace'
-              ? OPERATION_SCHEMAS[t].omit({ keepAlt: true })
+              ? OPERATION_SCHEMAS[t].omit({ keepAlt: true, uses: true })
               : OPERATION_SCHEMAS[t]
     );
   return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
@@ -421,6 +421,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.duplicate does not take an index.' } };
       // Keeping every use's alt text is for the app's own web-sized copies, which are the same picture.
       if (ops.some((o) => o.type === 'asset.replace' && o.keepAlt !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take keepAlt: uses with the old image’s suggested alt text take the new one’s, and its result lists the uses whose alt text to check.' } };
+      // Choosing some uses is the author's, from the places Assets lists; the AI replaces an image everywhere.
+      if (ops.some((o) => o.type === 'asset.replace' && o.uses !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take uses: it replaces the image wherever it is used. To change one place, set that image value instead.' } };
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId);
       if (!res.ok) {
         // A batch that creates a page and refers to it in the same call cannot work: the page has no ID yet.

@@ -357,7 +357,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const review = (results[i] as { altReview?: unknown } | undefined)?.altReview;
         const n = Array.isArray(review) ? altStillToCheck(after, op.withAssetId, review as AltReview[]).length : 0;
         const check = n ? `; check the alt text in ${n === 1 ? 'one place' : `${n} places`}` : '';
-        return plain(op, `Replaced ${quoted(assetName(op.assetId))} with ${quoted(assetName(op.withAssetId))} wherever it was used${check}`);
+        const where = op.uses ? `in ${op.uses.length === 1 ? 'one chosen place' : `${op.uses.length} chosen places`}` : 'wherever it was used';
+        return plain(op, `Replaced ${quoted(assetName(op.assetId))} with ${quoted(assetName(op.withAssetId))} ${where}${check}`);
       }
       case 'asset.relink':
         return plain(op, `Gave ${quoted(assetName(op.assetId))} a new image file`);

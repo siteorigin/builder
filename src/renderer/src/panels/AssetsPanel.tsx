@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, ImageDown, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, ImageDown, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
 import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/types';
-import { api, applyOps, attachToChat, commitOps, getState, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
+import { api, applyOps, attachToChat, commitOps, getState, inspectorFocusRequest, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { inSeries, sortAssets } from '@shared/asset-order';
@@ -16,6 +16,7 @@ import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStora
 import { assetArrived, reviewImport } from '../lib/import-review';
 import { documentDetails, documentLabels, documentName, libraryDocuments } from '../lib/documents';
 import { altChecks } from '../lib/alt-review';
+import { imageUseRows, type ImageUseRow, type UseField } from '../lib/asset-uses';
 import type { MissingAssetFiles } from '@shared/api';
 
 /** Above this an image is worth flagging: pages load smaller copies, but the original still ships with the site. */
@@ -296,14 +297,26 @@ interface Place {
   go?: () => void;
 }
 
-/** Selects an element where an image is used, on its page or in the shared part that shows it. */
-const revealUse = (owner: OwnerRef, nodeId: string) => () => {
+/**
+ * Selects an element where an image is used, on its page or in the shared part that shows it. For a placed
+ * component's image, the inspector opens the field it is in: in a gallery or team, that row, opened.
+ */
+const revealUse = (owner: OwnerRef, nodeId: string, field?: UseField, label = 'That image') => () => {
   if (owner.kind === 'page') selectPage(owner.id);
   else if (owner.kind === 'shell' && !goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id}, so this image is not on any page.`, 'info');
-  setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true });
+  const opening = getState().snapshot?.workspaceKey;
+  setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true, ...(field && opening ? { inspectorFocus: inspectorFocusRequest({ opening, owner, nodeId, ...field, label }) } : {}) });
 };
 
-/** Every place an image is used, or a document linked to, by the same rules as the engine's usage count. */
+/** Where Show goes for one use of an image: its element and field, its page's settings, or Site styles. */
+function showUse(u: ImageUseRow): (() => void) | undefined {
+  if (u.at) return revealUse(u.at.owner, u.at.nodeId, u.field, u.what);
+  if (u.setting === 'site') return openSiteStyles;
+  const pageId = u.setting?.pageId;
+  return pageId ? () => selectPage(pageId) : undefined;
+}
+
+/** Every place a document is linked from, by the same rules as the engine's usage count. */
 function placesOf(state: ProjectState, assetId: string): Place[] {
   const document = state.assets.assets[assetId]?.kind === 'document';
   const count = (v: unknown): number => {
@@ -424,6 +437,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const [importing, setImporting] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const [allPlaces, setAllPlaces] = useState(false);
+  // Replacing in some places: the uses ticked (by key) and the image picked for them. Null: every place, as picked.
+  const [choosing, setChoosing] = useState<{ chosen: string[]; pick: string | null } | null>(null);
   // The uses whose alt text the last Replace everywhere left to check, shown with the replaced image while that change stands.
   const [altReview, setAltReview] = useState<{ assetId: string; withId: string; undo: UndoTarget; review: AltReview[] } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -469,10 +484,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const selectedNow = useRef(selected);
   selectedNow.current = selected;
   const importRun = useRef(0);
-  const places = useMemo(() => (snap && sel ? placesOf(snap.state, sel.id) : []), [snap, sel]);
+  const places = useMemo(() => (snap && sel?.kind === 'image' ? imageUseRows(snap.state, sel.id) : []), [snap, sel]);
   useEffect(() => {
     setNameError(null);
     setAllPlaces(false);
+    setChoosing(null);
     setAltReview((r) => (r?.assetId === selected ? r : null));
   }, [selected]);
   // A pending "Import a replacement" never applies after the panel has gone.
@@ -543,11 +559,13 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     replaceSession.current++;
     setPickQ('');
     pickSeries.choose('');
+    setChoosing(null);
     setReplacing(true);
   };
   const closeReplace = () => {
     replaceSession.current++;
     setReplacing(false);
+    setChoosing(null);
     requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-replace-open')?.focus());
   };
 
@@ -657,22 +675,26 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     await importFiles(undefined, 'document');
   };
 
-  const replaceWith = async (withId: string) => {
+  /** Show another image in every place this one is used, or only in the places chosen (`only`), as one step. */
+  const replaceWith = async (withId: string, only?: ImageUseRow[]) => {
     // A second choice while the first is on its way replaces nothing more.
-    if (!sel || withId === sel.id || replacingNow.current) return;
-    const n = places.length || usage[sel.id] || 0;
+    if (!sel || withId === sel.id || replacingNow.current || only?.length === 0) return;
+    const n = only?.length ?? (places.length || usage[sel.id] || 0);
     const target = getState().snapshot?.state.assets.assets[withId];
+    const uses = only?.flatMap((u) => (u.target ? [u.target] : []));
     replacingNow.current = true;
-    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], `Replace ${nameOf(sel)}`).finally(() => (replacingNow.current = false));
+    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId, ...(uses ? { uses } : {}) }], only ? `Replace ${nameOf(sel)} in ${plural(n, 'place', 'places')}` : `Replace ${nameOf(sel)}`).finally(() => (replacingNow.current = false));
     if (r) {
       replaceSession.current++;
       setReplacing(false);
+      setChoosing(null);
       // Uses with a description of their own, or none now, are listed with this image for the author to check.
       const review = (r.results?.[0]?.altReview ?? []) as AltReview[];
       const check = review.length > 0 && !!r.entryId && selectedNow.current === sel.id;
       setAltReview(check ? { assetId: sel.id, withId, undo: { entryId: r.entryId!, workspaceKey: r.workspaceKey, revision: r.revision }, review } : null);
       const more = check ? ` Check the alt text in ${review.length === 1 ? 'one place' : `${review.length} places`} below.` : '';
-      toast(`${target ? nameOf(target) : 'The new image'} now shows in ${n === 1 ? 'its place' : `all ${n} places`} instead of ${nameOf(sel)}.${more}`, 'info', undoAction(r));
+      const where = only ? (n === 1 ? 'the place you chose' : `the ${n} places you chose`) : n === 1 ? 'its place' : `all ${n} places`;
+      toast(`${target ? nameOf(target) : 'The new image'} now shows in ${where} instead of ${nameOf(sel)}.${more}`, 'info', undoAction(r));
       requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
     }
   };
@@ -746,7 +768,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     }
   };
 
-  const grid = (onPick: (a: AssetRecord) => void, label: string) => (
+  /** `picked`: the tile chosen so far, when picking one is not yet acting on it (replacing in some places). */
+  const grid = (onPick: (a: AssetRecord) => void, label: string, picked?: string | null) => (
     <div className="asset-grid" role="group" aria-label={label} onKeyDown={gridKeys}>
       {shown.map((a) => {
         // Two imports can share a name ("hero"): the asset ID tells them apart, as the AI chat names them.
@@ -759,12 +782,18 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           <button
             key={a.id}
             data-asset={a.id}
-            className="asset-tile"
+            className={`asset-tile${picked === a.id ? ' picked' : ''}`}
             onClick={() => onPick(a)}
+            aria-pressed={picked === undefined ? undefined : picked === a.id}
             aria-label={gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}
             title={gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}
           >
             <Thumb key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={a} devUrl={devUrl} />
+            {picked === a.id && (
+              <span className="asset-picked" aria-hidden="true">
+                <Check />
+              </span>
+            )}
             {gone && (
               <span className="asset-size asset-gone" aria-hidden="true">
                 <TriangleAlert />
@@ -859,7 +888,22 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   let body: React.ReactNode;
   if (sel && replacing) {
     const n = places.length || usage[sel.id] || 0;
-    body = <div className="asset-replace">{shown.length ? grid((a) => void replaceWith(a.id), `Images to use instead of ${nameOf(sel)}`) : noMatches}</div>;
+    // Some places, chosen from the uses still there: one removed meanwhile drops out of the count and the change.
+    const chosen = choosing ? places.filter((u) => u.target && choosing.chosen.includes(u.key)) : [];
+    const pick = choosing?.pick ? (snap.state.assets.assets[choosing.pick] ?? null) : null;
+    const choosable = places.filter((u) => u.target).length;
+    const onPick = (a: AssetRecord) => (choosing ? setChoosing((c) => c && { ...c, pick: a.id }) : void replaceWith(a.id));
+    const startChoosing = () => {
+      replaceSession.current++;
+      setChoosing({ chosen: places.flatMap((u) => (u.target ? [u.key] : [])), pick: null });
+    };
+    const stopChoosing = () => {
+      replaceSession.current++;
+      setChoosing(null);
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-choose-open')?.focus());
+    };
+    const tick = (key: string, on: boolean) => setChoosing((c) => c && { ...c, chosen: on ? [...c.chosen.filter((k) => k !== key), key] : c.chosen.filter((k) => k !== key) });
+    body = <div className="asset-replace">{shown.length ? grid(onPick, choosing ? `Image to show in the places ticked` : `Images to use instead of ${nameOf(sel)}`, choosing ? (pick?.id ?? null) : undefined) : noMatches}</div>;
     tools = (
       <div className="asset-replace-top">
         <div className="asset-detail-top">
@@ -871,9 +915,58 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           <Thumb a={sel} devUrl={devUrl} />
           <div>
             <h4 title={nameOf(sel)}>Replace {nameOf(sel)}</h4>
-            <p>{n === 1 ? 'Pick the image to show in its place.' : `Pick the image to show in all ${n} places.`} You can undo this.</p>
+            <p>{choosing ? 'Tick the places to change, then pick the image to show there.' : n === 1 ? 'Pick the image to show in its place.' : `Pick the image to show in all ${n} places.`} You can undo this.</p>
+            {!choosing && n > 1 && choosable > 0 && (
+              <button className="link-btn asset-choose-open" onClick={startChoosing}>
+                Choose places…
+              </button>
+            )}
           </div>
         </div>
+        {choosing && (
+          <fieldset className="asset-choose">
+            <legend>
+              Places to change <span className="asset-count">{chosen.length} of {n}</span>
+            </legend>
+            <ul>
+              {places.map((u) => {
+                const Icon = PLACE_ICON[u.icon];
+                const go = showUse(u);
+                const label = `${u.where} · ${u.what}`;
+                return (
+                  <li key={u.key}>
+                    <label className="asset-use" title={u.target ? label : `${label}\nOnly Replace everywhere can change this one.`}>
+                      <input type="checkbox" checked={!!u.target && choosing.chosen.includes(u.key)} disabled={!u.target} onChange={(e) => tick(u.key, e.target.checked)} />
+                      <Icon aria-hidden="true" />
+                      <span className="where">{u.where}</span>
+                      <span className="what">{u.what}</span>
+                    </label>
+                    {go && (
+                      <button className="btn btn-sm btn-ghost asset-choose-show" onClick={go} aria-label={`Show ${u.what} on ${u.where}`} title={`Show ${u.what} on ${u.where}`}>
+                        <ChevronRight />
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="asset-choose-sum" role="status">
+              {!chosen.length
+                ? 'Tick at least one place.'
+                : pick
+                  ? `${nameOf(pick)} will show in ${chosen.length === n ? `all ${n} places` : `${chosen.length} of ${n} places`}.${chosen.length < n ? ` The other ${plural(n - chosen.length, 'place keeps', 'places keep')} ${nameOf(sel)}.` : ''}`
+                  : `Pick the image to show in ${plural(chosen.length, 'place', 'places')}.`}
+            </p>
+            <div className="asset-choose-actions">
+              <button className="btn btn-sm btn-primary" disabled={!pick || !chosen.length} onClick={() => pick && void replaceWith(pick.id, chosen)}>
+                <Replace /> {chosen.length ? `Replace in ${plural(chosen.length, 'place', 'places')}` : 'Replace'}
+              </button>
+              <button className="btn btn-sm btn-ghost" onClick={stopChoosing}>
+                Every place instead
+              </button>
+            </div>
+          </fieldset>
+        )}
         <div className="asset-replace-add">
           <button
             className="btn btn-sm"
@@ -883,8 +976,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               const session = replaceSession.current;
               const r = await importFiles(undefined, 'image');
               if (replaceSession.current !== session) return;
-              // Applied only while the picker is still open for this image, and only for the one file chosen, come in cleanly.
-              if (r.chosen === 1 && r.ids.length === 1 && !r.failed) void replaceWith(r.ids[0]);
+              // Applied only while the picker is still open for this image, and only for the one file chosen, come in
+              // cleanly. Choosing places, it is picked for them, to replace there once the author says so.
+              if (r.chosen === 1 && r.ids.length === 1 && !r.failed) {
+                if (choosing) setChoosing((c) => c && { ...c, pick: r.ids[0] });
+                else void replaceWith(r.ids[0]);
+              }
               else {
                 const next = r.ids.find((id) => id !== sel.id);
                 if (!next) return;
@@ -967,7 +1064,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                   return (
                     <li key={c.key}>
                       {c.at ? (
-                        <button className="asset-use" onClick={revealUse(c.at.owner, c.at.nodeId)} title={`Show ${c.what} on ${c.where}`}>
+                        <button className="asset-use" onClick={revealUse(c.at.owner, c.at.nodeId, c.field, c.what)} title={`Show ${c.what} on ${c.where}`}>
                           {inner}
                         </button>
                       ) : (
@@ -1078,23 +1175,25 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             <ul>
               {shownPlaces.map((p) => {
                 const Icon = PLACE_ICON[p.icon];
+                const go = showUse(p);
                 const inner = (
                   <>
                     <Icon aria-hidden="true" />
                     <span className="where">{p.where}</span>
-                    {p.what && <span className="what">{p.what}</span>}
-                    {p.count > 1 && <span className="times">{p.count}×</span>}
-                    {p.go && <ChevronRight className="go" aria-hidden="true" />}
+                    <span className="what">{p.what}</span>
+                    {go && <ChevronRight className="go" aria-hidden="true" />}
                   </>
                 );
                 return (
                   <li key={p.key}>
-                    {p.go ? (
-                      <button className="asset-use" onClick={p.go} title={`Show ${p.what ? `${p.what} on ` : ''}${p.where}`}>
+                    {go ? (
+                      <button className="asset-use" onClick={go} title={`Show ${p.what} on ${p.where}`}>
                         {inner}
                       </button>
                     ) : (
-                      <span className="asset-use static">{inner}</span>
+                      <span className="asset-use static" title={`${p.what} · ${p.where}`}>
+                        {inner}
+                      </span>
                     )}
                   </li>
                 );

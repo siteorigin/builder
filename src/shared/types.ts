@@ -51,6 +51,17 @@ export type ValuePlace = ({ owner: OwnerRef; nodeId: string } | { definitionId: 
 export type AltReview = ValuePlace & { reason: 'custom' | 'missing'; alt: string };
 
 /**
+ * One use of a library image, as a replacement in some places names it: an image value in an element (`node`) or in
+ * a component property's starting value (`default`), reached by `path` as in ValuePlace but through list items only by
+ * their ID; a page's sharing image; or the site's browser tab icon or sharing image.
+ */
+export type ImageUseTarget =
+  | { kind: 'node'; owner: OwnerRef; nodeId: string; path: string[] }
+  | { kind: 'default'; definitionId: string; path: string[] }
+  | { kind: 'pageSharing'; pageId: string }
+  | { kind: 'site'; field: 'favicon' | 'socialImage' };
+
+/**
  * Binding to a property of the enclosing component, or a field of the current repeated item. `field` names one
  * field of an object property (`{ $prop: 'primary', field: 'label' }`); without it the whole value is bound.
  */

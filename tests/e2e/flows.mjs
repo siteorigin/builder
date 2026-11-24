@@ -349,8 +349,20 @@ const sectionsBefore = await homeSections();
 const previewReading = frame.locator(`img[alt="${readingAlt}"]`);
 await win.locator('.rail [aria-label="Assets"]').click();
 await win.locator('[data-asset="a_reading"]').click();
-// Its Gallery use selects the Gallery on Home: the copy goes right after it, in a section of its own.
-await win.locator('button.asset-use[title="Show Gallery on Home"]').click();
+// Its Gallery use names the row and selects the Gallery on Home with that row open at its image (#228): the copy
+// goes right after the Gallery, in a section of its own.
+await win.locator('button.asset-use[title="Show Gallery · Image 3: Reading room, Old Mill on Home"]').click();
+await eventually(async () =>
+  assert.deepEqual(
+    await win.evaluate(() => {
+      const head = document.querySelector('#dock-panel-inspect #list-head-i3');
+      const field = document.querySelector('#dock-panel-inspect #list-item-i3 [data-field="image"]');
+      return { open: head?.getAttribute('aria-expanded'), focused: !!field && field.contains(document.activeElement) };
+    }),
+    { open: 'true', focused: true },
+    'the Reading room row is open, with focus in its image field'
+  )
+);
 const placeWhere = win.getByTestId('asset-place-where');
 await eventually(async () => assert.equal(await placeWhere.innerText(), 'Goes in a new section after Gallery on Home. Select something on the page to put it elsewhere.'));
 const shownBefore = await previewReading.count();
