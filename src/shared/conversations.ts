@@ -97,6 +97,8 @@ function fold(text: string): { folded: string; from: number[]; to: number[] } {
   for (const ch of text) {
     const f = ch.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/ς/g, 'σ');
     for (let k = 0; k < f.length; k++) (from.push(i), to.push(i + ch.length));
+    // A mark that folds away (a decomposed accent) belongs to the letter before it, so a match takes it along.
+    if (!f && to.length) to[to.length - 1] = i + ch.length;
     folded += f;
     i += ch.length;
   }

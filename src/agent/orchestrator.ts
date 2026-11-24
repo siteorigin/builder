@@ -611,18 +611,22 @@ export class Orchestrator {
     const dir = this.chatDir();
     if (!session || !dir) throw new Error('No project open');
     this.canChange(session, id, 'deleting a conversation');
+    if (this.removing.has(id)) throw new Error('That conversation is already being deleted.');
     const open = this.conversation?.id === id;
-    this.removing.add(id);
+    // This opening's own records: a delete that finishes after the project closed never marks another opening's.
+    const { removing, deleted } = this;
+    removing.add(id);
     // No request may start in the open conversation while it goes: it would add to a thread being removed.
     if (open) this.clearing++;
     try {
       await this.queueFileChange(async () => {
         if (session.readOnly) throw new Error(session.readOnly.reason);
+        if (this.deps.session() !== session) throw new Error('The project changed, so the conversation was not deleted.');
         await fs.rm(join(dir, `${id}.json`), { force: true });
-        this.deleted.add(id);
+        deleted.add(id);
       });
     } finally {
-      this.removing.delete(id);
+      removing.delete(id);
       if (open) this.clearing--;
     }
     this.sameSession(session);
@@ -667,17 +671,24 @@ export class Orchestrator {
     const dir = this.chatDir();
     const conv = this.conversation;
     if (!dir || !conv || !conv.messages.length || !/^c_[a-z0-9]+$/.test(conv.id)) return null;
-    const bytes = JSON.stringify(conv);
+    const saved = JSON.parse(JSON.stringify(conv)) as Conversation;
+    const { deleted } = this;
     return async () => {
       // Checked again when the write's turn comes: the project may have been taken over, or the conversation
       // deleted (by a delete that finished: one that failed leaves it to be saved as usual), meanwhile.
-      if (session.readOnly || this.deleted.has(conv.id)) return;
-      await this.writeConversation(dir, conv, bytes);
+      if (session.readOnly || deleted.has(conv.id)) return;
+      // The messages as they were when the write was asked for; the name as it is now, so a rename that landed
+      // after this write was queued is never written over.
+      saved.title = conv.title;
+      if (conv.named) saved.named = true;
+      else delete saved.named;
+      await this.writeConversation(dir, saved);
     };
   }
 
   /** Replace a conversation's file whole: written beside it, then moved over it, so a reader never sees half. */
-  private async writeConversation(dir: string, conv: Conversation, bytes = JSON.stringify(conv)) {
+  private async writeConversation(dir: string, conv: Conversation) {
+    const bytes = JSON.stringify(conv);
     const target = join(dir, `${conv.id}.json`);
     const tmp = `${target}.${newId('t')}.tmp`;
     await fs.mkdir(dir, { recursive: true });

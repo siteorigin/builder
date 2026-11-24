@@ -168,7 +168,8 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
     if (id) focusRename(id);
   };
 
-  const tooLong = !!renaming && Array.from(renaming.text.replace(/\s+/g, ' ').trim()).length > TITLE_MAX;
+  // Counted as the name is kept: composed, on one line.
+  const tooLong = !!renaming && Array.from(renaming.text.normalize('NFC').replace(/\s+/g, ' ').trim()).length > TITLE_MAX;
   return (
     <Modal
       title="AI conversations"

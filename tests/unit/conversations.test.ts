@@ -79,6 +79,9 @@ describe('finding a conversation', () => {
     const decomposed = 'Cafe\u0301 opening hours';
     const m = matchConversation({ title: 'x', prompts: [decomposed] }, 'café opening')!;
     expect(decomposed.slice(m.start, m.end)).toBe(decomposed.slice(0, 'Cafe\u0301 opening'.length));
+    // A match ending on a letter takes its accent along.
+    const end = matchConversation({ title: 'x', prompts: [decomposed] }, 'cafe')!;
+    expect(decomposed.slice(end.start, end.end)).toBe('Cafe\u0301');
     const lig = matchConversation({ title: 'Our o\uFB03ce', prompts: [] }, 'f')!;
     expect(lig.end).toBeGreaterThan(lig.start);
     expect('Our o\uFB03ce'.slice(lig.start, lig.end)).toBe('\uFB03');
@@ -444,6 +447,71 @@ describe('managing conversations (#235)', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(existsSync(env.file(first))).toBe(false);
     expect((await env.make().loadConversations()).list.map((c) => c.id)).toEqual(['c_brief1']);
+  });
+
+  it('a request’s save queued after a rename never writes the old name back, and a failed rename leaves the next one standing', async () => {
+    const env = await setup();
+    const open = await env.ask('Write an About page');
+    // The rename waits its turn; meanwhile a request runs and ends, its save queued behind the rename.
+    let release = hold(env.orch);
+    const renamed = env.orch.renameConversation(open, 'About page');
+    expect((await env.orch.send('And a footer', env.ctx, open)).ok).toBe(true);
+    await until(() => !env.orch.busy, 'the request to finish');
+    release();
+    await renamed;
+    // A list read waits its turn behind the request's own save: the file is final after it.
+    await env.orch.loadConversations();
+    expect(env.stored(open).messages).toHaveLength(4);
+    expect(env.stored(open)).toMatchObject({ title: 'About page', named: true });
+
+    // Two renames in a row, the first failing to save: the second is the name, in memory and on disk.
+    release = hold(env.orch);
+    // Only this conversation's next write fails; the project's own files are written as usual.
+    const real = fsPromises.writeFile.bind(fsPromises) as (...a: unknown[]) => Promise<void>;
+    let failed = false;
+    const write = vi.spyOn(fsPromises, 'writeFile').mockImplementation(((path: unknown, ...rest: unknown[]) => {
+      if (failed || !String(path).includes(`${open}.json`)) return real(path, ...rest);
+      failed = true;
+      return Promise.reject(Object.assign(new Error('ENOSPC: no space left'), { code: 'ENOSPC' }));
+    }) as typeof fsPromises.writeFile);
+    const first = env.orch.renameConversation(open, 'Failed name');
+    const second = env.orch.renameConversation(open, 'Final name');
+    release();
+    try {
+      await expect(first).rejects.toThrow(/ENOSPC/);
+      await expect(second).resolves.toEqual({ id: open, title: 'Final name' });
+    } finally {
+      write.mockRestore();
+    }
+    expect((await env.orch.loadConversations()).active.title).toBe('Final name');
+    expect(env.stored(open).title).toBe('Final name');
+  });
+
+  it('a first request that reads “New conversation” stays the title after the next one', async () => {
+    const env = await setup();
+    const open = await env.ask('New conversation');
+    await env.ask('Add a gallery page');
+    expect(env.stored(open).title).toBe('New conversation');
+    expect(env.stored(open).named).toBeUndefined();
+  });
+
+  it('a delete that fails leaves the save queued before it to land, and one already under way refuses a second', async () => {
+    const env = await setup();
+    const open = await env.ask('Try an interview experiment');
+    const release = hold(env.orch);
+    expect((await env.orch.send('One more question', env.ctx, open)).ok).toBe(true);
+    await until(() => !env.orch.busy, 'the request to finish');
+    const rm = vi.spyOn(fsPromises, 'rm').mockRejectedValueOnce(Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }));
+    try {
+      const deleting = env.orch.deleteConversation(open);
+      await expect(env.orch.deleteConversation(open)).rejects.toThrow(/already being deleted/);
+      release();
+      await expect(deleting).rejects.toThrow(/EPERM/);
+    } finally {
+      rm.mockRestore();
+    }
+    // The request that ended before the delete was asked for reached the disk.
+    expect(env.stored(open).messages.map((m) => m.text).filter((t, i) => i % 2 === 0)).toEqual(['Try an interview experiment', 'One more question']);
   });
 
   it('a delete that fails leaves the conversation listed, open and saved, and can be tried again', async () => {
