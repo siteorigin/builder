@@ -82,10 +82,22 @@ export function SettingsModal() {
     unsavedProviders.length
       ? void confirmDialog({
           title: unsavedProviders.length > 1 ? 'Save the API keys you entered?' : 'Save the API key you entered?',
-          body: `You typed ${unsavedProviders.length > 1 ? 'keys' : 'a key'} for ${unsavedProviders.map((p) => providers.find((x) => x.id === p)?.label ?? p).join(' and ')} but did not save ${unsavedProviders.length > 1 ? 'them' : 'it'}.`,
+          body: `You typed ${unsavedProviders.length > 1 ? 'keys' : 'a key'} for ${unsavedProviders.map((p) => providers.find((x) => x.id === p)?.label ?? p).join(' and ')} but didn’t save ${unsavedProviders.length > 1 ? 'them' : 'it'}.`,
+          // The overwrite is named from the providers whose saved key would be replaced, not from how many were typed.
+          details: ((replaced: string[]) =>
+            replaced.length
+              ? [
+                  { kind: 'risk' as const, text: `Save and close replaces the ${replaced.length > 1 ? 'keys' : 'key'} saved now for ${replaced.join(' and ')}. Using ${replaced.length > 1 ? 'an old one' : 'the old one'} again takes a copy of it.` },
+                  { kind: 'keep' as const, text: 'Discard closes Settings and drops what you typed. Saved keys stay as they are.' }
+                ]
+              : [
+                  { kind: 'note' as const, text: `Save and close keeps ${unsavedProviders.length > 1 ? 'them' : 'it'} on this computer.` },
+                  { kind: 'lose' as const, text: 'Discard closes Settings and drops what you typed.' }
+                ])(unsavedProviders.filter((p) => providers.find((x) => x.id === p)?.source === 'stored').map((p) => providers.find((x) => x.id === p)?.label ?? p)),
           confirmLabel: 'Save and close',
           cancelLabel: 'Discard',
-          stayLabel: 'Keep editing'
+          stayLabel: 'Keep editing',
+          icon: 'key'
         }).then(async (ok) => {
           if (ok === null) return;
           if (ok) {
@@ -160,10 +172,12 @@ export function SettingsModal() {
     const label = status?.label ?? provider;
     const ok = await confirmDialog({
       title: isLocal ? 'Remove the server API key?' : `Remove the ${label} API key?`,
-      body: isLocal ? 'The assistant stops sending a key to your model server.' : `The assistant stops working with ${label} until you add a key again. If you don't have a copy, you'll need to create a new one.`,
+      body: isLocal ? 'The key is deleted from this computer, and the assistant stops sending one to your model server.' : `The key is deleted from this computer, and the assistant stops working with ${label} until you add one again.`,
+      details: [...(isLocal ? [] : [{ kind: 'note' as const, text: `Without a copy of the key, you’ll need to create a new one at ${label}.` }]), { kind: 'final', text: 'This can’t be undone.' }],
       confirmLabel: 'Remove key',
       cancelLabel: 'Keep key',
-      danger: true
+      tone: 'danger',
+      icon: 'key'
     });
     if (!ok || keyWrite.current) return;
     keyWrite.current = true;

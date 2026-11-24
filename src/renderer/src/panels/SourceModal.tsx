@@ -252,7 +252,20 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const close = () => {
     if (writing || discarding.current) return;
     if (!dirty || !src?.editable) return void setState({ modal: null });
-    const asked = confirmDialog({ title: 'Discard your changes?', body: `Your changes to the ${changed} have not been saved.`, confirmLabel: 'Discard changes', cancelLabel: 'Keep editing', danger: true });
+    const asked = confirmDialog({
+      title: 'Discard your changes?',
+      body: `The editor closes without saving your changes to the ${changed}.`,
+      subject: def.name,
+      subjectKind: 'component',
+      details: [
+        { kind: 'keep', text: 'The last saved version stays on your site.' },
+        { kind: 'final', text: 'Unsaved changes can’t be brought back.' }
+      ],
+      confirmLabel: 'Discard changes',
+      cancelLabel: 'Keep editing',
+      tone: 'caution',
+      icon: 'discard'
+    });
     discarding.current = asked;
     void asked.then((ok) => {
       discarding.current = null;
@@ -276,7 +289,21 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     setErrors((e) => (e.length ? [] : e));
   };
   const revert = async () => {
-    const ok = await confirmDialog({ title: 'Revert your changes?', body: `This puts the ${changed} back to the last saved version.`, confirmLabel: 'Revert changes', cancelLabel: 'Keep editing', danger: true });
+    const ok = await confirmDialog({
+      title: 'Revert your changes?',
+      body: `The ${changed} ${changed === 'code' ? 'goes' : 'go'} back to the last saved version. The editor stays open.`,
+      subject: def.name,
+      subjectKind: 'component',
+      details: [
+        ...(codeDirty ? [{ kind: 'undo' as const, text: 'Undo in the code editor brings your code changes back.' }] : []),
+        ...(propsDirty ? [{ kind: 'final' as const, text: 'Property changes can’t be brought back.' }] : [])
+      ],
+      confirmLabel: 'Revert changes',
+      cancelLabel: 'Keep editing',
+      // Code alone comes back with Undo, so only a reset of the properties is a loss.
+      tone: propsDirty ? 'caution' : 'neutral',
+      icon: 'revert'
+    });
     if (ok !== true) return;
     setEdit(null);
     reloadProps();
@@ -582,7 +609,17 @@ export function NewCodeComponentModal() {
   const close = () => {
     if (writing || discarding.current) return;
     if (!unsaved) return void setState({ modal: null });
-    const asked = confirmDialog({ title: 'Discard this new component?', body: 'Your new component has not been saved.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', danger: true });
+    const asked = confirmDialog({
+      title: 'Discard this new component?',
+      body: 'The editor closes and the component is never created.',
+      subject: name.trim() || undefined,
+      subjectKind: 'component',
+      details: [{ kind: 'final', text: 'Your unsaved work on this component can’t be brought back.' }],
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep editing',
+      tone: 'caution',
+      icon: 'discard'
+    });
     discarding.current = asked;
     void asked.then((ok) => {
       discarding.current = null;

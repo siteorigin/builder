@@ -320,10 +320,15 @@ export function HealthModal() {
   const unlock = async () => {
     const ok = await confirmDialog({
       title: 'Unlock this project?',
-      body: 'Only unlock it if the other copy of SiteOrigin Builder is no longer running. Two apps editing the same project can overwrite each other’s changes.',
+      body: 'Only unlock it once the other copy of SiteOrigin Builder has closed this project.',
+      details: [
+        { kind: 'risk', text: 'If both copies stay open, each can overwrite the other’s changes.' },
+        { kind: 'keep', text: 'Unlocking deletes nothing.' }
+      ],
       confirmLabel: 'Unlock and edit',
       cancelLabel: 'Keep read-only',
-      danger: true
+      tone: 'danger',
+      icon: 'unlock'
     });
     if (ok !== true) return;
     const r = await api.project.unlock().catch((e: Error) => ({ ok: false, message: e.message }));

@@ -4,7 +4,8 @@ import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
 import { UnpackingModal } from './components/ProjectDialogs';
-import { ConfirmHost, Toasts, openDialogs, openMenus } from './components/ui';
+import { Toasts, openDialogs, openMenus } from './components/ui';
+import { ConfirmHost } from './components/ConfirmDialog';
 import { runComponentPreviews, runInspection } from './lib/inspect';
 import { restorePanelWidth } from './lib/layout';
 import { handleShortcut, projectHistory } from './Editor';

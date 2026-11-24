@@ -3,7 +3,7 @@ import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, getConfirm, markDraft, onConfirmChange, undoAvailable, useStore, type HeldEdit } from '../store';
+import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, undoAvailable, useStore, type HeldEdit } from '../store';
 import { afterSettle, isSettling, reportRefused } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { runPhase } from '../lib/savestate';
@@ -984,44 +984,6 @@ export function useGridTabStops(ref: React.RefObject<HTMLElement | null>) {
       for (const c of cells) c.tabIndex = c === keep ? 0 : -1;
     }
   });
-}
-
-/** Hosts confirmDialog(): the app's own confirmation, styled and themed like every other dialog. */
-export function ConfirmHost() {
-  const [req, setReq] = useState(getConfirm());
-  useEffect(() => {
-    const off = onConfirmChange(() => setReq(getConfirm()));
-    return () => void off();
-  }, []);
-  if (!req) return null;
-  return (
-    <Modal
-      key={req.id}
-      title={req.title}
-      icon={req.danger ? <CircleAlert style={{ color: 'var(--red)' }} /> : <Info />}
-      onClose={() => req.resolve(null)}
-      describedBy="confirm-body"
-      footer={
-        <>
-          {req.stayLabel && (
-            <button className="btn btn-ghost" data-autofocus onClick={() => req.resolve(null)} style={{ marginRight: 'auto' }}>
-              {req.stayLabel}
-            </button>
-          )}
-          <button className="btn" data-autofocus={req.stayLabel ? undefined : true} onClick={() => req.resolve(false)}>
-            {req.cancelLabel ?? 'Cancel'}
-          </button>
-          <button className={`btn ${req.danger ? 'btn-danger-fill' : 'btn-primary'}`} onClick={() => req.resolve(true)}>
-            {req.confirmLabel}
-          </button>
-        </>
-      }
-    >
-      <p id="confirm-body" style={{ margin: 0, overflowWrap: 'anywhere' }}>
-        {req.body}
-      </p>
-    </Modal>
-  );
 }
 
 /** Run fn once the menu or dialog that launched it has closed (a command that opens its own flow, such as

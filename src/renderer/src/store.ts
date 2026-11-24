@@ -747,8 +747,13 @@ export function markDraft(key: string, on: boolean) {
   }
 }
 
+export type ConfirmIcon = 'delete' | 'discard' | 'revert' | 'replace' | 'unlock' | 'leave' | 'key' | 'web' | 'email' | 'phone' | 'warning';
+export interface ConfirmDetail {
+  kind: 'lose' | 'risk' | 'keep' | 'undo' | 'final' | 'note';
+  text: string;
+}
 export interface ConfirmRequest {
-  /** Each question is its own dialog, so one replacing another starts with its own safe focus. */
+  /** Each question has its own id, so one replacing another starts again on its own safe choice. */
   id: number;
   title: string;
   body: string;
@@ -757,7 +762,22 @@ export interface ConfirmRequest {
   /** A third, safe choice ("Keep editing") that resolves like a dismissal and takes the initial focus, so
    *  a second Enter never discards anything. */
   stayLabel?: string;
+  /** Shorthand for tone 'danger'. */
   danger?: boolean;
+  /** What is at stake, shown by the icon and the confirm button. 'danger': lost for good, or saved work at risk
+   *  (a red button). 'caution': unsaved or recoverable work is lost (an outlined red button). 'neutral' (the
+   *  default): nothing is lost. */
+  tone?: 'danger' | 'caution' | 'neutral';
+  /** The glyph beside the title, naming the kind of action. */
+  icon?: ConfirmIcon;
+  /** The one thing the answer acts on (a version's name, a link's address), set apart so it can be checked. */
+  subject?: string;
+  subjectKind?: 'version' | 'component' | 'field' | 'web' | 'email' | 'phone';
+  /** A quiet fact about the subject, such as the space it takes. */
+  subjectNote?: string;
+  /** One short line each: what is lost, what is at risk, what stays safe, how to take it back or that it can't
+   *  be, and anything else to know. Shown in the order given, each with its own icon. */
+  details?: ConfirmDetail[];
   /** true = confirm, false = the cancel button, null = dismissed (Escape, ×, backdrop): stay where you were. */
   resolve: (ok: boolean | null) => void;
 }
