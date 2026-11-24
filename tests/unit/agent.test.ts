@@ -2525,6 +2525,9 @@ describe('part scope rules (#132)', () => {
     const inDef: Authority = { kind: 'selection', owner: { kind: 'component', id }, nodeId: def.tree!.rootIds[0], label: 'Banner' };
     expect(checkAuthority(state, [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: heading.id, field: 'text', value: 'New default' }], inDef)).toMatch(/default of the "heading" property/);
     expect(checkAuthority(state, [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: button.id, field: 'appearance', value: 'secondary' }], inDef)).toBeNull();
+  });
+});
+
 describe('components that are not reusable yet (#363)', () => {
   const lastTool = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
   const lastSaid = (req: CanonicalModelRequest) => (req.items.at(-1) as { text?: string }).text ?? '';

@@ -2291,6 +2291,9 @@ describe('rich text links read and written whole (#132)', () => {
     const text = richTextToMarkdown(blocks, s.pages);
     expect(text).toContain('<tel:+1 555 0100>');
     expect(normalizeRichText(text, s, 'Text')).toEqual(blocks);
+  });
+});
+
 describe('validate_project and components that are not reusable yet (#363)', () => {
   it('lists their findings apart, capped, with the component and node, however many other warnings come first', async () => {
     const { executeTool } = await import('@agent/tools');
