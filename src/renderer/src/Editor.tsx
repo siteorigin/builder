@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
-import { openDialogs, openMenus, Tabs, useWindowWidth } from './components/ui';
-import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore } from './store';
+import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
+import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas, stepVisitor } from './panels/Canvas';
 import { HealthModal, StatusBar } from './panels/StatusBar';
@@ -28,7 +28,7 @@ import { focusedSurface } from './lib/history';
 import { visitorStepKey } from '@shared/preview-keys';
 import { useTransitionAnnouncement } from './lib/announce';
 import { runPhase } from './lib/savestate';
-import { PANEL_LIMITS, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
+import { PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
 
 const LEFT_TABS = [
@@ -38,14 +38,13 @@ const LEFT_TABS = [
   { id: 'assets', label: 'Assets', icon: <Images /> }
 ] as const;
 
-/** Leave "editing everywhere" for the page it was entered from. When the focused control leaves with the
- *  band (Done editing), focus lands on the page switcher, where the page is named. */
+/** Leave "editing everywhere" for the page it was entered from. However it is left (Done editing, Esc), focus
+ *  lands on the page switcher, where the page now being edited is named. */
 function leaveDefinitionMode() {
   const d = getState().definitionMode;
   if (!d) return;
-  const hadFocus = !!document.activeElement?.closest('.mode-band');
   setState({ definitionMode: null, pageId: d.returnPageId, selection: null });
-  if (hadFocus) requestAnimationFrame(() => document.querySelector<HTMLElement>('.toolbar .project-title')?.focus());
+  requestAnimationFrame(() => document.querySelector<HTMLElement>('.toolbar .project-title')?.focus());
 }
 
 function isTyping(e: KeyboardEvent) {
@@ -151,16 +150,39 @@ function saveWidth(side: PanelSide) {
   saveLocal(side === 'left' ? { leftWidth: s.leftWidth } : { rightWidth: s.rightWidth });
 }
 
+/** A shortcut as this platform writes it, as the toolbar's hints do. */
+const shortcutKeys = (k: string) => (api.platform === 'darwin' ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
+
+/** Each splitter's name, the panel it sizes (its aria-controls), and its grip's name. */
+const SPLIT = {
+  left: { label: 'Resize sidebar', panel: 'editor-sidebar', hide: 'Hide sidebar', grip: 'Sidebar width' },
+  right: { label: 'Resize right panel', panel: 'editor-dock', hide: 'Hide right panel', grip: 'Right panel width' }
+} as const;
+
 /**
- * A splitter. Dragging and the arrow keys start from the width the panel is drawn at and stop where the
- * canvas would drop below its minimum (lib/layout). A step the limit turns into no change leaves the
- * preferred width alone, so a panel squeezed by a small window still gets its room back in a larger one.
+ * A panel's seam: a splitter (WAI-ARIA APG window splitter) and its visible grip, drawn on the edge between the
+ * panel and the canvas. It lives outside the panel, so it stays at the edge while the panel is hidden: Enter
+ * hides the panel and Enter again brings it back, with its view and width, without focus leaving the seam.
+ * Dragging (the splitter or the grip) and the arrow keys start from the width the panel is drawn at and stop where
+ * the canvas would drop below its minimum (lib/layout). Home and End go to the narrowest and widest the room
+ * allows, a double-click on the seam goes back to the default width, and the width menu (a click on the grip, a
+ * right-click on the seam, or Shift+F10) offers the same steps without dragging. A step the limit turns into no
+ * change leaves the preferred width alone, so a panel squeezed by a small window gets its room back later.
  */
-function Resizer({ side, width, max }: { side: PanelSide; width: number; max: number }) {
+function Seam({ side, width, max, at, restore }: { side: PanelSide; width: number; max: number; at: number; restore: () => void }) {
   // `drawn` is the width the drag last left the panel at: if anything else changes it mid-drag (the other
   // panel toggled, the window resized, another project opened), the drag ends rather than jump from a
-  // stale starting point.
-  const drag = useRef<{ pointer: number; x: number; from: number; drawn: number; changed: boolean } | null>(null);
+  // stale starting point. `moved` is set once the pointer has travelled far enough to be a drag at all.
+  const drag = useRef<{ pointer: number; x: number; from: number; drawn: number; moved: boolean; changed: boolean } | null>(null);
+  // A press on the grip that became a drag must not also open the menu on its click.
+  const dragged = useRef(false);
+  const splitter = useRef<HTMLDivElement>(null);
+  const menu = useMenu();
+  // Whether the open menu came from the grip, which then reports itself expanded.
+  const fromGrip = useRef(false);
+  // The seam stays lit while it is being dragged or its menu is open, from the splitter or from its grip.
+  const [dragging, setDragging] = useState(false);
+  const collapsed = width === 0;
   const outward = side === 'left' ? 1 : -1;
   /** Make `requested` the panel's preferred width, within its room. Returns the width now drawn, or null when
    *  the limit turns the request into no change. */
@@ -171,52 +193,151 @@ function Resizer({ side, width, max }: { side: PanelSide; width: number; max: nu
     setState(side === 'left' ? { leftWidth: w } : { rightWidth: w });
     return w;
   };
-  const end = (el: HTMLDivElement, pointer: number) => {
+  const drawn = () => fitPanels(window.innerWidth, panelPrefs())[side];
+  /** A one-off resize (a key, the menu), kept with the project when it changed anything. */
+  const step = (requested: number) => {
+    if (resize(requested) !== null) saveWidth(side);
+  };
+  /** Back to the default width: the preference itself, so a window too small to show it still gets it back later. */
+  const reset = () => {
+    setState(side === 'left' ? { leftWidth: PANEL_DEFAULTS.left } : { rightWidth: PANEL_DEFAULTS.right });
+    saveWidth(side);
+  };
+  const hide = () => {
+    setState(side === 'left' ? { leftTab: null } : { dockOpen: false });
+    // Hidden from the grip's menu, focus would go back to a grip that has gone: the seam takes it instead.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const a = document.activeElement;
+        if (!a || a === document.body || (a as HTMLElement).offsetParent === null) splitter.current?.focus();
+      })
+    );
+  };
+  const items = (): MenuItem[] => {
+    const w = drawn();
+    const preferred = side === 'left' ? getState().leftWidth : getState().rightWidth;
+    return [
+      { heading: `Width: ${w} px` },
+      { label: 'Narrower', onSelect: () => step(w - 40), disabled: w <= PANEL_LIMITS[side].min },
+      { label: 'Wider', onSelect: () => step(w + 40), disabled: w >= max },
+      { label: 'Default width', hint: `${PANEL_DEFAULTS[side]} px`, onSelect: reset, disabled: preferred === PANEL_DEFAULTS[side] },
+      { separator: true },
+      { label: SPLIT[side].hide, shortcut: shortcutKeys(side === 'left' ? '⌘\\' : '⇧⌘\\'), onSelect: hide }
+    ];
+  };
+  /** The width menu at a point: a right-click on the seam, or Shift+F10 / the context menu key. */
+  const openMenu = (x: number, y: number, el: HTMLElement) => {
+    fromGrip.current = false;
+    menu.open(x, y, items(), SPLIT[side].label, el);
+  };
+  const end = (el: HTMLElement, pointer: number) => {
     const d = drag.current;
     if (d?.pointer !== pointer) return;
     drag.current = null;
-    el.classList.remove('dragging');
+    setDragging(false);
     if (el.hasPointerCapture(pointer)) el.releasePointerCapture(pointer);
     if (d.changed) saveWidth(side);
   };
+  /** Dragging, shared by the splitter and its grip. A cancelled or lost press only cleans up. */
+  const dragProps = {
+    onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
+      if (e.button !== 0 || collapsed) return;
+      // Captured, so the drag follows the pointer over the preview frame and always hears the release.
+      e.currentTarget.setPointerCapture(e.pointerId);
+      dragged.current = false;
+      const from = drawn();
+      drag.current = { pointer: e.pointerId, x: e.clientX, from, drawn: from, moved: false, changed: false };
+    },
+    onPointerMove: (e: ReactPointerEvent<HTMLElement>) => {
+      const d = drag.current;
+      if (d?.pointer !== e.pointerId) return;
+      if (drawn() !== d.drawn) return end(e.currentTarget, e.pointerId);
+      // A few pixels of wobble is still a click.
+      if (!d.moved) {
+        if (Math.abs(e.clientX - d.x) < 3) return;
+        d.moved = dragged.current = true;
+        setDragging(true);
+      }
+      const w = resize(d.from + (e.clientX - d.x) * outward);
+      if (w !== null) {
+        d.drawn = w;
+        d.changed = true;
+      }
+    },
+    onPointerUp: (e: ReactPointerEvent<HTMLElement>) => end(e.currentTarget, e.pointerId),
+    onPointerCancel: (e: ReactPointerEvent<HTMLElement>) => end(e.currentTarget, e.pointerId),
+    onLostPointerCapture: (e: ReactPointerEvent<HTMLElement>) => end(e.currentTarget, e.pointerId)
+  };
+  const lit = dragging || menu.isOpen;
   return (
-    <div
-      className="resizer"
-      tabIndex={0}
-      role="separator"
-      aria-orientation="vertical"
-      aria-valuenow={width}
-      aria-valuemin={PANEL_LIMITS[side].min}
-      aria-valuemax={max}
-      aria-label={`Resize ${side === 'left' ? 'sidebar' : 'right panel'}`}
-      onPointerDown={(e) => {
-        if (e.button !== 0) return;
-        // Captured, so the drag follows the pointer over the preview frame and always hears the release.
-        e.currentTarget.setPointerCapture(e.pointerId);
-        e.currentTarget.classList.add('dragging');
-        const from = fitPanels(window.innerWidth, panelPrefs())[side];
-        drag.current = { pointer: e.pointerId, x: e.clientX, from, drawn: from, changed: false };
-      }}
-      onPointerMove={(e) => {
-        const d = drag.current;
-        if (d?.pointer !== e.pointerId) return;
-        if (fitPanels(window.innerWidth, panelPrefs())[side] !== d.drawn) return end(e.currentTarget, e.pointerId);
-        const w = resize(d.from + (e.clientX - d.x) * outward);
-        if (w !== null) {
-          d.drawn = w;
-          d.changed = true;
-        }
-      }}
-      onPointerUp={(e) => end(e.currentTarget, e.pointerId)}
-      onPointerCancel={(e) => end(e.currentTarget, e.pointerId)}
-      onLostPointerCapture={(e) => end(e.currentTarget, e.pointerId)}
-      onKeyDown={(e) => {
-        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-        e.preventDefault();
-        const from = fitPanels(window.innerWidth, panelPrefs())[side];
-        if (resize(from + (e.key === 'ArrowRight' ? 16 : -16) * outward) !== null) saveWidth(side);
-      }}
-    />
+    <div className={`seam ${side}${collapsed ? ' collapsed' : ''}`} style={side === 'left' ? { left: at } : { right: at }}>
+      <div
+        ref={splitter}
+        className={`resizer${lit ? ' dragging' : ''}`}
+        tabIndex={0}
+        role="separator"
+        aria-orientation="vertical"
+        aria-valuenow={width}
+        aria-valuemin={collapsed ? 0 : PANEL_LIMITS[side].min}
+        aria-valuemax={max}
+        aria-valuetext={collapsed ? 'Hidden. Press Enter to show it.' : `${width} pixels wide`}
+        aria-label={SPLIT[side].label}
+        aria-controls={SPLIT[side].panel}
+        title={collapsed ? undefined : 'Drag to resize. Double-click for the default width, or right-click for more.'}
+        {...dragProps}
+        onDoubleClick={collapsed ? undefined : reset}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          if (collapsed) return;
+          const r = e.currentTarget.getBoundingClientRect();
+          // From the keyboard (the context menu key) the menu opens beside the seam, level with the panel heads.
+          if (e.clientX || e.clientY) openMenu(e.clientX, e.clientY, e.currentTarget);
+          else openMenu(r.left + r.width / 2, r.top + 48, e.currentTarget);
+        }}
+        onKeyDown={(e) => {
+          // Enter puts the panel away and brings it back; focus stays on the seam either way.
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            return collapsed ? restore() : hide();
+          }
+          if (collapsed) return;
+          if (e.key === 'F10' && e.shiftKey) {
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            return openMenu(r.left + r.width / 2, r.top + 48, e.currentTarget);
+          }
+          const w = drawn();
+          const next = e.key === 'ArrowRight' ? w + 16 * outward : e.key === 'ArrowLeft' ? w - 16 * outward : e.key === 'Home' ? PANEL_LIMITS[side].min : e.key === 'End' ? max : null;
+          if (next === null) return;
+          e.preventDefault();
+          step(next);
+        }}
+      />
+      {/* The seam's visible handle, level with the panel heads, where the preview's own width grips never are:
+          drag it like the splitter, or click it for the width menu (a pointer that cannot drag). The keyboard has
+          the splitter, whose focus is drawn on this grip. */}
+      {!collapsed && (
+        <button
+          type="button"
+          className={`split-grip${lit ? ' active' : ''}`}
+          tabIndex={-1}
+          aria-label={SPLIT[side].grip}
+          aria-haspopup="menu"
+          aria-expanded={menu.isOpen && fromGrip.current}
+          title="Drag to resize, or click for width options"
+          {...dragProps}
+          onClick={(e) => {
+            if (dragged.current) return void (dragged.current = false);
+            // Below the grip, opening over the canvas side; closing it hands focus to the splitter, the seam's
+            // keyboard control (the grip is for the pointer and is not in the Tab order).
+            const r = e.currentTarget.getBoundingClientRect();
+            menu.open(r.left, r.bottom + 4, items(), SPLIT[side].label, splitter.current);
+            fromGrip.current = true;
+          }}
+        />
+      )}
+      {menu.node}
+    </div>
   );
 }
 
@@ -235,6 +356,8 @@ export function Editor() {
   const aiBusy = useStore((s) => !!s.runStatus);
   const aiPhase = useStore((s) => runPhase(s.runStatus));
   const aiReading = useStore((s) => s.runMode === 'ask');
+  // What the AI tab's mark says while a run goes on: a solid pulse while it works, a ring while it waits for you.
+  const aiLabel = aiPhase === 'asking' ? 'Waiting for your answer' : aiPhase === 'checking' ? 'Checking' : aiPhase === 'stopping' ? 'Stopping' : aiReading ? 'Reading the site' : 'Working';
   const leaving = useStore((s) => s.leaving);
   // New project, or a project to trust, chosen from here: asked over this project, which stays open until the new
   // one has opened (#80).
@@ -264,7 +387,8 @@ export function Editor() {
       }
       // Undo and Redo from a control without text history of its own (a select, a checkbox) undo the project.
       const history = mod && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
-      if (isTyping(e) && !history && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
+      // The panel shortcuts (Cmd/Ctrl+\ and Shift+Cmd/Ctrl+\) type nothing, so they work from a field too.
+      if (isTyping(e) && !history && !(mod && ['k', 'e', 'j', 's', '\\', '|'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
       // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a
       // button or row in another panel (an Assets tile, a page row).
       if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
@@ -347,9 +471,51 @@ export function Editor() {
     return unsub;
   }, []);
 
+  // A panel that closes around the focused control (its shortcut, its splitter's menu) hands focus to the
+  // control that opens it again: the view's rail button, or the toolbar's Right panel toggle.
+  useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        const a = document.activeElement;
+        const label = LEFT_TABS.find((t) => t.id === prev.leftTab)?.label;
+        if (prev.leftTab && !s.leftTab && label && a?.closest('.side-panel')) requestAnimationFrame(() => document.querySelector<HTMLElement>(`.rail [aria-label="${label}"]`)?.focus());
+        if (prev.dockOpen && !s.dockOpen && a?.closest('.dock')) requestAnimationFrame(() => document.querySelector<HTMLElement>('.toolbar [aria-label="Right panel"]')?.focus());
+      }),
+    []
+  );
+
+  // The Site styles shortcut gives back what it borrowed, so pressing it twice leaves the shell as it was: the
+  // dock it opened is put away again, or the view it covered comes back. Any other change to the dock (its
+  // toggle, another tab) makes the dock the user's again.
+  const stylesBorrowed = useRef<{ opened: boolean; tab: RightTab } | null>(null);
+  // The sidebar view a seam brings back after Enter hid the sidebar.
+  const lastLeftTab = useRef<LeftTab>(leftTab ?? 'pages');
+  useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        if (s.dockOpen !== prev.dockOpen || (s.rightTab !== prev.rightTab && prev.rightTab === 'styles')) stylesBorrowed.current = null;
+        if (s.leftTab) lastLeftTab.current = s.leftTab;
+      }),
+    []
+  );
+
+  // The rail is one stop in the Tab order (WAI-ARIA APG toolbar): the button last focused, else the open view.
+  const [railStop, setRailStop] = useState<string | null>(null);
+  const railIds = [...LEFT_TABS.map((t) => t.id as string), 'styles'];
+  const railTab = railStop ?? leftTab ?? 'pages';
+  const onRailKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const i = railIds.indexOf(railTab);
+    const n = e.key === 'ArrowDown' ? i + 1 : e.key === 'ArrowUp' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? railIds.length - 1 : null;
+    if (n === null) return;
+    e.preventDefault();
+    const id = railIds[(n + railIds.length) % railIds.length];
+    setRailStop(id);
+    e.currentTarget.querySelector<HTMLElement>(`[data-rail="${id}"]`)?.focus();
+  };
+
   const defining = useStore((s) => s.definitionMode);
-  // The page row is outlined only while the page itself is what the inspector shows.
-  const pageInspected = useStore((s) => s.mode === 'edit' && !s.selection && s.rightTab === 'inspect');
+  // The page row is outlined only while the page itself is what the inspector shows, on screen.
+  const pageInspected = useStore((s) => s.mode === 'edit' && !s.selection && !s.definitionMode && s.dockOpen && s.rightTab === 'inspect');
   const defName = useStore((s) => (s.definitionMode ? s.snapshot?.state.components[s.definitionMode.definitionId]?.name ?? 'component' : null));
   // Where the component is used, by page name, bounded so the band stays one line: "Home and About", "4 pages".
   const defPlaces = useStore((s) => {
@@ -363,7 +529,7 @@ export function Editor() {
   const modeAnnouncement = useTransitionAnnouncement(defName, (prev, next) => (next ? `Editing ${next} everywhere. Layout and style changes apply wherever it is used.` : prev ? `Finished editing ${prev} everywhere` : null));
 
   return (
-    <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}`} inert={leaving || undefined}>
+    <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}${leftTab ? '' : ' no-sidebar'}`} inert={leaving || undefined}>
       <Toolbar />
       {defining && defInfo && (
         <div className="mode-band" role="region" aria-label="Editing a component everywhere">
@@ -388,19 +554,46 @@ export function Editor() {
         {modeAnnouncement}
       </span>
       <div className="workspace">
-        <nav className="rail" aria-label="Sidebar">
+        <div className="rail" role="toolbar" aria-orientation="vertical" aria-label="Panels" onKeyDown={onRailKey}>
           {LEFT_TABS.map((t) => (
-            <button key={t.id} className="icon-btn" aria-pressed={leftTab === t.id} title={t.label} aria-label={t.label} onClick={() => setState({ leftTab: leftTab === t.id ? null : t.id })}>
+            <button
+              key={t.id}
+              data-rail={t.id}
+              className="icon-btn"
+              tabIndex={railTab === t.id ? 0 : -1}
+              aria-pressed={leftTab === t.id}
+              aria-controls={leftTab === t.id ? 'editor-sidebar' : undefined}
+              title={t.label}
+              aria-label={t.label}
+              onFocus={() => setRailStop(t.id)}
+              onClick={() => setState({ leftTab: leftTab === t.id ? null : t.id })}
+            >
               {t.icon}
             </button>
           ))}
-          <div className="rail-sep" role="presentation" />
-          <button className="icon-btn shortcut" aria-pressed={dockOpen && rightTab === 'styles'} title="Site styles" aria-label="Site styles" onClick={() => (dockOpen && rightTab === 'styles' ? setState({ rightTab: 'inspect' }) : openSiteStyles())}>
+          <div className="rail-sep" role="separator" aria-orientation="horizontal" />
+          <button
+            data-rail="styles"
+            className="icon-btn shortcut"
+            tabIndex={railTab === 'styles' ? 0 : -1}
+            aria-pressed={dockOpen && rightTab === 'styles'}
+            aria-controls={dockOpen && rightTab === 'styles' ? 'editor-dock' : undefined}
+            title="Site styles"
+            aria-label="Site styles"
+            onFocus={() => setRailStop('styles')}
+            onClick={() => {
+              const lent = stylesBorrowed.current;
+              if (dockOpen && rightTab === 'styles') return setState(lent?.opened ? { dockOpen: false, rightTab: lent.tab } : { rightTab: lent?.tab ?? 'inspect' });
+              const before = { opened: !dockOpen, tab: rightTab };
+              openSiteStyles();
+              stylesBorrowed.current = before;
+            }}
+          >
             <Palette />
           </button>
-        </nav>
+        </div>
         {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching. */}
-        <aside className="side-panel" style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar panel">
+        <aside id="editor-sidebar" className={`side-panel${shown.left < 250 ? ' narrow' : ''}`} style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar">
           {(['pages', 'layers', 'insert', 'assets'] as const).map((t) => (
             <div key={t} className="side-panel-view" hidden={leftTab !== t}>
               {t === 'pages' && <PagesPanel />}
@@ -409,11 +602,11 @@ export function Editor() {
               {t === 'assets' && <AssetsPanel narrow={shown.left < 240} />}
             </div>
           ))}
-          <Resizer side="left" width={shown.left} max={panelMax('left', windowWidth, prefs)} />
         </aside>
+        <Seam side="left" width={shown.left} max={panelMax('left', windowWidth, prefs)} at={RAIL_WIDTH + shown.left} restore={() => setState({ leftTab: lastLeftTab.current })} />
         <Canvas />
-        <aside className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }}>
-          <Resizer side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} />
+        <Seam side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} at={shown.right} restore={() => setState({ dockOpen: true })} />
+        <aside id="editor-dock" className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }} aria-label="Right panel">
           {/* Every dock panel stays mounted, so the chat and inspector keep their state while hidden. */}
           <Tabs<'inspect' | 'chat' | 'styles'>
             className="dock-tabs"
@@ -426,7 +619,7 @@ export function Editor() {
             panelsStyle={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
             options={[
               { value: 'inspect', label: 'Inspector', icon: <SlidersHorizontal />, panel: () => <Inspector /> },
-              { value: 'chat', label: 'AI', icon: <Sparkles />, extra: aiBusy ? <span className="live" role="img" aria-label={aiPhase === 'asking' ? 'Waiting for your answer' : aiPhase === 'checking' ? 'Checking' : aiPhase === 'stopping' ? 'Stopping' : aiReading ? 'Reading the site' : 'Working'} /> : undefined, panel: () => <Chat /> },
+              { value: 'chat', label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => <Chat /> },
               { value: 'styles', label: 'Site styles', icon: <Palette />, panel: () => <SiteStyles /> }
             ]}
           />
