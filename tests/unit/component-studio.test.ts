@@ -83,6 +83,8 @@ describe('Component Studio: the design in the isolated preview', () => {
     expect(studioPick(state, id, [studioDescOf(state, id, elsewhere)!])!.itemPath).toBeUndefined();
     expect(studioRef(state, id, elsewhere).itemPath).toBeUndefined();
     expect(studioRef(state, id, kept)).toBe(kept);
+    // An item inside another list's item may sit in an item only a sample has: let go, so it is outlined in every item.
+    expect(studioRef(state, id, { ...kept, itemPath: [`${itemId}-sample-3`, itemId] }).itemPath).toBeUndefined();
   });
 
   it('picks a component inside the design whole, from anything inside it, and outlines its parts through it', () => {
@@ -95,6 +97,14 @@ describe('Component Studio: the design in the isolated preview', () => {
     const part: ElementRef = { owner: own(id), instancePath: [nested], nodeId: deep };
     expect(studioDescOf(state, id, part)).toEqual({ ctx: `${studioCtx(id)}|${nested}`, node: deep, items: '' });
     expect(studioDesignCtx(state, id, part)).toBe(designCtx(state, part).replace(`component:${id}`, studioCtx(id)));
+  });
+
+  it('picks the innermost of the design’s own nodes the bridge reports', () => {
+    const { state, id, def, nodes } = design('features.grid');
+    const root = def.tree!.rootIds[0];
+    const inner = nodes.find((n) => n.id !== root && !listPropFor(def, n.id))!;
+    const chain = [inner.id, root].map((nodeId) => studioDescOf(state, id, { owner: own(id), instancePath: [], nodeId })!);
+    expect(studioPick(state, id, chain)?.nodeId).toBe(inner.id);
   });
 
   it('ignores the page, other components and the code wrapper', () => {

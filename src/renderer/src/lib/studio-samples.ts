@@ -77,10 +77,30 @@ function fieldsOf(fields: Record<string, ScalarPropSchema>, values: Record<strin
 }
 
 /**
+ * The fields of a list item or an object, their text longer; undefined when one holds rich text that cannot grow
+ * within its limits, which a sample cannot send as it is either (the preview checks it afresh, with no saved value
+ * to let it stand): the property then keeps its starting value.
+ */
+function longFields(fields: Record<string, ScalarPropSchema>, values: Record<string, unknown>, key?: string): Record<string, unknown> | undefined {
+  let fits = true;
+  const out = fieldsOf(
+    fields,
+    values,
+    (schema, value) => {
+      const v = longScalar(schema, value);
+      if (v === undefined && schema.type === 'richtext') fits = false;
+      return v;
+    },
+    key
+  );
+  return fits ? out : undefined;
+}
+
+/**
  * A list made fuller, its items' text longer. `key` names a field that identifies an item (a form field's name): the
  * starting items keep theirs, and the added ones are left without, for the preview to give them names of their own.
  */
-function longList(schema: ListProp, key?: string): ListItem[] {
+function longList(schema: ListProp, key?: string): ListItem[] | undefined {
   const base = Array.isArray(schema.default) ? schema.default : [];
   const max = Math.min(schema.max ?? LONG_ITEMS, LONG_ITEMS);
   const count = Math.max(base.length, Math.min(max, Math.max(base.length * 2, 3)));
@@ -89,7 +109,9 @@ function longList(schema: ListProp, key?: string): ListItem[] {
     const from = base.length ? base[i % base.length] : ({ id: '' } as ListItem);
     // Items repeated past the starting ones get IDs of their own, so each is its own item on the page.
     const id = i < base.length ? from.id : `${from.id || 'item'}-sample-${i}`;
-    const item = { ...fieldsOf(schema.fields, from, longScalar, key), id } as ListItem;
+    const fields = longFields(schema.fields, from, key);
+    if (!fields) return undefined;
+    const item = { ...fields, id } as ListItem;
     if (key && i >= base.length) item[key] = '';
     items.push(item);
   }
@@ -116,7 +138,7 @@ export function studioSampleProps(def: ComponentDefinition, sample: StudioSample
       v = sample === 'long' ? longList(schema, key) : (Array.isArray(schema.default) ? schema.default : []).slice(0, schema.min ?? 0).map((it) => ({ ...fieldsOf(schema.fields, it, (s) => emptyScalar(s), key), id: it.id }));
     } else if (schema.type === 'object') {
       const values = (schema as ObjectProp).default ?? {};
-      v = fieldsOf(schema.fields, values, sample === 'long' ? longScalar : (s) => emptyScalar(s));
+      v = sample === 'long' ? longFields(schema.fields, values) : fieldsOf(schema.fields, values, (s) => emptyScalar(s));
     } else if (schema.type === 'table') continue;
     else v = sample === 'long' ? longScalar(schema, schema.default) : emptyScalar(schema);
     if (v !== undefined) out[name] = v;

@@ -487,7 +487,16 @@ export function Canvas() {
     const revision = getState().snapshot?.revision;
     // The preview shown already (an inline edit cancelled, say, changes nothing) is kept, with what the author opened in it.
     const from = JSON.stringify([studioRequest, revision, url, workspaceKey, studioRetry]);
-    if (from === studioFrom.current && showsStudio()) return;
+    if (from === studioFrom.current && showsStudio()) {
+      // Back to what is shown (Long copy, then Starting content again, before it arrived): what was on its way is
+      // dropped, and the preview on screen takes picks again.
+      loads.supersede();
+      if (studioPending.current && readySession.current === session) {
+        studioPending.current = false;
+        setState({ frameReady: true });
+      }
+      return;
+    }
     const request = loads.begin();
     const spec = JSON.parse(studioRequest) as { definitionId: string };
     // Until the first preview of this component is there, what the frame shows (the page, or another component) is
@@ -521,7 +530,7 @@ export function Canvas() {
   }, [studioRequest, snapshot?.revision, url, workspaceKey, editing, studioRetry]); // eslint-disable-line react-hooks/exhaustive-deps
   // Leaving the studio releases its preview, and the frame opens the page again.
   // An inline edit still open there is finished first (committed, or kept for the author when it no longer can be), so
-  // leaving never loses what was typed; a preview that does not answer in time is left without it.
+  // leaving never loses what was typed; a preview that does not answer is left without it after a while.
   const inStudio = !!studioView;
   useEffect(() => {
     if (inStudio) return;
@@ -533,7 +542,8 @@ export function Canvas() {
     if (!studioAt.current) return void (pending && setSession(newSessionId()));
     if (editing) {
       post('commitTextEdit');
-      const t = setTimeout(() => endInlineEdit(), 3000);
+      // A preview that does not answer at all can no longer give the text back.
+      const t = setTimeout(() => endInlineEdit(), 10000);
       return () => clearTimeout(t);
     }
     studioAt.current = null;
@@ -556,7 +566,9 @@ export function Canvas() {
           const studio = showsStudio();
           if (studio) {
             const shown = p.preview as { key?: unknown; mounted?: unknown; error?: unknown } | undefined;
-            if (!studioLoads.current!.shows(shown?.key)) break;
+            // Only a preview of the component being edited now: another's (still loading as the author moved on) waits for
+            // the next one, taking no picks.
+            if (!studioLoads.current!.shows(shown?.key) || studioAt.current!.definitionId !== s.definitionMode?.definitionId) break;
             if (shown?.mounted !== true) {
               const name = studioDefName() ?? 'The component';
               setFrameError(`${name} couldn’t be shown${typeof shown?.error === 'string' && shown.error ? `: ${shown.error.slice(0, 300)}` : '.'}`);

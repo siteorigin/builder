@@ -3,6 +3,7 @@ import type { ComponentDefinition } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, catalogueEntries } from '@catalogue/index';
 import { generateComponentPreview } from '@generator/preview';
+import { PREVIEW_MODULE } from '@shared/component-preview';
 import { studioSampleProps } from '../../src/renderer/src/lib/studio-samples';
 
 const starter = () => createStarterState('blank', 'Studio Samples', false);
@@ -82,6 +83,20 @@ describe('Component Studio sample content', () => {
     const props = studioSampleProps(def, 'long')!;
     expect(props).not.toHaveProperty('body');
     expect(props.title).toMatch(/^T /);
+    // At the most blocks rich text takes, one more paragraph would pass it too.
+    const blocks = Array.from({ length: 500 }, () => ({ type: 'p' as const, spans: [{ text: 'a' }] }));
+    expect(studioSampleProps({ ...def, properties: { body: { type: 'richtext', label: 'Body', default: blocks } } }, 'long')).toBeUndefined();
+    // Inside a list's items or an object, the whole property keeps its starting value: the preview checks a sample afresh.
+    const over = [{ type: 'p' as const, spans: [{ text: 'y'.repeat(20001) }] }];
+    const nested: ComponentDefinition = {
+      ...def,
+      properties: {
+        rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { text: { type: 'richtext', label: 'Text', default: [] } }, default: [{ id: 'r1', text: over }] },
+        card: { type: 'object', label: 'Card', fields: { text: { type: 'richtext', label: 'Text', default: [] } }, default: { text: over } },
+        title: { type: 'string', label: 'Title', default: 'T' }
+      }
+    };
+    expect(Object.keys(studioSampleProps(nested, 'long')!)).toEqual(['title']);
   });
 
   it('keeps a form’s field names, and leaves the fields it adds without, so no two share one', () => {
@@ -95,6 +110,10 @@ describe('Component Studio sample content', () => {
     // The preview names the added fields after their labels, each its own.
     const out = generateComponentPreview(state, { componentId: 'contact.form', props: { fields } });
     if ('error' in out) throw new Error(out.error);
+    const module = out.files.get(PREVIEW_MODULE)!;
+    const names = [...module.matchAll(/"name":"([^"]*)"/g)].map((m) => m[1]).filter(Boolean);
+    expect(names.length).toBeGreaterThanOrEqual(fields.length);
+    expect(new Set(names.slice(0, fields.length)).size).toBe(fields.length);
     const empty = studioSampleProps(def, 'empty')!.fields as Array<{ name: string }> | undefined;
     for (const f of empty ?? []) expect(starting.map((s) => s.name)).toContain(f.name);
   });

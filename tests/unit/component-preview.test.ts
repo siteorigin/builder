@@ -80,12 +80,12 @@ describe('isolated component preview files', () => {
     const def = state.components[id];
     const [name, schema] = Object.entries(def.properties).find(([, s]) => s.type === 'list' && !s.feed && s.default.length >= 2)!;
     const [a, b] = schema.default as Array<{ id: string }>;
-    // Two rows without IDs, then one that repeats the first's.
-    def.properties[name] = { ...schema, default: [{ ...a, id: undefined }, { ...b, id: undefined }, { ...a }, { ...b }] } as typeof schema;
+    // A row without an ID, then one that repeats another's.
+    def.properties[name] = { ...schema, default: [{ ...b, id: undefined }, { ...a }, { ...a }, { ...b }] } as typeof schema;
     const first = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
     expect(preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)).toBe(first);
     const shown = [...first.matchAll(/\{"id":"([^"]+)",/g)].map((m) => m[1]);
-    expect(shown).toEqual(['preview-item-0', 'preview-item-1', a.id, b.id]);
+    expect(shown).toEqual(['preview-item-0', a.id, 'preview-item-2', b.id]);
   });
 
   it('renders each variant choice, and an axis left out keeps its default', () => {

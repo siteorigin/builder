@@ -698,15 +698,16 @@ export function studioDesignCtx(state: ProjectState, definitionId: string, ref: 
 /**
  * One of the edited component's references as the studio's preview can show it: an item of a list is kept only when
  * it is one of the design's own starting items, the only ones every preview shows under the same ID (sample content
- * adds its own, and a placement's items are that placement's).
+ * adds its own, and a placement's items are that placement's). An item of a list inside another list's item is let
+ * go too, since the outer item may be one only a sample has: the node is then outlined in every item.
  */
 export function studioRef(state: ProjectState, definitionId: string, ref: ElementRef): ElementRef {
-  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
-  if (itemId === undefined) return ref;
+  const itemId = ref.itemPath?.length === 1 ? ref.itemPath[0] : undefined;
+  if (!ref.itemPath?.length) return ref;
   const def = own(state.components, definitionId);
   const list = def ? listPropFor(def, ref.nodeId) : undefined;
   const schema = def && list ? own(def.properties, list) : undefined;
-  const shown = schema?.type === 'list' && !schema.feed && (idsOf(schema.default) ?? []).includes(itemId) && refExists(state, ref);
+  const shown = itemId !== undefined && schema?.type === 'list' && !schema.feed && (idsOf(schema.default) ?? []).includes(itemId) && refExists(state, ref);
   if (shown) return ref;
   const out = { ...ref };
   delete out.itemPath;
