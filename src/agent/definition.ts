@@ -39,8 +39,8 @@ export function definitionTarget(authority: Authority): DefinitionTarget | null 
 const scalar = z.union([z.string(), z.number(), z.boolean()]);
 /** The property types a small model adds: single values an author fills in. Lists, tables and objects stay with the general tools. */
 const ADDED_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon'] as const;
-/** Property types whose default is one plain value, which set_default takes. */
-const PLAIN_DEFAULTS = new Set<PropSchema['type']>(['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'icon']);
+/** Property types whose default is one plain value, which set_default takes: an image's is its assetId. */
+const PLAIN_DEFAULTS = new Set<PropSchema['type']>(['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'icon', 'image']);
 /** Bindings a small model makes: content and conditions. A nested placement's properties and variants, and a repeat's list, stay with the general tools. */
 const UNOFFERED_BINDINGS = new Set(['prop', 'variant', 'list', 'action']);
 /** Above this many, node IDs are checked when a call arrives instead of listed in the grammar. */
@@ -217,13 +217,20 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
   const partNodes = new Set(Object.values(def.parts).map((p) => p.nodeId));
   const exposable = nodes.filter((id) => rendered(tree.nodes[id]) && !partNodes.has(id));
   const editable = nodes.filter((id) => Object.keys(nodeFields(tree.nodes[id])).length || exposable.includes(id));
+  const contentSchema = propsJsonSchema({ properties: content }) as { properties: Record<string, JsonSchema> };
+  // New alt text alone keeps the picture (see runDefinitionTool), so an image needs only its alt.
+  if (contentSchema.properties.image) contentSchema.properties.image = { ...contentSchema.properties.image, required: ['alt'], description: 'The image: its assetId and alt text, or the alt text alone to keep the picture.' };
+  // A field is replaced whole, so text the context shows shortened is read whole first.
+  const shortened = nodes.some((nodeId) => selectionAbridged(state, { owner: { kind: 'component', id: def.id }, nodeId }));
   if (editable.length)
     tools.push({
       ...describe('edit_definition_node'),
       parameters: closed(
         {
           nodeId: idSchema(editable, 'The node to change.'),
-          ...(Object.keys(content).length ? { content: { ...propsJsonSchema({ properties: content }), description: 'The content fields to change; send only those that change.' } } : {}),
+          ...(Object.keys(content).length
+            ? { content: { ...contentSchema, description: `The content fields to change; send only those that change.${shortened ? ' Each replaces the field whole: read text shown shortened (ending in …) whole with inspect_element first.' : ''}` } }
+            : {}),
           ...(exposable.length
             ? { exposeAsPart: closed({ partId: { type: 'string', description: 'A new camelCase part name, such as "eyebrow".' }, label: { type: 'string', minLength: 1, maxLength: 60, description: 'What authors see, such as "Eyebrow".' } }, ['partId', 'label']) }
             : {})
@@ -267,7 +274,7 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
       label: { type: 'string', minLength: 1, maxLength: 80 },
       type: { type: 'string', enum: [...ADDED_TYPES] },
       options: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 60 }, description: 'enum only: its option values, in order.' },
-      default: { ...SCALAR, description: 'Optional: what placements start with, for a text, number, yes/no, enum or link.' }
+      default: { ...SCALAR, description: "Optional: what placements start with, for a text, number, yes/no, enum or link, or an image's assetId." }
     },
     ['action', 'prop', 'label', 'type']
   );
@@ -326,9 +333,17 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
         ['parentId', 'primitive']
       )
     });
-  const removable = nodes.filter((id) => id !== tree.rootIds[0]);
+  const removable = nodes.filter((id) => removableNode(s, id));
   if (removable.length) tools.push({ ...describe('remove_definition_node'), parameters: closed({ nodeId: idSchema(removable, 'The node to remove.') }, ['nodeId']) });
   return tools;
+}
+
+/**
+ * Whether a small model may remove a node: never the design's root, nor anything holding a slot's outlet, which shows
+ * the content each placement put there (that needs the author's approval and the general tools).
+ */
+function removableNode(s: Scope, id: string): boolean {
+  return id !== s.tree.rootIds[0] && !subtreeIds(s.tree, id).some((n) => s.tree.nodes[n]?.kind === 'slot');
 }
 
 /** The node a style call without nodeId or partId styles: the selected node, or the design's root, when it renders one. */
@@ -459,7 +474,7 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
 
   if (name === 'remove_definition_node') {
     const a = args as z.infer<(typeof DEFINITION_ARGS)['remove_definition_node']>;
-    const node = namedNode(s, a.nodeId, s.nodes.filter((id) => id !== tree.rootIds[0]), issues, 'nodeId', "is the design's root, which every placement is");
+    const node = namedNode(s, a.nodeId, s.nodes.filter((id) => removableNode(s, id)), issues, 'nodeId', a.nodeId === tree.rootIds[0] ? "is the design's root, which every placement is" : "holds a slot's outlet, which shows each placement's own content: ask the author first");
     if (!node) return fieldError(issues, NOTHING_APPLIED);
     return applySelected([{ type: 'node.remove', owner, nodeId: node.id }], host, `Remove ${node.name ?? node.id}`, callId);
   }

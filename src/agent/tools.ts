@@ -352,14 +352,14 @@ export function toolsForRun(opts: {
   }
   // A component's own design on a small model: tools built from that design as it is now, beside its contract and
   // design to read and the author to ask, so the general operations never crowd out the request (#360).
+  // A design or selected node that is gone (removed by the run itself, say) keeps the small set's reads and question: the
+  // run may change nothing more, and the general tools would only crowd out its answer.
   if (focused && opts.definitionTarget) {
-    const micro = definitionTools(state, opts.definitionTarget);
-    if (micro) {
-      const images = JSON.stringify(micro).includes('"assetId"') || !!opts.attachedImages;
-      // Text too long to show whole can still be read whole, a part at a time, before it is rewritten.
-      const reads = definitionAbridged(state, opts.definitionTarget) ? [plainTool('inspect_element')] : [];
-      return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...reads, ...(images ? [plainTool('search_assets')] : []), plainTool('request_clarification')], mode: 'definition', focused };
-    }
+    const micro = definitionTools(state, opts.definitionTarget) ?? [];
+    const images = JSON.stringify(micro).includes('"assetId"') || !!opts.attachedImages;
+    // Text too long to show whole can still be read whole, a part at a time, before it is rewritten.
+    const reads = definitionAbridged(state, opts.definitionTarget) ? [plainTool('inspect_element')] : [];
+    return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...reads, ...(images ? [plainTool('search_assets')] : []), plainTool('request_clarification')], mode: 'definition', focused };
   }
   const general = toolDefinitions({ codeEnabled, definitionOps });
   if (selection) {

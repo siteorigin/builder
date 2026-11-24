@@ -146,6 +146,10 @@ describe('choosing the definition tools', () => {
     expect(prop(tool(definitionTools(session.state, { definitionId: id })!, 'bind_definition_field'), 'binding').anyOf![0].properties!.$prop.enum).toContain('badge');
     expect(definitionTools(session.state, { definitionId: id, nodeId: 'gone' })).toBeNull();
     expect(definitionTools(session.state, { definitionId: 'proj.gone' })).toBeNull();
+    // A run whose selected node is gone (it removed it, say) may change nothing more: it keeps the small reads.
+    const gone = toolsForRun({ state: session.state, selection: null, capabilities: local, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: { definitionId: id, nodeId: 'gone' } });
+    expect(gone).toMatchObject({ mode: 'definition', focused: true });
+    expect(names(gone.tools)).toEqual(['read_component', 'request_clarification']);
     void owner;
   });
 
@@ -205,7 +209,7 @@ describe('running the definition tools', () => {
     expect(def.tree!.nodes.content.styles).toEqual(before.styles);
     // A new option, then its content edit and a default for the whole component.
     expect((await run(host, 'add_definition_variant', { axis: 'tone', option: 'bold', label: 'Bold' })).ok).toBe(true);
-    expect(Object.keys(session.state.components[id].variantAxes!.tone.options)).toContain('bold');
+    expect(session.state.components[id].variantAxes!.tone.options.bold).toMatchObject({ label: 'Bold' });
     expect((await run(host, 'manage_component_prop', { change: { action: 'set_default', prop: 'title', value: 'Welcome' } })).ok).toBe(true);
     expect(session.state.components[id].properties.title.default).toBe('Welcome');
     expect((await run(host, 'edit_definition_node', { nodeId: 'lead', content: { tag: 'h3' } })).ok).toBe(true);
@@ -219,6 +223,7 @@ describe('running the definition tools', () => {
     const added = await run(host, 'insert_definition_node', { parentId: 'content', primitive: 'paragraph', text: 'Made by hand', index: 2 });
     expect(added.ok).toBe(true);
     const nodeId = (added.content as { nodeId: string }).nodeId;
+    expect(session.state.components[id].tree!.nodes[nodeId]).toMatchObject({ kind: 'text', text: 'Made by hand' });
     expect(session.state.components[id].tree!.nodes.content).toMatchObject({ children: expect.arrayContaining([nodeId]) });
     expect((session.state.components[id].tree!.nodes.content as { children: string[] }).children.indexOf(nodeId)).toBe(2);
     expect(prop(tool(definitionTools(session.state, { definitionId: id })!, 'bind_definition_field'), 'nodeId').enum).toContain(nodeId);
@@ -230,6 +235,13 @@ describe('running the definition tools', () => {
     expect(errorOf(await run(host, 'insert_definition_node', { parentId: 'heading', primitive: 'icon' })).message).toMatch(/"heading" holds no children/);
     expect(errorOf(await run(host, 'remove_definition_node', { nodeId: 'root' })).message).toMatch(/"root" is the design's root/);
     expect(session.revision).toBe(revision);
+    // A slot's outlet shows what each placement put there: neither it nor what holds it is removed without the author.
+    expect((await session.apply({ operations: [{ type: 'component.setSlot', definitionId: id, slot: 'extra', label: 'Extra' }, { type: 'node.insert', owner: { kind: 'component', id }, parentId: 'actions', primitive: 'slot', bind: 'extra' }] }, { label: 'Slot', source: 'user' })).ok).toBe(true);
+    const outlet = Object.values(session.state.components[id].tree!.nodes).find((n) => n.kind === 'slot')!.id;
+    const removable = prop(tool(definitionTools(session.state, { definitionId: id })!, 'remove_definition_node'), 'nodeId').enum!;
+    for (const holder of [outlet, 'actions', 'content']) expect(removable).not.toContain(holder);
+    expect(removable).toContain('lead');
+    expect(errorOf(await run(host, 'remove_definition_node', { nodeId: 'actions' })).message).toMatch(/holds a slot's outlet/);
   });
 
   it("keeps an image's picture when only its alt text is sent", async () => {
@@ -241,6 +253,13 @@ describe('running the definition tools', () => {
     expect((await run(host, 'edit_definition_node', { nodeId, content: { image: { assetId, alt: 'A room' } } })).ok).toBe(true);
     expect((await run(host, 'edit_definition_node', { nodeId, content: { image: { alt: 'A calm room' } } })).ok).toBe(true);
     expect((session.state.components[id].tree!.nodes[nodeId] as { image?: unknown }).image).toMatchObject({ assetId, alt: 'A calm room' });
+    // The grammar asks only for the alt text, so the merge can be reached.
+    const content = prop(tool(definitionTools(session.state, { definitionId: id })!, 'edit_definition_node'), 'content') as { properties: Record<string, { required?: string[] }> };
+    expect(content.properties.image.required).toEqual(['alt']);
+    // An image property starts from a picture by its assetId, and its default can be set the same way.
+    expect((await run(host, 'manage_component_prop', { change: { action: 'add', prop: 'photo', label: 'Photo', type: 'image', default: assetId } })).ok).toBe(true);
+    expect(session.state.components[id].properties.photo.default).toMatchObject({ assetId });
+    expect((await run(host, 'manage_component_prop', { change: { action: 'set_default', prop: 'photo', value: assetId } })).ok).toBe(true);
     // A picture bound to a property is not this node's to keep: its assetId is needed.
     expect(errorOf(await run(host, 'edit_definition_node', { nodeId: 'media', content: { image: { alt: 'x' } } })).message).toMatch(/send its assetId/);
   });
@@ -252,7 +271,8 @@ describe('running the definition tools', () => {
     const bad: Array<[string, unknown, RegExp]> = [
       ['manage_component_prop', { change: { action: 'add', prop: 'heading', label: 'Heading', type: 'string' } }, /already has a property "heading"/],
       ['manage_component_prop', { change: { action: 'add', prop: 'size', label: 'Size', type: 'string', options: ['a'] } }, /only an enum property has options/],
-      ['manage_component_prop', { change: { action: 'add', prop: 'photo', label: 'Photo', type: 'image', default: 'x' } }, /starts empty/],
+      ['manage_component_prop', { change: { action: 'add', prop: 'photo', label: 'Photo', type: 'image', default: 'x' } }, /change\.default/],
+      ['manage_component_prop', { change: { action: 'add', prop: 'when', label: 'When', type: 'link', default: true } }, /change\.default/],
       ['manage_component_prop', { change: { action: 'remove', prop: 'nope' } }, /has no property "nope"/],
       ['edit_definition_node', { nodeId: 'content', content: { text: 'Hi' } }, /no content of its own/],
       ['edit_definition_node', { nodeId: 'heading', exposeAsPart: { partId: 'title', label: 'Title' } }, /already the "heading" part/],
@@ -288,8 +308,8 @@ describe('running the definition tools', () => {
     expect((await run(host, 'edit_definition_node', { nodeId: 'content', exposeAsPart: { partId: 'copy', label: 'Copy' } })).ok).toBe(true);
     expect((await run(host, 'style_definition_element', { variant: { axis: 'layout', option: 'media-start' }, scope: 'base', styles: [{ property: 'gap', value: { token: 'space.lg' } }] })).ok).toBe(true);
     expect(session.state.components[id].tree!.nodes.lead.when).toEqual({ ref: { $prop: 'showLead' }, eq: true });
-    expect((await run(host, 'bind_definition_field', { nodeId: 'eyebrow', field: 'unless', binding: { $prop: 'showLead' }, ne: true })).ok).toBe(true);
-    expect(session.state.components[id].tree!.nodes.eyebrow.unless).toEqual({ ref: { $prop: 'showLead' }, ne: true });
+    expect((await run(host, 'bind_definition_field', { nodeId: 'eyebrow', field: 'unless', binding: { $prop: 'showLead' }, ne: false })).ok).toBe(true);
+    expect(session.state.components[id].tree!.nodes.eyebrow.unless).toEqual({ ref: { $prop: 'showLead' }, ne: false });
     const revision = session.revision;
     // Outside it: a node beside it, a default every placement shows, an existing property, a new axis.
     expect(errorOf(await run(host, 'style_definition_element', { nodeId: 'media', scope: 'base', styles: [{ property: 'gap', value: null }] })).message).toMatch(/"media" is outside what this request may change/);
