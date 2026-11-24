@@ -134,13 +134,21 @@ const manifestSchema = z.strictObject({
   files: z.record(file, z.strictObject({ size: z.number().int().nonnegative(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }))
 });
 
-/** CSS a pack writes into every site unchanged: no other stylesheets, no remote or local resources, no markup. */
+/**
+ * CSS a pack writes into every site unchanged: no other stylesheets, no remote or local resources, no markup. An
+ * image written inline (`url("data:image/…")`, a small icon, say) loads nothing, so it is allowed.
+ */
 function checkCss(css: string, where: string) {
   if (/<\/?\s*(style|script)/i.test(css)) refuse(`${where} contains markup.`);
   // Read as a browser would. Strings and comments are found together, left to right: "/*" inside a string starts no
   // comment, and text inside either (even the word url()) loads nothing. An escaped letter ("\\75 rl(") is the letter.
+  // An inline image is found the same way, as one url() holding one plain string, so it can never start inside a
+  // string or comment, or reach past its own closing bracket; one written any other way is still refused.
   const plain = css
-    .replace(/(\\[\s\S])|("(?:[^"\\\n]|\\[\s\S])*"?|'(?:[^'\\\n]|\\[\s\S])*'?)|\/\*[\s\S]*?(?:\*\/|$)/g, (_, esc: string | undefined, str: string | undefined) => esc ?? (str ? '""' : ' '))
+    .replace(
+      /(url\(\s*(?:"data:image\/[^"\\\n\r\f]*"|'data:image\/[^'\\\n\r\f]*')\s*\))|(\\[\s\S])|("(?:[^"\\\n]|\\[\s\S])*"?|'(?:[^'\\\n]|\\[\s\S])*'?)|\/\*[\s\S]*?(?:\*\/|$)/g,
+      (_, inline: string | undefined, esc: string | undefined, str: string | undefined) => (inline ? ' ' : (esc ?? (str ? '""' : ' ')))
+    )
     .replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?/g, (_, hex: string) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd))
     .replace(/\\(.)/gs, '$1');
   if (/@import/i.test(plain)) refuse(`${where} imports another stylesheet (@import), which packs may not do.`);

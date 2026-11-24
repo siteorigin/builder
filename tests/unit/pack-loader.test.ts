@@ -165,6 +165,10 @@ describe('loading a theme pack release', () => {
       (def.tree!.nodes[root] as { children: string[] }).children.push(root);
     }), /contains itself/],
     ['base CSS that hides url() behind escapes', (d) => edit(d, (m) => (m.baseCss += '\nbody { background: \\75 rl(https://example.com/pixel.gif); }')), /loads a resource/],
+    ['base CSS that loads a resource beside an inline image', (d) => edit(d, (m) => (m.baseCss += '\nbody { background: url("data:image/png;base64,iVBORw0KGgo="), url(https://example.com/pixel.gif); }')), /loads a resource/],
+    ['base CSS that hides url() between strings that look like an inline image', (d) => edit(d, (m) => (m.baseCss += `\n.a::before { content: 'url("data:image/'; } body { background: url(https://example.com/pixel.gif); } .b::after { content: '")'; }`)), /loads a resource/],
+    ['base CSS that writes an inline image with an escape', (d) => edit(d, (m) => (m.baseCss += '\nbody { background: url("data:image/svg+xml,\\") url(https://example.com/pixel.gif) "); }')), /loads a resource/],
+    ['base CSS that inlines something other than an image', (d) => edit(d, (m) => (m.baseCss += '\nbody { background: url("data:text/css,body{}"); }')), /loads a resource/],
     ['base CSS that hides @import behind escapes', (d) => edit(d, (m) => (m.baseCss = '@\\69 mport "https://example.com/x.css";\n' + m.baseCss)), /@import/],
     ['a token that refers to a token by number', (d) => edit(d, (m) => ((m.tokens[0] as { value: unknown }).value = { token: 7 })), /malformed at tokens\.0\.value/],
     ['a token value that could leave its rule', (d) => edit(d, (m) => ((m.tokens[0] as { value: unknown }).value = 'red; } body { display: none')), /malformed at tokens\.0\.value/],
@@ -200,11 +204,13 @@ describe('loading a theme pack release', () => {
     }, /fonts\/face\.webp, which is not a \.woff2 file/]
   ];
 
-  it('accepts base CSS that only mentions url() in a comment or a string, and element IDs a generator can use', async () => {
+  it('accepts base CSS that only mentions url() in a comment or a string or draws an inline image, and element IDs a generator can use', async () => {
     const root = tmp();
     const dir = await release(root);
     edit(dir, (m) => {
       m.baseCss += '\n/* Fonts come from the pack, never url() or @import. */\n.note::before { content: "\\75 rl() is not loaded here"; }';
+      // An icon written inline loads nothing.
+      m.baseCss += `\n.badge::after { background: rgb(0 0 0 / 0.6) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3C/svg%3E") center / 1rem no-repeat; }`;
       const def = m.components[2];
       const root = def.tree!.rootIds[0];
       def.tree!.nodes['2up'] = { ...def.tree!.nodes[root], id: '2up' };
