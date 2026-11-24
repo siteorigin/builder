@@ -307,10 +307,18 @@ describe('paste style', () => {
     expect(plan.rows.find((r) => r.property === 'opacity')).toMatchObject({ status: 'skip', reason: 'The copied value isn’t one the builder can paste.' });
     const font = plan.operations.find((o) => o.type === 'node.setStyle' && o.property === 'fontFamily');
     expect(plan.operations.filter((o) => o !== font)).toEqual([{ type: 'node.setStyle', owner: owner(s), nodeId: heading.nodeId, scope: 'tablet', property: 'marginBlockEnd', value: '24px' }]);
-    // A font named on its own is written as the stack the edit stores, so pasting again finds nothing to change.
-    expect(font).toMatchObject({ scope: 'base', value: expect.stringContaining('Plus Jakarta Sans Variable') });
+    // A font named on its own is written as copied; the edit stores its full stack, and pasting again finds nothing to change.
+    expect(font).toMatchObject({ scope: 'base', value: 'Plus Jakarta Sans' });
     const after = applyOperations(s, plan.operations).state;
+    expect(after.pages[homeId(s)].nodes[heading.nodeId].styles?.base?.fontFamily).toContain('Plus Jakarta Sans Variable');
     expect(planStylePaste(after, captureStyle(s, stack)!, heading, 'every').operations).toEqual([]);
+    // A stack the edit lengthens past what may be written is still written as copied, so the paste goes through.
+    let long = 'Arial, Plus Jakarta Sans';
+    for (let i = 0; long.length < 185; i++) long += `, Fallback ${i}`;
+    (stackNode.styles!.base as Record<string, unknown>).fontFamily = long;
+    const longPlan = planStylePaste(s, captureStyle(s, stack)!, heading, 'every');
+    expect(longPlan.operations.find((o) => o.type === 'node.setStyle' && o.property === 'fontFamily')).toMatchObject({ value: long });
+    expect(() => applyOperations(s, longPlan.operations)).not.toThrow();
   });
 
   it('holds back a property whose site style was removed since copying, and only that property', () => {
@@ -341,6 +349,9 @@ describe('paste style', () => {
     s = style(s, hero, 'base', 'background', `linear-gradient(var(--so-${token.replace('.', '-')}), #ffffff)`);
     const copy = captureStyle(s, hero)!;
     expect(planStylePaste(s, copy, section(s, 'content.media'), 'every').rows.find((r) => r.property === 'background')).toMatchObject({ status: 'change' });
+    // A variable that was never a site style is the author's own: it pastes.
+    const own = style(s, hero, 'tablet', 'background', 'linear-gradient(var(--so-color-optional), #ffffff)');
+    expect(planStylePaste(own, captureStyle(own, hero)!, section(own, 'content.media'), 'tablet').operations).toHaveLength(1);
     // Its own use is cleared (the style can't be removed while CSS names it), then the style is removed.
     s = style(s, hero, 'base', 'background', null);
     s = applyOperations(s, [{ type: 'token.remove', tokenId: token }]).state;

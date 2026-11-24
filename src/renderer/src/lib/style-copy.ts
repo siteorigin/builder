@@ -46,6 +46,8 @@ export interface StyleCopy {
   kind: 'section' | 'single';
   label: string;
   sets: Array<{ part: string | null; label: string; styles: ResponsiveStyles }>;
+  /** The site styles there were when it was copied, as CSS text names them, to tell one removed since. */
+  vars: string[];
 }
 
 /** One override a paste writes (`to`) over what the destination has now (`from`). No `to` removes the override. */
@@ -156,7 +158,7 @@ export function captureStyle(state: ProjectState, ref: ElementRef): StyleCopy | 
   const sel = styleSelection(state, ref);
   if (!sel) return null;
   const sets = sel.targets.filter((t) => hasRules(t.styles)).map((t) => ({ part: t.part, label: t.label, styles: JSON.parse(JSON.stringify(t.styles)) as ResponsiveStyles }));
-  return { kind: sel.kind, label: sel.label, sets };
+  return { kind: sel.kind, label: sel.label, sets, vars: effectiveTokens(state).map((t) => tokenVar(t.id)) };
 }
 
 const sameValue = (a: StyleValue | undefined, b: StyleValue | undefined) => (a && typeof a === 'object') || (b && typeof b === 'object') ? JSON.stringify(a) === JSON.stringify(b) : a === b;
@@ -174,28 +176,37 @@ function isStyleValue(v: unknown): v is StyleValue {
   return !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && typeof (v as { token?: unknown }).token === 'string';
 }
 
-/** Site style variables named in CSS text, such as a gradient's `var(--so-color-brand)`. */
-const TOKEN_VAR_RE = /var\(\s*(--so-(?:color|font|text|space|container|radius|shadow|border)-[A-Za-z0-9-]+)/g;
+/** CSS variables named in CSS text, such as a gradient's `var(--so-color-brand)`. */
+const CSS_VAR_RE = /var\(\s*(--[A-Za-z0-9_-]+)/g;
 const removed = (token: string) => `It uses the site style “${token}”, which has been removed since it was copied.`;
 
+/** What a check of the copy needs: the site styles now (by ID and as CSS text names them), and when it was copied. */
+interface Known {
+  tokens: Set<string>;
+  vars: Set<string>;
+  copied: Set<string>;
+}
+
 /**
- * The value a paste writes for a copied one, as `node.setStyle` would store it (a font named on its own becomes its
- * full stack), or why it can't be written into this project now: the same checks the edit makes, so one value
+ * The value a paste writes for a copied one, and the value the edit stores for it (a font named on its own is stored
+ * as its full stack), or why it can't be written into this project now: the checks the edit makes, so one value
  * never fails the whole paste.
  */
-function prepare(state: ProjectState, vars: string[], property: string, v: unknown): { value: StyleValue } | { error: string } {
+function prepare(state: ProjectState, known: Known, property: string, v: unknown): { value: StyleValue; stored: StyleValue } | { error: string } {
   if (!isStyleValue(v)) return { error: 'The copied value isn’t one the builder can paste.' };
   const err = validateStyleValue(property, v);
   if (err) return { error: err };
   const token = tokenRef(property, v);
-  if (token && !vars.includes(tokenVar(token))) return { error: removed(token) };
+  if (token && !known.tokens.has(token)) return { error: removed(token) };
+  // CSS text naming a site style's variable: only a style there was when copied, and is no longer, is missing.
   if (typeof v === 'string')
-    for (const [, name] of v.matchAll(TOKEN_VAR_RE)) if (!vars.some((t) => name === t || name.startsWith(`${t}-`))) return { error: removed(name.slice(5)) };
+    for (const [, name] of v.matchAll(CSS_VAR_RE)) if (known.copied.has(name) && !known.vars.has(name)) return { error: removed(name.slice(5)) };
   if (property === 'fontFamily' && typeof v === 'string' && !FONT_KEYWORD_RE.test(v.trim())) {
+    // The edit checks the value as written, then stores the stack, which may be longer than a value may be written.
     const font = resolveFontStack(state, v);
-    return 'error' in font ? { error: font.error } : { value: font.stack };
+    return 'error' in font ? { error: font.error } : { value: v, stored: font.stack };
   }
-  return { value: v };
+  return { value: v, stored: v };
 }
 
 const scopeList = (s: ResponsiveStyles, property: string) => STYLE_SCOPES.filter((sc) => s[sc]?.[property] !== undefined).map((sc) => SCOPE_LABELS[sc]);
@@ -211,7 +222,8 @@ const scopeList = (s: ResponsiveStyles, property: string) => STYLE_SCOPES.filter
 export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: ElementRef, scope: PasteScope): PastePlan {
   const destination = styleSelection(state, ref);
   if (!destination) return { destination, rows: [], operations: [] };
-  const vars = effectiveTokens(state).map((t) => tokenVar(t.id));
+  const now = effectiveTokens(state);
+  const known: Known = { tokens: new Set(now.map((t) => t.id)), vars: new Set(now.map((t) => tokenVar(t.id))), copied: new Set(copy.vars) };
   const scopes = scope === 'every' ? STYLE_SCOPES : [scope];
   const rows: PasteRow[] = [];
   const operations: EditOperation[] = [];
@@ -240,17 +252,17 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
       else if (!scopes.some((sc) => set.styles[sc]?.[property] !== undefined)) skip(`The copy sets it for ${scopeList(set.styles, property).join(', ')}, not ${SCOPE_LABELS[scope as ResponsiveScope]}.`);
       else {
         // Every size the paste writes is checked first: a property with one value that can't be written changes nowhere.
-        const wants = new Map<ResponsiveScope, StyleValue>();
+        const wants = new Map<ResponsiveScope, { value: StyleValue; stored: StyleValue }>();
         let why = '';
         for (const sc of scopes) {
           const raw: unknown = set.styles[sc]?.[property];
           if (raw === undefined) continue;
-          const ready = prepare(state, vars, property, raw);
+          const ready = prepare(state, known, property, raw);
           if ('error' in ready) {
             why = ready.error;
             break;
           }
-          wants.set(sc, ready.value);
+          wants.set(sc, ready);
         }
         if (why) {
           skip(why);
@@ -260,7 +272,7 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
         for (const sc of scopes) {
           const want = wants.get(sc);
           const have = target.styles?.[sc]?.[property];
-          if (want === undefined ? have !== undefined : !sameValue(want, have)) changes.push(want === undefined ? { scope: sc, from: have } : { scope: sc, from: have, to: want });
+          if (want === undefined ? have !== undefined : !sameValue(want.stored, have)) changes.push(want === undefined ? { scope: sc, from: have } : { scope: sc, from: have, to: want.value });
         }
         rows.push({ part, target: at, property, label, status: changes.length ? 'change' : 'same', changes });
         for (const c of changes)
