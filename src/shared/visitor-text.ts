@@ -4,7 +4,8 @@ import { clipText } from './not-found';
 
 /**
  * The words a generated site says on its own, around the author's content: the skip link, the menu and submenu
- * buttons, landmark names, a contact form's progress, search results, the image viewer and the video player. Each
+ * buttons, landmark names, a contact form's progress, search results, the image viewer, a carousel's buttons and
+ * count, and the video player. Each
  * comes in the language of the page it is on, from the author's own wording for that language when there is one,
  * then the built-in wording for the language, then English.
  */
@@ -51,6 +52,11 @@ export const VISITOR_TEXT_KEYS = [
   'imagePrevious',
   'imageNext',
   'imageCount',
+  'carouselLabel',
+  'carouselPrevious',
+  'carouselNext',
+  'carouselOne',
+  'carouselMany',
   'videoPlay',
   'videoFrom',
   'videoLoads',
@@ -118,6 +124,16 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
     ]
   },
   {
+    label: 'Carousel',
+    fields: [
+      { key: 'carouselLabel', label: 'Slides', hint: 'The name screen readers give a carousel’s slides when it has no heading or name of its own.' },
+      { key: 'carouselPrevious', label: 'Previous slide', hint: 'The carousel’s button for the slide before.' },
+      { key: 'carouselNext', label: 'Next slide', hint: 'The carousel’s button for the slide after.' },
+      { key: 'carouselOne', label: 'One slide showing', hint: 'Beside the buttons, and announced, when one slide shows.', fills: ['index', 'count'] },
+      { key: 'carouselMany', label: 'Several slides showing', hint: 'Beside the buttons, and announced, when several slides show at once.', fills: ['first', 'last', 'count'] }
+    ]
+  },
+  {
     label: 'Video, tables and moved pages',
     fields: [
       { key: 'videoPlay', label: 'Play video', hint: 'The video’s play button.' },
@@ -161,6 +177,11 @@ const EN: VisitorText = {
   imagePrevious: 'Previous image',
   imageNext: 'Next image',
   imageCount: '{index} of {count}',
+  carouselLabel: 'Slides',
+  carouselPrevious: 'Previous',
+  carouselNext: 'Next',
+  carouselOne: 'Slide {index} of {count}',
+  carouselMany: 'Slides {first}–{last} of {count}',
   videoPlay: 'Play video',
   videoFrom: 'Video from {host}',
   videoLoads: 'Loads the player from {host}',
@@ -200,6 +221,11 @@ const AR: VisitorText = {
   imagePrevious: 'الصورة السابقة',
   imageNext: 'الصورة التالية',
   imageCount: '{index} من {count}',
+  carouselLabel: 'الشرائح',
+  carouselPrevious: 'السابق',
+  carouselNext: 'التالي',
+  carouselOne: 'الشريحة {index} من {count}',
+  carouselMany: 'الشرائح {first}–{last} من {count}',
   videoPlay: 'تشغيل الفيديو',
   videoFrom: 'فيديو من {host}',
   videoLoads: 'يُحمَّل المشغّل من {host}',
@@ -239,6 +265,11 @@ const HE: VisitorText = {
   imagePrevious: 'התמונה הקודמת',
   imageNext: 'התמונה הבאה',
   imageCount: '{index} מתוך {count}',
+  carouselLabel: 'שקופיות',
+  carouselPrevious: 'הקודם',
+  carouselNext: 'הבא',
+  carouselOne: 'שקופית {index} מתוך {count}',
+  carouselMany: 'שקופיות {first}–{last} מתוך {count}',
   videoPlay: 'הפעלת הסרטון',
   videoFrom: 'סרטון מ-{host}',
   videoLoads: 'הנגן נטען מ-{host}',

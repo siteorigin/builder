@@ -977,6 +977,16 @@ describe('media.carousel (issue #381)', () => {
     expect(list(rendered({ heading: '', slides: SLIDES }))![1]).toContain('aria-label="Slides"');
   });
 
+  it('names a list without a heading in the language of the site', async () => {
+    const s = structuredClone(bundle.state);
+    s.site.language = 'ar';
+    const home = s.pages[s.site.homePageId];
+    const placed = Object.values(home.nodes).find((n) => n.kind === 'instance' && n.definitionId === bundle.defs['media.carousel'].id) as InstanceNode;
+    placed.props = { heading: '', slides: SLIDES };
+    home.rootIds = [placed.id];
+    expect(list(await renderRoute(s, s.site.homePageId))![1]).toContain('aria-label="الشرائح"');
+  });
+
   it('shows three slides at a time on a desktop, two or one when chosen, and one with the edge of the next on a phone', () => {
     const css = componentsCss();
     const cls = nodeClass('media.carousel', 'slide');

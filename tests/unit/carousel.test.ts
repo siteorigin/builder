@@ -1,11 +1,11 @@
 /**
  * The Carousel section (issue #381): a list of slides that scrolls sideways with CSS alone, and the runtime helper that
- * adds Previous and Next buttons and the count of the slides showing. Found in Insert and by the AI, placed and edited
- * through the ordinary operations, written into the site with its helper, and refused where it cannot work.
+ * adds Previous and Next buttons and the count of the slides showing, in the page's language. Found in Insert and by
+ * the AI, placed and edited through the ordinary operations, written into the site with its helper, and refused where
+ * it cannot work.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { compile } from 'svelte/compiler';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -15,9 +15,10 @@ import { CATEGORY_LABELS, catalogueComponent, catalogueEntries, searchCatalogue 
 import { FOUNDATION_EXAMPLES } from '@catalogue/foundation/ai-examples';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
-import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
+import { RUNTIME_DIR, defFile, generateProject, generateVisitorTextJs } from '@generator/index';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from '@generator/carousel';
 import { isCarouselTrack } from '@generator/card-links';
+import { builtInVisitorText, type VisitorText } from '@shared/visitor-text';
 import { pickImagesField } from '../../src/renderer/src/lib/gallery-picks';
 
 interface Measured {
@@ -35,10 +36,11 @@ interface Shown {
   back: boolean;
   forward: boolean;
 }
+type Fill = (text: string, values: Record<string, unknown>) => string;
 interface Geometry {
   measure: (list: unknown) => Measured;
   view: (m: Measured) => Shown;
-  status: (v: Shown) => string;
+  status: (v: Shown, text: VisitorText, fill: Fill) => string;
   step: (m: Measured, dir: number) => number | null;
 }
 
@@ -52,11 +54,18 @@ function laidOut(n: number, width: number, gap: number, size: number, at = 0): M
 describe('where a carousel is', () => {
   let dir: string;
   let g: Geometry;
+  let fill: Fill;
+  /** What the count says, in a language's built-in wording, filled in by the site's own visitor-text.js. */
+  const say = (v: Shown, language = 'en') => g.status(v, builtInVisitorText(language), fill);
   beforeAll(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'so-carousel-'));
+    // Under the project, where the site's wording finds the svelte it imports.
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    dir = mkdtempSync(join(resolve('.tmp'), 'so-carousel-'));
     writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
     writeFileSync(join(dir, 'carousel.js'), CAROUSEL_JS);
+    writeFileSync(join(dir, 'visitor-text.js'), generateVisitorTextJs(createStarterState('business', 'Test Studio', false)));
     g = await import(pathToFileURL(join(dir, 'carousel.js')).href);
+    ({ fill } = await import(pathToFileURL(join(dir, 'visitor-text.js')).href));
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
   afterEach(() => vi.unstubAllGlobals());
@@ -65,13 +74,13 @@ describe('where a carousel is', () => {
     // 1200px showing three 384px slides with 24px between them: the list stops at 0, 408 and 816.
     const at = (x: number) => laidOut(5, 384, 24, 1200, x);
     expect(g.view(at(0))).toEqual({ total: 5, first: 0, last: 2, scrolls: true, back: false, forward: true });
-    expect(g.status(g.view(at(0)))).toBe('Slides 1–3 of 5');
+    expect(say(g.view(at(0)))).toBe('Slides 1–3 of 5');
     expect(g.step(at(0), 1)).toBe(408);
-    expect(g.status(g.view(at(408)))).toBe('Slides 2–4 of 5');
+    expect(say(g.view(at(408)))).toBe('Slides 2–4 of 5');
     expect(g.step(at(408), 1)).toBe(816);
     const end = g.view(at(816));
     expect(end).toMatchObject({ first: 2, last: 4, back: true, forward: false });
-    expect(g.status(end)).toBe('Slides 3–5 of 5');
+    expect(say(end)).toBe('Slides 3–5 of 5');
     // Next does nothing at the end, though slides 4 and 5 start further on: no step leaves the count where it was.
     expect(g.step(at(816), 1)).toBeNull();
     expect(g.step(at(816), -1)).toBe(408);
@@ -82,12 +91,12 @@ describe('where a carousel is', () => {
   it('counts one slide on a phone that shows the edge of the next', () => {
     // 342px showing 85% slides (290.7px) with 24px between them.
     const at = (x: number) => laidOut(4, 290.7, 24, 342, x);
-    expect(g.status(g.view(at(0)))).toBe('Slide 1 of 4');
+    expect(say(g.view(at(0)))).toBe('Slide 1 of 4');
     expect(g.step(at(0), 1)).toBeCloseTo(314.7);
-    expect(g.status(g.view(at(314.7)))).toBe('Slide 2 of 4');
+    expect(say(g.view(at(314.7)))).toBe('Slide 2 of 4');
     expect(g.step(at(314.7), -1)).toBe(0);
     const last = at(at(0).max);
-    expect(g.status(g.view(last))).toBe('Slide 4 of 4');
+    expect(say(g.view(last))).toBe('Slide 4 of 4');
     expect(g.view(last).forward).toBe(false);
   });
 
@@ -108,8 +117,8 @@ describe('where a carousel is', () => {
     expect(g.step(m(0), 1)).toBe(320);
     expect(g.step(m(320), 1)).toBe(840);
     expect(g.step(m(840), -1)).toBe(320);
-    expect(g.status(g.view(m(320)))).toBe('Slide 2 of 5');
-    expect(g.status(g.view(m(840)))).toBe('Slides 3–4 of 5');
+    expect(say(g.view(m(320)))).toBe('Slide 2 of 5');
+    expect(say(g.view(m(840)))).toBe('Slides 3–4 of 5');
   });
 
   it('jumps to the start and the end', () => {
@@ -121,13 +130,20 @@ describe('where a carousel is', () => {
 
   it('says nothing, and goes nowhere, with no slides or when every slide fits', () => {
     expect(g.view(laidOut(0, 384, 24, 1200))).toEqual({ total: 0, first: 0, last: 0, scrolls: false, back: false, forward: false });
-    expect(g.status(g.view(laidOut(0, 384, 24, 1200)))).toBe('');
+    expect(say(g.view(laidOut(0, 384, 24, 1200)))).toBe('');
     const fits = laidOut(2, 384, 24, 1200);
     expect(g.view(fits)).toMatchObject({ total: 2, first: 0, last: 1, scrolls: false, back: false, forward: false });
     expect(g.step(fits, 1)).toBeNull();
     expect(g.step(fits, -1)).toBeNull();
     const one = laidOut(1, 1200, 24, 1200);
-    expect(g.status(g.view(one))).toBe('Slide 1 of 1');
+    expect(say(g.view(one))).toBe('Slide 1 of 1');
+  });
+
+  it('says the count in the page’s language', () => {
+    const several = g.view(laidOut(5, 384, 24, 1200, 408));
+    expect(say(several, 'ar')).toBe('الشرائح 2–4 من 5');
+    expect(say(several, 'he')).toBe('שקופיות 2–4 מתוך 5');
+    expect(say(g.view(laidOut(4, 290.7, 24, 342)), 'ar')).toBe('الشريحة 1 من 4');
   });
 
   it('counts the slide that shows most when none shows by half, as one wider than the list', () => {
@@ -192,10 +208,20 @@ describe('the carousel helper', () => {
     }
   });
 
-  it('carries no editor code, and imports only its own geometry', () => {
+  it('carries no editor code, and imports only its own geometry and the site’s wording', () => {
     for (const source of [CAROUSEL_SVELTE, CAROUSEL_JS]) expect(source).not.toMatch(/data-so-|__siteorigin|siteorigin/i);
-    expect([...CAROUSEL_SVELTE.matchAll(/import .* from '([^']+)'/g)].map((m) => m[1])).toEqual(['svelte', './carousel.js']);
+    expect([...CAROUSEL_SVELTE.matchAll(/import .* from '([^']+)'/g)].map((m) => m[1])).toEqual(['svelte', './carousel.js', './visitor-text.js']);
     expect(CAROUSEL_JS).not.toMatch(/^import /m);
+  });
+
+  it('says its buttons, its count and an unnamed list’s name in the page’s language', () => {
+    expect(CAROUSEL_SVELTE).toContain('const text = visitorText();');
+    expect(CAROUSEL_SVELTE).toContain('aria-label={label || text().carouselLabel}');
+    expect(CAROUSEL_SVELTE).toContain('<span class="so-visually-hidden">{text().carouselPrevious}</span>');
+    expect(CAROUSEL_SVELTE).toContain('<span class="so-visually-hidden">{text().carouselNext}</span>');
+    expect(CAROUSEL_SVELTE).toContain('said = status(shown, text(), fill);');
+    // No wording of its own.
+    expect(CAROUSEL_SVELTE).not.toMatch(/>\s*(Previous|Next)\s*<|'Slides'/);
   });
 
   it('steps at once for a visitor who asks for reduced motion, asking at each step', () => {

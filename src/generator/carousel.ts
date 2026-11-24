@@ -62,11 +62,14 @@ export function view(m) {
 	};
 }
 
-/** What the count says: "Slide 2 of 5", or "Slides 2–4 of 5" while several show. */
-export function status(v) {
+/**
+ * What the count says, in the page's wording (visitor-text.js, whose fill() puts the numbers in): "Slide 2 of 5", or
+ * "Slides 2–4 of 5" while several show.
+ */
+export function status(v, text, fill) {
 	if (!v.total) return '';
-	if (v.first === v.last) return 'Slide ' + (v.first + 1) + ' of ' + v.total;
-	return 'Slides ' + (v.first + 1) + '–' + (v.last + 1) + ' of ' + v.total;
+	if (v.first === v.last) return fill(text.carouselOne, { index: v.first + 1, count: v.total });
+	return fill(text.carouselMany, { first: v.first + 1, last: v.last + 1, count: v.total });
 }
 
 /**
@@ -93,12 +96,16 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 	 * scroll bar or keyboard, with or without the page's script. Once the script runs it adds Previous and Next
 	 * buttons and says which slides show. The buttons, and the arrow keys, Home and End while the list has focus,
 	 * move a slide at a time, at once for a visitor who asks for reduced motion. Printed, the slides stack down the page.
+	 * What it says (the buttons, the count and the list's name when it has none) is in the language of the page.
 	 */
 	import { onMount } from 'svelte';
 	import { measure, status, step, view } from './carousel.js';
+	import { fill, visitorText } from './visitor-text.js';
 
 	let { children, class: className = '', id = undefined, 'aria-label': label = undefined, ...rest } = $props();
 	const uid = $props.id();
+	// The carousel's own words, in the language of the page.
+	const text = visitorText();
 	const listId = $derived(id || 'so-carousel-' + uid);
 	let list = $state();
 	// Until the script has measured it, the list is taken to scroll, so a keyboard can always reach it.
@@ -118,7 +125,7 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 		if (aim !== null && Math.abs(m.at - aim) <= 1) aim = null;
 		shown = view(m);
 		// The count changes once the list comes to rest, so a screen reader hears where it stopped, not each slide passed.
-		if (!settle) said = status(shown);
+		if (!settle) said = status(shown, text(), fill);
 	}
 
 	function schedule() {
@@ -195,7 +202,7 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 		bind:this={list}
 		id={listId}
 		class={['so-carousel__list', className]}
-		aria-label={label || 'Slides'}
+		aria-label={label || text().carouselLabel}
 		tabindex={shown.scrolls ? 0 : undefined}
 		onscroll={scrolled}
 		onkeydown={keydown}
@@ -207,11 +214,11 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 			<p class="so-carousel__status" role="status">{said}</p>
 			<button type="button" class="so-carousel__step" aria-controls={listId} aria-disabled={!shown.back} onclick={() => go(-1)}>
 				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
-				<span class="so-visually-hidden">Previous</span>
+				<span class="so-visually-hidden">{text().carouselPrevious}</span>
 			</button>
 			<button type="button" class="so-carousel__step" aria-controls={listId} aria-disabled={!shown.forward} onclick={() => go(1)}>
 				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
-				<span class="so-visually-hidden">Next</span>
+				<span class="so-visually-hidden">{text().carouselNext}</span>
 			</button>
 		</div>
 	{/if}
