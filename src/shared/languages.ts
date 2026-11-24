@@ -131,3 +131,13 @@ export function siteLanguageClash(state: Pick<ProjectState, 'site' | 'pages'>, l
   }
   return null;
 }
+
+/** Why the site can't take this language, or null when it can: the engine refuses it, and Site details says so
+ *  beside the field before anything is sent. */
+export function siteLanguageProblem(state: Pick<ProjectState, 'site' | 'pages'>, language: string): string | null {
+  if (!isLanguageCode(language)) return LANGUAGE_CODE_ERROR;
+  // Pages that use the site language follow it: none may end up in the language of one of its translations. A set
+  // that already had two versions in one language (written by hand) is reported elsewhere and does not stop this.
+  const clash = siteLanguageClash(state, language);
+  return clash ? `${translationClashMessage(clash)} Pages without a language of their own use the site language.` : null;
+}
