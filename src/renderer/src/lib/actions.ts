@@ -568,7 +568,7 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   if (!snapshot) return;
   const r = resolveRef(snapshot.state, ref);
   const target = inlineField(r.node as GraphNode | undefined);
-  if (!target) return;
+  if (!target) return 'restore';
   // A repeated item without the field shows the field's default, which is what the edit started from.
   const current = shownOrDefault(snapshot.state, ref, target.value);
   text = storedEdit(r.node as GraphNode | undefined, current, text);
@@ -586,10 +586,16 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   }
   const label = (target.field === 'label' ? 'Edit button text' : 'Edit text') + (ref.owner.kind === 'component' ? ' everywhere' : '');
   if (!ref.instancePath.length) return (await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label)) ? undefined : 'restore';
-  if (ref.instancePath.length > 1) return toast('Edit nested component text from the inspector.', 'error');
+  if (ref.instancePath.length > 1) {
+    toast('Edit nested component text from the inspector.', 'error');
+    return 'restore';
+  }
   const instId = ref.instancePath[0];
   const binding = target.value;
-  if (!isBinding(binding)) return toast('This text is part of the component design. Use Edit everywhere or Make unique to change it.', 'error');
+  if (!isBinding(binding)) {
+    toast('This text is part of the component design. Use Edit everywhere or Make unique to change it.', 'error');
+    return 'restore';
+  }
   if ('$prop' in binding) {
     // Text bound to one field of an object property changes that field alone.
     if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, ...(binding.field !== undefined ? { field: binding.field } : {}), value: text }], label))) return 'restore';
@@ -598,7 +604,7 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
     // cannot tell a footer's links from its contact links).
     const listProp = listPropFor(r.def!, ref.nodeId);
     const itemId = ref.itemPath?.[ref.itemPath.length - 1];
-    if (!listProp || !itemId) return;
+    if (!listProp || !itemId) return 'restore';
     if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label))) return 'restore';
   }
 }

@@ -13,10 +13,14 @@ let pointerAt = null;
 /** The element `pointerAt` describes. */
 let pointerEl = null;
 let editing = null; // { el, desc, editId, original, rich }
-let linkEditor = null; // { host, input, range }
+let linkEditor = null; // { host, input, error, range, check }
 let toolbar = null; // { host, root, buttons, range, backward }
 /** The editor's own controls on the page (the link field, the formatting toolbar): presses there are for them. */
 const ownUi = (t) => !!t && ((linkEditor && t === linkEditor.host) || (toolbar && t === toolbar.host));
+/** Counts the link field's checks, so only the answer to the latest one is acted on. */
+let linkChecks = 0;
+/** The id of the editor's page request on its way, if any (see the navigate message). */
+let navRequest = null;
 /** Larger commits than this would be dropped by the editor's message size check, or refused by the editor. */
 const MAX_COMMIT_CHARS = 150000;
 const MAX_TEXT_CHARS = 20000;
@@ -1110,6 +1114,8 @@ const LINK_EDITOR_CSS = `
   input[aria-invalid='true'] { border-color: #ff7a7a; }
   button { height: 28px; padding: 0 9px; border: 0; border-radius: 5px; background: #2d3037; color: #f4f5f7; font: inherit; cursor: pointer; }
   button:hover, button:focus-visible { background: #40444d; outline: none; }
+  .error { box-sizing: border-box; max-width: 340px; margin: 4px 0 0; padding: 6px 8px; border-radius: 6px; background: #1b1d21; color: #ffb4b4; box-shadow: 0 6px 24px rgb(0 0 0 / 0.32); font: 12px/1.35 system-ui, sans-serif; }
+  .error[hidden] { display: none; }
 `;
 
 /**
@@ -1165,8 +1171,9 @@ function openLinkEditor() {
   const top = box.bottom + 50 > innerHeight ? Math.max(8, box.top - 44) : box.bottom + 6;
   host.style.cssText = `position: fixed; z-index: 2147483647; left: ${Math.max(8, Math.min(box.left, innerWidth - 340))}px; top: ${top}px;`;
   const root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = `<style>${LINK_EDITOR_CSS}</style><form><input aria-label="Link destination" placeholder="/about/, https://…, email or phone" spellcheck="false"><button type="submit">Apply</button>${anchor ? '<button type="button">Remove</button>' : ''}</form>`;
+  root.innerHTML = `<style>${LINK_EDITOR_CSS}</style><form><input aria-label="Link destination" aria-describedby="so-link-error" placeholder="/about/, https://…, email or phone" spellcheck="false"><button type="submit">Apply</button>${anchor ? '<button type="button">Remove</button>' : ''}</form><p class="error" id="so-link-error" role="alert" hidden></p>`;
   const input = root.querySelector('input');
+  const error = root.querySelector('.error');
   input.value = anchor ? anchor.getAttribute('href') || '' : '';
   // Pressing a button keeps focus in the field, so the edit does not end on the way to the click.
   root.addEventListener('mousedown', (e) => e.target !== input && e.preventDefault());
@@ -1176,7 +1183,13 @@ function openLinkEditor() {
   });
   const remove = root.querySelector('button[type="button"]');
   if (remove) remove.addEventListener('click', () => applyLink(''));
-  input.addEventListener('input', () => input.removeAttribute('aria-invalid'));
+  // Typing again clears what was said about the last destination, and any answer still on its way about it.
+  input.addEventListener('input', () => {
+    input.removeAttribute('aria-invalid');
+    error.hidden = true;
+    error.textContent = '';
+    if (linkEditor && linkEditor.input === input) linkEditor.check = null;
+  });
   root.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.isComposing || e.keyCode === 229) return;
@@ -1192,7 +1205,7 @@ function openLinkEditor() {
     if (editing && (e.relatedTarget === editing.el || (toolbar && e.relatedTarget === toolbar.host))) return updateToolbar();
     commitEdit();
   });
-  linkEditor = { host, input, range };
+  linkEditor = { host, input, error, range, check: null };
   document.documentElement.appendChild(host);
   input.focus();
   input.select();
@@ -1210,7 +1223,11 @@ function closeLinkEditor(restore) {
   }
   updateToolbar();
 }
-/** Only destinations the editor can store are written; it checks them again when the edit is committed. */
+/**
+ * Only destinations the editor can store are written. The editor knows the site's pages, so it checks each one
+ * (and again when the edit is committed); the field stays open, with what was typed and the link the words had,
+ * until it says the destination is good, or says what is wrong with it.
+ */
 function applyLink(raw) {
   const text = raw.trim();
   if (!text) {
@@ -1219,18 +1236,32 @@ function applyLink(raw) {
     return;
   }
   const href = /^[^\s@/:]+@[^\s@/]+\.[^\s@/]+$/.test(text) ? `mailto:${text}` : /^\+?\(?\d[\d ().-]{5,}$/.test(text) && !/^\d{1,3}(\.\d{1,3}){3}$/.test(text) ? `tel:${text}` : /^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(text) ? `https://${text}` : text;
-  if (!/^(https?:\/\/\S|mailto:\S|tel:\S|#\S|\/)/i.test(href)) {
-    linkEditor.input.setAttribute('aria-invalid', 'true');
-    return;
-  }
-  const { range } = linkEditor;
-  // The text changed underneath the field: there is no longer a selection to link.
-  if (range.collapsed || !editing.el.contains(range.commonAncestorContainer)) {
-    linkEditor.input.setAttribute('aria-invalid', 'true');
-    return;
-  }
+  if (href.length > 2000 || !/^(https?:\/\/\S|mailto:\S|tel:\S|#\S|\/)/i.test(href)) return linkProblem('Use a page address such as /about/, a web address, an email address or a phone number.');
+  if (!linkRangeLive()) return linkProblem('The words to link have changed. Close this and select them again.');
+  linkEditor.check = { id: ++linkChecks, href };
+  send('checkLink', { editId: editing.editId, check: linkEditor.check.id, href });
+}
+/** The editor's answer about the destination last submitted: link the words, or say what is wrong. */
+function linkChecked(payload) {
+  const ed = linkEditor;
+  if (!ed || !editing || !ed.check || ed.check.id !== payload.check) return;
+  const { href } = ed.check;
+  ed.check = null;
+  if (typeof payload.problem === 'string') return linkProblem(payload.problem.slice(0, 300));
+  if (!linkRangeLive()) return linkProblem('The words to link have changed. Close this and select them again.');
   closeLinkEditor(true);
   document.execCommand('createLink', false, href);
+}
+/** Whether the words the field links are still there to link (the text can change underneath the field). */
+function linkRangeLive() {
+  const { range } = linkEditor;
+  return !range.collapsed && editing.el.contains(range.commonAncestorContainer);
+}
+function linkProblem(message) {
+  if (!linkEditor) return;
+  linkEditor.input.setAttribute('aria-invalid', 'true');
+  linkEditor.error.textContent = message;
+  linkEditor.error.hidden = false;
 }
 // ---------------------------------------------------------------------------
 // Formatting toolbar: visible link and list controls while rich text is edited
@@ -2140,12 +2171,21 @@ window.addEventListener('message', async (e) => {
     case 'navigate': {
       const path = String(m.payload.path || '/');
       if (!path.startsWith('/') || path.startsWith('//')) return;
+      // The editor's request, answered once the page is there: only its latest request's answer counts there, so
+      // a page reported on the way (or a visitor's link the request overtook) never switches it back.
+      const id = Number.isSafeInteger(m.payload.navId) ? m.payload.navId : null;
+      navRequest = id;
       try {
         const nav = await import('$app/navigation');
         await nav.goto(path);
       } catch {
-        location.assign(path);
+        // A request the editor has since replaced loads no page of its own.
+        if (navRequest === id) location.assign(path);
+        break;
       }
+      if (navRequest !== id) break;
+      navRequest = null;
+      if (id !== null) send('navigated', { path: location.pathname, navId: id });
       break;
     }
     // Back or Forward in a visitor's journey: a step to a neighbouring entry of this frame's own history, which
@@ -2173,6 +2213,9 @@ window.addEventListener('message', async (e) => {
       break;
     case 'beginTextEdit':
       beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit);
+      break;
+    case 'linkChecked':
+      linkChecked(m.payload);
       break;
     // The editor is saving, or leaving the project: hand back the text being edited, as leaving it would. A
     // link still being typed is left out, as moving focus away does (a link already there keeps its address),
