@@ -312,6 +312,10 @@ document.addEventListener(
       if (a && a.origin !== location.origin) {
         e.preventDefault();
         send('externalLink', { href: a.href });
+      } else if (a && a.hasAttribute('download')) {
+        // The preview downloads nothing; the editor says what visitors get instead.
+        e.preventDefault();
+        send('download', { name: String(a.getAttribute('download') || '').slice(0, 300) });
       }
       return;
     }

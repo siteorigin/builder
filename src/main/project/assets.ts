@@ -6,6 +6,7 @@ import type { ImportReviewRow } from '@shared/api';
 import type { AssetRecord } from '@shared/types';
 import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
+import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
 import { atomicWrite, safeJoin, sha } from './fsutil';
 import { sanitizeSvg } from './svg';
 import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng, type ImageProblem } from './media';
@@ -26,7 +27,8 @@ const MIME: Record<string, string> = {
   '.avif': 'image/avif',
   '.svg': 'image/svg+xml',
   '.woff2': 'font/woff2',
-  '.woff': 'font/woff'
+  '.woff': 'font/woff',
+  ...Object.fromEntries(DOCUMENT_EXTENSIONS.map((ext) => [`.${ext}`, DOCUMENT_FORMATS[ext].mime]))
 };
 const MAX_BYTES = 25 * 1024 * 1024;
 /** File extensions of the images the library stores (for file pickers that need one as it is). */
@@ -42,6 +44,10 @@ export const LARGE_PHOTO_BYTES = 1_500_000;
 const CONVERT_MAX_BYTES = 64 * 1024 * 1024;
 
 const isPhotoToConvert = (path: string) => PHOTO_EXTENSIONS.includes(extname(path).slice(1).toLowerCase());
+export { DOCUMENT_EXTENSIONS };
+
+export type AssetKind = AssetRecord['kind'];
+const kindOfMime = (mime: string): AssetKind => (mime.startsWith('font/') ? 'font' : mime.startsWith('image/') ? 'image' : 'document');
 
 /** Conservative SVG check: reject anything executable or externally referenced. */
 export function svgProblem(text: string): string | null {
@@ -66,10 +72,52 @@ function unusableReason(problem: ImageProblem | 'damaged', mime: string): string
 }
 
 /** Is this a file of the given kind, going by its extension? A HEIC photo is an image: it is imported as a copy. */
-export function isAssetOfKind(path: string, kind: 'image' | 'font'): boolean {
+export function isAssetOfKind(path: string, kind: AssetKind): boolean {
   if (isPhotoToConvert(path)) return kind === 'image';
   const mime = MIME[extname(path).toLowerCase()];
-  return !!mime && mime.startsWith('font/') === (kind === 'font');
+  return !!mime && kindOfMime(mime) === kind;
+}
+
+const OLE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+const ZIP = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const OOXML_PARTS: Record<string, string> = { docx: 'word/', xlsx: 'xl/', pptx: 'ppt/' };
+
+/**
+ * Whether a document's bytes are what its name says: a PDF has the PDF header, Office and OpenDocument files are
+ * the archives (or, for the older Office formats, the compound files) those formats are, and text has no binary
+ * zeros (unless it starts with a UTF-16 byte order mark). The bytes are kept as they are; nothing is converted.
+ */
+function documentMatches(buf: Buffer, ext: string): boolean {
+  switch (ext) {
+    case 'pdf':
+      return buf.subarray(0, 1024).includes('%PDF-');
+    case 'doc':
+    case 'xls':
+    case 'ppt':
+      return buf.subarray(0, OLE.length).equals(OLE);
+    case 'txt':
+    case 'csv': {
+      const head = buf.subarray(0, 8192);
+      return (head[0] === 0xff && head[1] === 0xfe) || (head[0] === 0xfe && head[1] === 0xff) || !head.includes(0);
+    }
+    case 'odt':
+    case 'ods':
+    case 'odp': {
+      // An OpenDocument file is an archive whose first entry, stored as it is, is "mimetype" naming the format.
+      if (!buf.subarray(0, ZIP.length).equals(ZIP) || buf.subarray(30, 38).toString('latin1') !== 'mimetype') return false;
+      const at = 38 + buf.readUInt16LE(28);
+      const mime = DOCUMENT_FORMATS[ext].mime;
+      return buf.subarray(at, at + mime.length).toString('latin1') === mime;
+    }
+    case 'docx':
+    case 'xlsx':
+    case 'pptx':
+      // An Office Open XML file is an archive that lists its parts' types, with its main part in the folder of its
+      // kind: a workbook renamed .docx is no Word document.
+      return buf.subarray(0, ZIP.length).equals(ZIP) && buf.includes('[Content_Types].xml') && buf.includes(OOXML_PARTS[ext]);
+    default:
+      return buf.subarray(0, ZIP.length).equals(ZIP);
+  }
 }
 
 /** The end of "{file} was not imported because …" for a HEIC photo this computer cannot convert: what to do instead. */
@@ -131,7 +179,7 @@ const refusal = (sourcePath: string, verb: string): Refusal => (reason) => new E
 async function prepareFile(sourcePath: string, refuse: Refusal): Promise<PreparedFile> {
   const ext = extname(sourcePath).toLowerCase();
   const mime = MIME[ext];
-  if (!mime) throw new Error(`${basename(sourcePath)}: only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, and WOFF2 or WOFF fonts, can be imported.`);
+  if (!mime) throw new Error(`${basename(sourcePath)}: only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2 or WOFF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be imported.`);
   const stat = await fs.stat(sourcePath);
   if (stat.size > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
   return prepareBytes(sourcePath, await fs.readFile(sourcePath), mime, ext, refuse);
@@ -140,6 +188,14 @@ async function prepareFile(sourcePath: string, refuse: Refusal): Promise<Prepare
 /** Check a file's bytes for the library as `mime`, stored with `ext`. */
 async function prepareBytes(sourcePath: string, bytes: Buffer, mime: string, ext: string, refuse: Refusal): Promise<PreparedFile> {
   let buf = bytes;
+  // A document is copied as it is, once it is the kind of file its name says.
+  if (kindOfMime(mime) === 'document') {
+    if (buf.length > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
+    if (!buf.length) throw refuse('the file is empty. Choose the original file, or save or download it again.');
+    const format = documentFormat(sourcePath)!;
+    if (!documentMatches(buf, format.ext)) throw refuse(`it is not a${/^[aeiou]/i.test(format.label) ? 'n' : ''} ${format.label}, although its name says it is. Open it in the app that made it and save or export it again.`);
+    return { source: sourcePath, stem: basename(sourcePath, extname(sourcePath)), ext, mime, buf, hash: sha(buf) };
+  }
   // A picture no browser can show never becomes a library image an author could choose.
   const problem = mime.startsWith('image/') ? imageProblem(buf, mime) : buf.length ? null : 'empty';
   if (problem) throw refuse(unusableReason(problem, mime));
@@ -332,7 +388,7 @@ export async function reviewImportFile(sourcePath: string, opts: { converter: bo
 export const isOpaquePicture = (buf: Buffer, mime: string) => mediaWorker.opaque(buf, mime);
 
 /** Where a library file lives and what it is: the part of an asset record a new file replaces. */
-export type StoredFile = Pick<AssetRecord, 'file' | 'mime' | 'bytes' | 'hash' | 'width' | 'height' | 'variants'>;
+export type StoredFile = Pick<AssetRecord, 'file' | 'mime' | 'bytes' | 'hash' | 'width' | 'height' | 'variants' | 'originalName'>;
 
 /** A file to put in the project, made (checked, decoded, resized) before anything is written. */
 interface PendingFile {
@@ -369,11 +425,46 @@ async function writeFiles(projectDir: string, files: PendingFile[], onlyMissing 
 }
 
 /**
+ * Write a planned import. A document's name holds only eight characters of its hash, which another file can share:
+ * when a different file already has the name (one kept for undo, say), or another library record claims it (its
+ * file moved away for now), this one takes the next free numbered name, so a link never starts serving other bytes.
+ * Pictures and fonts keep the name they were planned with. `library` is the records already in the project.
+ */
+async function writePlanned(projectDir: string, stored: StoredFile, files: PendingFile[], library: AssetRecord[] = []): Promise<void> {
+  if (files.length === 1 && kindOfMime(stored.mime) === 'document') {
+    const data = files[0].data;
+    const claimed = new Map(library.filter((a) => typeof a?.file === 'string').map((a) => [a.file, a.hash]));
+    for (let n = 1; ; n++) {
+      const rel = n === 1 ? stored.file : stored.file.replace(/-([a-f0-9]{8})(\.[a-z0-9]+)$/, `-${n}-$1$2`);
+      const at = safeJoin(projectDir, rel);
+      const other = claimed.has(rel) && claimed.get(rel) !== stored.hash;
+      const there = !other && (await isFile(at)) ? await fs.readFile(at).catch(() => null) : null;
+      // The same bytes are already in place: nothing to write.
+      if (there?.equals(data)) {
+        stored.file = rel;
+        return;
+      }
+      if (!other && !there && !(await fs.lstat(at).then(() => true, () => false))) {
+        stored.file = files[0].rel = rel;
+        break;
+      }
+      if (n >= 50) throw new Error('every name for this file is taken in the assets folder');
+    }
+  }
+  await writeFiles(projectDir, files);
+}
+
+/**
  * A checked file as the importer stores it in static/assets/: its record details, and the files to write, a
  * picture's responsive copies included. A picture the decoder cannot read is refused here.
  */
 async function planStore(p: PreparedFile, refuse: Refusal): Promise<{ stored: StoredFile; files: PendingFile[] }> {
-  const isFont = p.mime.startsWith('font/');
+  const kind = kindOfMime(p.mime);
+  if (kind === 'document') {
+    const file = `static/assets/${slugify(p.stem) || 'document'}-${p.hash.slice(0, 8)}${p.ext}`;
+    return { stored: { file, mime: p.mime, bytes: p.buf.length, hash: p.hash }, files: [{ rel: file, data: p.buf }] };
+  }
+  const isFont = kind === 'font';
   const info = isFont ? null : imageInfo(p.buf, p.mime);
   // Decoding allocates by pixel count, which a small file can inflate: very large pictures are not decoded at all
   // and keep only the original.
@@ -408,20 +499,22 @@ export async function importAsset(
   const refuse = refusal(sourcePath, 'was not imported');
   const { note, ...p } = await prepareImport(sourcePath, refuse, opts);
   const noted = note ? { note } : {};
-  const dup = existing.find((a) => a.hash === p.hash);
+  // The same bytes under another format's name (a .txt and a .csv) are a file of their own.
+  const dup = existing.find((a) => a.hash === p.hash && a.mime === p.mime);
   // A font imported before metadata was recorded gets it now.
   if (dup) return { record: dup, existing: true, ...(p.font && !dup.font ? { font: p.font } : {}), ...noted };
-  const isFont = p.mime.startsWith('font/');
+  const kind = kindOfMime(p.mime);
   const { stored, files } = await planStore(p, refuse);
-  if (!(await fence(async () => void (await writeFiles(projectDir, files))))) throw refuse(`${NOT_WRITTEN}.`);
+  if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
   const record: AssetRecord = {
     id: newId('a'),
-    name: isFont ? fontName(p.font!) : p.stem.replace(/[-_]+/g, ' ').trim() || 'Image',
+    name: kind === 'font' ? fontName(p.font!) : p.stem.replace(/[-_]+/g, ' ').trim().slice(0, 200) || (kind === 'document' ? 'Document' : 'Image'),
     file: stored.file,
     mime: stored.mime,
     bytes: stored.bytes,
     hash: stored.hash,
-    kind: isFont ? 'font' : 'image',
+    kind,
+    ...(kind === 'document' ? { originalName: basename(sourcePath).slice(0, 255) } : {}),
     createdAt: new Date().toISOString(),
     ...(stored.width !== undefined ? { width: stored.width, height: stored.height } : {}),
     ...(stored.variants ? { variants: stored.variants } : {}),
@@ -430,8 +523,8 @@ export async function importAsset(
   return { record, existing: false, ...noted };
 }
 
-/** A file the importer named, inside static/assets/: the only kind a library image may be restored to. */
-const LIBRARY_FILE = /^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png|webp|gif|avif|svg)$/;
+/** A file the importer named, inside static/assets/: the only kind a library image or document may be restored to. */
+const LIBRARY_FILE = new RegExp(`^static/assets/[a-z0-9][a-z0-9-]*\\.(jpg|png|webp|gif|avif|svg|${DOCUMENT_EXTENSIONS.join('|')})$`);
 
 /**
  * Put back what a library image is missing in the project folder: its original, from `original` when that is
@@ -440,13 +533,19 @@ const LIBRARY_FILE = /^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png|webp|gif|avi
  * files written and the copies that could not be made.
  */
 export async function restoreAssetFiles(projectDir: string, record: AssetRecord, original?: Buffer, fence: WriteFence = unfenced): Promise<{ written: string[]; failed: string[] }> {
-  const name = record.name.trim() || 'This image';
-  if (!LIBRARY_FILE.test(record.file)) throw new Error(`${name} has a file name SiteOrigin Builder did not give it, so it cannot be restored. Choose another image instead.`);
+  const document = record.kind === 'document';
+  const name = record.name.trim() || (document ? 'This document' : 'This image');
+  if (!LIBRARY_FILE.test(record.file)) throw new Error(`${name} has a file name SiteOrigin Builder did not give it, so it cannot be restored. Choose another ${document ? 'file' : 'image'} instead.`);
   const at = safeJoin(projectDir, record.file);
   const files: PendingFile[] = [];
   const failed: string[] = [];
   // Copies of a different picture would show the wrong image at smaller sizes, whichever file they are made from.
-  const mismatch = () => new Error(`The original file of ${name} is not the picture the library recorded, so its copies were not made again. Locate the original, or choose another image.`);
+  const mismatch = () =>
+    new Error(
+      document
+        ? `The file of ${name} in the project folder is not the one the library recorded. Give the document its file again in Assets.`
+        : `The original file of ${name} is not the picture the library recorded, so its copies were not made again. Locate the original, or choose another image.`
+    );
   const onDisk = (await isFile(at)) ? await fs.readFile(at).catch(() => undefined) : undefined;
   if (onDisk && sha(onDisk) !== record.hash) throw mismatch();
   const buf = onDisk ?? original;
@@ -477,15 +576,17 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
  * library expects it, with its copies, and nothing else changes. A different picture is stored as an import would
  * store it, and what the image record should now say is returned for asset.relink.
  */
-export async function locateAssetFile(projectDir: string, record: AssetRecord, sourcePath: string, fence: WriteFence = unfenced): Promise<{ same: true; written: string[]; failed: string[] } | { same: false; stored: StoredFile }> {
+export async function locateAssetFile(projectDir: string, record: AssetRecord, sourcePath: string, fence: WriteFence = unfenced, library: AssetRecord[] = []): Promise<{ same: true; written: string[]; failed: string[] } | { same: false; stored: StoredFile }> {
   const refuse = refusal(sourcePath, "can't be used");
-  if (isPhotoToConvert(sourcePath)) throw refuse('it is a HEIC photo, which browsers can’t show. Add it to Assets with Add images, which makes a JPEG copy, then use Replace everywhere.');
-  if (!isAssetOfKind(sourcePath, 'image')) throw refuse('it is not an image. Choose a JPEG, PNG, WebP, GIF, AVIF or SVG file.');
+  const document = record.kind === 'document';
+  if (document && !isAssetOfKind(sourcePath, 'document')) throw refuse('it is not a document. Choose a PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP file.');
+  if (!document && isPhotoToConvert(sourcePath)) throw refuse('it is a HEIC photo, which browsers can’t show. Add it to Assets with Add images, which makes a JPEG copy, then use Replace everywhere.');
+  if (!document && !isAssetOfKind(sourcePath, 'image')) throw refuse('it is not an image. Choose a JPEG, PNG, WebP, GIF, AVIF or SVG file.');
   const p = await prepareFile(sourcePath, refuse);
-  if (p.hash === record.hash) return { same: true, ...(await restoreAssetFiles(projectDir, record, p.buf, fence)) };
+  if (p.hash === record.hash && p.mime === record.mime) return { same: true, ...(await restoreAssetFiles(projectDir, record, p.buf, fence)) };
   const { stored, files } = await planStore(p, refuse);
-  if (!(await fence(async () => void (await writeFiles(projectDir, files))))) throw refuse(`${NOT_WRITTEN}.`);
-  return { same: false, stored };
+  if (!(await fence(() => writePlanned(projectDir, stored, files, library)))) throw refuse(`${NOT_WRITTEN}.`);
+  return { same: false, stored: document ? { ...stored, originalName: basename(sourcePath).slice(0, 255) } : stored };
 }
 
 /** What a web-sized copy of a library image (its original's bytes) would be, or null when none can be made from it. */

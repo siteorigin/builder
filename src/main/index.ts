@@ -262,7 +262,7 @@ function registerIpc() {
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } }
   );
   handle('project:redo', () => controller.session?.redo());
-  const kindOf = (only: unknown) => (only === 'image' || only === 'font' ? only : undefined);
+  const kindOf = (only: unknown) => (only === 'image' || only === 'font' || only === 'document' ? only : undefined);
   const pathList = (paths: unknown) => (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : undefined);
   handle('project:reviewImport', (paths?: unknown, only?: unknown) => controller.reviewImport(pathList(paths), kindOf(only)));
   handle('project:importAssets', (paths?: unknown, only?: unknown, choices?: unknown) => controller.importAssets(pathList(paths), kindOf(only), importChoices(choices)));

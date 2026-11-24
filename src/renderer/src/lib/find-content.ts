@@ -196,6 +196,13 @@ function linkPart(state: ProjectState, link: LinkValue, path: string): Part | nu
       if (!page) return null;
       return { path, kind: 'link', text: page.route + (link.anchor ? `#${link.anchor}` : ''), blocked: 'This goes to a page of the site. Choose another page for it in the inspector.' };
     }
+    case 'document': {
+      // Found by the file visitors download; the link itself names the document, which is chosen in the inspector.
+      const doc = own(state.assets.assets, link.target);
+      const text = doc?.kind === 'document' ? [doc.originalName, doc.name].find((t) => typeof t === 'string' && t.trim()) : undefined;
+      if (!text) return null;
+      return { path, kind: 'link', text, blocked: 'This downloads a document from Assets. Choose another document for it in the inspector, or give the document a new file in Assets.' };
+    }
     default:
       return null;
   }
@@ -214,6 +221,11 @@ export function describeLink(state: ProjectState, link: unknown): string {
     case 'page': {
       const page = own(state.pages, link.target);
       return `${page?.title ?? 'Missing page'} (${(page?.route ?? link.target) + (link.anchor ? `#${link.anchor}` : '')})`;
+    }
+    case 'document': {
+      const doc = own(state.assets.assets, link.target);
+      const name = doc?.kind === 'document' ? [doc.originalName, doc.name].find((t) => typeof t === 'string' && t.trim()) : undefined;
+      return doc?.kind === 'document' ? `Download ${name ?? 'a document'}` : 'Missing document';
     }
     default:
       return link.target;

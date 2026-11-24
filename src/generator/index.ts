@@ -7,6 +7,7 @@
  * portable project source.
  */
 import type {
+  AssetRecord,
   Binding,
   ComponentDefinition,
   GraphNode,
@@ -152,10 +153,16 @@ export function encodeMailto(target: string): string {
   return `${encoded}?${query}`;
 }
 
-export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveContext): { href: string; newTab?: boolean } | null {
+export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveContext): { href: string; newTab?: boolean; download?: string } | null {
   if (!link || link.type === 'none' || !link.target) return null;
   let href = '';
   switch (link.type) {
+    case 'document': {
+      // The file itself, from the site's own folder, saved under the name it was imported with.
+      const doc = Object.hasOwn(ctx.state.assets.assets, link.target) ? ctx.state.assets.assets[link.target] : undefined;
+      if (doc?.kind !== 'document' || typeof doc.file !== 'string' || !doc.file.startsWith('static/')) return null;
+      return { href: '/' + doc.file.slice('static/'.length), download: downloadName(doc) };
+    }
     case 'page': {
       const page = ctx.state.pages[link.target];
       if (!page) return null;
@@ -177,6 +184,19 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       break;
   }
   return link.newTab ? { href, newTab: true } : { href };
+}
+
+/**
+ * The name a visitor's download is saved under: the file the document was imported from, else its library name, with
+ * the stored file's extension. Characters file systems refuse are left out.
+ */
+export function downloadName(doc: AssetRecord): string {
+  const ext = /\.[a-z0-9]+$/i.exec(doc.file)?.[0] ?? '';
+  const clean = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f<>:"/\\|?*]+/g, ' ').replace(/\s+/g, ' ').trim() : '');
+  let base = clean(doc.originalName).replace(/\.[a-z0-9]+$/i, '') || clean(doc.name) || 'document';
+  // A name shaped like a stored file's ("guide-1a2b3c4d") would make the website build keep that file for it.
+  if (/^[a-z0-9-]*-[a-f0-9]{8}$/i.test(base)) base = base.replace(/-/g, ' ');
+  return `${base.slice(0, 120).replace(/[. ]+$/, '') || 'document'}${ext.toLowerCase()}`;
 }
 
 export function resolveImage(img: ImageValue | null | undefined, ctx: ResolveContext) {

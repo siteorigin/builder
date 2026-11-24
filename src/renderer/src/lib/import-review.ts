@@ -59,7 +59,7 @@ const needsReview = (r: ImportReviewRow) => r.action === 'convert' || r.action =
  * straight through. Null when nothing is to be imported (the chooser or the review was closed, or the project
  * changed meanwhile).
  */
-export async function reviewImport(paths: string[] | undefined, only?: 'image' | 'font'): Promise<ReviewedImport | null> {
+export async function reviewImport(paths: string[] | undefined, only?: 'image' | 'font' | 'document'): Promise<ReviewedImport | null> {
   const opening = getState().snapshot?.workspaceKey;
   if (!opening || getState().leaving) return null;
   const request = ++requests;

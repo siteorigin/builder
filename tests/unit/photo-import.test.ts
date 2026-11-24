@@ -320,7 +320,7 @@ describe('importing a reviewed batch', () => {
     const scan = sourceFile('scan.png', await noisy(3000, 2000, 'png'));
     const kept = sourceFile('kept.png', await noisy(3000, 2000, 'png'));
     const plain = sourceFile('plain.jpg', await sharp({ create: { width: 640, height: 480, channels: 3, background: '#406080' } }).jpeg().toBuffer());
-    const notes = sourceFile('notes.txt', Buffer.from('hello'));
+    const notes = sourceFile('notes.md', Buffer.from('hello'));
     const review = await c.reviewImport([heic, scan, kept, plain, notes]);
     expect(review?.rows.map((r) => r.action)).toEqual(['convert', 'offer', 'offer', 'import', 'refuse']);
     expect(review?.rows[4].reason).toMatch(/^only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images/);
@@ -328,7 +328,7 @@ describe('importing a reviewed batch', () => {
     const opening = c.openingKey!;
     const r = await c.importAssets(review!.paths, undefined, { opening, files });
     const assets = c.session!.state.assets.assets;
-    expect(r.message).toMatch(/notes\.txt: only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images/);
+    expect(r.message).toMatch(/notes\.md: only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images/);
     expect(r.ok).toBe(false);
     if (!canConvert) expect(r.message).toMatch(/IMG_0042\.heic was not imported because it could not be converted/);
     const added = r.assetIds.map((id) => assets[id]);

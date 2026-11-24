@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, promises as fs } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
+import { documentFormat } from '@shared/document-files';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
@@ -152,7 +153,8 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
-    if (namesFile(text, basename(rel))) shipped.add(rel);
+    // A document by its whole name: `offer-1a2b3c4d.doc` is not named by `offer-1a2b3c4d.docx`.
+    if ((documentFormat(rel) ? namesWholeFile : namesFile)(text, basename(rel))) shipped.add(rel);
     else {
       await fs.rm(join(project, rel));
       removed.add(rel);
@@ -201,15 +203,18 @@ function namesWholeFile(text: string, file: string): boolean {
 
 /** The export notes for library images with missing files that nothing on the site names, so the export went ahead. */
 export function missingUnusedWarnings(missing: MissingInExport[]): string[] {
-  return missing.filter((m) => !m.used).map(({ asset, missing: m }) => `${asset.name.trim() || 'An image'} is missing ${missingParts(m)} in the project folder. No page or code names ${them(m)}, so the website was exported without ${them(m)}.`);
+  return missing.filter((m) => !m.used).map(({ asset, missing: m }) => `${unnamed(asset)} is missing ${missingParts(m)} in the project folder. No page or code names ${them(m)}, so the website was exported without ${them(m)}.`);
 }
+
+/** A library file's name, or what it is when it has none. */
+const unnamed = (a: AssetRecord | undefined) => (typeof a?.name === 'string' && a.name.trim()) || (a?.kind === 'document' ? 'A document' : 'An image');
 
 /** "it" for one missing file, "them" for more. */
 const them = (m: MissingAssetFiles) => ((m.original ? 1 : 0) + m.variants.length > 1 ? 'them' : 'it');
 
 /** Why a website export stopped for images whose files are missing, and the files themselves for the details. */
 export function missingAssetsStop(used: MissingInExport[]): { message: string; warnings: string[] } {
-  const nameOf = (a: AssetRecord) => a.name.trim() || 'An image';
+  const nameOf = unnamed;
   const warnings = used.map(({ asset, missing }) => `${nameOf(asset)}: ${[...(missing.original ? [asset.file] : []), ...missing.variants].join(', ')} not found.`);
   if (used.length === 1) {
     const { asset, missing } = used[0];
@@ -217,14 +222,15 @@ export function missingAssetsStop(used: MissingInExport[]): { message: string; w
     return { message: `${nameOf(asset)} is missing ${missingParts(missing)} in the project folder, and the website uses ${them(missing)}. ${fix}, then export again.`, warnings };
   }
   const names = used.map((u) => nameOf(u.asset));
-  return { message: `${used.length} images the website uses are missing files in the project folder: ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}. Fix them in Assets, then export again.`, warnings };
+  const what = used.every((u) => u.asset.kind === 'document') ? 'documents' : used.some((u) => u.asset.kind === 'document') ? 'images and documents' : 'images';
+  return { message: `${used.length} ${what} the website uses are missing files in the project folder: ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}. Fix them in Assets, then export again.`, warnings };
 }
 
 /** The export notes for an editable project that leaves out image files missing from the project folder. */
 export function missingSourceWarnings(state: ProjectState, missing: MissingAssetFiles[]): string[] {
   return missing.map((m) => {
     const a = state.assets.assets[m.assetId];
-    return `${a?.name.trim() || 'An image'} is missing ${missingParts(m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
+    return `${unnamed(a)} is missing ${missingParts(m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
   });
 }
 

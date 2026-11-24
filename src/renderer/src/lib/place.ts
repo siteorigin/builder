@@ -4,14 +4,15 @@ import { api, commitIfUnchanged, errorText, getState, setState, toast } from '..
 import { trackApply, type ApplyOutcome } from './pending';
 import { reviewImport } from './import-review';
 
-/** Asks the Assets panel to open on one image. `detail`: { opening, assetId }. */
+/** Asks the Assets panel to open on one image or document. `detail`: { opening, assetId }. */
 export const SHOW_ASSET_EVENT = 'builder-show-asset';
 
-/** Open the Assets panel on an image, if it is still in the opening of the project it was offered in. */
+/** Open the Assets panel on an image or document, if it is still in the opening of the project it was offered in. */
 export function showAsset(opening: string, assetId: string): void {
   const snap = getState().snapshot;
   if (snap?.workspaceKey !== opening) return;
-  if (snap.state.assets.assets[assetId]?.kind !== 'image') return toast('That image is no longer in Assets.', 'info');
+  const kind = Object.hasOwn(snap.state.assets.assets, assetId) ? snap.state.assets.assets[assetId]?.kind : undefined;
+  if (kind !== 'image' && kind !== 'document') return toast('That file is no longer in Assets.', 'info');
   setState({ leftTab: 'assets' });
   window.dispatchEvent(new CustomEvent(SHOW_ASSET_EVENT, { detail: { opening, assetId } }));
 }

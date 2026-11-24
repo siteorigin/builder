@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, Component, FileSearch, FileText, Globe, ImageDown, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, ImageDown, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
+import { isDocumentLink } from '@engine/apply';
 import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, attachToChat, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
@@ -11,6 +12,8 @@ import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
 import { assetArrived, reviewImport } from '../lib/import-review';
+import { documentDetails, documentLabels, documentName, libraryDocuments } from '../lib/documents';
+import type { MissingAssetFiles } from '@shared/api';
 
 /** Above this an image is worth flagging: pages load smaller copies, but the original still ships with the site. */
 const LARGE = 1_500_000;
@@ -117,6 +120,170 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
   );
 }
 
+/**
+ * Downloadable documents: each one's name, the file visitors download, where the site links to it, and what can be
+ * done with it. A new version of the file goes in with Replace file, and every link follows; links can also move to
+ * another document. A document stays while anything links to it, so no link is ever left going nowhere.
+ */
+function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed, onAdd, adding }: { state: ProjectState; docs: AssetRecord[]; usage: Record<string, number>; missingOf: Map<string, MissingAssetFiles>; reveal: string | null; onRevealed: () => void; onAdd: () => void; adding: boolean }) {
+  const labels = documentLabels(docs);
+  const [open, setOpen] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Where each document's links would move to, chosen before Move links.
+  const [moveTo, setMoveTo] = useState<Record<string, string>>({});
+  const toggles = useRef(new Map<string, HTMLButtonElement>());
+  // "Open in Assets" for a document opens its row once: the request is used up here. Focus follows on the next
+  // frame, which only leaving the list cancels (using up the request re-renders before then).
+  const focusFrame = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(focusFrame.current), []);
+  useEffect(() => {
+    if (!reveal) return;
+    setOpen(reveal);
+    onRevealed();
+    cancelAnimationFrame(focusFrame.current);
+    focusFrame.current = requestAnimationFrame(() => toggles.current.get(reveal)?.focus());
+  }, [reveal, onRevealed]);
+  const replaceFile = async (a: AssetRecord) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await api.project.locateAsset(a.id).catch((e: Error) => ({ ok: false, message: e.message }));
+      if (r.message) toast(r.message, r.ok ? 'info' : 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const moveLinks = async (a: AssetRecord, to: string) => {
+    const target = state.assets.assets[to];
+    const n = usage[a.id] ?? 0;
+    const r = await commitOps([{ type: 'asset.replace', assetId: a.id, withAssetId: to }], `Move links from ${documentName(a)}`);
+    if (r) {
+      setMoveTo(({ [a.id]: _, ...rest }) => rest);
+      toast(`${n === 1 ? 'The link' : `All ${n} links`} to ${documentName(a)} now go${n === 1 ? 'es' : ''} to ${target ? documentName(target) : 'the other document'}.`, 'info', undoAction(r));
+    }
+  };
+  const remove = async (a: AssetRecord) => {
+    const r = await commitOps([{ type: 'asset.remove', assetId: a.id }], `Remove ${documentName(a)}`);
+    if (r) toast(`Removed ${documentName(a)}.`, 'info', undoAction(r));
+  };
+  return (
+    <section className="doc-list" aria-labelledby="doc-list-title">
+      <div className="doc-list-head">
+        <h4 id="doc-list-title">Documents</h4>
+        <button className="btn btn-sm" onClick={onAdd} disabled={adding} title="Choose PDFs or other files for visitors to download">
+          <FilePlus /> Add documents
+        </button>
+      </div>
+      {docs.length === 0 ? (
+        <p className="doc-list-note">Add a PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP file, then link a button to it: choose Document as the link’s destination. Visitors download it from your site, so it needs no other hosting.</p>
+      ) : (
+        <ul>
+          {docs.map((a) => {
+            const used = usage[a.id] ?? 0;
+            const gone = missingOf.get(a.id)?.original;
+            const expanded = open === a.id;
+            const others = docs.filter((d) => d.id !== a.id);
+            return (
+              <li key={a.id} className={`doc-item${expanded ? ' open' : ''}`} data-document={a.id}>
+                <button
+                  className="doc-toggle"
+                  ref={(el) => {
+                    if (el) toggles.current.set(a.id, el);
+                    else toggles.current.delete(a.id);
+                  }}
+                  aria-expanded={expanded}
+                  onClick={() => setOpen(expanded ? null : a.id)}
+                >
+                  {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                  <FileDown aria-hidden="true" />
+                  <span className="doc-title">
+                    <b>{labels.get(a.id)}</b>
+                    <span className="doc-meta">
+                      {documentDetails(a)} · {gone ? 'File missing' : used ? `Linked ${plural(used, 'time', 'times')}` : 'Not linked'}
+                    </span>
+                  </span>
+                  {gone && <TriangleAlert className="doc-warn" aria-label="File missing" />}
+                </button>
+                {expanded && (
+                  <div className="doc-body">
+                    {gone && <p className="doc-missing">Its file is not in the project folder, so visitors can’t download it. Locate the file, or choose a new one.</p>}
+                    <Field label="Name">
+                      <DraftInput
+                        className="input sm"
+                        value={typeof a.name === 'string' ? a.name : ''}
+                        ariaLabel={`Name of ${documentName(a)}`}
+                        onCommit={(v) => {
+                          const name = v.trim().slice(0, 120);
+                          if (!name) return false;
+                          if (name !== a.name) void applyOps([{ type: 'asset.update', assetId: a.id, name }], 'Rename document');
+                        }}
+                      />
+                    </Field>
+                    <DocumentPlaces state={state} assetId={a.id} />
+                    <div className="doc-actions">
+                      <button className="btn btn-sm" disabled={busy} onClick={() => void replaceFile(a)} title={used ? 'Choose a new version: every link to this document downloads it instead' : 'Choose another file for this document'}>
+                        <FileUp /> {gone ? 'Locate file…' : 'Replace file…'}
+                      </button>
+                      {used > 0 && others.length > 0 && (
+                        <span className="doc-move">
+                          <select className="select sm" value={others.some((d) => d.id === moveTo[a.id]) ? moveTo[a.id] : ''} aria-label={`Document to move the links to ${documentName(a)} to`} onChange={(e) => setMoveTo((m) => ({ ...m, [a.id]: e.target.value }))}>
+                            <option value="" disabled>
+                              Move its links to…
+                            </option>
+                            {others.map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {labels.get(d.id)}
+                              </option>
+                            ))}
+                          </select>
+                          <button className="btn btn-sm" disabled={!others.some((d) => d.id === moveTo[a.id])} onClick={() => void moveLinks(a, moveTo[a.id])}>
+                            Move links
+                          </button>
+                        </span>
+                      )}
+                      <button className="btn btn-sm btn-ghost" disabled={used > 0} onClick={() => void remove(a)} title={used ? `Linked ${plural(used, 'time', 'times')}. Replace its file, move its links to another document, or change those links first.` : `Remove ${documentName(a)}`}>
+                        <Trash2 /> Remove
+                      </button>
+                    </div>
+                    {used > 0 && <p className="doc-list-note">It can’t be removed while the site links to it: visitors would find those links going nowhere.</p>}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** Where the site links to a document, each place a button that goes there. */
+function DocumentPlaces({ state, assetId }: { state: ProjectState; assetId: string }) {
+  const places = placesOf(state, assetId);
+  if (!places.length) return <p className="doc-list-note">No page links to it yet.</p>;
+  return (
+    <ul className="doc-places" aria-label="Linked from">
+      {places.map((p) => {
+        const Icon = PLACE_ICON[p.icon];
+        const text = `${p.where}${p.what ? ` · ${p.what}` : ''}${p.count > 1 ? ` (${p.count})` : ''}`;
+        return (
+          <li key={p.key}>
+            {p.go ? (
+              <button className="link-btn" onClick={p.go}>
+                <Icon aria-hidden="true" /> {text}
+              </button>
+            ) : (
+              <span>
+                <Icon aria-hidden="true" /> {text}
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 interface Place {
   key: string;
   icon: 'page' | 'shell' | 'component' | 'site';
@@ -126,12 +293,13 @@ interface Place {
   go?: () => void;
 }
 
-/** Every place an image is used, by the same rules as the engine's usage count. */
+/** Every place an image is used, or a document linked to, by the same rules as the engine's usage count. */
 function placesOf(state: ProjectState, assetId: string): Place[] {
+  const document = state.assets.assets[assetId]?.kind === 'document';
   const count = (v: unknown): number => {
     if (Array.isArray(v)) return v.reduce<number>((n, x) => n + count(x), 0);
     if (!v || typeof v !== 'object') return 0;
-    let n = (v as { assetId?: unknown }).assetId === assetId ? 1 : 0;
+    let n = (v as { assetId?: unknown }).assetId === assetId || (isDocumentLink(v) && v.target === assetId) ? 1 : 0;
     for (const x of Object.values(v)) n += count(x);
     return n;
   };
@@ -154,7 +322,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
   }
   for (const d of Object.values(state.components)) {
     const c = count(d.properties);
-    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: 'Starting image for new copies', count: c });
+    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: document ? 'Starting link for new copies' : 'Starting image for new copies', count: c });
   }
   for (const p of Object.values(state.pages)) {
     const c = count(p.seo) + (p.seo.socialImage === assetId ? 1 : 0);
@@ -275,6 +443,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     return shared;
   }, [assets]);
   const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter(isValidFontAsset).sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
+  const documents = useMemo(() => (snap ? libraryDocuments(snap.state) : []), [snap]);
+  // The document "Open in Assets" asked for, until the list has opened it.
+  const [shownDocument, setShownDocument] = useState<string | null>(null);
+  const revealed = useCallback(() => setShownDocument(null), []);
   const sel = selected && assetsDoc ? (assetsDoc[selected] ?? null) : null;
   const recordsLocation = useRecordsLocation(sel);
   const webPlan = useWebCopyPlan(sel, snap?.workspaceKey ?? '', !!(sel && missingOf.get(sel.id)?.original));
@@ -306,9 +478,15 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const onShow = (e: Event) => {
       const { opening, assetId } = ((e as CustomEvent).detail ?? {}) as { opening?: string; assetId?: string };
       const s = getState().snapshot;
-      if (!assetId || !s || s.workspaceKey !== opening || s.state.assets.assets[assetId]?.kind !== 'image') return;
+      const kind = assetId && s ? s.state.assets.assets[assetId]?.kind : undefined;
+      if (!assetId || !s || s.workspaceKey !== opening || (kind !== 'image' && kind !== 'document')) return;
       replaceSession.current++;
       setReplacing(false);
+      if (kind === 'document') {
+        setSelected(null);
+        setShownDocument(assetId);
+        return;
+      }
       setSelected(assetId);
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
@@ -358,21 +536,25 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
    * Import through the app's picker (no paths) or dropped files, and say exactly what arrived. HEIC photos, large
    * photos and files that can't be added are shown in the import review first (see reviewImport).
    */
-  const importFiles = async (paths?: string[], only?: 'image') => {
+  const importFiles = async (paths?: string[], only?: 'image' | 'document') => {
     const before = new Set(Object.keys(getState().snapshot?.state.assets.assets ?? {}));
     setImporting(true);
     try {
-      const plan = await reviewImport(paths, only).catch((e: Error) => (toast(`The images couldn’t be added: ${e.message}`, 'error'), null));
+      const plan = await reviewImport(paths, only).catch((e: Error) => (toast(`The files couldn’t be added: ${e.message}`, 'error'), null));
       if (!plan) return { ids: [], added: [], failed: false, reviewed: false, chosen: 0 };
-      const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, only, plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The images couldn’t be added: ${e.message}` }));
+      const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, only, plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The files couldn’t be added: ${e.message}` }));
+      // What arrived is told by kind once the new records reach this window (they come in one snapshot).
+      if (r.assetIds.length) await assetArrived(r.assetIds[r.assetIds.length - 1], plan.choices.opening);
       const added = r.assetIds.filter((id) => !before.has(id));
       const already = r.assetIds.length - added.length;
       const doc = getState().snapshot?.state.assets.assets ?? {};
       const addedFonts = added.filter((id) => doc[id]?.kind === 'font').length;
-      const addedImages = added.length - addedFonts;
+      const addedDocuments = added.filter((id) => doc[id]?.kind === 'document').length;
+      const addedImages = added.length - addedFonts - addedDocuments;
       const parts = [
         addedImages ? `Added ${plural(addedImages, 'image', 'images')}.` : '',
         addedFonts ? `Added ${plural(addedFonts, 'font', 'fonts')}. Use ${addedFonts === 1 ? 'it' : 'them'} in Site styles.` : '',
+        addedDocuments ? `Added ${plural(addedDocuments, 'document', 'documents')}. Link a button to ${addedDocuments === 1 ? 'it' : 'them'}: choose Document as the link’s destination.` : '',
         already ? `${plural(already, 'file was', 'files were')} already here.` : '',
         r.note ?? '',
         r.message ?? ''
@@ -446,6 +628,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     } finally {
       setCopying(false);
     }
+  };
+
+  const addDocuments = async () => {
+    if (importing) return;
+    await importFiles(undefined, 'document');
   };
 
   const replaceWith = async (withId: string) => {
@@ -879,7 +1066,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           </span>
           <b>Add images</b>
           <span>Drop files here, or click to choose</span>
-          <small>JPEG, PNG, WebP, GIF, AVIF or SVG, and WOFF2 or WOFF fonts</small>
+          <small>JPEG, PNG, WebP, GIF, AVIF or SVG, WOFF2 or WOFF fonts, and documents such as PDFs</small>
         </button>
         <p>Images you add are copied into this project, so the site keeps working wherever it goes.</p>
       </div>
@@ -917,13 +1104,14 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       <div className="asset-host" {...dropProps} onKeyDown={sel ? onEscape(replacing ? closeReplace : back) : undefined}>
         {importing && (
           <p className="asset-importing" role="status">
-            <Spinner decorative /> Adding images…
+            <Spinner decorative /> Adding files…
           </p>
         )}
         {tools}
         <div className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>
           {body}
           {!sel && !replacing && fonts.length > 0 && <FontList fonts={fonts} usage={usage} />}
+          {!sel && !replacing && <DocumentList state={snap.state} docs={documents} usage={usage} missingOf={missingOf} reveal={shownDocument} onRevealed={revealed} onAdd={() => void addDocuments()} adding={importing} />}
           {!sel && !replacing && storage.info && <StorageSummary
               info={storage.info}
               onFree={() => {
@@ -938,7 +1126,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           <div className="asset-drop-overlay" aria-hidden="true">
             <div>
               <Upload />
-              <b>Drop to add images</b>
+              <b>Drop to add files</b>
               <span>They’re copied into this project</span>
             </div>
           </div>

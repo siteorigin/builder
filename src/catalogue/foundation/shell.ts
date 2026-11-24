@@ -42,6 +42,8 @@ const HEADER_SOURCE = `<script>
 
 	/** Site-relative links go through resolve() so the site works under a sub-path. */
 	const href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);
+	/** A link to one of the site's documents downloads it under its own file name. */
+	const download = (link) => (link?.href?.startsWith('/') && typeof link.download === 'string' && link.download ? link.download : undefined);
 	const isCurrent = (link) => !!link?.href?.startsWith('/') && !link.href.includes('#') && (link.href.length > 1 && link.href.endsWith('/') ? link.href.slice(0, -1) : link.href) === current;
 
 	$effect(() => {
@@ -223,6 +225,7 @@ const HEADER_SOURCE = `<script>
 					<li>
 						<a
 							href={href(item.link) ?? '#'}
+							download={download(item.link)}
 							target={item.link?.newTab ? '_blank' : undefined}
 							rel={item.link?.newTab ? 'noopener noreferrer' : undefined}
 							aria-current={isCurrent(item.link) ? 'page' : undefined}
@@ -235,6 +238,7 @@ const HEADER_SOURCE = `<script>
 				<a
 					class={['so-btn', ctaStyle === 'secondary' ? 'so-btn--secondary' : 'so-btn--primary', 'so-header__cta']}
 					href={href(ctaLink)}
+					download={download(ctaLink)}
 					target={ctaLink.newTab ? '_blank' : undefined}
 					rel={ctaLink.newTab ? 'noopener noreferrer' : undefined}
 					onclick={() => (open = false)}>{ctaLabel}</a
