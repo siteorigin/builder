@@ -1381,7 +1381,7 @@ export function InsertPanel() {
         if (ev.pointerId !== from.pointer || Math.hypot(ev.clientX - from.x, ev.clientY - from.y) < DRAG_START) return;
         stop();
         // One insert at a time, as for a click.
-        if (adding.current || !beginInsertDrag({ spec: it.spec, name: fullName(it) }, { x: ev.clientX, y: ev.clientY })) return;
+        if (adding.current || !beginInsertDrag({ spec: it.spec, name: fullName(it) }, { x: ev.clientX, y: ev.clientY, pointerId: ev.pointerId })) return;
         dragged.current = true;
         window.getSelection()?.removeAllRanges();
         clearTimeout(peekTimer.current);
@@ -1394,9 +1394,10 @@ export function InsertPanel() {
     },
     onDragStart: (e: React.DragEvent<HTMLElement>) => e.preventDefault()
   });
-  /** Whether a click ends a drag (a keyboard's click never does). */
+  /** Whether a click ends a drag. A keyboard's click never does, and leaves the drag's own click to be told apart. */
   const endsDrag = (e: React.MouseEvent<HTMLElement>) => {
-    const was = dragged.current && e.detail > 0;
+    if (e.detail === 0) return false;
+    const was = dragged.current;
     dragged.current = false;
     return was;
   };
@@ -1502,7 +1503,7 @@ export function InsertPanel() {
   const fallback: Kind = next ? added.kind : query ? 'section' : (scrolled ?? topKind);
   // The next one of what was just added goes where that item now goes, from the new selection.
   const addedItem = added ? byKey.get(added.key) : undefined;
-  const nextTo = next ? (addedItem ? whereOf(addedItem) : where[added.kind]) : null;
+  const nextTo = next ? (aimItem ? whereOf(aimItem) : addedItem ? whereOf(addedItem) : where[added.kind]) : null;
   const aimTo = aimItem ? whereOf(aimItem) : null;
   const line: Line =
     aim === 'new'
@@ -1768,7 +1769,7 @@ export function InsertPanel() {
                         }
                       : undefined
                   }
-                  onMouseMove={() => (i !== active ? setActive(i) : !peek && peekResult())}
+                  onMouseMove={() => !document.documentElement.classList.contains('insert-dragging') && (i !== active ? setActive(i) : !peek && peekResult())}
                   {...dragFrom(it)}
                   onClick={(e) => {
                     searchRef.current?.focus({ preventScroll: true });

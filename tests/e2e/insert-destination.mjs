@@ -40,7 +40,7 @@ const openInsert = async () => {
  * fit, which Playwright's own boxes for elements in the frame leave out, so the point is the frame's box on screen
  * plus the element's place in the page, scaled.
  */
-const pointIn = async (locator, fx, fy) => {
+const pointIn = async (locator, fx, fy, dy = 0) => {
   const view = await win.locator('.canvas-scroll').boundingBox();
   const place = async () => {
     const f = await win.locator('.frame-box iframe').boundingBox();
@@ -49,7 +49,7 @@ const pointIn = async (locator, fx, fy) => {
       return { x: b.x, y: b.y, width: b.width, height: b.height, vw: window.innerWidth };
     });
     const k = f.width / r.vw;
-    return { x: f.x + (r.x + r.width * fx) * k, y: f.y + (r.y + r.height * fy) * k };
+    return { x: f.x + (r.x + r.width * fx) * k, y: f.y + (r.y + r.height * fy) * k + dy };
   };
   let at = await place();
   if (at.y < view.y + 20 || at.y > view.y + view.height - 20) {
@@ -105,6 +105,7 @@ await selectIn(frame.locator('p', { hasText: 'Hall A, stand 12' }).first(), /Exh
 await openInsert();
 await projectTile('Exhibitor card').hover();
 await eventually(async () => assert.match(await strip.getAttribute('title'), /^Exhibitor card goes after Exhibitor card in Grid$/, 'the strip names the grid the card goes into'));
+assert.equal(await strip.locator('.tgt').innerText(), 'Exhibitor card in Grid', 'and shows it');
 const rootsBefore = (await home()).rootIds;
 const before = await newest();
 await projectTile('Exhibitor card').click();
@@ -151,9 +152,9 @@ const pickUp = async (tile) => {
   await win.mouse.down();
   await win.mouse.move(t.x + t.width / 2 + 12, t.y + t.height / 2 + 4, { steps: 3 });
 };
-const dragTo = async (tile, locator, fx, fy) => {
+const dragTo = async (tile, locator, fx, fy, dy = 0) => {
   await pickUp(tile);
-  const at = await pointIn(locator, fx, fy);
+  const at = await pointIn(locator, fx, fy, dy);
   await win.mouse.move(at.x, at.y, { steps: 12 });
 };
 const firstBox = frame.locator('#first');
@@ -199,14 +200,64 @@ await secondCard.waitFor();
   await win.screenshot({ path: join(SHOTS, 'insert-destination-drag-element.png') });
   await win.mouse.up();
   await eventually(async () => {
-    const kids = (await home()).nodes[grid].children;
+    const page = await home();
+    const kids = page.nodes[grid].children;
     assert.equal(kids.length, 3, 'the paragraph is in the grid');
     assert.deepEqual([kids[0], kids[2]], [card, card2], 'between the two cards');
+    assert.equal(page.nodes[kids[1]].kind, 'text', 'and it is a paragraph');
   });
   assert.notEqual((await newest()).id, changes?.id);
   assert.equal((await newest()).label, 'Insert Paragraph', 'one change');
   await undo();
   await eventually(async () => assert.deepEqual((await home()).nodes[grid].children, [card, card2], 'one Undo takes it away'));
+}
+
+step('the Exhibitor card drags between the two cards, and a Paragraph between sections gets a Section of its own');
+{
+  const roots = (await home()).rootIds;
+  await dragTo(projectTile('Exhibitor card'), secondCard, 0.15, 0.5);
+  await eventually(async () => assert.match(await dropLabel.innerText(), /Exhibitor card after Exhibitor card in Grid/));
+  await win.mouse.up();
+  await eventually(async () => {
+    const page = await home();
+    const kids = page.nodes[grid].children;
+    assert.equal(kids.length, 3, 'a third card is in the grid');
+    assert.deepEqual([kids[0], kids[2]], [card, card2], 'between the two cards');
+    assert.equal(page.nodes[kids[1]].definitionId, cardDef, 'a placement of the card');
+    assert.deepEqual(page.rootIds, roots, 'nothing new at the top of the page');
+  });
+  await undo();
+  await eventually(async () => assert.deepEqual((await home()).nodes[grid].children, [card, card2]));
+
+  // Just inside the first section's bottom edge: between the sections.
+  const before = await home();
+  await dragTo(basicTile('Paragraph'), firstBox, 0.5, 1, -3);
+  await eventually(async () => assert.match(await dropLabel.innerText(), /Paragraph in a new section after Section/, 'the label says a new section holds it'));
+  await win.mouse.up();
+  await eventually(async () => {
+    const page = await home();
+    assert.equal(page.rootIds.length, roots.length + 1);
+    const wrapper = page.nodes[page.rootIds[1]];
+    assert.equal((await snapshot()).components[wrapper.definitionId]?.componentId, 'layout.section', 'a new Section after the first');
+    assert.equal(page.nodes[wrapper.slots.content[0]].kind, 'text', 'holding the paragraph');
+  });
+  assert.equal((await newest()).label, 'Insert Paragraph');
+  await undo();
+  await eventually(async () => assert.deepEqual(await home(), before, 'one Undo takes both away'));
+}
+
+step('a press that is dragged back to its own tile adds nothing');
+{
+  const page = await home();
+  const changes = await newest();
+  await dragTo(basicTile('Heading'), firstBox, 0.5, 0.5);
+  await dropLabel.waitFor();
+  const t = await basicTile('Heading').boundingBox();
+  await win.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 8 });
+  await win.mouse.up();
+  await win.waitForTimeout(400);
+  assert.deepEqual(await home(), page, 'nothing is added');
+  assert.equal((await newest())?.id, changes?.id);
 }
 
 step('a gap an Order style keeps it out of is refused, and says why');
@@ -230,7 +281,7 @@ await shownLast.waitFor();
   assert.match(await dropTarget.getAttribute('class'), /refused/, 'the row is outlined as refused');
   await win.screenshot({ path: join(SHOTS, 'insert-destination-refused.png') });
   await win.mouse.up();
-  await win.locator('.toast', { hasText: 'Paragraph wasn’t added' }).waitFor();
+  await win.locator('.toast', { hasText: 'Paragraph wasn’t added: An Order style' }).waitFor();
   assert.deepEqual(await home(), page, 'nothing is added');
   assert.equal((await newest())?.id, changes?.id, 'and nothing is recorded');
   assert.deepEqual(page.nodes[row].children, [one, two]);
@@ -246,11 +297,17 @@ step('Escape cancels a drag; a tile still inserts from the keyboard afterwards')
   await win.mouse.up();
   await win.waitForTimeout(300);
   assert.deepEqual(await home(), page, 'Escape adds nothing');
-  await selectIn(frame.locator('p', { hasText: 'Shown first' }).first(), /^Text$/);
+  await selectIn(frame.locator('p', { hasText: 'Shown second' }).first(), /^Text$/);
   await openInsert();
   await basicTile('Heading').focus();
   await win.keyboard.press('Enter');
-  await eventually(async () => assert.equal((await home()).nodes[row].children.length, 3, 'Enter on a tile adds it after the selection'));
+  await eventually(async () => {
+    const page = await home();
+    const kids = page.nodes[row].children;
+    assert.equal(kids.length, 3, 'Enter on a tile adds it');
+    assert.deepEqual([kids[0], kids[2]], [one, two], 'right after the selected paragraph');
+    assert.equal(page.nodes[kids[1]].kind, 'text', 'a heading');
+  });
 }
 
 assert.deepEqual(errors, [], 'no page errors');

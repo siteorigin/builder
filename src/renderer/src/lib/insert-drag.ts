@@ -10,7 +10,9 @@ export interface InsertDrag {
   name: string;
 }
 
-type Begin = (drag: InsertDrag, at: { x: number; y: number }) => boolean;
+/** Where the drag is in the window, and the pointer that is dragging it. */
+type At = { x: number; y: number; pointerId: number };
+type Begin = (drag: InsertDrag, at: At) => boolean;
 let begin: Begin | null = null;
 
 /** The canvas takes drags from Insert while it is on screen. */
@@ -20,6 +22,6 @@ export function setInsertDropTarget(fn: Begin | null) {
 
 /** Hand a drag to the canvas, from the pointer's place in the window. False when the canvas cannot take one now
  *  (Preview, a component edited everywhere, no page showing): the press stays a click. */
-export function beginInsertDrag(drag: InsertDrag, at: { x: number; y: number }): boolean {
+export function beginInsertDrag(drag: InsertDrag, at: At): boolean {
   return begin ? begin(drag, at) : false;
 }

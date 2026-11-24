@@ -391,7 +391,8 @@ export function imagePlacement(snap: ProjectSnapshot | null = getState().snapsho
   if (!at || !where || at.owner.kind !== 'page') return { at: null, reason: 'Open a page to place the image on it.' };
   // The node it goes after is named by ID: two Galleries side by side share a label, and can trade places.
   const before = nodeBefore(snap.state, at.owner, at.parentId, at.slot, at.index);
-  return { at, where, page: page.title, key: JSON.stringify([snap.workspaceKey, at, before, where]) };
+  // The words Assets shows; the container's name is the Insert panel's, and renaming it moves nothing.
+  return { at, where, page: page.title, key: JSON.stringify([snap.workspaceKey, at, before, { lead: where.lead, target: where.target, node: where.node }]) };
 }
 
 /** How long a placement waits for changes already on their way when it was asked for (a suggested alt text committed

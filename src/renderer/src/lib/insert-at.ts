@@ -5,7 +5,7 @@
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
-import { childLists, findParent } from '@engine/tree';
+import { allTrees, childLists, findParent } from '@engine/tree';
 import { ownerLabel, refLabel, treeFor } from './model';
 import type { InsertSpec } from './insert-search';
 
@@ -26,11 +26,27 @@ export function slotFor(state: ProjectState, definitionId: string): string | und
   return names.find((name) => nodes.some((n) => n.kind === 'slot' && n.slot === name)) ?? names[0];
 }
 
+/** Where a definition is placed now: 'element' when any placement sits inside a layout or another component's
+ *  design, 'section' when every one is a section of a page (or of the header or footer), none when it is not placed. */
+function placedAs(state: ProjectState, definitionId: string): InsertRole | undefined {
+  let found: InsertRole | undefined;
+  for (const t of allTrees(state)) {
+    for (const n of Object.values(t.tree.nodes)) {
+      if (n.kind !== 'instance' || n.definitionId !== definitionId) continue;
+      if (t.owner.kind === 'component' || !t.tree.rootIds.includes(n.id)) return 'element';
+      found = 'section';
+    }
+  }
+  return found;
+}
+
 /**
  * Whether a component inserts as one of a page's sections or as an element inside a layout. Create component records
- * it (a card made inside a grid is an element); copies carry it on. A definition from before that is read from what it
- * is: a theme's component, or a design whose root is one, is a section, and so is a root that is a section element; a
- * design rooted in any other element (a card, a paragraph) is an element. Code with nothing to go on stays a section.
+ * it (a card made inside a grid is an element); copies carry it on. A definition from before that goes where it is
+ * placed: inside a layout anywhere makes it an element, and only ever among a page's sections, a section. One placed
+ * nowhere is read from what it is: a theme's component, or a design whose root is one, is a section, and so is a root
+ * that is a section element; a design rooted in any other element (a card, a paragraph) is an element. Code with
+ * nothing to go on stays a section.
  */
 export function definitionRole(state: ProjectState, definitionId: string, seen = new Set<string>()): InsertRole {
   const def = own(state.components, definitionId);
@@ -38,6 +54,8 @@ export function definitionRole(state: ProjectState, definitionId: string, seen =
   seen.add(def.id);
   if (def.insertAs === 'section' || def.insertAs === 'element') return def.insertAs;
   if (def.owner === 'theme') return 'section';
+  const placed = placedAs(state, def.id);
+  if (placed) return placed;
   const from = def.provenance?.forkedFrom;
   if (from && own(state.components, from)) return definitionRole(state, from, seen);
   const root = def.kind === 'managed' && def.tree ? own(def.tree.nodes, def.tree.rootIds[0] ?? '') : undefined;

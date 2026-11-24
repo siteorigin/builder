@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { OwnerRef, ProjectState } from '@shared/types';
+import type { ElementNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { dropListSpecs, dropTarget, incomingOrder, insertIndex, measuredLists, measureIds, type Measured } from '../../src/renderer/src/lib/insert-drop';
+import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertIndex, measuredLists, measureIds, savingProblems, type Measured } from '../../src/renderer/src/lib/insert-drop';
 
 /**
  * Dragging an Insert tile onto the page (#52): the lists a drop can go into, and the list and gap under the pointer.
@@ -52,12 +52,15 @@ describe('the lists a drop can go into (#52)', () => {
     expect(specs).toContainEqual({ parentId: p.first, slot: 'content', childIds: [p.grid, p.row], depth: 0 });
     expect(specs).toContainEqual({ parentId: p.grid, childIds: [p.a, p.b], depth: 1 });
     expect(specs).toContainEqual({ parentId: p.row, childIds: [], depth: 1 });
+    // An empty section takes content too.
+    expect(specs).toContainEqual({ parentId: p.second, slot: 'content', childIds: [], depth: 0 });
     expect(measureIds(specs).sort()).toEqual([p.first, p.second, p.grid, p.row, p.a, p.b].sort());
   });
 
   it('are none while a component is being edited', () => {
     const p = page();
-    expect(dropListSpecs(p.state, { kind: 'component', id: 'foundation.layout.section' })).toEqual([]);
+    const made = applyOperations(p.state, [{ type: 'component.createFromNode', owner: p.owner, nodeId: p.grid, name: 'Artist grid' }]);
+    expect(dropListSpecs(made.state, { kind: 'component', id: made.results[0].definitionId as string })).toEqual([]);
   });
 });
 
@@ -68,7 +71,8 @@ describe('where a section drops (#52)', () => {
     const at = (y: number) => dropTarget(lists, 'section', 500, y, 10, 0)!;
     expect(at(100)).toMatchObject({ index: 0, list: { parentId: null } });
     // The grid is under the pointer, but a section goes between sections: after the first one.
-    expect(at(260).index).toBe(1);
+    expect(at(225).index).toBe(1);
+    expect(at(225).line).toMatchObject({ y: 399 });
     expect(at(450).index).toBe(1);
     expect(at(650).index).toBe(2);
     expect(at(650).line).toMatchObject({ y: 699 });
@@ -135,12 +139,53 @@ describe('where an element drops (#52)', () => {
     expect(dropTarget(multi, 'element', 800, 300, 10, 0)).toMatchObject({ index: null, refused: 'It has more than one place for content.' });
   });
 
-  it('leaves out a container that does not show at this width', () => {
+  it('leaves out a container that does not show at this width, and keeps its place among its siblings', () => {
     const p = page();
     const hidden = new Map(p.measured);
     hidden.set(p.row, null);
     const lists = measuredLists(dropListSpecs(p.state, p.owner), hidden);
     expect(lists.some((l) => l.parentId === p.row)).toBe(false);
+    expect(lists.find((l) => l.parentId === p.first)!.children).toEqual([p.measured.get(p.grid), null]);
+    // Below the grid in the section: after the grid, and so before the hidden row.
+    expect(dropTarget(lists, 'element', 50, 300, 10, 0)).toMatchObject({ index: 1, list: { parentId: p.first } });
+    // A list whose children all hide takes the new node at its end.
+    const top = measuredLists([{ parentId: null, childIds: ['h'], depth: -1 }], new Map([['h', null]]));
+    expect(dropTarget(top, 'section', 10, 10, 10, 0)).toMatchObject({ index: 1 });
+  });
+
+  it('the deeper of two containers the same size, and an empty row that measures as a line', () => {
+    const p = page();
+    const same = new Map(p.measured);
+    same.set(p.grid, box(0, 0, 1000, 400));
+    const lists = measuredLists(dropListSpecs(p.state, p.owner), same);
+    expect(dropTarget(lists, 'element', 500, 200, 10, 0)!.list.parentId).toBe(p.grid);
+    const flat = new Map(p.measured);
+    flat.set(p.row, box(100, 280, 800, 0));
+    const thin = measuredLists(dropListSpecs(p.state, p.owner), flat);
+    expect(dropTarget(thin, 'element', 500, 284, 10, 0)).toMatchObject({ index: 0, list: { parentId: p.row } });
+    expect(dropTarget(thin, 'element', 500, 300, 10, 0)!.list.parentId).toBe(p.first);
+  });
+
+  it('between two containers side by side, near the edge they share', () => {
+    const p = page();
+    // Two stacks fill a row with no gap between them.
+    const out = applyOperations(p.state, [
+      { type: 'node.insert', owner: p.owner, parentId: p.row, primitive: 'stack' },
+      { type: 'node.insert', owner: p.owner, parentId: p.row, primitive: 'stack' }
+    ]);
+    const [left, right] = out.results.map((r) => r.nodeId as string);
+    const m = new Map(p.measured);
+    m.set(p.row, box(100, 280, 800, 200));
+    m.set(left, box(100, 280, 400, 200));
+    m.set(right, box(500, 280, 400, 200));
+    const lists = measuredLists(dropListSpecs(out.state, p.owner), m);
+    expect(lists.find((l) => l.parentId === left)!.sideways).toBe(true);
+    // Well inside the right stack: into it.
+    expect(dropTarget(lists, 'element', 700, 380, 10, 0)!.list.parentId).toBe(right);
+    // At the seam: into the row, between the two.
+    expect(dropTarget(lists, 'element', 503, 380, 10, 0)).toMatchObject({ index: 1, list: { parentId: p.row } });
+    // A section filling the page's width is no column: its left edge still drops inside it.
+    expect(lists.find((l) => l.parentId === p.first)!.sideways).toBeUndefined();
   });
 });
 
@@ -154,9 +199,11 @@ describe('a new node among siblings with an Order style (#52)', () => {
     // Sibling 0 is shown last (order 1): a gap before it is after the order-0 ones.
     expect(insertIndex([1, 2, 0], 2, order([1, 0, 0]), 0)).toBe(3);
     expect(insertIndex([1, 2, 0], 3, order([1, 0, 0]), 0)).toBeNull();
-    // A hidden sibling (index 3) keeps its place: the end of the list is after it.
+    // A hidden last sibling (index 3): the gap after the last one shown is before it, in the document.
     expect(insertIndex([0, 1, 2], 3, order([0, 0, 0, 0]), 0, 4)).toBe(3);
     expect(insertIndex([], 0, order([]), 0, 2)).toBe(2);
+    // Negative orders count like any other.
+    expect(insertIndex([0, 1], 1, order([-2, 0]), -2)).toBe(1);
   });
 
   it('places a component whose root has an order by that order, and refuses one whose order changes with the screen size', () => {
@@ -165,6 +212,14 @@ describe('a new node among siblings with an Order style (#52)', () => {
     expect(insertIndex([0, 1], 2, order([0, 0]), 2)).toBe(2);
     expect(insertIndex([0, 1], 1, order([0, 0]), null)).toBeNull();
     expect(insertIndex([], 0, order([]), null, 0)).toBe(0);
+    expect(insertIndex([], 0, () => 0, null, 2)).toBeNull();
+  });
+
+  it('puts an element dropped between sections in a Section of its own, whatever its own order', () => {
+    const p = page();
+    const lists = measuredLists(dropListSpecs(p.state, p.owner), p.measured);
+    expect(dropTarget(lists, 'element', 500, 396, 10, 5)).toMatchObject({ index: 1, list: { parentId: null } });
+    expect(dropTarget(lists, 'element', 500, 396, 10, null)).toMatchObject({ index: 1, list: { parentId: null } });
   });
 
   it('reads the incoming order from a component’s root', () => {
@@ -178,6 +233,28 @@ describe('a new node among siblings with an Order style (#52)', () => {
     expect(incomingOrder(out.state, { definitionId: defId })).toBe(2);
     root.styles = { base: { order: 2 }, phone: { order: 0 } };
     expect(incomingOrder(out.state, { definitionId: defId })).toBeNull();
+    root.styles = { phone: { order: 2 } };
+    expect(incomingOrder(out.state, { definitionId: defId })).toBeNull();
     expect(incomingOrder(out.state, { primitive: 'paragraph' })).toBe(0);
+    // A variant option it is inserted with can order its root too.
+    root.styles = {};
+    def.variantAxes = { look: { label: 'Look', default: 'plain', options: { plain: { label: 'Plain' }, last: { label: 'Last', styles: { [def.tree!.rootIds[0]]: { base: { order: 3 } } } } } } };
+    expect(incomingOrder(out.state, { definitionId: defId })).toBe(0);
+    expect(incomingOrder(out.state, { definitionId: defId, variants: { look: 'last' } })).toBe(3);
+  });
+});
+
+describe('what the project would refuse (#52)', () => {
+  it('says why, for what the operation refuses and for a problem that stops saving', () => {
+    const p = page();
+    const before = () => savingProblems(p.state);
+    expect(dropRefusal(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.a, primitive: 'paragraph' }], before)).toMatch(/.+/);
+    expect(dropRefusal(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.grid, primitive: 'button' }], before)).toBeNull();
+    // The grid becomes a card that links somewhere: a button can't go inside it.
+    (p.state.pages[p.owner.id].nodes[p.grid] as ElementNode).link = { type: 'url', target: 'https://example.com/artists' };
+    const linked = () => savingProblems(p.state);
+    expect(linked()).toEqual([]);
+    expect(dropRefusal(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.grid, primitive: 'button' }], linked)).toMatch(/inside a card that links somewhere/);
+    expect(dropRefusal(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.grid, primitive: 'paragraph' }], linked)).toBeNull();
   });
 });

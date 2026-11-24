@@ -3288,6 +3288,12 @@ window.addEventListener('message', async (e) => {
       }
       commitEdit();
       break;
+    case 'scrollBy': {
+      // A drag from the editor's Insert panel turns the wheel over the page into a scroll of the page.
+      const y = Number(m.payload.y);
+      if (Number.isFinite(y)) window.scrollBy({ top: Math.max(-4000, Math.min(4000, y)), behavior: 'instant' });
+      break;
+    }
     case 'measure': {
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
       // Each box with its CSS order, which can lay siblings out in another order than the document's, and whether more

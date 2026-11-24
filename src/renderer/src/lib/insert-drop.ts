@@ -4,8 +4,11 @@
  * between the page's sections; elements (and components made from one) go into a container or a placed component's
  * slot, or between sections in a new Section of their own.
  */
-import type { OwnerRef, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import type { OwnerRef, ProjectState, ResponsiveStyles } from '@shared/types';
+import { applyOperations } from '@engine/apply';
 import { childLists } from '@engine/tree';
+import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import type { InsertSpec } from './insert-search';
 import { dropAt, shownOrder, type Box } from './reorder';
 import { type InsertRole } from './insert-at';
@@ -31,6 +34,9 @@ export type Measured = Box & { order: number; many?: boolean };
 export interface DropList extends ListSpec {
   box: Box | null;
   children: Array<Measured | null>;
+  /** Its holder sits beside a sibling in a row (a column of a two-column grid): near its left or right edge, the drop
+   *  goes between them rather than into it. */
+  sideways?: boolean;
 }
 
 /** Where the pointer drops: the list, the index in its full list (null: no index there can be reached), the line that
@@ -103,6 +109,14 @@ const union = (boxes: Box[]): Box | null => {
 /** The lists with their measures. A nested list that does not show (its holder hidden at this width) is left out. */
 export function measuredLists(specs: ListSpec[], measured: Map<string, Measured | null>): DropList[] {
   const at = (id: string) => measured.get(id) ?? null;
+  // The list each node sits in, for whether a holder shares a row with a sibling.
+  const inList = new Map<string, ListSpec>();
+  for (const l of specs) for (const c of l.childIds) inList.set(c, l);
+  const besideSibling = (id: string, box: Box) =>
+    (inList.get(id)?.childIds ?? []).some((other) => {
+      const b = other === id ? null : at(other);
+      return !!b && b.y < box.y + box.height && b.y + b.height > box.y && (b.x + b.width <= box.x + 1 || b.x >= box.x + box.width - 1);
+    });
   return specs.flatMap((l): DropList[] => {
     const children = l.childIds.map(at);
     const holder = l.parentId ? at(l.parentId) : null;
@@ -110,7 +124,15 @@ export function measuredLists(specs: ListSpec[], measured: Map<string, Measured 
     if (l.parentId && !box) return [];
     // Content a component shows more than once is only measured where it first shows: a drop there is not one place.
     const many = !!holder?.many || children.some((c) => c?.many);
-    return [{ ...l, box, children, ...(many && !l.refused ? { refused: 'This content shows more than once on the page. Select a place inside it and click the tile instead.' } : {}) }];
+    return [
+      {
+        ...l,
+        box,
+        children,
+        ...(l.parentId && holder && besideSibling(l.parentId, holder) ? { sideways: true } : {}),
+        ...(many && !l.refused ? { refused: 'This content shows more than once on the page. Select a place inside it and click the tile instead.' } : {})
+      }
+    ];
   });
 }
 
@@ -133,10 +155,15 @@ export function insertIndex(shown: number[], to: number, order: (i: number) => n
   return next ?? length;
 }
 
-/** Whether (x, y) is inside `b`, `edge` pixels clear of its top and bottom. */
-const within = (b: Box, x: number, y: number, edge: number) => {
-  const e = Math.min(edge, b.height / 4);
-  return x >= b.x && x <= b.x + b.width && y >= b.y + e && y <= b.y + b.height - e;
+/**
+ * Whether (x, y) is inside `b`, `edge` pixels clear of its top and bottom (and of its left and right, `sideways`). A
+ * container too thin for that (an empty row is a line) takes the pointer within `edge` of its middle.
+ */
+const within = (b: Box, x: number, y: number, edge: number, sideways = false) => {
+  const ex = sideways ? Math.min(edge, b.width / 4) : 0;
+  if (x < b.x + ex || x > b.x + b.width - ex) return false;
+  if (b.height < edge * 3) return Math.abs(y - (b.y + b.height / 2)) <= edge;
+  return y >= b.y + edge && y <= b.y + b.height - edge;
 };
 
 /**
@@ -147,11 +174,13 @@ const within = (b: Box, x: number, y: number, edge: number) => {
 export function dropTarget(lists: DropList[], role: InsertRole, x: number, y: number, edge: number, own: number | null): DropTarget | null {
   const top = lists.find((l) => l.parentId === null);
   if (!top) return null;
-  const nested = role === 'element' ? lists.filter((l) => l.box && within(l.box, x, y, edge)) : [];
+  const nested = role === 'element' ? lists.filter((l) => l.box && within(l.box, x, y, edge, l.sideways)) : [];
   const area = (b: Box) => b.width * b.height;
   // The innermost: the smallest box, and of two the same size (a grid filling its section), the deeper one.
   const list = nested.sort((a, b) => area(a.box!) - area(b.box!) || b.depth - a.depth)[0] ?? top;
   if (list.refused) return { list, index: null, line: null, refused: list.refused };
+  // An element at the page's top level goes in a new Section of its own, which has no Order style.
+  if (role === 'element' && list.parentId === null) own = 0;
   const visible = list.children.flatMap((c, i) => (c ? [i] : []));
   const order = (i: number) => list.children[i]?.order ?? 0;
   const shown = shownOrder(visible, order);
@@ -173,15 +202,42 @@ export function dropTarget(lists: DropList[], role: InsertRole, x: number, y: nu
 const ORDER = 'An Order style puts the elements here in another order than the page shows, so it can’t go in that spot at this size.';
 
 /** The CSS order a new node of `spec` has: none for a basic element or a theme section; a component's design can set
- *  one on its root (null when it changes with the screen size). */
+ *  one on its root, and so can the variant options it is inserted with (null when it changes with the screen size). */
 export function incomingOrder(state: ProjectState, spec: InsertSpec): number | null {
   if (!spec.definitionId) return 0;
   const def = own(state.components, spec.definitionId);
-  const root = def?.kind === 'managed' && def.tree ? own(def.tree.nodes, def.tree.rootIds[0] ?? '') : undefined;
-  const styles = root && 'styles' in root ? root.styles : undefined;
-  const values = Object.entries(styles ?? {}).flatMap(([scope, props]) => (props && Object.hasOwn(props, 'order') ? [[scope, props.order] as const] : []));
+  const rootId = def?.kind === 'managed' && def.tree ? def.tree.rootIds[0] : undefined;
+  const root = rootId ? own(def!.tree!.nodes, rootId) : undefined;
+  const sources: ResponsiveStyles[] = [root && 'styles' in root && root.styles ? root.styles : {}];
+  for (const [axis, a] of Object.entries(def?.variantAxes ?? {})) {
+    const chosen = own(a.options, spec.variants?.[axis] ?? a.default);
+    const styles = rootId ? own(chosen?.styles, rootId) : undefined;
+    if (styles) sources.push(styles);
+  }
+  const values = sources.flatMap((styles) => Object.entries(styles).flatMap(([scope, props]) => (props && Object.hasOwn(props, 'order') ? [[scope, props.order] as const] : [])));
   if (!values.length) return 0;
-  if (values.length > 1 || values[0][0] !== 'base') return null;
-  const n = Number(values[0][1]);
+  if (values.some(([scope]) => scope !== 'base')) return null;
+  // The last one that sets it wins, as the page's rules do: a variant's over the design's own.
+  const n = Number(values[values.length - 1][1]);
   return Number.isSafeInteger(n) ? n : null;
 }
+
+/**
+ * Why the project would refuse `ops`, tried on a copy, or null when it takes them: what the operations themselves
+ * refuse (a slot that takes only some things, a full one), and, as the project checks before it saves, a problem
+ * they bring that stops saving (a button inside a card that is itself a link). `before` is the project's own
+ * problems of that kind, worked out once (see savingProblems).
+ */
+export function dropRefusal(state: ProjectState, ops: EditOperation[], before: () => Diagnostic[]): string | null {
+  let next: ProjectState;
+  try {
+    next = applyOperations(state, ops).state;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+  const introduced = introducedDiagnostics(before(), savingProblems(next));
+  return introduced.length ? introduced.map((d) => d.message).join(' ') : null;
+}
+
+/** The problems that stop a project being saved, as the project counts them before a change. */
+export const savingProblems = (state: ProjectState): Diagnostic[] => validateState(state, { sectionLinks: false }).filter(blocksSaving);
