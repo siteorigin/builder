@@ -537,6 +537,8 @@ export class ProjectSession extends EventEmitter {
     const unloaded = await this.unloadedEdit(new Set()).finally(() => (this.docs = held));
     if (unloaded) {
       if (attempts > 1) return this.publishMigration(attempts - 1, approved);
+      // After a reload, the files still changing bring another reload, which updates the format once they settle.
+      if (approved) return;
       throw new DiskConflictError(unloaded);
     }
     for (const [path, stored] of before) await atomicWrite(this.local('recovery', backup, path), stored);

@@ -513,7 +513,7 @@ describe('opening an older project', () => {
     write(dir, GRID, legacy);
     const r = await s.reloadFromDisk();
     expect(r.ok).toBe(false);
-    expect(r.message).toMatch(/The “Home” page uses the layout "four-columns" of "Services grid", which the older copy of "Services grid" does not have/);
+    expect(r.message).toMatch(/uses the layout “four-columns” of “Services grid”, which the changed component no longer has/);
     expect(toJson(s.state)).toBe(loaded);
     expect(readFileSync(join(dir, homeFile), 'utf8')).toBe(pageBytes);
     // The same in the current format: a copy from before an update added the option.
@@ -543,17 +543,21 @@ describe('opening an older project', () => {
     expect((s.state.pages[s.state.site.homePageId].nodes[chosen.id] as InstanceNode).variants).toEqual({ layout: 'default' });
   });
 
-  it('does not open a project whose component was put back from an older copy while it was closed (#103)', async () => {
+  it('opens a project whose component was put back from an older copy while it was closed, keeping the page’s choice (#103)', async () => {
     const dir = copyFixture();
-    await (await session(dir)).close();
+    const first = await session(dir);
+    const chosen = Object.values(first.state.pages[first.state.site.homePageId].nodes).find((n) => n.kind === 'instance' && n.variants?.layout === 'four-columns') as InstanceNode;
+    await first.close();
     open.splice(0);
     const GRID = 'siteorigin/components/foundation.features.grid/component.json';
     const legacy = JSON.parse(readFileSync(join(FIXTURE, GRID), 'utf8'));
     delete legacy.variants['four-columns'];
     write(dir, GRID, legacy);
-    const before = tree(dir);
-    await expect(ProjectSession.open(dir, 'again')).rejects.toThrow(/The “Home” page uses the layout "four-columns" of "Services grid"/);
-    expect(tree(dir)).toEqual(before);
+    // Nothing tells the copy apart from a choice that was already stale, so the project opens: the page keeps its
+    // choice in its own file, and Project health says it names an option the component does not have.
+    const s = await session(dir, 'again');
+    expect((s.state.pages[s.state.site.homePageId].nodes[chosen.id] as InstanceNode).variants).toEqual({ layout: 'four-columns' });
+    expect(s.diagnostics().some((d) => /four-columns/.test(d.message))).toBe(true);
   });
 
   it('loads a page and its component put back together from the same older copy (#103)', async () => {
@@ -907,6 +911,16 @@ describe('theme component updates', () => {
       // A stored value that is not a list shows the default's items, as the generator reads it: whatever else holds
       // such a placement back, its slot content is not said to disappear.
       expect(themeUpdates(project([{ id: 'i_d', text: 'Default' }], [null as never]).state).kept.find((k) => k.id === SECTION)?.reason ?? '').not.toMatch(/slot/);
+    });
+
+    it('does not hold an update over a slot the installed version already leaves out (#103)', () => {
+      const { state } = project([]);
+      // The installed copy already shows the slot only inside the list; the update changes nothing about that.
+      const installed = structuredClone(theme.components[at]);
+      installed.description = 'An older description';
+      state.components[SECTION] = installed;
+      state.themeLock.components[SECTION].hash = definitionHash(installed);
+      expect(themeUpdates(state).kept.find((k) => k.id === SECTION)?.reason ?? '').not.toMatch(/slot/);
     });
 
     it('holds it for a placement that empties a list the others inherit items from', () => {

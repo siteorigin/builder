@@ -219,7 +219,8 @@ describe('responsive overrides', () => {
     const source = code.source!;
     const cls = (node: string) => `so-${code.id.replace(/[^a-zA-Z0-9]/g, '-')}__${node}`;
     const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const gated = (node: string, size: 'phone' | 'tablet' | 'desktop') => `:global(.${cls(node)}:not(:where(.so-shown, .so-shown-${size}))) {`;
+    const mark = `so-shown--${code.id.replace(/[^a-zA-Z0-9]/g, '-')}`;
+    const gated = (node: string, size: 'phone' | 'tablet' | 'desktop') => `:global(.${cls(node)}:not(:where(.${mark}, .${mark}-${size}))) {`;
     // The design's hides stay in the code, each written for an element not marked shown at that size, and in no
     // other form: the node's own rule no longer hides it outright.
     const own = source.match(new RegExp(`:global\\(\\.${esc(cls('brand-name'))}\\) \\{[^}]*\\}`))![0];
@@ -231,20 +232,25 @@ describe('responsive overrides', () => {
     }
     // Nothing writes a display of its own to show it: the element keeps whatever its other rules give it.
     expect(source).not.toMatch(/so-shown[^{]*\{\s*display: (?!none)/);
+    expect(source).not.toMatch(/\.so-shown[,)]/);
     expect(() => compile(source, { filename: code.sourcePath, generate: 'server', runes: true })).not.toThrow();
     expect((await checkSvelteSource(source, { filename: code.sourcePath })).filter((p) => p.severity === 'error')).toEqual([]);
     // The placement marks it shown at every size, through the same hook its other part styles use.
     const placed = (st: ProjectState) => [...generateProject(st).values()].join('\n');
-    expect(placed(r.state)).toMatch(/"brand":"so-o-[\w-]+-brand so-shown"/);
+    expect(placed(r.state)).toContain(`-brand ${mark}"`);
     // Shown on phones only, it marks that size; with the override gone it marks nothing and stays hidden.
     const phone = structuredClone(r.state);
     (Object.values(phone.site.shell.footer.nodes)[0] as InstanceNode).overrides = { brand: { phone: { hidden: false } } };
-    expect(placed(phone)).toMatch(/"brand":"so-o-[\w-]+-brand so-shown-phone"/);
+    expect(placed(phone)).toContain(`-brand ${mark}-phone"`);
     const plain = structuredClone(r.state);
     delete (Object.values(plain.site.shell.footer.nodes)[0] as InstanceNode).overrides;
     expect(placed(plain)).not.toMatch(/"brand":"[^"]*so-shown/);
     // The site's own component stylesheet is unchanged: hides there stay plain.
     expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).not.toContain('so-shown');
+    // Code that does not gate its hides keeps one class per part, whatever its placement asks.
+    const handwritten = structuredClone(r.state);
+    handwritten.components[code.id].source = source.replaceAll(mark, 'so-other');
+    expect(placed(handwritten)).toMatch(/"brand":"so-o-[\w-]+-brand"/);
   });
 
   it('drives button colours through --so-btn-bg / --so-btn-fg so hover follows them', () => {

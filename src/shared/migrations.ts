@@ -302,7 +302,6 @@ export const MIGRATIONS: Migration[] = [
     id: 'variant-axes',
     description: 'Replace the single variant of a component with named axes, so tone and layout can combine.',
     migrate(project, due) {
-      const rebuiltIds = new Set(Object.values(project.components).filter((d) => due(d)).map((d) => d.id));
       for (const def of Object.values(project.components) as LegacyDefinition[]) {
         if (!due(def)) continue;
         const axes = legacyAxes(def);
@@ -326,31 +325,12 @@ export const MIGRATIONS: Migration[] = [
           else if (def?.kind === 'code' && axes && typeof value === 'string') node.variants = { [Object.keys(axes)[0]]: value };
         }
       };
-      // A managed definition put back from a copy older than the placements around it (they are already on axes) is
-      // rebuilt here from its first-format variants. An option those placements chose that it does not have would
-      // quietly show the default instead, so the update stops and says why. Code is given nothing for such a choice
-      // (its own fallback shows), which a choice that was already stale also gets, so only a reload can tell them apart.
-      const rebuilt = (id: string) => (rebuiltIds.has(id) && project.components[id]?.kind === 'managed' ? project.components[id] : undefined);
-      const check = (tree: NodeTree, where: string) => {
-        for (const node of Object.values(tree.nodes)) {
-          const def = node.kind === 'instance' ? rebuilt(node.definitionId) : undefined;
-          if (!def || node.kind !== 'instance' || !node.variants) continue;
-          for (const [axis, option] of Object.entries(node.variants))
-            if (typeof option === 'string' && !Object.hasOwn(def.variantAxes?.[axis]?.options ?? {}, option))
-              throw new Error(`${where} uses the ${axis} "${option}" of "${def.name}", which the older copy of "${def.name}" does not have. Put back the matching page files too, or choose another option first.`);
-        }
-      };
       if (due(project.site)) {
         convert(project.site.shell.header);
         convert(project.site.shell.footer);
-      } else {
-        check(project.site.shell.header, 'The header');
-        check(project.site.shell.footer, 'The footer');
       }
       for (const page of Object.values(project.pages)) if (due(page)) convert(page);
-      else check(page, `The “${page.title}” page`);
       for (const def of Object.values(project.components)) if (due(def) && def.tree) convert(def.tree);
-      else if (def.tree) check(def.tree, `“${def.name}”`);
     }
   },
   {

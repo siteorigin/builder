@@ -353,6 +353,23 @@ describe('review regressions', () => {
     expect((after.site.shell.header.nodes[header.id] as InstanceNode).props.sticky).toBe(!altSticky);
   });
 
+  it('refuses a theme switch that would drop item styles waiting for items of an inherited list (#103)', () => {
+    const s = fresh();
+    const grid = firstInstance(s, 'features.grid');
+    const def = s.components[grid.definitionId];
+    const items = def.properties.items as { default: Array<Record<string, unknown>> };
+    // The grid shows the installed default's items, which differ from the new theme's, and keeps styles for an item
+    // that list does not show now.
+    items.default[0].title = 'Installed title';
+    delete grid.props.items;
+    grid.itemOverrides = { card: { list: 'items', items: { 'item-gone': { base: { opacity: 0.5 } } } } } as never;
+    expect(() => applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }])).toThrow(/keeps styles for “.*” items its list does not show now/);
+    // Without them, the switch keeps the items the grid showed.
+    delete grid.itemOverrides;
+    const after = applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state;
+    expect(((after.pages[after.site.homePageId].nodes[grid.id] as InstanceNode).props.items as Array<{ title: string }>)[0].title).toBe('Installed title');
+  });
+
   it('refuses a theme switch that would hide a placement’s slot content inside an empty list (#103)', () => {
     let s = fresh();
     const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), componentId: 'layout.section' }]);

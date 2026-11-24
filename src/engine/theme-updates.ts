@@ -154,11 +154,13 @@ function shownSlots(next: ComponentDefinition, node: InstanceNode): Set<string> 
   return out;
 }
 
-/** The filled slots of a placement that `next` would no longer show. */
-export function hiddenSlotContent(next: ComponentDefinition, node: InstanceNode, label: string, name: string): string[] {
+/** The filled slots of a placement that `was` shows and `next` would no longer show. */
+export function hiddenSlotContent(was: ComponentDefinition, next: ComponentDefinition, node: InstanceNode, label: string): string[] {
   if (next.kind !== 'managed' || !next.tree) return [];
   const shown = shownSlots(next, node);
-  return Object.entries(node.slots ?? {}).flatMap(([slot, ids]) => (ids.length && !shown.has(slot) ? [`${label}: ${name} would no longer show the content in its "${slot}" slot.`] : []));
+  // Content the installed version already leaves out is not lost to this one.
+  const before = was.kind === 'managed' && was.tree ? shownSlots(was, node) : null;
+  return Object.entries(node.slots ?? {}).flatMap(([slot, ids]) => (ids.length && !shown.has(slot) && (!before || before.has(slot)) ? [`${label}: ${was.name} would no longer show the content in its "${slot}" slot.`] : []));
 }
 
 /** What placements on pages and in the shell hold that `next` would no longer show or accept. */
@@ -177,7 +179,7 @@ function placementConflicts(state: ProjectState, def: ComponentDefinition, next:
       }
     }
     if (next.kind !== 'managed' || !next.tree) continue;
-    for (const m of hiddenSlotContent(next, node, label, def.name)) out.add(m);
+    for (const m of hiddenSlotContent(def, next, node, label)) out.add(m);
     for (const partId of Object.keys(node.overrides ?? {})) {
       const target = own(next.parts, partId)?.nodeId;
       const kind = target && rendered.has(target) ? next.tree.nodes[target].kind : undefined;

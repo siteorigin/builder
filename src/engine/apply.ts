@@ -2316,6 +2316,14 @@ function inheritedValues(state: ProjectState, node: InstanceNode, was: Component
     let value = inherited ? schema.default : node.props[name];
     if (inherited && value !== undefined && !sameValue(value, now.default)) {
       if (!check(now, value, now.label)) continue;
+      // Styles a placement keeps for items its inherited list does not show now wait for them; once the list is its
+      // own, they would be dropped as styles of removed items.
+      const rows = new Set((Array.isArray(value) ? value : []).map((it) => (isItem(it) ? it.id : undefined)));
+      const waiting = Object.values(node.itemOverrides ?? {}).some((e) => e?.list === name && Object.keys(e.items ?? {}).some((id) => !rows.has(id)));
+      if (schema.type === 'list' && waiting) {
+        conflicts.push(`${label}: ${was.name} keeps styles for “${now.label}” items its list does not show now, which the switch would drop.`);
+        continue;
+      }
       value = props[name] = clone(value);
     }
     // Item fields left empty show their field's default, which the new version may have changed too.
@@ -2377,7 +2385,7 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
       const values = inheritedValues(state, n, state.components[n.definitionId], next, t.label);
       conflicts.push(...values.conflicts);
       // Content in a slot the new version shows only inside a list this placement leaves empty would disappear.
-      conflicts.push(...hiddenSlotContent(next, { ...n, props: { ...n.props, ...values.props } }, t.label, state.components[n.definitionId].name));
+      conflicts.push(...hiddenSlotContent(state.components[n.definitionId], next, { ...n, props: { ...n.props, ...values.props } }, t.label));
       kept.set(n, values);
     }
   }

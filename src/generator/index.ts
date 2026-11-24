@@ -437,8 +437,8 @@ interface RuleOpts {
   unhide?: (scope: ResponsiveScope) => string | null;
   /** Finishes each selector written (a component's own <style> block makes them `:global()`). */
   wrap?: (sel: string) => string;
-  /** Converted code's own stylesheet: each hide is written for an element not marked shown at that size (see `shownGate`). */
-  gateHides?: boolean;
+  /** Converted code's own stylesheet: the marker each hide is gated on (see `shownGate`). */
+  gateHides?: string;
 }
 
 function nodeDisplay(layout: unknown): string | null {
@@ -463,21 +463,29 @@ function unhider(def: ComponentDefinition, nodeId: string, variants: InstanceNod
   };
 }
 
-/** Classes a code placement's part takes where the placement shows it again (`hidden: false`), at all sizes or one. */
-function shownClasses(override: ResponsiveStyles | undefined): string {
-  if (!override) return '';
-  const out = override.base?.hidden === false ? [' so-shown'] : [];
-  for (const size of ['phone', 'tablet', 'desktop'] as const) if (override[size]?.hidden === false) out.push(` so-shown-${size}`);
+/** The marker a placement of converted code `def` sets where it shows a part again (see `shownGate`). */
+const shownMark = (def: Pick<ComponentDefinition, 'id'>) => `so-shown--${defKey(def.id)}`;
+
+/**
+ * Classes a placement of converted code takes on a part it shows again (`hidden: false`), at all sizes or one. Only
+ * code whose stylesheet gates its hides on them gets any, so other code keeps one class per part.
+ */
+function shownClasses(def: ComponentDefinition, override: ResponsiveStyles | undefined): string {
+  const mark = shownMark(def);
+  if (!override || def.kind !== 'code' || !def.source?.includes(mark)) return '';
+  const out = override.base?.hidden === false ? [` ${mark}`] : [];
+  for (const size of ['phone', 'tablet', 'desktop'] as const) if (override[size]?.hidden === false) out.push(` ${mark}-${size}`);
   return out.join('');
 }
 
 /**
  * Code made from a managed design keeps that design's hides in its own stylesheet, where a placement's overrides can
- * no longer see them. Each hide is written for an element not marked shown at that size (`so-shown` for every size,
- * `so-shown-<size>`): `:where()` adds no weight, so the hide keeps its place in the cascade, and a marked element
- * simply takes whatever display its other rules give it.
+ * no longer see them. Each hide is written for an element not marked shown at that size by a placement of this very
+ * component (its marker for every size, or for that size): `:where()` adds no weight, so the hide keeps its place in
+ * the cascade, and a marked element simply takes whatever display its other rules give it. A nested component's
+ * marker names that component, so it never lifts a hide its container sets on the same element.
  */
-const shownGate = (raw: string, size: 'phone' | 'tablet' | 'desktop') => `${raw}:not(:where(.so-shown, .so-shown-${size}))`;
+const shownGate = (raw: string, size: 'phone' | 'tablet' | 'desktop', mark: string) => `${raw}:not(:where(.${mark}, .${mark}-${size}))`;
 
 /**
  * Declaration order inside a rule. Composite values come first so the specific ones win (`gap` before `columnGap`,
@@ -530,8 +538,8 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     if (fallback.length) rules[scope].push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
     if (decls.length) rules[scope].push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${d};`).join('\n')}\n}`);
     // The hide right after the rule it came from, per size, so it keeps its place in the cascade.
-    if (gated && scope === 'base') for (const size of ['phone', 'tablet', 'desktop'] as const) rules.base.push(`@media ${MEDIA_QUERIES[size]} {\n\t${wrap(shownGate(raw, size))} {\n\t\tdisplay: none;\n\t}\n}`);
-    else if (gated && scope !== 'base') rules[scope].push(`${wrap(shownGate(raw, scope))} {\n\tdisplay: none;\n}`);
+    if (gated && scope === 'base') for (const size of ['phone', 'tablet', 'desktop'] as const) rules.base.push(`@media ${MEDIA_QUERIES[size]} {\n\t${wrap(shownGate(raw, size, opts.gateHides!))} {\n\t\tdisplay: none;\n\t}\n}`);
+    else if (gated && scope !== 'base') rules[scope].push(`${wrap(shownGate(raw, scope, opts.gateHides!))} {\n\tdisplay: none;\n}`);
     // At every size: a transition set for one size is turned off wherever the element is.
     if (reduced.length) rules.reduced.push(`${quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
     // Shown at all sizes: each range where it is hidden gets the display its own layout gives it.
@@ -612,7 +620,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
   const wrap = (sel: string) => (standalone ? `:global(${sel})` : sel);
   for (const id of Object.keys(def.tree.nodes).sort()) {
     const n = def.tree.nodes[id];
-    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap, gateHides: standalone });
+    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap, gateHides: standalone ? shownMark(def) : undefined });
     if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, n, `.${nodeClass(def, id)}`, wrap);
   }
   const axes = axesOf(def);
@@ -628,7 +636,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
         const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
         // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
         const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
-        addRules(rules, sel, v.styles![nid], { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone });
+        addRules(rules, sel, v.styles![nid], { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined });
       }
     }
   });
@@ -1547,7 +1555,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   const attrs: string[] = [];
   // Class: definitions pass their node class; pages pass nothing (overrides use so_o). A code placement inside a
   // definition shows its root again through the same markers a page's code placement takes (see shownClasses).
-  const rootShown = def.kind === 'code' ? shownClasses(node.overrides?.root).trim() : '';
+  const rootShown = shownClasses(def, node.overrides?.root).trim();
   if (ctx.def) attrs.push(`class=${classExpr(ctx, node, rootShown ? [js(rootShown)] : [])}`);
   for (const [propName, schema] of Object.entries(def.properties).sort(([a], [b]) => a.localeCompare(b))) {
     const raw = Object.hasOwn(node.props, propName) ? node.props[propName] : schema.default;
@@ -1603,7 +1611,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   if (!ctx.def && node.overrides && Object.keys(node.overrides).length) {
     const map: Record<string, string> = {};
     // A code placement shows a part its code hides through classes, since its stylesheet cannot see those hides.
-    for (const partId of Object.keys(node.overrides).sort()) map[partId] = overrideClass(node.id, partId) + (def.kind === 'code' ? shownClasses(node.overrides[partId]) : '');
+    for (const partId of Object.keys(node.overrides).sort()) map[partId] = overrideClass(node.id, partId) + shownClasses(def, node.overrides[partId]);
     attrs.push(`so_o={${js(map)}}`);
     if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) attrs.push(`class=${attrJs(map.root)}`);
   }
