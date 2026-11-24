@@ -61,44 +61,49 @@ try {
   await win.locator('[aria-label="Settings"]').click();
   const dialog = win.locator('.modal');
   await dialog.getByRole('tab', { name: 'AI assistant' }).click();
-  await dialog.getByRole('button', { name: 'Local model' }).click();
+  await dialog.getByRole('radio', { name: 'Local model' }).click();
   await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
 
   step(`the ${preset.label} preset`);
-  const presetButton = dialog.getByRole('group', { name: 'Server presets' }).getByRole('button', { name: preset.label, exact: true });
-  assert.equal(await presetButton.getAttribute('aria-pressed'), 'false', 'the preset is not chosen yet');
+  const presetButton = dialog.getByRole('group', { name: 'Common server apps' }).getByRole('button', { name: preset.label, exact: true });
+  assert.equal(await presetButton.getAttribute('aria-current'), null, 'the preset is not chosen yet');
   await presetButton.click();
-  await eventually(async () => assert.equal(await presetButton.getAttribute('aria-pressed'), 'true'));
+  await eventually(async () => assert.equal(await presetButton.getAttribute('aria-current'), 'true'));
   assert.equal(await dialog.locator('#settings-local-url').inputValue(), preset.baseURL);
   await eventually(async () => assert.equal((await settings()).ai.local.baseURL, preset.baseURL));
 
   step('the server models are discovered and the second is chosen');
   const modelSelect = dialog.locator('#settings-local-model');
-  await eventually(async () => assert.equal(await dialog.getByRole('button', { name: 'Refresh' }).isEnabled(), true));
+  // Named Refresh only once a check has settled; it reads Checking… while one runs.
+  const refreshButton = dialog.getByRole('button', { name: 'Refresh', exact: true });
+  await eventually(async () => assert.equal(await refreshButton.isEnabled(), true));
   const beforeRefresh = gets().length;
-  await dialog.getByRole('button', { name: 'Refresh' }).click();
+  await refreshButton.click();
   await eventually(async () => assert.ok(gets().length > beforeRefresh, 'Refresh asks the server for its models'));
   await eventually(async () => assert.deepEqual(await modelSelect.locator('option').allInnerTexts(), ["Use the server's model", 'first-model', 'second-model']));
   await modelSelect.selectOption('second-model');
   await eventually(async () => assert.equal((await settings()).ai.models.local, 'second-model'));
 
   step('the connection is tested against the chosen model');
-  await eventually(async () => assert.equal(await dialog.getByRole('button', { name: 'Refresh' }).isEnabled(), true));
+  await eventually(async () => assert.equal(await refreshButton.isEnabled(), true));
   const asked = gets().length;
-  await dialog.getByRole('button', { name: 'Test connection' }).click();
-  await win.locator('.toast', { hasText: 'Connected. second-model is available.' }).waitFor({ timeout: 15000 });
+  const connection = dialog.locator('#settings-connection');
+  await dialog.locator('.settings-status').getByRole('button', { name: 'Test connection' }).click();
+  await connection.filter({ hasText: 'Connection test passed' }).filter({ hasText: 'second-model is available.' }).waitFor({ timeout: 15000 });
   assert.ok(gets().length > asked, 'the test asked the server for its models');
   assert.equal(posts().length, 0, 'nothing is generated before a chat');
 
   step('a cloud key pasted into the Local key field is refused, and never sent');
+  await dialog.locator('.settings-advanced summary').click();
   const keyField = dialog.locator('#settings-api-key');
   const cloudKey = `sk-ant-api03-${'NotARealKey_0123456789-'.repeat(4)}`;
   const beforeKey = server.requests.length;
   await keyField.fill(cloudKey);
   await dialog.locator('.field-error', { hasText: 'This looks like an Anthropic API key' }).waitFor();
-  assert.equal(await dialog.getByRole('button', { name: 'Save', exact: true }).isEnabled(), false, 'the key cannot be saved');
-  await dialog.getByRole('button', { name: 'Test this key' }).click();
-  await win.locator('.toast.error', { hasText: 'This looks like an Anthropic API key' }).waitFor({ timeout: 15000 });
+  assert.equal(await keyField.getAttribute('aria-invalid'), 'true');
+  assert.equal(await dialog.getByRole('button', { name: 'Save key', exact: true }).isEnabled(), false, 'the key cannot be saved');
+  await dialog.locator('.settings-status').getByRole('button', { name: 'Test this key' }).click();
+  await connection.filter({ hasText: 'This looks like an Anthropic API key' }).waitFor({ timeout: 15000 });
   await keyField.press('Enter');
   assert.equal(server.requests.length, beforeKey, 'nothing was sent to the server, with or without the key');
   assert.equal((await win.evaluate(() => window.builder.ai.providers())).find((p) => p.id === 'local').source, null, 'no key was saved');
