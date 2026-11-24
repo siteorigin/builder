@@ -67,7 +67,7 @@ import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
 import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
 import { useStyleCopyItems } from './StylePaste';
-import { useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
+import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, createComponentTarget, definitionView, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
@@ -786,7 +786,7 @@ function SelectionActions({ title, selection, items, group, ask = true }: { titl
   return (
     <>
       {ask && (
-        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title={`Ask AI about ${title} (⌘J)`} onClick={() => askAiAbout(selection)}>
+        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title={`Ask AI about ${title} (${platformKeys('⌘J')})`} onClick={() => askAiAbout(selection)}>
           <Sparkles />
         </button>
       )}

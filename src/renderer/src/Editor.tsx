@@ -37,6 +37,7 @@ import { useTransitionAnnouncement } from './lib/announce';
 import { runPhase } from './lib/savestate';
 import { PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
+import { shortcutLabel } from './lib/shortcut-keys';
 
 const LEFT_TABS = [
   { id: 'pages', label: 'Pages', icon: <FileText /> },
@@ -166,7 +167,7 @@ function saveWidth(side: PanelSide) {
 }
 
 /** A shortcut as this platform writes it, as the toolbar's hints do. */
-const shortcutKeys = (k: string) => (api.platform === 'darwin' ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
+const shortcutKeys = (k: string) => shortcutLabel(k, api.platform);
 
 /** Each splitter's name, the panel it sizes (its aria-controls), and its grip's name. */
 const SPLIT = {

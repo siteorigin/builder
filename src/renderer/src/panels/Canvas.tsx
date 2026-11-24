@@ -39,6 +39,7 @@ import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
 import { sampleEntries, shownView, templateOwner, viewAt, viewKey, type TemplateMode } from '../lib/template-view';
 import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type FrameEntry, type VisitorHistory } from '../lib/preview-history';
+import { shortcutLabel } from '../lib/shortcut-keys';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -47,7 +48,7 @@ export const frameTextFocus = { active: false };
 
 /** Shortcuts as this platform writes them: ⌘ and Meta on macOS, Ctrl and Control elsewhere. */
 const isMac = api.platform === 'darwin';
-const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
+const keys = (k: string) => shortcutLabel(k, api.platform);
 const ariaKeys = (k: string) => (isMac ? k : k.replace('Meta', 'Control'));
 
 /** The site's page addresses as they are now (see siteAddresses). */

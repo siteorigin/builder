@@ -1,10 +1,11 @@
 import { isImeComposing } from '../lib/ime';
 import { oneLine } from '../lib/one-line';
+import { shortcutLabel } from '../lib/shortcut-keys';
 import { Children, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
+import { aiActivity, api, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
 import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, keepDraft, keptDraft, keptDraftKey, keptField, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
@@ -291,7 +292,8 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
               <span className="grow">{it.label}</span>
             )}
             {it.hint && <span className="hint">{it.hint}</span>}
-            {it.shortcut && <span className="kbd">{it.shortcut}</span>}
+            {/* Written the Mac way (⌘D, ⌫) and named as this platform names the keys. */}
+            {it.shortcut && <span className="kbd">{shortcutLabel(it.shortcut, api.platform)}</span>}
             {(radio || toggle) && it.icon && <span className="menu-trail">{indicator}</span>}
           </>
         );

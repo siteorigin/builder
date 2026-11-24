@@ -2,9 +2,10 @@ import { ClipboardCopy, ClipboardPaste } from 'lucide-react';
 import type { MenuItem } from '../components/ui';
 import { api, getState, useStore, type State } from '../store';
 import { pasteFromMenu } from '../lib/clipboard';
+import { shortcutLabel } from '../lib/shortcut-keys';
 
-/** A shortcut as this computer writes it: ⌘C on a Mac, Ctrl+C elsewhere. */
-export const platformKeys = (k: string) => (api.platform === 'darwin' ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
+/** A shortcut as this computer writes it: ⌘C on a Mac, Ctrl+C elsewhere (see shortcutLabel). */
+export const platformKeys = (k: string) => shortcutLabel(k, api.platform);
 
 /** What a menu does for Copy and Paste: `copy` when the selection can be copied (content on a page), `paste` where a
  *  paste is offered. Either is left out of the menu when null. */

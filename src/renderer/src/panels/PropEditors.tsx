@@ -6,6 +6,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';
+import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
 import { DraftInput, Field, FieldHome, openSection, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -923,9 +924,10 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
 
 /**
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
- * its hint; without, it names itself with aria-label.
+ * its hint; without, it names itself with aria-label. `onProblem` hears why text typed in a number field can't be
+ * saved (null once it can), for beside the field.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder, everywhere }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean }) {
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder, everywhere, onProblem }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean; onProblem?: (problem: string | null) => void }) {
   const name = id ? undefined : (label ?? schema.label);
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
@@ -946,7 +948,24 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
         />
       );
     case 'number':
-      return <DraftInput {...wired} value={String(value ?? schema.default)} onCommit={(t) => onChange(Number(t))} ariaLabel={name} />;
+      // Text that is not a number in range ("12px") is never sent: it stays in the field with the reason beside it.
+      // An emptied field sends nothing either, and the saved value comes back.
+      return (
+        <DraftInput
+          {...wired}
+          value={String(value ?? schema.default)}
+          check={(t) => {
+            const read = readNumberDraft(t, schema);
+            return 'problem' in read ? { message: read.problem } : null;
+          }}
+          onProblem={(p) => onProblem?.(p?.message ?? null)}
+          onCommit={(t, edit) => {
+            const read = readNumberDraft(t, schema);
+            return 'value' in read ? onChange(read.value, edit) : 'empty' in read ? undefined : false;
+          }}
+          ariaLabel={name}
+        />
+      );
     case 'boolean':
       return <Switch id={id} describedBy={describedBy} checked={!!value} onChange={onChange} label={name ?? schema.label} />;
     case 'enum':
@@ -1348,6 +1367,8 @@ export interface FieldAction {
  */
 export function ScalarField({ schema, value, onChange, read, state, label, hint, error, action, onLive, placeholder, everywhere, notedBy }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean; notedBy?: string }) {
   const id = useId();
+  // Why the number typed in the field can't be saved, shown in place of the field's own note until it is corrected.
+  const [numberProblem, setNumberProblem] = useState<string | null>(null);
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
   // A set of choices names itself and says what it is under its own rows.
@@ -1386,9 +1407,10 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
         )}
       </div>
     );
+  const problem = (schema.type === 'number' ? numberProblem : null) ?? error;
   return (
-    <Field label={shown} hint={note} error={error} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} everywhere={everywhere} />
+    <Field label={shown} hint={note} error={problem} controlId={id}>
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || problem ? `${id}-note` : undefined} invalid={!!problem} onLive={onLive} placeholder={placeholder} everywhere={everywhere} onProblem={setNumberProblem} />
     </Field>
   );
 }
