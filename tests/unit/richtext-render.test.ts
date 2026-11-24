@@ -548,6 +548,12 @@ describe('Convert to code within what a copy can keep', () => {
     home(s).nodes[node.id] = node;
     home(s).rootIds.push(node.id);
     expect(() => applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id }])).toThrow(/a list filled in from pages, with a page link in a field's default/);
+    // A field every row supplies itself never shows its default, and text written before blocks holds no link.
+    const news = s.components['project.news'].properties.news as unknown as { fields: Record<string, unknown> };
+    news.fields.note = { type: 'richtext', label: 'Note', default: ['Written as a string'] };
+    news.fields.pageLink = { type: 'link', label: 'Link', default: { type: 'page', target: about.id } };
+    outer.properties.intro = { type: 'richtext', label: 'Intro', default: ['Written before blocks', { type: 'p' }] as never };
+    expect(() => applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id }])).not.toThrow();
   });
 
   it('refuses rather than give the copy more properties than a component may have', () => {

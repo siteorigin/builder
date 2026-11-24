@@ -24,7 +24,7 @@ import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, tex
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageClash, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
-import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { isListBlock, toRichText } from '@shared/richtext';
 import { findVariant, variantOptions } from '@shared/variants';
 import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily } from '@shared/fonts';
@@ -2126,7 +2126,8 @@ function withoutPageLinks(schema: PropSchema, v: unknown): unknown {
     case 'link':
       return (v as LinkValue).type === 'page' ? { type: 'none', target: '' } : v;
     case 'richtext':
-      return Array.isArray(v) ? (v as RichText).map((b) => (isListBlock(b) ? { ...b, items: b.items.map((it) => it.map(unlinked)) } : { ...b, spans: b.spans.map(unlinked) })) : v;
+      // Older strings and malformed blocks hold no links and pass through as they are.
+      return Array.isArray(v) ? v.map((b) => (!b || typeof b !== 'object' ? b : Array.isArray(b.items) ? { ...b, items: b.items.map((it: unknown) => (Array.isArray(it) ? it.map(unlinked) : it)) } : Array.isArray(b.spans) ? { ...b, spans: b.spans.map(unlinked) } : b)) : v;
     case 'list':
       return Array.isArray(v)
         ? v.map((it) => (it && typeof it === 'object' ? { ...it, ...Object.fromEntries(Object.entries(schema.fields).filter(([f]) => Object.hasOwn(it, f)).map(([f, fs]) => [f, withoutPageLinks(fs, (it as Record<string, unknown>)[f])])) } : it))
@@ -2135,7 +2136,7 @@ function withoutPageLinks(schema: PropSchema, v: unknown): unknown {
       return v;
   }
 }
-const unlinked = (s: RichSpan): RichSpan => (s?.link?.type === 'page' ? { ...s, link: { type: 'none', target: '' } } : s);
+const unlinked = (s: RichSpan): RichSpan => (s && typeof s === 'object' && s.link?.type === 'page' ? { ...s, link: { type: 'none', target: '' } } : s);
 
 /** A property as the converted source's own fallback holds it: its default, and a list's field defaults, unlinked from pages. */
 function sourceFallback(schema: PropSchema): PropSchema {
@@ -2166,7 +2167,7 @@ function promotePageLinks(state: ProjectState, def: ComponentDefinition) {
   const propName = (base: string) => {
     const words = base.split(/[^a-zA-Z0-9]+/).filter(Boolean);
     const camel = words.map((w, i) => (i ? w[0].toUpperCase() + w.slice(1) : w)).join('').replace(/^[^a-zA-Z]+/, '').replace(/^./, (c) => c.toLowerCase()).slice(0, 30);
-    const root = camel && valid(camel) && !/^item$/.test(camel) ? camel : `${camel || 'page'}Link`.slice(0, 30);
+    const root = camel && valid(camel) && !/^item$/.test(camel) ? camel : `${(camel || 'page').slice(0, 26)}Link`;
     // A name whose label property exists would look as if that label decided whether the link shows.
     for (let i = 1; i < 1000; i++) {
       const n = i === 1 ? root : `${root}${i}`;
@@ -2204,7 +2205,8 @@ function promotePageLinks(state: ProjectState, def: ComponentDefinition) {
     if (n.kind === 'instance' && nested)
       for (const [k, schema] of Object.entries(nested.properties)) {
         // A list worked out from the site's pages takes no value, so its fields' defaults would be written into the code.
-        if (schema.type === 'list' && schema.feed && Object.values(schema.fields).some((f) => showsPageLink(f, f.default, code)))
+        // Fields every row supplies itself (a story's own page link) never show their default.
+        if (schema.type === 'list' && schema.feed && Object.entries(schema.fields).some(([f, fs]) => !Object.hasOwn(ARTICLE_ROW_FIELDS, f) && showsPageLink(fs, fs.default, code)))
           fail(`"${def.name}" shows “${schema.label}”, a list filled in from pages, with a page link in a field's default. A code copy would keep that page's address of today: remove the link first.`);
         if (!Object.hasOwn(n.props, k) && showsPageLink(schema, schema.default, code)) n.props[k] = promote(schema, k, schema.default);
       }
