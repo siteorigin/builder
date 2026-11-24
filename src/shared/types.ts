@@ -75,22 +75,39 @@ export function isBinding(v: unknown): v is Binding {
   return !!v && typeof v === 'object' && ('$prop' in (v as object) || '$item' in (v as object));
 }
 
+/**
+ * A read of one of the definition's own UI state variables (`ComponentDefinition.state`). Only conditions and the
+ * variant axes of nested components read state: content (text, links, images) always comes from properties.
+ */
+export type StateRef = { $state: string };
+/** What a condition or a nested component's variant axis can read: a property, a list item field or UI state. */
+export type BindingRef = Binding | StateRef;
+
+/** A read of UI state, and nothing else: a value that also names a property or an item field is neither. */
+export function isStateRef(v: unknown): v is StateRef {
+  return !!v && typeof v === 'object' && !Array.isArray(v) && Object.hasOwn(v, '$state') && !isBinding(v);
+}
+
+export function isBindingRef(v: unknown): v is BindingRef {
+  return isBinding(v) || isStateRef(v);
+}
+
 /** A value a condition can compare a bound value with. */
 export type ConditionValue = string | number | boolean;
 /** A bound value compared with a literal: equal (`eq`) or not equal (`ne`). */
-export type Comparison = { ref: Binding; eq: ConditionValue } | { ref: Binding; ne: ConditionValue };
+export type Comparison = { ref: BindingRef; eq: ConditionValue } | { ref: BindingRef; ne: ConditionValue };
 /** What `when` and `unless` test: a bound value being present, or a bound value compared with a literal. */
-export type Condition = Binding | Comparison;
+export type Condition = BindingRef | Comparison;
 
 export function isComparison(v: unknown): v is Comparison {
-  if (!v || typeof v !== 'object' || !isBinding((v as { ref?: unknown }).ref)) return false;
+  if (!v || typeof v !== 'object' || !isBindingRef((v as { ref?: unknown }).ref)) return false;
   return Object.hasOwn(v, 'eq') !== Object.hasOwn(v, 'ne');
 }
 
 /** The binding a condition reads, or undefined for a value that is not a condition. */
-export function conditionRef(c: unknown): Binding | undefined {
+export function conditionRef(c: unknown): BindingRef | undefined {
   if (isComparison(c)) return c.ref;
-  return isBinding(c) ? c : undefined;
+  return isBindingRef(c) ? c : undefined;
 }
 
 /**
@@ -369,6 +386,11 @@ export interface LinkNode extends NodeBase {
   iconPosition?: Bindable<IconPosition>;
   /** Accessible name, when the label alone does not say where the link goes. */
   ariaLabel?: Bindable<string>;
+  /**
+   * Inside a component's design: what clicking the button does to the component's UI state, instead of (a link of
+   * type `none`) or alongside going somewhere.
+   */
+  stateAction?: StateAction;
 }
 export interface IconNode extends NodeBase {
   kind: 'icon';
@@ -399,9 +421,10 @@ export interface InstanceNode extends NodeBase {
   props: Record<string, unknown>;
   /**
    * The option chosen on each of the definition's variant axes. An axis left out uses its default. Inside a
-   * definition an axis can be bound to an enum property whose options are all options of that axis.
+   * definition an axis can be bound to an enum property, or to enum UI state, whose options are all options of that
+   * axis.
    */
-  variants?: Record<string, Bindable<string>>;
+  variants?: Record<string, string | BindingRef>;
   /** Instance style overrides keyed by public part ID ("root" is the instance boundary). */
   overrides?: Record<string, ResponsiveStyles>;
   /**
@@ -498,6 +521,43 @@ export interface SlotDef {
   max?: number;
 }
 
+/**
+ * One of a managed component's own UI state variables: whether a panel is open, which tab or billing period shows.
+ * Each placement starts at `initial`, and visitors change it with buttons (`LinkNode.stateAction`); it is never a
+ * property placements set.
+ */
+export type UiStateSchema = BooleanUiState | EnumUiState;
+export interface BooleanUiState {
+  type: 'boolean';
+  label: string;
+  initial: boolean;
+}
+export interface EnumUiState {
+  type: 'enum';
+  label: string;
+  /** The values in order, which `next` and `prev` step through. */
+  options: Array<{ value: string; label: string }>;
+  initial: string;
+}
+export const UI_STATE_TYPES: ReadonlyArray<UiStateSchema['type']> = ['boolean', 'enum'];
+
+/**
+ * What a button does to UI state: `set` it to a value, `toggle` a yes/no state, or step a choice to its `next` or
+ * `prev` option, staying at the last (or first) unless `wrap` goes round to the other end.
+ */
+export type StateAction =
+  | { state: string; op: 'set'; value: boolean | string }
+  | { state: string; op: 'toggle' }
+  | { state: string; op: 'next' | 'prev'; wrap?: boolean };
+export type StateActionOp = StateAction['op'];
+export const STATE_ACTION_OPS: readonly StateActionOp[] = ['set', 'toggle', 'next', 'prev'];
+
+/** The value a definition's UI state starts at in every placement, or undefined when it declares no such state. */
+export function stateInitial(def: Pick<ComponentDefinition, 'state'> | undefined, name: string): unknown {
+  const s: unknown = def?.state && Object.hasOwn(def.state, name) ? def.state[name] : undefined;
+  return s && typeof s === 'object' ? (s as { initial?: unknown }).initial : undefined;
+}
+
 export interface ComponentDefinition {
   schemaVersion: number;
   /** Unique installed definition identity. */
@@ -515,6 +575,8 @@ export interface ComponentDefinition {
   parts: Record<string, PartDef>;
   slots?: Record<string, SlotDef>;
   variantAxes?: Record<string, VariantAxis>;
+  /** UI state the design reads (`{ $state: name }`) and its buttons change (managed components only). */
+  state?: Record<string, UiStateSchema>;
   /** Managed graph (managed components only). */
   tree?: NodeTree;
   /** Svelte source for code components bundled with a theme. */

@@ -209,6 +209,8 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       base.label = n.label;
       base.link = n.link;
       base.appearance = n.appearance;
+      // A button that changes the component's UI state works without a destination.
+      if (n.stateAction) base.stateAction = n.stateAction;
       break;
     default:
       base.kind = n.kind;
@@ -287,6 +289,8 @@ export function componentDetail(def: ComponentDefinition) {
     ),
     variantAxes: Object.fromEntries(axesOf(def).map(([axis, a]) => [axis, { label: a.label, default: a.default, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, v.label])) }])),
     slots: def.slots ?? {},
+    // UI state the design reads in conditions and variants and its buttons change; placements never set it.
+    ...(def.state && Object.keys(def.state).length ? { state: def.state } : {}),
     examples: def.examples ?? []
   };
 }

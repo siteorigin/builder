@@ -1,8 +1,8 @@
 /**
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
-import type { Binding, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema, TokenGroup } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, RICH_CODE_FORMS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
+import type { BindingRef, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema, StateRef, TokenGroup, UiStateSchema } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
 import { ARTICLE_ROW_FIELDS } from '@shared/articles';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
@@ -343,7 +343,8 @@ export interface BindingSite {
   field: BindField;
   /** For `prop`, the nested property; for `variant`, the axis. */
   prop?: string;
-  binding: Binding;
+  /** A property, a list item field, or (in a condition or a nested variant axis) the definition's UI state. */
+  binding: BindingRef;
   /** The comparison a `when` or `unless` makes with its binding, if it is not a plain presence test. */
   comparison?: Comparison;
 }
@@ -354,7 +355,7 @@ export function bindingSites(def: ComponentDefinition): BindingSite[] {
   for (const n of Object.values(def.tree?.nodes ?? {})) {
     for (const slot of bindingSlots(n)) {
       const condition = slot.field === 'when' || slot.field === 'unless';
-      const binding = condition ? conditionRef(slot.value) : isBinding(slot.value) ? slot.value : undefined;
+      const binding = condition ? conditionRef(slot.value) : isBindingRef(slot.value) ? slot.value : undefined;
       if (!binding) continue;
       out.push({ node: n, field: slot.field, prop: slot.prop, binding, ...(condition && isComparison(slot.value) ? { comparison: slot.value } : {}) });
     }
@@ -373,14 +374,14 @@ const listed = (values: string[]) => values.map((v) => `"${v}"`).join(', ');
  * cannot take (a tag that is not one, a variant the nested component lacks, an icon side other than start or end).
  * Null when it fits. Shared by load validation, binding and property changes, so every path refuses the same.
  */
-export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'node' | 'field' | 'prop' | 'comparison'>, schema: PropSchema): string | null {
+export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'node' | 'field' | 'prop' | 'comparison'>, schema: PropSchema, what: 'property' | 'state' = 'property'): string | null {
   const { node, field, comparison } = site;
   if (comparison) {
     const value = 'eq' in comparison ? comparison.eq : comparison.ne;
     const shown = JSON.stringify(value);
     switch (schema.type) {
       case 'boolean':
-        return typeof value === 'boolean' ? null : `compares a yes/no property with ${shown}; compare it with true or false.`;
+        return typeof value === 'boolean' ? null : `compares a yes/no ${what} with ${shown}; compare it with true or false.`;
       case 'number':
         return typeof value === 'number' && Number.isFinite(value) ? null : `compares a number property with ${shown}; compare it with a number.`;
       case 'string':
@@ -421,7 +422,7 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
     (field === 'text' && node.kind === 'text' && !!node.rich);
   const ok = acceptedTypes(node, field, undefined);
   if (!fresh || !ok) return null;
-  if (!ok.includes(schema.type)) return `shows a ${schema.type} property as its ${field}, which needs a ${ok.join(' or ')} property.`;
+  if (!ok.includes(schema.type)) return `shows a ${schema.type} ${what} as its ${field}, which needs a ${ok.join(' or ')} ${what}.`;
   const options = optionValues(schema);
   switch (field) {
     case 'datetime':
@@ -482,9 +483,163 @@ export function enclosingList(def: ComponentDefinition, nodeId: string): ListPro
   return null;
 }
 
-/** The schema a binding at this node resolves to, or undefined when it does not resolve. */
-export function boundSchema(def: ComponentDefinition, nodeId: string, b: Binding): PropSchema | undefined {
+/**
+ * The schema a binding at this node resolves to, or undefined when it does not resolve. UI state reads as the yes/no
+ * or choice property it behaves like, with its initial value as the default.
+ */
+export function boundSchema(def: ComponentDefinition, nodeId: string, b: BindingRef): PropSchema | undefined {
+  // Only a read of state alone: a value that also names a property or an item field is refused as malformed.
+  if (isStateRef(b)) {
+    const s = declaredState(def, b.$state);
+    return s ? stateAsProp(s) : undefined;
+  }
   if ('$prop' in b) return propBindingSchema(def.properties, b);
   const list = enclosingList(def, nodeId);
   return list && Object.hasOwn(list.fields, b.$item) ? list.fields[b.$item] : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// UI state
+// ---------------------------------------------------------------------------
+
+/** At most this many UI state variables per component, and this many options per choice. */
+export const MAX_UI_STATES = 20;
+const MAX_STATE_OPTIONS = 50;
+
+/** Fields that may read UI state: conditions, and the variant axes of a nested component. */
+export const STATE_FIELDS: ReadonlySet<BindField> = new Set<BindField>(['when', 'unless', 'variant']);
+
+/** A UI state variable as the yes/no or choice property it behaves like, starting at its initial value. */
+export function stateAsProp(s: UiStateSchema): PropSchema {
+  return s.type === 'boolean' ? { type: 'boolean', label: s.label, default: s.initial } : { type: 'enum', label: s.label, default: s.initial, options: s.options };
+}
+
+/** What is wrong with a stored UI state declaration, or null. Shared by load validation and the theme pack loader. */
+export function uiStateProblem(def: Pick<ComponentDefinition, 'properties'>, name: string, raw: unknown): string | null {
+  if (!/^[a-z][a-zA-Z0-9]{0,39}$/.test(name) || RESERVED.has(name) || /^item\d+$/.test(name) || isProtoKey(name) || name === 'prototype') return `"${name.slice(0, 40)}" is not a name UI state can have.`;
+  if (Object.hasOwn(def.properties ?? {}, name)) return `"${name}" is both a property and UI state.`;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return `the UI state "${name}" is not a declaration.`;
+  const r = raw as Record<string, unknown>;
+  if (!(UI_STATE_TYPES as readonly unknown[]).includes(r.type)) return `the UI state "${name}" is neither yes/no (boolean) nor a choice (enum).`;
+  if (typeof r.label !== 'string') return `the UI state "${name}" has no label.`;
+  if (r.type === 'boolean') return typeof r.initial === 'boolean' ? null : `the UI state "${name}" starts as ${JSON.stringify(r.initial) ?? 'nothing'}; a yes/no state starts as true or false.`;
+  const options = r.options;
+  if (!Array.isArray(options) || options.length < 2 || options.length > MAX_STATE_OPTIONS) return `the UI state "${name}" needs 2 to ${MAX_STATE_OPTIONS} options.`;
+  const values = new Set<string>();
+  for (const o of options) {
+    const value = (o as { value?: unknown } | null)?.value;
+    if (typeof value !== 'string' || !value || value.length > 60 || typeof (o as { label?: unknown }).label !== 'string') return `the UI state "${name}" has an option that is not a value of up to 60 characters with a label.`;
+    if (values.has(value)) return `the UI state "${name}" lists the option "${value}" twice.`;
+    values.add(value);
+  }
+  return typeof r.initial === 'string' && values.has(r.initial) ? null : `the UI state "${name}" starts as ${JSON.stringify(r.initial) ?? 'nothing'}, which is not one of its options.`;
+}
+
+/** A state map a hand edit made into something else is reported once, on its own, not again by everything that reads it. */
+const stateMapDamaged = (def: Pick<ComponentDefinition, 'state'>) => def.state !== undefined && (!def.state || typeof def.state !== 'object' || Array.isArray(def.state));
+
+/** Whether a definition declares this state, but in a form a hand edit damaged (reported on its own). */
+export function damagedState(def: Pick<ComponentDefinition, 'state' | 'properties'>, name: string): boolean {
+  if (stateMapDamaged(def)) return true;
+  return !!def.state && Object.hasOwn(def.state, name) && !declaredState(def, name);
+}
+
+/** A declared, well-formed UI state variable of a definition (one a hand edit damaged is reported on its own). */
+export function declaredState(def: Pick<ComponentDefinition, 'state' | 'properties'>, name: string): UiStateSchema | undefined {
+  const s = def.state && Object.hasOwn(def.state, name) ? def.state[name] : undefined;
+  return s !== undefined && !uiStateProblem(def, name, s) ? s : undefined;
+}
+
+/** The name UI state may take: a property-style name that no property of the component already has. */
+export function checkStateName(def: ComponentDefinition, name: string) {
+  checkPropName(name, 'State');
+  if (name === 'prototype') fail('"prototype" is a reserved name. Choose another state name.');
+  if (Object.hasOwn(def.properties, name)) fail(`"${def.name}" already has a property "${name}". UI state needs a name of its own.`);
+}
+
+/**
+ * Validate and normalize a UI state declaration supplied by a person or the AI. The label defaults to the name, an
+ * option may be given as just its value, and the initial value defaults to false or the first option; anything
+ * else that does not fit is refused rather than guessed.
+ */
+export function normalizeUiState(raw: unknown, name: string): UiStateSchema {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(`UI state "${name}" needs a declaration with a type.`);
+  const r = raw as Record<string, unknown>;
+  const label = text(r.label, 80) ?? name;
+  if (r.type === 'boolean') {
+    if (r.options !== undefined) fail(`UI state "${name}" is yes/no, so it has no options.`);
+    if (r.initial !== undefined && typeof r.initial !== 'boolean') fail(`UI state "${name}" is yes/no: it starts as true or false, not ${JSON.stringify(r.initial)}.`);
+    return { type: 'boolean', label, initial: r.initial === true };
+  }
+  if (r.type !== 'enum') fail(`UI state "${name}" needs a type of boolean or enum.`);
+  if (!Array.isArray(r.options) || r.options.length < 2 || r.options.length > MAX_STATE_OPTIONS) fail(`UI state "${name}": a choice needs 2 to ${MAX_STATE_OPTIONS} options.`);
+  const seen = new Set<string>();
+  const options = r.options.map((o) => {
+    const value = typeof o === 'string' ? o : (o as { value?: unknown } | null)?.value;
+    if (typeof value !== 'string' || !value || value.length > 60) fail(`UI state "${name}": every option needs a value of up to 60 characters.`);
+    if (seen.has(value)) fail(`UI state "${name}": option "${value}" is listed twice.`);
+    seen.add(value);
+    return { value, label: (typeof o === 'object' && text((o as { label?: unknown }).label, 80)) || value };
+  });
+  if (r.initial !== undefined && (typeof r.initial !== 'string' || !seen.has(r.initial)))
+    fail(`UI state "${name}" starts as ${JSON.stringify(r.initial)}, which is not one of its options (${listed(options.map((o) => o.value))}).`);
+  return { type: 'enum', label, options, initial: (r.initial as string | undefined) ?? options[0].value };
+}
+
+/** What is wrong with a read of UI state at a binding site, or null: state the definition lacks, a field that cannot read it, or a value it never holds. */
+export function stateRefProblem(state: ProjectState, def: ComponentDefinition, site: Pick<BindingSite, 'node' | 'field' | 'prop' | 'comparison'>, ref: StateRef): string | null {
+  if (!STATE_FIELDS.has(site.field)) return `reads the UI state "${ref.$state}" as its ${site.field}; only conditions and the variants of a nested component read UI state.`;
+  // A declaration a hand edit damaged is reported once, on its own.
+  if (damagedState(def, ref.$state)) return null;
+  const declared = declaredState(def, ref.$state);
+  if (!declared) return `reads the UI state "${ref.$state}", which the component does not declare.`;
+  return bindingProblem(state, site, stateAsProp(declared), 'state');
+}
+
+/** What is wrong with what a button does to UI state, or null. Shared by load validation and node.setStateAction. */
+export function stateActionProblem(def: ComponentDefinition, action: unknown): string | null {
+  if (!action || typeof action !== 'object' || Array.isArray(action)) return 'has a UI state action that is not one.';
+  const a = action as Record<string, unknown>;
+  if (typeof a.state !== 'string' || !(STATE_ACTION_OPS as readonly unknown[]).includes(a.op)) return 'has a UI state action that names no state, or does something other than set, toggle, next or prev.';
+  const keys = Object.keys(a).filter((k) => k !== 'state' && k !== 'op');
+  const allowed = a.op === 'set' ? ['value'] : a.op === 'toggle' ? [] : ['wrap'];
+  const extra = keys.filter((k) => !allowed.includes(k));
+  if (extra.length) return `has a "${a.op}" UI state action that also says ${extra.map((k) => `"${k}"`).join(', ')}, which only ${extra.includes('value') ? 'set' : extra.includes('wrap') ? 'next and prev' : 'other actions'} take.`;
+  if (damagedState(def, a.state)) return null;
+  const declared = declaredState(def, a.state);
+  if (!declared) return `changes the UI state "${a.state}", which the component does not declare.`;
+  switch (a.op) {
+    case 'toggle':
+      return declared.type === 'boolean' ? null : `toggles the choice "${a.state}"; set it, or step it to the next or previous option.`;
+    case 'next':
+    case 'prev':
+      if (a.wrap !== undefined && typeof a.wrap !== 'boolean') return `steps "${a.state}" with a wrap that is not true or false.`;
+      return declared.type === 'enum' ? null : `steps the yes/no state "${a.state}" to its ${a.op} option; set or toggle it instead.`;
+    default:
+      if (declared.type === 'boolean') return typeof a.value === 'boolean' ? null : `sets the yes/no state "${a.state}" to ${JSON.stringify(a.value) ?? 'nothing'}; set it to true or false.`;
+      return typeof a.value === 'string' && declared.options.some((o) => o.value === a.value)
+        ? null
+        : `sets "${a.state}" to ${JSON.stringify(a.value) ?? 'nothing'}, which is not one of its options (${listed(declared.options.map((o) => o.value))}).`;
+  }
+}
+
+/** Every node of a design that reads or changes one UI state variable, with what it does. */
+export function stateUsers(def: ComponentDefinition, name: string): Array<{ node: GraphNode; field: BindField | 'stateAction'; prop?: string }> {
+  const out: Array<{ node: GraphNode; field: BindField | 'stateAction'; prop?: string }> = [];
+  for (const site of bindingSites(def)) if (isStateRef(site.binding) && site.binding.$state === name) out.push({ node: site.node, field: site.field, prop: site.prop });
+  for (const n of Object.values(def.tree?.nodes ?? {})) if (n.kind === 'link' && n.stateAction?.state === name) out.push({ node: n, field: 'stateAction' });
+  return out;
+}
+
+/** Whether any node of these reads or changes UI state. */
+export function usesState(nodes: GraphNode[]): boolean {
+  return nodes.some((n) => (n.kind === 'link' && n.stateAction !== undefined) || bindingSlots(n).some((slot) => isStateRef(slot.field === 'when' || slot.field === 'unless' ? conditionRef(slot.value) : slot.value)));
+}
+
+/** A copy of a definition with one UI state variable replaced (or removed with `undefined`), for checking a change before making it. */
+export function withState(def: ComponentDefinition, name: string, schema: UiStateSchema | undefined): ComponentDefinition {
+  const next = { ...(def.state ?? {}) };
+  if (schema) next[name] = schema;
+  else delete next[name];
+  return { ...def, state: next };
 }

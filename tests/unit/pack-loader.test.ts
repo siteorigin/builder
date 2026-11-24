@@ -126,6 +126,41 @@ describe('loading a theme pack release', () => {
     ['a used file that is not listed', (d) => edit(d, (m) => delete m.files[m.fonts[0].faces[0].file]), /is used but not listed/],
     ['a listed file nothing uses', (d) => edit(d, (m) => (m.files['previews/extra.webp'] = m.files['previews/hero.split.webp'])), /previews\/extra\.webp is listed but nothing in the pack uses it/],
     ['a preview for a component the pack does not have', (d) => edit(d, (m) => (m.previews!['ghost.section'] = { default: 'previews/hero.split.webp' })), /preview for ghost\.section, which the pack does not have/],
+    ['UI state with a name that cannot be an identifier', (d) => edit(d, (m) => (m.components[2].state = { 'open-now': { type: 'boolean', label: 'Open', initial: false } })), /"open-now" is not a name UI state can have/],
+    ['a condition that reads UI state the component does not declare', (d) => edit(d, (m) => (m.components[2].tree!.nodes[m.components[2].tree!.rootIds[0]].when = { $state: 'open' })), /reads the UI state "open", which the component does not declare/],
+    ['a comparison with UI state the component does not declare', (d) => edit(d, (m) => (m.components[2].tree!.nodes[m.components[2].tree!.rootIds[0]].unless = { ref: { $state: 'tab' }, eq: 'a' })), /reads the UI state "tab", which the component does not declare/],
+    ['a yes/no state compared with text', (d) => edit(d, (m) => {
+      const c = m.components[2];
+      c.state = { open: { type: 'boolean', label: 'Open', initial: false } };
+      c.tree!.nodes[c.tree!.rootIds[0]].when = { ref: { $state: 'open' }, eq: 'true' };
+    }), /compares a yes\/no state with "true"/],
+    ['UI state read as text', (d) => edit(d, (m) => {
+      const c = m.components[2];
+      c.state = { open: { type: 'boolean', label: 'Open', initial: false } };
+      const text = Object.values(c.tree!.nodes).find((n) => n.kind === 'text');
+      if (!text || text.kind !== 'text') throw new Error('The component has no text to test with.');
+      text.text = { $state: 'open' } as never;
+    }), /reads UI state as its text/],
+    ['a condition naming UI state that is neither a read nor one comparison', (d) => edit(d, (m) => {
+      const c = m.components[2];
+      c.state = { open: { type: 'boolean', label: 'Open', initial: false } };
+      c.tree!.nodes[c.tree!.rootIds[0]].when = { ref: { $state: 'open' }, eq: true, ne: false } as never;
+    }), /neither UI state nor a comparison of it with one value/],
+    ['more UI state than a component may have', (d) => edit(d, (m) => (m.components[2].state = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`flag${i}`, { type: 'boolean', label: 'Flag', initial: false }])))), /more than 20 UI state variables/],
+    ['a button that toggles a choice', (d) => edit(d, (m) => {
+      const c = m.components[2];
+      c.state = { tab: { type: 'enum', label: 'Tab', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }], initial: 'a' } };
+      const link = Object.values(c.tree!.nodes).find((n) => n.kind === 'link');
+      if (!link || link.kind !== 'link') throw new Error('The component has no button to test with.');
+      link.stateAction = { state: 'tab', op: 'toggle' };
+    }), /toggles the choice "tab"/],
+    ['a button that sets a choice to a value it does not offer', (d) => edit(d, (m) => {
+      const c = m.components[2];
+      c.state = { tab: { type: 'enum', label: 'Tab', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }], initial: 'a' } };
+      const link = Object.values(c.tree!.nodes).find((n) => n.kind === 'link');
+      if (!link || link.kind !== 'link') throw new Error('The component has no button to test with.');
+      link.stateAction = { state: 'tab', op: 'set', value: 'c' };
+    }), /sets "tab" to "c", which is not one of its options/],
     ['a font file changed after it was built', (d) => writeFileSync(join(d, firstFont(d)), Buffer.concat([readFileSync(join(d, firstFont(d))), Buffer.from('x')])), /bytes, but the pack lists/],
     ['a font file with the same size but other bytes', (d) => {
       const f = join(d, firstFont(d));

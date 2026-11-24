@@ -2,7 +2,7 @@ import { useEffect, useId, useRef } from 'react';
 import type { ComponentDefinition, ConditionValue, GraphNode, OwnerRef } from '@shared/types';
 import { applyOps } from '../store';
 import { DraftInput, Section, SwitchRow } from '../components/ui';
-import { comparisonInput, conditionSources, readRule, ruleOp, sourceKey, startValue, type ConditionField, type ConditionRule, type ConditionSource, type ConditionTest } from '../lib/conditions';
+import { bindingName, comparisonInput, conditionSources, readRule, ruleOp, sourceKey, startValue, type ConditionField, type ConditionRule, type ConditionSource, type ConditionTest } from '../lib/conditions';
 
 const ROW_LABEL: Record<ConditionField, string> = { when: 'Show when…', unless: 'Hide when…' };
 const NONE_LABEL: Record<ConditionField, string> = { when: 'Always shown', unless: 'Never hidden' };
@@ -10,7 +10,7 @@ const UNDO_LABEL: Record<ConditionField, string> = { when: 'show condition', unl
 
 /**
  * When a node of a component's design shows: "Show when…" and "Hide when…", each reading a property of the
- * component or a field of the item it is repeated for, and, for a container, leaving it out when everything inside
+ * component, a field of the item it is repeated for or the component's UI state, and, for a container, leaving it out when everything inside
  * it is hidden. Every placement follows these rules with its own values.
  */
 export function ConditionControls({ def, node, level }: { def: ComponentDefinition; node: GraphNode; level?: number }) {
@@ -52,7 +52,7 @@ function ConditionRow({
   sources: ReturnType<typeof conditionSources>;
 }) {
   const id = useId();
-  const all = [...sources.props, ...sources.item];
+  const all = [...sources.props, ...sources.item, ...sources.state];
   const source = rule?.source;
   const input = source ? comparisonInput(source.schema) : null;
   // A value just typed is committed as its field loses focus, which choosing "is" or "is not" makes it do, before the
@@ -86,7 +86,7 @@ function ConditionRow({
     save({ binding: rule.binding, test, value: rule.test !== 'set' ? current : startValue(source.schema) });
   };
   const missing = rule && !source;
-  const name = rule ? ('$prop' in rule.binding ? rule.binding.$prop : rule.binding.$item) : '';
+  const name = rule ? bindingName(rule.binding) : '';
   return (
     <div className="field insp-condition" data-condition={field}>
       <label htmlFor={id}>{ROW_LABEL[field]}</label>
@@ -104,6 +104,15 @@ function ConditionRow({
         {sources.item.length > 0 && (
           <optgroup label={`Each ${(sources.itemLabel ?? 'item').toLowerCase()}`}>
             {sources.item.map((s) => (
+              <option key={s.key} value={s.key}>
+                {s.label}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {sources.state.length > 0 && (
+          <optgroup label="UI state">
+            {sources.state.map((s) => (
               <option key={s.key} value={s.key}>
                 {s.label}
               </option>

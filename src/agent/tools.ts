@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
-import { EditOperationSchema, legacyShellError, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
+import { EditOperationSchema, legacyShellError, OPERATION_SCHEMAS, PROP_OR_ITEM_BINDING, type OperationType } from '@shared/ops';
 import { MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { normalizeRoute, slugify } from '@shared/routes';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
@@ -142,6 +142,13 @@ const NEVER_OFFERED = new Set<OperationType>([
   'entry.reorder',
   'entry.remove'
 ]);
+/**
+ * Operations the assistant is not offered yet: UI state shows only its initial value in the generated site until its
+ * buttons work there, so a toggle or tabs built through these would be reported as working when they are not.
+ */
+const NOT_YET_OFFERED = new Set<OperationType>(['component.setState', 'component.removeState', 'node.setStateAction']);
+/** Whether an operation authors UI state: one of those, or a binding that reads state. */
+const authorsState = (op: EditOperation) => NOT_YET_OFFERED.has(op.type) || (op.type === 'node.setBinding' && !!op.binding && '$state' in op.binding);
 /** Operations that need Developer mode, shown only to runs that have it. */
 export { CODE_OPERATIONS };
 
@@ -165,7 +172,7 @@ const DEFINITION_OPERATIONS = new Set<OperationType>([
 /** The operation union the model is shown for a run; the app still checks every operation it receives. */
 function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
-    .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)))
+    .filter((t) => !NEVER_OFFERED.has(t) && !NOT_YET_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)))
     .map((t) =>
       t === 'page.create'
         ? OPERATION_SCHEMAS[t].omit({ pageId: true })
@@ -175,7 +182,9 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
             ? OPERATION_SCHEMAS[t].omit({ index: true })
             : t === 'asset.replace'
               ? OPERATION_SCHEMAS[t].omit({ keepAlt: true, uses: true })
-              : OPERATION_SCHEMAS[t]
+              : t === 'node.setBinding'
+                ? OPERATION_SCHEMAS[t].extend({ binding: PROP_OR_ITEM_BINDING })
+                : OPERATION_SCHEMAS[t]
     );
   return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
 }
@@ -463,6 +472,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       if (ops.some((o) => o.type === 'node.insert' && o.newNodeId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.insert does not take a newNodeId.' } };
       // The copy goes right after the original; placing it elsewhere is a node.move of the copy it returns.
       if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.duplicate does not take an index.' } };
+      // UI state is not offered yet (NOT_YET_OFFERED), and a call naming it anyway is refused the same way.
+      if (ops.some(authorsState)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'UI state cannot be changed by the assistant yet: no component.setState, component.removeState, node.setStateAction or {"$state"} binding. The generated site does not run state buttons yet.' } };
       // Keeping every use's alt text is for the app's own web-sized copies, which are the same picture.
       if (ops.some((o) => o.type === 'asset.replace' && o.keepAlt !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take keepAlt: uses with the old image’s suggested alt text take the new one’s, and its result lists the uses whose alt text to check.' } };
       // Choosing some uses is the author's, from the places Assets lists; the AI replaces an image everywhere.

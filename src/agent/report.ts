@@ -220,7 +220,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
           return plain(op, `${op.binding ? 'Set' : 'Cleared'} ${rule} for ${name(op.owner, op.nodeId)} in ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
         }
         const field = op.field === 'prop' ? (op.prop ?? 'property') : (CONTENT_FIELDS[op.field] ?? op.field);
-        const label = `${op.binding ? 'Connected' : 'Disconnected'} the ${field} of ${name(op.owner, op.nodeId)} ${op.binding ? 'to a property' : 'from its property'} in ${where(op.owner)}`;
+        const source = op.binding && '$state' in op.binding ? 'to UI state' : 'to a property';
+        const label = `${op.binding ? 'Connected' : 'Disconnected'} the ${field} of ${name(op.owner, op.nodeId)} ${op.binding ? source : 'from its property'} in ${where(op.owner)}`;
         return plain(op, label, linkTo(op.owner, op.nodeId));
       }
       case 'instance.setProp': {
@@ -334,6 +335,15 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const how = op.type === 'component.removeVariant' ? 'Removed' : had ? 'Changed' : 'Added';
         return plain(op, `${how} the option ${quoted(label)} ${how === 'Removed' ? 'from' : 'of'} the ${quoted(componentName(op.definitionId))} component`);
       }
+      case 'component.setState':
+      case 'component.removeState': {
+        const had = before.components[op.definitionId]?.state?.[op.state];
+        const label = (op.type === 'component.setState' ? op.schema.label : undefined) || had?.label || op.state;
+        const how = op.type === 'component.removeState' ? 'Removed' : had ? 'Changed' : 'Added';
+        return plain(op, `${how} the UI state ${quoted(label)} ${how === 'Removed' ? 'from' : 'of'} the ${quoted(componentName(op.definitionId))} component`);
+      }
+      case 'node.setStateAction':
+        return plain(op, `${op.action ? 'Set' : 'Cleared'} what ${name(op.owner, op.nodeId)} does to UI state in ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       case 'component.setSlot':
       case 'component.removeSlot': {
         const had = before.components[op.definitionId]?.slots?.[op.slot];

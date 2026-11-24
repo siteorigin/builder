@@ -2,11 +2,11 @@
  * Definition-level editing of project components: removal, property schema, parts, variants, slots and
  * property bindings. Every operation keeps instances consistent with the definition it changes.
  */
-import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem, OwnerRef, ProjectState, PropSchema, SlotDef } from '@shared/types';
+import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem, OwnerRef, ProjectState, PropSchema, SlotDef, StateAction } from '@shared/types';
 import { slotDecl, slotDeclProblem, slotFill } from './slots';
 import { propBindingName, propBindingSchema } from '@shared/bindings';
 import { isArticleDate } from '@shared/articles';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, slotChildren } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, isBindingRef, isStateRef, slotChildren } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
@@ -15,7 +15,27 @@ import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, instancesOf } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
 import { normalizeProp } from './values';
-import { acceptedTypes, bindingProblem, bindingSites, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties, normalizePropSchema, type BindField } from './schema';
+import {
+  MAX_UI_STATES,
+  STATE_FIELDS,
+  acceptedTypes,
+  bindingProblem,
+  bindingSites,
+  boundSchema,
+  checkPropName,
+  checkStateName,
+  enclosingList,
+  isProtoKey,
+  normalizeProperties,
+  normalizePropSchema,
+  damagedState,
+  normalizeUiState,
+  stateActionProblem,
+  stateRefProblem,
+  stateUsers,
+  withState,
+  type BindField
+} from './schema';
 import { defFile } from '@generator/index';
 
 type OpResult = Record<string, unknown>;
@@ -132,6 +152,7 @@ function describeNode(n: GraphNode): string {
 /** Put a property schema in place, moving every instance's content to it. Content that no longer fits blocks the change. */
 function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: string, schema: PropSchema) {
   const prev = own(def.properties, name);
+  if (own(def.state, name)) fail(`"${def.name}" already has UI state "${name}". A property needs a name of its own.`);
   if (!prev && Object.keys(def.properties).length >= 60) fail('A component can have at most 60 properties.');
   for (const site of bindingSites(def)) {
     const b = site.binding;
@@ -393,9 +414,10 @@ export function removeVariant(state: ProjectState, op: Op<'component.removeVaria
   for (const { node, owner } of instancesOf(state, def.id)) {
     const chosen = node.variants?.[found.axis];
     const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
-    const from = parent && isBinding(chosen) ? boundSchema(parent, node.id, chosen) : undefined;
+    if (parent && isStateRef(chosen) && damagedState(parent, chosen.$state)) fail(`"${parent.name}" chooses the ${found.axis} through its UI state "${chosen.$state}", which is damaged. Declare it again there first.`);
+    const from = parent && isBindingRef(chosen) ? boundSchema(parent, node.id, chosen) : undefined;
     if (from?.type === 'enum' && from.options.some((o) => o.value === found.id))
-      fail(`"${parent!.name}" can choose the ${found.axis} "${found.id}" through its "${from.label}" choice. Remove that option there first.`);
+      fail(`"${parent!.name}" can choose the ${found.axis} "${found.id}" through its "${from.label}" ${isStateRef(chosen) ? 'UI state' : 'choice'}. Remove that option there first.`);
   }
   const axis = def.variantAxes![found.axis];
   delete axis.options[found.id];
@@ -481,6 +503,83 @@ export function removeSlot(state: ProjectState, op: Op<'component.removeSlot'>):
     delete node.slots[op.slot];
     if (!Object.keys(node.slots).length) delete node.slots;
   }
+  return {};
+}
+
+// ---------------------------------------------------------------------------
+// UI state
+// ---------------------------------------------------------------------------
+
+/** The project-owned managed definition whose design UI state belongs to. */
+function stateDef(state: ProjectState, id: string): ComponentDefinition & { tree: NonNullable<ComponentDefinition['tree']> } {
+  const def = projectDef(state, id);
+  if (def.kind !== 'managed' || !def.tree) fail(`"${def.name}" is a code component; it keeps its UI state in its source.`);
+  return def as ComponentDefinition & { tree: NonNullable<ComponentDefinition['tree']> };
+}
+
+const STATE_USES: Partial<Record<BindField | 'stateAction', string>> = { when: 'shows only when it', unless: 'hides when it', variant: 'chooses a variant from it', stateAction: 'changes it' };
+
+/** "the Monthly button (changes it), the Annual panel (shows only when it)". */
+function describeUsers(users: ReturnType<typeof stateUsers>): string {
+  return users.map((u) => `${describeNode(u.node)} (${STATE_USES[u.field] ?? `reads it as its ${u.field}`})`).join(', ');
+}
+
+/**
+ * Add a UI state variable, or change one. Every node that reads or changes it must still fit: a comparison with a
+ * value it can hold, a nested variant whose options include all of its own, a button action of the right kind.
+ */
+export function setState(state: ProjectState, op: Op<'component.setState'>): OpResult {
+  const def = stateDef(state, op.definitionId);
+  checkStateName(def, op.state);
+  if (!own(def.state, op.state) && Object.keys(def.state ?? {}).length >= MAX_UI_STATES) fail(`A component can have at most ${MAX_UI_STATES} UI state variables.`);
+  const schema = normalizeUiState(op.schema, op.state);
+  // A change that leaves out the label or the starting value keeps the ones the state has, where they still fit:
+  // relabelling a choice never moves every placement to its first option.
+  const prev = own(def.state, op.state);
+  if ((op.schema.label === undefined || !op.schema.label.trim()) && typeof prev?.label === 'string' && prev.label.trim()) schema.label = prev.label;
+  if (prev && op.schema.initial === undefined && !damagedState(def, op.state) && prev.type === schema.type && (schema.type === 'boolean' || schema.options.some((o) => o.value === prev.initial)))
+    schema.initial = prev.initial as never;
+  const next = withState(def, op.state, schema);
+  for (const site of bindingSites(next)) {
+    if (!isStateRef(site.binding) || site.binding.$state !== op.state) continue;
+    const problem = stateRefProblem(state, next, site, site.binding);
+    if (problem) fail(`"${op.state}" cannot change this way: ${describeNode(site.node)} ${problem}`);
+  }
+  for (const n of Object.values(def.tree.nodes)) {
+    if (n.kind !== 'link' || n.stateAction?.state !== op.state) continue;
+    const problem = stateActionProblem(next, n.stateAction);
+    if (problem) fail(`"${op.state}" cannot change this way: ${describeNode(n)} ${problem}`);
+  }
+  def.state = next.state;
+  return {};
+}
+
+/** Remove a UI state variable that nothing reads or changes any more. */
+export function removeState(state: ProjectState, op: Op<'component.removeState'>): OpResult {
+  const def = stateDef(state, op.definitionId);
+  const declared = own(def.state, op.state) ?? fail(`"${def.name}" has no UI state "${op.state}".`);
+  const users = stateUsers(def, op.state);
+  if (users.length) fail(`"${declared.label || op.state}" is still used by ${describeUsers(users)}. Unbind those or remove what they do first.`);
+  delete def.state![op.state];
+  if (!Object.keys(def.state!).length) delete def.state;
+  return {};
+}
+
+/** Set or clear what a button in a component's design does to the component's UI state. Its link stays as it is. */
+export function nodeSetStateAction(state: ProjectState, op: Op<'node.setStateAction'>): OpResult {
+  if (op.owner.kind !== 'component') fail("Buttons change UI state only inside a component's design. Edit the component first.");
+  const def = stateDef(state, op.owner.id);
+  const node = getNode(def.tree, op.nodeId);
+  if (node.kind !== 'link') fail(`${describeNode(node)} is not a button, so it cannot change UI state.`);
+  if (op.action === null) {
+    delete node.stateAction;
+    return {};
+  }
+  const action = clone(op.action) as StateAction;
+  if (damagedState(def, action.state)) fail(`The UI state "${action.state}" of "${def.name}" is damaged. Declare it again with component.setState first.`);
+  const problem = stateActionProblem(def, action);
+  if (problem) fail(`${describeNode(node)} ${problem}`);
+  node.stateAction = action;
   return {};
 }
 
@@ -580,14 +679,15 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
   if (op.binding === null) {
     if (condition || field === 'fallbackAlt') delete holder[key];
     else if (field === 'list') fail('Repeated items always come from a list property. Remove the repeat instead.');
-    else if (field === 'variant' && isBinding(current)) {
+    else if (field === 'variant' && isBindingRef(current)) {
       // The placement keeps the option the property showed by default, where the nested component has it.
       const d = boundSchema(def, node.id, current)?.default;
       if (typeof d === 'string' && Object.hasOwn(axisDef!.options, d)) holder[key] = d;
       else delete holder[key];
       if (inst.variants && !Object.keys(inst.variants).length) delete inst.variants;
-    } else if (isBinding(current)) {
+    } else if (isBindingRef(current)) {
       // A field the node may leave out (a card destination, an accessible name) goes when nothing usable is left.
+      // State read where content belongs (a hand edit) leaves the value it starts at.
       const literal = literalFor(field, node, boundSchema(def, node.id, current), nested);
       if (literal === undefined) delete holder[key];
       else holder[key] = literal;
@@ -596,8 +696,13 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
   }
   const b = op.binding;
   if ('$item' in b && field === 'list') fail('A repeat must use a list property ($prop), not a list item field.');
+  if ('$state' in b) {
+    if (!STATE_FIELDS.has(field)) fail(`${describeNode(node)} cannot read UI state as its ${field}: only "when", "unless" and a nested component's "variant" read UI state.`);
+    if (!own(def.state, b.$state)) fail(`"${def.name}" has no UI state "${b.$state}". Add it with component.setState first.`);
+  }
   const schema = boundSchema(def, node.id, b);
   if (!schema) {
+    if ('$state' in b) fail(`The UI state "${b.$state}" of "${def.name}" is damaged. Declare it again with component.setState.`);
     if ('$prop' in b && b.field !== undefined && own(def.properties, b.$prop)) {
       const p = def.properties[b.$prop];
       fail(p.type === 'object' ? `"${p.label}" has no field "${b.field}". Fields: ${Object.keys(p.fields).join(', ')}.` : `"${p.label}" is not an object property, so it has no field "${b.field}".`);
@@ -606,10 +711,12 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
     fail(enclosingList(def, node.id) ? `The list has no field "${b.$item}".` : 'Only elements inside a repeat can show list item fields.');
   }
   const ok = acceptedTypes(node, field, nested);
-  if (ok && !ok.includes(schema.type)) fail(`A ${schema.type} property cannot be used as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}. It needs a ${ok.join(' or ')} property.`);
+  const what = '$state' in b ? 'state' : 'property';
+  if (ok && !ok.includes(schema.type)) fail(`A ${schema.type} ${what} cannot be used as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}. It needs a ${ok.join(' or ')} ${what}.`);
   if (field === 'list' && '$prop' in b && enclosingRepeatProp(def, node.id) === b.$prop) fail('A repeat cannot repeat the list it is already inside.');
   const comparison = op.eq !== undefined ? ({ ref: clone(b), eq: op.eq } as Comparison) : op.ne !== undefined ? ({ ref: clone(b), ne: op.ne } as Comparison) : undefined;
-  const problem = bindingProblem(state, { node, field, prop: axis ?? op.prop, comparison }, schema);
+  const site = { node, field, prop: axis ?? op.prop, comparison };
+  const problem = '$state' in b ? stateRefProblem(state, def, site, b) : bindingProblem(state, site, schema);
   if (problem) fail(`${describeNode(node)} ${problem}`);
   const before = holder[key];
   holder[key] = comparison ?? clone(b);

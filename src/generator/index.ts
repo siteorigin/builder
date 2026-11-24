@@ -30,7 +30,7 @@ import type {
   TokenDef,
   TokenValue
 } from '@shared/types';
-import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isAppearPreset, isBinding, isComparison, slotChildren, type Condition } from '@shared/types';
+import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, isComparison, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
 import {
   MEDIA_QUERIES,
   REDUCED_MOTION_QUERY,
@@ -915,6 +915,8 @@ function useImport(ctx: EmitCtx, name: string, path: string) {
 }
 
 function bindExpr(ctx: EmitCtx, v: unknown, schema?: PropSchema): string {
+  // UI state shows the value every placement starts at; changing it with the design's buttons is not generated yet.
+  if (isStateRef(v)) return js(stateInitial(ctx.def ?? undefined, v.$state) ?? null);
   if (isBinding(v)) {
     if ('$prop' in v) {
       const local = ctx.locals.get(v.$prop);
@@ -1362,7 +1364,7 @@ function sizingBoxes(walk: SizingWalk, tree: NodeTree, nodeId: string, placement
   const layers = (id: string, n: GraphNode): SizingBox => {
     const box: SizingBox = [{ styles: n.styles ?? {}, tier: 0 }];
     if (!placement || !def) return box;
-    for (const [axis, a] of axesOf(def)) if (isBinding(placement.variants?.[axis]) && Object.values(a.options).some((o) => o.styles?.[id])) walk.unknown = true;
+    for (const [axis, a] of axesOf(def)) if (isBindingRef(placement.variants?.[axis]) && Object.values(a.options).some((o) => o.styles?.[id])) walk.unknown = true;
     for (const styles of selectedVariantStyles(def, placement.variants, id)) box.push({ styles, tier: 1 });
     const rootId = def.tree?.rootIds[0];
     for (const partId of Object.keys(placement.overrides ?? {}).sort()) {
@@ -1737,7 +1739,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   const axes = new Map(axesOf(def));
   // A bound axis shows its default for any value that is not one of its options.
   const variantExpr = (v: unknown, axis: string) => {
-    if (!isBinding(v)) return js(v);
+    if (!isBindingRef(v)) return js(v);
     const a = axes.get(axis)!;
     const value = bindExpr(ctx, v);
     return `{${js(Object.keys(a.options))}.includes(${value}) ? ${value} : ${js(a.default)}}`;

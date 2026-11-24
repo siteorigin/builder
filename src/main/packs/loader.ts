@@ -8,7 +8,7 @@ import { promises as fs, type Stats } from 'node:fs';
 import { join, relative, sep, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import type { ComponentDefinition, GraphNode, ProjectState } from '@shared/types';
-import { COMPONENT_CATEGORIES, SCHEMA_VERSION, SLOT_PRIMITIVES, conditionRef, isBinding, slotChildren } from '@shared/types';
+import { COMPONENT_CATEGORIES, SCHEMA_VERSION, SLOT_PRIMITIVES, conditionRef, isBinding, isStateRef, slotChildren } from '@shared/types';
 import { slotDecl, slotFill } from '@engine/slots';
 import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST, PACK_VERSION_RE, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { FONT_FAMILY_RE } from '@shared/fonts';
@@ -16,6 +16,7 @@ import { variantIdsValid } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { boundSchema } from '@engine/schema';
 import { defKey, slotIdent } from '@generator/index';
+import { MAX_UI_STATES, stateActionProblem, stateRefProblem, uiStateProblem } from '@engine/schema';
 import { sha } from '../project/fsutil';
 import { readRegularFile, type PackFileSource } from './files';
 import type { PackRefusal } from '@shared/api';
@@ -192,6 +193,32 @@ function checkTree(def: ComponentDefinition) {
     }
     // A slot's content is elements of the same design.
     if (inst) for (const ids of Object.values(inst.slots ?? {})) for (const c of Array.isArray(ids) ? ids : []) if (!nodes[c]) refuse(`${where}: node "${id}" puts "${String(c).slice(0, 40)}" in a slot, which does not exist.`);
+    // UI state is read by conditions (checked as the project checks them) and nested variant axes, and changed by
+    // buttons; nothing else reads it.
+    const holdsState = (v: unknown) => JSON.stringify(v ?? null).includes('"$state"');
+    for (const field of ['when', 'unless'] as const) {
+      const c = n[field];
+      const ref = conditionRef(c);
+      if (!ref && holdsState(c)) refuse(`${where}: node "${id}" has a ${field} condition that is neither UI state nor a comparison of it with one value.`);
+      if (!isStateRef(ref)) continue;
+      const problem = typeof ref.$state === 'string' ? stateRefProblem({} as ProjectState, def, { node: n, field, comparison: c === ref ? undefined : (c as never) }, ref) : 'reads UI state without naming it.';
+      if (problem) refuse(`${where}: node "${id}" ${problem}`);
+    }
+    for (const [key, v] of Object.entries(n)) {
+      if (key === 'when' || key === 'unless' || !v || typeof v !== 'object' || !Object.hasOwn(v, '$state')) continue;
+      refuse(`${where}: node "${id}" reads UI state as its ${key.slice(0, 40)}; only conditions and the variants of a nested component read UI state.`);
+    }
+    if (n.kind === 'instance' && Object.values(n.props).some(holdsState)) refuse(`${where}: node "${id}" gives a nested component UI state as a property; only conditions and variants read UI state.`);
+    for (const v of Object.values((n as { variants?: Record<string, unknown> }).variants ?? {})) {
+      if (!v || typeof v !== 'object' || !Object.hasOwn(v, '$state')) continue;
+      const name = isStateRef(v) ? v.$state : undefined;
+      const declared = typeof name === 'string' && def.state && Object.hasOwn(def.state, name) ? def.state[name] : undefined;
+      if (declared?.type !== 'enum') refuse(`${where}: node "${id}" takes a variant from UI state that is not a choice the component declares.`);
+    }
+    if (Object.hasOwn(n, 'stateAction')) {
+      const problem = n.kind === 'link' ? stateActionProblem(def, n.stateAction) : 'changes UI state, which only a button can.';
+      if (problem) refuse(`${where}: node "${id}" ${problem}`);
+    }
   }
   for (const id of def.tree!.rootIds) if (!nodes[id]) refuse(`${where}: its root "${id}" does not exist.`);
   // Every element is reached once from the roots: no element inside itself, and none in two places.
@@ -236,6 +263,14 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
           if (r.type === 'enum' && !Array.isArray((field as { options?: unknown }).options)) refuse(`${where}: the choice field "${f}" of "${name}" has no options.`);
         }
       if (prop.type === 'enum' && !Array.isArray(prop.options)) refuse(`${where}: the choice property "${name}" has no options.`);
+    }
+    if (def.state !== undefined) {
+      if (def.kind !== 'managed' || !def.state || typeof def.state !== 'object' || Array.isArray(def.state)) refuse(`${where} declares UI state that only a managed design can use.`);
+      if (Object.keys(def.state).length > MAX_UI_STATES) refuse(`${where} declares more than ${MAX_UI_STATES} UI state variables.`);
+      for (const [name, decl] of Object.entries(def.state)) {
+        const problem = uiStateProblem(def, name, decl);
+        if (problem) refuse(`${where}: ${problem}`);
+      }
     }
     const idents = new Map<string, string>();
     for (const slot of Object.keys(def.slots ?? {})) {
