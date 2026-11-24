@@ -48,14 +48,15 @@ const urlOf = (base: string | null, route: string) => (base ? base + routeUrl(ro
 
 /**
  * Whether two absolute URLs name the same page of the site: the same origin and query, and the same path once escapes
- * are decoded and a trailing slash is let go ("/%73ervices" is "/services/"), since the site answers both at one page.
+ * of ordinary characters are decoded and one trailing slash is let go ("/%73ervices" is "/services/"), since the site
+ * answers both at one page. An escaped "/" or "?" ("%2F") stays escaped: it is part of a segment, not a separator.
  */
 function sameAddress(a: string | null, b: string | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   try {
     const [x, y] = [new URL(a), new URL(b)];
-    const path = (u: URL) => decodeURIComponent(u.pathname).replace(/\/+$/, '');
+    const path = (u: URL) => decodeURI(u.pathname).replace(/%[0-9a-f]{2}/gi, (e) => e.toUpperCase()).replace(/\/$/, '');
     return x.origin === y.origin && x.search === y.search && path(x) === path(y);
   } catch {
     return false;

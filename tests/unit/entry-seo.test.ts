@@ -265,8 +265,9 @@ describe('an entry’s generated page', () => {
     expect(meta.visibility).toMatchObject({ website: true, indexable: true, sitemap: false, jsonLd: true });
     // A canonical URL that names the post's own address is no copy, however it is spelled.
     for (const own of [SPRING, SPRING.slice(0, -1), SPRING.replace('spring', '%73pring')]) expect(sitemapUrls(run(set, updatePost({ canonical: own }))), own).toContain(SPRING);
-    // Another address on the same site is one.
-    expect(sitemapUrls(run(set, updatePost({ canonical: 'https://example.com/studio/blog/' })))).not.toContain(SPRING);
+    // Another address on the same site is one, an escaped "/" being part of a segment and not a separator.
+    for (const other of ['https://example.com/studio/blog/', 'https://example.com/studio%2Fblog/spring-pottery-classes/', `${SPRING}/`, `${SPRING}?page=2`])
+      expect(sitemapUrls(run(set, updatePost({ canonical: other }))), other).not.toContain(SPRING);
     // Cleared, each falls back again: the entry's title, its excerpt, its featured image before the site's.
     const back = run(set, updatePost({ seoTitle: '', description: '', socialImage: null, canonical: '', featuredImage: 'img_bowls' }));
     expect(post(back)).toMatchObject({ title: 'Spring pottery classes · Riverside Studio', socialTitle: 'Spring pottery classes', description: entryOf(state).excerpt, imageId: 'img_bowls', imageSource: 'featured', canonical: SPRING });
