@@ -9,7 +9,7 @@ import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agen
 import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
-import { imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
+import { copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
 import { authorityFor, canEditContracts, checkAuthority, OP_REACH, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
@@ -1621,9 +1621,34 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     deny({ type: 'page.create', title: 'New' });
     // The component has gone (its copy was undone): nothing may change.
     expect(checkAuthority(base, [{ type: 'node.setStyle', owner, nodeId: 'heading', scope: 'base', style: 'color', value: '#000' } as unknown as EditOperation], authority)).toMatch(/no longer in the site/);
+    // Removing a slot whose placeholder is the root would make the next node the root.
+    const slotFirst = applyOperations(state, [
+      { type: 'component.setSlot', definitionId: id, slot: 'lead', label: 'Lead' },
+      { type: 'node.insert', owner, parentId: null, index: 0, primitive: 'slot', bind: 'lead' }
+    ]).state;
+    expect(checkAuthority(slotFirst, [{ type: 'component.removeSlot', definitionId: id, slot: 'lead' }], authority)).toMatch(/keep it first/);
+    // A selection inside the design cannot make a placement in it a component of its own either.
+    const inner: Authority = { kind: 'selection', owner, nodeId: placed, label: 'Banner' };
+    expect(checkAuthority(nested.state, [{ type: 'component.makeUnique', owner, nodeId: placed } as EditOperation], inner)).toMatch(/adds a new component/);
+    expect(checkAuthority(nested.state, [{ type: 'component.convertToCode', owner, nodeId: placed } as EditOperation], inner)).toMatch(/adds a new component/);
     // An element selected inside it that has gone limits nothing, not even an addition to the contract.
     const stale: Authority = { kind: 'selection', owner, nodeId: 'n_gone', label: 'Tagline' };
     expect(checkAuthority(state, [{ type: 'component.setPropSchema', definitionId: id, prop: 'extra', schema: { type: 'string', label: 'Extra', default: '' } }], stale)).toMatch(/no longer exists/);
+  });
+
+  it('treats copying a code component as code, as the editor does', () => {
+    const state = createStarterState('business', 'Test', false);
+    const homeId = state.site.homePageId;
+    const hero = state.pages[homeId].nodes[state.pages[homeId].rootIds[0]] as InstanceNode;
+    const code = structuredClone(state) as ProjectState;
+    (code.components[hero.definitionId] as { kind: string }).kind = 'code';
+    const unique = { type: 'component.makeUnique', owner: { kind: 'page', id: homeId }, nodeId: hero.id } as EditOperation;
+    const duplicate = { type: 'component.duplicate', definitionId: hero.definitionId } as EditOperation;
+    expect(copiesCode(code, unique)).toBe(true);
+    expect(copiesCode(code, duplicate)).toBe(true);
+    expect(copiesCode(state, unique)).toBe(false);
+    expect(copiesCode(state, duplicate)).toBe(false);
+    expect(copiesCode(state, { type: 'component.convertToCode', owner: { kind: 'page', id: homeId }, nodeId: hero.id } as EditOperation)).toBe(true);
   });
 
   it('decides contract operations by what the run may change, never by Developer mode', () => {
@@ -1746,7 +1771,9 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     def = await editEverywhere(env.session);
     const r = await env.orch.send('Bind the eyebrow to a new tagline field and use navy for the brand', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
     const q = await waitForQuestion(env.events);
-    expect(env.orch.answer(r.runId!, q.id!, 'yes')).toBe(true);
+    // The choice as the author sees it.
+    expect(q.choices[0]).toBe('Yes, allow changes beyond Split hero');
+    expect(env.orch.answer(r.runId!, q.id!, q.choices[0])).toBe(true);
     while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
     // The general tools before and after: a site request on this model would get the page and brand tools only.
     for (const t of tools) expect(t).toContain('apply_operations');
@@ -1754,6 +1781,9 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     expect(applied.error).toBeUndefined();
     expect(env.session.state.tokens.overrides['color.brand']).toBe('#000080');
     expect(env.session.state.components[def.id].properties.tagline).toBeDefined();
+    expect((env.session.state.components[def.id].tree!.nodes.eyebrow as { text?: unknown }).text).toEqual({ $prop: 'tagline' });
+    // The model really was a small one: an ordinary site request on it gets no apply_operations.
+    expect(toolsForRun({ state: env.session.state, selection: null, capabilities: env.adapter.capabilities(), codeEnabled: false, definitionOps: true }).tools.map((t) => t.name)).not.toContain('apply_operations');
   });
 });
 

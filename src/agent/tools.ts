@@ -95,6 +95,19 @@ const DESCRIPTIONS: Record<ToolName, string> = {
 const NEVER_OFFERED = new Set<OperationType>(['asset.add', 'asset.relink', 'theme.refresh', 'node.paste']);
 /** Operations that need Developer mode. */
 export const CODE_OPERATIONS = new Set<OperationType>(['component.createCode', 'component.updateSource', 'component.convertToCode']);
+
+/** Whether an operation creates or copies code: a code operation, or a copy of a code component (as the editor checks). */
+export function copiesCode(state: ProjectState, op: EditOperation): boolean {
+  if (CODE_OPERATIONS.has(op.type)) return true;
+  const isCode = (id: unknown) => typeof id === 'string' && Object.hasOwn(state.components, id) && state.components[id].kind === 'code';
+  if (op.type === 'component.duplicate') return isCode(op.definitionId);
+  if (op.type === 'component.makeUnique') {
+    const tree = op.owner.kind === 'page' ? state.pages[op.owner.id] : op.owner.kind === 'shell' ? state.site.shell[op.owner.id as 'header' | 'footer'] : state.components[op.owner.id]?.tree;
+    const n = tree && Object.hasOwn(tree.nodes, op.nodeId) ? tree.nodes[op.nodeId] : undefined;
+    return n?.kind === 'instance' && isCode(n.definitionId);
+  }
+  return false;
+}
 const CODE_TOOLS = new Set<ToolName>(['read_source', 'apply_source_patch']);
 /** Editing a component's own contract. Rarely needed, so left out of the schema unless the run can use it. */
 const DEFINITION_OPERATIONS = new Set<OperationType>([

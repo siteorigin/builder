@@ -167,6 +167,9 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
   for (const op of ops) {
     if (CONTRACT_EDITS.has(op.type)) {
       if ((op as { definitionId?: string }).definitionId !== def.id) return outside(op);
+      // Removing a slot removes its placeholder too, which may be the root.
+      const first = root ? nodes[root] : undefined;
+      if (op.type === 'component.removeSlot' && first?.kind === 'slot' && first.slot === op.slot) return `component.removeSlot: ${rootFirst}`;
       continue;
     }
     // Both add a new component to the site, for one placement inside the design.
@@ -215,6 +218,8 @@ export function checkAuthority(state: ProjectState, ops: EditOperation[], author
   if (!allowed.size) return 'The selected element no longer exists.';
   const sameOwner = (o: OwnerRef) => o.kind === authority.owner.kind && o.id === authority.owner.id;
   for (const op of ops) {
+    // Inside a component's design, a placement made unique or turned into code adds a new component to the site.
+    if (authority.owner.kind === 'component' && (op.type === 'component.makeUnique' || op.type === 'component.convertToCode')) return `${op.type} adds a new component to the site, which changes more than ${authority.label}.`;
     // Anything not classified (an operation from a newer document) is treated as the widest reach.
     switch (OP_REACH[op.type] ?? 'wider') {
       case 'node': {

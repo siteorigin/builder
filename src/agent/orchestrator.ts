@@ -9,7 +9,7 @@ import { getTheme } from '@catalogue/index';
 import type { Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ModelEvent, ToolCall } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
-import { assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
+import { assetSummary, copiesCode, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { compactProjectSummary, describeSelection, projectSummary } from './context';
 import { authorityFor, canEditContracts, checkAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
@@ -782,7 +782,7 @@ export class Orchestrator {
         // Asset records are created only by the verified importer, never by the model.
         if (operations.some((o) => o.type === 'asset.add' || o.type === 'asset.relink'))
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The assistant cannot add images. Ask the user to import them, then use search_assets.' } };
-        const codeOp = operations.find((o) => CODE_OPERATIONS.has(o.type));
+        const codeOp = operations.find((o) => copiesCode(session.state, o));
         if (codeOp && !codeEnabled)
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'Custom code is turned off for this user (Developer mode is off). Build this with theme components, layout primitives and styles instead.' } };
         // The shared header and footer are edited in place; removing one would empty it on every page.
