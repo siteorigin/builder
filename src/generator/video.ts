@@ -28,6 +28,7 @@ const VIMEO_HASH = /^[0-9a-f]{6,32}$/i;
 const YOUTUBE_HOSTS = ['youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtube-nocookie.com'];
 const VIMEO_HOSTS = ['vimeo.com', 'player.vimeo.com'];
 const YOUTUBE_ID_PATHS = ['embed', 'shorts', 'live', 'v', 'e'];
+const YOUTUBE_NOT_VIDEOS = ['videoseries', 'live_stream'];
 
 /** A start time as the hosts write it ("90", "90s", "1m30s"), in seconds. */
 export function parseStart(raw) {
@@ -63,7 +64,7 @@ function youtube(u, host) {
 	if (host === 'youtu.be') id = parts[0];
 	else if (parts[0] === 'watch') id = u.searchParams.get('v') ?? undefined;
 	else if (parts.length >= 2 && YOUTUBE_ID_PATHS.includes(parts[0])) id = parts[1];
-	if (!id || !YOUTUBE_ID.test(id)) return null;
+	if (!id || !YOUTUBE_ID.test(id) || YOUTUBE_NOT_VIDEOS.includes(id)) return null;
 	const start = parseStart(u.searchParams.get('t') ?? u.searchParams.get('start'));
 	return { provider: 'youtube', id, ...(start ? { start } : {}) };
 }
@@ -172,6 +173,10 @@ export function videoPlayerSvelte(instrument = false): string {
 	/** The player address the visitor chose to play: another address shows its own button again. */
 	let playing = $state('');
 	let frame = $state();
+	// A changed address forgets the press, so going back to the first address never plays it unasked.
+	$effect.pre(() => {
+		if (playing && playing !== src) playing = '';
+	});
 	async function play() {
 		${instrument ? "// Only Preview plays: in Edit, and before the editor has taken over the page, a press selects the section.\n\t\tif (!window.__siteoriginBridge || document.documentElement.hasAttribute('data-so-editing')) return;\n\t\t" : ''}playing = src;
 		await tick();
@@ -207,6 +212,8 @@ export function videoPlayerSvelte(instrument = false): string {
 		position: relative;
 		width: 100%;
 		aspect-ratio: 16 / 9;
+		/* The hosts' players need this much height for their controls on the narrowest phones. */
+		min-height: 200px;
 		overflow: hidden;
 		border-radius: var(--so-radius-lg, 0);
 		background: #111214;

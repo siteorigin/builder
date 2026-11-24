@@ -24,8 +24,8 @@ import { playerFrameAllowed, type FrameView } from '../../src/main/player-frames
 const YT = 'dQw4w9WgXcQ';
 const TOUR = `https://www.youtube.com/watch?v=${YT}`;
 
-/** Addresses both readers must agree on, supported or not. */
-const CORPUS = [
+/** Addresses both readers read as a video. */
+const ACCEPTED = [
   TOUR,
   `https://youtu.be/${YT}?t=90`,
   `https://www.youtube.com/watch?v=${YT}&t=1m30s`,
@@ -41,7 +41,10 @@ const CORPUS = [
   'https://vimeo.com/76979871#t=1m5s',
   'https://player.vimeo.com/video/76979871?h=1a2b3c4d5e&dnt=1&autoplay=1#t=65s',
   'https://vimeo.com/channels/staffpicks/76979871?h=1a2b3c4d5e',
-  'https://vimeo.com/groups/shortfilms/videos/76979871',
+  'https://vimeo.com/groups/shortfilms/videos/76979871'
+];
+/** Addresses both readers refuse. */
+const REFUSED = [
   '',
   '   ',
   'https://www.youtube.com/playlist?list=PL123',
@@ -52,8 +55,11 @@ const CORPUS = [
   `https://www.you\ntube.com/watch?v=${YT}`,
   'https://vimeo.com/76979871/not-a-hash!',
   'https://vimeo.com/76979871?h=',
-  'https://example.com/tour.mp4'
+  'https://example.com/tour.mp4',
+  'https://www.youtube.com/embed/videoseries?list=PL123',
+  'https://www.youtube.com/embed/live_stream?channel=UC1234567890'
 ];
+const CORPUS = [...ACCEPTED, ...REFUSED];
 
 describe('the site’s copy of the address reader', () => {
   let dir: string;
@@ -71,12 +77,17 @@ describe('the site’s copy of the address reader', () => {
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-  it.each(CORPUS)('reads %j exactly as the editor does', (url) => {
-    const ours = parseVideoUrl(url);
+  it.each(ACCEPTED)('reads %j as the same video as the editor does', (url) => {
+    const ours = parseVideoUrl(url)!;
+    expect(ours).not.toBeNull();
     expect(site.parseVideoUrl(url)).toEqual(ours);
-    if (!ours) return;
     for (const autoplay of [false, true]) expect(site.videoEmbedUrl(ours, { autoplay })).toBe(videoEmbedUrl(ours, { autoplay }));
     expect(site.videoWatchUrl(ours)).toBe(videoWatchUrl(ours));
+  });
+
+  it.each(REFUSED)('refuses %j, as the editor does', (url) => {
+    expect(parseVideoUrl(url)).toBeNull();
+    expect(site.parseVideoUrl(url)).toBeNull();
   });
 
   it('names the same hosts and players', () => {
@@ -84,15 +95,14 @@ describe('the site’s copy of the address reader', () => {
   });
 
   it('imports nothing and carries no editor code', () => {
-    expect(VIDEO_JS).not.toMatch(/^\s*import\b|data-so-|__so|siteorigin-bridge|builderTest/m);
+    expect(VIDEO_JS).not.toMatch(/\bimport\b|\brequire\(|data-so-|__so|siteorigin-bridge|builderTest|window\.|document\./);
   });
 });
 
 describe('player addresses the preview admits', () => {
   it('admits exactly the addresses the player writes, with and without autoplay', () => {
-    for (const url of CORPUS) {
-      const source = parseVideoUrl(url);
-      if (!source) continue;
+    for (const url of ACCEPTED) {
+      const source = parseVideoUrl(url)!;
       expect(isVideoPlayerUrl(videoEmbedUrl(source))).toBe(true);
       expect(isVideoPlayerUrl(videoEmbedUrl(source, { autoplay: true }))).toBe(true);
     }
@@ -106,6 +116,9 @@ describe('player addresses the preview admits', () => {
     `https://www.youtube.com/embed/${YT}`,
     `http://www.youtube-nocookie.com/embed/${YT}`,
     `https://www.youtube-nocookie.com/embed/videoseries?list=PL123`,
+    `https://www.youtube-nocookie.com/embed/videoseries?autoplay=1`,
+    `https://www.youtube-nocookie.com/embed/live_stream`,
+    `https://www.youtube-nocookie.com/embed/${YT}?autoplay=0`,
     `https://www.youtube-nocookie.com.evil.example/embed/${YT}`,
     'https://player.vimeo.com/video/76979871',
     'https://player.vimeo.com/video/76979871?dnt=1&h=1a2b3c4d5e',
@@ -274,10 +287,12 @@ describe('the Video section', () => {
     expect(pageText(odd, contact(odd))).not.toContain('Tour of our studio');
   });
 
-  it('has a worked example the assistant can follow', () => {
+  it('has a worked example that asks the author for their own video rather than offering one to copy', () => {
     const example = FOUNDATION_EXAMPLES.find((e) => e.componentId === 'media.video')!;
     expect(example.keywords).toEqual(expect.arrayContaining(['video', 'youtube', 'vimeo', 'embed']));
-    expect(parseVideoUrl(example.props.url)).not.toBeNull();
+    expect(example.props.url).toBe('');
+    expect(JSON.stringify(example)).not.toMatch(/https?:/);
+    expect(example.description).toMatch(/ask them for the address.*Never make one up/);
   });
 
   it('passes the code checks a developer’s copy of it would face', async () => {

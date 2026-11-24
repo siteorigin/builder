@@ -160,8 +160,8 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     id: 'video-studio-tour',
     componentId: 'media.video',
     keywords: ['video', 'youtube', 'vimeo', 'embed', 'film', 'tour', 'demo', 'watch', 'clip'],
-    description: 'One YouTube or Vimeo video under a heading. Ask for the address of a single video; never invent one',
-    props: { heading: 'Take a tour of the studio', lead: 'Two minutes inside the workshop, from the bench to the kiln.', title: 'Tour of our studio', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }
+    description: "One YouTube or Vimeo video under a heading. The url is the author's own video: leave it empty and ask them for the address of a single video. Never make one up or reuse one from elsewhere",
+    props: { heading: 'Take a tour of the studio', lead: 'Two minutes inside the workshop, from the bench to the kiln.', title: 'Tour of our studio', url: '' }
   },
   {
     id: 'cta-contact',

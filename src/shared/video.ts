@@ -64,6 +64,8 @@ const YOUTUBE_HOSTS = new Set(['youtube.com', 'm.youtube.com', 'music.youtube.co
 const VIMEO_HOSTS = new Set(['vimeo.com', 'player.vimeo.com']);
 /** Paths whose next segment is the video ID on YouTube. */
 const YOUTUBE_ID_PATHS = new Set(['embed', 'shorts', 'live', 'v', 'e']);
+/** Player paths shaped like a video ID that play a playlist or a channel's stream instead. */
+const YOUTUBE_NOT_VIDEOS = new Set(['videoseries', 'live_stream']);
 
 /** A start time as YouTube and Vimeo write it ("90", "90s", "1m30s", "1h2m3s"), in seconds. */
 export function parseStart(raw: string | null | undefined): number | undefined {
@@ -99,7 +101,7 @@ function youtube(u: URL, host: string): VideoSource | null {
   if (host === 'youtu.be') id = parts[0];
   else if (parts[0] === 'watch') id = u.searchParams.get('v') ?? undefined;
   else if (parts.length >= 2 && YOUTUBE_ID_PATHS.has(parts[0])) id = parts[1];
-  if (!id || !YOUTUBE_ID.test(id)) return null;
+  if (!id || !YOUTUBE_ID.test(id) || YOUTUBE_NOT_VIDEOS.has(id)) return null;
   const start = parseStart(u.searchParams.get('t') ?? u.searchParams.get('start'));
   return { provider: 'youtube', id, ...(start ? { start } : {}) };
 }
