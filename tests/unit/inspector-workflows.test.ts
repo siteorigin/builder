@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { InstanceNode, ProjectState } from '@shared/types';
+import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, captureClipboard } from '@engine/apply';
 import { EngineError, codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
@@ -178,7 +178,7 @@ describe('copy and paste', () => {
 describe('paste what was copied (#62)', () => {
   const to = (s: ProjectState) => ({ kind: 'page' as const, id: otherPage(s) });
   const items = (n: InstanceNode) => n.props.items as Array<{ id: string; title: string }>;
-  const paste = (s: ProjectState, clip: ReturnType<typeof captureClipboard>, toOwner = to(s), extra: { parentId?: string | null; index?: number } = {}) =>
+  const paste = (s: ProjectState, clip: ReturnType<typeof captureClipboard>, toOwner: OwnerRef = to(s), extra: { parentId?: string | null; index?: number } = {}) =>
     applyOperations(s, [{ type: 'node.paste', clipboardId: clip.id, toOwner, ...extra }], { clipboards: [clip] });
   const pasted = (r: ReturnType<typeof paste>, pageId: string) => r.state.pages[pageId].nodes[r.results[0].nodeId as string] as InstanceNode;
   /** A section holding a button and an image, to copy. */
@@ -309,12 +309,41 @@ describe('paste what was copied (#62)', () => {
     expect(copy.overrides?.root).toBeDefined();
   });
 
-  it('pastes onto pages only', () => {
+  it('pastes inside a project component edited everywhere, inside its root, and nowhere else in it (#200)', () => {
     const f = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'hero.split').definitionId }]);
     const defId = f.results[0].definitionId as string;
     const s = f.state;
-    const clip = captureClipboard(s, s.site.homePageId, firstInstance(s, 'stats.row').id);
-    rejects(() => paste(s, clip, { kind: 'component', id: defId } as never, { parentId: s.components[defId].tree!.rootIds[0] }), /Paste onto a page/);
+    const inComponent = { kind: 'component' as const, id: defId };
+    const root = s.components[defId].tree!.rootIds[0];
+    const stats = firstInstance(s, 'stats.row');
+    const clip = captureClipboard(s, s.site.homePageId, stats.id);
+    const tree = (st: ProjectState) => st.components[defId].tree!;
+    const slotOrChildren = (st: ProjectState, id: string) => {
+      const n = tree(st).nodes[id];
+      return n.kind === 'element' ? n.children : Object.values((n as InstanceNode).slots ?? {}).flat();
+    };
+    const before = JSON.stringify(s);
+    const r = paste(s, clip, inComponent, { parentId: root });
+    const id = r.results[0].nodeId as string;
+    // The copy is the component's own node, in its root, with an ID of its own, still a placement of the same section.
+    expect(slotOrChildren(r.state, root)).toContain(id);
+    expect(id).not.toBe(stats.id);
+    expect((tree(r.state).nodes[id] as InstanceNode).definitionId).toBe(stats.definitionId);
+    expect(r.state.pages[s.site.homePageId].nodes[stats.id]).toBeDefined();
+    expect(validateState(r.state)).toEqual([]);
+    // Beside the root, where the component's one designated root would be joined by another, it is refused.
+    rejects(() => paste(s, clip, inComponent), /inside the component, not beside its root/);
+    // The shared header and footer take no pasted content.
+    rejects(() => paste(s, clip, { kind: 'shell', id: 'header' } as never), /shared header and footer take no pasted content/);
+    // A component cannot contain itself; a group is pasted whole or not at all.
+    const grid = firstInstance(s, 'features.grid');
+    const g = applyOperations(s, [{ type: 'component.fork', definitionId: grid.definitionId }]);
+    const gridDef = g.results[0].definitionId as string;
+    const gridRoot = g.state.components[gridDef].tree!.rootIds[0];
+    const both = captureClipboard(g.state, g.state.site.homePageId, [firstInstance(g.state, 'stats.row').id, firstInstance(g.state, 'features.grid').id]);
+    const into = { kind: 'component' as const, id: gridDef };
+    rejects(() => paste(g.state, both, into, { parentId: gridRoot }), /contain itself/);
+    expect(JSON.stringify(s)).toBe(before);
   });
 
   it('names what the copy needs that was removed after copying, and pastes nothing', () => {

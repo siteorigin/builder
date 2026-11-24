@@ -204,6 +204,8 @@ export interface State {
   styleCopy: (StyleCopy & { opening: string }) | null;
   /** The labels a rename left behind, offered until the author updates or keeps them. Never saved. */
   renameOffer: RenameOffer | null;
+  /** What Copy last took and the project still holds, for the menus that offer Paste (kept by lib/clipboard). Never saved. */
+  copyNote: { opening: string; label: string; count: number } | null;
   setState: (p: Partial<State>) => void;
 }
 
@@ -275,6 +277,7 @@ export const useStore = create<State>((set) => ({
   assetSort: savedAssetSort(),
   styleCopy: null,
   renameOffer: null,
+  copyNote: null,
   setState: (p) => set(oneSelection(p))
 }));
 

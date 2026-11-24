@@ -1,12 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookmarkPlus, ChevronDown, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
+import { BookmarkPlus, ChevronDown, ClipboardCopy, ClipboardPaste, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
 import { api, projectHistory, setState, setViewport, toast, useStore } from '../store';
 import { pageShowing, partName } from '@shared/page-shell';
-import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline } from '../lib/actions';
+import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, planLayers } from '../lib/actions';
+import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
+import { platformKeys } from './CopyPaste';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { LucideIcon } from './InsertPanel';
@@ -144,6 +146,8 @@ export function CommandMenu() {
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', action: 'Open the AI chat', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
       { id: 'styles', label: 'Site styles', keywords: 'colors colours fonts typography spacing theme', action: 'Open site styles', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
       { id: 'find', kbd: '⇧⌘F', label: 'Find and replace…', keywords: 'search words site content', action: 'Open Find and replace', group: 'Edit', icon: <Replace />, run: () => setState({ modal: { kind: 'find' } }) },
+      { id: 'copy', kbd: platformKeys('⌘C'), label: 'Copy the selected section or element', group: 'Edit', icon: <ClipboardCopy />, run: () => void copySelection() },
+      { id: 'paste', kbd: platformKeys('⌘V'), label: 'Paste the copied section or element', group: 'Edit', icon: <ClipboardPaste />, run: () => void pasteFromMenu() },
       { id: 'undo', kbd: '⌘Z', label: 'Undo', group: 'Edit', icon: <Undo2 />, run: () => projectHistory('undo') },
       { id: 'redo', kbd: '⇧⌘Z', label: 'Redo', group: 'Edit', icon: <Redo2 />, run: () => projectHistory('redo') },
       { id: 'newproject', kbd: '⇧⌘N', label: 'New project…', action: 'Start a new project', group: 'Project', icon: <Plus />, run: () => sendCommand('new-project') },
@@ -247,7 +251,19 @@ export function CommandMenu() {
   }, [snap, q, sections, fields, clashing, sectionLimit]);
   const typed = q.trim().toLowerCase();
   const history = snap?.history;
-  const unavailable = (c: Cmd) => (c.id === 'undo' && !history?.canUndo ? 'Nothing to undo' : c.id === 'redo' && !history?.canRedo ? 'Nothing to redo' : undefined);
+  // Copy and Paste act on the page being edited (Paste also inside a component edited everywhere), from what is
+  // selected there and what was copied.
+  const editing = useStore((s) => s.mode === 'edit');
+  const copyable = useStore((s) => s.mode === 'edit' && !s.definitionMode && planLayers(s)?.group.owner.kind === 'page');
+  const pasteable = useStore((s) => !!copiedHere(s));
+  const readOnly = !!snap?.readOnly;
+  const unavailable = (c: Cmd) => {
+    if (c.id === 'undo') return history?.canUndo ? undefined : 'Nothing to undo';
+    if (c.id === 'redo') return history?.canRedo ? undefined : 'Nothing to redo';
+    if (c.id === 'copy') return !editing ? 'Edit mode only' : copyable ? undefined : 'Nothing to copy';
+    if (c.id === 'paste') return !editing ? 'Edit mode only' : !pasteable ? 'Nothing copied' : readOnly ? 'Read-only' : undefined;
+    return undefined;
+  };
   // A page answers by its title, its whole label, or the last part of its address ("faq" is the page at /faq/). A
   // command that cannot run now never outranks one that can.
   const rankOf = (c: Cmd) => {

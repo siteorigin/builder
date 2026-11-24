@@ -1,5 +1,5 @@
 import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, Box, ChevronDown, ChevronRight, ClipboardCopy, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Box, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, X } from 'lucide-react';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef, slotChildren } from '@shared/types';
@@ -10,7 +10,8 @@ import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, 
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
-import { copySelection } from '../lib/clipboard';
+import { copySelection, pasteFromMenu } from '../lib/clipboard';
+import { copyPasteItems } from './CopyPaste';
 import { styleCopyItems } from './StylePaste';
 import { clip, contentText, everySizeEdits, eyeAction, hiddenAncestor, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
@@ -524,7 +525,7 @@ export function LayersPanel() {
       ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
       ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), plan, pages, count, openerOf(el, primary)), 0) }] : []),
       { separator: true },
-      ...(g.owner.kind === 'page' ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => copySelection(plan) && announce(`Copied ${count}`) }] : []),
+      ...copyPasteItems({ copy: g.owner.kind === 'page' ? () => copySelection(plan) && announce(`Copied ${count}`) : null, paste: g.owner.kind === 'shell' ? null : () => void pasteFromMenu() }),
       { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => reported(duplicateLayers(plan, true), `Duplicated ${count}`) },
       { separator: true },
       { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => {
@@ -625,13 +626,16 @@ export function LayersPanel() {
       ...(editable
         ? [
             { separator: true },
-            ...(ref.owner.kind === 'page' && !definitionMode ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => void copySelection(plan) }] : []),
+            ...copyPasteItems({ copy: ref.owner.kind === 'page' && !definitionMode ? () => void copySelection(plan) : null, paste: () => void pasteFromMenu() }),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: create } }) }] : []),
             { separator: true },
             { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
           ]
-        : [])
+        : // The component being edited everywhere takes a paste inside itself, though it is not copied or removed here.
+          isDefRoot
+          ? [{ separator: true }, ...copyPasteItems({ copy: null, paste: () => void pasteFromMenu() })]
+          : [])
     ];
     // A row (treeitem) is not a menu button: open at the row and return focus to it, without marking it expanded.
     if (el instanceof HTMLElement && el.getAttribute('role') === 'treeitem') {

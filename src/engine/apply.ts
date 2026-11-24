@@ -1403,8 +1403,9 @@ export function captureClipboard(state: ProjectState, pageId: string, nodeIds: s
  */
 function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | undefined): OpResult {
   if (!clip) fail('Nothing copied is available to paste. Copy it again.');
-  // The editor pastes onto pages only; content placed inside a definition follows other rules.
-  if (op.toOwner.kind !== 'page') fail('Paste onto a page.');
+  // The editor pastes onto a page, or inside a component it is editing everywhere (placeCopy checks that: inside its root,
+  // never the component itself). The shared header and footer are not pasted into.
+  if (op.toOwner.kind === 'shell') fail('Paste onto a page, or inside a component. The shared header and footer take no pasted content.');
   const gone = (what: string) => fail(`Nothing was pasted: the copy ${what}, which has been removed since it was copied.`);
   for (const [id, c] of Object.entries(clip.components)) {
     const def = own(state.components, id);

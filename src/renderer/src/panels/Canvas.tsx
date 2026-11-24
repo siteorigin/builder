@@ -24,6 +24,8 @@ import { focusInspector } from '../lib/inspector-focus';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
+import { copyPasteItems } from './CopyPaste';
+import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
 import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type FrameEntry, type VisitorHistory } from '../lib/preview-history';
 
@@ -937,11 +939,15 @@ export function Canvas() {
     // into the page with the text, where Tab reaches its formatting toolbar.
     const editable = mode === 'edit' && canInlineEdit(ref) && !!descFor(ref);
     const editText = live(ref, () => startTextEditFromChrome(ref));
+    // Copy takes content from a page; Paste goes after (or inside) what the menu names, here or in a component edited
+    // everywhere. The shared header and footer take neither.
+    const clipboard = ref.owner.kind === 'shell' ? [] : copyPasteItems({ copy: t && t.owner.kind === 'page' ? on(() => copySelection()) : null, paste: on(() => pasteFromMenu()) });
     const items = [
         { heading: name },
         ...(editable ? [{ label: 'Edit text', icon: <Pencil />, onSelect: editText }] : []),
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
         { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: live(ref, () => askAiAbout(ref)) },
+        ...(!t && clipboard.length ? [{ separator: true }, ...clipboard] : []),
         ...(t
           ? [
               ...(reorderable || !locked || create ? [{ separator: true }] : []),
@@ -951,7 +957,7 @@ export function Canvas() {
                     { label: 'Move down', icon: <ArrowDown />, shortcut: keys('⇧⌘↓'), disabled: sib!.index >= sib!.count - 1, onSelect: on(() => announcedMove(() => moveSelection(1))) }
                   ]
                 : []),
-              ...(locked ? [] : [{ label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
+              ...(locked ? [] : [...clipboard, { label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
               ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: on(() => setState({ modal: { kind: 'create-component' as const, ref: create } })) }] : []),
               ...(locked ? [] : [{ separator: true }, { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: on(deleteSelection) }])
             ]
