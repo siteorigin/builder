@@ -224,18 +224,31 @@ export interface LaunchedApp {
 async function watchingSpawns<T>(fn: (child: ChildProcess) => void, run: () => Promise<T>): Promise<T> {
   const onMessage = (message: unknown) => {
     const child = (message as { process?: ChildProcess }).process;
-    // Playwright's own arguments; on Windows it runs the app through a shell, with them inside one command line.
-    if (!child || !child.spawnargs?.some((a) => a.includes('--remote-debugging-port=0'))) return;
-    if (child.pid) fn(child);
-    else child.once('spawn', () => fn(child));
+    // Published as the process object is made, before it has arguments or a pid: look once it has spawned.
+    child?.once('spawn', () => {
+      // Playwright's own arguments; on Windows it runs the app through a shell, with them inside one command line.
+      if (child.pid && child.spawnargs.some((a) => a.includes('--remote-debugging-port=0'))) fn(child);
+    });
   };
   subscribe('child_process', onMessage);
+  // Playwright waits for three lines from the app but awaits one at a time: if the app is killed before the first,
+  // the other two waits reject with no one listening, which would end this process. Those, and only those, are
+  // let go while a launch settles; anything else unhandled still throws.
+  const onUnhandled = (reason: unknown) => {
+    if (reason instanceof Error && reason.message === PLAYWRIGHT_LAUNCH_FAILED) return;
+    throw reason;
+  };
+  process.on('unhandledRejection', onUnhandled);
   try {
     return await run();
   } finally {
     unsubscribe('child_process', onMessage);
+    setTimeout(() => process.off('unhandledRejection', onUnhandled), 5000).unref();
   }
 }
+
+/** The error Playwright's Electron launcher rejects with when the app exits before it is connected. */
+const PLAYWRIGHT_LAUNCH_FAILED = 'Process failed to launch!';
 
 /** Wait for the app's editor window: the first window at the editor's address, skipping any other (hidden) window. */
 export async function editorWindow(app: ElectronApplication, timeoutMs: number): Promise<Page> {
@@ -668,20 +681,22 @@ export class Session {
       this.abortStart = reject;
     });
     stopped.catch(() => undefined);
-    const steps = this.startSteps(deadline, (p) => (phase = p));
+    const steps = this.startSteps(deadline, (p) => (phase = p), stopped);
     this.starting = steps.catch(() => undefined);
     try {
       await Promise.race([steps, stopped]);
       this.state = 'ready';
       return await this.describe();
     } catch (e) {
-      this.failed = true;
+      // Closed by its owner while starting is not a failure, and that close is already removing the run's folders.
+      const interrupted = this.closeRequested;
+      if (!interrupted) this.failed = true;
       const err =
         e instanceof DriverError
           ? e
           : new DriverError('LAUNCH_FAILED', `The app did not start (at ${phase}): ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`, { details: { phase } });
-      if (this.args.keepArtifacts !== 'never') await this.writeEvidence(err).catch(() => undefined);
-      const closed = await this.close({ failed: true }).catch((c: unknown) => c);
+      if (!interrupted && this.args.keepArtifacts !== 'never') await this.writeEvidence(err).catch(() => undefined);
+      const closed = await this.close({ failed: !interrupted }).catch((c: unknown) => c);
       const details: Record<string, unknown> = { ...err.details, phase };
       if (closed && typeof closed === 'object' && 'processes' in closed) Object.assign(details, { artifacts: (closed as CloseResult).artifacts, processes: (closed as CloseResult).processes });
       else details.cleanup = closed instanceof DriverError ? { code: closed.code, message: closed.message, ...closed.details } : String(closed);
@@ -692,7 +707,11 @@ export class Session {
     }
   }
 
-  private async startSteps(deadline: number, at: (p: StartPhase) => void): Promise<void> {
+  /**
+   * The start itself. Each step either finishes quickly, watches for the session closing, or waits on the app (which
+   * closing kills), so this settles soon after `stopped` rejects: closing waits for it before removing anything.
+   */
+  private async startSteps(deadline: number, at: (p: StartPhase) => void, stopped: Promise<never>): Promise<void> {
     const left = () => {
       if (this.closeRequested) throw new DriverError('CLOSED', 'The session was closed while it started.');
       return Math.max(1, deadline - Date.now());
@@ -700,7 +719,8 @@ export class Session {
     const reach = async (p: StartPhase) => {
       at(p);
       left();
-      await this.options.hooks?.phase?.(p, this);
+      const held = this.options.hooks?.phase?.(p, this);
+      if (held) await Promise.race([held, stopped]);
       left();
     };
     this.build = await buildIdentity(this.appRoot);
